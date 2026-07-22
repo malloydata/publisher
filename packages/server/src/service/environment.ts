@@ -21,6 +21,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { logger } from "../logger";
+import { redactPgSecrets } from "../pg_helpers";
 import { recordManifestBind } from "../materialization_metrics";
 import {
    assertSafeEnvironmentPath,
@@ -138,6 +139,27 @@ export class Environment {
    // AB/BA deadlock path.
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
+   /**
+    * Configured packages that failed to load, keyed by name, with the reason.
+    *
+    * A load failure is not fatal: the package is omitted and its siblings serve
+    * on. It is also observable exactly once, because the failing load deletes
+    * the `packageStatuses` entry that `listPackages` enumerates, so the next
+    * listing no longer knows the package was ever configured. That makes this
+    * the only lasting record. Read by EnvironmentStore.getStatus.
+    */
+   private failedPackages: Map<string, string> = new Map();
+   /**
+    * Why a configured package never reached the disk, keyed by package name.
+    *
+    * Separate from {@link failedPackages} because it is the more specific
+    * answer and has to win. A package whose location failed to mount is still
+    * seeded SERVING by addEnvironment, so its later lazy load fails on the
+    * manifest that was never copied and `listPackages` records that instead.
+    * Reporting "Package manifest ... does not exist." for what was really a
+    * typo'd `location` sends the reader hunting in the wrong place.
+    */
+   private mountErrors: Map<string, string> = new Map();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -629,6 +651,24 @@ export class Environment {
                   );
                   // Directory did not contain a valid package.json file -- therefore, it's not a package.
                   // Or it timed out
+                  // Redact before this reaches getStatus: compiling a model
+                  // resolves the package's connections, so a Postgres/DuckLake
+                  // ATTACH failure surfaces here carrying the connection string
+                  // (connection.ts builds it, and redacts it before logging for
+                  // the same reason). A log line was the old destination; this
+                  // one is an HTTP response body.
+                  //
+                  // Reduces the exposure, does not remove it: redactPgSecrets
+                  // only covers keyword-form `password=`, which is what
+                  // buildPgConnectionString emits. A URL-form connectionString
+                  // supplied verbatim in config still carries its credentials
+                  // through. Widen the helper rather than trusting this call.
+                  this.failedPackages.set(
+                     packageName,
+                     redactPgSecrets(
+                        error instanceof Error ? error.message : String(error),
+                     ),
+                  );
                   return undefined;
                }
             }),
@@ -892,6 +932,9 @@ export class Environment {
          }
          this.packages.set(packageName, _package);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
+         // It loaded, so any earlier failure is stale. A package that failed at
+         // boot can be fixed on disk and reloaded without a restart.
+         this.clearPackageLoadFailure(packageName);
          logger.debug(`Successfully loaded package ${packageName}`);
 
          return _package;
@@ -973,6 +1016,10 @@ export class Environment {
          throw error;
       }
       this.setPackageStatus(packageName, PackageStatus.SERVING);
+      // Same reasoning as the load and install paths: it is serving now, so an
+      // earlier boot failure is stale. Without this, a package fixed on disk
+      // and re-added keeps its loadError for the life of the process.
+      this.clearPackageLoadFailure(packageName);
       return this.packages.get(packageName);
    }
 
@@ -1161,6 +1208,8 @@ export class Environment {
 
          this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
+         // Publishing a fixed package clears the boot failure it replaces.
+         this.clearPackageLoadFailure(packageName);
 
          if (oldPackage) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
@@ -1509,6 +1558,29 @@ export class Environment {
       return this.packageStatuses.get(packageName);
    }
 
+   /**
+    * Record why a configured package's location never mounted, so /status can
+    * name the real cause instead of the missing-manifest fallout it produces.
+    * Called by EnvironmentStore right after the environment is created.
+    */
+   public setPackageMountError(packageName: string, message: string): void {
+      this.mountErrors.set(packageName, message);
+   }
+
+   /** Forget any recorded failure for a package, whatever its cause. */
+   private clearPackageLoadFailure(packageName: string): void {
+      this.failedPackages.delete(packageName);
+      this.mountErrors.delete(packageName);
+   }
+
+   /** Packages configured for this environment that did not load, and why. */
+   public getFailedPackages(): ReadonlyMap<string, string> {
+      if (this.mountErrors.size === 0) return this.failedPackages;
+      // Mount errors last, so the specific cause overwrites the generic
+      // manifest error that the un-mounted package produces on its lazy load.
+      return new Map([...this.failedPackages, ...this.mountErrors]);
+   }
+
    public setPackageStatus(packageName: string, status: PackageStatus): void {
       const currentStatus = this.packageStatuses.get(packageName);
       this.packageStatuses.set(packageName, {
@@ -1525,6 +1597,14 @@ export class Environment {
    public async deletePackage(packageName: string): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
+         // Clear the load failure before the early return, not after it. A
+         // package that failed to load is not in `packages` (the load catch
+         // evicts it), so deleting it takes the early return every time, while
+         // the controller still drops its config row. Leaving the entry would
+         // make getStatus report a loadError for a package that is no longer
+         // configured, which is the one thing that channel must not do.
+         this.clearPackageLoadFailure(packageName);
+
          const _package = this.packages.get(packageName);
          if (!_package) {
             return;

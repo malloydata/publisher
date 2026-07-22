@@ -28,6 +28,8 @@ my-package/
   public/               # ONLY this directory is web-served
     index.html
     app.js
+    vendor/             # chart library, vendored rather than loaded from a CDN
+      chart.umd.js
 ```
 
 Only `public/` is reachable over the web, at `/environments/<env>/packages/<pkg>/<file>`. Models, data, and `publisher.json` are private and reached only through the query API, which still applies the model's filters, access modifiers, and authorize rules. There is no flag to set: a `public/` directory is what makes a package an app.
@@ -39,7 +41,7 @@ The agent orchestrates these. Each query and chart step hands off to a focused s
 1. READ THE MODEL FIRST. Get the model's real source and view names, through your environment's context tool if it has one, or by opening the `.malloy` file directly. Never guess field or view names.
 2. SCAFFOLD the package (template below).
 3. WRITE THE QUERIES with `skill:malloy-html-data-app-runtime`. Validate each before pasting it into the page, using whatever query tool your environment provides or a running Publisher (see `skill:malloy-html-data-app-runtime`). Malloy syntax questions go to `skill:malloy-queries`.
-4. CHOOSE CHARTS with `skill:malloy-charts` when rendering through `<malloy-render>`; otherwise it is your own chart library drawing the returned rows. Vendor any chart library into `public/` and load it locally, not from a CDN, because embedded author JavaScript runs with the viewing user's data authority. (The shipped example loads its chart library from a CDN for brevity; a published or embedded app should vendor it.)
+4. CHOOSE CHARTS with `skill:malloy-charts` when rendering through `<malloy-render>`; otherwise it is your own chart library drawing the returned rows. Vendor any chart library into `public/` and load it locally, not from a CDN. Two reasons: embedded author JavaScript runs with the viewing user's data authority, and a blocked CDN (agent sandboxes and many corporate networks block them) is easy to miss, because the script never runs and the charts come up empty. The `html-data-app` and `storefront` examples both ship their chart library in `public/vendor/` and load it from `public/index.html` as `./vendor/chart.umd.js`. Copy that, but resolve the path against the page's own directory: a page in a subdirectory (`public/reports/index.html`) needs `../vendor/chart.umd.js`. A wrong relative path 404s and leaves the charts blank, which is the failure you are trying to avoid.
 5. EMBED (optional) with `skill:malloy-html-data-app-embedding`.
 6. PREVIEW with the local authoring loop (below).
 7. VERIFY before you call it done (see "What 'done' means" below). This step is not optional.
@@ -156,7 +158,7 @@ npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
 }
 ```
 
-A local package uses a filesystem `location` (`"./<pkg>"`, relative to `--server_root`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a `.malloynb` whose cells each `import "x.malloy"`, the notebook compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once in the first cell.)
+A local package uses a filesystem `location` (`"./<pkg>"`, relative to the directory holding `publisher.config.json`); a remote one uses a GitHub `tree` URL. If one model in the package fails to compile, the **whole package** fails to load, so a stray notebook/model error blanks every tile. (Common one: a `.malloynb` whose cells each `import "x.malloy"`, the notebook compiles as one batch, so the repeated import errors `Cannot redefine 'x'`. Import once in the first cell.)
 
 ### Publishing
 

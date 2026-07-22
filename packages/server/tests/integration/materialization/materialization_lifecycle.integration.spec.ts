@@ -346,9 +346,14 @@ describe("Materialization REST API: single-call (E2E)", () => {
             const routedExecuted = await executedSql();
             const routedCompiled = await compiledSql();
             expect(routedExecuted).not.toContain("data/orders.csv");
-            expect(routedExecuted).toContain("order_summary");
             expect(routedCompiled).not.toContain("data/orders.csv");
-            expect(routedCompiled).toContain("order_summary");
+            // The bound table is referenced QUOTED for the connection's dialect,
+            // byte-compatible with the CREATE side's quoteTablePath: a
+            // case-folding engine (Snowflake uppercases unquoted identifiers)
+            // can only resolve the case-preserved created table through the
+            // same quoting (Package.quoteBoundTableNames).
+            expect(routedExecuted).toContain('"order_summary"');
+            expect(routedCompiled).toContain('"order_summary"');
 
             // Cleanup: drop the table + record, then reload back to live so the
             // dangling binding doesn't leak into later groups.

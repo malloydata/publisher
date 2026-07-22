@@ -31,6 +31,11 @@ Poll until the server reports `serving` rather than assuming a fixed wait. From 
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # -> "serving"
 ```
 
+`serving` does not mean everything loaded. A package that fails to load is skipped, not fatal, so the
+server serves whatever did load and the package is simply absent. If data you expect is missing, check
+`curl -s http://localhost:4000/api/v0/status | jq .loadErrors`, which is absent when everything loaded
+and otherwise names each environment or package that did not load, and why.
+
 ## 2. Connect your agent
 
 Publisher exposes one MCP endpoint: `http://localhost:4040/mcp` (streamable HTTP, stateless, unauthenticated; put it behind a gateway if you expose it beyond localhost).

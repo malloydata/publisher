@@ -1,4 +1,8 @@
-import { useServer, useRouterClickHandler } from "@malloy-publisher/sdk";
+import {
+   useServer,
+   useRouterClickHandler,
+   DOC_LINKS,
+} from "@malloy-publisher/sdk";
 import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
 import CodeOutlinedIcon from "@mui/icons-material/CodeOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -273,13 +277,13 @@ function DocsFooter({ isCollapsed }: { isCollapsed: boolean }) {
    const links = [
       {
          label: "Malloy Docs",
-         href: "https://docs.malloydata.dev/documentation/",
+         href: DOC_LINKS.docsHome,
          icon: <ArticleOutlinedIcon fontSize="small" />,
          external: true,
       },
       {
          label: "Publisher Docs",
-         href: "https://github.com/malloydata/publisher/blob/main/README.md",
+         href: DOC_LINKS.publishing,
          icon: <OpenInNewIcon fontSize="small" />,
          external: true,
       },

@@ -37,7 +37,7 @@ put the server behind your own gateway before exposing it beyond localhost.
 
 | Method & path | Does |
 | --- | --- |
-| `GET /api/v0/status` | Server lifecycle (`operationalState`). |
+| `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load. |
 | `GET /api/v0/environments` | List environments, each with its packages. |
 | `GET /api/v0/environments/{env}/packages/{pkg}` | Package metadata (models, `explores`, `buildPlan`, …). |
 | `GET  …/packages/{pkg}/models/{path}` | A model's compiled metadata (sources, views, givens). |

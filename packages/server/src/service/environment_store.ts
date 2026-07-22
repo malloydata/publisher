@@ -4,12 +4,14 @@ import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import extract from "extract-zip";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import simpleGit from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
    getProcessedPublisherConfig,
+   getPublisherConfigDir,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
    ProcessedPublisherConfig,
@@ -27,6 +29,7 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
+import { redactPgSecrets } from "../pg_helpers";
 import {
    assertSafeEnvironmentPath,
    assertSafePackageName,
@@ -37,6 +40,9 @@ import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 type ApiEnvironment = components["schemas"]["Environment"];
+type LoadError = NonNullable<
+   components["schemas"]["ServerStatus"]["loadErrors"]
+>[number];
 
 const AZURE_SUPPORTED_SCHEMES = ["https://", "http://", "abfss://", "az://"];
 const AZURE_DATA_EXTENSIONS = [
@@ -115,9 +121,49 @@ async function clearMountTarget(targetPath: string): Promise<void> {
    }
 }
 
+/**
+ * Absolute on-disk path for a local package `location`.
+ *
+ * `~/` (POSIX form only) expands to the home directory. Anything still
+ * relative resolves against `anchorDir`, the directory holding the active
+ * config, so a config and the packages it points at can be moved or
+ * committed together. Absolute locations are returned untouched.
+ */
+export function resolvePackageLocation(
+   location: string,
+   anchorDir: string,
+   homeDir?: string,
+): string {
+   let expanded = location;
+   if (location.startsWith("~/")) {
+      // Resolved lazily, inside the tilde branch only: os.homedir() can throw
+      // where HOME is unset and there is no passwd entry for the uid (e.g. a
+      // distroless container with runAsUser), and a `./sales` or absolute
+      // location must never fail on that.
+      const home = homeDir ?? os.homedir();
+      if (!home) {
+         throw new Error(
+            `Cannot expand "~" in location "${location}": home directory is not set`,
+         );
+      }
+      expanded = path.join(home, location.slice(2));
+   }
+   return path.isAbsolute(expanded) ? expanded : path.join(anchorDir, expanded);
+}
+
 export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
+   /**
+    * Environments that were configured but did not load, keyed by name.
+    *
+    * A load failure is not fatal: the environment is skipped and the server
+    * still reports `serving`. Nothing else remembers it, because the throw
+    * happens before the environment reaches `this.environments` or the
+    * database, so this is the only record that a configured environment is
+    * missing rather than never asked for. Surfaced on `getStatus`.
+    */
+   private failedEnvironments = new Map<string, string>();
    private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
@@ -218,11 +264,21 @@ export class EnvironmentStore {
             true,
          );
       } catch (error) {
-         this.logEnvironmentInitializationError(environment.name, error);
+         this.recordEnvironmentInitializationFailure(environment.name, error);
       }
    }
 
-   private logEnvironmentInitializationError(
+   /**
+    * Log a skipped environment AND remember why, for getStatus to report.
+    *
+    * Both boot paths funnel through here: the config path
+    * ({@link addConfiguredEnvironment}) and the database-restore path taken by
+    * every restart against an existing publisher.db. Keeping the record here
+    * rather than in the callers is deliberate: recording it in only one of them
+    * would leave the other silently dropping failures, which is the bug this is
+    * meant to fix.
+    */
+   private recordEnvironmentInitializationFailure(
       environmentName: string | undefined,
       error: unknown,
    ) {
@@ -231,6 +287,24 @@ export class EnvironmentStore {
          `Error initializing environment${label}; skipping environment`,
          this.extractErrorDataFromError(error),
       );
+      // Only record an environment that is genuinely not there. An environment
+      // reaches `this.environments` before the rest of its setup (the database
+      // sync, its package listing) is done, and a throw from that tail lands
+      // here while the environment is live and serving. Reporting it would
+      // contradict `environments`, which still lists it, and a loadErrors entry
+      // with no `package` means the whole environment was skipped. It also could
+      // never be cleared: the clear below only runs when an environment is
+      // created, so a live one would carry the entry until restart.
+      if (environmentName && !this.environments.has(environmentName)) {
+         // Redacted because this is bound for an HTTP response body, not just a
+         // log line; see the same call in environment.ts.
+         this.failedEnvironments.set(
+            environmentName,
+            redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         );
+      }
    }
 
    private async initialize() {
@@ -349,7 +423,7 @@ export class EnvironmentStore {
 
                         return environmentInstance.listPackages();
                      } catch (error) {
-                        this.logEnvironmentInitializationError(
+                        this.recordEnvironmentInitializationFailure(
                            dbEnvironment.name,
                            error,
                         );
@@ -768,9 +842,16 @@ export class EnvironmentStore {
             : baseState
       ) as components["schemas"]["ServerStatus"]["operationalState"];
 
-      const status = {
+      const status: {
+         timestamp: number;
+         environments: Array<components["schemas"]["Environment"]>;
+         initialized: boolean;
+         frozenConfig: boolean;
+         operationalState: components["schemas"]["ServerStatus"]["operationalState"];
+         loadErrors?: LoadError[];
+      } = {
          timestamp: Date.now(),
-         environments: [] as Array<components["schemas"]["Environment"]>,
+         environments: [],
          initialized: this.isInitialized,
          frozenConfig: isPublisherConfigFrozen(this.serverRootPath),
          operationalState,
@@ -812,6 +893,34 @@ export class EnvironmentStore {
             }
          }),
       );
+
+      // Collected AFTER listEnvironments, not before: serialize() awaits
+      // listPackages(), which is what loads an environment's packages and so
+      // records their failures. Reading the maps at the top of this method risks
+      // reading them before the failures they report have been recorded.
+      //
+      // A read-time overlay over live state, like "throttled" above, so there is
+      // no fourth stored status to keep in sync.
+      const loadErrors: LoadError[] = [];
+      for (const [environmentName, message] of this.failedEnvironments) {
+         loadErrors.push({ environment: environmentName, message });
+      }
+      for (const [environmentName, environment] of this.environments) {
+         for (const [packageName, message] of environment.getFailedPackages()) {
+            loadErrors.push({
+               environment: environmentName,
+               package: packageName,
+               message,
+            });
+         }
+      }
+      // Left unset when nothing failed, so the key is absent from the response
+      // and a healthy server's status body is byte-for-byte what it was before
+      // this field existed.
+      if (loadErrors.length > 0) {
+         status.loadErrors = loadErrors;
+      }
+
       return status;
    }
 
@@ -904,13 +1013,16 @@ export class EnvironmentStore {
          (environment?.packages && environment.packages.length > 0) ||
          (environmentConfig?.packages && environmentConfig.packages.length > 0);
       let absoluteEnvironmentPath: string;
+      let mountErrors: ReadonlyMap<string, string> = new Map();
       if (hasPackages) {
          const packagesToProcess =
             environment?.packages || environmentConfig?.packages || [];
-         absoluteEnvironmentPath = await this.loadEnvironmentIntoDisk(
+         const loaded = await this.loadEnvironmentIntoDisk(
             environmentName,
             packagesToProcess,
          );
+         absoluteEnvironmentPath = loaded.path;
+         mountErrors = loaded.mountErrors;
          if (absoluteEnvironmentPath.endsWith(".zip")) {
             absoluteEnvironmentPath = await this.unzipEnvironment(
                absoluteEnvironmentPath,
@@ -929,7 +1041,18 @@ export class EnvironmentStore {
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
 
+      // Attach before the SERVING seeding below: those packages are configured
+      // but un-mounted, and this is the only record of why.
+      for (const [packageName, message] of mountErrors) {
+         newEnvironment.setPackageMountError(packageName, message);
+      }
+
       this.environments.set(environmentName, newEnvironment);
+      // It loaded, so any earlier failure for this name is stale. A boot
+      // failure can be followed by a successful POST or lazy load of the same
+      // environment, and a status that keeps reporting the old error would lie
+      // in the other direction.
+      this.failedEnvironments.delete(environmentName);
 
       environment?.packages?.forEach((_package) => {
          if (_package.name) {
@@ -1119,6 +1242,21 @@ export class EnvironmentStore {
       );
    }
 
+   /**
+    * Absolute on-disk path for a local package `location`, anchored at the
+    * directory holding the active config. That covers locations POSTed at
+    * runtime too, which no config declares. When there is no config worth
+    * anchoring to, `getPublisherConfigDir` returns null (it owns the cases) and
+    * the server root is the only meaningful base, which is also what this did
+    * before the anchor moved.
+    */
+   private resolveLocalPath(location: string): string {
+      return resolvePackageLocation(
+         location,
+         getPublisherConfigDir(this.serverRootPath) ?? this.serverRootPath,
+      );
+   }
+
    private isGitHubURL(location: string) {
       return (
          location.startsWith("https://github.com/") ||
@@ -1134,6 +1272,38 @@ export class EnvironmentStore {
       return location.startsWith("s3://");
    }
 
+   /**
+    * Isolate a location failure to the packages it actually affects instead of
+    * aborting the whole environment. The packages that mounted still serve;
+    * each one named here is left un-mounted, so its configured status entry
+    * (set in addEnvironment) resolves to a per-package load failure that
+    * getFailedPackages() -> /status loadErrors reports. A bad location now
+    * behaves like a bad manifest: those packages dropped, siblings unaffected.
+    *
+    * The message is kept rather than letting the lazy load speak for it. An
+    * un-mounted package fails later on the manifest that was never copied, and
+    * "Package manifest ... does not exist." points at publisher_data/ instead
+    * of the location that is actually wrong. Redacted because it reaches an
+    * HTTP response body.
+    */
+   private recordMountFailure(
+      error: unknown,
+      location: string,
+      packageNames: string[],
+      mountErrors: Map<string, string>,
+   ): void {
+      logger.error(
+         `Failed to download or mount location "${location}"`,
+         this.extractErrorDataFromError(error),
+      );
+      const message = redactPgSecrets(
+         error instanceof Error ? error.message : String(error),
+      );
+      for (const packageName of packageNames) {
+         mountErrors.set(packageName, message);
+      }
+   }
+
    private async loadEnvironmentIntoDisk(
       environmentName: string,
       packages: ApiEnvironment["packages"],
@@ -1144,6 +1314,10 @@ export class EnvironmentStore {
          PUBLISHER_DATA_DIR,
          environmentName,
       );
+      // Why each package's location failed, carried out to the Environment so
+      // /status can report the real cause rather than the missing manifest it
+      // leaves behind.
+      const mountErrors = new Map<string, string>();
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
 
@@ -1204,6 +1378,11 @@ export class EnvironmentStore {
          );
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
+         // Two failure scopes, deliberately separate. The download is shared by
+         // every package at this location, so losing it loses all of them. An
+         // extract is per package, so one bad sibling must not strand the ones
+         // after it in the loop.
+         let downloaded = true;
          try {
             // Use the existing download method for all locations
             await this.downloadOrMountLocation(
@@ -1212,11 +1391,28 @@ export class EnvironmentStore {
                environmentName,
                "shared",
             );
-            // Extract each package from the downloaded content
-            for (const _package of packagesForLocation) {
+         } catch (error) {
+            downloaded = false;
+            this.recordMountFailure(
+               error,
+               groupedLocation,
+               packagesForLocation.map((p) => p.name),
+               mountErrors,
+            );
+         }
+         // Extract each package from the downloaded content
+         for (const _package of downloaded ? packagesForLocation : []) {
+            // Declared out here so the catch can clean up the exact path this
+            // iteration created. Never re-derive it from the package name
+            // there: the name may be why we are in the catch at all, and
+            // safeJoinUnderRoot permits a name that resolves to the root, so a
+            // package called "." would hand the cleanup the whole environment
+            // directory. Undefined means nothing was created yet.
+            let absolutePackagePath: string | undefined;
+            try {
                const packageDir = _package.name;
                assertSafePackageName(packageDir);
-               const absolutePackagePath = safeJoinUnderRoot(
+               absolutePackagePath = safeJoinUnderRoot(
                   absoluteTargetPath,
                   packageDir,
                );
@@ -1245,15 +1441,11 @@ export class EnvironmentStore {
                } else {
                   // For non-GitHub locations, use package name
                   if (this.isLocalPath(_package.location)) {
-                     // Match the resolution rule used by
-                     // `downloadOrMountLocation` (line ~1352): relative
-                     // paths are anchored at `serverRootPath`. Without this
-                     // step the existing-source check below falls through
-                     // for any relative location, and the in-place mount
-                     // branch is unreachable.
-                     sourcePath = path.isAbsolute(_package.location)
-                        ? _package.location
-                        : path.join(this.serverRootPath, _package.location);
+                     // Same resolution rule as `downloadOrMountLocation`.
+                     // Without this step the existing-source check below
+                     // falls through for any relative location, and the
+                     // in-place mount branch is unreachable.
+                     sourcePath = this.resolveLocalPath(_package.location);
                   } else {
                      sourcePath = safeJoinUnderRoot(
                         tempDownloadPath,
@@ -1356,16 +1548,23 @@ export class EnvironmentStore {
                      `Copied entire download as package "${packageDir}"`,
                   );
                }
+            } catch (error) {
+               this.recordMountFailure(
+                  error,
+                  groupedLocation,
+                  [_package.name],
+                  mountErrors,
+               );
+               // Leave nothing behind. A copy that threw part way through can
+               // leave a tree holding the manifest and models but not the data,
+               // which loads cleanly and therefore clears the very error
+               // recorded above, so the package serves incomplete content and
+               // /status says nothing. Continuing past the failure is what
+               // makes this reachable for more than one package per location.
+               if (absolutePackagePath) {
+                  await clearMountTarget(absolutePackagePath);
+               }
             }
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to download or mount location "${groupedLocation}"`,
-               errorData,
-            );
-            throw new PackageNotFoundError(
-               `Failed to download or mount location: ${groupedLocation}`,
-            );
          }
          try {
             // Clean up temporary download directory
@@ -1383,7 +1582,7 @@ export class EnvironmentStore {
          }
       }
 
-      return absoluteTargetPath;
+      return { path: absoluteTargetPath, mountErrors };
    }
 
    private async downloadOrMountLocation(
@@ -1465,9 +1664,7 @@ export class EnvironmentStore {
 
       // Handle absolute and relative paths
       if (this.isLocalPath(location)) {
-         const packagePath: string = path.isAbsolute(location)
-            ? location
-            : path.join(this.serverRootPath, location);
+         const packagePath: string = this.resolveLocalPath(location);
          try {
             logger.info(
                `Mounting local directory at "${packagePath}" to "${targetPath}"`,

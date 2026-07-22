@@ -1,5 +1,5 @@
 import { Box } from "@mui/material";
-import React, { Suspense, useLayoutEffect, useRef } from "react";
+import React, { Suspense, useEffect, useLayoutEffect, useRef } from "react";
 import { buildMalloyExplicitTheme } from "../../theme/buildMalloyExplicitTheme";
 import { buildTableCssVars } from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
@@ -20,6 +20,10 @@ interface MalloyVizHandle {
    setResult: (result: unknown) => void;
    render: (element: HTMLElement) => void;
    remove: () => void;
+   // Fires once the chart has painted (or immediately if it already has). We
+   // use it to swap a freshly-rendered chart in only when it's ready, so the
+   // previously-painted chart never blanks out mid-render.
+   onReady: (callback: () => void) => void;
 }
 
 declare global {
@@ -66,6 +70,13 @@ const createRenderer = async (
    });
    return renderer.createViz() as MalloyVizHandle;
 };
+
+// Warm the renderer chunk as soon as this module loads so the first chart
+// paint doesn't have to wait on the dynamic import resolving (the async
+// import is what widened the clear-then-repaint gap into a visible flicker).
+if (typeof window !== "undefined") {
+   void import("@malloydata/render");
+}
 
 /**
  * Pull a per-chart Theme override out of a parsed Malloy result by reading
@@ -243,39 +254,59 @@ function RenderedResultInner({
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
    const hasMeasuredRef = useRef(false);
+   // The chart currently painted into the container, held across renders. A
+   // new render paints into a fresh offscreen stage and only swaps in (and
+   // disposes this one) once it's ready, so the container never blanks between
+   // charts. That up-front clear + cleanup dispose was the flicker.
+   const liveRef = useRef<{ viz: MalloyVizHandle; node: HTMLElement } | null>(
+      null,
+   );
+   // Bumped on every render-effect run and on unmount. A slow async render that
+   // resolves after a newer one has started (or after unmount) checks this and
+   // bails, so overlapping renders can't leave two charts or leak a viz.
+   const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
+
+   // Dispose the last live viz on unmount only. Deliberately NOT done in the
+   // render effect's cleanup: a re-run must keep the old chart until the new
+   // one has painted, and the new render disposes it during the swap.
+   useEffect(() => {
+      return () => {
+         renderGenRef.current += 1;
+         liveRef.current?.viz.remove();
+         liveRef.current = null;
+      };
+   }, []);
 
    useLayoutEffect(() => {
       if (!ref.current || !result) return;
 
       injectRendererOverrides();
 
-      let isMounted = true;
-      // Track the active viz instance so the cleanup can dispose it even
-      // when unmount races with the async setup (see bug #3 from the code
-      // review: viz constructed but never `remove()`'d on rapid navigation).
-      let viz: MalloyVizHandle | undefined;
       const element = ref.current;
-
-      while (element.firstChild) {
-         element.removeChild(element.firstChild);
-      }
-
-      // Apply the shell theme's CSS variables immediately so the table
-      // chrome looks right during the async setup window. We re-apply once
-      // the per-chart override resolves below, so per-chart annotations
-      // affect both Vega and table styles.
-      applyTableCssVars(element, baseTheme);
+      const myGen = (renderGenRef.current += 1);
+      let cancelled = false;
+      const isCurrent = () => !cancelled && myGen === renderGenRef.current;
+      // Created inside the async body; hoisted so cleanup can tear them down
+      // if this render is superseded before it swaps itself into `liveRef`.
+      let stage: HTMLDivElement | undefined;
+      let viz: MalloyVizHandle | undefined;
+      let observer: MutationObserver | null = null;
+      let measureTimeout: NodeJS.Timeout | null = null;
+      // Safety net so a render that never signals ready (an async renderer
+      // error that only reaches onError) can't leave a previous chart showing
+      // stale data forever; see the setTimeout below.
+      let readyFallback: ReturnType<typeof setTimeout> | null = null;
 
       hasMeasuredRef.current = false;
 
-      let observer: MutationObserver | null = null;
-      let measureTimeout: NodeJS.Timeout | null = null;
-
-      const measureRenderedSize = () => {
-         if (hasMeasuredRef.current || !isMounted || !element.firstElementChild)
+      // Measure the rendered chart's natural height off `root` (the stage that
+      // wraps the renderer output) and report it up. Same grandchild/dashboard
+      // HACK as before, just anchored on the stage wrapper.
+      const measureRenderedSize = (root: HTMLElement) => {
+         if (hasMeasuredRef.current || cancelled || !root.firstElementChild)
             return;
-         const child = element.firstElementChild as HTMLElement;
+         const child = root.firstElementChild as HTMLElement;
          const grandchild = child.firstElementChild as HTMLElement;
          if (!grandchild) return;
          const greatgrandchild = grandchild.firstElementChild as HTMLElement;
@@ -315,52 +346,123 @@ function RenderedResultInner({
             ? resolveTheme([...layers, perChart], mode)
             : baseTheme;
 
-         // Per-chart annotation may have shifted table CSS vars; re-apply.
-         if (isMounted) applyTableCssVars(element, effectiveTheme);
+         if (!isCurrent()) return;
 
          try {
-            const created = await createRenderer(effectiveTheme, onDrill);
-            if (!isMounted) {
-               // Unmounted during the dynamic import / construction. Tear
-               // down the viz we just made; the effect's cleanup won't see
-               // it because `viz` was unset.
-               created.remove();
-               return;
+            viz = await createRenderer(effectiveTheme, onDrill);
+         } catch (error) {
+            console.error("Failed to create renderer:", error);
+            return;
+         }
+         if (!isCurrent()) {
+            // Superseded during the dynamic import / construction.
+            viz.remove();
+            viz = undefined;
+            return;
+         }
+
+         // Render into a fresh stage appended to the container. While a
+         // previous chart is still on screen, keep the stage laid out (so the
+         // fill chart actually measures a size and `onReady` fires) but hidden
+         // and overlaid; reveal it and drop the old chart only once painted.
+         const previous = liveRef.current;
+         stage = document.createElement("div");
+         stage.style.width = "100%";
+         stage.style.height = "100%";
+         // Theme the chart's table/dashboard chrome on the stage itself, not on
+         // the shared container: during a swap the outgoing chart is still a
+         // child of the container, so writing the new per-chart CSS vars there
+         // would repaint the old chart's chrome to the new theme before it is
+         // swapped out. Scoping the vars to this stage keeps each chart stable.
+         applyTableCssVars(stage, effectiveTheme);
+         if (previous) {
+            element.style.position = "relative";
+            stage.style.position = "absolute";
+            stage.style.inset = "0";
+            stage.style.visibility = "hidden";
+         }
+         element.appendChild(stage);
+
+         // Fallback measurement if `onReady` never fires: settle on DOM
+         // mutations, then measure once.
+         const stageNode = stage;
+         observer = new MutationObserver(() => {
+            if (measureTimeout) clearTimeout(measureTimeout);
+            measureTimeout = setTimeout(() => {
+               measureRenderedSize(stageNode);
+               observer?.disconnect();
+            }, 100);
+         });
+         observer.observe(stage, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+         });
+
+         const activeViz = viz;
+         let promoted = false;
+         const promote = () => {
+            if (promoted || !isCurrent()) return;
+            promoted = true;
+            if (readyFallback) {
+               clearTimeout(readyFallback);
+               readyFallback = null;
             }
-            viz = created;
+            // The new chart has painted; drop the outgoing one now.
+            if (previous) {
+               previous.viz.remove();
+               if (previous.node.parentNode === element) {
+                  element.removeChild(previous.node);
+               }
+            }
+            stageNode.style.position = "";
+            stageNode.style.inset = "";
+            stageNode.style.visibility = "";
+            element.style.position = "";
+            liveRef.current = { viz: activeViz, node: stageNode };
+            measureRenderedSize(stageNode);
+         };
 
-            observer = new MutationObserver(() => {
-               if (measureTimeout) clearTimeout(measureTimeout);
-               measureTimeout = setTimeout(() => {
-                  measureRenderedSize();
-                  observer?.disconnect();
-               }, 100);
-            });
-
-            observer.observe(element, {
-               childList: true,
-               subtree: true,
-               attributes: true,
-            });
-
+         try {
             // The renderer accepts a Malloy Result; we don't import that type
             // in the SDK to avoid pinning to the malloy core types here.
             viz.setResult(parsed);
-            viz.render(element);
+            viz.render(stage);
+            viz.onReady(promote);
+            // If onReady never fires (an async render error that only reaches
+            // the renderer's onError), force the swap after a bounded wait so
+            // the outcome becomes visible instead of the previous chart
+            // lingering with stale data indefinitely.
+            readyFallback = setTimeout(promote, 10000);
          } catch (error) {
             console.error("Error rendering visualization:", error);
             observer?.disconnect();
-            viz?.remove();
+            viz.remove();
             viz = undefined;
+            if (stageNode.parentNode === element) {
+               element.removeChild(stageNode);
+            }
          }
       })();
 
       return () => {
-         isMounted = false;
+         cancelled = true;
          observer?.disconnect();
          if (measureTimeout) clearTimeout(measureTimeout);
-         viz?.remove();
-         viz = undefined;
+         if (readyFallback) clearTimeout(readyFallback);
+         // If this render built a stage but never swapped it into `liveRef`
+         // (superseded, or unmounted mid-render), tear it down so it can't
+         // leak a viz or leave an orphan node behind.
+         if (stage && liveRef.current?.node !== stage) {
+            viz?.remove();
+            if (stage.parentNode === element) {
+               element.removeChild(stage);
+            }
+            // This render may have set the container position:relative for its
+            // overlay stage but never promoted; reset it so no stray relative
+            // lingers on the container.
+            element.style.position = "";
+         }
       };
    }, [result, onDrill, onSizeChange, baseTheme, layers, mode]);
 

@@ -36,6 +36,37 @@ curl -s http://localhost:4000/api/v0/environments | jq '.[].name'    # → list 
   drops. Only reported when the memory governor is enabled (see
   [configuration.md](configuration.md#operational-tuning-oom-guards)).
 
+### `serving` does not mean everything loaded
+
+A package or environment that fails to load is skipped rather than fatal, so the server still reports
+`serving` and simply serves whatever did load. Check `loadErrors` before you treat a `serving` server
+as complete:
+
+```bash
+curl -s http://localhost:4000/api/v0/status | jq .loadErrors
+```
+
+The field is absent when everything loaded. Otherwise it lists what is missing and why:
+
+```json
+[
+  {
+    "environment": "sales",
+    "message": "Failed to download or mount location: ./sales-models"
+  },
+  {
+    "environment": "examples",
+    "package": "storefront",
+    "message": "Package manifest for /publisher_data/examples/storefront does not exist"
+  }
+]
+```
+
+An entry with no `package` means the whole environment was skipped, which also takes down its healthy
+packages. An entry with a `package` means that package alone is missing and its siblings are serving.
+Either way the fix is usually the `location` in `publisher.config.json`, or a missing
+`publisher.json` in the package directory.
+
 ## Docker
 
 Two ways to run Publisher in Docker: build the image from source, or pull the pre-built image from

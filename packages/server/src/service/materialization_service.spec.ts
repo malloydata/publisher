@@ -891,6 +891,110 @@ describe("executeInstructedBuild", () => {
       expect(rootIdx).toBeGreaterThan(midIdx);
    });
 
+   it("seeds a downstream build with the QUOTED upstream reference (case-folding dialect)", async () => {
+      // A carried/seeded upstream (built in a prior run or unit, e.g. via
+      // referenceManifest) must reach the downstream's SQL generation as the
+      // SAME quoted path the builder CREATEd it with; otherwise the downstream
+      // CREATE misses the case-preserved table on a case-folding engine
+      // (Snowflake). Capture the buildManifest Malloy is handed for the
+      // downstream to prove the seed was quoted for its connection's dialect
+      // before it becomes a FROM.
+      let seen:
+         | {
+              buildManifest?: {
+                 entries?: Record<string, { tableName?: string }>;
+              };
+           }
+         | undefined;
+      const runSQL = sinon.stub().resolves();
+      const connection = {
+         runSQL,
+         dialectName: "snowflake",
+      } as unknown as MalloyConnection;
+      const down = fakeSource({
+         name: "down",
+         sourceEntityId: "bdownaaaaaaaaaa",
+         dialectName: "snowflake",
+         onGetSQL: (o) => {
+            seen = o as typeof seen;
+         },
+      });
+      const compiled = compiledWith(
+         { down },
+         [["down"]],
+         new Map([["duckdb", connection]]),
+      );
+
+      await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bdownaaaaaaaaaa",
+               materializedTableId: "mt-d",
+               physicalTableName: "down_v1",
+               realization: "COPY",
+            },
+         ],
+         {
+            up: {
+               sourceEntityId: "up",
+               physicalTableName: "schema.orders_base",
+               connectionName: "duckdb",
+            },
+         },
+      );
+
+      expect(seen?.buildManifest?.entries?.up?.tableName).toBe(
+         '"schema"."orders_base"',
+      );
+   });
+
+   it("seeds unquoted when the upstream's connection is absent from the build (older CP / cross-connection)", async () => {
+      // No connectionName on the seed (an older control plane) -> bind verbatim,
+      // exactly the pre-change behavior. Non-case-folding engines are unaffected;
+      // a case-folding engine self-signals by failing the downstream CREATE.
+      let seen:
+         | {
+              buildManifest?: {
+                 entries?: Record<string, { tableName?: string }>;
+              };
+           }
+         | undefined;
+      const runSQL = sinon.stub().resolves();
+      const connection = {
+         runSQL,
+         dialectName: "snowflake",
+      } as unknown as MalloyConnection;
+      const down = fakeSource({
+         name: "down",
+         sourceEntityId: "bdownaaaaaaaaaa",
+         dialectName: "snowflake",
+         onGetSQL: (o) => {
+            seen = o as typeof seen;
+         },
+      });
+      const compiled = compiledWith(
+         { down },
+         [["down"]],
+         new Map([["duckdb", connection]]),
+      );
+
+      await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bdownaaaaaaaaaa",
+               materializedTableId: "mt-d",
+               physicalTableName: "down_v1",
+               realization: "COPY",
+            },
+         ],
+         { up: { sourceEntityId: "up", physicalTableName: "orders_base" } },
+      );
+
+      expect(seen?.buildManifest?.entries?.up?.tableName).toBe("orders_base");
+   });
+
    it("throws when an instructed graph's connection is missing", async () => {
       const s1 = fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" });
       const compiled = compiledWith({ s1 }, [["s1"]], new Map());
@@ -922,6 +1026,7 @@ describe("buildOneSource", () => {
       connection: { runSQL: sinon.SinonStub },
       physicalTableName: string,
       dialectName?: string,
+      manifest: Manifest = new Manifest(),
    ): Promise<{ sourceEntityId: string; physicalTableName: string }> {
       const source = fakeSource({
          name: "orders",
@@ -950,7 +1055,7 @@ describe("buildOneSource", () => {
          instruction,
          connection,
          { duckdb: "dig" },
-         new Manifest(),
+         manifest,
       );
    }
 
@@ -1034,6 +1139,33 @@ describe("buildOneSource", () => {
       ]);
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });
+
+   it("records the QUOTED just-built name in the build manifest (matches the CREATE)", async () => {
+      // The build manifest feeds a downstream persist's FROM verbatim, so the
+      // recorded name must be the SAME quoted path the CREATE used — else a
+      // downstream built later in this run misses the case-preserved table on a
+      // case-folding engine. buildManifest also passes through Malloy's canonical
+      // path validation (requireCanonicalTablePathAnyDialect), so this proves the
+      // quoted form is accepted, not just produced.
+      const runSQL = sinon.stub().resolves();
+      const manifest = new Manifest();
+      await callBuildOneSource(
+         { runSQL },
+         "schema.orders_base",
+         "snowflake",
+         manifest,
+      );
+      expect(manifest.buildManifest.entries["abcdef1234567890"].tableName).toBe(
+         '"schema"."orders_base"',
+      );
+      // The logical (unquoted) name is what the CREATE was told to produce, and
+      // is exactly what quoteTablePath quoted for the DDL — read mirrors write.
+      const created = runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string)
+         .find((s) => s.startsWith("CREATE TABLE"))!;
+      expect(created).toContain('"schema"."orders_base_abcdef123456"');
+   });
 });
 
 describe("runBuild (branch behavior)", () => {
@@ -1058,7 +1190,11 @@ describe("runBuild (branch behavior)", () => {
             forceRefresh: boolean;
             buildInstructions: BuildInstruction[] | undefined;
             referenceManifest?:
-               | { sourceEntityId: string; physicalTableName: string }[]
+               | {
+                    sourceEntityId: string;
+                    physicalTableName: string;
+                    connectionName?: string;
+                 }[]
                | undefined;
             strictUpstreams?: boolean | undefined;
          },
@@ -1125,7 +1261,11 @@ describe("runBuild (branch behavior)", () => {
             forceRefresh: false,
             buildInstructions: instructions,
             referenceManifest: [
-               { sourceEntityId: "up-1", physicalTableName: "upstream_tbl" },
+               {
+                  sourceEntityId: "up-1",
+                  physicalTableName: "upstream_tbl",
+                  connectionName: "sf",
+               },
             ],
             strictUpstreams: true,
          },
@@ -1134,10 +1274,13 @@ describe("runBuild (branch behavior)", () => {
 
       // The reference manifest becomes the seed (carried) entries so a
       // downstream build resolves its upstream to the existing physical table.
+      // connectionName is carried through so the seed can be quoted for the
+      // upstream's dialect (see quoteSeedTablePath).
       expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual({
          "up-1": {
             sourceEntityId: "up-1",
             physicalTableName: "upstream_tbl",
+            connectionName: "sf",
          },
       });
       // strictUpstreams flows through as the strict flag (5th arg).
@@ -1201,9 +1344,11 @@ describe("autoLoadManifest", () => {
       ).autoLoadManifest({ reloadAllModelsForPackage }, "pkg", entries);
 
       expect(reloadAllModelsForPackage.calledOnce).toBe(true);
+      // connectionName is carried alongside tableName so the bind step
+      // (Package.quoteBoundTableNames) can quote the path for its dialect.
       expect(reloadAllModelsForPackage.firstCall.args).toEqual([
          "pkg",
-         { b1: { tableName: "orders_v1" } },
+         { b1: { tableName: "orders_v1", connectionName: "duckdb" } },
       ]);
    });
 
