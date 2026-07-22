@@ -490,6 +490,10 @@ export class EnvironmentStore {
    public async deleteEnvironmentFromDatabase(
       environmentName: string,
    ): Promise<void> {
+      // Before the metadata lookup, for the same reason as the package
+      // variant: the cleanup needs only the name, never the row.
+      this.cleanupEnvironmentEmbeddings(environmentName);
+
       const repository = this.storageManager.getRepository();
 
       // Get the environment from database
@@ -504,20 +508,6 @@ export class EnvironmentStore {
       // Delete the environment (this will cascade delete connections and packages)
       await repository.deleteEnvironment(dbEnvironment.id);
       logger.info(`Deleted environment "${environmentName}" from database`);
-
-      // Best-effort: drop the environment's cached entity embeddings
-      // (see deletePackageFromDatabase for why failure never propagates).
-      try {
-         await deleteEnvironmentEmbeddings(
-            this.storageManager.getDuckDbConnection(),
-            environmentName,
-         );
-      } catch (error) {
-         logger.warn("Failed to clean up entity embeddings for environment", {
-            environmentName,
-            error: error instanceof Error ? error.message : String(error),
-         });
-      }
    }
 
    private async addEnvironmentMetadata(
@@ -773,6 +763,11 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ): Promise<void> {
+      // Before the metadata lookups: embeddings are written off the
+      // in-memory environment, which can outlive a lost metadata row,
+      // so the cleanup must not sit behind the missing-row early return.
+      this.cleanupPackageEmbeddings(environmentName, packageName);
+
       const repository = this.storageManager.getRepository();
 
       // Get the environment ID from database
@@ -794,21 +789,61 @@ export class EnvironmentStore {
          await repository.deletePackage(existingPackage.id);
          logger.info(`Deleted package "${packageName}" from database`);
       }
+   }
 
-      // Best-effort: drop the package's cached entity embeddings so
-      // package churn does not grow publisher.db forever. An orphaned
-      // row is inert (reads are scoped by environment + package), so a
-      // failed cleanup must never fail the delete.
+   /**
+    * Best-effort, non-blocking: drop a deleted package's cached entity
+    * embeddings so package churn does not grow publisher.db forever.
+    * Not awaited by callers: the cleanup queues on the package's sync
+    * mutex, which an in-flight bulk embed can hold for minutes, and a
+    * DELETE response must not stall behind it. Needs only the names, so
+    * it runs regardless of whether the metadata row still exists. An
+    * orphaned row is inert (reads are scoped by environment + package),
+    * so failure is logged, never propagated.
+    */
+   private cleanupPackageEmbeddings(
+      environmentName: string,
+      packageName: string,
+   ): void {
       try {
-         await deletePackageEmbeddings(
+         deletePackageEmbeddings(
             this.storageManager.getDuckDbConnection(),
             environmentName,
             packageName,
-         );
+         ).catch((error: unknown) => {
+            logger.warn("Failed to clean up entity embeddings for package", {
+               environmentName,
+               packageName,
+               error: error instanceof Error ? error.message : String(error),
+            });
+         });
       } catch (error) {
          logger.warn("Failed to clean up entity embeddings for package", {
             environmentName,
             packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
+   }
+
+   /** Environment-wide variant of {@link cleanupPackageEmbeddings}. */
+   private cleanupEnvironmentEmbeddings(environmentName: string): void {
+      try {
+         deleteEnvironmentEmbeddings(
+            this.storageManager.getDuckDbConnection(),
+            environmentName,
+         ).catch((error: unknown) => {
+            logger.warn(
+               "Failed to clean up entity embeddings for environment",
+               {
+                  environmentName,
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+         });
+      } catch (error) {
+         logger.warn("Failed to clean up entity embeddings for environment", {
+            environmentName,
             error: error instanceof Error ? error.message : String(error),
          });
       }

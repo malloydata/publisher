@@ -646,6 +646,12 @@ describe("trySemanticSearch", () => {
       );
       expect(afterPkg.map((r) => r.package_name)).toEqual(["pkg-b"]);
 
+      // Clear the sync metas so pkg-b has none: the environment delete
+      // must then reach its rows via the final env-wide sweep, whose
+      // whole purpose is packages never queried in this process. Without
+      // this reset the per-meta loop would empty the table first and the
+      // sweep would pass vacuously.
+      _resetEmbeddingIndexStateForTests();
       await deleteEnvironmentEmbeddings(db, "env");
       const afterEnv = await db.all<{ n: number }>(
          "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
