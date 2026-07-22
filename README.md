@@ -46,7 +46,9 @@ PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments
 
 `load_errors` counts configured packages and environments that failed to load. When it is not 0,
 `/api/v0/status` names each one under `.loadErrors`. The `url=` host reads `localhost` when the
-server binds every interface (the default); a configured `--host` shows as itself.
+server binds every interface (the default); a configured `--host` shows as itself. If initialization
+fails, a `PUBLISHER_INIT_FAILED` line is printed in its place; a startup failure outside
+initialization, like a port already in use, crashes without either token.
 
 ## Point your agent at it
 

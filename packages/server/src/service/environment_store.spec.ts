@@ -1801,7 +1801,9 @@ describe("CloneProgressReporter", () => {
       second.done();
       expect(writes).toEqual([
          "\rcloning a/a: receiving 10%\x1b[K",
-         "cloning b/b: receiving 20%\n",
+         // The non-owner takes over the row cleanly before scrolling it, so
+         // its milestone never concatenates onto the owner's in-place text.
+         "\rcloning b/b: receiving 20%\x1b[K\n",
          "\rcloning a/a: receiving 30%\x1b[K",
          "\n",
          "\rcloning b/b: receiving 90%\x1b[K",

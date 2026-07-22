@@ -177,7 +177,9 @@ export function stripGitProgressNoise(message: string): string {
       .filter(
          (line) =>
             !/\d+% \(\d+\/\d+\)/.test(line) &&
-            !/^Cloning into /.test(line.trim()),
+            // Also matches the "Error: Cloning into ..." shape V8 seeds
+            // into err.stack from the message's first line.
+            !/^(\w+: )?Cloning into /.test(line.trim()),
       )
       .join("\n")
       .trim();
@@ -212,6 +214,7 @@ export class CloneProgressReporter {
    private lastStage: string | undefined;
    private lastMilestone = -1;
    private wroteInPlace = false;
+   private finished = false;
    /**
     * One reporter at a time owns a TTY's in-place line: environments load
     * concurrently at boot, and two reporters `\r`-rewriting the same line
@@ -227,6 +230,11 @@ export class CloneProgressReporter {
    ) {}
 
    onProgress(event: SimpleGitProgressEvent): void {
+      if (this.finished) {
+         // A late event after done() must not re-claim the TTY line the
+         // finishing newline just released.
+         return;
+      }
       const { stage, progress, processed, total } = event;
       const counts = total > 0 ? ` (${processed}/${total})` : "";
       const text = `${this.label}: ${stage} ${progress}%${counts}`;
@@ -264,10 +272,17 @@ export class CloneProgressReporter {
       } else {
          return;
       }
+      if (this.out.isTTY === true) {
+         // A non-owner on a TTY: the cursor may sit mid-line on the owner's
+         // in-place output, so take over the row cleanly and scroll it.
+         this.out.write(`\r${text}\x1b[K\n`);
+         return;
+      }
       this.out.write(`${text}\n`);
    }
 
    done(): void {
+      this.finished = true;
       if (this.wroteInPlace) {
          this.out.write("\n");
       }
@@ -619,6 +634,21 @@ export class EnvironmentStore {
          markNotReady();
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
+         try {
+            // The failure counterpart of PUBLISHER_READY, so a script
+            // waiting on that token fails fast instead of hanging on a
+            // broken config. Redacted because initialization errors can
+            // carry connection strings.
+            process.stderr.write(
+               `PUBLISHER_INIT_FAILED error=${JSON.stringify(
+                  redactPgSecrets(
+                     error instanceof Error ? error.message : String(error),
+                  ),
+               )}\n`,
+            );
+         } catch {
+            // A failed stderr write must not mask the logged error above.
+         }
       }
    }
 
@@ -646,7 +676,8 @@ export class EnvironmentStore {
             }) + "\n",
          );
       } catch {
-         // A dead stderr pipe must not fail a boot that is already serving.
+         // A failed stderr write must not fail a boot that is already
+         // serving.
       }
    }
 
@@ -1561,6 +1592,8 @@ export class EnvironmentStore {
       }
 
       // Processing by each unique location
+      const totalPackages = packages.length;
+      let mountedCount = 0;
       for (const [groupedLocation, packagesForLocation] of locationGroups) {
          // Use a hash instead of base64 to keep paths short (Windows MAX_PATH limit)
          // This works for both local and remote paths
@@ -1688,7 +1721,7 @@ export class EnvironmentStore {
                            linkType,
                         );
                         logger.info(
-                           `In-place mount (watch mode): linked package "${packageDir}" -> "${absoluteSourcePath}"`,
+                           `In-place mount (watch mode): linked package "${packageDir}" -> "${absoluteSourcePath}" (${++mountedCount}/${totalPackages})`,
                         );
                      } catch (linkError) {
                         // Degrade gracefully instead of failing the env load:
@@ -1709,6 +1742,9 @@ export class EnvironmentStore {
                         await fs.promises.cp(sourcePath, absolutePackagePath, {
                            recursive: true,
                         });
+                        logger.info(
+                           `Copied package "${packageDir}" (${++mountedCount}/${totalPackages})`,
+                        );
                      }
                   } else {
                      if (
@@ -1730,7 +1766,7 @@ export class EnvironmentStore {
                         recursive: true,
                      });
                      logger.info(
-                        `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"}`,
+                        `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"} (${++mountedCount}/${totalPackages})`,
                      );
                   }
                } else {
@@ -1743,7 +1779,7 @@ export class EnvironmentStore {
                      recursive: true,
                   });
                   logger.info(
-                     `Copied entire download as package "${packageDir}"`,
+                     `Copied entire download as package "${packageDir}" (${++mountedCount}/${totalPackages})`,
                   );
                }
             } catch (error) {

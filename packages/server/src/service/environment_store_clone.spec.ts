@@ -10,6 +10,7 @@ import {
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
+import { logger } from "../logger";
 
 /**
  * Wiring coverage for the package git clone: the shallow-clone options must
@@ -165,6 +166,7 @@ describe("git clone wiring", () => {
          }),
       );
 
+      const infoSpy = spyOn(logger, "info");
       const store = new EnvironmentStore(serverRootPath);
       await store.finishedInitialization;
 
@@ -172,6 +174,16 @@ describe("git clone wiring", () => {
       expect(recordedClones).toHaveLength(1);
       expect(recordedClones[0].repoUrl).toBe("https://github.com/example/repo");
       expect(recordedClones[0].opts).toEqual(GIT_CLONE_OPTIONS);
+
+      // The extraction log carries the mounted-of-total counter.
+      const infoMessages = infoSpy.mock.calls.map((c) => String(c[0]));
+      infoSpy.mockRestore();
+      expect(
+         infoMessages.some(
+            (m) =>
+               m.includes('Extracted package "pkg-a"') && m.includes("(1/1)"),
+         ),
+      ).toBe(true);
 
       // The progress event surfaced on stderr, labeled with env and package.
       const output = stderrWrites.join("");
@@ -244,16 +256,25 @@ describe("git clone wiring", () => {
       }
       expect(caught).toBeDefined();
       // The message keeps what went wrong and drops the --progress spew;
-      // the stack (which V8 seeds with the message) is stripped too.
+      // the stack (which V8 seeds with the message, prefixed "Error: ") is
+      // stripped too, including the prefixed "Cloning into" first line.
       expect(caught!.message).toBe("fatal: early EOF");
       expect(caught!.stack ?? "").not.toContain("Receiving objects");
+      expect(caught!.stack ?? "").not.toContain("Cloning into");
    });
 
-   it("does not print a readiness line when boot fails", async () => {
+   it("prints the failure token instead of the readiness line when boot fails", async () => {
       storageInitFails = true;
       const store = new EnvironmentStore(serverRootPath);
       // initialize() swallows the failure by design; the promise resolves.
       await store.finishedInitialization;
-      expect(stderrWrites.join("").includes("PUBLISHER_READY")).toBe(false);
+      const output = stderrWrites.join("");
+      expect(output.includes("PUBLISHER_READY")).toBe(false);
+      // A script waiting on the ready token fails fast instead of hanging.
+      const failLines = output
+         .split("\n")
+         .filter((line) => line.startsWith("PUBLISHER_INIT_FAILED"));
+      expect(failLines).toHaveLength(1);
+      expect(failLines[0]).toContain("storage init failed (test)");
    });
 });
