@@ -10,7 +10,7 @@ For full setup details per connection type, see [docs.malloydata.dev/documentati
 
 ## Per-package DuckDB sandboxes
 
-Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the Parquet files in each package without needing any user-defined connection.
+Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the data files in each package without needing any user-defined connection. DuckDB reads Parquet and CSV in place, so `duckdb.table('data/customers.parquet')` and `duckdb.table('data/regions.csv')` both work with no conversion step (`storefront` uses both).
 
 You do not have to declare these sandboxes — they're created on package load.
 

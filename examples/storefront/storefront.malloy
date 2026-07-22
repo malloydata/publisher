@@ -1,9 +1,11 @@
 // Storefront — a small but complete ecommerce semantic model.
 //
 // A classic star schema: an `order_items` fact joined to `customers` and
-// `products` dimensions. It shows the things Malloy is good at — joins,
-// symmetric aggregates, reusable measures, and nested `# dashboard` views —
-// on data that needs no cloud credentials (DuckDB reads the local Parquet).
+// `products` dimensions, plus a `regions` lookup read from CSV. It shows the
+// things Malloy is good at: joins, symmetric aggregates, reusable measures,
+// and nested `# dashboard` views, all on data that needs no cloud credentials
+// (DuckDB reads the local Parquet and CSV files in place, with no conversion
+// step and no connection to configure).
 //
 // Data is ~25k order lines across ~11k orders over three years, so the trend,
 // map, and category charts all have something real to say. Regenerate it with
@@ -26,6 +28,13 @@ source: products is duckdb.table('data/products.parquet') extend {
   measure: product_count is count()
 }
 
+// A CSV, not Parquet: this is the kind of small lookup you'd keep in a
+// spreadsheet, and `duckdb.table()` reads either format, so nothing to convert.
+#(doc) Sales region for each US state, one row per state, keyed by `state`
+source: regions is duckdb.table('data/regions.csv') extend {
+  primary_key: state
+}
+
 #(doc) Order line items — the fact table, one row per product sold on an order
 source: order_items is duckdb.table('data/order_items.parquet') extend {
   primary_key: id
@@ -35,6 +44,8 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
     customers with customer_id
     #(doc) Product sold on this line
     products with product_id
+    #(doc) Sales region for the customer's home state
+    regions with customers.state
 
   dimension:
     #(doc) Gross margin on this line (sale price minus product cost)
@@ -110,6 +121,13 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   view: sales_by_state is {
     group_by: customers.state
     aggregate: total_sales
+  }
+  #(doc) Revenue by sales region (states rolled up via the regions lookup)
+  # bar_chart
+  view: sales_by_region is {
+    group_by: regions.region
+    aggregate: total_sales
+    order_by: total_sales desc
   }
   #(doc) Monthly revenue trend
   # line_chart

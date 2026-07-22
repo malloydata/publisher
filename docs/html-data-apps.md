@@ -8,6 +8,13 @@ models and render whatever you like with the front-end tools you already know
 install, and no framework requirement. You write HTML, CSS, and JavaScript, and
 Publisher serves it and answers its queries.
 
+Ship any library you use inside the package's `public/` directory and load it
+with a relative path, rather than from a CDN. The bundled examples put theirs in
+`public/vendor/`. Two reasons: agent sandboxes and many corporate networks block
+CDNs, and the failure is easy to miss, because the script never runs, so the page
+comes up with empty charts and whatever renders after them; and a page's JavaScript runs with the viewing
+user's data authority, so it is worth knowing exactly what you are loading.
+
 > **What this is:** a self-contained dashboard written in plain HTML/CSS/JS, shipped *inside* a
 > package and **served by Publisher** — no build step, no framework, no npm. It's the supported way to
 > ship a custom UI. (For zero-code exploration, use the [Publisher App](./publisher-app.md); to build
@@ -37,6 +44,8 @@ my-package/
   public/               # everything in here is web-served
     index.html          # can be one self-contained file, or split out css/js
     embed-test.html
+    vendor/             # chart library, vendored rather than loaded from a CDN
+      chart.umd.js
 ```
 
 Publisher serves the contents of `public/` at:

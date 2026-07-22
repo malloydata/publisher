@@ -257,4 +257,33 @@ describe("MaterializationScheduler", () => {
       await sched.tick(dueLater + 1);
       expect(service.calls.length).toBe(3);
    });
+
+   it("prunes arming state when a package unloads, then re-anchors on reload without a stale fire", async () => {
+      // A never-fired schedule (fakeService default lastFireAt = null), so a
+      // fresh arm anchors from `now` and does not catch up.
+      const service = fakeService();
+      const p = fakePackage("p", { schedule: "* * * * *" });
+      // makeScheduler closes over this array via getLoadedPackages, so mutating
+      // it simulates the package leaving and re-entering the loaded set.
+      const loaded = [p];
+      const sched = makeScheduler(loaded, service);
+
+      await sched.tick(t0); // arm: nextFire = t0 + 60s
+
+      // Unload: the package leaves the loaded set, so the sweep prunes its state
+      // (tick's not-seen cleanup) instead of leaving a stale nextFire behind.
+      loaded.length = 0;
+      await sched.tick(dueLater); // past the old nextFire, but the package is gone
+      expect(service.calls.length).toBe(0);
+
+      // Reload: with the state pruned, arm is fresh — anchored from `now`, so the
+      // pre-unload nextFire can't resurface as a spurious catch-up.
+      loaded.push(p);
+      await sched.tick(dueLater + 1); // now < fresh nextFire -> no fire
+      expect(service.calls.length).toBe(0);
+
+      // It is genuinely re-armed (not inert): the next occurrence still fires.
+      await sched.tick(dueLater + 1 + 60_001);
+      expect(service.calls.length).toBe(1);
+   });
 });
