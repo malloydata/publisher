@@ -23,6 +23,7 @@ import {
    extractJoins,
    extractRefinements,
    extractViews,
+   narrowSchemaToPublic,
    sliceSourceRange,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -548,6 +549,53 @@ describe("sliceSourceRange", () => {
             end: { line: 9, character: 0 },
          }),
       ).toBeUndefined();
+   });
+});
+
+describe("narrowSchemaToPublic", () => {
+   const schema = [
+      { name: "id", type: "BIGINT" },
+      { name: "ssn", type: "VARCHAR" },
+      { name: "amount", type: "BIGINT" },
+   ];
+
+   it("drops a captured column the source does not publicly expose (except:)", () => {
+      // `ssn` is materialized into the table (getSQL projects it) and captured by
+      // DESCRIBE, but the source `except:`s it, so it is absent from the field
+      // list and must not be declared on the serve shape.
+      const fields = [
+         { name: "id" },
+         { name: "amount" },
+         { name: "amount_x2", code: "amount * 2", expressionType: "scalar" },
+      ];
+      expect(narrowSchemaToPublic(schema, fields)).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "amount", type: "BIGINT" },
+      ]);
+   });
+
+   it("drops a captured column whose field carries a non-public access modifier", () => {
+      const fields = [
+         { name: "id" },
+         { name: "ssn", accessModifier: "private" },
+         { name: "amount" },
+      ];
+      expect(narrowSchemaToPublic(schema, fields).map((c) => c.name)).toEqual([
+         "id",
+         "amount",
+      ]);
+   });
+
+   it("keeps every column when all are public (no-op for a plain rollup)", () => {
+      const fields = [{ name: "id" }, { name: "ssn" }, { name: "amount" }];
+      expect(narrowSchemaToPublic(schema, fields)).toEqual(schema);
+   });
+
+   it("fails closed to an empty shape when the field list is unavailable", () => {
+      // Can't determine the public surface → declare nothing → queries fall back
+      // to live rather than risk exposing a hidden column.
+      expect(narrowSchemaToPublic(schema, undefined)).toEqual([]);
+      expect(narrowSchemaToPublic(schema, [])).toEqual([]);
    });
 });
 

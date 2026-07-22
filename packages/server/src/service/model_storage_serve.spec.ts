@@ -29,13 +29,20 @@ const BINDING: ServeBinding = {
  * A Model whose original source `X` yields total=0, with a real DuckDB
  * connection carrying `mz_real` (total=60) that the serve binding rebinds to.
  */
-async function buildModel(): Promise<Model> {
+async function buildModel(opts?: {
+   originalText?: string;
+   storageSQL?: string;
+}): Promise<Model> {
    const duckdb = new DuckDBConnection("duckdb", ":memory:");
    // DuckDB shares a process-global :memory: db by connection name, so a prior
    // test's table can linger — replace it.
-   await duckdb.runSQL("CREATE OR REPLACE TABLE mz_real AS SELECT 60 AS total");
+   await duckdb.runSQL(
+      opts?.storageSQL ??
+         "CREATE OR REPLACE TABLE mz_real AS SELECT 60 AS total",
+   );
    const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
-   const originalText = `source: X is duckdb.sql("SELECT 0 AS total")`;
+   const originalText =
+      opts?.originalText ?? `source: X is duckdb.sql("SELECT 0 AS total")`;
    const urlReader = new InMemoryURLReader(
       new Map([[`${ROOT}m.malloy`, originalText]]),
    );
@@ -123,5 +130,43 @@ describe("storage= serve routing (end-to-end)", () => {
       // compile throws, and the query must still succeed, served live.
       model.setServeBindings([{ ...BINDING, connectionName: "missing_conn" }]);
       expect(await runTotal(model)).toBe(0);
+   });
+
+   it("does not serve an except:-hidden column from storage (vector A)", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      // X hides `secret` via except:, but the built table still carries it (the
+      // build's getSQL projected it) and the binding schema captured it.
+      const model = await buildModel({
+         originalText:
+            `source: X is duckdb.sql("SELECT 0 AS total, 'live' AS secret") ` +
+            `extend { except: secret }`,
+         storageSQL:
+            "CREATE OR REPLACE TABLE mz_real AS " +
+            "SELECT 60 AS total, 'from_storage' AS secret",
+      });
+      model.setServeBindings([
+         {
+            ...BINDING,
+            schema: [
+               { name: "total", type: "BIGINT" },
+               { name: "secret", type: "VARCHAR" },
+            ],
+         },
+      ]);
+      // The public column still serves from storage (narrowing didn't break it).
+      expect(await runTotal(model)).toBe(60);
+      // A query on the hidden column must NOT be served from storage: the shape
+      // no longer declares `secret`, so it falls back to live, where X's
+      // `except:` makes `secret` undefined → the query is refused. (Before the
+      // fix this returned 'from_storage' — the leak.)
+      await expect(
+         model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { group_by: secret }",
+            {},
+            true,
+         ),
+      ).rejects.toThrow();
    });
 });
