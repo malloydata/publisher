@@ -17,7 +17,9 @@ import {
    EmbeddableEntity,
    MIN_SIMILARITY,
    SemanticSearchResult,
+   _clearProviderCooldownForTests,
    _resetEmbeddingIndexStateForTests,
+   _syncMetaSizeForTests,
    deleteEnvironmentEmbeddings,
    deletePackageEmbeddings,
    embeddingText,
@@ -620,6 +622,184 @@ describe("trySemanticSearch", () => {
       // it, it reports indexing and the tool answers marked lexical.
       release();
       expect(await cPromise).toEqual({ unavailable: "indexing" });
+   });
+
+   it("a torn write (sync failing mid-loop) still invalidates other memos", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "pkg",
+         query: "find alpha",
+         limit: 10,
+      };
+      const pkgA = {} as unknown as Package;
+      await searchReady({
+         ...base,
+         pkg: pkgA,
+         entities: [entity("alpha", "src")],
+      });
+
+      // A reload instance syncs two changed entities through a DB whose
+      // SECOND insert fails: one row was already rewritten, so even
+      // though the sync rejects, snapshots must be invalidated.
+      let inserts = 0;
+      const failingDb = new Proxy(db, {
+         get(target, prop, receiver) {
+            if (prop === "run") {
+               return async (query: string, params?: unknown[]) => {
+                  if (query.includes("INSERT INTO entity_embeddings")) {
+                     inserts++;
+                     if (inserts === 2) throw new Error("disk full (test)");
+                  }
+                  return target.run(query, params);
+               };
+            }
+            return Reflect.get(target, prop, receiver);
+         },
+      });
+      const changed = mapProvider({
+         ...QUERY_VECTORS,
+         "alpha: reworded": [0, 1, 0],
+         "beta: new": [0, 0, 1],
+      });
+      const first = await trySemanticSearch({
+         ...base,
+         db: failingDb,
+         provider: changed.provider,
+         pkg: {} as unknown as Package,
+         entities: [
+            entity("alpha", "src", "reworded"),
+            entity("beta", "src", "new"),
+         ],
+      });
+      expect(first).toEqual({ unavailable: "indexing" });
+
+      // Settle phase 1: wait until the second insert has been attempted
+      // (it increments the counter before throwing).
+      for (let i = 0; i < 200 && inserts < 2; i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(inserts).toBe(2);
+      // Settle phase 2: the rejection handler (which sets the cool-down)
+      // runs asynchronously after the throw; wait until a call observes
+      // the cool-down so the failed sync has fully settled. This
+      // converges with or without the finally bump, so it does not mask
+      // the pin below.
+      let settled: SemanticSearchResult = { hits: [] };
+      for (let i = 0; i < 200; i++) {
+         settled = await trySemanticSearch({
+            ...base,
+            pkg: pkgA,
+            entities: [entity("alpha", "src")],
+         });
+         if ("unavailable" in settled && settled.unavailable === "cooldown") {
+            break;
+         }
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(settled).toEqual({ unavailable: "cooldown" });
+
+      // The pin: with the cool-down cleared, pkgA's done memo must be
+      // stale, because the failed sync changed a row before it died. A
+      // success-only bump would leave pkgA serving the half-rewritten
+      // table as semantic hits here.
+      _clearProviderCooldownForTests();
+      const next = await trySemanticSearch({
+         ...base,
+         pkg: pkgA,
+         entities: [entity("alpha", "src")],
+      });
+      expect(next).toEqual({ unavailable: "indexing" });
+   });
+
+   it("querying through an old instance after a package delete recovers, never empty-semantic", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      const pkgA = {} as unknown as Package;
+      await searchReady({ ...base, pkg: pkgA });
+
+      // Delete removes the rows AND the syncMeta entry (the churn-leak
+      // fix); the map must shrink back.
+      const before = _syncMetaSizeForTests();
+      await deletePackageEmbeddings(db, "env", "pkg");
+      expect(_syncMetaSizeForTests()).toBe(before - 1);
+
+      // pkgA still holds a done memo minted under the deleted meta. Its
+      // generation can never match the re-minted meta's (globally unique
+      // values), so the next call re-syncs and answers with real hits.
+      // Trusting the stale memo would serve {hits: []} marked semantic
+      // over the emptied table.
+      const back = await searchReady({ ...base, pkg: pkgA });
+      if (!("hits" in back))
+         throw new Error("expected hits, got " + JSON.stringify(back));
+      expect(back.hits.map((h) => h.name)).toEqual(["alpha"]);
+   });
+
+   it("a sync queued behind a package delete aborts instead of writing under an orphaned meta", async () => {
+      // Hold the package mutex via a gated first sync, queue the delete
+      // behind it, and queue a second instance's sync behind the delete.
+      // When the gate opens: sync 1 completes, the delete purges and
+      // orphans the meta, and sync 2 must abort as a no-op rather than
+      // re-embedding rows for the deleted package.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+         release = resolve;
+      });
+      const gated = mapProvider(
+         { ...ENTITY_VECTORS, ...QUERY_VECTORS },
+         { gate: { forText: "alpha", until: gate } },
+      );
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      // Sync 1 (holds the mutex at its embed once it starts).
+      const s1 = trySemanticSearch({
+         ...base,
+         provider: gated.provider,
+         pkg: {} as unknown as Package,
+      });
+      // Delete queues behind sync 1.
+      const del = deletePackageEmbeddings(db, "env", "pkg");
+      // Sync 2 queues behind the delete, under the SAME (old) meta.
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const s2kick = trySemanticSearch({
+         ...base,
+         provider,
+         pkg: {} as unknown as Package,
+      });
+
+      release();
+      await Promise.all([s1, del, s2kick]);
+
+      // The orphaned sync runs as soon as the delete releases the mutex.
+      // Poll a failure-detection window: if the orphan guard were gone,
+      // sync 2 would re-insert alpha within milliseconds; with it, the
+      // table stays empty for the whole window.
+      let resurrected = 0;
+      for (let i = 0; i < 60; i++) {
+         const rows = await db.all<{ n: number }>(
+            "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
+         );
+         resurrected = rows[0].n;
+         if (resurrected > 0) break;
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(resurrected).toBe(0);
    });
 
    it("deletion helpers drop a package's and an environment's rows", async () => {

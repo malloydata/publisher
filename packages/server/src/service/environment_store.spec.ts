@@ -2196,3 +2196,58 @@ describe("parseGitHubUrl", () => {
       expect(performance.now() - start).toBeLessThan(500);
    });
 });
+
+describe("EnvironmentStore embeddings cleanup wiring", () => {
+   const serverRootPath = path.join(TEMP_DIR_PATH, "cleanup-wiring-tests");
+
+   beforeEach(() => {
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+      mkdirSync(serverRootPath, { recursive: true });
+      mockDbEnvironments = [];
+      embeddingCleanupRuns.length = 0;
+      embeddingCleanupBlocks = false;
+      _resetEmbeddingIndexStateForTests();
+   });
+
+   afterEach(() => {
+      embeddingCleanupBlocks = false;
+      _resetEmbeddingIndexStateForTests();
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+   });
+
+   it("deletePackageFromDatabase fires cleanup without awaiting it, even with no metadata row", async () => {
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      // The cleanup's SQL never resolves: were the store awaiting it,
+      // this call would hang past the test timeout. The mock repository
+      // reports no environment row, so resolving promptly ALSO pins
+      // that the cleanup runs before the missing-row early return.
+      embeddingCleanupBlocks = true;
+      await store.deletePackageFromDatabase("wiring-env", "wiring-pkg");
+
+      const deletes = embeddingCleanupRuns.filter((r) =>
+         r.sql.includes("DELETE FROM entity_embeddings"),
+      );
+      expect(deletes.length).toBe(1);
+      expect(deletes[0].params).toEqual(["wiring-env", "wiring-pkg"]);
+   });
+
+   it("deleteEnvironmentFromDatabase fires the env-wide cleanup without awaiting it", async () => {
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      embeddingCleanupBlocks = true;
+      await store.deleteEnvironmentFromDatabase("wiring-env");
+
+      const deletes = embeddingCleanupRuns.filter((r) =>
+         r.sql.includes("DELETE FROM entity_embeddings"),
+      );
+      expect(deletes.length).toBe(1);
+      expect(deletes[0].params).toEqual(["wiring-env"]);
+   });
+});
