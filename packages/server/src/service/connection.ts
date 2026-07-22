@@ -895,8 +895,20 @@ async function federatePostgres(
    logger.info(
       `Federating Postgres source for passthrough as alias '${alias}': ${redactPgSecrets(attachString)}`,
    );
+   // OR REPLACE for idempotency: a build session is created as an in-memory
+   // DuckDBConnection, and @malloydata/db-duckdb keys its process-global instance
+   // cache (`activeDBs`) purely on config — the connection NAME is not part of the
+   // key and a `:memory:` primary is never given a private instance — so every
+   // build session with the same config shares one underlying DuckDB instance.
+   // A plain ATTACH would therefore throw "database with name '<alias>' already
+   // exists" once a prior build's postgres attach is still registered on that
+   // shared instance. Since the alias is the connection name and the config is
+   // that connection's, a re-attach is to the identical source, so replacing is
+   // safe. (bigquery/snowflake federate via CREATE OR REPLACE SECRET with no
+   // ATTACH, and the DuckLake destination attach already uses ATTACH OR REPLACE,
+   // so postgres was the only non-idempotent source attach.)
    await connection.runSQL(
-      `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
+      `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
    );
    return { handle: alias, sourceType: "postgres" };
 }

@@ -89,9 +89,41 @@ describe("federateSourceForPassthrough", () => {
       expect(result).toEqual({ handle: "src_pg", sourceType: "postgres" });
       const attach = sql.find((s) => s.startsWith("ATTACH"));
       expect(attach).toBeDefined();
+      // OR REPLACE for idempotency: build sessions share one in-memory DuckDB
+      // instance (the db-duckdb instance cache keys on config, not the connection
+      // name, and never gives a :memory: primary a private instance), so a plain
+      // ATTACH throws "already exists" once a prior build's postgres attach
+      // lingers on that shared instance. The alias→source mapping is fixed, so
+      // replacing re-attaches to the identical source.
+      expect(attach).toStartWith("ATTACH OR REPLACE ");
       // The ATTACH alias is dialect-quoted; the handle stays the raw name (it
       // becomes the postgres_query string literal, which matches the catalog).
       expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+   });
+
+   it("postgres: re-federating the same source on one session is idempotent (no 'already exists')", async () => {
+      // Regression: build sessions share a process-global in-memory DuckDB
+      // instance, so a second build's postgres attach would collide with the
+      // first's unless the attach is idempotent. Two federations of the same
+      // source on one connection must both issue an OR REPLACE attach and not
+      // throw. (A real DuckDB would raise "database ... already exists" on a
+      // plain re-ATTACH; here runSQL is stubbed, so we pin the SQL contract.)
+      const { conn, sql } = stubbedConnection();
+      const cfg = {
+         name: "src_pg",
+         postgresConnection: {
+            host: "h",
+            port: 5432,
+            databaseName: "d",
+            userName: "u",
+            password: "pw",
+         } as components["schemas"]["PostgresConnection"],
+      };
+      await federateSourceForPassthrough(conn, "postgres", cfg);
+      await federateSourceForPassthrough(conn, "postgres", cfg);
+      const attaches = sql.filter((s) => s.startsWith("ATTACH"));
+      expect(attaches).toHaveLength(2);
+      for (const a of attaches) expect(a).toStartWith("ATTACH OR REPLACE ");
    });
 
    it("postgres: dialect-quotes an alias that needs quoting (e.g. a hyphen)", async () => {
