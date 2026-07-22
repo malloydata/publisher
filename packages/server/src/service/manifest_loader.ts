@@ -4,9 +4,28 @@ import * as fs from "fs/promises";
 import { fileURLToPath } from "url";
 import { components } from "../api";
 import { logger } from "../logger";
-import { FreshnessManifest } from "../storage/DatabaseInterface";
+import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
+
+/**
+ * A fetched build manifest, split by tier. A storage-materialized entry (one
+ * that carries `storageConnectionName`) is served cross-connection via the
+ * virtual-source transform, so it becomes a serve BINDING — it must never enter
+ * the same-connection `tableName` substitution. Everything else is an
+ * in-warehouse (path-C) entry the Malloy runtime resolves by substituting its
+ * `tableName` at compile time.
+ */
+export interface FetchedManifest {
+   /** In-warehouse (path-C) entries: same-connection `tableName` substitution. */
+   tableNameManifest: FreshnessManifest;
+   /**
+    * `storage=` entries keyed by sourceEntityId, carried as full
+    * {@link ManifestEntry}s (with `storageConnectionName` + captured `schema` +
+    * `sourceName`) so the bind step can derive cross-connection serve bindings.
+    */
+   storageEntries: Record<string, ManifestEntry>;
+}
 
 // Lazily-created clients reused across fetches. Both use the ambient credential
 // chain (ADC for GCS; the default provider chain for S3) — the same auth the
@@ -57,22 +76,26 @@ async function readManifestBytes(uri: string): Promise<string> {
 }
 
 /**
- * Fetch and parse the control-plane-computed build manifest at `uri`, returning
- * the full wire binding map (`sourceEntityId -> { tableName, connectionName,
- * dataAsOf, freshnessWindowSeconds, freshnessFallback }`). The wire manifest
- * keys physical tables under `physicalTableName`; the Malloy runtime consumes
- * `tableName`, so we translate that field here but otherwise carry the
- * control-plane fields verbatim — the freshness fields so the serve path can
- * gate `age vs window` per query, and `connectionName` so the bind step can
- * quote the path for that connection's dialect (see
- * Package.quoteBoundTableNames). Entries
- * missing a physical table are skipped. This is a pure fetch + parse: it does
- * **not** filter on freshness (that happens per query on the serve path). Throws
- * if the URI can't be read or parsed.
+ * Fetch and parse the control-plane-computed build manifest at `uri`, split by
+ * tier into {@link FetchedManifest}. The wire manifest keys physical tables
+ * under `physicalTableName`; for an in-warehouse (path-C) entry the Malloy
+ * runtime consumes `tableName`, so that field is translated here and the entry
+ * lands in `tableNameManifest`, carrying the freshness fields verbatim (so the
+ * serve path can gate `age vs window` per query) and `connectionName` (so the
+ * bind step can quote the path for that connection's dialect — see
+ * Package.quoteBoundTableNames).
+ *
+ * A `storage=`-materialized entry (one carrying `storageConnectionName`) is
+ * routed instead to `storageEntries` as its full {@link ManifestEntry}: it lives
+ * on a DIFFERENT connection and is served through the virtual-source transform
+ * from its captured `schema`, so it must never become a same-connection
+ * `tableName` substitution. Entries missing a physical table are skipped. This
+ * is a pure fetch + parse: it does **not** filter on freshness (that happens per
+ * query on the serve path). Throws if the URI can't be read or parsed.
  */
 export async function fetchManifestEntries(
    uri: string,
-): Promise<FreshnessManifest> {
+): Promise<FetchedManifest> {
    const raw = await readManifestBytes(uri);
 
    let parsed: WireBuildManifest;
@@ -86,7 +109,8 @@ export async function fetchManifestEntries(
       );
    }
 
-   const entries: FreshnessManifest = {};
+   const tableNameManifest: FreshnessManifest = {};
+   const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(parsed.entries ?? {})) {
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
@@ -96,7 +120,14 @@ export async function fetchManifestEntries(
          });
          continue;
       }
-      entries[sourceEntityId] = {
+      if (entry.storageConnectionName) {
+         // Cross-connection storage tier: keep the full entry (schema +
+         // sourceName + storageConnectionName) for the serve-binding derivation;
+         // never enter the same-connection tableName manifest.
+         storageEntries[sourceEntityId] = entry;
+         continue;
+      }
+      tableNameManifest[sourceEntityId] = {
          tableName: physicalTableName,
          connectionName: entry.connectionName,
          dataAsOf: entry.dataAsOf,
@@ -104,5 +135,5 @@ export async function fetchManifestEntries(
          freshnessFallback: entry.freshnessFallback,
       };
    }
-   return entries;
+   return { tableNameManifest, storageEntries };
 }

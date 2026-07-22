@@ -38,7 +38,7 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
-import { fetchManifestEntries } from "./manifest_loader";
+import { fetchManifestEntries, type FetchedManifest } from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -829,6 +829,15 @@ export class Environment {
     * beside {@link bindManifestIfConfigured} — same "bind serve state on load"
     * step, for the cross-connection tier. Best-effort: a lookup failure logs and
     * leaves the package serving live (a subsequent build will bind it).
+    *
+    * Skipped when the package has a bound `manifestLocation`: the two storage
+    * serve-binding producers (this local materialization store and the host's
+    * fetched manifest, applied by {@link bindManifest}) are mutually exclusive
+    * by manifest presence, and the host is authoritative when one is set. An
+    * orchestrated publisher STILL persists its own local materialization records
+    * (the host triggers builds through it), so without this guard the local
+    * rebind — which runs AFTER {@link bindManifestIfConfigured} on load — would
+    * overwrite the host's bindings with a possibly-staler local generation.
     */
    private async rebindStorageServeBindings(pkg: Package): Promise<void> {
       if (!this.storageBindingResolver) return;
@@ -836,6 +845,10 @@ export class Environment {
       // consumed (serve routing requires mode `on`), so skip the per-load
       // materialization lookup entirely — an off deployment does no extra work.
       if (getPersistStorageMode() === "off") return;
+      // Host-authoritative: a bound manifestLocation means bindManifest already
+      // supplied the storage serve bindings from the host's manifest; the local
+      // store must not clobber them (mutually-exclusive binding sources).
+      if (pkg.getPackageMetadata().manifestLocation) return;
       const packageName = pkg.getPackageName();
       try {
          const entries = await this.storageBindingResolver(packageName);
@@ -1370,16 +1383,40 @@ export class Environment {
          // manifest store must not block serving indefinitely — bound is the
          // intended state, live is the degraded fallback. Race the fetch against
          // a timeout and fall back to live on either failure.
-         const entries =
+         const { tableNameManifest, storageEntries } =
             await this.fetchManifestEntriesWithTimeout(manifestLocation);
-         await pkg.reloadAllModels(entries);
+
+         // Tier split. Storage entries (cross-connection) bind as serve bindings
+         // WITHOUT a recompile — they apply to the already-compiled models via
+         // Model.setServeBindings. The host is the authoritative producer here,
+         // so this also supersedes the local-store rebind (see
+         // rebindStorageServeBindings, which no-ops when manifestLocation is set).
+         const hasStorage = Object.keys(storageEntries).length > 0;
+         if (hasStorage) {
+            pkg.bindStorageServeBindings(storageEntries);
+         }
+
+         // Path-C entries drive the same-connection tableName substitution, which
+         // is resolved at COMPILE time — so they require a reloadAllModels
+         // recompile (v0's existing cost). Skip the recompile for a pure-storage
+         // manifest flip: only when there is nothing to substitute AND nothing
+         // previously substituted to clear (otherwise a package that just dropped
+         // its last path-C entry must still recompile to revert it).
+         const hasPathC = Object.keys(tableNameManifest).length > 0;
+         const hadPathC = pkg.hasBoundTableNameManifest();
+         if (hasPathC || hadPathC) {
+            await pkg.reloadAllModels(tableNameManifest);
+         }
+
          pkg.setBoundManifestUri(manifestLocation);
          recordManifestBind("success");
          logger.info("Bound build manifest to package", {
             environmentName: this.environmentName,
             packageName,
             manifestLocation,
-            entryCount: Object.keys(entries).length,
+            tableNameEntryCount: Object.keys(tableNameManifest).length,
+            storageEntryCount: Object.keys(storageEntries).length,
+            recompiled: hasPathC || hadPathC,
          });
       } catch (err) {
          pkg.markManifestBindFailed();
@@ -1403,7 +1440,7 @@ export class Environment {
     */
    private async fetchManifestEntriesWithTimeout(
       manifestLocation: string,
-   ): Promise<FreshnessManifest> {
+   ): Promise<FetchedManifest> {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
          timer = setTimeout(
@@ -1627,7 +1664,12 @@ export class Environment {
             if (body.manifestLocation) {
                await this.bindManifest(_package, body.manifestLocation);
             } else {
+               // Revert to live: drop the path-C tableName substitution AND the
+               // cross-connection storage serve bindings the prior bindManifest
+               // applied, so no query still routes to a materialized table after
+               // the operator explicitly cleared the manifest.
                await _package.reloadAllModels({});
+               _package.bindStorageServeBindings({});
             }
          }
 
