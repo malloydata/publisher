@@ -18,6 +18,8 @@ import {
    MIN_SIMILARITY,
    SemanticSearchResult,
    _resetEmbeddingIndexStateForTests,
+   deleteEnvironmentEmbeddings,
+   deletePackageEmbeddings,
    embeddingText,
    humanizeName,
    trySemanticSearch,
@@ -52,7 +54,14 @@ beforeEach(async () => {
  */
 function mapProvider(
    vectors: Record<string, number[]>,
-   options: { model?: string; dimensions?: number; fail?: () => boolean } = {},
+   options: {
+      model?: string;
+      dimensions?: number;
+      fail?: () => boolean;
+      // Requests whose input includes this text block until the promise
+      // resolves, so a test can hold one call mid-flight deterministically.
+      gate?: { forText: string; until: Promise<void> };
+   } = {},
 ): { provider: EmbeddingProvider; counts: Map<string, number> } {
    const counts = new Map<string, number>();
    const fetchStub = (async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -60,6 +69,9 @@ function mapProvider(
          return new Response("stub failure", { status: 500 });
       }
       const body = JSON.parse(String(init?.body)) as { input: string[] };
+      if (options.gate && body.input.includes(options.gate.forText)) {
+         await options.gate.until;
+      }
       const data = body.input.map((text, index) => {
          counts.set(text, (counts.get(text) ?? 0) + 1);
          const embedding = vectors[text];
@@ -504,6 +516,141 @@ describe("trySemanticSearch", () => {
          "SELECT DISTINCT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
       );
       expect(dims.map((d) => d.dims)).toEqual([4]);
+      // The purge deleted ONLY the stale row: beta was embedded exactly
+      // once. A delete-all purge would re-embed it and fail this pin.
+      expect(wide.counts.get("beta")).toBe(1);
+   });
+
+   it("a sync that changes rows invalidates other instances' memos", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "pkg",
+         query: "find alpha",
+         limit: 10,
+      };
+      const pkgA = {} as unknown as Package;
+      await searchReady({
+         ...base,
+         pkg: pkgA,
+         entities: [entity("alpha", "src")],
+      });
+
+      // A reload's instance syncs with a CHANGED entity text: the rows
+      // pkgA's snapshot logic trusts have been rewritten.
+      const changedVectors = {
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: reworded": [0, 1, 0],
+      };
+      const changed = mapProvider(changedVectors);
+      await searchReady({
+         ...base,
+         provider: changed.provider,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src", "reworded")],
+      });
+
+      // pkgA's done memo must now be stale (the sync bumped the
+      // generation): its next call re-kicks a sync instead of serving
+      // from the trusted memo.
+      const next = await trySemanticSearch({
+         ...base,
+         pkg: pkgA,
+         entities: [entity("alpha", "src")],
+      });
+      expect(next).toEqual({ unavailable: "indexing" });
+   });
+
+   it("a call overlapping a purge answers indexing, not empty semantic hits", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      const pkgA = {} as unknown as Package;
+      await searchReady({ ...base, provider, pkg: pkgA });
+
+      // Call C on pkgA holds at its query embed (gated), memo done and
+      // generation current at entry.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+         release = resolve;
+      });
+      const gated = mapProvider(
+         { ...ENTITY_VECTORS, ...QUERY_VECTORS },
+         { gate: { forText: "find alpha", until: gate } },
+      );
+      const cPromise = trySemanticSearch({
+         ...base,
+         provider: gated.provider,
+         pkg: pkgA,
+      });
+
+      // While C is gated, another instance's heal purges the table (a
+      // 4-dim provider makes every row stale) and stops before any
+      // re-sync repopulates it.
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const pkgB = {} as unknown as Package;
+      for (let i = 0; i < 200; i++) {
+         await trySemanticSearch({
+            ...base,
+            provider: wide.provider,
+            pkg: pkgB,
+         });
+         const rows = await db.all<{ n: number }>(
+            "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
+         );
+         if (rows[0].n === 0) break;
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      // Released, C searches an empty table with no stale rows left to
+      // heal. Without the entry-generation re-check it would return
+      // {hits: []} (served as semantic "nothing relevant here"); with
+      // it, it reports indexing and the tool answers marked lexical.
+      release();
+      expect(await cPromise).toEqual({ unavailable: "indexing" });
+   });
+
+   it("deletion helpers drop a package's and an environment's rows", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = { db, provider, query: "find alpha", limit: 10 };
+      await searchReady({
+         ...base,
+         environmentName: "env",
+         packageName: "pkg-a",
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src")],
+      });
+      await searchReady({
+         ...base,
+         environmentName: "env",
+         packageName: "pkg-b",
+         pkg: {} as unknown as Package,
+         entities: [entity("beta", "src")],
+      });
+
+      await deletePackageEmbeddings(db, "env", "pkg-a");
+      const afterPkg = await db.all<{ package_name: string }>(
+         "SELECT DISTINCT package_name FROM entity_embeddings WHERE environment_name = 'env' ORDER BY package_name",
+      );
+      expect(afterPkg.map((r) => r.package_name)).toEqual(["pkg-b"]);
+
+      await deleteEnvironmentEmbeddings(db, "env");
+      const afterEnv = await db.all<{ n: number }>(
+         "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
+      );
+      expect(afterEnv[0].n).toBe(0);
    });
 
    it("backs off instead of purging twice within the cool-down window", async () => {

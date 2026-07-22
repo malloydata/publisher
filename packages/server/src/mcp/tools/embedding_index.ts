@@ -167,6 +167,55 @@ interface ExistingRow {
 }
 
 /**
+ * Remove a deleted package's cached embeddings so package churn does not
+ * grow publisher.db forever. Called best-effort from the deletion paths;
+ * a missed cleanup is inert (every read is scoped by environment and
+ * package) and `--init` reclaims it. Runs under the package mutex so it
+ * cannot tear an in-flight sync, and bumps the generation so any live
+ * instance memo stops trusting its rows.
+ */
+export async function deletePackageEmbeddings(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+): Promise<void> {
+   const meta = metaFor(environmentName, packageName);
+   await meta.mutex.runExclusive(async () => {
+      await db.run(
+         `DELETE FROM entity_embeddings
+          WHERE environment_name = ? AND package_name = ?`,
+         [environmentName, packageName],
+      );
+      meta.generation++;
+   });
+}
+
+/**
+ * Remove a deleted environment's cached embeddings. Packages with live
+ * sync state are cleaned under their mutex (so an in-flight sync cannot
+ * resurrect rows); a final environment-wide sweep covers packages never
+ * queried in this process, which by construction have no sync to race.
+ */
+export async function deleteEnvironmentEmbeddings(
+   db: DuckDBConnection,
+   environmentName: string,
+): Promise<void> {
+   const prefix = `${environmentName}\x00`;
+   for (const [key] of syncMeta) {
+      if (key.startsWith(prefix)) {
+         await deletePackageEmbeddings(
+            db,
+            environmentName,
+            key.slice(prefix.length),
+         );
+      }
+   }
+   await db.run(`DELETE FROM entity_embeddings WHERE environment_name = ?`, [
+      environmentName,
+   ]);
+}
+
+/**
  * Bring the entity_embeddings rows for one package in line with the
  * current entity set: embed new/changed entities (content-hash diff, so
  * unchanged entities never re-embed, across restarts too), upsert them,
@@ -184,10 +233,10 @@ async function syncPackageEmbeddings(
 ): Promise<number> {
    const meta = metaFor(environmentName, packageName);
    return meta.mutex.runExclusive(async () => {
-      // Captured under the mutex: a purge (which also runs under this
+      // Everything here runs under the package mutex: a purge (same
       // mutex) either finished before this sync started or starts after
-      // it ends, so the generation cannot move mid-sync.
-      const generation = meta.generation;
+      // it ends, so the generation moves mid-sync only via the bump at
+      // the bottom of this function.
       const existingRows = await db.all<ExistingRow>(
          `SELECT entity_kind, entity_source, entity_name, content_hash,
                  embedding_model, CAST(dims AS INTEGER) AS dims
@@ -297,6 +346,15 @@ async function syncPackageEmbeddings(
          }
       }
 
+      // A sync that CHANGED rows invalidates every other instance's
+      // snapshot the same way a purge does: without this bump, a call
+      // blocked behind this sync on the mutex could return its pre-sync
+      // cosine snapshot (possibly empty) marked semantic. The bumped
+      // generation is returned, so this sync's own memo stays valid.
+      if (toEmbed.length > 0 || deleted > 0) {
+         meta.generation++;
+      }
+
       logger.debug("[MCP Tool getContext] Synced entity embeddings", {
          environmentName,
          packageName,
@@ -304,7 +362,7 @@ async function syncPackageEmbeddings(
          embedded: toEmbed.length,
          deleted,
       });
-      return generation;
+      return meta.generation;
    });
 }
 
@@ -465,6 +523,15 @@ export async function trySemanticSearch(args: {
             limit,
          ],
       );
+      // A sync or heal holding the package mutex right now may be
+      // rewriting rows underneath the query that just ran: that snapshot
+      // is unreliable (it can be partial or empty mid-write) and must
+      // not be served as semantic. Completed writers are caught by the
+      // generation re-check below; this catches the in-flight ones.
+      if (meta.mutex.isLocked()) {
+         return { unavailable: "indexing" };
+      }
+
       // Invariant check, every call: no row may exist that does not
       // match the provider's current (model, dims). The sync diff cannot
       // see a dims change (row hashes still match), so stale-dims rows
