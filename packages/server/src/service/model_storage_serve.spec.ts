@@ -132,6 +132,27 @@ describe("storage= serve routing (end-to-end)", () => {
       expect(await runTotal(model)).toBe(0);
    });
 
+   it("a binding for a source this model does not define does not break serving the model's own sources", async () => {
+      // Bindings are pushed to EVERY model in the package, so a model can receive
+      // a binding for a source it doesn't define (defined in a sibling model).
+      // That source has no field list here, so its narrowed schema is empty — the
+      // serve shape must simply omit it, not emit an empty `type: {}` that fails
+      // the whole shape model and drops storage serving for X too.
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+      model.setServeBindings([
+         BINDING,
+         {
+            sourceName: "OtherModelSource", // not defined in this model
+            connectionName: "duckdb",
+            virtualHandle: "h2",
+            tablePath: "mz_real",
+            schema: [{ name: "total", type: "BIGINT" }],
+         },
+      ]);
+      expect(await runTotal(model)).toBe(60);
+   });
+
    it("does not serve an except:-hidden column from storage (vector A)", async () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       // X hides `secret` via except:, but the built table still carries it (the

@@ -1957,26 +1957,42 @@ export class Model {
          const text = fileCache.get(location.url);
          return text ? sliceSourceRange(text, location.range) : undefined;
       };
-      return this.serveBindings.map((b) => {
-         const fields = contents?.[b.sourceName]?.fields;
-         // Narrow the declared ::Shape to the source's PUBLIC columns: the build
-         // materializes every projected column (incl. `except:`-ed / access-
-         // restricted ones), so the captured schema can be wider than the
-         // source's public surface. Declaring a hidden column would expose it
-         // over storage when live hides it — always applied (even with no
-         // refinements), so the serve surface never widens the source's.
-         const schema = narrowSchemaToPublic(b.schema, fields);
-         const refinements = [
-            ...extractJoins(fields, {
-               sourceNameById,
-               materializedSourceNames,
-               liftText,
-            }),
-            ...extractRefinements(fields),
-            ...extractViews(fields, liftText),
-         ];
-         return { ...b, schema, refinements };
-      });
+      return (
+         this.serveBindings
+            .map((b) => {
+               const fields = contents?.[b.sourceName]?.fields;
+               // Narrow the declared ::Shape to the source's PUBLIC columns: the
+               // build materializes every projected column (incl. `except:`-ed /
+               // access-restricted ones), so the captured schema can be wider
+               // than the source's public surface. Declaring a hidden column
+               // would expose it over storage when live hides it — always applied
+               // (even with no refinements), so the serve surface never widens
+               // the source's.
+               const schema = narrowSchemaToPublic(b.schema, fields);
+               const refinements = [
+                  ...extractJoins(fields, {
+                     sourceNameById,
+                     materializedSourceNames,
+                     liftText,
+                  }),
+                  ...extractRefinements(fields),
+                  ...extractViews(fields, liftText),
+               ];
+               return { ...b, schema, refinements };
+            })
+            // Drop any binding whose public schema is empty. Bindings are pushed
+            // to EVERY model in the package, so a model receives bindings for
+            // sources it doesn't define (defined in a sibling model) — those have
+            // no field list here, hence an empty narrowed schema. An empty
+            // `type: X__shape is {}` is a Malloy parse error that would fail the
+            // ENTIRE serve-shape model (breaking the base-only-always-compiles
+            // fallback invariant) and silently drop storage serving for this
+            // model's own sources too. Omitting them sends queries on an
+            // undefined source to live (where this model refuses them anyway) and
+            // keeps a source from being served through a model that doesn't
+            // declare it.
+            .filter((b) => b.schema.length > 0)
+      );
    }
 
    public async getQueryResults(
