@@ -37,7 +37,7 @@ samples, see [configuration.md](configuration.md#bring-your-own-config).
 > --init`, to re-mount them. The `governed-analytics` and `html-data-app` READMEs also have a
 > self-contained "Run it standalone" recipe that mounts just that package from a `/tmp` workspace. After
 > changing an example's data generator, re-run `bun run generate:example-data` to refresh the Parquet
-> files.
+> and CSV files.
 
 ## Makefile shortcuts
 

@@ -21,6 +21,8 @@ publisher.json         # name, version, description
 public/                # ONLY this directory is web-served
   index.html
   embed-test.html
+  vendor/              # chart library, vendored rather than loaded from a CDN
+    chart.umd.js
 ```
 
 Only `public/` is reachable over the web, at

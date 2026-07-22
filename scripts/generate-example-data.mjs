@@ -1,15 +1,16 @@
-// Regenerate the Parquet datasets that back the Publisher example packages.
+// Regenerate the datasets that back the Publisher example packages.
 //
 //   node scripts/generate-example-data.mjs
 //   bun run generate:example-data
 //
 // Everything here is deterministic (seeded PRNG), so re-running produces the
 // exact same files — a diff only appears when this generator changes. Data is
-// built in memory, written to temporary JSON, and converted to Parquet with the
-// bundled DuckDB bindings. No network, no credentials.
+// built in memory, written to temporary JSON, and converted to Parquet (or CSV)
+// with the bundled DuckDB bindings. No network, no credentials.
 //
 // Datasets:
 //   examples/storefront/data/{customers,products,order_items}.parquet
+//   examples/storefront/data/regions.csv
 //   examples/governed-analytics/orders.parquet
 //   examples/html-data-app/subscriptions.parquet
 import { DuckDBInstance } from "@duckdb/node-api";
@@ -51,33 +52,33 @@ const monthLabel = (y, m) => `${y}-${String(m + 1).padStart(2, "0")}`;
 
 // ── Reference data ──────────────────────────────────────────────────────────
 
-// (full state name, representative city, relative population weight)
+// (full state name, representative city, relative population weight, US Census region)
 const STATES = [
-  ["California", "Los Angeles", 39], ["Texas", "Houston", 30],
-  ["Florida", "Miami", 22], ["New York", "New York", 20],
-  ["Pennsylvania", "Philadelphia", 13], ["Illinois", "Chicago", 13],
-  ["Ohio", "Columbus", 12], ["Georgia", "Atlanta", 11],
-  ["North Carolina", "Charlotte", 11], ["Michigan", "Detroit", 10],
-  ["New Jersey", "Newark", 9], ["Virginia", "Virginia Beach", 9],
-  ["Washington", "Seattle", 8], ["Arizona", "Phoenix", 7],
-  ["Massachusetts", "Boston", 7], ["Tennessee", "Nashville", 7],
-  ["Indiana", "Indianapolis", 7], ["Missouri", "Kansas City", 6],
-  ["Maryland", "Baltimore", 6], ["Wisconsin", "Milwaukee", 6],
-  ["Colorado", "Denver", 6], ["Minnesota", "Minneapolis", 6],
-  ["South Carolina", "Columbia", 5], ["Alabama", "Birmingham", 5],
-  ["Louisiana", "New Orleans", 5], ["Kentucky", "Louisville", 4],
-  ["Oregon", "Portland", 4], ["Oklahoma", "Oklahoma City", 4],
-  ["Connecticut", "Hartford", 4], ["Utah", "Salt Lake City", 3],
-  ["Iowa", "Des Moines", 3], ["Nevada", "Las Vegas", 3],
-  ["Arkansas", "Little Rock", 3], ["Mississippi", "Jackson", 3],
-  ["Kansas", "Wichita", 3], ["New Mexico", "Albuquerque", 2],
-  ["Nebraska", "Omaha", 2], ["Idaho", "Boise", 2],
-  ["West Virginia", "Charleston", 2], ["Hawaii", "Honolulu", 1],
-  ["New Hampshire", "Manchester", 1], ["Maine", "Portland", 1],
-  ["Montana", "Billings", 1], ["Rhode Island", "Providence", 1],
-  ["Delaware", "Wilmington", 1], ["South Dakota", "Sioux Falls", 1],
-  ["North Dakota", "Fargo", 1], ["Alaska", "Anchorage", 1],
-  ["Vermont", "Burlington", 1], ["Wyoming", "Cheyenne", 1],
+  ["California", "Los Angeles", 39, "West"], ["Texas", "Houston", 30, "South"],
+  ["Florida", "Miami", 22, "South"], ["New York", "New York", 20, "Northeast"],
+  ["Pennsylvania", "Philadelphia", 13, "Northeast"], ["Illinois", "Chicago", 13, "Midwest"],
+  ["Ohio", "Columbus", 12, "Midwest"], ["Georgia", "Atlanta", 11, "South"],
+  ["North Carolina", "Charlotte", 11, "South"], ["Michigan", "Detroit", 10, "Midwest"],
+  ["New Jersey", "Newark", 9, "Northeast"], ["Virginia", "Virginia Beach", 9, "South"],
+  ["Washington", "Seattle", 8, "West"], ["Arizona", "Phoenix", 7, "West"],
+  ["Massachusetts", "Boston", 7, "Northeast"], ["Tennessee", "Nashville", 7, "South"],
+  ["Indiana", "Indianapolis", 7, "Midwest"], ["Missouri", "Kansas City", 6, "Midwest"],
+  ["Maryland", "Baltimore", 6, "South"], ["Wisconsin", "Milwaukee", 6, "Midwest"],
+  ["Colorado", "Denver", 6, "West"], ["Minnesota", "Minneapolis", 6, "Midwest"],
+  ["South Carolina", "Columbia", 5, "South"], ["Alabama", "Birmingham", 5, "South"],
+  ["Louisiana", "New Orleans", 5, "South"], ["Kentucky", "Louisville", 4, "South"],
+  ["Oregon", "Portland", 4, "West"], ["Oklahoma", "Oklahoma City", 4, "South"],
+  ["Connecticut", "Hartford", 4, "Northeast"], ["Utah", "Salt Lake City", 3, "West"],
+  ["Iowa", "Des Moines", 3, "Midwest"], ["Nevada", "Las Vegas", 3, "West"],
+  ["Arkansas", "Little Rock", 3, "South"], ["Mississippi", "Jackson", 3, "South"],
+  ["Kansas", "Wichita", 3, "Midwest"], ["New Mexico", "Albuquerque", 2, "West"],
+  ["Nebraska", "Omaha", 2, "Midwest"], ["Idaho", "Boise", 2, "West"],
+  ["West Virginia", "Charleston", 2, "South"], ["Hawaii", "Honolulu", 1, "West"],
+  ["New Hampshire", "Manchester", 1, "Northeast"], ["Maine", "Portland", 1, "Northeast"],
+  ["Montana", "Billings", 1, "West"], ["Rhode Island", "Providence", 1, "Northeast"],
+  ["Delaware", "Wilmington", 1, "South"], ["South Dakota", "Sioux Falls", 1, "Midwest"],
+  ["North Dakota", "Fargo", 1, "Midwest"], ["Alaska", "Anchorage", 1, "West"],
+  ["Vermont", "Burlington", 1, "Northeast"], ["Wyoming", "Cheyenne", 1, "West"],
 ];
 
 const FIRST_NAMES = [
@@ -117,6 +118,14 @@ const BRANDS = [
 const ORDER_STATUSES = [
   ["Complete", 68], ["Shipped", 14], ["Processing", 8], ["Returned", 6], ["Cancelled", 4],
 ];
+
+// Codepoint order, not localeCompare: the row order reaches the CSV bytes
+// verbatim, and collation for "New York" / "Wisconsin" varies by locale.
+function buildRegions() {
+  return STATES.map(([state, , , region]) => ({ state, region })).sort((a, b) =>
+    a.state < b.state ? -1 : a.state > b.state ? 1 : 0,
+  );
+}
 
 // ── Storefront ──────────────────────────────────────────────────────────────
 function buildStorefront() {
@@ -307,7 +316,7 @@ function buildSubscriptions() {
 }
 
 // ── Write helpers ────────────────────────────────────────────────────────────
-async function writeParquet(con, tmp, outPath, rows, columns) {
+async function writeTable(con, tmp, outPath, rows, columns, format) {
   const base = outPath.replace(/[\/]/g, "_");
   const jsonPath = join(tmp, `${base}.json`);
   await writeFile(jsonPath, JSON.stringify(rows));
@@ -317,9 +326,15 @@ async function writeParquet(con, tmp, outPath, rows, columns) {
   await con.run(
     `COPY (SELECT * FROM read_json('${jsonPath.replace(/'/g, "''")}', ` +
       `format='array', columns={${colSpec}})) ` +
-      `TO '${outPath}' (FORMAT PARQUET)`,
+      `TO '${outPath}' (FORMAT ${format})`,
   );
 }
+
+const writeParquet = (con, tmp, outPath, rows, columns) =>
+  writeTable(con, tmp, outPath, rows, columns, "PARQUET");
+
+const writeCsv = (con, tmp, outPath, rows, columns) =>
+  writeTable(con, tmp, outPath, rows, columns, "CSV, HEADER");
 
 async function main() {
   const inst = await DuckDBInstance.create(":memory:");
@@ -342,6 +357,13 @@ async function main() {
       created_at: "DATE",
     });
 
+    // CSV on purpose: a small lookup a human would keep in a spreadsheet, and a
+    // worked example that duckdb.table() reads CSV and Parquet in one model.
+    const regions = buildRegions();
+    await writeCsv(con, tmp, "examples/storefront/data/regions.csv", regions, {
+      state: "VARCHAR", region: "VARCHAR",
+    });
+
     const gov = buildGoverned();
     await writeParquet(con, tmp, "examples/governed-analytics/orders.parquet", gov, {
       order_id: "BIGINT", region: "VARCHAR", tenant: "VARCHAR",
@@ -356,7 +378,7 @@ async function main() {
     });
 
     console.log("Wrote:");
-    console.log(`  storefront   customers=${sf.customers.length} products=${sf.products.length} order_items=${sf.order_items.length}`);
+    console.log(`  storefront   customers=${sf.customers.length} products=${sf.products.length} order_items=${sf.order_items.length} regions=${regions.length} (csv)`);
     console.log(`  governed     orders=${gov.length}`);
     console.log(`  subscriptions rows=${subs.length}`);
   } finally {
