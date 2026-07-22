@@ -1,7 +1,6 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
-import { deriveAnnotationFields } from "./build_plan";
 
 /**
  * Compile-time eligibility gate for materializing a persist source into a
@@ -69,33 +68,6 @@ export function assertMaterializationEligible(
             `used for row-level access control, so a materialized-once table ` +
             `served to everyone would leak filtered rows across tenants. This ` +
             `is refused for safety. Serve this source live (drop 'storage=').`,
-      });
-   }
-}
-
-/**
- * Refuse a `storage=` source whose `#@ persist name=` carries a quoted
- * identifier (a `"`, `'`, or backtick). The standalone path content-addresses
- * the physical table by decorating this logical name (`<name>__m<hash>`); a
- * quote inside it produces a malformed identifier the CTAS double-quotes while
- * the serve `virtualMap` passes the recorded path verbatim, so the source would
- * silently fall back to live (best case) or error at serve (worst). A dotted
- * `name=schema.table` (unquoted) is fine — only quoting breaks the decoration.
- * A clean build-time 422 beats a silent serve failure.
- *
- * @throws {MaterializationEligibilityError} (HTTP 422) if the name is quoted.
- */
-export function assertStorageNameSupported(persistSource: PersistSource): void {
-   const name = deriveAnnotationFields(persistSource).name;
-   if (name && /["'`]/.test(name)) {
-      recordEligibilityRefused("quoted_name");
-      throw new MaterializationEligibilityError({
-         message:
-            `Source '${persistSource.name}' cannot be materialized into a ` +
-            `storage destination: its '#@ persist name=${name}' is a quoted ` +
-            `identifier, which the content-addressed physical-table naming does ` +
-            `not support. Use an unquoted name (a dotted 'schema.table' is fine), ` +
-            `or drop 'storage='.`,
       });
    }
 }

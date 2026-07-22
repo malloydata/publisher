@@ -11,7 +11,6 @@ import {
    buildSourceIntoStorage,
    dropStorageTable,
    dropStorageTableSql,
-   logicalViewSql,
    passthroughSourceType,
    wrapPassthrough,
 } from "./materialization_build_session";
@@ -67,22 +66,6 @@ describe("dropStorageTable gating (no session I/O before the gate)", () => {
             environmentPath: "/tmp/env",
          }),
       ).rejects.toThrow(/must be one of/i);
-   });
-});
-
-describe("logicalViewSql", () => {
-   it("points the logical name at the physical table, catalog-qualified and quoted", () => {
-      expect(logicalViewSql("lake", "daily", "daily__mabc123")).toBe(
-         'CREATE OR REPLACE VIEW "lake"."daily" AS SELECT * FROM "lake"."daily__mabc123"',
-      );
-   });
-
-   it("qualifies a dotted schema.table logical name", () => {
-      expect(
-         logicalViewSql("lake", "analytics.daily", "analytics.daily__mabc123"),
-      ).toBe(
-         'CREATE OR REPLACE VIEW "lake"."analytics"."daily" AS SELECT * FROM "lake"."analytics"."daily__mabc123"',
-      );
    });
 });
 
@@ -241,7 +224,6 @@ describe.skipIf(process.platform === "win32")(
                downstreamName: "monthly_orders",
                virtualMap: buildVirtualMap([parent]),
                physicalTableName: "monthly_orders__mdef456",
-               logicalViewName: "monthly_orders",
                environmentPath: dir,
             });
 
