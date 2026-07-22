@@ -48,6 +48,7 @@ let lastFactoryOpts: {
    }) => void;
 } | null = null;
 let storageInitFails = false;
+let cloneFailure: Error | null = null;
 
 mock.module("simple-git", () => ({
    default: (factoryOpts?: typeof lastFactoryOpts) => {
@@ -60,6 +61,10 @@ mock.module("simple-git", () => ({
             cb: (err: Error | null) => void,
          ) => {
             recordedClones.push({ repoUrl, dir, opts });
+            if (cloneFailure) {
+               cb(cloneFailure);
+               return;
+            }
             // Materialize the fixture the extraction step expects: the repo
             // contains one package subdirectory.
             const pkgDir = path.join(dir, PKG_NAME);
@@ -125,6 +130,7 @@ describe("git clone wiring", () => {
       recordedClones = [];
       lastFactoryOpts = null;
       storageInitFails = false;
+      cloneFailure = null;
       stderrWrites = [];
       stderrSpy = spyOn(process.stderr, "write").mockImplementation(
          (chunk: string | Uint8Array) => {
@@ -217,6 +223,30 @@ describe("git clone wiring", () => {
       expect(stderrWrites.join("")).toContain(
          "cloning example/repo: receiving 50% (1/2)",
       );
+   });
+
+   it("a failed clone rejects with the progress noise stripped", async () => {
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+      cloneFailure = new Error(
+         "Cloning into '/x'...\nReceiving objects: 50% (5/10)\nfatal: early EOF",
+      );
+
+      const target = path.join(serverRootPath, "publisher_data", "direct");
+      let caught: Error | undefined;
+      try {
+         await store.downloadGitHubDirectory(
+            "https://github.com/example/repo",
+            target,
+         );
+      } catch (e) {
+         caught = e as Error;
+      }
+      expect(caught).toBeDefined();
+      // The message keeps what went wrong and drops the --progress spew;
+      // the stack (which V8 seeds with the message) is stripped too.
+      expect(caught!.message).toBe("fatal: early EOF");
+      expect(caught!.stack ?? "").not.toContain("Receiving objects");
    });
 
    it("does not print a readiness line when boot fails", async () => {

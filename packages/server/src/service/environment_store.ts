@@ -165,9 +165,11 @@ export const GIT_CLONE_OPTIONS: Record<string, string | number | null> = {
 /**
  * With a progress handler configured, simple-git forces `--progress`, and a
  * failed clone's error message then carries every progress line git wrote to
- * stderr. Those messages reach `/status` loadErrors and API error responses,
- * so drop the noise and keep the lines that say what went wrong. Returns the
- * input when everything matched, rather than an empty error.
+ * stderr. Those messages surface in API error responses on the add/update
+ * package path and in the failure logs (the boot path's `/status` loadErrors
+ * carries a location-level summary instead), so drop the noise and keep the
+ * lines that say what went wrong. Returns the input when everything matched,
+ * rather than an empty error.
  */
 export function stripGitProgressNoise(message: string): string {
    const kept = message
@@ -210,6 +212,14 @@ export class CloneProgressReporter {
    private lastStage: string | undefined;
    private lastMilestone = -1;
    private wroteInPlace = false;
+   /**
+    * One reporter at a time owns a TTY's in-place line: environments load
+    * concurrently at boot, and two reporters `\r`-rewriting the same line
+    * would overwrite each other. Later reporters fall back to milestone
+    * lines until the owner finishes. Keyed by stream so tests with fake
+    * streams cannot collide.
+    */
+   private static ttyOwners = new WeakMap<object, CloneProgressReporter>();
 
    constructor(
       private readonly label: string,
@@ -220,14 +230,33 @@ export class CloneProgressReporter {
       const { stage, progress, processed, total } = event;
       const counts = total > 0 ? ` (${processed}/${total})` : "";
       const text = `${this.label}: ${stage} ${progress}%${counts}`;
-      if (this.out.isTTY === true) {
-         // \x1b[K clears the tail of the previous, possibly longer, line.
-         this.out.write(`\r${text}\x1b[K`);
+      if (this.out.isTTY === true && this.claimTtyLine()) {
+         // Clamped to the terminal width: an auto-wrapped line breaks the
+         // \r rewrite (git clamps its own progress output for the same
+         // reason). The moving part sits at the end, so shorten the label
+         // and keep the stage/percentage visible; only when even the
+         // suffix cannot fit does a plain head slice apply. \x1b[K clears
+         // the tail of a longer previous line.
+         const budget = Math.max(1, (this.out.columns || 80) - 1);
+         const suffix = `: ${stage} ${progress}%${counts}`;
+         let line: string;
+         if (text.length <= budget) {
+            line = text;
+         } else if (suffix.length + 4 <= budget) {
+            const labelBudget = budget - suffix.length;
+            line = `${this.label.slice(0, labelBudget - 3)}...${suffix}`;
+         } else {
+            line = text.slice(0, budget);
+         }
+         this.out.write(`\r${line}\x1b[K`);
          this.wroteInPlace = true;
          return;
       }
       const milestone = Math.floor(progress / 25);
-      if (stage !== this.lastStage) {
+      if (stage !== this.lastStage || milestone < this.lastMilestone) {
+         // A new stage, or a percentage restart inside one reported stage:
+         // git's server-side counting and compressing phases both arrive as
+         // stage "remote:", so a drop in progress marks the next sub-phase.
          this.lastStage = stage;
          this.lastMilestone = milestone;
       } else if (milestone > this.lastMilestone) {
@@ -242,12 +271,28 @@ export class CloneProgressReporter {
       if (this.wroteInPlace) {
          this.out.write("\n");
       }
+      if (CloneProgressReporter.ttyOwners.get(this.out) === this) {
+         CloneProgressReporter.ttyOwners.delete(this.out);
+      }
+   }
+
+   private claimTtyLine(): boolean {
+      const owner = CloneProgressReporter.ttyOwners.get(this.out);
+      if (owner === undefined) {
+         CloneProgressReporter.ttyOwners.set(this.out, this);
+         return true;
+      }
+      return owner === this;
    }
 }
 
 /** `0.0.0.0`/`::` bind every interface; a script needs a host it can dial. */
 function displayHost(host: string): string {
-   return host === "0.0.0.0" || host === "::" ? "localhost" : host;
+   if (host === "0.0.0.0" || host === "::") {
+      return "localhost";
+   }
+   // An IPv6 literal needs brackets to be dialable inside a URL.
+   return host.includes(":") ? `[${host}]` : host;
 }
 
 /**
@@ -592,13 +637,17 @@ export class EnvironmentStore {
          packages += environment.getRegisteredPackageCount();
          loadErrors += environment.getFailedPackages().size;
       }
-      process.stderr.write(
-         formatReadinessLine({
-            environments: this.environments.size,
-            packages,
-            loadErrors,
-         }) + "\n",
-      );
+      try {
+         process.stderr.write(
+            formatReadinessLine({
+               environments: this.environments.size,
+               packages,
+               loadErrors,
+            }) + "\n",
+         );
+      } catch {
+         // A dead stderr pipe must not fail a boot that is already serving.
+      }
    }
 
    public async addEnvironmentToDatabase(
@@ -2092,6 +2141,11 @@ export class EnvironmentStore {
             reporter.done();
             if (err) {
                err.message = stripGitProgressNoise(err.message);
+               if (err.stack) {
+                  // V8 captures the message into the stack at construction,
+                  // so the spew survives there unless stripped too.
+                  err.stack = stripGitProgressNoise(err.stack);
+               }
                const errorData = this.extractErrorDataFromError(err);
                logger.error(
                   `Failed to clone GitHub repository "${repoUrl}"`,

@@ -1737,6 +1737,77 @@ describe("CloneProgressReporter", () => {
          "\n",
       ]);
    });
+
+   it("clamps the in-place line to the terminal width", () => {
+      // An auto-wrapped line breaks the \r rewrite: the cursor lands on the
+      // continuation row and every event scrolls a stale fragment. Too
+      // narrow for even the suffix, so a plain head slice applies.
+      const { writes, out } = fakeOut(true);
+      (out as unknown as { columns: number }).columns = 20;
+      const reporter = new CloneProgressReporter("cloning owner/repo", out);
+      reporter.onProgress(event("receiving", 45, 100, 220));
+      reporter.done();
+      expect(writes[0]).toBe(
+         "\r" + "cloning owner/repo:".slice(0, 19) + "\x1b[K",
+      );
+      expect(writes[0].length).toBe(1 + 19 + 3);
+   });
+
+   it("keeps the moving percentage visible when clamping a long label", () => {
+      // The default npx label is longer than an 80-column terminal; the
+      // label shortens, the stage and percentage stay on screen.
+      const { writes, out } = fakeOut(true);
+      (out as unknown as { columns: number }).columns = 60;
+      const reporter = new CloneProgressReporter(
+         "[examples] cloning malloydata/publisher (storefront, governed-analytics)",
+         out,
+      );
+      reporter.onProgress(event("receiving", 45, 100, 220));
+      reporter.done();
+      const visible = writes[0].slice(1, -3); // strip \r and \x1b[K
+      expect(visible.length).toBe(59);
+      expect(visible.endsWith(": receiving 45% (100/220)")).toBe(true);
+      expect(visible).toContain("...");
+   });
+
+   it("resets the milestone when the percentage restarts within a stage", () => {
+      // git's server-side counting and compressing phases both parse as
+      // stage "remote:"; the second starts back at 0%.
+      const { writes, out } = fakeOut(false);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("remote:", 100));
+      reporter.onProgress(event("remote:", 10));
+      reporter.onProgress(event("remote:", 60));
+      reporter.done();
+      expect(writes).toEqual([
+         "cloning o/r: remote: 100%\n",
+         "cloning o/r: remote: 10%\n",
+         "cloning o/r: remote: 60%\n",
+      ]);
+   });
+
+   it("only one reporter owns a TTY's in-place line at a time", () => {
+      // Environments load concurrently at boot; a second clone must not
+      // rewrite the first one's line. It falls back to milestone lines.
+      const { writes, out } = fakeOut(true);
+      const first = new CloneProgressReporter("cloning a/a", out);
+      const second = new CloneProgressReporter("cloning b/b", out);
+      first.onProgress(event("receiving", 10));
+      second.onProgress(event("receiving", 20));
+      first.onProgress(event("receiving", 30));
+      first.done();
+      // After the owner finishes, the line is free to claim again.
+      second.onProgress(event("receiving", 90));
+      second.done();
+      expect(writes).toEqual([
+         "\rcloning a/a: receiving 10%\x1b[K",
+         "cloning b/b: receiving 20%\n",
+         "\rcloning a/a: receiving 30%\x1b[K",
+         "\n",
+         "\rcloning b/b: receiving 90%\x1b[K",
+         "\n",
+      ]);
+   });
 });
 
 describe("formatReadinessLine", () => {
@@ -1764,6 +1835,16 @@ describe("formatReadinessLine", () => {
       ).toBe(
          "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=3 load_errors=0",
+      );
+   });
+
+   it("brackets an IPv6 literal host so the URL is dialable", () => {
+      process.env.PUBLISHER_HOST = "::1";
+      expect(
+         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://[::1]:4000 mcp=http://[::1]:4040 " +
+            "environments=1 packages=1 load_errors=0",
       );
    });
 
@@ -1887,6 +1968,46 @@ describe("readiness line emission", () => {
       // packages= is what the server actually serves: the boot-time database
       // sync prunes a package whose load failed (environment.ts getPackage
       // catch), so the failed one appears in load_errors, not in packages.
+      expect(lines[0]).toContain("packages=1");
+      expect(lines[0]).toContain("load_errors=1");
+   });
+
+   it("counts a failed environment in load_errors", async () => {
+      // An environment that fails initialization outright lands in
+      // failedEnvironments, not in environments; the line must count it
+      // alongside per-package failures. Failure lever: a FILE squatting the
+      // environment's publisher_data directory path makes the initial mkdir
+      // throw before any package mounts.
+      const pkgA = writePackage("pkg-a");
+      mkdirSync(path.join(readinessRoot, "publisher_data"), {
+         recursive: true,
+      });
+      writeFileSync(path.join(readinessRoot, "publisher_data", "bad-env"), "");
+      writeFileSync(
+         path.join(readinessRoot, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: "good-env",
+                  packages: [{ name: "pkg-a", location: pkgA }],
+                  connections: [],
+               },
+               {
+                  name: "bad-env",
+                  packages: [{ name: "pkg-a", location: pkgA }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(readinessRoot);
+      await store.finishedInitialization;
+
+      const lines = readyLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("environments=1");
       expect(lines[0]).toContain("packages=1");
       expect(lines[0]).toContain("load_errors=1");
    });

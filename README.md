@@ -44,8 +44,9 @@ instead of polling:
 PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=1 packages=3 load_errors=0
 ```
 
-`load_errors` counts configured packages that failed to load. When it is not 0, `/api/v0/status`
-names each one under `.loadErrors`.
+`load_errors` counts configured packages and environments that failed to load. When it is not 0,
+`/api/v0/status` names each one under `.loadErrors`. The `url=` host reads `localhost` when the
+server binds every interface (the default); a configured `--host` shows as itself.
 
 ## Point your agent at it
 
@@ -58,7 +59,7 @@ claude mcp add --transport http malloy http://localhost:4040/mcp
 
 Then just ask, in plain English:
 
-> *"Use Malloy to explore the storefront sales data and chart revenue by category."*
+> _"Use Malloy to explore the storefront sales data and chart revenue by category."_
 
 The agent discovers what data exists (`malloy_getContext`), grounds itself in the real source, view,
 and field names, runs the query (`malloy_executeQuery`), and returns an answer backed by your
@@ -88,29 +89,29 @@ semantic model. No schema spelunking, no hallucinated column names.
   so a new source or view is queryable by name, no restart.
 - **Govern access.** [Givens](docs/givens.md) are one runtime-parameter mechanism that powers filter
   widgets, [row-level access](docs/row-level-access.md) (which rows a caller sees), and
-  [`#(authorize)`](docs/authorize.md) source gates (who can query). Separately, curate *what* is
+  [`#(authorize)`](docs/authorize.md) source gates (who can query). Separately, curate _what_ is
   [discoverable and queryable](docs/discovery-and-access.md).
 
 ## Documentation
 
 The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README.md). Highlights:
 
-| Topic | Doc |
-| --- | --- |
-| Runnable example packages | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
-| Connect an AI agent over MCP | [docs/ai-agents.md](docs/ai-agents.md) |
-| No-code visual query builder | [docs/explorer.md](docs/explorer.md) |
-| The Publisher App (navigation & features) | [docs/publisher-app.md](docs/publisher-app.md) |
-| Build a custom UI (no build step) | [docs/html-data-apps.md](docs/html-data-apps.md) |
-| REST & MCP API overview | [docs/api-overview.md](docs/api-overview.md) |
-| Runtime parameters & access control | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md) |
-| Database connections | [docs/connections.md](docs/connections.md) |
-| Deploy (npx / Docker / Compose) | [docs/deployment.md](docs/deployment.md) |
-| Docker runtime deep-dive (layout, env, tuning) | [packages/server/README.docker.md](packages/server/README.docker.md) |
-| Configuration & tuning reference | [docs/configuration.md](docs/configuration.md) |
-| Theming (light/dark, palette) | [docs/theming.md](docs/theming.md) |
-| Architecture & how it fits together | [docs/architecture.md](docs/architecture.md) |
-| Build & develop from a clone | [docs/development.md](docs/development.md) |
+| Topic                                          | Doc                                                                                                                                                                                      |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runnable example packages                      | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
+| Connect an AI agent over MCP                   | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
+| No-code visual query builder                   | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
+| The Publisher App (navigation & features)      | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
+| Build a custom UI (no build step)              | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
+| REST & MCP API overview                        | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
+| Runtime parameters & access control            | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md)                                     |
+| Database connections                           | [docs/connections.md](docs/connections.md)                                                                                                                                               |
+| Deploy (npx / Docker / Compose)                | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |
+| Docker runtime deep-dive (layout, env, tuning) | [packages/server/README.docker.md](packages/server/README.docker.md)                                                                                                                     |
+| Configuration & tuning reference               | [docs/configuration.md](docs/configuration.md)                                                                                                                                           |
+| Theming (light/dark, palette)                  | [docs/theming.md](docs/theming.md)                                                                                                                                                       |
+| Architecture & how it fits together            | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
+| Build & develop from a clone                   | [docs/development.md](docs/development.md)                                                                                                                                               |
 
 The complete user guide also lives at
 **[docs.malloydata.dev](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**.
