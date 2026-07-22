@@ -1092,17 +1092,33 @@ export class MaterializationService {
                   `${physicalTableName} reported no columns; cannot build a MERGE.`,
             );
          }
+         // Resolve the declared primary_key to the target's ACTUAL column
+         // spelling (a case-normalizing engine such as Snowflake may store it
+         // upper-cased). Every identifier in the MERGE — the ON key and the
+         // column list — then comes from one authority (the target schema), so
+         // they can't disagree in case. The source subquery `S` produces the
+         // same physical spelling because the target was created from it.
+         const pkColumn = targetColumns.find(
+            (c) => c.toLowerCase() === primaryKey.toLowerCase(),
+         );
+         if (!pkColumn) {
+            throw new BadRequestError(
+               `Incremental persist source "${persistSource.name}": primary_key ` +
+                  `"${primaryKey}" is not among the target table's columns ` +
+                  `[${targetColumns.join(", ")}].`,
+            );
+         }
          const hydrated = hydrateIncrementalKeysCte(
             buildSQL,
             quotedPhysical,
-            primaryKey,
+            pkColumn,
             dialect,
          );
          await connection.runSQL(
             buildMergeSQL(
                quotedPhysical,
                hydrated,
-               primaryKey,
+               pkColumn,
                targetColumns,
                dialect,
             ),
@@ -1133,13 +1149,19 @@ export class MaterializationService {
 
    /**
     * The target table's actual column names via the connection's dialect-aware
-    * schema introspection, or `null` if the table does not exist. On the
-    * incremental path this both decides seed-vs-MERGE (null => first run) and
-    * yields the MERGE column set from the physical table — the same authority the
-    * first-run CTAS used, so non-atomic columns and any warehouse name
-    * normalization are preserved. A missing table is reported as a keyed error
-    * (the expected first-run signal); a genuine connection failure rejects and
-    * fails the run loudly rather than being misread as "absent".
+    * schema introspection, or `null` if no schema comes back. On the incremental
+    * path this both decides seed-vs-MERGE (null => first run) and yields the
+    * MERGE column set from the physical table — the same authority the first-run
+    * CTAS used, so non-atomic columns and any warehouse name normalization are
+    * preserved.
+    *
+    * `fetchSchemaForTables` collapses every per-table failure (a missing table,
+    * but also a transient metadata error) into its `errors` map rather than
+    * throwing, so "no schema" is treated as first run. The benign miss — a
+    * transient fetch error against a table that DOES exist — then surfaces as a
+    * spurious "table already exists" failure from the first-run CTAS: a failed
+    * run, never data loss or divergence. Distinguishing not-found from transient
+    * would need dialect-specific error classification (a possible refinement).
     */
    private async fetchTargetColumns(
       connection: MalloyConnection,

@@ -366,6 +366,48 @@ describe("buildOneSource incremental dispatch", () => {
       );
    });
 
+   it("resolves the primary key to the target's actual column spelling (case-normalizing engine)", async () => {
+      // Snowflake-style: the target stores upper-cased columns while the Malloy
+      // primary_key is lower-case. Every identifier in the MERGE (the ON key and
+      // the column list) must use the target's spelling, so they can't disagree
+      // in case. snowflake is not a backtick dialect, so identifiers double-quote.
+      const connection = conn(["ORDER_ID", "VENUE"]);
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "abcdef1234567890",
+         sql: "SELECT order_id, venue FROM raw",
+         dialectName: "snowflake",
+         annotationFields: { refresh: "incremental" },
+         explore: { primaryKey: "order_id" },
+      });
+      await callBuild(service(), source, connection, "orders_v1");
+
+      const merge = connection.runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string)
+         .find((s) => s.startsWith("MERGE INTO"))!;
+      expect(merge).toContain('ON T."ORDER_ID" = S."ORDER_ID"');
+      expect(merge).toContain('UPDATE SET "VENUE" = S."VENUE"');
+      expect(merge).toContain(
+         'INSERT ("ORDER_ID", "VENUE") VALUES (S."ORDER_ID", S."VENUE")',
+      );
+   });
+
+   it("throws when the primary_key is not among the target columns", async () => {
+      const connection = conn(["a", "b"]); // pk "order_id" absent
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "abcdef1234567890",
+         sql: "SELECT a, b FROM raw",
+         dialectName: "postgres",
+         annotationFields: { refresh: "incremental" },
+         explore: { primaryKey: "order_id" },
+      });
+      await expect(
+         callBuild(service(), source, connection, "orders_v1"),
+      ).rejects.toThrow(BadRequestError);
+   });
+
    it("forceFullRebuild routes an incremental source through the full staging + rename path", async () => {
       // The escape hatch: forceFullRebuild bypasses the MERGE/seed path entirely
       // and rebuilds via staging + atomic rename. No schema fetch, no MERGE — the

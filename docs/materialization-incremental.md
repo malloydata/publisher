@@ -89,10 +89,12 @@ against the target table (the connection's dialect-aware introspection). Because
 is the authority on its own columns**, the MERGE covers exactly what the first-run CTAS created —
 including non-atomic (struct / array / record) columns and any name normalization the warehouse
 applied. (A Malloy-side column derivation would drop non-atomic columns, silently diverging from the
-seeded table.) A missing table is the "first run" signal; a genuine connection failure fails the run
-rather than being misread as absent. The MERGE runs **in place** (no staging table / rename) and is
-**idempotent under retry**: re-running the same MERGE is a no-op on rows already merged, unlike a raw
-`INSERT`, which would double-insert.
+seeded table.) The declared `primary_key` is resolved to the target's actual column spelling, so the
+MERGE's key and column list are all in one casing. "No schema returned" is the first-run signal; a
+transient schema-fetch error against a table that already exists therefore surfaces as a spurious
+"table already exists" failure from the seed CTAS — a failed run, never data loss or divergence. The
+MERGE runs **in place** (no staging table / rename) and is **idempotent under retry**: re-running the
+same MERGE is a no-op on rows already merged, unlike a raw `INSERT`, which would double-insert.
 
 Append-only vs upsert is not a separate mode — it falls out of the candidate set. A classification
 source whose candidate set (via the CTE) is "items not yet classified" only ever inserts; a dedup
