@@ -1352,6 +1352,23 @@ export class Environment {
             );
             return;
          }
+         // Host-authoritative: when a manifestLocation is bound, the host's
+         // manifest is the sole source of storage serve bindings (see
+         // bindManifest + rebindStorageServeBindings' matching guard). This
+         // method is the LOCAL-store binding path (post-build auto-load and the
+         // post-delete rebind); on an orchestrated deployment the publisher
+         // still writes its own local materialization records, so without this
+         // guard a build's auto-load or a routine retire of a superseded record
+         // would clobber the host's bindings with a possibly-staler local
+         // generation. Standalone (no manifestLocation) is unaffected.
+         if (pkg.getPackageMetadata().manifestLocation) {
+            logger.debug(
+               "Skipping local-store storage serve binding: manifestLocation " +
+                  "is bound (host authoritative)",
+               { packageName },
+            );
+            return;
+         }
          pkg.bindStorageServeBindings(entries);
       });
    }
@@ -1391,8 +1408,14 @@ export class Environment {
          // Model.setServeBindings. The host is the authoritative producer here,
          // so this also supersedes the local-store rebind (see
          // rebindStorageServeBindings, which no-ops when manifestLocation is set).
+         // Bind whenever there ARE storage entries OR there WERE (bindStorage-
+         // ServeBindings with the now-empty set clears them): a manifest whose
+         // storage entries vanished must drop the old bindings, not leave them
+         // routing at a table the host no longer vouches for. Mirrors the
+         // hadPathC guard below.
          const hasStorage = Object.keys(storageEntries).length > 0;
-         if (hasStorage) {
+         const hadStorage = pkg.hasStorageServeBindings();
+         if (hasStorage || hadStorage) {
             pkg.bindStorageServeBindings(storageEntries);
          }
 

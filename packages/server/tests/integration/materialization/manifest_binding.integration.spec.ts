@@ -371,6 +371,42 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       { timeout: 60_000 },
    );
 
+   it(
+      "a rebind to a manifest whose storage entries vanished clears the old bindings",
+      async () => {
+         // Regression (MED-2): bindManifest must drop storage serve bindings when
+         // a NEW manifest (still a real URI, not a clear) no longer carries them —
+         // otherwise stale bindings keep routing at a table the host no longer
+         // vouches for.
+         await getPackage(true);
+         const sourceEntityId = await orderSummarySourceEntityId();
+         const withStorage = await writeStorageManifest(sourceEntityId);
+         const bound = (await (
+            await patchPackage({ manifestLocation: withStorage })
+         ).json()) as Record<string, unknown>;
+         expect(
+            (bound.storageServeBindings as unknown[] | undefined)?.length,
+         ).toBe(1);
+
+         // Rebind to a DIFFERENT manifest URI that carries no storage entries.
+         const noStorage = path.join(tmpDir, `no-storage-${Date.now()}.json`);
+         await fsp.writeFile(
+            noStorage,
+            JSON.stringify({ builtAt: new Date().toISOString(), entries: {} }),
+            "utf8",
+         );
+         const rebound = (await (
+            await patchPackage({ manifestLocation: noStorage })
+         ).json()) as Record<string, unknown>;
+         // Stale storage binding must be gone, not left routing.
+         expect(rebound.storageServeBindings ?? null).toBeNull();
+
+         await patchPackage({ manifestLocation: null });
+         await getPackage(true);
+      },
+      { timeout: 60_000 },
+   );
+
    it("degrades to serving live when the manifest is unreachable", async () => {
       const missing = path.join(tmpDir, "does-not-exist.json");
 

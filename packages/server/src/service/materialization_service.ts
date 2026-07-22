@@ -1254,6 +1254,13 @@ export class MaterializationService {
          // manifest-driven GC (which only drops names it recorded building) can
          // never see it. Best-effort drop of the just-built table so a refused
          // build doesn't leak an orphaned table.
+         //
+         // Note (in-place naming): the CTAS above already replaced any prior
+         // generation at this name, so a failed-gate rebuild has no earlier
+         // table to fall back to — the source reverts to serving live until a
+         // subsequent successful build. Rollback-safe regeneration (keep the
+         // prior generation until the new one is validated) requires the
+         // host-generational orchestrated path, not the auto-run server.
          try {
             await dropStorageTable({
                destinationName,
@@ -1510,6 +1517,14 @@ export class MaterializationService {
     * issues `DROP TABLE IF EXISTS` for the physical table and its (possible)
     * leftover staging table. Failures are logged and swallowed so a partial
     * cleanup never blocks deletion of the record.
+    *
+    * A physical name is dropped only when NO other remaining MANIFEST_FILE_READY
+    * run references it. Physical names are the source's `name=` verbatim (or a
+    * host-assigned name), so multiple generations of a source share one physical
+    * name — dropping a superseded record's table would otherwise take out the
+    * table the current generation still serves. The skip incidentally also
+    * protects the in-warehouse (path-C) case, where generations likewise share a
+    * name.
     */
    private async dropMaterializedTables(
       environmentName: string,
@@ -1528,6 +1543,29 @@ export class MaterializationService {
       const pkg = await environment.getPackage(packageName, false);
       const connectionCache = new Map<string, MalloyConnection>();
 
+      // Physical names still referenced by ANOTHER MANIFEST_FILE_READY run for
+      // this package (keyed destination-and-name), so a shared name is never
+      // dropped out from under a live generation. `m` is still in the repo at
+      // this point (deletion happens after this sweep), so exclude it by id.
+      const tableKey = (dest: string, table: string) => `${dest} ${table}`;
+      const stillReferenced = new Set<string>();
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      const others =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? [];
+      for (const other of others) {
+         if (other.id === m.id) continue;
+         if (other.status !== "MANIFEST_FILE_READY") continue;
+         for (const e of Object.values(other.manifest?.entries ?? {})) {
+            const dest = e.storageConnectionName ?? e.connectionName;
+            if (dest && e.physicalTableName) {
+               stillReferenced.add(tableKey(dest, e.physicalTableName));
+            }
+         }
+      }
+
       for (const entry of Object.values(entries)) {
          const connectionName = entry.connectionName;
          const physicalTableName = entry.physicalTableName;
@@ -1536,6 +1574,21 @@ export class MaterializationService {
                materializationId: m.id,
                sourceEntityId: entry.sourceEntityId,
             });
+            continue;
+         }
+
+         // Do not drop a table another live generation still serves (shared
+         // physical name — see the method doc).
+         const destForKey = entry.storageConnectionName ?? connectionName;
+         if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
+            logger.info(
+               "Skipping drop: table still referenced by another materialization",
+               {
+                  materializationId: m.id,
+                  physicalTableName,
+                  destination: destForKey,
+               },
+            );
             continue;
          }
 

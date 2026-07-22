@@ -473,11 +473,28 @@ function orderBindingsByJoinDeps(bindings: ServeBinding[]): ServeBinding[] {
  * re-emitting them is out of scope, and a query that uses one simply falls back
  * to live (safe).
  */
+/**
+ * Whether a compiled field carries a non-public access modifier
+ * (`private`/`internal`). Such a field is hidden by the live model's access
+ * control, so it must NEVER be re-emitted onto the serve shape: the served
+ * virtual source carries no access modifiers, so re-declaring a private/internal
+ * dimension, measure, join, or view would expose — over the stored table — a
+ * field the live path refuses. Skipping it makes any query that references it
+ * fall back to live, where the modifier is enforced (fail-safe). Defensive on
+ * the value: anything other than an absent/`public` modifier is treated as
+ * restricted, so a future modifier kind also fails closed.
+ */
+function isAccessRestricted(field: unknown): boolean {
+   const am = (field as { accessModifier?: unknown }).accessModifier;
+   return am != null && am !== "public";
+}
+
 export function extractRefinements(
    fields: readonly unknown[] | undefined,
 ): FieldRefinement[] {
    const out: FieldRefinement[] = [];
    for (const field of fields ?? []) {
+      if (isAccessRestricted(field)) continue; // never re-emit a hidden field
       const f = field as {
          name?: string;
          code?: unknown;
@@ -570,6 +587,7 @@ export function extractJoins(
 ): JoinRefinement[] {
    const out: JoinRefinement[] = [];
    for (const field of fields ?? []) {
+      if (isAccessRestricted(field)) continue; // never re-emit a hidden join
       const f = field as {
          as?: unknown;
          name?: unknown;
@@ -622,6 +640,7 @@ export function extractViews(
 ): ViewRefinement[] {
    const out: ViewRefinement[] = [];
    for (const field of fields ?? []) {
+      if (isAccessRestricted(field)) continue; // never re-emit a hidden view
       const f = field as {
          type?: unknown;
          name?: unknown;

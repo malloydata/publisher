@@ -389,6 +389,36 @@ describe("extractRefinements", () => {
       expect(extractRefinements(undefined)).toEqual([]);
       expect(extractRefinements([])).toEqual([]);
    });
+
+   it("skips access-restricted (private/internal) fields — never re-emit a hidden field", () => {
+      // The served virtual source carries no access modifiers, so re-declaring a
+      // private/internal field would expose over the stored table a field the
+      // live path refuses. It must be dropped (the query falls back to live,
+      // where the modifier is enforced). The compiler carries accessModifier on
+      // the field right beside `code`/`expressionType`.
+      const fields = [
+         {
+            name: "public_dim",
+            expressionType: "scalar",
+            code: "upper(region)",
+         },
+         {
+            name: "secret_flag",
+            expressionType: "scalar",
+            code: "amount * 2",
+            accessModifier: "private",
+         },
+         {
+            name: "internal_total",
+            expressionType: "aggregate",
+            code: "amount.sum()",
+            accessModifier: "internal",
+         },
+      ];
+      expect(extractRefinements(fields)).toEqual([
+         { kind: "dimension", name: "public_dim", code: "upper(region)" },
+      ]);
+   });
 });
 
 describe("buildServeShapeModelForBindings with refinements", () => {
@@ -574,6 +604,19 @@ describe("extractJoins", () => {
       expect(extractJoins(fields, ctx())).toEqual([]);
    });
 
+   it("skips an access-restricted (private/internal) join", () => {
+      const fields = [
+         {
+            as: "r",
+            join: "one",
+            sourceID: "regions@f",
+            location: loc(3),
+            accessModifier: "private",
+         },
+      ];
+      expect(extractJoins(fields, ctx())).toEqual([]);
+   });
+
    it("skips a join whose declaration text cannot be recovered", () => {
       const fields = [
          { as: "r", join: "one", sourceID: "regions@f", location: loc(3) },
@@ -631,6 +674,18 @@ describe("extractViews", () => {
             text: "by_region is { group_by: region; aggregate: c is count() }",
          },
       ]);
+   });
+
+   it("skips an access-restricted (private/internal) view", () => {
+      const fields = [
+         {
+            type: "turtle",
+            name: "secret_view",
+            location: { url: "file:///m", range: {} },
+            accessModifier: "internal",
+         },
+      ];
+      expect(extractViews(fields, liftText)).toEqual([]);
    });
 
    it("skips non-turtle fields and unliftable turtles", () => {
