@@ -263,6 +263,73 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
 };
 
 /**
+ * Settings for the optional embedding provider behind semantic
+ * `malloy_getContext` retrieval. See {@link getEmbeddingConfig}.
+ */
+export interface EmbeddingConfig {
+   /** Bearer token sent to the embedding endpoint. */
+   apiKey: string;
+   /** Embedding model name, e.g. "text-embedding-3-small". */
+   model: string;
+   /** Base URL of an OpenAI-compatible API (no trailing slash). */
+   baseUrl: string;
+   /**
+    * Optional `dimensions` request parameter. Omitted from requests when
+    * unset; the vector length then comes from the provider's response.
+    */
+   dimensions?: number;
+}
+
+const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
+
+/**
+ * Embedding-provider settings for semantic `malloy_getContext` retrieval,
+ * or `null` when the feature is disabled. The feature is enabled iff
+ * `EMBEDDING_API_KEY` is set and non-empty; without it the tool keeps its
+ * lexical (lunr) ranking unchanged.
+ *
+ * The key must be set explicitly. An ambient provider key (for example
+ * `OPENAI_API_KEY`) is deliberately NOT read: enabling this feature sends
+ * entity names, `#(doc)` text, and query strings to the configured
+ * endpoint, and that egress must never switch on just because a commonly
+ * exported variable happens to be present.
+ *
+ * Throws on malformed companion values (bad URL, bad integer) so a typo
+ * surfaces loudly in the log rather than silently degrading to lexical.
+ */
+export const getEmbeddingConfig = (): EmbeddingConfig | null => {
+   const apiKey = process.env.EMBEDDING_API_KEY?.trim();
+   if (!apiKey) {
+      return null;
+   }
+
+   const rawBase = process.env.EMBEDDING_API_BASE;
+   const baseUrl = (rawBase?.trim() || DEFAULT_EMBEDDING_API_BASE).replace(
+      /\/+$/,
+      "",
+   );
+   try {
+      new URL(baseUrl);
+   } catch {
+      throw new Error(
+         `Invalid value for EMBEDDING_API_BASE: expected a URL, got "${rawBase}"`,
+      );
+   }
+
+   const model = process.env.EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL;
+
+   const dimensions = parseIntEnv("EMBEDDING_DIMENSIONS");
+   if (dimensions !== undefined && dimensions <= 0) {
+      throw new Error(
+         `EMBEDDING_DIMENSIONS must be a positive integer (got ${dimensions})`,
+      );
+   }
+
+   return { apiKey, model, baseUrl, dimensions };
+};
+
+/**
  * Tunables for the standalone {@link MaterializationScheduler}. Sourced from
  * environment variables at startup; see {@link getMaterializationSchedulerConfig}.
  *

@@ -79,6 +79,10 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Fraction at which back-pressure clears. The gap between low and high gives hysteresis so the governor doesn't flap on every GC cycle. |
 | `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | How often the governor samples RSS. Minimum `100`. Smaller values catch spikes faster but burn a few extra microseconds per tick. |
 | `PUBLISHER_MEMORY_BACKPRESSURE` | — | `true` | When `false`, the governor still samples RSS and emits metrics but never flips the back-pressure flag. Useful for a monitoring-only rollout before enabling the 503 behaviour. |
+| `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic ranking for `malloy_getContext` question retrieval; sent as a bearer token to the embedding endpoint. Unset keeps lexical retrieval, unchanged. Entity names, `#(doc)` text, and query strings are sent to the endpoint when enabled; see "Semantic retrieval" in `docs/configuration.md`. |
+| `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name. |
+| `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API. |
+| `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter; omitted when unset. |
 
 ### Memory governor
 

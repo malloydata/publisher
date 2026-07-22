@@ -122,6 +122,8 @@ export async function initializeSchema(
     )
   `);
 
+   await createEntityEmbeddingsTable(db);
+
    // Create indexes for better query performance
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_packages_environment_id ON packages(environment_id)",
@@ -135,6 +137,38 @@ export async function initializeSchema(
    await db.run(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
    );
+}
+
+/**
+ * Vector cache for semantic `malloy_getContext` retrieval (see
+ * mcp/tools/embedding_index.ts). One row per discoverable model entity;
+ * the primary key mirrors the tool's in-memory dedup key. Rows are
+ * content-addressed (`content_hash` over the embedded text, compared
+ * together with `embedding_model` + `dims`), so staleness self-heals on
+ * the next index sync and wiping the table only ever costs re-embedding.
+ * `embedding` is a LIST column searched with list_cosine_similarity; at
+ * the entity counts a single Publisher serves, a brute-force scan is
+ * faster and simpler than a vector-index extension.
+ */
+export async function createEntityEmbeddingsTable(
+   db: DuckDBConnection,
+): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS entity_embeddings (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      entity_kind VARCHAR NOT NULL,
+      entity_source VARCHAR NOT NULL,
+      entity_name VARCHAR NOT NULL,
+      model_path VARCHAR NOT NULL,
+      content_hash VARCHAR NOT NULL,
+      embedding_model VARCHAR NOT NULL,
+      dims INTEGER NOT NULL,
+      embedding FLOAT[] NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, entity_kind, entity_source, entity_name)
+    )
+  `);
 }
 
 // TODO: Remove this during projects cleanup
@@ -177,6 +211,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "connections",
       "environments",
       "themes",
+      "entity_embeddings",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));
