@@ -35,6 +35,7 @@ import {
 import { logger, loggerMiddleware } from "./logger";
 
 import {
+   getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
 } from "./config";
@@ -199,6 +200,12 @@ const modelController = new ModelController(environmentStore);
 // that Environment.getPackage / addPackage consult before allocating
 // any new package — the server responds with HTTP 503 instead of
 // OOM-killing the pod.
+// Validate the DuckDB extension-fetch policy at boot so an unrecognised value
+// (e.g. a k8s-manifest typo) fails the boot loudly here, rather than surfacing
+// on the first query that resolves a DuckDB connection — which matters most for
+// an operator relying on `local-only` for a no-network guarantee. Logging the
+// resolved policy also records the posture the server booted with.
+logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
 const memoryGovernorConfig = getMemoryGovernorConfig();
 const memoryGovernor = memoryGovernorConfig
    ? new PackageMemoryGovernor(memoryGovernorConfig)

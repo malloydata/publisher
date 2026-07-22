@@ -263,6 +263,18 @@ export class MaterializationRepository {
       await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
    }
 
+   // Cascade deletes remove the publisher's records only; they intentionally
+   // issue no DDL. Dropping the physical tables is opt-in
+   // (deleteMaterialization({ dropTables })) and otherwise the caller's
+   // responsibility, so a materialized table outlives its record when an
+   // environment or package is deleted. Adding a DROP here would also risk
+   // firing against a connection already torn down by the delete path.
+   //
+   // Standalone caveat (#901): with no control plane owning physical GC,
+   // nothing drops those tables today, so they accumulate in the warehouse.
+   // That is an open follow-up, not a settled contract — its best-effort
+   // drop-before-teardown belongs ABOVE these methods, so it completes this
+   // design rather than moving DDL into the low-level record deletes.
    async deleteByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run(
          "DELETE FROM materializations WHERE environment_id = ?",

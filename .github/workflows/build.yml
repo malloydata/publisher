@@ -234,6 +234,19 @@ jobs:
           submodules: "true"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      # Version-contract gate that pairs with the offline LOAD smoke test below:
+      # that step proves the DuckLake extension is baked and loads offline; this
+      # one proves the catalog-format RANGE that engine supports (1.0 <= format
+      # <= its max) is still covered by the migration matrix. Derived purely from
+      # the pinned @duckdb/node-api version — it fails the build the moment a
+      # Malloy bump moves the engine to a minor line whose max DuckLake catalog
+      # format has not been verified and recorded (never an enumerated list).
+      - name: Check DuckLake catalog-format range contract
+        run: bun run validate-ducklake-catalog-range
       # Derive the DuckDB CLI version from the engine Malloy resolves
       # (@duckdb/node-api in bun.lock) so the image's baked CLI/extensions
       # always match the runtime, regardless of the Dockerfile ARG default.
