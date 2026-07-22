@@ -685,6 +685,22 @@ export class Package {
    }
 
    /**
+    * Whether the package currently has a bound (non-empty) same-connection
+    * `tableName` manifest — i.e. a prior bind substituted path-C physical tables
+    * at compile time. Used by the manifest-rebind tier split to decide whether a
+    * pure-storage refresh can skip the {@link reloadAllModels} recompile: it can
+    * only skip when there is nothing to substitute now AND nothing was
+    * substituted before (otherwise dropping the last path-C entry must recompile
+    * to revert it).
+    */
+   public hasBoundTableNameManifest(): boolean {
+      return (
+         this.buildManifestEntries !== undefined &&
+         Object.keys(this.buildManifestEntries).length > 0
+      );
+   }
+
+   /**
     * The freshness-filtered build manifest for the serve path, evaluated at
     * `now`. Persistence.md §9.3 Phase B: a query on a `#@ persist` source may
     * use its materialized table only while the table is within its declared
