@@ -205,6 +205,12 @@ export async function deletePackageEmbeddings(
 ): Promise<void> {
    const meta = metaFor(environmentName, packageName);
    await meta.mutex.runExclusive(async () => {
+      // Same orphan guard as every other mutexed writer: a second delete
+      // queued on the old meta must not run again (its map removal would
+      // hit a re-minted meta's entry and orphan a live sync).
+      if (syncMeta.get(metaKey(environmentName, packageName)) !== meta) {
+         return;
+      }
       await db.run(
          `DELETE FROM entity_embeddings
           WHERE environment_name = ? AND package_name = ?`,
