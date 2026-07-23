@@ -135,7 +135,7 @@ describe("EmbeddingProvider", () => {
          CONFIG,
          stubFetch(
             [],
-            () => new Response("boom ".repeat(100), { status: 401 }),
+            () => new Response("boom ".repeat(100), { status: 429 }),
          ),
       );
       const err = await provider.embedBatch(["a"], 1000).then(
@@ -143,8 +143,51 @@ describe("EmbeddingProvider", () => {
          (e: Error) => e,
       );
       expect(err).toBeDefined();
-      expect(err!.message).toContain("(401)");
+      expect(err!.message).toContain("(429)");
       expect(err!.message.length).toBeLessThan(400);
+      expect(err!.message).not.toContain("test-key");
+   });
+
+   it("drops auth-failure bodies entirely (they can reflect the key)", async () => {
+      const provider = new EmbeddingProvider(
+         CONFIG,
+         stubFetch(
+            [],
+            () =>
+               new Response("Incorrect API key provided: test-key", {
+                  status: 401,
+               }),
+         ),
+      );
+      const err = await provider.embedBatch(["a"], 1000).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err!.message).toContain("(401)");
+      expect(err!.message).toContain("authentication failed");
+      expect(err!.message).not.toContain("test-key");
+   });
+
+   it("scrubs literal key occurrences from non-auth error bodies", async () => {
+      const provider = new EmbeddingProvider(
+         CONFIG,
+         stubFetch(
+            [],
+            () =>
+               new Response(
+                  "proxy error while forwarding token test-key upstream",
+                  {
+                     status: 502,
+                  },
+               ),
+         ),
+      );
+      const err = await provider.embedBatch(["a"], 1000).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err!.message).toContain("(502)");
+      expect(err!.message).toContain("[REDACTED]");
       expect(err!.message).not.toContain("test-key");
    });
 

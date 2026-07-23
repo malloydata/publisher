@@ -143,6 +143,16 @@ describe("humanizeName / embeddingText", () => {
       );
       expect(embeddingText(entity("total_sales", "s"))).toBe("total sales");
    });
+
+   it("never produces empty embed text for punctuation-only names", () => {
+      // `_` is a legal Malloy identifier; an empty input would 400 the
+      // whole package's embedding batch at the provider.
+      expect(humanizeName("_")).toBe("");
+      expect(embeddingText(entity("_", "s"))).toBe("_");
+      expect(embeddingText(entity("_", "s", "odd but documented"))).toBe(
+         "_: odd but documented",
+      );
+   });
 });
 
 describe("trySemanticSearch", () => {
