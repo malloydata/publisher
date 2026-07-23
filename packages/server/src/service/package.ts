@@ -667,6 +667,11 @@ export class Package {
          ...this.renderTagWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
+         // A within-package persist-target collision spans two or more sources, so
+         // there is no single target field; the message names them. Surfaced here
+         // (alongside the load-path log) so an operator can see it on the status
+         // API like the other persist warnings — see persistenceCollisionWarnings.
+         ...this.persistenceCollisionWarnings().map((message) => ({ message })),
       ];
       if (allWarnings.length > 0) {
          metadata.warnings = allWarnings;
