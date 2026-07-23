@@ -300,10 +300,30 @@ source: b is duckdb.sql("SELECT 2 as y")
    );
 
    it(
+      "surfaces the collision on the package status warnings (not just the log)",
+      async () => {
+         const pkg = await loadPackage(COLLIDING_MODEL);
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         const collision = warnings.find((w) =>
+            w.message?.includes("resolve to the same materialized table"),
+         );
+         expect(collision).toBeDefined();
+         expect(collision!.message).toContain('"dup"');
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "does not warn when the same name= targets different destinations",
       async () => {
          const pkg = await loadPackage(SAME_NAME_DIFF_DEST_MODEL);
          expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(
+            warnings.some((w) =>
+               w.message?.includes("resolve to the same materialized table"),
+            ),
+         ).toBe(false);
       },
       { timeout: 30000 },
    );
