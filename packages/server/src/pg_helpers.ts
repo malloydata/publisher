@@ -3,11 +3,50 @@
 // neither layer takes a dependency on the other — see CLAUDE.md's "Two
 // parallel DuckLake/PG attach paths" note for why this matters.
 
-// Redact libpq `password=...` values from a string before it goes into a
-// log line or HTTP response body. Handles bare and quoted values.
+// Redact Postgres credentials from a string before it goes into a log line
+// or HTTP response body. Covers both libpq forms: keyword `password=...`
+// (bare and quoted values) and URI userinfo (`scheme://user:pass@host`).
+// The input is arbitrary error prose that may carry zero or more connection
+// strings: attach failures echo user-supplied connection strings verbatim
+// (DuckDB's postgres extension embeds the full DSN), so URL-parsing is not
+// an option and substitution has to be shape-based.
 //
-// Scope: keyword-form `password=` only. Does not touch URL-style
-// `user:pw@host` credentials, AWS keys, GCS secrets, etc.
+// Three passes, and the order is load-bearing (URI passes first: the
+// keyword pass's \S+ would otherwise eat a URI's `@host/db` tail whenever
+// a password contains the text `password=`):
+//   1. Any-scheme URI userinfo. The password class ([^/\s]+) is greedy to
+//      the LAST `@` before a `/`, matching how WHATWG URL and libpq split
+//      userinfo, so a literal `@` in a password redacts fully; bounding at
+//      `/` keeps path-@ URLs (https://h:443/@scope/pkg) and comma-joined
+//      URI lists from collapsing into one match. The username class allows
+//      empty (`postgres://:pw@h`) and a literal `@` (Azure's `user@servername`
+//      form, `postgres://myadmin@srv:pw@host`), stopping at the first `:`;
+//      it excludes `?#` so a passwordless URI with `:...@` in its query is
+//      not mangled by this pass.
+//   2. A postgres-scheme-only mop-up with first-@ semantics ([^@\s]+),
+//      for the one shape pass 1 fails open on: a raw `/` in the password
+//      (invalid per RFC 3986, but connectionStrings flow through verbatim).
+//      Scheme-restricted so it can never touch an https URL.
+//   3. The original keyword-form pass, unchanged.
+//
+// The scheme has no leading `\b`/anchor on purpose: a scheme abutting a
+// word char (`x_postgres://u:pw@h`) should still redact. Over-matching a
+// credential-shaped `scheme://user:pass@` token is the safe direction, and
+// usernames stay visible (they aid debugging, and the keyword pass keeps
+// `user=` too). Some non-secret shapes are over-redacted as a result, which
+// is always preferred to a leak: `?password=a&sslmode=b` loses the
+// `&sslmode=b` tail, and a passwordless `@`-username URI with a raw `@`
+// later in its query/fragment (`postgres://u@srv:5432/db?x=a@b`) has its
+// tail replaced by `***`. Residual gap (accepted): a raw (unencoded)
+// whitespace inside a password ends the match early; a valid URI/libpq
+// string encodes it, and dropping the `\s` bound would let a match run
+// across surrounding message text.
 export function redactPgSecrets(s: string): string {
-   return s.replace(/password=('[^']*'|"[^"]*"|\S+)/gi, "password=***");
+   return s
+      .replace(/([a-z][a-z0-9+.-]*:\/\/[^:/?#\s]*):([^/\s]+)@/gi, "$1:***@")
+      .replace(
+         /((?:postgres|postgresql):\/\/[^:/?#\s]*):([^@\s]+)@/gi,
+         "$1:***@",
+      )
+      .replace(/password=('[^']*'|"[^"]*"|\S+)/gi, "password=***");
 }
