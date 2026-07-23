@@ -1559,12 +1559,20 @@ export class Environment {
    }
 
    /**
-    * Packages registered in this environment, loaded or not. Cheap on
-    * purpose: counts statuses without triggering the load that
-    * listPackages() performs.
+    * Packages this environment is actually serving: registered statuses minus
+    * any recorded as failed or un-mounted. Disjoint from getFailedPackages()
+    * by construction, so the readiness line's packages= and load_errors=
+    * cannot double-count a package that is seeded SERVING at boot and only
+    * pruned later by a side-effect load (which a transient DB or memory-
+    * pressure error can skip). Cheap: no package load is triggered.
     */
-   public getRegisteredPackageCount(): number {
-      return this.packageStatuses.size;
+   public getServingPackageCount(): number {
+      const failed = this.getFailedPackages();
+      let serving = 0;
+      for (const name of this.packageStatuses.keys()) {
+         if (!failed.has(name)) serving += 1;
+      }
+      return serving;
    }
 
    /**

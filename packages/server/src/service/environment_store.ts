@@ -664,7 +664,7 @@ export class EnvironmentStore {
       let packages = 0;
       let loadErrors = this.failedEnvironments.size;
       for (const environment of this.environments.values()) {
-         packages += environment.getRegisteredPackageCount();
+         packages += environment.getServingPackageCount();
          loadErrors += environment.getFailedPackages().size;
       }
       try {

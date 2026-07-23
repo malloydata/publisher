@@ -15,7 +15,7 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError } from "../errors";
-import { Environment } from "./environment";
+import { Environment, PackageStatus } from "./environment";
 import {
    CloneProgressReporter,
    cloneProgressLabel,
@@ -1614,6 +1614,41 @@ describe("resolvePackageLocation", () => {
    });
 });
 
+describe("Environment.getServingPackageCount", () => {
+   const envRoot = path.join(TEMP_DIR_PATH, "serving-count-env");
+
+   beforeEach(() => {
+      rmSync(envRoot, { recursive: true, force: true });
+      mkdirSync(envRoot, { recursive: true });
+   });
+
+   afterEach(() => {
+      rmSync(envRoot, { recursive: true, force: true });
+   });
+
+   it("excludes a package that is registered SERVING but recorded as failed", async () => {
+      // A mount-failed package is seeded SERVING at boot and only pruned by a
+      // later side-effect load; if that prune is skipped (a transient DB or
+      // memory-pressure error), packages= must still not count it, and it
+      // must not overlap load_errors=. The serving count is registered-minus-
+      // failed, so it holds regardless of whether the prune ran.
+      //
+      // Two good and one bad, not one-and-one: this catches both size-only
+      // (would say 3) and a full inversion (would say 1), so the count really
+      // is "registered minus failed".
+      const env = await Environment.create("e", envRoot, []);
+      env.setPackageStatus("good-1", PackageStatus.SERVING);
+      env.setPackageStatus("good-2", PackageStatus.SERVING);
+      env.setPackageStatus("bad", PackageStatus.SERVING);
+      env.setPackageMountError("bad", "location does not exist");
+
+      expect(env.getServingPackageCount()).toBe(2);
+      // Disjoint from the failure set, so packages= + load_errors= never
+      // double-counts "bad".
+      expect(env.getFailedPackages().has("bad")).toBe(true);
+   });
+});
+
 describe("GIT_CLONE_OPTIONS", () => {
    it("clones shallow and single-branch", () => {
       // The load-bearing content: packages serve the default branch's working
@@ -1786,6 +1821,19 @@ describe("CloneProgressReporter", () => {
       ]);
    });
 
+   it("ignores a progress event that arrives after done()", () => {
+      // simple-git can deliver a trailing event after the completion
+      // callback ran done(); it must not re-write the row the finishing
+      // newline scrolled past, nor re-claim TTY ownership.
+      const { writes, out } = fakeOut(true);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("receiving", 50));
+      reporter.done();
+      const writesAfterDone = writes.length;
+      reporter.onProgress(event("receiving", 90));
+      expect(writes.length).toBe(writesAfterDone);
+   });
+
    it("only one reporter owns a TTY's in-place line at a time", () => {
       // Environments load concurrently at boot; a second clone must not
       // rewrite the first one's line. It falls back to milestone lines.
@@ -1846,6 +1894,16 @@ describe("formatReadinessLine", () => {
          formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
       ).toBe(
          "PUBLISHER_READY url=http://[::1]:4000 mcp=http://[::1]:4040 " +
+            "environments=1 packages=1 load_errors=0",
+      );
+   });
+
+   it("displays the :: wildcard bind as localhost", () => {
+      process.env.PUBLISHER_HOST = "::";
+      expect(
+         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
             "environments=1 packages=1 load_errors=0",
       );
    });

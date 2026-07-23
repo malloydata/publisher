@@ -49,6 +49,7 @@ let lastFactoryOpts: {
    }) => void;
 } | null = null;
 let storageInitFails = false;
+let storageInitMessage = "storage init failed (test)";
 let cloneFailure: Error | null = null;
 
 mock.module("simple-git", () => ({
@@ -67,13 +68,18 @@ mock.module("simple-git", () => ({
                return;
             }
             // Materialize the fixture the extraction step expects: the repo
-            // contains one package subdirectory.
-            const pkgDir = path.join(dir, PKG_NAME);
-            mkdirSync(pkgDir, { recursive: true });
-            writeFileSync(
-               path.join(pkgDir, "publisher.json"),
-               JSON.stringify({ name: PKG_NAME }),
-            );
+            // contains a subdirectory per package (pkg-a plus a sibling used
+            // by the shared-clone counter test). Extraction only copies the
+            // named subdir, so an unused one is harmless to single-package
+            // tests.
+            for (const name of [PKG_NAME, "pkg-b"]) {
+               const pkgDir = path.join(dir, name);
+               mkdirSync(pkgDir, { recursive: true });
+               writeFileSync(
+                  path.join(pkgDir, "publisher.json"),
+                  JSON.stringify({ name }),
+               );
+            }
             // Drive the progress handler the way the real plugin would.
             lastFactoryOpts?.progress?.({
                method: "clone",
@@ -92,7 +98,7 @@ mock.module("../storage/StorageManager", () => ({
    StorageManager: class MockStorageManager {
       async initialize(): Promise<void> {
          if (storageInitFails) {
-            throw new Error("storage init failed (test)");
+            throw new Error(storageInitMessage);
          }
       }
       getRepository() {
@@ -131,6 +137,7 @@ describe("git clone wiring", () => {
       recordedClones = [];
       lastFactoryOpts = null;
       storageInitFails = false;
+      storageInitMessage = "storage init failed (test)";
       cloneFailure = null;
       stderrWrites = [];
       stderrSpy = spyOn(process.stderr, "write").mockImplementation(
@@ -214,6 +221,48 @@ describe("git clone wiring", () => {
       expect(readyLines[0]).toContain("load_errors=0");
    });
 
+   it("the mounted-of-total counter accumulates across packages in a shared clone", async () => {
+      // Two packages share one repo clone; the counter is one variable across
+      // every mount branch, so a single (1/2)->(2/2) run pins that it advances
+      // rather than reporting a constant.
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: ENV_NAME,
+                  packages: [
+                     {
+                        name: PKG_NAME,
+                        location: `https://github.com/example/repo/tree/main/${PKG_NAME}`,
+                     },
+                     {
+                        name: "pkg-b",
+                        location: `https://github.com/example/repo/tree/main/pkg-b`,
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const infoSpy = spyOn(logger, "info");
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+      const infoMessages = infoSpy.mock.calls.map((c) => String(c[0]));
+      infoSpy.mockRestore();
+
+      // One clone serves both, and the counter runs 1/2 then 2/2.
+      expect(recordedClones).toHaveLength(1);
+      const counters = infoMessages
+         .filter((m) => m.startsWith("Extracted package"))
+         .map((m) => m.slice(m.lastIndexOf("(")));
+      expect(counters).toEqual(["(1/2)", "(2/2)"]);
+      expect(stderrWrites.join("")).toContain("packages=2");
+   });
+
    it("direct download extracts the subdirectory and labels by repo alone", async () => {
       // The controller add-package path: downloadGitHubDirectory is called
       // with the raw /tree/... location and no progress context.
@@ -276,5 +325,26 @@ describe("git clone wiring", () => {
          .filter((line) => line.startsWith("PUBLISHER_INIT_FAILED"));
       expect(failLines).toHaveLength(1);
       expect(failLines[0]).toContain("storage init failed (test)");
+   });
+
+   it("redacts a pg password in the failure token", async () => {
+      // The init error can carry a connection string; the INIT_FAILED token
+      // must redact the keyword-form password before it reaches stderr.
+      // (The adjacent winston init-error log shares the raw-message gap with
+      // every other extractErrorDataFromError site; redacting those centrally
+      // is a separate security follow-up, tracked in npx-fast-first-boot.md.)
+      storageInitFails = true;
+      storageInitMessage =
+         "attach failed: host=db port=5432 password=supersecret dbname=x";
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      const failLine = stderrWrites
+         .join("")
+         .split("\n")
+         .find((line) => line.startsWith("PUBLISHER_INIT_FAILED"));
+      expect(failLine).toBeDefined();
+      expect(failLine).toContain("password=***");
+      expect(failLine).not.toContain("supersecret");
    });
 });
