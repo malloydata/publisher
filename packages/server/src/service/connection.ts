@@ -30,6 +30,8 @@ import {
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
+import os from "os";
+import path from "path";
 import { components } from "../api";
 import { getExtensionFetchPolicy } from "../config";
 import {
@@ -224,7 +226,12 @@ async function isDatabaseAttached(
          ),
       );
    } catch (error) {
-      logger.warn(`Failed to check existing databases:`, error);
+      // Redact in case the error text carries a connection string.
+      logger.warn("Failed to check existing databases", {
+         error: redactPgSecrets(
+            error instanceof Error ? error.message : String(error),
+         ),
+      });
       return false;
    }
 }
@@ -1170,7 +1177,12 @@ async function attachDatabasesToDuckDB(
             handleAlreadyAttachedError(attachError, attachedDb.name || "");
          }
       } catch (error) {
-         logger.error(`Failed to attach database ${attachedDb.name}:`, error);
+         // Attach errors echo the connection string (DuckDB embeds the DSN).
+         logger.error(`Failed to attach database ${attachedDb.name}`, {
+            error: redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         });
          throw new Error(
             `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
          );
@@ -2023,7 +2035,10 @@ async function testDuckDBConnection(
          }
       } catch (error) {
          const errorMessage = `Attached database '${attachedDb.name}' (${attachedDb.type}) test failed: ${(error as Error).message}`;
-         logger.error(errorMessage);
+         // A probe that fails after the attach half-succeeded can carry the
+         // DSN, so redact this log line too (the rethrow below is redacted at
+         // the testConnectionConfig boundary).
+         logger.error(redactPgSecrets(errorMessage));
          failedAttachments.push(errorMessage);
       }
    }
@@ -2039,13 +2054,38 @@ export async function testConnectionConfig(
    connectionConfig: ApiConnection,
 ): Promise<ApiConnectionStatus> {
    let environmentConfig: EnvironmentMalloyConfig | null = null;
+   let testRoot: string | null = null;
    try {
       // Validate that connection name is provided
       if (!connectionConfig.name) {
          throw new Error("Connection name is required");
       }
 
-      environmentConfig = buildEnvironmentMalloyConfig([connectionConfig]);
+      // Only duckdb/ducklake derive a `<name>.duckdb` filename from the name
+      // (other types never touch the filesystem), so scope the path-safety
+      // check to them. Defense in depth: the throwaway directory below already
+      // contains any write, but this keeps a traversing name from escaping it.
+      if (
+         connectionConfig.type === "duckdb" ||
+         connectionConfig.type === "ducklake"
+      ) {
+         assertSafePackageName(connectionConfig.name);
+      }
+
+      // Root the throwaway config in a fresh temp directory. DuckDB/DuckLake
+      // connections need a non-empty workingDirectory (empty fails validation
+      // before the test runs) and open a `<name>.duckdb` there; keeping that in
+      // its own directory, rather than cwd, means the test never reads, writes,
+      // or deletes an operator's own database, and two concurrent tests of one
+      // name can't clobber each other. The whole directory is removed in the
+      // finally.
+      testRoot = await fs.mkdtemp(
+         path.join(os.tmpdir(), "publisher-conn-test-"),
+      );
+      environmentConfig = buildEnvironmentMalloyConfig(
+         [connectionConfig],
+         testRoot,
+      );
       const connection =
          await environmentConfig.malloyConfig.connections.lookupConnection(
             connectionConfig.name,
@@ -2096,12 +2136,24 @@ export async function testConnectionConfig(
       if (error instanceof AxiosError) {
          logAxiosError(error);
       } else {
-         logger.error(error);
+         // Same redaction as the response, but keep the stack for diagnostics
+         // (the raw message/stack can carry the DSN).
+         logger.error("Connection test failed", {
+            error: redactPgSecrets(
+               error instanceof Error
+                  ? (error.stack ?? error.message)
+                  : String(error),
+            ),
+         });
       }
 
       return {
          status: "failed",
-         errorMessage: (error as Error).message,
+         // Attach failures echo the connection string verbatim (DuckDB embeds
+         // the full DSN), and this message goes into the REST response body.
+         errorMessage: redactPgSecrets(
+            error instanceof Error ? error.message : String(error),
+         ),
       };
    } finally {
       if (environmentConfig) {
@@ -2114,11 +2166,20 @@ export async function testConnectionConfig(
          }
       }
 
-      if (connectionConfig.type === "ducklake" && connectionConfig.name) {
-         await deleteDuckLakeConnectionFile(
-            connectionConfig.name,
-            process.cwd(),
-         );
+      // Remove the whole throwaway directory (and any <name>.duckdb /
+      // <name>_ducklake.duckdb the test wrote inside it). Wrapped so a cleanup
+      // failure can never override the response.
+      if (testRoot) {
+         try {
+            await fs.rm(testRoot, { recursive: true, force: true });
+         } catch (cleanupError) {
+            logger.warn("Error cleaning up connection test directory", {
+               error:
+                  cleanupError instanceof Error
+                     ? cleanupError.message
+                     : String(cleanupError),
+            });
+         }
       }
    }
 }

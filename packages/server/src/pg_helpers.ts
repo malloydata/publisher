@@ -23,10 +23,15 @@
 //      form, `postgres://myadmin@srv:pw@host`), stopping at the first `:`;
 //      it excludes `?#` so a passwordless URI with `:...@` in its query is
 //      not mangled by this pass.
-//   2. A postgres-scheme-only mop-up with first-@ semantics ([^@\s]+),
-//      for the one shape pass 1 fails open on: a raw `/` in the password
-//      (invalid per RFC 3986, but connectionStrings flow through verbatim).
-//      Scheme-restricted so it can never touch an https URL.
+//   2. A postgres-scheme-only mop-up with first-@ semantics ([^@\s]+), for
+//      a shape pass 1 fails open on: a raw `/` in the password (invalid
+//      per RFC 3986, but connectionStrings flow through verbatim). It only
+//      recovers the password when no raw `@` precedes the `/`: with both
+//      (`postgres://u:p@a/b@h/d`), pass 1 redacts through the first `@`,
+//      and its inserted `***@` satisfies this pass's first-`@` before it
+//      ever reaches the raw `/`, so the password tail after the raw `@`
+//      stays visible (a residual gap, see below). Scheme-restricted so it
+//      can never touch an https URL.
 //   3. The original keyword-form pass, unchanged.
 //
 // The scheme has no leading `\b`/anchor on purpose: a scheme abutting a
@@ -37,10 +42,12 @@
 // is always preferred to a leak: `?password=a&sslmode=b` loses the
 // `&sslmode=b` tail, and a passwordless `@`-username URI with a raw `@`
 // later in its query/fragment (`postgres://u@srv:5432/db?x=a@b`) has its
-// tail replaced by `***`. Residual gap (accepted): a raw (unencoded)
-// whitespace inside a password ends the match early; a valid URI/libpq
-// string encodes it, and dropping the `\s` bound would let a match run
-// across surrounding message text.
+// tail replaced by `***`. Residual gaps (accepted): the pass-2 shape above
+// (a raw `@` and then a raw `/` in one password, doubly invalid) keeps its
+// post-`@` tail; and a raw (unencoded) whitespace inside a password ends
+// the match early. A valid URI/libpq string encodes whitespace, and
+// dropping the `\s` bound would let a match run across surrounding
+// message text.
 export function redactPgSecrets(s: string): string {
    return s
       .replace(/([a-z][a-z0-9+.-]*:\/\/[^:/?#\s]*):([^/\s]+)@/gi, "$1:***@")
