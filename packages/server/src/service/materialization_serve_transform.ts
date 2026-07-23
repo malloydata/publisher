@@ -116,6 +116,15 @@ export interface ServeBinding {
    refinements?: SourceRefinement[];
    /** Optional freshness anchor (data-as-of instant); carried through verbatim. */
    freshAsOf?: string;
+   /**
+    * Optional freshness window + fallback, carried through verbatim so the serve
+    * path can gate this binding per query the SAME way the in-warehouse (path-C)
+    * serve does — a stale binding whose fallback is `live`/`fail` is dropped from
+    * the serve shape and served live; `stale_ok` (or un-gated) keeps serving the
+    * materialized table. Placement (`storage=`) is orthogonal to freshness.
+    */
+   freshnessWindowSeconds?: number;
+   freshnessFallback?: "live" | "stale_ok" | "fail";
 }
 
 /**
@@ -162,6 +171,8 @@ export function deriveServeBindings(
          tablePath: `${entry.storageConnectionName}.${entry.physicalTableName}`,
          schema,
          freshAsOf: entry.dataAsOf,
+         freshnessWindowSeconds: entry.freshnessWindowSeconds,
+         freshnessFallback: entry.freshnessFallback,
       });
    }
    return bindings;
