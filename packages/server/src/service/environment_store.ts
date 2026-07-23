@@ -301,6 +301,98 @@ export class CloneProgressReporter {
    }
 }
 
+/**
+ * The last `/segment` of a run of non-empty path segments at the start of
+ * `afterRepo`, or undefined. Reproduces the capture of the old
+ * `(\/[^/]+)*` group, which retained only its final iteration and stopped at
+ * the first empty segment.
+ */
+function lastGitHubPathSegment(afterRepo: string): string | undefined {
+   if (!afterRepo.startsWith("/")) return undefined;
+   const run: string[] = [];
+   for (const seg of afterRepo.slice(1).split("/")) {
+      if (seg === "") break;
+      run.push(seg);
+   }
+   return run.length > 0 ? `/${run[run.length - 1]}` : undefined;
+}
+
+/**
+ * Parse a GitHub package location into owner, repo, and (optionally) the
+ * subdirectory path segment.
+ *
+ * Uses a repetition-free regex for owner/repo plus plain string ops for the
+ * path, NOT a single `(\/[^/]+)*` regex: those shapes were flagged as
+ * polynomial-backtracking (ReDoS) on adversarial input, and the location is
+ * user/config supplied. Behavior is preserved exactly, including
+ * `packagePath` being only the LAST path segment after the repo (a quirk the
+ * callers rely on); environment_store.spec.ts fuzzes the old regexes as an
+ * oracle to prove equivalence. Exported for that test.
+ */
+export function parseGitHubUrl(
+   githubUrl: string,
+): { owner: string; repoName: string; packagePath?: string } | null {
+   // HTTPS: https://github.com/owner/repo/tree/branch/subdir. The host may
+   // appear anywhere (the old regex was unanchored); the owner/repo pattern
+   // has no repetition group, so it cannot backtrack polynomially.
+   const httpsMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(githubUrl);
+   if (httpsMatch) {
+      const afterRepo = githubUrl.slice(
+         httpsMatch.index + httpsMatch[0].length,
+      );
+      return {
+         owner: httpsMatch[1],
+         repoName: httpsMatch[2],
+         packagePath: lastGitHubPathSegment(afterRepo),
+      };
+   }
+
+   // SSH: git@github.com:owner/repo(.git)?(/subdir)*. The old regex was
+   // $-anchored, so the whole tail after the repo had to be a run of
+   // non-empty `/segment`s; a trailing slash or empty segment matched nothing
+   // and failed the parse.
+   // `git@github.com:` may appear anywhere (the old regex was not anchored at
+   // the start), though in practice isGitHubURL only routes locations that
+   // begin with it here.
+   const SSH_PREFIX = "git@github.com:";
+   const sshAt = githubUrl.indexOf(SSH_PREFIX);
+   if (sshAt !== -1) {
+      const rest = githubUrl.slice(sshAt + SSH_PREFIX.length);
+      const firstSlash = rest.indexOf("/");
+      if (firstSlash > 0) {
+         const owner = rest.slice(0, firstSlash);
+         const afterOwner = rest.slice(firstSlash + 1);
+         const secondSlash = afterOwner.indexOf("/");
+         const repoSeg =
+            secondSlash === -1 ? afterOwner : afterOwner.slice(0, secondSlash);
+         const afterRepo =
+            secondSlash === -1 ? "" : afterOwner.slice(secondSlash);
+         // repo was `[^/\s]+` (no whitespace); anything else falls through to
+         // "not a GitHub URL", as the old regex did.
+         if (repoSeg.length > 0 && !/\s/.test(repoSeg)) {
+            const repoName =
+               repoSeg.length > 4 && repoSeg.endsWith(".git")
+                  ? repoSeg.slice(0, -4)
+                  : repoSeg;
+            if (afterRepo === "") {
+               return { owner, repoName };
+            }
+            const segments = afterRepo.slice(1).split("/");
+            // $-anchored: every trailing segment had to be non-empty.
+            if (!segments.includes("")) {
+               return {
+                  owner,
+                  repoName,
+                  packagePath: `/${segments[segments.length - 1]}`,
+               };
+            }
+         }
+      }
+   }
+
+   return null;
+}
+
 /** `0.0.0.0`/`::` bind every interface; a script needs a host it can dial. */
 function displayHost(host: string): string {
    if (host === "0.0.0.0" || host === "::") {
@@ -1575,7 +1667,7 @@ export class EnvironmentStore {
          // For GitHub URLs, group by base repository URL to optimize downloads
          let locationKey = _package.location;
          if (this.isGitHubURL(_package.location)) {
-            const githubInfo = this.parseGitHubUrl(_package.location);
+            const githubInfo = parseGitHubUrl(_package.location);
             if (githubInfo) {
                // Always use HTTPS format for grouping to ensure consistency
                locationKey = `https://github.com/${githubInfo.owner}/${githubInfo.repoName}`;
@@ -1650,7 +1742,7 @@ export class EnvironmentStore {
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
-                  const githubInfo = this.parseGitHubUrl(_package.location);
+                  const githubInfo = parseGitHubUrl(_package.location);
                   if (githubInfo && githubInfo.packagePath) {
                      // Extract subdirectory from the original GitHub URL
                      // Handle both /tree/main/subdir and /tree/branch/subdir cases
@@ -2114,30 +2206,6 @@ export class EnvironmentStore {
       logger.info(`Downloaded S3 directory ${s3Path} to ${absoluteDirPath}`);
    }
 
-   private parseGitHubUrl(
-      githubUrl: string,
-   ): { owner: string; repoName: string; packagePath?: string } | null {
-      // Handle HTTPS format: https://github.com/owner/repo/tree/branch/subdir
-      const httpsRegex =
-         /github\.com\/(?<owner>[^/]+)\/(?<repoName>[^/]+)(?<packagePath>\/[^/]+)*/;
-      const httpsMatch = githubUrl.match(httpsRegex);
-      if (httpsMatch) {
-         const { owner, repoName, packagePath } = httpsMatch.groups!;
-         return { owner, repoName, packagePath };
-      }
-
-      // Handle SSH format: git@github.com:owner/repo.git or git@github.com:owner/repo
-      const sshRegex =
-         /git@github\.com:(?<owner>[^/]+)\/(?<repoName>[^/\s]+?)(?:\.git)?(?<packagePath>\/[^/]+)*$/;
-      const sshMatch = githubUrl.match(sshRegex);
-      if (sshMatch) {
-         const { owner, repoName, packagePath } = sshMatch.groups!;
-         return { owner, repoName, packagePath };
-      }
-
-      return null;
-   }
-
    async downloadGitHubDirectory(
       githubUrl: string,
       absoluteDirPath: string,
@@ -2146,7 +2214,7 @@ export class EnvironmentStore {
       assertSafeEnvironmentPath(absoluteDirPath);
       // First we'll clone the repo without the additional path
       // E.g. we're removing `/tree/main/imdb` from https://github.com/credibledata/malloy-samples/tree/main/imdb
-      const githubInfo = this.parseGitHubUrl(githubUrl);
+      const githubInfo = parseGitHubUrl(githubUrl);
       if (!githubInfo) {
          throw new Error(`Invalid GitHub URL: ${githubUrl}`);
       }

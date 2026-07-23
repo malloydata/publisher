@@ -22,6 +22,7 @@ import {
    EnvironmentStore,
    formatReadinessLine,
    GIT_CLONE_OPTIONS,
+   parseGitHubUrl,
    resolvePackageLocation,
    stripGitProgressNoise,
 } from "./environment_store";
@@ -2070,5 +2071,128 @@ describe("readiness line emission", () => {
       expect(lines[0]).toContain("environments=1");
       expect(lines[0]).toContain("packages=1");
       expect(lines[0]).toContain("load_errors=1");
+   });
+});
+
+describe("parseGitHubUrl", () => {
+   // The exact regexes parseGitHubUrl replaced, kept here ONLY as a
+   // behavioral oracle. The product code no longer runs them (they were
+   // flagged as polynomial-ReDoS); the fuzz below proves the linear
+   // string parser returns identical results. Never feed these long input.
+   const oldParseGitHubUrl = (
+      githubUrl: string,
+   ): { owner: string; repoName: string; packagePath?: string } | null => {
+      const httpsRegex =
+         /github\.com\/(?<owner>[^/]+)\/(?<repoName>[^/]+)(?<packagePath>\/[^/]+)*/;
+      const httpsMatch = githubUrl.match(httpsRegex);
+      if (httpsMatch) {
+         const { owner, repoName, packagePath } = httpsMatch.groups!;
+         return { owner, repoName, packagePath };
+      }
+      const sshRegex =
+         /git@github\.com:(?<owner>[^/]+)\/(?<repoName>[^/\s]+?)(?:\.git)?(?<packagePath>\/[^/]+)*$/;
+      const sshMatch = githubUrl.match(sshRegex);
+      if (sshMatch) {
+         const { owner, repoName, packagePath } = sshMatch.groups!;
+         return { owner, repoName, packagePath };
+      }
+      return null;
+   };
+
+   // Absent and undefined packagePath are the same result; normalize so the
+   // comparison ignores that representational difference.
+   const norm = (r: ReturnType<typeof parseGitHubUrl>) =>
+      r === null
+         ? null
+         : {
+              owner: r.owner,
+              repoName: r.repoName,
+              packagePath: r.packagePath ?? null,
+           };
+
+   it("matches the documented cases", () => {
+      expect(
+         parseGitHubUrl(
+            "https://github.com/malloydata/publisher/tree/main/examples/storefront",
+         ),
+      ).toEqual({
+         owner: "malloydata",
+         repoName: "publisher",
+         // Preserved quirk: only the LAST path segment.
+         packagePath: "/storefront",
+      });
+      expect(parseGitHubUrl("https://github.com/owner/repo")).toEqual({
+         owner: "owner",
+         repoName: "repo",
+      });
+      expect(parseGitHubUrl("git@github.com:owner/repo.git")).toEqual({
+         owner: "owner",
+         repoName: "repo",
+      });
+      expect(parseGitHubUrl("https://gitlab.com/owner/repo")).toBeNull();
+   });
+
+   it("is identical to the old regexes across a fuzzed input space", () => {
+      const prefixes = [
+         "https://github.com/",
+         "http://github.com/",
+         "github.com/",
+         "git@github.com:",
+         "ssh://git@github.com:",
+         "before github.com/",
+         "",
+         "https://gitlab.com/",
+      ];
+      const owners = ["owner", "o", "", "own er", "a.b"];
+      const repos = [
+         "repo",
+         "r",
+         "repo.git",
+         ".git",
+         "a.git",
+         "re po",
+         "",
+         "repo.gitx",
+      ];
+      const tails = [
+         "",
+         "/tree/main/sub",
+         "/tree/main",
+         "/a/b/c",
+         "/",
+         "//",
+         "/a//b",
+         "/sub dir",
+         "/tree/branch/a/b",
+      ];
+      let cases = 0;
+      for (const prefix of prefixes) {
+         for (const owner of owners) {
+            for (const repo of repos) {
+               for (const tail of tails) {
+                  const input = `${prefix}${owner}/${repo}${tail}`;
+                  expect(norm(parseGitHubUrl(input))).toEqual(
+                     norm(oldParseGitHubUrl(input)),
+                  );
+                  cases++;
+               }
+            }
+         }
+      }
+      expect(cases).toBeGreaterThan(2000);
+   });
+
+   it("runs in linear time on adversarial input (no ReDoS)", () => {
+      // The payloads CodeQL flagged: a long run that made the old
+      // `(\/[^/]+)*` regexes backtrack polynomially. The string parser is
+      // linear, so this returns effectively instantly.
+      const start = performance.now();
+      parseGitHubUrl("git@github.com:" + ".".repeat(200000));
+      parseGitHubUrl("git@github.com:" + "a/".repeat(200000));
+      parseGitHubUrl(
+         "git@github.com:./!/" + "git@github.com:./!/".repeat(5000),
+      );
+      parseGitHubUrl("https://github.com/" + "a/".repeat(200000));
+      expect(performance.now() - start).toBeLessThan(500);
    });
 });
