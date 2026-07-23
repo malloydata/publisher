@@ -99,6 +99,42 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
       );
    });
 
+   it("refuses a source protected by its own #(authorize) gate", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(authorize) "$role = 'analyst'"
+#@ persist name="mz_authz"
+source: mz_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_authz).toBeDefined();
+      expect(() => assertMaterializationEligible(sources.mz_authz)).toThrow(
+         MaterializationEligibilityError,
+      );
+      expect(() => assertMaterializationEligible(sources.mz_authz)).toThrow(
+         /authorize/i,
+      );
+   });
+
+   it("refuses a source that reaches an #(authorize) gate through a JOIN", async () => {
+      // The gate is on the joined source, not on mz_authz_joined itself — a join
+      // must not launder an authorize-gated source into a frozen table.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+#(authorize) "$role = 'analyst'"
+source: gated is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+source: joiner is duckdb.sql("SELECT 2 AS n, 'acme' AS tenant")
+#@ persist name="mz_authz_joined"
+source: mz_authz_joined is joiner extend {
+  join_one: g is gated on tenant = g.tenant
+} -> { aggregate: c is count() }`);
+      expect(sources.mz_authz_joined).toBeDefined();
+      expect(() =>
+         assertMaterializationEligible(sources.mz_authz_joined),
+      ).toThrow(MaterializationEligibilityError);
+   });
+
    it("refuses a source that reaches a given through a JOIN (not just its own pipeline)", async () => {
       // The given lives on a joined source, not on mz_joined's own where/fields.
       // The compiled struct embeds the joined SourceDef, so the fail-closed walk

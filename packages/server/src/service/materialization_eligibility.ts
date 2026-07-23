@@ -1,6 +1,7 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
+import { parseAuthorizeAnnotation } from "./authorize";
 
 /**
  * Compile-time eligibility gate for materializing a persist source into a
@@ -24,13 +25,21 @@ import { recordEligibilityRefused } from "../materialization_metrics";
  *     materialized once and served frozen would leak one tenant's rows to every
  *     tenant. This check fails closed: if the source references any given, it is
  *     refused, no exceptions.
+ *  3. **No `#(authorize)` gate — a security refusal.** An authorize expression
+ *     is a per-request *who-can-query* gate evaluated at query time. The served
+ *     virtual shape of a materialized source carries no gate to evaluate, so a
+ *     materialized authorize-gated source would be served to everyone,
+ *     bypassing the gate. Fails closed and reaches a gate on a JOINED source too
+ *     (a join must not launder an authorize-gated source), mirroring the
+ *     transitive `#(authorize)` enforcement on the live serve path (#906).
  *
- * The third eligibility property from the design — the served source must
+ * One further eligibility property from the design — the served source must
  * compile in DuckDB (portability) — is enforced at *build* time against the
  * captured table schema (see the DuckDB-compile gate in the build path), not
  * here: it needs the post-build authoritative schema this compile-time pass
- * does not have. This pass covers only the two properties determinable from the
- * compiled source alone, so it can fail fast before any warehouse work.
+ * does not have. This pass covers the properties determinable from the compiled
+ * source alone (free parameters, given references, authorize gates), so it can
+ * fail fast before any warehouse work.
  *
  * The gate reads the *compiled* source (only the compiled `ModelDef` sees
  * effective annotations, parameters, and given usage through `extend`/imports —
@@ -68,6 +77,19 @@ export function assertMaterializationEligible(
             `used for row-level access control, so a materialized-once table ` +
             `served to everyone would leak filtered rows across tenants. This ` +
             `is refused for safety. Serve this source live (drop 'storage=').`,
+      });
+   }
+
+   if (referencesAuthorize(persistSource)) {
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${sourceName}' cannot be materialized into a storage ` +
+            `destination: it is protected by an #(authorize) gate (its own or a ` +
+            `joined source's). An authorize expression is evaluated per request; ` +
+            `a materialized-once table served frozen carries no gate, so it would ` +
+            `be served to everyone, bypassing authorization. This is refused for ` +
+            `safety. Serve this source live (drop 'storage=').`,
       });
    }
 }
@@ -158,6 +180,78 @@ function walkForGiven(
 
    for (const value of Object.values(record)) {
       if (walkForGiven(value, seen, depth + 1)) return true;
+   }
+   return false;
+}
+
+/**
+ * Whether the compiled source (transitively) carries an `#(authorize)` gate —
+ * on the source itself or on any source reachable through a join. Fail-closed:
+ * walks the compiled source definition for annotation notes (`blockNotes` /
+ * `notes`) whose text is an authorize annotation. A join embeds the joined
+ * SourceDef (with its own blockNotes), so a gate reached only through a join is
+ * still found — a join must not launder an authorize-gated source, matching the
+ * transitive enforcement on the live serve path (#906). Any introspection or
+ * parse failure is treated as "carries a gate" (fail closed).
+ */
+function referencesAuthorize(persistSource: PersistSource): boolean {
+   try {
+      return walkForAuthorize(persistSource._sourceDef, new WeakSet(), 0);
+   } catch {
+      // Fail closed: if we cannot prove the source is authorize-free, refuse it.
+      return true;
+   }
+}
+
+/** True if an annotation string is an `#(authorize)`/`##(authorize)` gate. */
+function isAuthorizeAnnotation(text: string): boolean {
+   try {
+      return parseAuthorizeAnnotation(text) !== null;
+   } catch {
+      // A malformed authorize annotation still means the author intended a gate.
+      return true;
+   }
+}
+
+function walkForAuthorize(
+   node: unknown,
+   seen: WeakSet<object>,
+   depth: number,
+): boolean {
+   if (depth > MAX_GIVEN_WALK_DEPTH) {
+      throw new Error("authorize-usage walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node as object)) return false;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      for (const item of node) {
+         if (walkForAuthorize(item, seen, depth + 1)) return true;
+      }
+      return false;
+   }
+
+   const record = node as Record<string, unknown>;
+
+   // Annotation notes live under `blockNotes` (source/statement) or `notes`
+   // (model/file), as either bare strings or `{ text }` objects.
+   for (const key of ["blockNotes", "notes"]) {
+      const arr = record[key];
+      if (!Array.isArray(arr)) continue;
+      for (const n of arr) {
+         const text =
+            typeof n === "string"
+               ? n
+               : n && typeof n === "object" && typeof (n as { text?: unknown }).text === "string"
+                 ? (n as { text: string }).text
+                 : undefined;
+         if (text !== undefined && isAuthorizeAnnotation(text)) return true;
+      }
+   }
+
+   for (const value of Object.values(record)) {
+      if (walkForAuthorize(value, seen, depth + 1)) return true;
    }
    return false;
 }
