@@ -826,6 +826,10 @@ describe("trySemanticSearch", () => {
       };
       const pkgA = {} as unknown as Package;
       await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
+      const initialRows = await db.all<{ content_hash: string }>(
+         "SELECT content_hash FROM entity_embeddings WHERE environment_name = 'env' AND entity_name = 'alpha'",
+      );
+      const staleHash = initialRows[0].content_hash;
 
       // Call C: gate its out-of-mutex stale-count SELECT so we can slip
       // a mutex-holding sync in between the isLocked() check and the
@@ -860,8 +864,19 @@ describe("trySemanticSearch", () => {
          pkg: pkgA,
       });
 
-      // While C's stale count is gated, a sync with a changed entity
-      // takes and holds the package mutex (its provider fetch is gated).
+      // ORDER IS LOAD-BEARING: wait until C is provably parked at the
+      // gated SELECT (it has already passed the isLocked() check with
+      // the mutex free) BEFORE the holder takes the mutex. Kicking the
+      // holder first would park the mutex before C's isLocked() check,
+      // and C would exit through that pre-existing guard without ever
+      // reaching the tryAcquire busy path this test exists to pin.
+      for (let i = 0; i < 200 && !gatedOnce; i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(gatedOnce).toBe(true);
+
+      // Now a sync with a changed entity takes and holds the package
+      // mutex (its provider fetch is gated).
       let releaseSync!: () => void;
       const syncGate = new Promise<void>((resolve) => {
          releaseSync = resolve;
@@ -880,7 +895,9 @@ describe("trySemanticSearch", () => {
 
       // Release C: it finds stale rows, tries the heal, and must answer
       // indexing immediately (busy) instead of queueing behind the held
-      // mutex for the sync's duration.
+      // mutex for the sync's duration. With a blocking acquire instead
+      // of tryAcquire, C queues behind the still-gated holder and the
+      // race below times out.
       releaseSelect();
       const timeoutMarker = Symbol("timeout");
       const raced = await Promise.race([
@@ -891,9 +908,17 @@ describe("trySemanticSearch", () => {
       ]);
       expect(raced).toEqual({ unavailable: "indexing" });
 
+      // Let the holder sync settle deterministically (its upsert changes
+      // alpha's content hash) so no write leaks past the next test's
+      // cleanup.
       releaseSync();
-      // Let the holder sync settle before the next test's cleanup.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      for (let i = 0; i < 200; i++) {
+         const rows = await db.all<{ content_hash: string }>(
+            "SELECT content_hash FROM entity_embeddings WHERE environment_name = 'env' AND entity_name = 'alpha'",
+         );
+         if (rows.length === 1 && rows[0].content_hash !== staleHash) break;
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
    });
 
    it("deletion helpers drop a package's and an environment's rows", async () => {
