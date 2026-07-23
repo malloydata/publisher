@@ -10,6 +10,7 @@ import {
    deriveBuildPlan,
    flattenDependsOn,
    iterGraphSources,
+   projectToPublicColumns,
    resolveFreshness,
    resolvePackageConnections,
 } from "./build_plan";
@@ -147,6 +148,43 @@ describe("deriveAnnotationFields", () => {
       } as unknown as PersistSource;
 
       expect(deriveAnnotationFields(source)).toEqual({});
+   });
+});
+
+describe("projectToPublicColumns", () => {
+   // A source whose PUBLIC surface (intrinsic atomic fields) is `cols` — i.e. any
+   // `except:`-ed / access-restricted column is already absent here, as Malloy
+   // reflects it. deriveColumns reads exactly this.
+   const sourceWithPublicCols = (cols: string[]): PersistSource =>
+      ({
+         dialectName: "postgres",
+         _explore: {
+            intrinsicFields: cols.map((name) => ({
+               name,
+               isAtomicField: () => true,
+               type: "string",
+            })),
+         },
+      }) as unknown as PersistSource;
+
+   it("wraps the build SQL to project only the source's public columns", () => {
+      const src = sourceWithPublicCols(["order_date", "amount"]); // `region` hidden → absent
+      const out = projectToPublicColumns(src, "SELECT order_date, region, amount FROM t");
+      // Outer projection lists ONLY the public columns; the hidden one is dropped.
+      expect(out).toMatch(/^SELECT\b/);
+      expect(out).toContain("order_date");
+      expect(out).toContain("amount");
+      expect(out).toContain("FROM (SELECT order_date, region, amount FROM t) AS __public");
+      // `region` must not appear in the OUTER projection (before the subquery).
+      const outerProjection = out.slice(0, out.indexOf("FROM ("));
+      expect(outerProjection).not.toContain("region");
+   });
+
+   it("fails open — returns the build SQL unchanged when columns can't be derived", () => {
+      const noExplore = {} as unknown as PersistSource; // deriveColumns throws → []
+      expect(projectToPublicColumns(noExplore, "SELECT 1")).toBe("SELECT 1");
+      const empty = sourceWithPublicCols([]);
+      expect(projectToPublicColumns(empty, "SELECT 1")).toBe("SELECT 1");
    });
 });
 

@@ -40,6 +40,7 @@ import {
    compilePackageBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
+   projectToPublicColumns,
    iterGraphSources,
 } from "./build_plan";
 import { getPersistStorageMode } from "../config";
@@ -1045,12 +1046,23 @@ export class MaterializationService {
                buildManifest: manifest.buildManifest,
                connectionDigests,
             }) !== buildSQL;
+         // Materialize ONLY the source's PUBLIC columns. `getSQL` projects every
+         // underlying column, including ones the source hides (`except:`, non-public
+         // access modifiers). The serve transform narrows the declared ::Shape to
+         // the public surface, but a DuckLake virtual source is not restricted to
+         // its declared shape — it exposes every physical column of the stored
+         // table — so a hidden column materialized here would be reachable over
+         // storage (and would also sit at rest). Projecting to the public columns
+         // makes the physical table equal the public surface, closing that leak at
+         // the source. Falls back to the full buildSQL if the public columns can't
+         // be derived (never widens — worst case is the prior behavior).
+         const publicBuildSQL = projectToPublicColumns(persistSource, buildSQL);
          return this.buildOneSourceIntoStorage(
             persistSource,
             instruction,
             manifest,
             environment,
-            buildSQL,
+            publicBuildSQL,
             builtEntries,
             dependsOnStorageUpstream,
          );

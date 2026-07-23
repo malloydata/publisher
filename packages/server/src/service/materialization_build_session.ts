@@ -12,6 +12,7 @@ import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import { quoteIdentifier, quoteTablePath } from "./quoting";
+import { projectToPublicColumns } from "./build_plan";
 import {
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -357,8 +358,11 @@ export async function buildDownstreamIntoStorage(params: {
          );
       }
       // The downstream's materialization SQL, over the rebound parents — DuckDB
-      // dialect, reading the attached lake tables via the virtualMap.
-      const sql = downstream.getSQL({ virtualMap });
+      // dialect, reading the attached lake tables via the virtualMap. Project to
+      // the public columns so a hidden (`except:` / access-restricted) downstream
+      // column is not materialized (same rationale as the single-source build:
+      // a DuckLake virtual source is not restricted to its declared shape).
+      const sql = projectToPublicColumns(downstream, downstream.getSQL({ virtualMap }));
 
       const target = quoteTablePath(
          `${destinationName}.${physicalTableName}`,
