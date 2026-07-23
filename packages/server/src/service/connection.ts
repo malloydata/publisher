@@ -914,7 +914,12 @@ async function attachDatabasesToDuckDB(
             handleAlreadyAttachedError(attachError, attachedDb.name || "");
          }
       } catch (error) {
-         logger.error(`Failed to attach database ${attachedDb.name}:`, error);
+         // Attach errors echo the connection string (DuckDB embeds the DSN).
+         logger.error(`Failed to attach database ${attachedDb.name}`, {
+            error: redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         });
          throw new Error(
             `Failed to attach database ${attachedDb.name}: ${(error as Error).message}`,
          );
@@ -1073,34 +1078,49 @@ class DuckLakeConnection extends DuckDBConnection {
    }
 }
 
+async function removeConnectionDbFile(
+   fileName: string,
+   environmentPath: string,
+): Promise<void> {
+   assertSafeEnvironmentPath(environmentPath);
+   const filePath = safeJoinUnderRoot(environmentPath, fileName);
+   try {
+      await fs.access(filePath);
+      await fs.rm(filePath);
+      logger.info(
+         `Removed connection file ${fileName} from ${environmentPath}`,
+      );
+   } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+         logger.debug(
+            `Connection file ${fileName} does not exist, skipping deletion`,
+         );
+      } else {
+         logger.error(
+            `Failed to remove connection file ${fileName} from ${environmentPath}`,
+            { error },
+         );
+      }
+   }
+}
+
 export async function deleteDuckLakeConnectionFile(
    connectionName: string,
    environmentPath: string,
 ): Promise<void> {
    assertSafePackageName(connectionName);
-   assertSafeEnvironmentPath(environmentPath);
-   const ducklakePath = safeJoinUnderRoot(
-      environmentPath,
+   await removeConnectionDbFile(
       `${connectionName}_ducklake.duckdb`,
+      environmentPath,
    );
-   try {
-      await fs.access(ducklakePath);
-      await fs.rm(ducklakePath);
-      logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-      );
-   } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-         logger.debug(
-            `DuckLake connection file ${connectionName}_ducklake.duckdb does not exist, skipping deletion`,
-         );
-      } else {
-         logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-            { error },
-         );
-      }
-   }
+}
+
+export async function deleteDuckDBConnectionFile(
+   connectionName: string,
+   environmentPath: string,
+): Promise<void> {
+   assertSafePackageName(connectionName);
+   await removeConnectionDbFile(`${connectionName}.duckdb`, environmentPath);
 }
 
 export type EnvironmentMalloyConfig = {
@@ -1767,7 +1787,10 @@ async function testDuckDBConnection(
          }
       } catch (error) {
          const errorMessage = `Attached database '${attachedDb.name}' (${attachedDb.type}) test failed: ${(error as Error).message}`;
-         logger.error(errorMessage);
+         // A probe that fails after the attach half-succeeded can carry the
+         // DSN, so redact this log line too (the rethrow below is redacted at
+         // the testConnectionConfig boundary).
+         logger.error(redactPgSecrets(errorMessage));
          failedAttachments.push(errorMessage);
       }
    }
@@ -1789,7 +1812,21 @@ export async function testConnectionConfig(
          throw new Error("Connection name is required");
       }
 
-      environmentConfig = buildEnvironmentMalloyConfig([connectionConfig]);
+      // The name becomes a filename under the working directory below
+      // (`<name>.duckdb` / `<name>_ducklake.duckdb`), and here it comes
+      // straight from the request body, so reject path-traversal names
+      // before they reach path.join. The DuckLake cleanup path already
+      // asserts the same on this name (see deleteDuckLakeConnectionFile).
+      assertSafePackageName(connectionConfig.name);
+
+      // Root the throwaway config at cwd: DuckDB/DuckLake connections need a
+      // non-empty workingDirectory (empty fails validation before the test
+      // runs), and the DuckLake cleanup in the finally below already expects
+      // the connection file in process.cwd().
+      environmentConfig = buildEnvironmentMalloyConfig(
+         [connectionConfig],
+         process.cwd(),
+      );
       const connection =
          await environmentConfig.malloyConfig.connections.lookupConnection(
             connectionConfig.name,
@@ -1840,12 +1877,21 @@ export async function testConnectionConfig(
       if (error instanceof AxiosError) {
          logAxiosError(error);
       } else {
-         logger.error(error);
+         // Same redaction as the response: the raw error can carry the DSN.
+         logger.error("Connection test failed", {
+            error: redactPgSecrets(
+               error instanceof Error ? error.message : String(error),
+            ),
+         });
       }
 
       return {
          status: "failed",
-         errorMessage: (error as Error).message,
+         // Attach failures echo the connection string verbatim (DuckDB embeds
+         // the full DSN), and this message goes into the REST response body.
+         errorMessage: redactPgSecrets(
+            error instanceof Error ? error.message : String(error),
+         ),
       };
    } finally {
       if (environmentConfig) {
@@ -1858,11 +1904,29 @@ export async function testConnectionConfig(
          }
       }
 
-      if (connectionConfig.type === "ducklake" && connectionConfig.name) {
-         await deleteDuckLakeConnectionFile(
-            connectionConfig.name,
-            process.cwd(),
-         );
+      // Both connection types write a <name>.duckdb / <name>_ducklake.duckdb
+      // file under cwd during the test; remove it so a connection test leaves
+      // nothing behind. Wrapped so a cleanup failure (or an invalid name that
+      // the guard above already rejected) can never override the response.
+      try {
+         if (connectionConfig.type === "ducklake" && connectionConfig.name) {
+            await deleteDuckLakeConnectionFile(
+               connectionConfig.name,
+               process.cwd(),
+            );
+         } else if (
+            connectionConfig.type === "duckdb" &&
+            connectionConfig.name
+         ) {
+            await deleteDuckDBConnectionFile(
+               connectionConfig.name,
+               process.cwd(),
+            );
+         }
+      } catch (cleanupError) {
+         logger.warn("Error cleaning up connection test file", {
+            error: cleanupError,
+         });
       }
    }
 }
