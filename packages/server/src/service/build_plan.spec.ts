@@ -169,12 +169,17 @@ describe("projectToPublicColumns", () => {
 
    it("wraps the build SQL to project only the source's public columns", () => {
       const src = sourceWithPublicCols(["order_date", "amount"]); // `region` hidden → absent
-      const out = projectToPublicColumns(src, "SELECT order_date, region, amount FROM t");
+      const out = projectToPublicColumns(
+         src,
+         "SELECT order_date, region, amount FROM t",
+      );
       // Outer projection lists ONLY the public columns; the hidden one is dropped.
       expect(out).toMatch(/^SELECT\b/);
       expect(out).toContain("order_date");
       expect(out).toContain("amount");
-      expect(out).toContain("FROM (SELECT order_date, region, amount FROM t) AS __public");
+      expect(out).toContain(
+         "FROM (SELECT order_date, region, amount FROM t) AS __public",
+      );
       // `region` must not appear in the OUTER projection (before the subquery).
       const outerProjection = out.slice(0, out.indexOf("FROM ("));
       expect(outerProjection).not.toContain("region");
@@ -452,6 +457,64 @@ describe("compilePackageBuildPlan", () => {
 
          expect(compiled.graphs).toEqual([]);
          expect(getModelRuntime.called).toBe(false);
+      } finally {
+         getModelRuntime.restore();
+      }
+   });
+
+   it("skips a model lacking ##! experimental.persistence instead of aborting the package", async () => {
+      // getBuildPlan() THROWS on a model without the flag (it does not return
+      // empty), so a header-less non-persist model — e.g. an imported base that
+      // only defines raw sources — must be skipped, or it would abort the whole
+      // package plan and drop the persist source in the sibling model.
+      const fakeModel = (hasFlag: boolean, graphs: MalloyBuildGraph[]) => ({
+         modelAnnotations: {
+            parseAsTag: () => ({ tag: { has: () => hasFlag } }),
+         },
+         getBuildPlan: () => {
+            if (!hasFlag) {
+               throw new Error(
+                  "Model must have ##! experimental.persistence to use getBuildPlan()",
+               );
+            }
+            return { graphs, sources: {}, tagParseLog: [] };
+         },
+      });
+      const models: Record<string, ReturnType<typeof fakeModel>> = {
+         "base.malloy": fakeModel(false, []), // header-less: must be skipped
+         "agg.malloy": fakeModel(true, [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "daily@agg", dependsOn: [] }]],
+            },
+         ] as unknown as MalloyBuildGraph[]),
+      };
+      const getModelRuntime = sinon
+         .stub(Model, "getModelRuntime")
+         .callsFake((async (_path: unknown, modelPath: unknown) => ({
+            runtime: {
+               loadModel: () => ({
+                  getModel: async () => models[modelPath as string],
+               }),
+            },
+            modelURL: new URL(`file:///${modelPath}`),
+            importBaseURL: new URL("file:///"),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         })) as any);
+      try {
+         const pkg = {
+            getModelPaths: () => ["base.malloy", "agg.malloy"],
+            getPackagePath: () => "/test",
+            getMalloyConfig: () => ({}),
+            getMalloyConnection: async () => ({ getDigest: async () => "dig" }),
+         } as unknown as Parameters<typeof compilePackageBuildPlan>[0];
+
+         // Would throw here before the guard (base.malloy's getBuildPlan).
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         // The header-less model is skipped; the persist source in agg survives.
+         expect(compiled.graphs).toHaveLength(1);
+         expect(compiled.graphs[0].nodes[0][0].sourceID).toBe("daily@agg");
       } finally {
          getModelRuntime.restore();
       }

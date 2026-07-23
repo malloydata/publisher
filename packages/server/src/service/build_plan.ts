@@ -373,8 +373,18 @@ export async function compilePackageBuildPlan(
          .loadModel(modelURL, { importBaseURL })
          .getModel();
 
-      // getBuildPlan() returns empty graphs for models with no #@ persist
-      // sources, so non-persist models are simply skipped below.
+      // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
+      // on any model that lacks the flag — it does NOT return empty. So a
+      // header-less non-persist model in the package (e.g. an imported base
+      // model that only defines raw sources) would abort the entire package
+      // build plan, silently dropping every persist source in every other
+      // model. Mirror Malloy's own guard and skip such models: without the flag
+      // a model cannot carry a functioning persist source anyway. Models that
+      // DO have the flag but declare no persist source return empty graphs and
+      // are skipped by the `graphs.length === 0` check below.
+      const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
+      if (!modelTag.has("experimental", "persistence")) continue;
+
       const buildPlan = malloyModel.getBuildPlan();
       for (const msg of buildPlan.tagParseLog) {
          logger.warn("Persist annotation issue", {
