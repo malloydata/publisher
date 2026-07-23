@@ -7,6 +7,7 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError } from "../errors";
+import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { Environment } from "./environment";
 import { EnvironmentStore, resolvePackageLocation } from "./environment_store";
 
@@ -19,11 +20,31 @@ type MockData = Record<string, unknown>;
 // so a test can assign it before constructing the store.
 let mockDbEnvironments: unknown[] = [];
 
+// Recorder for the embeddings-cleanup wiring tests: every SQL statement
+// the store's cleanup path issues lands here. When `blocks` is true the
+// statements never resolve, which pins that the delete APIs do not await
+// the cleanup (it can queue for minutes behind a bulk embed).
+const embeddingCleanupRuns: Array<{ sql: string; params: unknown[] }> = [];
+let embeddingCleanupBlocks = false;
+
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
          async initialize(_reInit?: boolean): Promise<void> {
             return;
+         }
+
+         getDuckDbConnection() {
+            return {
+               run: (sql: string, params?: unknown[]) => {
+                  embeddingCleanupRuns.push({ sql, params: params ?? [] });
+                  return embeddingCleanupBlocks
+                     ? new Promise<void>(() => {})
+                     : Promise.resolve();
+               },
+               all: async () => [],
+               get: async () => null,
+            };
          }
 
          getRepository() {
@@ -1595,5 +1616,60 @@ describe("resolvePackageLocation", () => {
       expect(resolvePackageLocation("~user/foo", CONFIG_DIR, HOME)).toBe(
          path.join(CONFIG_DIR, "~user", "foo"),
       );
+   });
+});
+
+describe("EnvironmentStore embeddings cleanup wiring", () => {
+   const serverRootPath = path.join(TEMP_DIR_PATH, "cleanup-wiring-tests");
+
+   beforeEach(() => {
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+      mkdirSync(serverRootPath, { recursive: true });
+      mockDbEnvironments = [];
+      embeddingCleanupRuns.length = 0;
+      embeddingCleanupBlocks = false;
+      _resetEmbeddingIndexStateForTests();
+   });
+
+   afterEach(() => {
+      embeddingCleanupBlocks = false;
+      _resetEmbeddingIndexStateForTests();
+      if (existsSync(serverRootPath)) {
+         rmSync(serverRootPath, { recursive: true, force: true });
+      }
+   });
+
+   it("deletePackageFromDatabase fires cleanup without awaiting it, even with no metadata row", async () => {
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      // The cleanup's SQL never resolves: were the store awaiting it,
+      // this call would hang past the test timeout. The mock repository
+      // reports no environment row, so resolving promptly ALSO pins
+      // that the cleanup runs before the missing-row early return.
+      embeddingCleanupBlocks = true;
+      await store.deletePackageFromDatabase("wiring-env", "wiring-pkg");
+
+      const deletes = embeddingCleanupRuns.filter((r) =>
+         r.sql.includes("DELETE FROM entity_embeddings"),
+      );
+      expect(deletes.length).toBe(1);
+      expect(deletes[0].params).toEqual(["wiring-env", "wiring-pkg"]);
+   });
+
+   it("deleteEnvironmentFromDatabase fires the env-wide cleanup without awaiting it", async () => {
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+
+      embeddingCleanupBlocks = true;
+      await store.deleteEnvironmentFromDatabase("wiring-env");
+
+      const deletes = embeddingCleanupRuns.filter((r) =>
+         r.sql.includes("DELETE FROM entity_embeddings"),
+      );
+      expect(deletes.length).toBe(1);
+      expect(deletes[0].params).toEqual(["wiring-env"]);
    });
 });
