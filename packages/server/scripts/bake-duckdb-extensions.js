@@ -27,8 +27,11 @@ import { DuckDBInstance } from "@duckdb/node-api";
 // sandbox, federated-database attach, and the materialization catalog. Keep this
 // in sync with the install sites in those files.
 //
-// `community: true` mirrors the runtime's `FORCE INSTALL '<name>' FROM community`
-// (bigquery, snowflake); the rest are core extensions installed by name.
+// `community: true` marks the community-repo extensions (bigquery, snowflake);
+// the rest are core extensions installed by name. The bake deliberately uses
+// `FORCE INSTALL ... FROM community` to (re)populate the build cache from the
+// CDN at build time; the *runtime* install (connection.ts) uses a plain,
+// local-first `INSTALL` that no-ops against this baked cache.
 // `registered` is the name the extension reports in duckdb_extensions() when it
 // differs from the INSTALL name (only postgres -> postgres_scanner).
 const EXTENSIONS = [

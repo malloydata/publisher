@@ -7,6 +7,13 @@ import { logSuccess, logInfo, logOutput, truncate } from "../utils/logger.js";
 const SETTLED_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 const SUCCESS_STATUSES = ["MANIFEST_FILE_READY"];
 
+// Each run records metadata.trigger (SCHEDULER | ON_DEMAND) so a scheduled
+// rebuild is distinguishable from a manual one; it lives in the free-form
+// metadata object rather than a top-level field.
+function triggerOf(m: any): string {
+  return (m?.metadata as { trigger?: string } | null)?.trigger ?? "";
+}
+
 export async function listMaterializations(
   client: PublisherClient,
   environmentName: string,
@@ -26,13 +33,62 @@ export async function listMaterializations(
   }
 
   const table = new Table({
-    head: ["ID", "Status", "Started", "Completed", "Error"],
+    head: ["ID", "Status", "Trigger", "Started", "Completed", "Error"],
   });
 
   materializations.forEach((m: any) => {
     table.push([
       m.id ?? "",
       m.status ?? "",
+      triggerOf(m),
+      m.startedAt ?? "",
+      m.completedAt ?? "",
+      m.error ? truncate(m.error) : "",
+    ]);
+  });
+
+  logOutput(table.toString());
+}
+
+/**
+ * List every materialization across all packages in an environment (newest
+ * first), each labeled with its package and trigger. Backed by the
+ * environment-scoped endpoint, so it needs no --package.
+ */
+export async function listEnvironmentMaterializations(
+  client: PublisherClient,
+  environmentName: string,
+  options: { limit?: number; offset?: number } = {},
+): Promise<void> {
+  const materializations = await client.listEnvironmentMaterializations(
+    environmentName,
+    options.limit,
+    options.offset,
+  );
+
+  if (materializations.length === 0) {
+    logInfo(`No materializations in environment: ${environmentName}`);
+    return;
+  }
+
+  const table = new Table({
+    head: [
+      "Package",
+      "ID",
+      "Status",
+      "Trigger",
+      "Started",
+      "Completed",
+      "Error",
+    ],
+  });
+
+  materializations.forEach((m: any) => {
+    table.push([
+      m.packageName ?? "",
+      m.id ?? "",
+      m.status ?? "",
+      triggerOf(m),
       m.startedAt ?? "",
       m.completedAt ?? "",
       m.error ? truncate(m.error) : "",

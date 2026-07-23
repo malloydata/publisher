@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import sinon from "sinon";
 
 import {
+   AccessDeniedError,
    BadRequestError,
    ModelNotFoundError,
    PayloadTooLargeError,
@@ -420,6 +421,11 @@ describe("service/model", () => {
                undefined,
                undefined,
                undefined,
+               undefined,
+               // Model surfaces `region` so filterGivensToModelSurface (see
+               // model.ts) forwards it rather than dropping it as unknown.
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               [{ name: "region", type: "string" }] as any,
             );
 
             await expect(
@@ -716,6 +722,11 @@ describe("service/model", () => {
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                runnableCells as any,
                undefined,
+               undefined,
+               // Model surfaces `target_code` so filterGivensToModelSurface
+               // (see model.ts) forwards it rather than dropping it as unknown.
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               [{ name: "target_code", type: "string" }] as any,
             );
 
             await expect(
@@ -816,6 +827,62 @@ describe("service/model", () => {
             expect(parsed.name).toBe("carriers");
             expect(parsed.givens).toEqual(givens);
          });
+      });
+   });
+
+   describe("authorize struct-resolution drift invariant", () => {
+      // collectAllReachableGates walks struct.fields using Malloy's own
+      // isJoined ('join' in sd) / isSourceDef (struct.type is a known source
+      // kind) guards. If a future Malloy version adds a new source `type`
+      // that isSourceDef doesn't yet recognize, a genuinely-joined field
+      // would fail isSourceDef and used to be silently `continue`d past —
+      // failing OPEN (the joined source's gate is never found, so it's never
+      // evaluated). This confirms the walk instead denies loudly when it
+      // finds a field that IS a join but can't be resolved to a walkable
+      // SourceDef, rather than silently treating it as "nothing to gate".
+      it("denies rather than silently skipping when a joined field doesn't resolve to a walkable SourceDef", async () => {
+         const driftedJoinField = {
+            name: "mystery_join",
+            join: "one", // isJoined: true ('join' in sd)
+            // A source `type` isSourceDef doesn't (yet) recognize -- stands
+            // in for a future Malloy source kind the duck-typed guard hasn't
+            // been updated to cover.
+            type: "future_source_kind",
+            fields: [],
+         };
+         const runStruct = {
+            type: "table",
+            name: "root",
+            fields: [driftedJoinField],
+         };
+         const modelDef = { contents: {}, exports: [], queryList: [] };
+         const runnable = {
+            getPreparedQuery: sinon.stub().resolves({
+               _query: { structRef: runStruct },
+               _modelDef: modelDef,
+            }),
+         };
+
+         const model = new Model(
+            packageName,
+            mockModelPath,
+            {},
+            "model",
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            { loadQuery: sinon.stub() } as any, // modelMaterializer
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            modelDef as any,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+         );
+
+         await expect(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            model.assertAuthorizedForAllSources(runnable as any, {}),
+         ).rejects.toThrow(AccessDeniedError);
       });
    });
 
