@@ -288,6 +288,11 @@ The stream is `GET /api/v0/environments/<env>/packages/<pkg>/events`. It emits a
 connects and reports `mode: disabled`, and no reloads fire, which is the expected
 production posture.
 
+One consequence for headless verification: because the runtime holds that stream open, a served
+page never reaches network idle, so a Playwright or Puppeteer check that waits for `networkidle`
+hangs. Wait on `load` plus a content selector instead. This holds with watch mode off too, since
+the stream still connects to hear `mode: disabled`.
+
 ## Full-screen apps in the page viewer
 
 When you open a page from inside the Publisher App (the package's Pages list), it
@@ -338,15 +343,9 @@ three directories deep and is empty for a package with no `public/` directory.
 
 ## The package manifest
 
-`publisher.json` sits at the package root and is not web-served. The fields that
-matter for a data app are:
-
-| Field | Required | Purpose |
-|---|---|---|
-| `name` | yes | Package name, used in the API URLs |
-| `description` | yes | Shown in the Publisher UI |
-| `version` | recommended | Package version, e.g. `"0.0.1"` |
-| `location` | no | Source path or URI (local path, GitHub, S3, GCS) for remote packages |
+`publisher.json` sits at the package root and is not web-served. No field in it is
+data-app-specific (a package becomes a data app by having a `public/` directory);
+the manifest field reference is [packages.md](packages.md).
 
 ```json
 {

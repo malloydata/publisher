@@ -48,6 +48,50 @@ describe("Materialization Commands", () => {
     );
   });
 
+  test("listEnvironmentMaterializations passes env + pagination through", async () => {
+    const mockClient = {
+      listEnvironmentMaterializations: mock(() =>
+        Promise.resolve([
+          {
+            id: "m1",
+            packageName: "orders",
+            status: "MANIFEST_FILE_READY",
+            metadata: { trigger: "SCHEDULER" },
+          },
+        ]),
+      ),
+    } as unknown as PublisherClient;
+
+    await materializationCommands.listEnvironmentMaterializations(
+      mockClient,
+      "env",
+      { limit: 7, offset: 2 },
+    );
+
+    expect(mockClient.listEnvironmentMaterializations).toHaveBeenCalledWith(
+      "env",
+      7,
+      2,
+    );
+  });
+
+  test("listEnvironmentMaterializations handles empty list", async () => {
+    const mockClient = {
+      listEnvironmentMaterializations: mock(() => Promise.resolve([])),
+    } as unknown as PublisherClient;
+
+    await materializationCommands.listEnvironmentMaterializations(
+      mockClient,
+      "env",
+    );
+
+    expect(mockClient.listEnvironmentMaterializations).toHaveBeenCalledWith(
+      "env",
+      undefined,
+      undefined,
+    );
+  });
+
   test("getMaterialization fetches and prints JSON", async () => {
     const mat = { id: "m1", status: "RUNNING" };
     const mockClient = {

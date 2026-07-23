@@ -2,6 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import "@malloydata/db-duckdb/native";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    Connection,
    ConnectionRuntime,
@@ -27,6 +28,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
+import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
 import {
    recordBuildPlanComputeDuration,
@@ -1256,7 +1258,16 @@ export class Package {
       malloyConfig.wrapConnections((base) => ({
          lookupConnection: async (name?: string) => {
             if (!name || name === "duckdb") {
-               return base.lookupConnection(name);
+               const connection = await base.lookupConnection(name);
+               // The per-package :memory: sandbox is a Publisher-owned DuckDB
+               // session too. Pin it against implicit auto-install so
+               // EXTENSION_FETCH_POLICY covers it — otherwise local-only's
+               // no-network guarantee had a hole here (the sandbox has no
+               // attached databases, so the env attach paths never touch it).
+               if (connection instanceof DuckDBConnection) {
+                  await applyExtensionSessionSettings(connection);
+               }
+               return connection;
             }
             // Resolve against the *current* environment MalloyConfig so a
             // connection-generation swap on Environment propagates without a

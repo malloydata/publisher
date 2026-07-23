@@ -8,6 +8,7 @@ import { components } from "../api";
 import {
    buildProxiedSslQuery,
    createEnvironmentConnections,
+   resolveProxiedTls,
    testConnectionConfig,
 } from "./connection";
 import { assembleEnvironmentConnections } from "./connection_config";
@@ -1915,5 +1916,75 @@ describe("buildProxiedSslQuery", () => {
       } finally {
          await fs.rm(caPath, { force: true });
       }
+   });
+});
+
+describe("resolveProxiedTls", () => {
+   it("routes verify-full to a raw ssl object with servername = the real host", () => {
+      // verify-full (chain + hostname) can't ride the connectionString through a
+      // tunnel — it needs ssl.servername set to the real DB host so pg checks the
+      // cert's SAN against it, not against the 127.0.0.1 socket address.
+      const { query, ssl } = resolveProxiedTls(
+         "conn",
+         "db.internal.example.com",
+         "verify-full",
+      );
+      expect(query).toBe("");
+      expect(ssl).toEqual({
+         servername: "db.internal.example.com",
+         rejectUnauthorized: true,
+      });
+   });
+
+   it("throws for verify-full with no host (servername would be undefined)", () => {
+      expect(() => resolveProxiedTls("conn", undefined, "verify-full")).toThrow(
+         /verify-full.*no host/i,
+      );
+   });
+
+   it("routes the connectionString-param modes through buildProxiedSslQuery with no ssl object", () => {
+      // verify-ca needs a CA bundle to build its query, so set one for the loop.
+      const prior = process.env.NODE_EXTRA_CA_CERTS;
+      process.env.NODE_EXTRA_CA_CERTS = "/etc/ssl/certs/bundle.pem";
+      try {
+         for (const mode of ["disable", "no-verify", "verify-ca", undefined]) {
+            const { query, ssl } = resolveProxiedTls("conn", "127.0.0.1", mode);
+            expect(query).toBe(buildProxiedSslQuery("conn", mode));
+            expect(ssl).toBeUndefined();
+         }
+      } finally {
+         if (prior === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = prior;
+      }
+   });
+
+   it("verify-full: a bare connectionString does not clobber the explicit ssl object (pg merge guard)", async () => {
+      // Load-bearing invariant: pg's ConnectionParameters does
+      // Object.assign({}, config, parse(connectionString)). A verify-full
+      // connectionString carries no sslmode, so pg-connection-string adds no
+      // `ssl` key and our explicit { servername, rejectUnauthorized } survives
+      // the merge. If a future pg bump changes this — or we accidentally emit an
+      // sslmode into the query — this guard fails loudly instead of silently
+      // downgrading verify-full.
+      const { query, ssl } = resolveProxiedTls(
+         "conn",
+         "db.internal.example.com",
+         "verify-full",
+      );
+      const { default: ConnectionParameters } = await import(
+         "pg/lib/connection-parameters.js"
+      );
+      const params = new (ConnectionParameters as unknown as new (
+         c: unknown,
+      ) => {
+         ssl: unknown;
+      })({
+         connectionString: `postgresql://u:p@127.0.0.1:5432/db${query}`,
+         ssl,
+      });
+      expect(params.ssl).toEqual({
+         servername: "db.internal.example.com",
+         rejectUnauthorized: true,
+      });
    });
 });

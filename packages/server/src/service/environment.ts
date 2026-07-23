@@ -483,10 +483,15 @@ export class Environment {
                );
             }
 
-            // Authorize backstop (the *who* axis, 403). Only run when the model
-            // declares gates so ungated compiles don't pay for the extra
-            // final-query compile.
-            if (queryMaterializer && gateModel?.hasAuthorize()) {
+            // Authorize backstop (the *who* axis, 403). NOT guarded by
+            // hasAuthorize(): that only inspects top-level modelDef.contents
+            // sources, so a gated source reached only via a cross-file/deep
+            // join is invisible to it and this backstop would silently never
+            // run for such a model — the same bypass assertAuthorizedForRunnable
+            // itself closes on the query path (see model.ts
+            // assertAuthorizedForAllSources). The own-source probe and joined-
+            // gate walk it runs are cheap no-ops for a genuinely ungated model.
+            if (queryMaterializer && gateModel) {
                await gateModel.assertAuthorizedForRunnable(
                   queryMaterializer,
                   givens ?? {},
@@ -658,11 +663,10 @@ export class Environment {
                   // the same reason). A log line was the old destination; this
                   // one is an HTTP response body.
                   //
-                  // Reduces the exposure, does not remove it: redactPgSecrets
-                  // only covers keyword-form `password=`, which is what
-                  // buildPgConnectionString emits. A URL-form connectionString
-                  // supplied verbatim in config still carries its credentials
-                  // through. Widen the helper rather than trusting this call.
+                  // redactPgSecrets covers both keyword-form `password=` (what
+                  // buildPgConnectionString emits) and URI userinfo
+                  // (`postgres://user:pass@host`), so a URL-form connectionString
+                  // supplied verbatim in config is redacted here too.
                   this.failedPackages.set(
                      packageName,
                      redactPgSecrets(

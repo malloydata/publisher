@@ -440,6 +440,46 @@ export const getMaxConcurrentQueries = (): number => {
    return raw;
 };
 
+/**
+ * DuckDB extension-fetch policy. Governs whether Publisher's explicit extension
+ * INSTALL step (see `installAndLoadExtension` in service/connection.ts) may
+ * reach the DuckDB extension network.
+ */
+export type ExtensionFetchPolicy = "on-demand" | "local-only";
+
+/**
+ * Resolve the DuckDB extension-fetch policy from `EXTENSION_FETCH_POLICY`;
+ * falls back to `on-demand` when unset or empty.
+ *
+ * - `on-demand` (default): preserves prior behaviour. Publisher runs `INSTALL`
+ *   for a missing extension on first use, which fetches it from the DuckDB
+ *   extension network when it is not already present on disk (baked into the
+ *   image). Extensions already baked are used as-is.
+ * - `local-only`: Publisher never runs `INSTALL`, and turns DuckDB's own
+ *   implicit auto-install off on its build/serve sessions
+ *   (`autoinstall_known_extensions=false`), so no code path reaches the
+ *   network. Auto-LOAD stays on, so an extension already present on disk still
+ *   lazy-loads; a genuinely missing extension surfaces as a loud, actionable
+ *   error instead of a silent fetch. For air-gapped / pinned-image deployments.
+ *
+ * Throws on an unrecognised value. Validated at server startup (server.ts calls
+ * this during boot) so a typo in a k8s manifest fails the boot loudly rather
+ * than surfacing on the first query that resolves a DuckDB connection — which,
+ * for a DuckLake-only deployment, could be well after `serving`. Also read on
+ * each connection resolve, so the value is honoured without a restart.
+ */
+export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
+   const raw = process.env.EXTENSION_FETCH_POLICY;
+   if (raw === undefined || raw.trim() === "") return "on-demand";
+   const normalised = raw.trim().toLowerCase();
+   if (normalised === "on-demand" || normalised === "local-only") {
+      return normalised;
+   }
+   throw new Error(
+      `Invalid value for EXTENSION_FETCH_POLICY: expected "on-demand" or "local-only", got "${raw}"`,
+   );
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

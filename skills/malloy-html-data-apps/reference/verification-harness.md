@@ -63,7 +63,7 @@ page.on("pageerror", (e) => errors.push(e.message));
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 
 await page.goto("http://localhost:4173/index.html", { waitUntil: "load" });
-// publisher.js holds an SSE stream open under --watch, so networkidle NEVER fires.
+// publisher.js holds an SSE stream open (even with watch off), so networkidle NEVER fires.
 // Wait on CONTENT — and for ALL tiles to RESOLVE, not just the first to appear.
 // Asserting after only the first .value renders races the others and yields a
 // false "stuck skeleton" / "empty value" FAIL. "Resolved" = every tile has a

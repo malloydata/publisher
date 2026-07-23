@@ -10,7 +10,7 @@ Publisher is the open-source semantic model server for [Malloy](https://malloyda
 - Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `malloy-html-data-apps` skill covers it.
 - Review Malloy for correctness with the `malloy-review` skill.
 
-All of it runs against a local server you start in step 1 and reach over MCP in step 2.
+All of it runs against a local server you start in step 1 and reach over MCP in step 2, or over REST when you work unattended (section 7).
 
 ## 1. Start the server first
 
@@ -23,7 +23,7 @@ bun install
 bun run build && bun run start        # REST on :4000, MCP on :4040
 ```
 
-To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build.
+To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
 
 Poll until the server reports `serving` rather than assuming a fixed wait. From a clone the sample packages are read straight from `examples/`, so this is usually seconds. A first `npx` run has to download the published package and then fetch the samples from GitHub, which is network-bound and can push it to a minute or two:
 
@@ -47,7 +47,7 @@ Publisher exposes one MCP endpoint: `http://localhost:4040/mcp` (streamable HTTP
 
 Connect the client after the server is up. An MCP client discovers a server's tools when it connects, so if the client was already running when you started the server (for example you asked the agent to start it), its `malloy_*` tools stay missing until it reconnects. In Claude Code: run `/mcp`, select `malloy`, then choose **Reconnect**. That panel reports `Auth: not authenticated` and offers `Authenticate` as its first option, which does not apply here because the endpoint has no auth; Reconnect is the one that works. Restarting Claude also works. The simplest path is to start the server first, then launch the agent.
 
-If you are the agent and you started the server during this session, your `malloy_*` tools will not show up however long you wait: your tool list was fixed when you connected. You cannot reconnect yourself. Say so and ask the user to run `/mcp`, select `malloy`, and choose Reconnect (the panel offers `Authenticate` first, which is not it), or to restart Claude. Do not quietly fall back to calling the REST API with curl instead. It looks like it is working, but it hides a fixable problem the user can clear in seconds, and it gives up the grounded discovery, compile checks, and reload that the tools exist to provide.
+If you are the agent and you started the server during this session, your `malloy_*` tools will not show up however long you wait: your tool list was fixed when you connected. You cannot reconnect yourself. When a user is present, say so and ask them to run `/mcp`, select `malloy`, and choose Reconnect (the panel offers `Authenticate` first, which is not it), or to restart Claude. Do not quietly fall back to calling the REST API with curl instead: it hides a fixable problem the user can clear in seconds, and it gives up the grounded discovery, compile checks, and reload that the tools exist to provide. Running unattended, with nobody to reconnect you, is the other case: there the REST API is the supported interface, not a workaround. See section 7.
 
 Claude Code: this repo ships a project `.mcp.json`, so from a clone Claude Code offers to connect on first run. Approve it once. To add it elsewhere:
 
@@ -108,7 +108,7 @@ For your own fast checks while authoring, use `malloy_compile`; it validates a c
 
 A reload that fails to compile is safe: your files are left alone, the previously compiled model keeps serving, and the compile errors come back in the response. Compile-check with `malloy_compile` first anyway; it is faster feedback and keeps a broken model from reaching the reload at all.
 
-Both tools read the copy under `publisher_data/<env>/<pkg>/`. For an env that is not in watch mode, that is a copy Publisher made of the configured source, so editing the original source directory does nothing until you re-copy it. Editing the `publisher_data/` copy is fine for a quick iteration, but keep the source of truth outside it: nothing there is version-controlled and `--init` wipes the whole tree. Watch mode mounts your own source directory in place, which is the durable way to iterate.
+Both tools read the copy under `publisher_data/<env>/<pkg>/`, which sits in the server root: the directory the server was launched from, unless `--server_root` set another. For an env that is not in watch mode, that is a copy Publisher made of the configured source, so editing the original source directory does nothing until you re-copy it. To tell which mode you are in, `GET /api/v0/watch-mode/status` reports whether watching is enabled and for which environment; a watch-mounted package also shows as a symlink in `publisher_data/`. Editing the `publisher_data/` copy is fine for a quick iteration, but keep the source of truth outside it: nothing there is version-controlled and `--init` wipes the whole tree. Watch mode mounts your own source directory in place, which is the durable way to iterate.
 
 Watch mode is a separate, optional thing for a human: it is how someone launches the server so that they and any open browser tab see model edits live. It is a launch-time choice for whoever starts the server, not something to turn on by restarting a server that is already running. To use it, start the server with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`), which names an environment whose packages Publisher mounts in place (as symlinks) and watches, so edits to the source recompile. Requirements:
 
@@ -118,7 +118,22 @@ Watch mode is a separate, optional thing for a human: it is how someone launches
 
 A save that fails to compile is skipped without a signal, so if a change does not appear, compile-check it first with `malloy_compile`.
 
-## 7. Going deeper
+## 7. Working unattended: the REST API
+
+If you started the server yourself and there is no user to reconnect your MCP client (a one-shot task, a cloud sandbox), MCP is out of reach for the whole session. Use the REST API on port 4000 instead; discovery, query, compile, and reload are all there (`malloy_searchDocs` and `malloy_getContext`'s plain-English ranking stay MCP-only; for syntax, read the bundled [`skills/`](skills/) markdown). Like MCP it is unauthenticated, so keep it on localhost. The playbook with worked examples is [docs/ai-agents.md](docs/ai-agents.md), and the running server serves its complete OpenAPI spec at http://localhost:4000/api-doc.yaml. The map:
+
+- `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded).
+- `GET /api/v0/environments`: the environment names every other path needs (the bundled one is `examples`).
+- `GET /api/v0/environments/{env}/packages`, then `…/packages/{pkg}/models`: what exists.
+- `GET …/models/{path}`: the discovery step. The response's `sources` (each with its `views`), `queries`, and `givens` are the names you can run. Use them verbatim; never guess.
+- `POST …/models/{path}/query`: run a query. The body is either `{"query": "run: …"}` (ad-hoc) or `{"queryName": "…", "sourceName": "…"}` (a named view; `queryName` alone runs a model-level named query). Add `"compactJson": true` and parse the `result` string to get plain row objects.
+- `POST …/models/{path}/compile`: body `{"source": "…"}`; structured diagnostics without running anything.
+- `GET …/packages/{pkg}?reload=true`: recompile a package after editing its files (the REST form of `malloy_reloadPackage`).
+- `POST /api/v0/environments/{env}/packages` with `{"name": "…", "location": "/absolute/path"}`: serve a package of your own on a running server. [docs/packages.md](docs/packages.md) is the package format.
+
+Reading this file without a clone? Every doc referenced here resolves at `https://raw.githubusercontent.com/malloydata/publisher/main/<path>`, for example `docs/ai-agents.md`.
+
+## 8. Going deeper
 
 - [`docs/`](docs/) is the reference hub, see its [index](docs/README.md). Start with [docs/ai-agents.md](docs/ai-agents.md) for per-client MCP config and the MCP tool reference.
 - [`examples/`](examples/) holds the three served packages: [`storefront`](examples/storefront) (ecommerce model + dashboards), [`governed-analytics`](examples/governed-analytics) (givens, authorize, row-level access), and [`html-data-app`](examples/html-data-app) (a no-build HTML dashboard). [`data-app`](examples/data-app) is a standalone React SDK app, not a served package.
