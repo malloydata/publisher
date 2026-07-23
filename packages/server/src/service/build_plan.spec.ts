@@ -522,7 +522,7 @@ describe("compilePackageBuildPlan", () => {
 });
 
 describe("computePackageBuildPlan", () => {
-   it("returns null when the package declares no persist sources", async () => {
+   it("returns a null plan and no dropped sources when the package declares no persist sources", async () => {
       const pkg = {
          getModelPaths: () => [],
          getPackagePath: () => "/test",
@@ -530,6 +530,9 @@ describe("computePackageBuildPlan", () => {
          getMalloyConnection: async () => ({}),
       } as unknown as Parameters<typeof computePackageBuildPlan>[0];
 
-      expect(await computePackageBuildPlan(pkg)).toBeNull();
+      const { plan, droppedPersistSources } =
+         await computePackageBuildPlan(pkg);
+      expect(plan).toBeNull();
+      expect(droppedPersistSources).toEqual([]);
    });
 });

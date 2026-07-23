@@ -7,6 +7,7 @@ import {
    BadRequestError,
    InvalidStateTransitionError,
    MaterializationConflictError,
+   MaterializationEligibilityError,
    MaterializationNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
@@ -528,6 +529,29 @@ export class MaterializationService {
          const compiled = await environment.withPackageLock(packageName, () =>
             compilePackageBuildPlan(pkg, signal),
          );
+
+         // Backstop: refuse loudly if the package annotated a `#@ persist` source
+         // that Malloy's getBuildPlan() silently dropped (a shape it doesn't
+         // treat as a materializable root — see detectDroppedPersistSources).
+         // Without this the build would report success with an empty manifest and
+         // the source would serve live, contradicting the "hard refuse, never a
+         // silent fallback" contract. Scoped to the sources this build targets so
+         // a build of unrelated sources isn't blocked by a dropped sibling.
+         const relevantDropped = (compiled.droppedPersistSources ?? []).filter(
+            (d) => !opts.sourceNames || opts.sourceNames.includes(d.name),
+         );
+         if (relevantDropped.length > 0) {
+            const names = relevantDropped.map((d) => `'${d.name}'`).join(", ");
+            throw new MaterializationEligibilityError({
+               message:
+                  `Source(s) ${names} are annotated '#@ persist' but were not ` +
+                  `recognized as a materializable source, so nothing would be ` +
+                  `built (they would be served live). Only query/aggregate ` +
+                  `sources materialize; a filtered pass-through does not. Persist ` +
+                  `a query source, or invoke a parameterized source with a bound ` +
+                  `argument, or drop the annotation to serve live.`,
+            });
+         }
 
          let instructions: BuildInstruction[];
          let carried: Record<string, ManifestEntry>;
