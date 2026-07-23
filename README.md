@@ -61,9 +61,24 @@ semantic model. No schema spelunking, no hallucinated column names.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
   [docs/ai-agents.md](docs/ai-agents.md) for per-client config and the stdio bridge.
 
-> The MCP server is stateless and unauthenticated, and it can read any data your models connect to.
-> Bind it to loopback (`--host 127.0.0.1`) for local use, and put an authenticating gateway in front
-> before exposing it more widely.
+> The server, MCP and REST alike, is stateless and unauthenticated, and it can read any data your
+> models connect to. Bind it to loopback (`--host 127.0.0.1`) for local use, and put an
+> authenticating gateway in front before exposing it more widely.
+
+No MCP client, or an agent running unattended that started the server itself? The same loop is
+available over plain REST:
+
+```bash
+curl -s -X POST \
+  http://localhost:4000/api/v0/environments/examples/packages/storefront/models/storefront.malloy/query \
+  -H 'content-type: application/json' \
+  -d '{"query":"run: order_items -> by_category","compactJson":true}' | jq -r .result
+```
+
+A package is just a directory with a `publisher.json` and a `.malloy` model;
+[docs/packages.md](docs/packages.md) is the format reference. The running server serves its full
+OpenAPI spec at `http://localhost:4000/api-doc.yaml`, and [docs/ai-agents.md](docs/ai-agents.md)
+covers agents in both modes, MCP and REST.
 
 ## What you can do
 
@@ -91,23 +106,24 @@ semantic model. No schema spelunking, no hallucinated column names.
 
 The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README.md). Highlights:
 
-| Topic                                          | Doc                                                                                                                                                                                      |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runnable example packages                      | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
-| Connect an AI agent over MCP                   | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
-| No-code visual query builder                   | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
-| The Publisher App (navigation & features)      | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
-| Build a custom UI (no build step)              | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
-| REST & MCP API overview                        | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
-| Runtime parameters & access control            | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md)                                     |
-| Database connections                           | [docs/connections.md](docs/connections.md)                                                                                                                                               |
-| Materialization & scheduling                   | [docs/materialization.md](docs/materialization.md)                                                                                                                                       |
-| Deploy (npx / Docker / Compose)                | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |
-| Docker runtime deep-dive (layout, env, tuning) | [packages/server/README.docker.md](packages/server/README.docker.md)                                                                                                                     |
-| Configuration & tuning reference               | [docs/configuration.md](docs/configuration.md)                                                                                                                                           |
-| Theming (light/dark, palette)                  | [docs/theming.md](docs/theming.md)                                                                                                                                                       |
-| Architecture & how it fits together            | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
-| Build & develop from a clone                   | [docs/development.md](docs/development.md)                                                                                                                                               |
+| Topic                                               | Doc                                                                                                                                                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runnable example packages                           | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
+| Connect an AI agent (MCP, or REST when unattended)  | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
+| No-code visual query builder                        | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
+| The Publisher App (navigation & features)           | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
+| Build a custom UI (no build step)                   | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
+| The package format (`publisher.json`, models, data) | [docs/packages.md](docs/packages.md)                                                                                                                                                     |
+| REST & MCP API overview                             | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
+| Runtime parameters & access control                 | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md)                                     |
+| Database connections                                | [docs/connections.md](docs/connections.md)                                                                                                                                               |
+| Materialization & scheduling                        | [docs/materialization.md](docs/materialization.md)                                                                                                                                       |
+| Deploy (npx / Docker / Compose)                     | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |
+| Docker runtime deep-dive (layout, env, tuning)      | [packages/server/README.docker.md](packages/server/README.docker.md)                                                                                                                     |
+| Configuration & tuning reference                    | [docs/configuration.md](docs/configuration.md)                                                                                                                                           |
+| Theming (light/dark, palette)                       | [docs/theming.md](docs/theming.md)                                                                                                                                                       |
+| Architecture & how it fits together                 | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
+| Build & develop from a clone                        | [docs/development.md](docs/development.md)                                                                                                                                               |
 
 The complete user guide also lives at
 **[docs.malloydata.dev](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**.
