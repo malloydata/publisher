@@ -10,6 +10,8 @@ import {
   MaterializationsApi,
   ModelsApi,
   NotebooksApi,
+  PackageMaterializationConfig,
+  PackageScopeEnum,
   PackagesApi,
 } from "./generated";
 
@@ -143,7 +145,14 @@ export class PublisherClient {
   async updatePackage(
     environmentName: string,
     packageName: string,
-    updates: { name?: string; location?: string; description?: string },
+    updates: {
+      name?: string;
+      location?: string;
+      description?: string;
+      scope?: PackageScopeEnum;
+      // A schedule edit sends `{ schedule }`; clearing sends `{ schedule: null }`.
+      materialization?: PackageMaterializationConfig | null;
+    },
   ): Promise<any> {
     try {
       const response = await this.packagesApi.updatePackage(
@@ -261,6 +270,24 @@ export class PublisherClient {
         limit,
         offset,
       );
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error as AxiosError);
+    }
+  }
+
+  async listEnvironmentMaterializations(
+    environmentName: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<any[]> {
+    try {
+      const response =
+        await this.materializationsApi.listEnvironmentMaterializations(
+          environmentName,
+          limit,
+          offset,
+        );
       return response.data;
     } catch (error) {
       throw this.handleError(error as AxiosError);
