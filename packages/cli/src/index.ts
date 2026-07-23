@@ -18,6 +18,7 @@ import * as environmentCommands from "./commands/environments.js";
 import * as packageCommands from "./commands/packages.js";
 import * as connectionCommands from "./commands/connections.js";
 import * as materializationCommands from "./commands/materializations.js";
+import * as scheduleCommands from "./commands/schedule.js";
 import * as modelCommands from "./commands/models.js";
 import * as notebookCommands from "./commands/notebooks.js";
 import * as databaseCommands from "./commands/databases.js";
@@ -74,7 +75,7 @@ program
   )
   .option(
     "--package <n>",
-    "Package name (required for materialization/model/notebook/database)",
+    "Package name (required for model/notebook/database; optional for materialization: omit to list the whole environment)",
   )
   .option("--limit <n>", "Max materializations to return")
   .option("--offset <n>", "Materializations to skip")
@@ -100,21 +101,33 @@ program
           }
           await connectionCommands.listConnections(client, options.environment);
           break;
-        case "materialization":
-          if (!options.environment || !options.package) {
-            logError("--environment and --package are required");
+        case "materialization": {
+          if (!options.environment) {
+            logError("--environment is required");
             process.exit(1);
           }
-          await materializationCommands.listMaterializations(
-            client,
-            options.environment,
-            options.package,
-            {
-              limit: parseOptionalCount(options.limit, "--limit"),
-              offset: parseOptionalCount(options.offset, "--offset"),
-            },
-          );
+          const materializationOpts = {
+            limit: parseOptionalCount(options.limit, "--limit"),
+            offset: parseOptionalCount(options.offset, "--offset"),
+          };
+          // With --package, list that package's runs; without it, list every
+          // package's runs across the environment (each labeled by package).
+          if (options.package) {
+            await materializationCommands.listMaterializations(
+              client,
+              options.environment,
+              options.package,
+              materializationOpts,
+            );
+          } else {
+            await materializationCommands.listEnvironmentMaterializations(
+              client,
+              options.environment,
+              materializationOpts,
+            );
+          }
           break;
+        }
         case "model":
           if (!options.environment || !options.package) {
             logError("--environment and --package are required");
@@ -489,6 +502,68 @@ program
         options.environment,
         options.package,
         id,
+      );
+    } catch (error: any) {
+      logError("Command failed", error);
+      process.exit(1);
+    }
+  });
+
+// SCHEDULE COMMANDS (a package's materialization.schedule cron)
+const schedule = program
+  .command("schedule")
+  .description("View or edit a package's materialization schedule");
+
+schedule
+  .command("view")
+  .description("Show the package's schedule, scope, and freshness")
+  .requiredOption("--environment <n>", "Environment name")
+  .requiredOption("--package <n>", "Package name")
+  .action(async (options) => {
+    try {
+      await scheduleCommands.viewSchedule(
+        getClient(),
+        options.environment,
+        options.package,
+      );
+    } catch (error: any) {
+      logError("Command failed", error);
+      process.exit(1);
+    }
+  });
+
+schedule
+  .command("set <cron>")
+  .description(
+    'Set the schedule (5-field UNIX cron in UTC, e.g. "0 6 * * *"); also sets scope: version',
+  )
+  .requiredOption("--environment <n>", "Environment name")
+  .requiredOption("--package <n>", "Package name")
+  .action(async (cron, options) => {
+    try {
+      await scheduleCommands.setSchedule(
+        getClient(),
+        options.environment,
+        options.package,
+        cron,
+      );
+    } catch (error: any) {
+      logError("Command failed", error);
+      process.exit(1);
+    }
+  });
+
+schedule
+  .command("clear")
+  .description("Clear the schedule (revert to publish / on-demand only)")
+  .requiredOption("--environment <n>", "Environment name")
+  .requiredOption("--package <n>", "Package name")
+  .action(async (options) => {
+    try {
+      await scheduleCommands.clearSchedule(
+        getClient(),
+        options.environment,
+        options.package,
       );
     } catch (error: any) {
       logError("Command failed", error);

@@ -14,6 +14,10 @@ Open http://localhost:4000 to explore the bundled example packages. `storefront`
 `governed-analytics`, and `html-data-app` are cloned from GitHub on first launch — expect a short wait
 before `operationalState` reports `serving`. No credentials required.
 
+Run one first launch at a time: two `npx` first runs installing concurrently can race in the shared
+npx cache and corrupt the install. If the command stops working after an interrupted or doubled-up
+first run, delete the cache under `~/.npm/_npx` and run it again.
+
 ## Verify it's working
 
 ```bash
@@ -51,20 +55,22 @@ The field is absent when everything loaded. Otherwise it lists what is missing a
 ```json
 [
   {
-    "environment": "sales",
-    "message": "Failed to download or mount location: ./sales-models"
+    "environment": "local",
+    "package": "sales",
+    "message": "Failed to mount local directory: /home/me/my-data/sales-models"
   },
   {
     "environment": "examples",
     "package": "storefront",
-    "message": "Package manifest for /publisher_data/examples/storefront does not exist"
+    "message": "Package manifest for /publisher_data/examples/storefront does not exist."
   }
 ]
 ```
 
-An entry with no `package` means the whole environment was skipped, which also takes down its healthy
-packages. An entry with a `package` means that package alone is missing and its siblings are serving.
-Either way the fix is usually the `location` in `publisher.config.json`, or a missing
+An entry with a `package` names a package that failed to load (a location that would not mount, a
+missing `publisher.json`, a compile error) while its sibling packages keep serving. An entry with
+no `package` means the environment itself failed to initialize, and its packages are absent with
+it. Either way the fix is usually the `location` in `publisher.config.json`, or a missing
 `publisher.json` in the package directory.
 
 ## Docker

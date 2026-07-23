@@ -6,7 +6,7 @@ import extract from "extract-zip";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import simpleGit from "simple-git";
+import simpleGit, { type SimpleGitProgressEvent } from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
@@ -149,6 +149,281 @@ export function resolvePackageLocation(
       expanded = path.join(home, location.slice(2));
    }
    return path.isAbsolute(expanded) ? expanded : path.join(anchorDir, expanded);
+}
+
+/**
+ * Options for every package git clone. Packages are served from the default
+ * branch's working tree only (no ref is ever checked out afterwards, and no
+ * later git operation touches the clone: a reload deletes and re-clones), so
+ * history is pure download cost. Exported for tests.
+ */
+export const GIT_CLONE_OPTIONS: Record<string, string | number | null> = {
+   "--depth": 1,
+   "--single-branch": null,
+};
+
+/**
+ * With a progress handler configured, simple-git forces `--progress`, and a
+ * failed clone's error message then carries every progress line git wrote to
+ * stderr. Those messages surface in API error responses on the add/update
+ * package path and in the failure logs (the boot path's `/status` loadErrors
+ * carries a location-level summary instead), so drop the noise and keep the
+ * lines that say what went wrong. Returns the input when everything matched,
+ * rather than an empty error.
+ */
+export function stripGitProgressNoise(message: string): string {
+   const kept = message
+      .split(/\r\n|\r|\n/)
+      .filter(
+         (line) =>
+            !/\d+% \(\d+\/\d+\)/.test(line) &&
+            // Also matches the "Error: Cloning into ..." shape V8 seeds
+            // into err.stack from the message's first line.
+            !/^(\w+: )?Cloning into /.test(line.trim()),
+      )
+      .join("\n")
+      .trim();
+   return kept.length > 0 ? kept : message.trim();
+}
+
+/** e.g. `[examples] cloning malloydata/publisher (storefront, +2 more)`. */
+export function cloneProgressLabel(
+   repo: string,
+   context?: { environmentName?: string; packageNames?: string[] },
+): string {
+   const env = context?.environmentName ? `[${context.environmentName}] ` : "";
+   const names = context?.packageNames ?? [];
+   const shown = names.length > 4 ? names.slice(0, 3) : names;
+   const more = names.length - shown.length;
+   const pkgs =
+      shown.length > 0
+         ? ` (${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`
+         : "";
+   return `${env}cloning ${repo}${pkgs}`;
+}
+
+/**
+ * Streams git clone progress to stderr: off winston (whose format changes
+ * under OTEL and whose level can hide info lines) and off stdout (which an
+ * MCP stdio transport would own), and it is where git itself reports
+ * progress. A TTY gets one line rewritten in place; anything else (CI logs)
+ * gets a line per stage and per 25-point step, so a slow clone shows life
+ * without flooding. Exported for tests.
+ */
+export class CloneProgressReporter {
+   private lastStage: string | undefined;
+   private lastMilestone = -1;
+   private wroteInPlace = false;
+   private finished = false;
+   /**
+    * One reporter at a time owns a TTY's in-place line: environments load
+    * concurrently at boot, and two reporters `\r`-rewriting the same line
+    * would overwrite each other. Later reporters fall back to milestone
+    * lines until the owner finishes. Keyed by stream so tests with fake
+    * streams cannot collide.
+    */
+   private static ttyOwners = new WeakMap<object, CloneProgressReporter>();
+
+   constructor(
+      private readonly label: string,
+      private readonly out: NodeJS.WriteStream = process.stderr,
+   ) {}
+
+   onProgress(event: SimpleGitProgressEvent): void {
+      if (this.finished) {
+         // A late event after done() must not re-claim the TTY line the
+         // finishing newline just released.
+         return;
+      }
+      const { stage, progress, processed, total } = event;
+      const counts = total > 0 ? ` (${processed}/${total})` : "";
+      const text = `${this.label}: ${stage} ${progress}%${counts}`;
+      if (this.out.isTTY === true && this.claimTtyLine()) {
+         // Clamped to the terminal width: an auto-wrapped line breaks the
+         // \r rewrite (git clamps its own progress output for the same
+         // reason). The moving part sits at the end, so shorten the label
+         // and keep the stage/percentage visible; only when even the
+         // suffix cannot fit does a plain head slice apply. \x1b[K clears
+         // the tail of a longer previous line.
+         const budget = Math.max(1, (this.out.columns || 80) - 1);
+         const suffix = `: ${stage} ${progress}%${counts}`;
+         let line: string;
+         if (text.length <= budget) {
+            line = text;
+         } else if (suffix.length + 4 <= budget) {
+            const labelBudget = budget - suffix.length;
+            line = `${this.label.slice(0, labelBudget - 3)}...${suffix}`;
+         } else {
+            line = text.slice(0, budget);
+         }
+         this.out.write(`\r${line}\x1b[K`);
+         this.wroteInPlace = true;
+         return;
+      }
+      const milestone = Math.floor(progress / 25);
+      if (stage !== this.lastStage || milestone < this.lastMilestone) {
+         // A new stage, or a percentage restart inside one reported stage:
+         // git's server-side counting and compressing phases both arrive as
+         // stage "remote:", so a drop in progress marks the next sub-phase.
+         this.lastStage = stage;
+         this.lastMilestone = milestone;
+      } else if (milestone > this.lastMilestone) {
+         this.lastMilestone = milestone;
+      } else {
+         return;
+      }
+      if (this.out.isTTY === true) {
+         // A non-owner on a TTY: the cursor may sit mid-line on the owner's
+         // in-place output, so take over the row cleanly and scroll it.
+         this.out.write(`\r${text}\x1b[K\n`);
+         return;
+      }
+      this.out.write(`${text}\n`);
+   }
+
+   done(): void {
+      this.finished = true;
+      if (this.wroteInPlace) {
+         this.out.write("\n");
+      }
+      if (CloneProgressReporter.ttyOwners.get(this.out) === this) {
+         CloneProgressReporter.ttyOwners.delete(this.out);
+      }
+   }
+
+   private claimTtyLine(): boolean {
+      const owner = CloneProgressReporter.ttyOwners.get(this.out);
+      if (owner === undefined) {
+         CloneProgressReporter.ttyOwners.set(this.out, this);
+         return true;
+      }
+      return owner === this;
+   }
+}
+
+/**
+ * The last `/segment` of a run of non-empty path segments at the start of
+ * `afterRepo`, or undefined. Reproduces the capture of the old
+ * `(\/[^/]+)*` group, which retained only its final iteration and stopped at
+ * the first empty segment.
+ */
+function lastGitHubPathSegment(afterRepo: string): string | undefined {
+   if (!afterRepo.startsWith("/")) return undefined;
+   const run: string[] = [];
+   for (const seg of afterRepo.slice(1).split("/")) {
+      if (seg === "") break;
+      run.push(seg);
+   }
+   return run.length > 0 ? `/${run[run.length - 1]}` : undefined;
+}
+
+/**
+ * Parse a GitHub package location into owner, repo, and (optionally) the
+ * subdirectory path segment.
+ *
+ * Uses a repetition-free regex for owner/repo plus plain string ops for the
+ * path, NOT a single `(\/[^/]+)*` regex: those shapes were flagged as
+ * polynomial-backtracking (ReDoS) on adversarial input, and the location is
+ * user/config supplied. Behavior is preserved exactly, including
+ * `packagePath` being only the LAST path segment after the repo (a quirk the
+ * callers rely on); environment_store.spec.ts fuzzes the old regexes as an
+ * oracle to prove equivalence. Exported for that test.
+ */
+export function parseGitHubUrl(
+   githubUrl: string,
+): { owner: string; repoName: string; packagePath?: string } | null {
+   // HTTPS: https://github.com/owner/repo/tree/branch/subdir. The host may
+   // appear anywhere (the old regex was unanchored); the owner/repo pattern
+   // has no repetition group, so it cannot backtrack polynomially.
+   const httpsMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(githubUrl);
+   if (httpsMatch) {
+      const afterRepo = githubUrl.slice(
+         httpsMatch.index + httpsMatch[0].length,
+      );
+      return {
+         owner: httpsMatch[1],
+         repoName: httpsMatch[2],
+         packagePath: lastGitHubPathSegment(afterRepo),
+      };
+   }
+
+   // SSH: git@github.com:owner/repo(.git)?(/subdir)*. The old regex was
+   // $-anchored, so the whole tail after the repo had to be a run of
+   // non-empty `/segment`s; a trailing slash or empty segment matched nothing
+   // and failed the parse.
+   // `git@github.com:` may appear anywhere (the old regex was not anchored at
+   // the start), though in practice isGitHubURL only routes locations that
+   // begin with it here.
+   const SSH_PREFIX = "git@github.com:";
+   const sshAt = githubUrl.indexOf(SSH_PREFIX);
+   if (sshAt !== -1) {
+      const rest = githubUrl.slice(sshAt + SSH_PREFIX.length);
+      const firstSlash = rest.indexOf("/");
+      if (firstSlash > 0) {
+         const owner = rest.slice(0, firstSlash);
+         const afterOwner = rest.slice(firstSlash + 1);
+         const secondSlash = afterOwner.indexOf("/");
+         const repoSeg =
+            secondSlash === -1 ? afterOwner : afterOwner.slice(0, secondSlash);
+         const afterRepo =
+            secondSlash === -1 ? "" : afterOwner.slice(secondSlash);
+         // repo was `[^/\s]+` (no whitespace); anything else falls through to
+         // "not a GitHub URL", as the old regex did.
+         if (repoSeg.length > 0 && !/\s/.test(repoSeg)) {
+            const repoName =
+               repoSeg.length > 4 && repoSeg.endsWith(".git")
+                  ? repoSeg.slice(0, -4)
+                  : repoSeg;
+            if (afterRepo === "") {
+               return { owner, repoName };
+            }
+            const segments = afterRepo.slice(1).split("/");
+            // $-anchored: every trailing segment had to be non-empty.
+            if (!segments.includes("")) {
+               return {
+                  owner,
+                  repoName,
+                  packagePath: `/${segments[segments.length - 1]}`,
+               };
+            }
+         }
+      }
+   }
+
+   return null;
+}
+
+/** `0.0.0.0`/`::` bind every interface; a script needs a host it can dial. */
+function displayHost(host: string): string {
+   if (host === "0.0.0.0" || host === "::") {
+      return "localhost";
+   }
+   // An IPv6 literal needs brackets to be dialable inside a URL.
+   return host.includes(":") ? `[${host}]` : host;
+}
+
+/**
+ * The one-line machine-readable boot signal. Scripts grep for the
+ * `PUBLISHER_READY` prefix instead of polling `/api/v0/status`, and the
+ * counts carry what `operationalState: "serving"` alone does not say: how
+ * much of the configured world actually loaded. Host and ports mirror
+ * server.ts's use-site defaults; parseArgs writes the flag values into
+ * process.env before the store is constructed. Exported for tests.
+ */
+export function formatReadinessLine(counts: {
+   environments: number;
+   packages: number;
+   loadErrors: number;
+}): string {
+   const host = displayHost(process.env.PUBLISHER_HOST || "0.0.0.0");
+   const port = Number(process.env.PUBLISHER_PORT || 4000);
+   const mcpPort = Number(process.env.MCP_PORT || 4040);
+   return (
+      `PUBLISHER_READY url=http://${host}:${port} ` +
+      `mcp=http://${host}:${mcpPort} ` +
+      `environments=${counts.environments} packages=${counts.packages} ` +
+      `load_errors=${counts.loadErrors}`
+   );
 }
 
 export class EnvironmentStore {
@@ -446,10 +721,55 @@ export class EnvironmentStore {
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
+         this.emitReadinessLine();
       } catch (error) {
          markNotReady();
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
+         try {
+            // The failure counterpart of PUBLISHER_READY, so a script
+            // waiting on that token fails fast instead of hanging on a
+            // broken config. Redacted because initialization errors can
+            // carry connection strings.
+            process.stderr.write(
+               `PUBLISHER_INIT_FAILED error=${JSON.stringify(
+                  redactPgSecrets(
+                     error instanceof Error ? error.message : String(error),
+                  ),
+               )}\n`,
+            );
+         } catch {
+            // A failed stderr write must not mask the logged error above.
+         }
+      }
+   }
+
+   /**
+    * Printed exactly once, from initialize()'s success tail: markReady() has
+    * just flipped /api/v0/status to "serving", and both HTTP listeners bound
+    * long before the downloads finished, so this is the same moment every
+    * existing readiness consumer (CI status polls, MCP /health/readiness)
+    * fires on. The catch above swallows a failed boot after markNotReady(),
+    * so the line never prints for a server that is not actually serving.
+    */
+   private emitReadinessLine(): void {
+      let packages = 0;
+      let loadErrors = this.failedEnvironments.size;
+      for (const environment of this.environments.values()) {
+         packages += environment.getServingPackageCount();
+         loadErrors += environment.getFailedPackages().size;
+      }
+      try {
+         process.stderr.write(
+            formatReadinessLine({
+               environments: this.environments.size,
+               packages,
+               loadErrors,
+            }) + "\n",
+         );
+      } catch {
+         // A failed stderr write must not fail a boot that is already
+         // serving.
       }
    }
 
@@ -1347,7 +1667,7 @@ export class EnvironmentStore {
          // For GitHub URLs, group by base repository URL to optimize downloads
          let locationKey = _package.location;
          if (this.isGitHubURL(_package.location)) {
-            const githubInfo = this.parseGitHubUrl(_package.location);
+            const githubInfo = parseGitHubUrl(_package.location);
             if (githubInfo) {
                // Always use HTTPS format for grouping to ensure consistency
                locationKey = `https://github.com/${githubInfo.owner}/${githubInfo.repoName}`;
@@ -1364,6 +1684,8 @@ export class EnvironmentStore {
       }
 
       // Processing by each unique location
+      const totalPackages = packages.length;
+      let mountedCount = 0;
       for (const [groupedLocation, packagesForLocation] of locationGroups) {
          // Use a hash instead of base64 to keep paths short (Windows MAX_PATH limit)
          // This works for both local and remote paths
@@ -1390,6 +1712,7 @@ export class EnvironmentStore {
                tempDownloadPath,
                environmentName,
                "shared",
+               packagesForLocation.map((p) => p.name),
             );
          } catch (error) {
             downloaded = false;
@@ -1419,7 +1742,7 @@ export class EnvironmentStore {
                // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
-                  const githubInfo = this.parseGitHubUrl(_package.location);
+                  const githubInfo = parseGitHubUrl(_package.location);
                   if (githubInfo && githubInfo.packagePath) {
                      // Extract subdirectory from the original GitHub URL
                      // Handle both /tree/main/subdir and /tree/branch/subdir cases
@@ -1490,7 +1813,7 @@ export class EnvironmentStore {
                            linkType,
                         );
                         logger.info(
-                           `In-place mount (watch mode): linked package "${packageDir}" -> "${absoluteSourcePath}"`,
+                           `In-place mount (watch mode): linked package "${packageDir}" -> "${absoluteSourcePath}" (${++mountedCount}/${totalPackages})`,
                         );
                      } catch (linkError) {
                         // Degrade gracefully instead of failing the env load:
@@ -1511,6 +1834,9 @@ export class EnvironmentStore {
                         await fs.promises.cp(sourcePath, absolutePackagePath, {
                            recursive: true,
                         });
+                        logger.info(
+                           `Copied package "${packageDir}" (${++mountedCount}/${totalPackages})`,
+                        );
                      }
                   } else {
                      if (
@@ -1532,7 +1858,7 @@ export class EnvironmentStore {
                         recursive: true,
                      });
                      logger.info(
-                        `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"}`,
+                        `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"} (${++mountedCount}/${totalPackages})`,
                      );
                   }
                } else {
@@ -1545,7 +1871,7 @@ export class EnvironmentStore {
                      recursive: true,
                   });
                   logger.info(
-                     `Copied entire download as package "${packageDir}"`,
+                     `Copied entire download as package "${packageDir}" (${++mountedCount}/${totalPackages})`,
                   );
                }
             } catch (error) {
@@ -1590,6 +1916,7 @@ export class EnvironmentStore {
       targetPath: string,
       environmentName: string,
       packageName: string,
+      packageNames?: string[],
    ) {
       const isCompressedFile = location.endsWith(".zip");
       // Handle GCS paths
@@ -1623,7 +1950,10 @@ export class EnvironmentStore {
             logger.info(
                `Cloning GitHub repository from "${location}" to "${targetPath}"`,
             );
-            await this.downloadGitHubDirectory(location, targetPath);
+            await this.downloadGitHubDirectory(location, targetPath, {
+               environmentName,
+               packageNames,
+            });
             return;
          } catch (error) {
             const errorData = this.extractErrorDataFromError(error);
@@ -1876,35 +2206,15 @@ export class EnvironmentStore {
       logger.info(`Downloaded S3 directory ${s3Path} to ${absoluteDirPath}`);
    }
 
-   private parseGitHubUrl(
+   async downloadGitHubDirectory(
       githubUrl: string,
-   ): { owner: string; repoName: string; packagePath?: string } | null {
-      // Handle HTTPS format: https://github.com/owner/repo/tree/branch/subdir
-      const httpsRegex =
-         /github\.com\/(?<owner>[^/]+)\/(?<repoName>[^/]+)(?<packagePath>\/[^/]+)*/;
-      const httpsMatch = githubUrl.match(httpsRegex);
-      if (httpsMatch) {
-         const { owner, repoName, packagePath } = httpsMatch.groups!;
-         return { owner, repoName, packagePath };
-      }
-
-      // Handle SSH format: git@github.com:owner/repo.git or git@github.com:owner/repo
-      const sshRegex =
-         /git@github\.com:(?<owner>[^/]+)\/(?<repoName>[^/\s]+?)(?:\.git)?(?<packagePath>\/[^/]+)*$/;
-      const sshMatch = githubUrl.match(sshRegex);
-      if (sshMatch) {
-         const { owner, repoName, packagePath } = sshMatch.groups!;
-         return { owner, repoName, packagePath };
-      }
-
-      return null;
-   }
-
-   async downloadGitHubDirectory(githubUrl: string, absoluteDirPath: string) {
+      absoluteDirPath: string,
+      progressContext?: { environmentName?: string; packageNames?: string[] },
+   ) {
       assertSafeEnvironmentPath(absoluteDirPath);
       // First we'll clone the repo without the additional path
       // E.g. we're removing `/tree/main/imdb` from https://github.com/credibledata/malloy-samples/tree/main/imdb
-      const githubInfo = this.parseGitHubUrl(githubUrl);
+      const githubInfo = parseGitHubUrl(githubUrl);
       if (!githubInfo) {
          throw new Error(`Invalid GitHub URL: ${githubUrl}`);
       }
@@ -1923,17 +2233,30 @@ export class EnvironmentStore {
       });
       await fs.promises.mkdir(absoluteDirPath, { recursive: true });
       const repoUrl = `https://github.com/${owner}/${repoName}`;
+      const reporter = new CloneProgressReporter(
+         cloneProgressLabel(`${owner}/${repoName}`, progressContext),
+      );
 
       // We'll clone the repo into absoluteDirPath
       await new Promise<void>((resolve, reject) => {
-         simpleGit().clone(repoUrl, absoluteDirPath, {}, (err) => {
+         simpleGit({
+            progress: (event) => reporter.onProgress(event),
+         }).clone(repoUrl, absoluteDirPath, GIT_CLONE_OPTIONS, (err) => {
+            reporter.done();
             if (err) {
+               err.message = stripGitProgressNoise(err.message);
+               if (err.stack) {
+                  // V8 captures the message into the stack at construction,
+                  // so the spew survives there unless stripped too.
+                  err.stack = stripGitProgressNoise(err.stack);
+               }
                const errorData = this.extractErrorDataFromError(err);
                logger.error(
                   `Failed to clone GitHub repository "${repoUrl}"`,
                   errorData,
                );
                reject(err);
+               return;
             }
             resolve();
          });

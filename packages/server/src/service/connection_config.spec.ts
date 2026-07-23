@@ -572,6 +572,27 @@ describe("SSH proxy validation", () => {
       }
    });
 
+   it("accepts sslmode=verify-full on a proxied connection with no CA bundle (verifies against Node's bundled CA roots + NODE_EXTRA_CA_CERTS)", () => {
+      // Unlike verify-ca (which passes an explicit sslrootcert path and so
+      // fails fast without NODE_EXTRA_CA_CERTS), verify-full trusts Node's
+      // bundled Mozilla CA roots + NODE_EXTRA_CA_CERTS — so it must NOT require
+      // a bundle at load.
+      const prior = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         const conn: ApiConnection = {
+            ...validSshProxy,
+            postgresConnection: {
+               ...validSshProxy.postgresConnection!,
+               sslmode: "verify-full",
+            },
+         };
+         expect(() => assembleEnvironmentConnections([conn])).not.toThrow();
+      } finally {
+         if (prior !== undefined) process.env.NODE_EXTRA_CA_CERTS = prior;
+      }
+   });
+
    it("rejects sslmode set on a non-proxied connection (silent-ignore footgun)", () => {
       const conn: ApiConnection = {
          name: "pg-direct",

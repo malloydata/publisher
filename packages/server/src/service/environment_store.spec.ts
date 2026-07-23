@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   mock,
+   spyOn,
+} from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { promises as fsPromises } from "fs";
 import * as path from "path";
@@ -7,8 +15,17 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError } from "../errors";
-import { Environment } from "./environment";
-import { EnvironmentStore, resolvePackageLocation } from "./environment_store";
+import { Environment, PackageStatus } from "./environment";
+import {
+   CloneProgressReporter,
+   cloneProgressLabel,
+   EnvironmentStore,
+   formatReadinessLine,
+   GIT_CLONE_OPTIONS,
+   parseGitHubUrl,
+   resolvePackageLocation,
+   stripGitProgressNoise,
+} from "./environment_store";
 
 type MockData = Record<string, unknown>;
 
@@ -1595,5 +1612,587 @@ describe("resolvePackageLocation", () => {
       expect(resolvePackageLocation("~user/foo", CONFIG_DIR, HOME)).toBe(
          path.join(CONFIG_DIR, "~user", "foo"),
       );
+   });
+});
+
+describe("Environment.getServingPackageCount", () => {
+   const envRoot = path.join(TEMP_DIR_PATH, "serving-count-env");
+
+   beforeEach(() => {
+      rmSync(envRoot, { recursive: true, force: true });
+      mkdirSync(envRoot, { recursive: true });
+   });
+
+   afterEach(() => {
+      rmSync(envRoot, { recursive: true, force: true });
+   });
+
+   it("excludes a package that is registered SERVING but recorded as failed", async () => {
+      // A mount-failed package is seeded SERVING at boot and only pruned by a
+      // later side-effect load; if that prune is skipped (a transient DB or
+      // memory-pressure error), packages= must still not count it, and it
+      // must not overlap load_errors=. The serving count is registered-minus-
+      // failed, so it holds regardless of whether the prune ran.
+      //
+      // Two good and one bad, not one-and-one: this catches both size-only
+      // (would say 3) and a full inversion (would say 1), so the count really
+      // is "registered minus failed".
+      const env = await Environment.create("e", envRoot, []);
+      env.setPackageStatus("good-1", PackageStatus.SERVING);
+      env.setPackageStatus("good-2", PackageStatus.SERVING);
+      env.setPackageStatus("bad", PackageStatus.SERVING);
+      env.setPackageMountError("bad", "location does not exist");
+
+      expect(env.getServingPackageCount()).toBe(2);
+      // Disjoint from the failure set, so packages= + load_errors= never
+      // double-counts "bad".
+      expect(env.getFailedPackages().has("bad")).toBe(true);
+   });
+});
+
+describe("GIT_CLONE_OPTIONS", () => {
+   it("clones shallow and single-branch", () => {
+      // The load-bearing content: packages serve the default branch's working
+      // tree only, so history is pure download cost. simple-git serializes
+      // this to `git clone --depth=1 --single-branch`.
+      expect(GIT_CLONE_OPTIONS["--depth"]).toBe(1);
+      expect(GIT_CLONE_OPTIONS).toHaveProperty("--single-branch", null);
+   });
+});
+
+describe("stripGitProgressNoise", () => {
+   it("drops progress lines and keeps the error", () => {
+      const message = [
+         "Cloning into '/tmp/x'...",
+         "remote: Counting objects: 45% (9/20)",
+         "Receiving objects: 99% (990/1000)",
+         "fatal: early EOF",
+         "fatal: fetch-pack: invalid index-pack output",
+      ].join("\n");
+      expect(stripGitProgressNoise(message)).toBe(
+         "fatal: early EOF\nfatal: fetch-pack: invalid index-pack output",
+      );
+   });
+
+   it("handles carriage-return separated progress spew", () => {
+      // git rewrites progress in place with \r, so the captured stderr is one
+      // long line unless split on \r too.
+      const message =
+         "Receiving objects: 10% (1/10)\rReceiving objects: 50% (5/10)\rfatal: the remote end hung up unexpectedly";
+      expect(stripGitProgressNoise(message)).toBe(
+         "fatal: the remote end hung up unexpectedly",
+      );
+   });
+
+   it("returns the input when every line is progress noise", () => {
+      const message = "Receiving objects: 10% (1/10)";
+      expect(stripGitProgressNoise(message)).toBe(message);
+   });
+});
+
+describe("cloneProgressLabel", () => {
+   it("names the environment, repo, and packages", () => {
+      expect(
+         cloneProgressLabel("malloydata/publisher", {
+            environmentName: "examples",
+            packageNames: ["storefront", "governed-analytics"],
+         }),
+      ).toBe(
+         "[examples] cloning malloydata/publisher (storefront, governed-analytics)",
+      );
+   });
+
+   it("truncates long package lists", () => {
+      expect(
+         cloneProgressLabel("o/r", {
+            environmentName: "e",
+            packageNames: ["a", "b", "c", "d", "e", "f"],
+         }),
+      ).toBe("[e] cloning o/r (a, b, c, +3 more)");
+   });
+
+   it("labels by repo alone without context", () => {
+      // The controller add-package path passes no context.
+      expect(cloneProgressLabel("o/r")).toBe("cloning o/r");
+   });
+});
+
+describe("CloneProgressReporter", () => {
+   const event = (stage: string, progress: number, processed = 0, total = 0) =>
+      ({ method: "clone", stage, progress, processed, total }) as Parameters<
+         CloneProgressReporter["onProgress"]
+      >[0];
+
+   const fakeOut = (isTTY: boolean) => {
+      const writes: string[] = [];
+      const out = {
+         isTTY,
+         write: (chunk: string) => {
+            writes.push(chunk);
+            return true;
+         },
+      } as unknown as NodeJS.WriteStream;
+      return { writes, out };
+   };
+
+   it("prints a line per stage and per 25-point step off a TTY", () => {
+      const { writes, out } = fakeOut(false);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("receiving", 0));
+      reporter.onProgress(event("receiving", 10)); // same milestone, suppressed
+      reporter.onProgress(event("receiving", 24)); // same milestone, suppressed
+      reporter.onProgress(event("receiving", 25, 25, 100));
+      reporter.onProgress(event("receiving", 90));
+      reporter.onProgress(event("resolving", 5)); // stage change, printed
+      reporter.done(); // no in-place line to finish
+      expect(writes).toEqual([
+         "cloning o/r: receiving 0%\n",
+         "cloning o/r: receiving 25% (25/100)\n",
+         "cloning o/r: receiving 90%\n",
+         "cloning o/r: resolving 5%\n",
+      ]);
+   });
+
+   it("tolerates arbitrary stage strings", () => {
+      // Server-side progress lines parse with stage "remote:".
+      const { writes, out } = fakeOut(false);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("remote:", 50));
+      expect(writes).toEqual(["cloning o/r: remote: 50%\n"]);
+   });
+
+   it("rewrites one line in place on a TTY and finishes it on done", () => {
+      const { writes, out } = fakeOut(true);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("receiving", 10, 1, 10));
+      reporter.onProgress(event("receiving", 11, 2, 10));
+      reporter.done();
+      expect(writes).toEqual([
+         "\rcloning o/r: receiving 10% (1/10)\x1b[K",
+         "\rcloning o/r: receiving 11% (2/10)\x1b[K",
+         "\n",
+      ]);
+   });
+
+   it("clamps the in-place line to the terminal width", () => {
+      // An auto-wrapped line breaks the \r rewrite: the cursor lands on the
+      // continuation row and every event scrolls a stale fragment. Too
+      // narrow for even the suffix, so a plain head slice applies.
+      const { writes, out } = fakeOut(true);
+      (out as unknown as { columns: number }).columns = 20;
+      const reporter = new CloneProgressReporter("cloning owner/repo", out);
+      reporter.onProgress(event("receiving", 45, 100, 220));
+      reporter.done();
+      expect(writes[0]).toBe(
+         "\r" + "cloning owner/repo:".slice(0, 19) + "\x1b[K",
+      );
+      expect(writes[0].length).toBe(1 + 19 + 3);
+   });
+
+   it("keeps the moving percentage visible when clamping a long label", () => {
+      // The default npx label is longer than an 80-column terminal; the
+      // label shortens, the stage and percentage stay on screen.
+      const { writes, out } = fakeOut(true);
+      (out as unknown as { columns: number }).columns = 60;
+      const reporter = new CloneProgressReporter(
+         "[examples] cloning malloydata/publisher (storefront, governed-analytics)",
+         out,
+      );
+      reporter.onProgress(event("receiving", 45, 100, 220));
+      reporter.done();
+      const visible = writes[0].slice(1, -3); // strip \r and \x1b[K
+      expect(visible.length).toBe(59);
+      expect(visible.endsWith(": receiving 45% (100/220)")).toBe(true);
+      expect(visible).toContain("...");
+   });
+
+   it("resets the milestone when the percentage restarts within a stage", () => {
+      // git's server-side counting and compressing phases both parse as
+      // stage "remote:"; the second starts back at 0%.
+      const { writes, out } = fakeOut(false);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("remote:", 100));
+      reporter.onProgress(event("remote:", 10));
+      reporter.onProgress(event("remote:", 60));
+      reporter.done();
+      expect(writes).toEqual([
+         "cloning o/r: remote: 100%\n",
+         "cloning o/r: remote: 10%\n",
+         "cloning o/r: remote: 60%\n",
+      ]);
+   });
+
+   it("ignores a progress event that arrives after done()", () => {
+      // simple-git can deliver a trailing event after the completion
+      // callback ran done(); it must not re-write the row the finishing
+      // newline scrolled past, nor re-claim TTY ownership.
+      const { writes, out } = fakeOut(true);
+      const reporter = new CloneProgressReporter("cloning o/r", out);
+      reporter.onProgress(event("receiving", 50));
+      reporter.done();
+      const writesAfterDone = writes.length;
+      reporter.onProgress(event("receiving", 90));
+      expect(writes.length).toBe(writesAfterDone);
+   });
+
+   it("only one reporter owns a TTY's in-place line at a time", () => {
+      // Environments load concurrently at boot; a second clone must not
+      // rewrite the first one's line. It falls back to milestone lines.
+      const { writes, out } = fakeOut(true);
+      const first = new CloneProgressReporter("cloning a/a", out);
+      const second = new CloneProgressReporter("cloning b/b", out);
+      first.onProgress(event("receiving", 10));
+      second.onProgress(event("receiving", 20));
+      first.onProgress(event("receiving", 30));
+      first.done();
+      // After the owner finishes, the line is free to claim again.
+      second.onProgress(event("receiving", 90));
+      second.done();
+      expect(writes).toEqual([
+         "\rcloning a/a: receiving 10%\x1b[K",
+         // The non-owner takes over the row cleanly before scrolling it, so
+         // its milestone never concatenates onto the owner's in-place text.
+         "\rcloning b/b: receiving 20%\x1b[K\n",
+         "\rcloning a/a: receiving 30%\x1b[K",
+         "\n",
+         "\rcloning b/b: receiving 90%\x1b[K",
+         "\n",
+      ]);
+   });
+});
+
+describe("formatReadinessLine", () => {
+   const SAVED = ["PUBLISHER_HOST", "PUBLISHER_PORT", "MCP_PORT"] as const;
+   let saved: Record<string, string | undefined>;
+
+   beforeEach(() => {
+      saved = {};
+      for (const key of SAVED) {
+         saved[key] = process.env[key];
+         delete process.env[key];
+      }
+   });
+
+   afterEach(() => {
+      for (const key of SAVED) {
+         if (saved[key] === undefined) delete process.env[key];
+         else process.env[key] = saved[key];
+      }
+   });
+
+   it("uses the server defaults and displays the wildcard bind as localhost", () => {
+      expect(
+         formatReadinessLine({ environments: 1, packages: 3, loadErrors: 0 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
+            "environments=1 packages=3 load_errors=0",
+      );
+   });
+
+   it("brackets an IPv6 literal host so the URL is dialable", () => {
+      process.env.PUBLISHER_HOST = "::1";
+      expect(
+         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://[::1]:4000 mcp=http://[::1]:4040 " +
+            "environments=1 packages=1 load_errors=0",
+      );
+   });
+
+   it("displays the :: wildcard bind as localhost", () => {
+      process.env.PUBLISHER_HOST = "::";
+      expect(
+         formatReadinessLine({ environments: 1, packages: 1, loadErrors: 0 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 " +
+            "environments=1 packages=1 load_errors=0",
+      );
+   });
+
+   it("respects the flag-derived env vars", () => {
+      // parseArgs writes --host/--port/--mcp_port here before the store exists.
+      process.env.PUBLISHER_HOST = "127.0.0.1";
+      process.env.PUBLISHER_PORT = "4321";
+      process.env.MCP_PORT = "4361";
+      expect(
+         formatReadinessLine({ environments: 2, packages: 5, loadErrors: 1 }),
+      ).toBe(
+         "PUBLISHER_READY url=http://127.0.0.1:4321 mcp=http://127.0.0.1:4361 " +
+            "environments=2 packages=5 load_errors=1",
+      );
+   });
+});
+
+describe("readiness line emission", () => {
+   const readinessRoot = path.join(TEMP_DIR_PATH, "readiness-line-test");
+   let stderrWrites: string[];
+   let stderrSpy: ReturnType<typeof spyOn>;
+
+   const readyLines = () =>
+      stderrWrites
+         .join("")
+         .split("\n")
+         .filter((line) => line.startsWith("PUBLISHER_READY"));
+
+   const writePackage = (name: string) => {
+      const dir = path.join(readinessRoot, "src-packages", name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "publisher.json"), JSON.stringify({ name }));
+      return dir;
+   };
+
+   beforeEach(() => {
+      if (existsSync(readinessRoot)) {
+         rmSync(readinessRoot, { recursive: true, force: true });
+      }
+      mkdirSync(readinessRoot, { recursive: true });
+      mock.module("../config", () => ({
+         isPublisherConfigFrozen: () => false,
+      }));
+      stderrWrites = [];
+      stderrSpy = spyOn(process.stderr, "write").mockImplementation(
+         (chunk: string | Uint8Array) => {
+            stderrWrites.push(String(chunk));
+            return true;
+         },
+      );
+   });
+
+   afterEach(() => {
+      stderrSpy.mockRestore();
+      rmSync(readinessRoot, { recursive: true, force: true });
+   });
+
+   it("emits exactly one line with counts after a successful boot", async () => {
+      const pkgA = writePackage("pkg-a");
+      const pkgB = writePackage("pkg-b");
+      writeFileSync(
+         path.join(readinessRoot, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: "readiness-env",
+                  packages: [
+                     { name: "pkg-a", location: pkgA },
+                     { name: "pkg-b", location: pkgB },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(readinessRoot);
+      await store.finishedInitialization;
+
+      const lines = readyLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("environments=1");
+      expect(lines[0]).toContain("packages=2");
+      expect(lines[0]).toContain("load_errors=0");
+      expect(lines[0]).toMatch(
+         /^PUBLISHER_READY url=http:\/\/\S+ mcp=http:\/\/\S+ environments=\d+ packages=\d+ load_errors=\d+$/,
+      );
+   });
+
+   it("counts a mount failure in load_errors and still emits", async () => {
+      // Post-#903 a bad location drops the package, not the boot; the line
+      // must report the failure rather than stay silent or claim a clean load.
+      const pkgA = writePackage("pkg-a");
+      writeFileSync(
+         path.join(readinessRoot, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: "readiness-env",
+                  packages: [
+                     { name: "pkg-a", location: pkgA },
+                     {
+                        name: "pkg-missing",
+                        location: path.join(readinessRoot, "does-not-exist"),
+                     },
+                  ],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(readinessRoot);
+      await store.finishedInitialization;
+
+      const lines = readyLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("environments=1");
+      // packages= is what the server actually serves: the boot-time database
+      // sync prunes a package whose load failed (environment.ts getPackage
+      // catch), so the failed one appears in load_errors, not in packages.
+      expect(lines[0]).toContain("packages=1");
+      expect(lines[0]).toContain("load_errors=1");
+   });
+
+   it("counts a failed environment in load_errors", async () => {
+      // An environment that fails initialization outright lands in
+      // failedEnvironments, not in environments; the line must count it
+      // alongside per-package failures. Failure lever: a FILE squatting the
+      // environment's publisher_data directory path makes the initial mkdir
+      // throw before any package mounts.
+      const pkgA = writePackage("pkg-a");
+      mkdirSync(path.join(readinessRoot, "publisher_data"), {
+         recursive: true,
+      });
+      writeFileSync(path.join(readinessRoot, "publisher_data", "bad-env"), "");
+      writeFileSync(
+         path.join(readinessRoot, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: "good-env",
+                  packages: [{ name: "pkg-a", location: pkgA }],
+                  connections: [],
+               },
+               {
+                  name: "bad-env",
+                  packages: [{ name: "pkg-a", location: pkgA }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(readinessRoot);
+      await store.finishedInitialization;
+
+      const lines = readyLines();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("environments=1");
+      expect(lines[0]).toContain("packages=1");
+      expect(lines[0]).toContain("load_errors=1");
+   });
+});
+
+describe("parseGitHubUrl", () => {
+   // The exact regexes parseGitHubUrl replaced, kept here ONLY as a
+   // behavioral oracle. The product code no longer runs them (they were
+   // flagged as polynomial-ReDoS); the fuzz below proves the linear
+   // string parser returns identical results. Never feed these long input.
+   const oldParseGitHubUrl = (
+      githubUrl: string,
+   ): { owner: string; repoName: string; packagePath?: string } | null => {
+      const httpsRegex =
+         /github\.com\/(?<owner>[^/]+)\/(?<repoName>[^/]+)(?<packagePath>\/[^/]+)*/;
+      const httpsMatch = githubUrl.match(httpsRegex);
+      if (httpsMatch) {
+         const { owner, repoName, packagePath } = httpsMatch.groups!;
+         return { owner, repoName, packagePath };
+      }
+      const sshRegex =
+         /git@github\.com:(?<owner>[^/]+)\/(?<repoName>[^/\s]+?)(?:\.git)?(?<packagePath>\/[^/]+)*$/;
+      const sshMatch = githubUrl.match(sshRegex);
+      if (sshMatch) {
+         const { owner, repoName, packagePath } = sshMatch.groups!;
+         return { owner, repoName, packagePath };
+      }
+      return null;
+   };
+
+   // Absent and undefined packagePath are the same result; normalize so the
+   // comparison ignores that representational difference.
+   const norm = (r: ReturnType<typeof parseGitHubUrl>) =>
+      r === null
+         ? null
+         : {
+              owner: r.owner,
+              repoName: r.repoName,
+              packagePath: r.packagePath ?? null,
+           };
+
+   it("matches the documented cases", () => {
+      expect(
+         parseGitHubUrl(
+            "https://github.com/malloydata/publisher/tree/main/examples/storefront",
+         ),
+      ).toEqual({
+         owner: "malloydata",
+         repoName: "publisher",
+         // Preserved quirk: only the LAST path segment.
+         packagePath: "/storefront",
+      });
+      expect(parseGitHubUrl("https://github.com/owner/repo")).toEqual({
+         owner: "owner",
+         repoName: "repo",
+      });
+      expect(parseGitHubUrl("git@github.com:owner/repo.git")).toEqual({
+         owner: "owner",
+         repoName: "repo",
+      });
+      expect(parseGitHubUrl("https://gitlab.com/owner/repo")).toBeNull();
+   });
+
+   it("is identical to the old regexes across a fuzzed input space", () => {
+      const prefixes = [
+         "https://github.com/",
+         "http://github.com/",
+         "github.com/",
+         "git@github.com:",
+         "ssh://git@github.com:",
+         "before github.com/",
+         "",
+         "https://gitlab.com/",
+      ];
+      const owners = ["owner", "o", "", "own er", "a.b"];
+      const repos = [
+         "repo",
+         "r",
+         "repo.git",
+         ".git",
+         "a.git",
+         "re po",
+         "",
+         "repo.gitx",
+      ];
+      const tails = [
+         "",
+         "/tree/main/sub",
+         "/tree/main",
+         "/a/b/c",
+         "/",
+         "//",
+         "/a//b",
+         "/sub dir",
+         "/tree/branch/a/b",
+      ];
+      let cases = 0;
+      for (const prefix of prefixes) {
+         for (const owner of owners) {
+            for (const repo of repos) {
+               for (const tail of tails) {
+                  const input = `${prefix}${owner}/${repo}${tail}`;
+                  expect(norm(parseGitHubUrl(input))).toEqual(
+                     norm(oldParseGitHubUrl(input)),
+                  );
+                  cases++;
+               }
+            }
+         }
+      }
+      expect(cases).toBeGreaterThan(2000);
+   });
+
+   it("runs in linear time on adversarial input (no ReDoS)", () => {
+      // The payloads CodeQL flagged: a long run that made the old
+      // `(\/[^/]+)*` regexes backtrack polynomially. The string parser is
+      // linear, so this returns effectively instantly.
+      const start = performance.now();
+      parseGitHubUrl("git@github.com:" + ".".repeat(200000));
+      parseGitHubUrl("git@github.com:" + "a/".repeat(200000));
+      parseGitHubUrl(
+         "git@github.com:./!/" + "git@github.com:./!/".repeat(5000),
+      );
+      parseGitHubUrl("https://github.com/" + "a/".repeat(200000));
+      expect(performance.now() - start).toBeLessThan(500);
    });
 });

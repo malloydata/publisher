@@ -8,8 +8,11 @@ Serve governed data models to applications, BI tools, and AI agents — over RES
 </p>
 
 <p align="center">
-  <img src="docs/malloy-publisher-demo.png" alt="Malloy Publisher serving the bundled storefront dashboard" width="800">
+  <video src="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d" poster="docs/malloy-publisher-demo.png" width="800" controls muted loop playsinline>
+    <img src="docs/malloy-publisher-demo.png" alt="Malloy Publisher serving the bundled storefront dashboard" width="800">
+  </video>
 </p>
+<p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze.</sub></p>
 
 When an AI queries your database directly, it writes its own SQL — and gets it subtly wrong: the wrong
 join, an invented column, a fan-out that double-counts but still looks plausible. Publisher puts a
@@ -36,6 +39,20 @@ all DuckDB-backed, no credentials required. Give the server a moment to report `
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # → "serving"
 ```
 
+A first `npx` run fetches the example packages from GitHub and reports its download progress on
+stderr. When the server is ready it prints a single line, also to stderr, that scripts can wait for
+instead of polling:
+
+```
+PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=1 packages=3 load_errors=0
+```
+
+`load_errors` counts configured packages and environments that failed to load. When it is not 0,
+`/api/v0/status` names each one under `.loadErrors`. The `url=` host reads `localhost` when the
+server binds every interface (the default); a configured `--host` shows as itself. If initialization
+fails, a `PUBLISHER_INIT_FAILED` line is printed in its place; a startup failure outside
+initialization, like a port already in use, crashes without either token.
+
 ## Point your agent at it
 
 This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the
@@ -47,7 +64,7 @@ claude mcp add --transport http malloy http://localhost:4040/mcp
 
 Then just ask, in plain English:
 
-> *"Use Malloy to explore the storefront sales data and chart revenue by category."*
+> _"Use Malloy to explore the storefront sales data and chart revenue by category."_
 
 The agent discovers what data exists (`malloy_getContext`), grounds itself in the real source, view,
 and field names, runs the query (`malloy_executeQuery`), and returns an answer backed by your
@@ -58,9 +75,24 @@ semantic model. No schema spelunking, no hallucinated column names.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
   [docs/ai-agents.md](docs/ai-agents.md) for per-client config and the stdio bridge.
 
-> The MCP server is stateless and unauthenticated, and it can read any data your models connect to.
-> Bind it to loopback (`--host 127.0.0.1`) for local use, and put an authenticating gateway in front
-> before exposing it more widely.
+> The server, MCP and REST alike, is stateless and unauthenticated, and it can read any data your
+> models connect to. Bind it to loopback (`--host 127.0.0.1`) for local use, and put an
+> authenticating gateway in front before exposing it more widely.
+
+No MCP client, or an agent running unattended that started the server itself? The same loop is
+available over plain REST:
+
+```bash
+curl -s -X POST \
+  http://localhost:4000/api/v0/environments/examples/packages/storefront/models/storefront.malloy/query \
+  -H 'content-type: application/json' \
+  -d '{"query":"run: order_items -> by_category","compactJson":true}' | jq -r .result
+```
+
+A package is just a directory with a `publisher.json` and a `.malloy` model;
+[docs/packages.md](docs/packages.md) is the format reference. The running server serves its full
+OpenAPI spec at `http://localhost:4000/api-doc.yaml`, and [docs/ai-agents.md](docs/ai-agents.md)
+covers agents in both modes, MCP and REST.
 
 ## What you can do
 
@@ -77,29 +109,35 @@ semantic model. No schema spelunking, no hallucinated column names.
   so a new source or view is queryable by name, no restart.
 - **Govern access.** [Givens](docs/givens.md) are one runtime-parameter mechanism that powers filter
   widgets, [row-level access](docs/row-level-access.md) (which rows a caller sees), and
-  [`#(authorize)`](docs/authorize.md) source gates (who can query). Separately, curate *what* is
+  [`#(authorize)`](docs/authorize.md) source gates (who can query). Separately, curate _what_ is
   [discoverable and queryable](docs/discovery-and-access.md).
+- **Materialize for cost & speed.** Persist an expensive source into a table with `#@ persist`, then
+  rebuild it on demand or on a cron with the opt-in standalone scheduler — see
+  [docs/materialization.md](docs/materialization.md) and the `malloy-pub schedule` /
+  `list materialization` CLI.
 
 ## Documentation
 
 The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README.md). Highlights:
 
-| Topic | Doc |
-| --- | --- |
-| Runnable example packages | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
-| Connect an AI agent over MCP | [docs/ai-agents.md](docs/ai-agents.md) |
-| No-code visual query builder | [docs/explorer.md](docs/explorer.md) |
-| The Publisher App (navigation & features) | [docs/publisher-app.md](docs/publisher-app.md) |
-| Build a custom UI (no build step) | [docs/html-data-apps.md](docs/html-data-apps.md) |
-| REST & MCP API overview | [docs/api-overview.md](docs/api-overview.md) |
-| Runtime parameters & access control | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md) |
-| Database connections | [docs/connections.md](docs/connections.md) |
-| Deploy (npx / Docker / Compose) | [docs/deployment.md](docs/deployment.md) |
-| Docker runtime deep-dive (layout, env, tuning) | [packages/server/README.docker.md](packages/server/README.docker.md) |
-| Configuration & tuning reference | [docs/configuration.md](docs/configuration.md) |
-| Theming (light/dark, palette) | [docs/theming.md](docs/theming.md) |
-| Architecture & how it fits together | [docs/architecture.md](docs/architecture.md) |
-| Build & develop from a clone | [docs/development.md](docs/development.md) |
+| Topic                                               | Doc                                                                                                                                                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runnable example packages                           | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
+| Connect an AI agent (MCP, or REST when unattended)  | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
+| No-code visual query builder                        | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
+| The Publisher App (navigation & features)           | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
+| Build a custom UI (no build step)                   | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
+| The package format (`publisher.json`, models, data) | [docs/packages.md](docs/packages.md)                                                                                                                                                     |
+| REST & MCP API overview                             | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
+| Runtime parameters & access control                 | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md)                                     |
+| Database connections                                | [docs/connections.md](docs/connections.md)                                                                                                                                               |
+| Materialization & scheduling                        | [docs/materialization.md](docs/materialization.md)                                                                                                                                       |
+| Deploy (npx / Docker / Compose)                     | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |
+| Docker runtime deep-dive (layout, env, tuning)      | [packages/server/README.docker.md](packages/server/README.docker.md)                                                                                                                     |
+| Configuration & tuning reference                    | [docs/configuration.md](docs/configuration.md)                                                                                                                                           |
+| Theming (light/dark, palette)                       | [docs/theming.md](docs/theming.md)                                                                                                                                                       |
+| Architecture & how it fits together                 | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
+| Build & develop from a clone                        | [docs/development.md](docs/development.md)                                                                                                                                               |
 
 The complete user guide also lives at
 **[docs.malloydata.dev](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**.

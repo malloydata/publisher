@@ -12,13 +12,18 @@ For full setup details per connection type, see [docs.malloydata.dev/documentati
 
 Each loaded package automatically gets its own DuckDB connection named `duckdb`. These per-package sandboxes are how the bundled examples (`storefront`, `governed-analytics`, `html-data-app`) query the data files in each package without needing any user-defined connection. DuckDB reads Parquet and CSV in place, so `duckdb.table('data/customers.parquet')` and `duckdb.table('data/regions.csv')` both work with no conversion step (`storefront` uses both).
 
-You do not have to declare these sandboxes — they're created on package load.
+You do not have to declare these sandboxes; they're created on package load. For the rest of the
+package format, see [packages.md](packages.md).
 
 ## Environment-level DuckDB connections
 
 You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
 
 An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+
+## DuckLake connections (`type: "ducklake"`)
+
+A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path — and queries it read-only. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.
 
 ## Connection naming rules
 
