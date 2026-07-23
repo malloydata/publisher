@@ -157,6 +157,39 @@ describe("MaterializationController.createMaterialization validation", () => {
       ]);
    });
 
+   it("preserves the optional `connectionName` on a manifest reference", async () => {
+      // Regression: `connectionName` (added by #904) lets the seed loop dialect-
+      // quote the referenced upstream for a case-folding engine. Dropping it here
+      // silently reverts to an unquoted seed — the same manual-copy drift that
+      // dropped BuildInstruction.destination.
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+                  realization: "COPY",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: "b1",
+                  physicalTableName: "upstream_table",
+                  connectionName: "sf",
+               },
+            ],
+         },
+      });
+      expect(parsed.referenceManifest).toEqual([
+         {
+            sourceEntityId: "b1",
+            physicalTableName: "upstream_table",
+            connectionName: "sf",
+         },
+      ]);
+   });
+
    it("rejects a referenceManifest entry missing a required field", async () => {
       const { controller } = build();
       await expect(

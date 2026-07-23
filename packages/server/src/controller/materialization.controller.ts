@@ -141,6 +141,14 @@ export class MaterializationController {
       return {
          sourceEntityId: ref.sourceEntityId as string,
          physicalTableName: ref.physicalTableName as string,
+         // The connection the upstream table lives on. Optional; carried through
+         // so the seed loop can dialect-quote the reference for a case-folding
+         // engine (#904). Dropping it silently reverts to an unquoted seed, which
+         // fails a downstream build on such an engine — the same manual-copy drift
+         // that dropped BuildInstruction.destination.
+         ...(typeof ref.connectionName === "string"
+            ? { connectionName: ref.connectionName }
+            : {}),
       };
    }
 
