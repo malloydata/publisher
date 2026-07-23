@@ -179,6 +179,13 @@ export class MaterializationController {
          materializedTableId: instruction.materializedTableId as string,
          physicalTableName: instruction.physicalTableName as string,
          realization: instruction.realization,
+         // The `storage=` destination the orchestrator targets. Optional in the
+         // schema; must be carried through, or an orchestrated build silently
+         // falls back to a path-C (in-warehouse) build (isStorageBuild=false) and
+         // never materializes into the storage destination.
+         ...(typeof instruction.destination === "string"
+            ? { destination: instruction.destination }
+            : {}),
       };
    }
 
