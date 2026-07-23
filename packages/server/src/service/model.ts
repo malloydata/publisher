@@ -67,6 +67,7 @@ import {
    type ServeBinding,
    type SourceLocation,
 } from "./materialization_serve_transform";
+import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
 import type {
    SerializedModel,
@@ -1789,11 +1790,46 @@ export class Model {
     * here, and {@link getQueryResults} falls back to serving it live. The
     * compiled materializer is memoized per binding set (the serve-variant cache).
     */
+   /**
+    * The serve bindings that may serve from their materialized table right NOW:
+    * fresh, un-gated, or stale-under-`stale_ok`. A stale binding whose fallback is
+    * `live`/`fail` evaluates to `serve_live` and is dropped, so the serve shape
+    * omits that source and any query touching it falls through to live — the SAME
+    * freshness gate the in-warehouse (path-C) serve applies (`getFreshBuildManifest`
+    * → `evaluateManifestFreshness`). Placement (`storage=`) is orthogonal to
+    * freshness: flip `storage=source`↔`storage=lake` and this behaves identically.
+    */
+   private freshServeBindings(now: number): ServeBinding[] {
+      const at = new Date(now);
+      return this.serveBindings.filter(
+         (b) =>
+            evaluateManifestFreshness(
+               {
+                  tableName: b.tablePath,
+                  dataAsOf: b.freshAsOf,
+                  freshnessWindowSeconds: b.freshnessWindowSeconds,
+                  freshnessFallback: b.freshnessFallback,
+               },
+               at,
+            ) === "serve_table",
+      );
+   }
+
    private async loadServeShapeQuery(queryString: string): Promise<{
       runnable: QueryMaterializer;
       virtualMap: VirtualMap;
    }> {
-      const key = this.serveBindings
+      // Gate by freshness first: only bindings that should serve their table now
+      // enter the shape. Keying the cache on the FRESH subset means it recompiles
+      // when a binding crosses its window (drops out) — the storage analogue of
+      // path-C's memoized getFreshBuildManifest.
+      const freshBindings = this.freshServeBindings(Date.now());
+      if (freshBindings.length === 0) {
+         // Every bound source is stale past its window with a live/fail fallback —
+         // nothing to serve from storage; fall through to live (caller's catch).
+         throw new Error("no fresh storage serve bindings for this query");
+      }
+      const key = freshBindings
          .map((b) => `${b.sourceName}@${b.connectionName}/${b.virtualHandle}`)
          .sort()
          .join("|");
@@ -1801,11 +1837,11 @@ export class Model {
          this.serveShapeCache = {
             key,
             materializer: await this.compileServeShape(
-               this.serveBindingsWithRefinements(),
+               this.serveBindingsWithRefinements(freshBindings),
             ),
          };
       }
-      const virtualMap = buildVirtualMap(this.serveBindings);
+      const virtualMap = buildVirtualMap(freshBindings);
       const runnable =
          this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
       // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
@@ -1919,7 +1955,9 @@ export class Model {
     * parsing that text; views are emitted optimistically and pruned by the
     * shape-compile escalation in {@link compileServeShape} if they don't hold.
     */
-   private serveBindingsWithRefinements(): ServeBinding[] {
+   private serveBindingsWithRefinements(
+      bindings: ServeBinding[] = this.serveBindings,
+   ): ServeBinding[] {
       const contents = (
          this.modelDef as
             | {
@@ -1938,7 +1976,7 @@ export class Model {
          }
       }
       const materializedSourceNames = new Set(
-         this.serveBindings.map((b) => b.sourceName),
+         bindings.map((b) => b.sourceName),
       );
       // Cache each source file's text (or null when unreadable) across bindings.
       const fileCache = new Map<string, string | null>();
@@ -1958,7 +1996,7 @@ export class Model {
          return text ? sliceSourceRange(text, location.range) : undefined;
       };
       return (
-         this.serveBindings
+         bindings
             .map((b) => {
                const fields = contents?.[b.sourceName]?.fields;
                // Narrow the declared ::Shape to the source's PUBLIC columns: the
