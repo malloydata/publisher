@@ -118,6 +118,30 @@ describe("Schedule Commands", () => {
     expect(mockClient.updatePackage).not.toHaveBeenCalled();
   });
 
+  test("clearSchedule clears a stuck empty-string schedule (presence is != null, not truthiness)", async () => {
+    // A package can get stuck with `schedule: ""` (the server does not yet
+    // reject an empty cron at the publish gate). A truthiness guard would treat
+    // "" as absent and refuse to clear it; presence is `!= null`, so the clear
+    // goes through and unsticks the package.
+    const mockClient = {
+      getPackage: mock(() =>
+        Promise.resolve({
+          description: "keep me",
+          materialization: { schedule: "" },
+        }),
+      ),
+      updatePackage: mock(() => Promise.resolve({})),
+    } as unknown as PublisherClient;
+
+    await scheduleCommands.clearSchedule(mockClient, "env", "orders");
+
+    expect(mockClient.updatePackage).toHaveBeenCalledWith("env", "orders", {
+      name: "orders",
+      description: "keep me",
+      materialization: { schedule: null },
+    });
+  });
+
   test("setSchedule surfaces a server rejection (invalid cron)", async () => {
     const mockClient = {
       getPackage: mock(() => Promise.resolve({})),

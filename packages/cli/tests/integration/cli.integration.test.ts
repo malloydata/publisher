@@ -188,6 +188,17 @@ describe("CLI integration (real server)", () => {
     expect(viewAfter.output.toLowerCase()).toContain("none");
   });
 
+  it("clear on an already-cleared package no-ops (exit 0, never PATCHes)", async () => {
+    // The prior test cleared the schedule; the persist-test fixture declares no
+    // freshness, so this exercises the live no-op path: presence is `!= null`,
+    // so with nothing to clear the command returns before it PATCHes rather than
+    // sending a fresh `materialization` object (which would wipe a freshness
+    // policy on a freshness-only package -- that survival case is unit-covered).
+    const clear = await runCli(["schedule", "clear", ...SCOPE], baseUrl);
+    expect(clear.code).toBe(0);
+    expect(clear.output.toLowerCase()).toContain("nothing to clear");
+  });
+
   it("rejects an invalid cron via the server publish gate (exit 1)", async () => {
     const r = await runCli(
       ["schedule", "set", "not-a-cron", ...SCOPE],
@@ -220,6 +231,9 @@ describe("CLI integration (real server)", () => {
     expect(list.code).toBe(0);
     expect(list.output).toContain(TEST_PKG);
     expect(list.output).toContain("Package");
+    // The env-scoped view keeps the Error column, so a failed run's message is
+    // not invisible environment-wide.
+    expect(list.output).toContain("Error");
     expect(list.output).toContain("ON_DEMAND");
 
     await runCli(

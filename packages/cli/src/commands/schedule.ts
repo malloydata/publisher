@@ -78,6 +78,11 @@ export async function setSchedule(
  * policy on a freshness-only package. Scope is left as version; to return a
  * package to `scope: package`, edit `scope` in its publisher.json (or PATCH the
  * package directly); the CLI does not expose a scope switch.
+ *
+ * Presence is `schedule != null`, not truthiness: an empty-string schedule is
+ * still present and must be clearable. Until the server rejects `""` at the
+ * publish gate a package can get stuck with `schedule: ""`, and a truthiness
+ * guard would refuse to clear the very state it needs to unstick.
  */
 export async function clearSchedule(
   client: PublisherClient,
@@ -85,7 +90,7 @@ export async function clearSchedule(
   packageName: string,
 ): Promise<void> {
   const current = await client.getPackage(environmentName, packageName);
-  if (!current?.materialization?.schedule) {
+  if (current?.materialization?.schedule == null) {
     logInfo(`No schedule set on ${packageName}; nothing to clear.`);
     return;
   }
