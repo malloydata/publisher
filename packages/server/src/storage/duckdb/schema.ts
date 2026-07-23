@@ -143,12 +143,14 @@ export async function initializeSchema(
  * Vector cache for semantic `malloy_getContext` retrieval (see
  * mcp/tools/embedding_index.ts). One row per discoverable model entity;
  * the primary key mirrors the tool's in-memory dedup key. Rows are
- * content-addressed (`content_hash` over the embedded text, compared
- * together with `embedding_model` + `dims`), so staleness self-heals on
- * the next index sync and wiping the table only ever costs re-embedding.
- * `embedding` is a LIST column searched with list_cosine_similarity; at
- * the entity counts a single Publisher serves, a brute-force scan is
- * faster and simpler than a vector-index extension.
+ * content-addressed: the index sync compares `content_hash` (over the
+ * embedded text) plus `embedding_model` and re-embeds on mismatch, while
+ * a dimensionality change is detected at query time by the stale-row
+ * heal, so staleness always self-corrects and wiping the table only
+ * ever costs re-embedding. `embedding` is a LIST column searched with
+ * list_cosine_similarity; at the entity counts a single Publisher
+ * serves, a brute-force scan is faster and simpler than a vector-index
+ * extension.
  */
 export async function createEntityEmbeddingsTable(
    db: DuckDBConnection,

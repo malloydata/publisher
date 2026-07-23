@@ -105,9 +105,23 @@ export class EmbeddingProvider {
       }
 
       if (!response.ok) {
-         const bodyText = await response.text().catch(() => "");
+         // Auth-failure bodies commonly reflect the presented credential
+         // (OpenAI's 401 echoes partial key characters; a self-hosted
+         // proxy may echo the whole token), and this message is logged
+         // by callers. Drop those bodies entirely, and scrub any literal
+         // occurrence of the key from the rest.
+         let detail: string;
+         if (response.status === 401 || response.status === 403) {
+            detail = "authentication failed; check EMBEDDING_API_KEY";
+         } else {
+            const bodyText = await response.text().catch(() => "");
+            detail = bodyText
+               .split(this.config.apiKey)
+               .join("[REDACTED]")
+               .slice(0, 200);
+         }
          throw new Error(
-            `Embedding request to ${url} failed (${response.status}): ${bodyText.slice(0, 200)}`,
+            `Embedding request to ${url} failed (${response.status}): ${detail}`,
          );
       }
 

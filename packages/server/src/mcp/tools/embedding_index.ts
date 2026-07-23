@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { Mutex } from "async-mutex";
+import { E_ALREADY_LOCKED, Mutex, tryAcquire } from "async-mutex";
 import { logger } from "../../logger";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import type { Package } from "../../service/package";
@@ -56,7 +56,7 @@ export type SemanticUnavailableReason =
 
 export type SemanticSearchResult =
    | { hits: SemanticHit[] }
-   | { unavailable: SemanticUnavailableReason; detail?: string };
+   | { unavailable: SemanticUnavailableReason };
 
 /**
  * Turn an identifier into the words a person would search with:
@@ -76,10 +76,13 @@ export function humanizeName(name: string): string {
 /**
  * The text embedded per entity: humanized name plus its `#(doc)` text.
  * Deliberately minimal (no kind, no parent source); the recipe is
- * eval-tunable via get_context_eval.ts.
+ * eval-tunable via get_context_eval.ts. A punctuation-only identifier
+ * (`_` is legal Malloy) humanizes to nothing; fall back to the raw name
+ * so no empty string reaches the provider, which would 400 the whole
+ * package's batch.
  */
 export function embeddingText(entity: EmbeddableEntity): string {
-   const name = humanizeName(entity.name);
+   const name = humanizeName(entity.name) || entity.name;
    return entity.doc ? `${name}: ${entity.doc}` : name;
 }
 
@@ -119,7 +122,6 @@ interface PackageSyncMeta {
    lastPurgeAtMs: number;
 }
 interface SyncState {
-   promise: Promise<void>;
    done: boolean;
    providerKey: string;
    generation: number;
@@ -332,7 +334,7 @@ async function syncPackageEmbeddings(
       // provider that ignores the `dimensions` request parameter (e.g.
       // Ollama) would otherwise mismatch the configured value forever
       // and re-embed the whole package on every instance swap. A real
-      // dims change is caught at query time by the empty-search heal.
+      // dims change is caught at query time by the stale-row heal.
       const toEmbed = desired.filter((d) => {
          const row = existing.get(
             entityRowKey(
@@ -509,9 +511,11 @@ export async function trySemanticSearch(args: {
          done: false,
          providerKey,
          generation: meta.generation,
-         promise: undefined as unknown as Promise<void>,
       };
-      const run = syncPackageEmbeddings(
+      // The sync promise is deliberately not stored: nothing may ever
+      // await it (cold starts answer lexically); completion is observed
+      // through `done` and failure through the handler below.
+      syncPackageEmbeddings(
          db,
          provider,
          environmentName,
@@ -537,7 +541,6 @@ export async function trySemanticSearch(args: {
             );
          },
       );
-      tracked.promise = run;
       syncState.set(pkg, tracked);
       state = tracked;
    }
@@ -558,7 +561,7 @@ export async function trySemanticSearch(args: {
          "[MCP Tool getContext] Query embedding failed; falling back to lexical ranking",
          { environmentName, packageName, error: message },
       );
-      return { unavailable: "error", detail: message };
+      return { unavailable: "error" };
    }
 
    try {
@@ -617,8 +620,13 @@ export async function trySemanticSearch(args: {
          // The check-and-purge runs under the package-name mutex so it
          // cannot interleave with a sync, and the generation bump
          // invalidates every instance's memo, not just this caller's.
-         const outcome: "none" | "purged" | "backoff" =
-            await meta.mutex.runExclusive(async () => {
+         // Acquired WITHOUT waiting: a held mutex means a bulk embed or
+         // another heal is mid-flight, and this call must answer as
+         // indexing rather than queue minutes behind it (the docstring's
+         // no-call-waits-on-a-bulk-embed contract).
+         let outcome: "none" | "purged" | "backoff" | "busy";
+         try {
+            outcome = await tryAcquire(meta.mutex).runExclusive(async () => {
                // Same orphaned-meta guard as the sync: never write under
                // a meta that deletePackageEmbeddings removed.
                if (
@@ -684,8 +692,14 @@ export async function trySemanticSearch(args: {
                meta.generation = ++generationCounter;
                return "purged";
             });
-         if (outcome === "purged") {
-            syncState.delete(pkg);
+         } catch (error) {
+            if (error !== E_ALREADY_LOCKED) throw error;
+            outcome = "busy";
+         }
+         if (outcome === "purged" || outcome === "busy") {
+            if (outcome === "purged") {
+               syncState.delete(pkg);
+            }
             return { unavailable: "indexing" };
          }
          if (outcome === "backoff") {
@@ -716,6 +730,6 @@ export async function trySemanticSearch(args: {
          "[MCP Tool getContext] Semantic search failed; falling back to lexical ranking",
          { environmentName, packageName, error: message },
       );
-      return { unavailable: "error", detail: message };
+      return { unavailable: "error" };
    }
 }
