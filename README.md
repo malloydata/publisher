@@ -39,6 +39,20 @@ all DuckDB-backed, no credentials required. Give the server a moment to report `
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # → "serving"
 ```
 
+A first `npx` run fetches the example packages from GitHub and reports its download progress on
+stderr. When the server is ready it prints a single line, also to stderr, that scripts can wait for
+instead of polling:
+
+```
+PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=1 packages=3 load_errors=0
+```
+
+`load_errors` counts configured packages and environments that failed to load. When it is not 0,
+`/api/v0/status` names each one under `.loadErrors`. The `url=` host reads `localhost` when the
+server binds every interface (the default); a configured `--host` shows as itself. If initialization
+fails, a `PUBLISHER_INIT_FAILED` line is printed in its place; a startup failure outside
+initialization, like a port already in use, crashes without either token.
+
 ## Point your agent at it
 
 This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the

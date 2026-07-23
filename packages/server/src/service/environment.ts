@@ -1563,6 +1563,23 @@ export class Environment {
    }
 
    /**
+    * Packages this environment is actually serving: registered statuses minus
+    * any recorded as failed or un-mounted. Disjoint from getFailedPackages()
+    * by construction, so the readiness line's packages= and load_errors=
+    * cannot double-count a package that is seeded SERVING at boot and only
+    * pruned later by a side-effect load (which a transient DB or memory-
+    * pressure error can skip). Cheap: no package load is triggered.
+    */
+   public getServingPackageCount(): number {
+      const failed = this.getFailedPackages();
+      let serving = 0;
+      for (const name of this.packageStatuses.keys()) {
+         if (!failed.has(name)) serving += 1;
+      }
+      return serving;
+   }
+
+   /**
     * Record why a configured package's location never mounted, so /status can
     * name the real cause instead of the missing-manifest fallout it produces.
     * Called by EnvironmentStore right after the environment is created.

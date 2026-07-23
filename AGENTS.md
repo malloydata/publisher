@@ -31,6 +31,11 @@ Poll until the server reports `serving` rather than assuming a fixed wait. From 
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # -> "serving"
 ```
 
+The server also prints one `PUBLISHER_READY` line to stderr at the moment it reaches `serving`,
+carrying environment, package, and load-error counts, so a script can watch for that line instead
+of polling; if initialization fails, `PUBLISHER_INIT_FAILED` is printed in its place. A first-run
+download reports its clone progress on stderr too.
+
 `serving` does not mean everything loaded. A package that fails to load is skipped, not fatal, so the
 server serves whatever did load and the package is simply absent. If data you expect is missing, check
 `curl -s http://localhost:4000/api/v0/status | jq .loadErrors`, which is absent when everything loaded
@@ -66,7 +71,14 @@ url = "http://localhost:4040/mcp"
 stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 
 ```json
-{ "mcpServers": { "malloy": { "command": "npx", "args": ["-y", "mcp-remote", "http://localhost:4040/mcp", "--allow-http"] } } }
+{
+  "mcpServers": {
+    "malloy": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:4040/mcp", "--allow-http"]
+    }
+  }
+}
 ```
 
 ## 3. The MCP tools
