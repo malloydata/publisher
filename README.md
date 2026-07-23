@@ -8,7 +8,7 @@ Serve governed data models to applications, BI tools, and AI agents — over RES
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/76dcb1c7-7195-48dd-8c7a-667f4f9abb78" poster="docs/malloy-publisher-demo.png" width="800" controls muted loop playsinline>
+  <video src="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d" poster="docs/malloy-publisher-demo.png" width="800" controls muted loop playsinline>
     <img src="docs/malloy-publisher-demo.png" alt="Malloy Publisher serving the bundled storefront dashboard" width="800">
   </video>
 </p>
