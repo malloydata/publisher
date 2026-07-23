@@ -12,6 +12,7 @@ import { logger } from "../logger";
 import { recordConnectionDigestSkipped } from "../materialization_metrics";
 import { errMessage } from "../utils";
 import { Model } from "./model";
+import { quoteIdentifier } from "./quoting";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
@@ -92,6 +93,33 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
       });
       return [];
    }
+}
+
+/**
+ * Wrap a source's build SQL to project only its PUBLIC columns. `getSQL` emits
+ * every underlying column, including ones the source hides (`except:`, non-public
+ * access modifiers); {@link deriveColumns} returns just the public surface (the
+ * source's intrinsic atomic fields). A `storage=` build must not materialize a
+ * hidden column: a DuckLake virtual source exposes every physical column of the
+ * stored table regardless of the served `::Shape`, so a hidden column would be
+ * reachable over storage (and would sit at rest). Projecting here makes the
+ * physical table equal the public surface. Applies to BOTH storage build paths
+ * (the warehouse-passthrough single-source build and the chained "stack on the
+ * parent" downstream build). Fails open: if the public columns can't be derived,
+ * returns `buildSQL` unchanged — never widens beyond what `getSQL` projected.
+ */
+export function projectToPublicColumns(
+   persistSource: PersistSource,
+   buildSQL: string,
+): string {
+   const cols = deriveColumns(persistSource)
+      .map((c) => c.name)
+      .filter((n): n is string => typeof n === "string" && n.length > 0);
+   if (cols.length === 0) return buildSQL;
+   const projection = cols
+      .map((n) => quoteIdentifier(n, persistSource.dialectName))
+      .join(", ");
+   return `SELECT ${projection} FROM (${buildSQL}) AS __public`;
 }
 
 /**
