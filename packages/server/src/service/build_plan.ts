@@ -6,6 +6,7 @@ import type {
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
+import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { logger } from "../logger";
@@ -75,6 +76,15 @@ export interface CompiledBuildPlan {
     * Optional so existing fixtures/callers that don't track it still typecheck.
     */
    sourceModelPaths?: Record<string, string>;
+   /**
+    * Sources carrying a `#@ persist` annotation that Malloy's getBuildPlan() did
+    * NOT recognize as a materializable build root, so they produced no plan entry
+    * and would otherwise be a silent no-op (served live, never materialized). See
+    * {@link detectDroppedPersistSources}. Callers surface these: a load-time
+    * warning and a hard build failure, so a persist annotation is never silently
+    * dropped.
+    */
+   droppedPersistSources?: { name: string; modelPath: string }[];
 }
 
 /** Output columns of a persist source, degrading to [] if unavailable. */
@@ -348,6 +358,57 @@ export async function resolvePackageConnections(
  * connections. The build plan is a pure function of the compiled model plus
  * connection config (no warehouse access).
  */
+/**
+ * Names of sources in a compiled model that carry a `#@ persist` annotation but
+ * are absent from the model's build plan — i.e. Malloy's getBuildPlan() did not
+ * recognize them as a materializable build root and silently returned no graph
+ * for them.
+ *
+ * BACKSTOP for a Malloy getBuildPlan() gap: it silently returns no graph for a
+ * `#@ persist` source whose shape it doesn't treat as a build root (observed for
+ * a filtered pass-through `X is <table> extend { where … }`, which stays type
+ * `table`; only query-shaped sources are treated as roots). Without this check
+ * the annotation is a silent no-op (served live, no build, no error). The primary
+ * fix is in Malloy (recognize the shape or emit a diagnostic); until then, detect
+ * the annotated-but-absent source here so callers can refuse loudly. See
+ * ~/dev/scratch/malloy-getbuildplan-drops-extend-where-persist.md.
+ *
+ * Reads the annotation exactly as Malloy's own checkPersistAnnotation does
+ * (`Annotations(def.annotations).parseAsTag('@').tag.has('persist')`). Best-effort
+ * and fail-open: any introspection failure yields no dropped names rather than
+ * risking a false positive that would wrongly fail a healthy build.
+ */
+function detectDroppedPersistSources(
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   malloyModel: any,
+   recognizedNames: Set<string>,
+): string[] {
+   const dropped: string[] = [];
+   try {
+      const contents = malloyModel?._modelDef?.contents as
+         | Record<string, { type?: string; annotations?: unknown }>
+         | undefined;
+      if (!contents) return dropped;
+      for (const [name, def] of Object.entries(contents)) {
+         if (recognizedNames.has(name)) continue;
+         if (!def || !def.annotations) continue;
+         let isPersist = false;
+         try {
+            isPersist = new Annotations(def.annotations)
+               .parseAsTag("@")
+               .tag.has("persist");
+         } catch {
+            continue;
+         }
+         if (isPersist) dropped.push(name);
+      }
+   } catch {
+      // Fail open: never let introspection break the build plan.
+      return [];
+   }
+   return dropped;
+}
+
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
@@ -355,6 +416,7 @@ export async function compilePackageBuildPlan(
    const allGraphs: MalloyBuildGraph[] = [];
    const allSources: Record<string, PersistSource> = {};
    const sourceModelPaths: Record<string, string> = {};
+   const droppedPersistSources: { name: string; modelPath: string }[] = [];
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -393,6 +455,20 @@ export async function compilePackageBuildPlan(
             severity: msg.severity,
          });
       }
+
+      // Detect `#@ persist` sources the plan didn't recognize (see
+      // detectDroppedPersistSources). Runs BEFORE the empty-graphs `continue`, so
+      // a model whose ONLY persist source is a dropped shape is still caught.
+      const recognizedNames = new Set(
+         Object.values(buildPlan.sources).map((s) => s.name),
+      );
+      for (const name of detectDroppedPersistSources(
+         malloyModel,
+         recognizedNames,
+      )) {
+         droppedPersistSources.push({ name, modelPath });
+      }
+
       if (buildPlan.graphs.length === 0) continue;
 
       allGraphs.push(...buildPlan.graphs);
@@ -434,6 +510,7 @@ export async function compilePackageBuildPlan(
       connectionDigests,
       connections,
       sourceModelPaths,
+      droppedPersistSources,
    };
 }
 
@@ -489,24 +566,31 @@ export function deriveBuildPlan(
 }
 
 /**
- * Compile and project a package's build plan, or null when the package
- * declares no persist source. Convenience for the read-only `Package.buildPlan`
- * field, which is a deterministic property of the compiled package.
+ * Compile and project a package's build plan (null when the package declares no
+ * materializable persist source), plus any `#@ persist` sources that were
+ * silently dropped from the plan (see {@link detectDroppedPersistSources}) so
+ * the caller can surface a load-time warning. A deterministic property of the
+ * compiled package; feeds the read-only `Package.buildPlan` field.
  */
 export async function computePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
-): Promise<BuildPlan | null> {
+): Promise<{
+   plan: BuildPlan | null;
+   droppedPersistSources: { name: string; modelPath: string }[];
+}> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
-   if (compiled.graphs.length === 0) {
-      return null;
-   }
-   return deriveBuildPlan(
-      compiled.graphs,
-      compiled.sources,
-      compiled.connectionDigests,
-      undefined,
-      compiled.sourceModelPaths,
-      pkg.getMaterializationConfig?.() ?? null,
-   );
+   const droppedPersistSources = compiled.droppedPersistSources ?? [];
+   const plan =
+      compiled.graphs.length === 0
+         ? null
+         : deriveBuildPlan(
+              compiled.graphs,
+              compiled.sources,
+              compiled.connectionDigests,
+              undefined,
+              compiled.sourceModelPaths,
+              pkg.getMaterializationConfig?.() ?? null,
+           );
+   return { plan, droppedPersistSources };
 }

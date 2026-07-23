@@ -154,6 +154,11 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
+   // Sources annotated `#@ persist` that Malloy's getBuildPlan() did not
+   // recognize as a materializable build root, so they produced no plan entry
+   // and would be a silent no-op (served live). Surfaced as an operator warning
+   // and hard-refused at build. See build_plan.detectDroppedPersistSources.
+   private droppedPersistSources: { name: string; modelPath: string }[] = [];
    // Non-fatal render-tag findings aggregated across the package's models (each
    // tagged with its model path), surfaced read-only on
    // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
@@ -548,7 +553,10 @@ export class Package {
       // compile); accepted for now.
       try {
          const buildPlanStart = Date.now();
-         pkg.buildPlan = await computePackageBuildPlan(pkg);
+         const { plan, droppedPersistSources } =
+            await computePackageBuildPlan(pkg);
+         pkg.buildPlan = plan;
+         pkg.droppedPersistSources = droppedPersistSources;
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
          logger.warn(
@@ -658,6 +666,7 @@ export class Package {
       const allWarnings = [
          ...this.renderTagWarnings,
          ...this.storageWarnings(),
+         ...this.droppedPersistWarnings(),
       ];
       if (allWarnings.length > 0) {
          metadata.warnings = allWarnings;
@@ -915,6 +924,28 @@ export class Package {
     * Read straight off the compiled build plan's `annotationFields.storage`
     * (undefined when the package declares no persist sources).
     */
+   /**
+    * Operator-facing warnings for `#@ persist` sources that Malloy's
+    * getBuildPlan() did not recognize as a materializable build root (observed
+    * for a filtered pass-through `X is <table> extend { where … }`). Without a
+    * signal the annotation is a silent no-op — no build, no error, served live —
+    * so surface it on `/status`. The build path additionally hard-refuses (see
+    * MaterializationService). Independent of {@link buildPlan} being null, since
+    * a package whose ONLY persist source is dropped has no plan at all.
+    */
+   private droppedPersistWarnings(): ApiPackageWarning[] {
+      return this.droppedPersistSources.map((d) => ({
+         model: d.modelPath,
+         target: d.name,
+         message:
+            `is annotated '#@ persist' but was not recognized as a ` +
+            `materializable source, so nothing is materialized and it is served ` +
+            `live. Only query/aggregate sources build; a filtered pass-through ` +
+            `does not. Persist a query source, or invoke a parameterized source ` +
+            `with a bound argument.`,
+      }));
+   }
+
    private storageWarnings(): ApiPackageWarning[] {
       const mode = getPersistStorageMode();
       if (mode === "on" || !this.buildPlan?.sources) return [];
