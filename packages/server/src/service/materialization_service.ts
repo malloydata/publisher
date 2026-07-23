@@ -64,6 +64,7 @@ import {
    sliceSourceRange,
 } from "./materialization_serve_transform";
 import type { ApiConnection } from "./model";
+import { fetchManifestEntries } from "./manifest_loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
@@ -563,6 +564,31 @@ export class MaterializationService {
             // table instead of recomputing live. The reference key is the
             // compiler's manifest-lookup sourceEntityId (see ManifestReference).
             carried = this.referenceManifestToEntries(opts.referenceManifest);
+            // Upstream resolution for an orchestrated build draws on three
+            // sources, in DESCENDING precedence — a reference is an IDENTITY, not
+            // a copy the caller must fully courier:
+            //   1. The explicit `referenceManifest` couriered in THIS build call.
+            //   2. The package's BOUND manifest (`manifestLocation`) — the set the
+            //      orchestrator distributed to this worker. This is what makes the
+            //      cross-worker flow work: a worker that never built the upstream
+            //      still holds its full entry via the refreshed manifest, so a
+            //      downstream can reuse the upstream's materialized table.
+            //   3. This worker's own most-recent local manifest (skip-if-unchanged
+            //      cache) — same-worker reuse.
+            // Each fills the storage fields (sourceName, storageConnectionName,
+            // schema) a thin reference can't carry — required for a `storage=`
+            // upstream's Tier-3 "stack on the parent" rebind. Higher-precedence
+            // fields win; each step is best-effort (a fetch/read failure leaves
+            // the entries as they are).
+            await this.seedFromBoundManifest(carried, pkg, instructions);
+            if (Object.keys(carried).length > 0) {
+               await this.resolveReferencesFromStore(
+                  carried,
+                  environmentId,
+                  packageName,
+                  id,
+               );
+            }
          } else {
             // Skip-if-unchanged: reuse tables from the most recent successful
             // manifest for sources whose sourceEntityId is unchanged, unless
@@ -737,6 +763,117 @@ export class MaterializationService {
    }
 
    /**
+    * Resolve upstream references against this publisher's OWN most-recent
+    * manifest, keyed by sourceEntityId (the same cache skip-if-unchanged reads).
+    * A reference is fundamentally an IDENTITY, not a copy: for each one that
+    * matches a locally persisted entry, fill in the fields a thin reference
+    * can't carry (sourceName, storageConnectionName, schema — needed for a
+    * `storage=` upstream's Tier-3 rebind) from the local entry, while letting any
+    * caller-supplied field WIN (the orchestrator is authoritative across a
+    * stateless fleet). Mutates `carried` in place. Best-effort: a lookup failure
+    * leaves the references exactly as supplied, so the cross-worker courier path
+    * (a worker that never built the upstream, fed the full entry) is unaffected.
+    */
+   private async resolveReferencesFromStore(
+      carried: Record<string, ManifestEntry>,
+      environmentId: string,
+      packageName: string,
+      excludeId: string,
+   ): Promise<void> {
+      let cached: Record<string, ManifestEntry>;
+      try {
+         cached = await this.getMostRecentManifestEntries(
+            environmentId,
+            packageName,
+            excludeId,
+         );
+      } catch (err) {
+         logger.warn(
+            "Reference resolve-local lookup failed; using references as supplied",
+            { packageName, error: err instanceof Error ? err.message : String(err) },
+         );
+         return;
+      }
+      for (const [sourceEntityId, ref] of Object.entries(carried)) {
+         const local = cached[sourceEntityId];
+         if (!local) continue;
+         // Local entry is the base; caller-supplied (defined) fields override it.
+         const merged: ManifestEntry = { ...local };
+         for (const [key, value] of Object.entries(ref)) {
+            if (value !== undefined) {
+               (merged as Record<string, unknown>)[key] = value;
+            }
+         }
+         carried[sourceEntityId] = merged;
+      }
+   }
+
+   /**
+    * Seed upstream reuse from the package's BOUND manifest — the set the
+    * orchestrator distributed to this worker via `manifestLocation`. This is the
+    * cross-worker path: a worker that never built an upstream still holds its full
+    * entry here (`storageConnectionName` + `schema` + `sourceName`), so a
+    * downstream can reuse the upstream's materialized table instead of recomputing
+    * it from raw. Adds any bound upstream not already carried (so a build needs no
+    * explicit reference when the manifest is refreshed), and fills gaps in a
+    * thin explicit reference — but an explicit `referenceManifest` field always
+    * wins (it targets THIS build). Sources this build is producing are skipped
+    * (built fresh, not reused). Best-effort: a fetch failure is ignored (the build
+    * falls back to the local store / inline recompute). Mutates `carried`.
+    */
+   private async seedFromBoundManifest(
+      carried: Record<string, ManifestEntry>,
+      pkg: { getPackageMetadata(): { manifestLocation?: string | null } },
+      instructions: BuildInstruction[],
+   ): Promise<void> {
+      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+      if (!manifestLocation) return;
+      let fetched;
+      try {
+         fetched = await fetchManifestEntries(manifestLocation);
+      } catch (err) {
+         logger.warn(
+            "Build upstream resolution: bound manifest fetch failed; ignoring",
+            {
+               manifestLocation,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+         return;
+      }
+      // Reconstruct a ManifestEntry map from both tiers of the fetched manifest:
+      // storage entries carry their full shape; path-C entries reconstruct from
+      // the tableName manifest.
+      const bound: Record<string, ManifestEntry> = { ...fetched.storageEntries };
+      for (const [eid, e] of Object.entries(fetched.tableNameManifest)) {
+         if (!bound[eid]) {
+            bound[eid] = {
+               sourceEntityId: eid,
+               physicalTableName: e.tableName,
+               connectionName: e.connectionName,
+            };
+         }
+      }
+      const building = new Set(instructions.map((i) => i.sourceEntityId));
+      for (const [eid, entry] of Object.entries(bound)) {
+         if (building.has(eid)) continue;
+         const existing = carried[eid];
+         if (!existing) {
+            carried[eid] = entry;
+            continue;
+         }
+         // Explicit reference wins; the bound entry fills the gaps it left.
+         const merged: ManifestEntry = { ...entry };
+         for (const [key, value] of Object.entries(existing)) {
+            if (value !== undefined) {
+               (merged as Record<string, unknown>)[key] = value;
+            }
+         }
+         carried[eid] = merged;
+      }
+   }
+
+   /**
     * Entries of the most recent successful (MANIFEST_FILE_READY) materialization
     * for this package, used for skip-if-unchanged. Excludes the in-flight run.
     */
@@ -745,10 +882,11 @@ export class MaterializationService {
       packageName: string,
       excludeId: string,
    ): Promise<Record<string, ManifestEntry>> {
-      const list = await this.repository.listMaterializations(
-         environmentId,
-         packageName,
-      );
+      const list =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? [];
       for (const m of list) {
          if (m.id === excludeId) continue;
          if (m.status === "MANIFEST_FILE_READY" && m.manifest?.entries) {

@@ -134,6 +134,8 @@ function setPackage(
       getPackagePath: () => "/test",
       getMalloyConfig: () => ({}),
       getMalloyConnection: async () => ({}),
+      // No bound manifestLocation by default, so seedFromBoundManifest no-ops.
+      getPackageMetadata: () => ({}),
       ...pkgOverrides,
    };
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({

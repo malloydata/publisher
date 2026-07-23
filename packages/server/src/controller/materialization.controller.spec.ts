@@ -128,6 +128,35 @@ describe("MaterializationController.createMaterialization validation", () => {
       });
    });
 
+   it("preserves the storage `destination` on a build instruction", async () => {
+      // Regression: `destination` is the orchestrated `storage=` axis. Dropping it
+      // here silently downgrades an orchestrated build to a path-C (in-warehouse)
+      // build, so it never materializes into the storage destination.
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+                  realization: "COPY",
+                  destination: "lake",
+               },
+            ],
+         },
+      });
+      expect(parsed.buildInstructions).toEqual([
+         {
+            sourceEntityId: "b2",
+            sourceID: undefined,
+            materializedTableId: "mt-2",
+            physicalTableName: "downstream_v1",
+            realization: "COPY",
+            destination: "lake",
+         },
+      ]);
+   });
+
    it("rejects a referenceManifest entry missing a required field", async () => {
       const { controller } = build();
       await expect(
