@@ -56,6 +56,12 @@ describe("prepareEmbeddingInput", () => {
       const long = "x".repeat(MAX_EMBED_INPUT_CHARS + 500);
       expect(prepareEmbeddingInput(long).length).toBe(MAX_EMBED_INPUT_CHARS);
    });
+
+   it("never returns an empty string (providers 400 on empty inputs)", () => {
+      expect(prepareEmbeddingInput("")).toBe("-");
+      expect(prepareEmbeddingInput("   ")).toBe("-");
+      expect(prepareEmbeddingInput("\n\t")).toBe("-");
+   });
 });
 
 describe("EmbeddingProvider", () => {

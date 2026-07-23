@@ -812,6 +812,90 @@ describe("trySemanticSearch", () => {
       expect(resurrected).toBe(0);
    });
 
+   it("answers indexing when the heal finds the mutex held mid-flight (busy path)", async () => {
+      // pkgA synced at 3 dims; a 4-dim query makes its rows stale, so
+      // the call reaches the heal.
+      const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      const pkgA = {} as unknown as Package;
+      await searchReady({ ...base, provider: narrow.provider, pkg: pkgA });
+
+      // Call C: gate its out-of-mutex stale-count SELECT so we can slip
+      // a mutex-holding sync in between the isLocked() check and the
+      // heal's acquire, the exact race the tryAcquire busy path covers.
+      let releaseSelect!: () => void;
+      const selectGate = new Promise<void>((resolve) => {
+         releaseSelect = resolve;
+      });
+      let gatedOnce = false;
+      const gatedDb = new Proxy(db, {
+         get(target, prop, receiver) {
+            if (prop === "get") {
+               return async (query: string, params?: unknown[]) => {
+                  if (!gatedOnce && query.includes("NOT (embedding_model")) {
+                     gatedOnce = true;
+                     await selectGate;
+                  }
+                  return target.get(query, params);
+               };
+            }
+            return Reflect.get(target, prop, receiver);
+         },
+      });
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const cPromise = trySemanticSearch({
+         ...base,
+         db: gatedDb,
+         provider: wide.provider,
+         pkg: pkgA,
+      });
+
+      // While C's stale count is gated, a sync with a changed entity
+      // takes and holds the package mutex (its provider fetch is gated).
+      let releaseSync!: () => void;
+      const syncGate = new Promise<void>((resolve) => {
+         releaseSync = resolve;
+      });
+      const holder = mapProvider(
+         { ...QUERY_VECTORS, "alpha: changed": [0, 1, 0] },
+         { gate: { forText: "alpha: changed", until: syncGate } },
+      );
+      const holdKick = trySemanticSearch({
+         ...base,
+         provider: holder.provider,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src", "changed")],
+      });
+      await holdKick;
+
+      // Release C: it finds stale rows, tries the heal, and must answer
+      // indexing immediately (busy) instead of queueing behind the held
+      // mutex for the sync's duration.
+      releaseSelect();
+      const timeoutMarker = Symbol("timeout");
+      const raced = await Promise.race([
+         cPromise,
+         new Promise((resolve) =>
+            setTimeout(() => resolve(timeoutMarker), 1_000),
+         ),
+      ]);
+      expect(raced).toEqual({ unavailable: "indexing" });
+
+      releaseSync();
+      // Let the holder sync settle before the next test's cleanup.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+   });
+
    it("deletion helpers drop a package's and an environment's rows", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
       const base = { db, provider, query: "find alpha", limit: 10 };

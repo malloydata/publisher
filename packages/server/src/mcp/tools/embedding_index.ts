@@ -78,8 +78,10 @@ export function humanizeName(name: string): string {
  * Deliberately minimal (no kind, no parent source); the recipe is
  * eval-tunable via get_context_eval.ts. A punctuation-only identifier
  * (`_` is legal Malloy) humanizes to nothing; fall back to the raw name
- * so no empty string reaches the provider, which would 400 the whole
- * package's batch.
+ * so the embedded text stays meaningful. prepareEmbeddingInput (which
+ * both the hash and the request path apply) separately guarantees that
+ * even a whitespace-only name never reaches the provider as an empty
+ * input.
  */
 export function embeddingText(entity: EmbeddableEntity): string {
    const name = humanizeName(entity.name) || entity.name;
