@@ -1261,14 +1261,45 @@ function isSingleServerInvocation(script: string): boolean {
  * looks private and is not the one shape this tool called safest, suppressing the
  * exposure warning that a script with no --host at all correctly gets.
  */
+/**
+ * The server flags that consume the following argv entry, mirroring the
+ * `arg === "--x" && args[i + 1]` chain in `packages/server/src/server.ts`.
+ * `--init` and `--help` take no value and so are deliberately absent.
+ */
+const SERVER_VALUE_FLAGS = new Set([
+   "--port",
+   "--host",
+   "--server_root",
+   "--config",
+   "--mcp_port",
+   "--shutdown_drain_duration_seconds",
+   "--shutdown_graceful_close_timeout_seconds",
+   "--watch-env",
+]);
+
 function hostFlagOf(script: string): string | undefined {
+   // A positional walk rather than a scan, because that is what the server
+   // does. Every value-taking flag consumes the NEXT token, so a flag whose own
+   // value is missing swallows `--host` as that value and the server never sees
+   // a host at all. A scan reads `--server_root --host 127.0.0.1` as loopback;
+   // the server binds 0.0.0.0. This is what decides whether the exposure
+   // warning is suppressed, so it has to agree with the server rather than with
+   // the text.
+   const tokens = script.trim().split(/\s+/).filter(Boolean);
    let value: string | undefined;
-   // `--hostname` and friends must not match, so the flag has to be a whole
-   // token. The last one wins, as it does on a real command line.
-   for (const match of script.matchAll(
-      /(?:^|\s)--host\s+("[^"]*"|'[^']*'|\S+)/g,
-   )) {
-      value = match[1].replace(/^["']|["']$/g, "");
+   for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      // A value flag with nothing after it matches no branch in that chain and
+      // consumes nothing, so it must not swallow anything here either.
+      if (!SERVER_VALUE_FLAGS.has(token) || tokens[i + 1] === undefined) {
+         continue;
+      }
+      if (token === "--host") {
+         // Last one wins, as it does on a real command line. `--hostname` and
+         // friends cannot match: this is a whole-token comparison.
+         value = tokens[i + 1].replace(/^["']|["']$/g, "");
+      }
+      i++;
    }
    return value;
 }

@@ -625,6 +625,33 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       expect(offeredCommands(output)).toContain(result.startCommand);
    });
 
+   test("a --host swallowed as another flag's value still warns", () => {
+      // The server walks argv positionally, so `--server_root` with its own
+      // value missing consumes `--host` as that value and never sets a host at
+      // all: the bind falls back to 0.0.0.0. Reading the script as text instead
+      // reports 127.0.0.1 and calls it private, which is the one mistake this
+      // warning cannot afford to make.
+      const script =
+         "npx -y @malloy-publisher/server@0.0.231 " +
+         "--config ./publisher.config.json --watch-env default " +
+         "--server_root --host 127.0.0.1";
+      fs.writeFileSync(
+         path.join(tmp, "package.json"),
+         JSON.stringify({ name: "app", scripts: { start: script } }, null, 2) +
+            "\n",
+      );
+      const output = formatSuccess(
+         scaffold({
+            name: "sales",
+            cwd: tmp,
+            host: "claude-code",
+            force: false,
+         }),
+      );
+      expect(output).toContain("Do not use");
+      expect(output).toContain("0.0.0.0");
+   });
+
    test("a loopback boot this tool did not write is not called unknown", () => {
       // `--port 4100` makes this a boot this tool could not have written, so it
       // is declined and the explicit command is offered instead. But its
@@ -648,6 +675,11 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       });
       const output = formatSuccess(result);
 
+      // Pin the branch, not just the absence of a warning: without this the
+      // test passes for a script that never reaches different-invocation at
+      // all, so any future change to what counts as a Publisher boot would
+      // stop exercising this case while staying green.
+      expect(result.declinedStartScript?.reason).toBe("different-invocation");
       expect(result.hasStartScript).toBe(false);
       expect(output).not.toContain("could not establish");
       expect(output).not.toContain("0.0.0.0");

@@ -59,12 +59,20 @@ jobs:
         run: |
           bun run --cwd packages/skills build
           BIN="$PWD/packages/create-malloy-package/dist/index.js"
-          node "$BIN" --version
-          cd "$(mktemp -d)"
-          node "$BIN" smoke
+          # Invoked directly, not as `node "$BIN"`: node strips the shebang as a
+          # comment, so running it that way would pass over a bin whose
+          # interpreter line is broken, which is the thing npm users depend on.
+          "$BIN" --version
+          # Assigned first, then cd. `cd "$(mktemp -d)"` fails open: bash -e does
+          # not catch a failing substitution used as an argument, and `cd ""`
+          # returns 0 and stays put, so a scaffold would land in the checkout the
+          # next step tests against.
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          "$BIN" smoke
           test -f smoke/publisher.json
           test -f publisher.config.json
-          test -d .claude/skills
+          test -f .claude/skills/malloy-getting-started/SKILL.md
 
       - name: Test
         run: bun run --cwd packages/create-malloy-package test
@@ -75,8 +83,17 @@ jobs:
     # definition that runs is the one on the ref you pick. npm's trusted
     # publisher matches on this file's name, so the filename is effectively the
     # credential and `needs: check_pack` is no protection: that job would verify
-    # the same branch's tarball. Without the ref check, a dispatch from any
-    # branch publishes that branch's code under the real package name.
+    # the same branch's tarball. Without this check, dispatching from a stale or
+    # half-finished branch publishes that branch's code under the real name.
+    #
+    # A guardrail, not a boundary, and worth being honest about which: the same
+    # premise applies to this line, so anyone who can dispatch can push a branch
+    # whose copy of this file drops it. npm matches repo plus filename and never
+    # a ref. The control that survives that is binding the trusted-publisher
+    # entry to a GitHub Environment whose deployment branches are restricted to
+    # main; npm verifies the environment claim in the OIDC token. Land that
+    # before setting the environment name on npm, never after, or every publish
+    # fails on a mismatch.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: check_pack
     runs-on: ubuntu-latest
@@ -180,7 +197,7 @@ jobs:
       # reason.
       #
       # Do not hand-publish from a workstation instead. It skips check_pack, the
-      # workspace:* rewrite below, and the registry check, which are the three
+      # workspace:* rewrite above, and the registry check, which are the three
       # things standing between a typo and an immutable broken version.
       #
       # The rewrite is also enforced by the package's prepublishOnly hook, which runs
@@ -190,8 +207,8 @@ jobs:
       # tarball that dies at every user's install, but only if you let the hook
       # run; see the next paragraph.
       #
-      # Run that manual publish with scripts ENABLED. Never pass
-      # --ignore-scripts, and check your own npmrc for ignore-scripts=true,
+      # If you ever do have to hand-publish anyway, run it with scripts ENABLED.
+      # Never pass --ignore-scripts, and check your own npmrc for ignore-scripts=true,
       # because npm skips prepack and prepublishOnly alike: dist/ is never
       # rebuilt, so you ship whatever stale build is on disk or no bin at all,
       # and the check-pack guard never runs, so `npm publish --ignore-scripts`
