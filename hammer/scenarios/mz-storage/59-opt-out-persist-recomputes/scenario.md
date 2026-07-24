@@ -85,6 +85,8 @@ expect binding: daily -> lake
 `daily_optout` must not appear at all — the opt-out keeps it from being a target,
 so only the base writes `nop_daily`.
 
+Expect:
+
 | source | writes    |
 | ------ | --------- |
 | daily  | nop_daily |

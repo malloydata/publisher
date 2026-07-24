@@ -94,6 +94,8 @@ Only the base `daily` may write `esc_daily`. RED today for the same upstream
 reason as the external twin; here the duplicate target writes the customer's own
 warehouse.
 
+Expect:
+
 | source | writes    |
 | ------ | --------- |
 | daily  | esc_daily |
