@@ -16,7 +16,7 @@ import { quoteManifestTablePath } from "./quoting";
 /**
  * The per-source serve pointer the virtual-source serve transform consumes. Two
  * origins, one shape (the "injectable binding seam"): the publisher self-derives
- * it from a build's manifest entry (standalone), or a host (control plane)
+ * it from a build's manifest entry (standalone), or a host
  * supplies it. `tablePath` is the LOGICAL, unquoted physical table path; `schema`
  * is the AUTHORITATIVE DuckDB column schema captured post-build (raw DuckDB type
  * strings), which the transform declares verbatim — see {@link buildServeShapeModel}.

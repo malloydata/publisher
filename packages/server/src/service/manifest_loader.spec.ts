@@ -95,7 +95,7 @@ describe("fetchManifestEntries", () => {
       });
    });
 
-   it("carries the control-plane freshness fields verbatim (path-C)", async () => {
+   it("carries the host-supplied freshness fields verbatim (path-C)", async () => {
       const dataAsOf = "2026-07-07T00:00:00.000Z";
       const file = await writeManifest({
          entries: {

@@ -76,7 +76,7 @@ async function readManifestBytes(uri: string): Promise<string> {
 }
 
 /**
- * Fetch and parse the control-plane-computed build manifest at `uri`, split by
+ * Fetch and parse the host-computed build manifest at `uri`, split by
  * tier into {@link FetchedManifest}. The wire manifest keys physical tables
  * under `physicalTableName`; for an in-warehouse (path-C) entry the Malloy
  * runtime consumes `tableName`, so that field is translated here and the entry

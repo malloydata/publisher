@@ -1079,7 +1079,7 @@ export class Package {
     * existed may carry a latent collision, so an un-gated reject would break a
     * routine re-publish. This is a WITHIN-package/version check only: a `name=`
     * change ACROSS versions, or a cross-package collision, needs the
-    * cross-version/global view the host (control plane) has and the publisher
+    * cross-version/global view the host has and the publisher
     * does not.
     */
    public persistenceCollisionWarnings(): string[] {
