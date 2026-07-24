@@ -957,7 +957,7 @@ export class Package {
       const warnings: ApiPackageWarning[] = [];
       for (const source of Object.values(this.buildPlan.sources)) {
          const storage = source.annotationFields?.storage?.trim();
-         if (!storage || storage === "source") continue;
+         if (!storage) continue;
          const message =
             mode === "off"
                ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
@@ -1094,10 +1094,9 @@ export class Package {
          const fields = source.annotationFields ?? {};
          const physicalName = (fields.name || source.name).trim();
          const storage = fields.storage?.trim();
-         // storage= into a real destination lands there; otherwise (colocated, or
-         // the reserved `storage=source`) it lands in the source's own warehouse.
-         const destination =
-            storage && storage !== "source" ? storage : source.connectionName;
+         // storage= into a real destination lands there; absent, the source is
+         // built colocated (into its own warehouse).
+         const destination = storage ? storage : source.connectionName;
          // Verbatim key. Limitation: names that differ only by case or quoting
          // (`Foo` vs `foo`, `"foo"` vs `foo`) key distinctly here but may fold to
          // the same physical table on a case-folding destination — such variants

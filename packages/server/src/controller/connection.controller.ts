@@ -107,15 +107,6 @@ function validateAdminAuthoredConnection(
       );
    }
 
-   // 'source' is the reserved `#@ persist storage=source` sentinel ("materialize
-   // in the warehouse"). Assembly rejects it too, but catching it here gives a
-   // clean 400 at the API add path rather than a 500 deeper in.
-   if (connectionName === "source" || connectionConfig.name === "source") {
-      throw new BadRequestError(
-         "Connection name 'source' is reserved for the storage=source sentinel (materialize in the source warehouse). Choose a different name.",
-      );
-   }
-
    try {
       validateDuckdbApiSurface(connectionConfig);
    } catch (error) {
