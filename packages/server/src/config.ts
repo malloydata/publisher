@@ -511,12 +511,14 @@ const PERSIST_STORAGE_MODES: readonly PersistStorageMode[] = [
 /**
  * Resolve the `storage=` deployment mode from `PERSIST_STORAGE_MODE`. Defaults
  * to `off` (feature dark) when unset/empty; loud-fails on an unrecognized value
- * so a typo can't silently leave the fleet in a surprising mode.
+ * so a typo can't silently leave the fleet in a surprising mode. Case-insensitive
+ * (like the sibling `PERSIST_COLLISION_ENFORCE`): `ON`/`Off` are accepted rather
+ * than crash-looping the process on an operator's casing while ENABLING the tier.
  */
 export const getPersistStorageMode = (): PersistStorageMode => {
    const raw = process.env.PERSIST_STORAGE_MODE;
    if (raw === undefined || raw.trim() === "") return "off";
-   const value = raw.trim();
+   const value = raw.trim().toLowerCase();
    if ((PERSIST_STORAGE_MODES as readonly string[]).includes(value)) {
       return value as PersistStorageMode;
    }
