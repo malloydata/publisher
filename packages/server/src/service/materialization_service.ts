@@ -72,6 +72,109 @@ function selfAssignTableName(persistSource: PersistSource): string {
    return deriveAnnotationFields(persistSource).name || persistSource.name;
 }
 
+/** The declared `#@ persist ... refresh=...` value, defaulting to "full". */
+export function refreshMode(
+   persistSource: PersistSource,
+): "full" | "incremental" {
+   return deriveAnnotationFields(persistSource).refresh === "incremental"
+      ? "incremental"
+      : "full";
+}
+
+/**
+ * Reserved CTE name for the compile-safe self-reference primitive. An
+ * incremental source's SQL declares
+ * `WITH __malloy_incremental_keys AS (<empty placeholder>)` and references it
+ * (e.g. `WHERE key NOT IN (SELECT key FROM __malloy_incremental_keys)`). The
+ * empty body compiles with no reference to the not-yet-existent target and, on
+ * the first-run seed, matches nothing so every row is processed. On an
+ * incremental MERGE the publisher hydrates the body to select the primary key
+ * from the already-materialized target, so only new rows are computed — crucially
+ * before an expensive step like ML.GENERATE_TEXT. This is the dbt
+ * `is_incremental()` + `{{ this }}` analog, realized without a compiler change.
+ */
+const INCREMENTAL_KEYS_CTE = "__malloy_incremental_keys";
+
+/**
+ * Rewrite the reserved {@link INCREMENTAL_KEYS_CTE} body to select the primary
+ * key from the target. Returns the SQL unchanged if the CTE is absent (the
+ * source did not opt into the self-reference; the MERGE then upserts every row
+ * the source returns). Boundary-safe: balances parentheses from the CTE's
+ * opening paren.
+ *
+ * The CTE must be written in the canonical `WITH <name> AS ( ... )` form. The
+ * anchor matches the name + `AS` keyword + opening paren together and is
+ * case-INSENSITIVE on `AS`: a lowercase `as` is valid SQL, and a case-sensitive
+ * scan would silently skip hydration, leaving the incremental filter inert (the
+ * MERGE would then reprocess every row). Matching name+`AS` as a unit also
+ * avoids anchoring on an `AS` substring inside an unrelated upstream identifier.
+ * A column-list form (`<name> (cols) AS (...)`) is not recognized — the reserved
+ * CTE needs no column list. The anchor is a `\b`-bounded name match, so it does
+ * not fire on a longer identifier that merely contains the reserved name; but it
+ * is a textual scan, not a SQL parse, so the reserved name must appear ONLY as
+ * this CTE — the first textual occurrence (e.g. inside a comment or string
+ * literal) is what anchors the rewrite. Authors should not reference the name
+ * anywhere but the CTE definition and its filter.
+ */
+export function hydrateIncrementalKeysCte(
+   sql: string,
+   quotedTarget: string,
+   primaryKey: string,
+   dialect: string,
+): string {
+   const anchor = new RegExp(
+      `\\b${INCREMENTAL_KEYS_CTE}\\s+AS\\s*\\(`,
+      "i",
+   ).exec(sql);
+   if (!anchor) return sql;
+   const asOpen = anchor.index + anchor[0].length - 1; // index of the "("
+   let depth = 0;
+   let close = asOpen;
+   for (; close < sql.length; close++) {
+      if (sql[close] === "(") depth++;
+      else if (sql[close] === ")") {
+         depth--;
+         if (depth === 0) break;
+      }
+   }
+   const body = ` SELECT ${quoteIdentifier(primaryKey, dialect)} FROM ${quotedTarget} `;
+   return sql.slice(0, asOpen + 1) + body + sql.slice(close);
+}
+
+/**
+ * A standard SQL MERGE that upserts the source rows into the target on the
+ * primary key: update non-key columns on match, insert on no-match. Append-once
+ * (classify) falls out naturally when the source's candidate set excludes
+ * already-present keys (via {@link INCREMENTAL_KEYS_CTE}); dedup upserts changed
+ * rows. Idempotent under retry, unlike a raw INSERT.
+ */
+export function buildMergeSQL(
+   quotedTarget: string,
+   usingSQL: string,
+   primaryKey: string,
+   columns: string[],
+   dialect: string,
+): string {
+   const q = (c: string) => quoteIdentifier(c, dialect);
+   const pk = q(primaryKey);
+   const nonKey = columns.filter((c) => c !== primaryKey);
+   // The target column on the LHS of SET is UNQUALIFIED: BigQuery and Postgres 15+
+   // reject a target-alias-qualified column there ("... cannot reference table
+   // alias"), and Snowflake accepts the unqualified form too — so this is the
+   // portable spelling. The RHS is source-qualified (S.col).
+   const setClause = nonKey.map((c) => `${q(c)} = S.${q(c)}`).join(", ");
+   const colList = columns.map(q).join(", ");
+   const valList = columns.map((c) => `S.${q(c)}`).join(", ");
+   const whenMatched = setClause
+      ? `WHEN MATCHED THEN UPDATE SET ${setClause} `
+      : "";
+   return (
+      `MERGE INTO ${quotedTarget} T USING (${usingSQL}) S ON T.${pk} = S.${pk} ` +
+      whenMatched +
+      `WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${valList})`
+   );
+}
+
 /** Classify a thrown build error as cancelled (cooperative abort) or failed. */
 function outcomeFor(
    _err: unknown,
@@ -252,6 +355,16 @@ export class MaterializationService {
       packageName: string,
       options: {
          forceRefresh?: boolean;
+         /**
+          * Escape hatch (dbt `--full-refresh` analog): rebuild every incremental
+          * source from scratch via the full staging+rename path this run, instead
+          * of MERGE-ing. Use after a schema or logic migration. Distinct from
+          * `forceRefresh` (which only bypasses content-hash reuse for full
+          * sources): the scheduler sets `forceRefresh` on every run, so it must
+          * NOT force incremental sources full, or scheduled refreshes would stop
+          * being incremental.
+          */
+         forceFullRebuild?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
@@ -288,9 +401,11 @@ export class MaterializationService {
       }
 
       const forceRefresh = options.forceRefresh ?? false;
+      const forceFullRebuild = options.forceFullRebuild ?? false;
       const trigger = options.trigger ?? "ON_DEMAND";
       const metadata = {
          forceRefresh,
+         forceFullRebuild,
          sourceNames: options.sourceNames ?? null,
          mode: orchestrated ? "orchestrated" : "auto",
          trigger,
@@ -323,6 +438,7 @@ export class MaterializationService {
             {
                sourceNames: options.sourceNames,
                forceRefresh,
+               forceFullRebuild,
                buildInstructions,
                referenceManifest: options.referenceManifest,
                strictUpstreams: options.strictUpstreams,
@@ -350,6 +466,7 @@ export class MaterializationService {
       opts: {
          sourceNames: string[] | undefined;
          forceRefresh: boolean;
+         forceFullRebuild: boolean;
          buildInstructions: BuildInstruction[] | undefined;
          referenceManifest: ManifestReference[] | undefined;
          strictUpstreams: boolean | undefined;
@@ -418,6 +535,7 @@ export class MaterializationService {
             carried,
             signal,
             opts.strictUpstreams ?? false,
+            opts.forceFullRebuild,
          );
 
          const sourcesBuilt = instructions.length;
@@ -491,8 +609,17 @@ export class MaterializationService {
             if (seen.has(sourceEntityId)) continue;
             seen.add(sourceEntityId);
 
+            // Content-hash reuse assumes "same SQL => reusable table". That holds
+            // for full rebuilds but NOT for incremental sources, whose table is a
+            // function of run history, not just SQL: carrying one forward would
+            // silently stop it advancing on a non-forced run. Incremental sources
+            // are always (re)built.
             const prior = priorEntries[sourceEntityId];
-            if (prior && prior.physicalTableName) {
+            if (
+               prior &&
+               prior.physicalTableName &&
+               refreshMode(persistSource) !== "incremental"
+            ) {
                carried[sourceEntityId] = prior;
                continue;
             }
@@ -696,6 +823,7 @@ export class MaterializationService {
       seedEntries: Record<string, ManifestEntry>,
       signal: AbortSignal,
       strict = false,
+      forceFullRebuild = false,
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -776,6 +904,7 @@ export class MaterializationService {
                connection,
                connectionDigests,
                manifest,
+               forceFullRebuild,
             );
             entries[sourceEntityId] = entry;
          }
@@ -786,10 +915,49 @@ export class MaterializationService {
 
    /**
     * Build a single instructed source into its assigned physical table.
-    * COPY uses a staging table + atomic rename for crash-safety; the staging
-    * name derives from the sourceEntityId. Records and returns the manifest entry.
+    * Dispatches on the source's `#@ persist ... refresh=...` mode: "incremental"
+    * takes the MERGE path ({@link buildIncrementalSource}); unset/"full" keeps the
+    * unchanged full-rebuild path ({@link buildFullSource}).
+    *
+    * `forceFullRebuild` is the escape hatch (dbt `--full-refresh` analog): when
+    * the run requests it, an incremental source is rebuilt from scratch via the
+    * full staging+rename path. Its self-reference CTE stays empty, so every row
+    * is reprocessed and the table is atomically swapped — the way to recover
+    * from a schema or logic migration without hand-dropping the table.
     */
    private async buildOneSource(
+      persistSource: PersistSource,
+      instruction: BuildInstruction,
+      connection: MalloyConnection,
+      connectionDigests: Record<string, string>,
+      manifest: Manifest,
+      forceFullRebuild = false,
+   ): Promise<ManifestEntry> {
+      if (!forceFullRebuild && refreshMode(persistSource) === "incremental") {
+         return this.buildIncrementalSource(
+            persistSource,
+            instruction,
+            connection,
+            connectionDigests,
+            manifest,
+         );
+      }
+      return this.buildFullSource(
+         persistSource,
+         instruction,
+         connection,
+         connectionDigests,
+         manifest,
+      );
+   }
+
+   /**
+    * Full rebuild (default; `refresh` unset or "full"): staging table + atomic
+    * rename for crash-safety; the staging name derives from the sourceEntityId.
+    * Records and returns the manifest entry. Behavior is byte-for-byte unchanged
+    * from before the incremental feature.
+    */
+   private async buildFullSource(
       persistSource: PersistSource,
       instruction: BuildInstruction,
       connection: MalloyConnection,
@@ -864,6 +1032,155 @@ export class MaterializationService {
          realization: instruction.realization,
          rowCount: null,
       };
+   }
+
+   /**
+    * Incremental build (`refresh="incremental"`): seed on first run, MERGE
+    * thereafter. First run (target absent) is a plain CTAS of the source SQL —
+    * the compile-safe self-reference CTE is empty, so all rows seed and the
+    * warehouse infers the exact schema (no derived DDL). Subsequent runs hydrate
+    * the self-reference to the target and MERGE on the source's primary_key, so
+    * only new rows are computed. In-place (no staging swap); a single MERGE is
+    * statement-atomic and idempotent under retry.
+    */
+   private async buildIncrementalSource(
+      persistSource: PersistSource,
+      instruction: BuildInstruction,
+      connection: MalloyConnection,
+      connectionDigests: Record<string, string>,
+      manifest: Manifest,
+   ): Promise<ManifestEntry> {
+      const sourceEntityId = instruction.sourceEntityId;
+      const physicalTableName = instruction.physicalTableName;
+      const buildSQL = persistSource.getSQL({
+         buildManifest: manifest.buildManifest,
+         connectionDigests,
+      });
+      const dialect = persistSource.dialectName;
+      const quotedPhysical = quoteTablePath(physicalTableName, dialect);
+
+      const startTime = performance.now();
+      // The target table is the authority on its own columns. One schema fetch
+      // tells us both whether the table exists (seed vs MERGE) and its exact
+      // column set — including non-atomic (struct/array/record) columns that a
+      // Malloy-side derivation would drop, plus any name normalization the
+      // warehouse applied. This mirrors the first-run CTAS, which likewise lets
+      // the warehouse own the schema (we never derive DDL from Malloy types).
+      const targetColumns = await this.fetchTargetColumns(
+         connection,
+         physicalTableName,
+      );
+      const firstRun = targetColumns === null;
+
+      if (firstRun) {
+         // First run: full seed. The self-reference CTE is empty, so the source
+         // processes every row; the warehouse infers the target schema.
+         await connection.runSQL(
+            `CREATE TABLE ${quotedPhysical} AS (${buildSQL})`,
+         );
+      } else {
+         const primaryKey = persistSource._explore.primaryKey;
+         if (!primaryKey) {
+            throw new BadRequestError(
+               `Incremental persist source "${persistSource.name}" requires a ` +
+                  `primary_key to MERGE on; declare one on the source.`,
+            );
+         }
+         if (targetColumns.length === 0) {
+            throw new BadRequestError(
+               `Incremental persist source "${persistSource.name}": target table ` +
+                  `${physicalTableName} reported no columns; cannot build a MERGE.`,
+            );
+         }
+         // Resolve the declared primary_key to the target's ACTUAL column
+         // spelling (a case-normalizing engine such as Snowflake may store it
+         // upper-cased). Every identifier in the MERGE — the ON key and the
+         // column list — then comes from one authority (the target schema), so
+         // they can't disagree in case. The source subquery `S` produces the
+         // same physical spelling because the target was created from it.
+         const pkColumn = targetColumns.find(
+            (c) => c.toLowerCase() === primaryKey.toLowerCase(),
+         );
+         if (!pkColumn) {
+            throw new BadRequestError(
+               `Incremental persist source "${persistSource.name}": primary_key ` +
+                  `"${primaryKey}" is not among the target table's columns ` +
+                  `[${targetColumns.join(", ")}].`,
+            );
+         }
+         const hydrated = hydrateIncrementalKeysCte(
+            buildSQL,
+            quotedPhysical,
+            pkColumn,
+            dialect,
+         );
+         await connection.runSQL(
+            buildMergeSQL(
+               quotedPhysical,
+               hydrated,
+               pkColumn,
+               targetColumns,
+               dialect,
+            ),
+         );
+      }
+
+      // Downstream sources built later in this run resolve their FROM against
+      // the live target (incremental mutates in place; there is no staging).
+      manifest.update(sourceEntityId, { tableName: quotedPhysical });
+
+      const durationMs = Math.round(performance.now() - startTime);
+      recordSourceBuildDuration(durationMs);
+      logger.info(
+         `Built incremental materialized source ${persistSource.name}`,
+         { physicalTableName, firstRun, durationMs },
+      );
+
+      return {
+         sourceEntityId,
+         sourceName: persistSource.name,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName,
+         connectionName: persistSource.connectionName,
+         realization: instruction.realization,
+         rowCount: null,
+      };
+   }
+
+   /**
+    * The target table's actual column names via the connection's dialect-aware
+    * schema introspection, or `null` if no schema comes back. On the incremental
+    * path this both decides seed-vs-MERGE (null => first run) and yields the
+    * MERGE column set from the physical table — the same authority the first-run
+    * CTAS used, so non-atomic columns and any warehouse name normalization are
+    * preserved.
+    *
+    * `fetchSchemaForTables` collapses every per-table failure (a missing table,
+    * but also a transient metadata error) into its `errors` map rather than
+    * throwing, so "no schema" is treated as first run. The benign miss — a
+    * transient fetch error against a table that DOES exist — then surfaces as a
+    * spurious "table already exists" failure from the first-run CTAS: a failed
+    * run, never data loss or divergence. Distinguishing not-found from transient
+    * would need dialect-specific error classification (a possible refinement).
+    */
+   private async fetchTargetColumns(
+      connection: MalloyConnection,
+      tableName: string,
+   ): Promise<string[] | null> {
+      const key = "__persist_target";
+      const { schemas, errors } = await connection.fetchSchemaForTables(
+         { [key]: tableName },
+         {},
+      );
+      const schema = schemas[key];
+      if (!schema) {
+         logger.debug(
+            "Incremental target schema not found; treating as first run",
+            { tableName, error: errors[key] },
+         );
+         return null;
+      }
+      return schema.fields.map((f) => f.name);
    }
 
    // ==================== CANCELLATION ====================

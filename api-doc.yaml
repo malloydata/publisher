@@ -4084,6 +4084,13 @@ components:
           default: false
           description:
             Build a new table even when a source's sourceEntityId is unchanged.
+        forceFullRebuild:
+          type: boolean
+          default: false
+          description: >-
+            When true, incremental (refresh=incremental) persist sources are
+            fully rebuilt this run instead of applying only new or changed rows.
+            Use after a schema or definition change. Independent of forceRefresh.
         sourceNames:
           type: array
           items:

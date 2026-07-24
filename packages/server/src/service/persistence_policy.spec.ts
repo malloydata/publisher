@@ -87,6 +87,26 @@ source: s is duckdb.sql("SELECT 1 as x")
 source: f is duckdb.sql("SELECT 1 as x")
 `;
 
+   const INCREMENTAL_MODEL = `##! experimental.persistence
+
+#@ persist name="i_table" refresh=incremental
+source: i is duckdb.sql("SELECT 1 as x")
+`;
+
+   const BAD_REFRESH_MODEL = `##! experimental.persistence
+
+#@ persist name="b_table" refresh=weekly
+source: b is duckdb.sql("SELECT 1 as x")
+`;
+
+   // Incremental with a SOURCE-level freshness fallback of "live" (no package
+   // freshness) — Rule 6 must catch the source-level declaration too.
+   const INCREMENTAL_SRC_LIVE_MODEL = `##! experimental.persistence
+
+#@ persist name="i_table" refresh=incremental freshness.window="24h" freshness.fallback="live"
+source: i is duckdb.sql("SELECT 1 as x")
+`;
+
    // ── scope parsing + surfacing ─────────────────────────────────────────
 
    it(
@@ -259,6 +279,95 @@ source: f is duckdb.sql("SELECT 1 as x")
          });
          expect(pkg.persistencePolicyWarnings()).toEqual([]);
          expect(sourceByName(pkg, "f").freshness).toEqual({ window: "1h" });
+      },
+      { timeout: 30000 },
+   );
+
+   // ── Rule 5: refresh must be a supported value (full | incremental) ────
+   // ── Rule 7: incremental requires a MERGE-capable dialect ──────────────
+
+   it(
+      "surfaces refresh=incremental to the wire plan and rejects it on a non-MERGE dialect (duckdb)",
+      async () => {
+         // This harness compiles against duckdb, which is not a MERGE-capable
+         // dialect for incremental (Rule 7), so an incremental source here is
+         // rejected — and this doubles as the dialect-gate test. It also proves
+         // the pinned compiler carries `refresh` through to the wire plan
+         // (annotationFields), which the whole incremental path keys off.
+         const pkg = await loadPackage(INCREMENTAL_MODEL, { scope: "package" });
+         const source = sourceByName(pkg, "i") as Record<string, unknown>;
+         expect(
+            (source.annotationFields as Record<string, string>).refresh,
+         ).toBe("incremental");
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain('"i"');
+         expect(joined).toContain("does not support incremental");
+         expect(joined).toContain("MERGE-capable");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "rejects an unsupported refresh value, naming the allowed set",
+      async () => {
+         const pkg = await loadPackage(BAD_REFRESH_MODEL, { scope: "package" });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain('"b"');
+         expect(joined).toContain("weekly");
+         expect(joined).toContain("full");
+         expect(joined).toContain("incremental");
+      },
+      { timeout: 30000 },
+   );
+
+   // ── Rule 6: incremental + freshness fallback "live" is invalid ────────
+
+   it(
+      "rejects an incremental source with freshness fallback live",
+      async () => {
+         // A live serve recomputes the source, which for an incremental
+         // definition returns only the delta, not the full dataset.
+         const pkg = await loadPackage(INCREMENTAL_MODEL, {
+            scope: "package",
+            materialization: { freshness: { window: "24h", fallback: "live" } },
+         });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain("incremental");
+         expect(joined).toContain("live");
+         expect(joined).toContain("delta");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "does not flag freshness fallback stale_ok on an incremental source (Rule 6)",
+      async () => {
+         // Rule 6 targets the "live" fallback only; stale_ok must not trip it.
+         // (A separate Rule 7 dialect warning is present because this harness is
+         // duckdb-only, so assert on Rule 6's signature rather than emptiness.)
+         const pkg = await loadPackage(INCREMENTAL_MODEL, {
+            scope: "package",
+            materialization: {
+               freshness: { window: "24h", fallback: "stale_ok" },
+            },
+         });
+         expect(pkg.formatInvalidPersistencePolicy()).not.toContain("delta");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "rejects an incremental source whose OWN freshness fallback is live",
+      async () => {
+         // No package freshness — the dangerous fallback is declared on the
+         // source itself, which Rule 6 must still catch.
+         const pkg = await loadPackage(INCREMENTAL_SRC_LIVE_MODEL, {
+            scope: "package",
+         });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain('"i"');
+         expect(joined).toContain("live");
+         expect(joined).toContain("delta");
       },
       { timeout: 30000 },
    );
