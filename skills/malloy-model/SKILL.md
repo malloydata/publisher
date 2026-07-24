@@ -182,11 +182,36 @@ source: customer_health is customers extend {
 - When both a combined table (all types) and filtered/split tables exist, prefer the split tables
 - **DRY: define measures/dimensions in base source files, not inline in views**
 
-## Parameterizable Filters with `#(filter)`
+## Parameterizing sources with `given:` (preferred)
 
-`#(filter)` annotations declare filterable dimensions on a source. Publisher parses them, exposes filter metadata via the API, renders filter widgets in the notebook UI, and **injects `where:` clauses into queries server-side** when callers supply parameters. This gives you a clean way to expose tunable knobs (date range, region, manufacturer) without hand-rolling parameterization in every query.
+Native Malloy **`given:` parameters** are the going-forward way to expose tunable knobs (date range, region, manufacturer) on a source — prefer them over `#(filter)` when you author a new model. A `given:` is a first-class runtime parameter you reference in the model's own logic; callers supply values at query time and the model uses them however it declares. Enable them with `##! experimental.givens` at the top of the model.
 
-Filters are a **runtime/modeling construct**, not just documentation. They shape governance, query latency (forcing filters keeps result sets bounded), and correctness (see `required` below). They live on the source, never on the consumer: an ad-hoc report or notebook that imports a source inherits and displays that source's filters automatically; it does not (and cannot) declare new ones. If an analysis needs a knob the source doesn't expose, the right move is to add a `#(filter)` to the source itself, not to wedge filtering into the consumer.
+```malloy
+##! experimental.givens
+
+given:
+  manufacturer_filter :: filter<string> is f''
+  subject_filter :: filter<string> is f''
+
+source: recalls is duckdb.table('data/auto_recalls.csv') extend {
+  where: Manufacturer ~ $manufacturer_filter, Subject ~ $subject_filter
+  measure: recall_count is count()
+}
+```
+
+A given is **declared bare** but **referenced with a `$` sigil** in expressions (`$manufacturer_filter`), as above.
+
+- **Give every optional filter a neutral, match-all default** — a `filter<>` given defaulting to `f''` — so an unsupplied value returns unfiltered rows, matching how `#(filter)` behaves when a value is omitted. Because the given bakes an always-on `where:` into the source, a non-neutral default (e.g. a date floor) applies to *every* read of the source, not just the ones that opt in — so keep defaults neutral. Defaults must be Malloy literals.
+- **Givens don't auto-inject a `where:`.** Unlike `#(filter)`, you write the filter expression that references the given yourself (e.g. `where: dimension ~ $given_name`).
+- **Not every filter maps cleanly.** A filter with no neutral match-all literal default — e.g. a scalar date/number range like `> @2020-01-01` — is not a good `given:`; keep those on `#(filter)`. Two more cases keep using `#(filter)`: mandatory scoping filters (`required`) and system-injected row-level filters (`implicit`), both below.
+
+Givens are also the substrate for access control — see "Access Control: Source Gating with `#(authorize)`" below.
+
+## Legacy: Parameterizable Filters with `#(filter)`
+
+`#(filter)` is the older, Publisher-specific mechanism for the same idea. Publisher parses the annotation, exposes filter metadata via the API, renders filter widgets in the notebook UI, and **injects `where:` clauses into queries server-side** when callers supply parameters. Prefer `given:` (above) for new models; keep reading and maintaining `#(filter)` on existing models, and keep using it for the two cases `given:` can't cover yet — `required` (mandatory scoping) and `implicit` (system-injected filters), below.
+
+Filters are a **runtime/modeling construct**, not just documentation. They shape governance, query latency (forcing filters keeps result sets bounded), and correctness (see `required` below). They live on the source, never on the consumer: an ad-hoc report or notebook that imports a source inherits and displays that source's filters automatically; it does not (and cannot) declare new ones. If an existing `#(filter)`-based source needs another knob, add it to the source itself, not to the consumer.
 
 ### Syntax
 
