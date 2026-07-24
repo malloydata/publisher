@@ -284,7 +284,12 @@ export class Rest {
    async query(
       pkg: string,
       modelPath: string,
-      spec: { query?: string; sourceName?: string; queryName?: string },
+      spec: {
+         query?: string;
+         sourceName?: string;
+         queryName?: string;
+         givens?: Record<string, unknown>;
+      },
    ): Promise<QueryOutcome> {
       const url = this.pkgUrl(pkg, `/models/${modelPath}/query`);
       const post = async (compactJson: boolean): Promise<string> => {
@@ -317,7 +322,12 @@ export class Rest {
    async tryQuery(
       pkg: string,
       modelPath: string,
-      spec: { query?: string; sourceName?: string; queryName?: string },
+      spec: {
+         query?: string;
+         sourceName?: string;
+         queryName?: string;
+         givens?: Record<string, unknown>;
+      },
    ): Promise<{ ok: true; outcome: QueryOutcome } | { ok: false; error: string }> {
       try {
          return { ok: true, outcome: await this.query(pkg, modelPath, spec) };

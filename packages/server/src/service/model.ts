@@ -2299,11 +2299,23 @@ export class Model {
       // the real query if this model doesn't itself surface them — see
       // filterGivensToModelSurface.
       const querySurfaceGivens = this.filterGivensToModelSurface(givens);
+      // Same reason as effectiveBuildManifest: the serve shape is a transient
+      // model built from given-FREE sources (a source referencing a given is
+      // ineligible for storage), so it surfaces no `given:` params at all and
+      // Malloy rejects any supplied name with "unknown given". A caller that
+      // passes the live model's givens — clients routinely pass every
+      // model-level given — would get a spurious 400 on a query that should
+      // just serve from storage, and prepare/run throws land PAST the
+      // routing fallback, so it isn't recoverable as a live retry. Drop them
+      // on the shape path; nothing there can read them. Safe: the authorize
+      // gate already ran above against the full unfiltered givens, and the
+      // live runnable still gets the filtered set.
+      const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
          rowLimit = resolveModelQueryRowLimit(
             (
                await runnable.getPreparedResult({
-                  givens: querySurfaceGivens,
+                  givens: effectiveGivens,
                   buildManifest: effectiveBuildManifest,
                   virtualMap: serveVirtualMap,
                })
@@ -2314,7 +2326,7 @@ export class Model {
 
          queryResults = await runnable.run({
             rowLimit,
-            givens: querySurfaceGivens,
+            givens: effectiveGivens,
             abortSignal,
             buildManifest: effectiveBuildManifest,
             virtualMap: serveVirtualMap,
