@@ -14,12 +14,21 @@ export async function listDatabases(
     return;
   }
 
+  // A file the server could not probe is listed carrying `error` instead of
+  // `info`. Only widen the table when one actually failed, so the common
+  // all-healthy output is unchanged.
+  const hasErrors = databases.some((d: any) => d.error);
+
   const table = new Table({
-    head: ["Path", "Type"],
+    head: hasErrors ? ["Path", "Type", "Error"] : ["Path", "Type"],
   });
 
   databases.forEach((d: any) => {
-    table.push([d.path ?? "", d.type ?? ""]);
+    const row = [d.path ?? "", d.type ?? ""];
+    if (hasErrors) {
+      row.push(d.error ?? "");
+    }
+    table.push(row);
   });
 
   logOutput(table.toString());

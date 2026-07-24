@@ -4,7 +4,7 @@ info:
   description: |
     The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources.
     A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases
-    (.parquet files) with a malloy-publisher.json manifest at the package's root directory.
+    (.parquet, .csv, and .xlsx files) with a malloy-publisher.json manifest at the package's root directory.
 
     ## Key Features
 
@@ -1855,8 +1855,8 @@ paths:
       summary: List embedded databases
       description: |
         Retrieves a list of all embedded databases within the specified package. These are typically
-        DuckDB databases stored as .parquet files that provide local data storage for the package.
-        Each database entry includes metadata about the database structure and content.
+        local data files read by DuckDB in place (.parquet, .csv, and .xlsx) that provide local data
+        storage for the package. Each database entry includes metadata about the database structure and content.
       parameters:
         - name: environmentName
           in: path
@@ -3333,6 +3333,12 @@ components:
           type: string
           description: Type of embedded database
           enum: ["embedded", "materialized"]
+        error:
+          type: string
+          description: >-
+            Error message if the data file could not be read. When set, `info`
+            is absent: the file is listed so the failure is visible, but its
+            schema and row count could not be probed.
 
     Schema:
       description: A schema name in a Connection.

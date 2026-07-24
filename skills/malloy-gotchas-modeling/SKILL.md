@@ -238,6 +238,27 @@ source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total i
 
 If a project's standards file specifies a stricter policy (e.g., a `search_malloy_docs` rationale comment requirement above every `conn.sql()` block), defer to that.
 
+## Excel Files: Read `.xlsx` In Place, Never Convert
+
+```malloy
+// RIGHT: .xlsx works like .csv/.parquet (in a Publisher package the sandbox connection is `duckdb`)
+source: budget is duckdb.table('data/budget.xlsx')
+// RIGHT: sheet selection or any read option needs read_xlsx in a SQL source
+source: q2 is duckdb.sql("""SELECT * FROM read_xlsx('data/budget.xlsx', sheet = 'Q2')""")
+// WRONG: converting the spreadsheet to Parquet or CSV first (an unnecessary extra step)
+```
+
+Do not convert spreadsheets before modeling. DuckDB's excel extension reads `.xlsx` directly and loads automatically on first use, so `duckdb.table('file.xlsx')` just works. `table()` takes a plain file path only, so anything needing `read_xlsx` options (`sheet`, `range`, `header`, `ignore_errors`, `normalize_names`, `all_varchar`, `empty_as_varchar`) goes through the SQL-source form.
+
+Quirks:
+
+- Only the FIRST sheet is read by default. Select another with `sheet = 'Name'`.
+- Every numeric column arrives as `number` (xlsx stores all numbers as doubles); there are no integer columns.
+- A column mixing numbers and text fails at query time (`Could not convert string ... to DOUBLE`). Add `ignore_errors = true` (bad cells become null) or `all_varchar = true`.
+- A sheet with no header row whose first row is all text silently loses that row to header detection. Pass `header = false`.
+- Headers with spaces are kept verbatim: backtick them in Malloy, or pass `normalize_names = true` for snake_case names.
+- `all_varchar = true` returns date cells as Excel serial strings (for example `'46027.0'`), not dates.
+
 ## Duplicate Rows: Check Before Building Measures
 
 ```malloy

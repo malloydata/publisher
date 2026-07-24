@@ -316,7 +316,14 @@ export default function Package({
                         icon={<ContentTypeIcon type="data" />}
                         tint={MALLOY_BRAND.darkBlue}
                         label={database.path}
-                        rightLabel={formatRowCount(database.info.rowCount)}
+                        rightLabel={
+                           // A file the server could not probe is listed with
+                           // `error` and no `info`; show that instead of a
+                           // row count rather than reading through undefined.
+                           database.info
+                              ? formatRowCount(database.info.rowCount)
+                              : "Unreadable"
+                        }
                         onClick={() => setSchemaDatabase(database)}
                      />
                   ))}
@@ -366,6 +373,11 @@ export default function Package({
                </IconButton>
             </DialogTitle>
             <DialogContent>
+               {schemaDatabase?.error && (
+                  <Typography variant="body2" color="error">
+                     {schemaDatabase.error}
+                  </Typography>
+               )}
                {schemaDatabase?.info?.columns && (
                   <Table size="small">
                      <TableHead>

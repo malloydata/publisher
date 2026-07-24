@@ -322,7 +322,7 @@ const resourceUri = encodeResourceUri({
 
 - Models list (`.malloy` files)
 - Notebooks list (`.malloynb` files)
-- Embedded databases (`.parquet` files)
+- Embedded databases (`.parquet`, `.csv`, and `.xlsx` files)
 - Connection configuration
 - Package README
 

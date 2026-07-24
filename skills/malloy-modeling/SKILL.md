@@ -24,6 +24,7 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 6. **No fixed scale on measures**: use `# currency` not `# currency=usd0m`
 7. **Cast strings for aggregates:** `avg(score::number)` not `avg(score)`
 8. **Boolean columns:** use `= true` not `= 'true'` (no quotes!)
+9. **Read `.xlsx` in place:** `duckdb.table('data/file.xlsx')` works as-is; never convert a spreadsheet to Parquet/CSV first (quirks: `skill:malloy-gotchas-modeling`)
 
 ## Planning and `modeling-notes.md`
 
