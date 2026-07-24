@@ -1311,6 +1311,45 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--watch-env",
 ]);
 
+/**
+ * Split a command the way `sh -c` would, which npm is what hands the script to.
+ * Only the two quoting forms need handling: SHELL_CONTROL_CHARACTERS already
+ * rejects backticks, `$`, parentheses, and the chaining and redirection
+ * operators, so nothing else can reach here. Splitting on whitespace instead
+ * lets a quoted flag name (`"--host"`) read as a different token than the one
+ * the server is actually handed.
+ */
+function shellTokens(script: string): string[] {
+   const tokens: string[] = [];
+   let current = "";
+   let quote: string | undefined;
+   let open = false;
+   for (const char of script) {
+      if (quote !== undefined) {
+         if (char === quote) quote = undefined;
+         else current += char;
+         continue;
+      }
+      if (char === '"' || char === "'") {
+         quote = char;
+         // A quoted empty string is still an argv entry, and a falsy one, which
+         // is the whole reason the server drops the flag in front of it.
+         open = true;
+         continue;
+      }
+      if (/\s/.test(char)) {
+         if (open) tokens.push(current);
+         current = "";
+         open = false;
+         continue;
+      }
+      current += char;
+      open = true;
+   }
+   if (open) tokens.push(current);
+   return tokens;
+}
+
 function hostFlagOf(script: string): string | undefined {
    // A positional walk rather than a scan, because that is what the server
    // does. Every value-taking flag consumes the NEXT token, so a flag whose own
@@ -1319,27 +1358,28 @@ function hostFlagOf(script: string): string | undefined {
    // the server binds 0.0.0.0. This is what decides whether the exposure
    // warning is suppressed, so it has to agree with the server rather than with
    // the text.
-   const tokens = script.trim().split(/\s+/).filter(Boolean);
+   const tokens = shellTokens(script);
+   // Start past the package spec: a value flag among the runner's own arguments
+   // belongs to npx, not to Publisher.
+   const spec = tokens.findIndex((token) =>
+      token.includes("@malloy-publisher/server"),
+   );
+   if (spec === -1) {
+      return undefined;
+   }
    let value: string | undefined;
-   for (let i = 0; i < tokens.length; i++) {
+   for (let i = spec + 1; i < tokens.length; i++) {
       const token = tokens[i];
       const next = tokens[i + 1];
-      // A value flag with nothing after it matches no branch in that chain and
-      // consumes nothing, so it must not swallow anything here either.
-      if (!SERVER_VALUE_FLAGS.has(token) || next === undefined) {
-         continue;
-      }
-      const unquoted = next.replace(/^["']|["']$/g, "");
-      // The chain tests `args[i + 1]` for truthiness, and the one falsy argv
-      // entry is the empty string, so `--host ""` matches no branch either: the
-      // flag is dropped, nothing is consumed, and the bind falls back.
-      if (unquoted === "") {
+      // Mirrors `arg === "--x" && args[i + 1]`: a value flag followed by
+      // nothing, or by the one falsy argv entry there is, matches no branch and
+      // so consumes nothing.
+      if (!SERVER_VALUE_FLAGS.has(token) || !next) {
          continue;
       }
       if (token === "--host") {
-         // Last one wins, as it does on a real command line. `--hostname` and
-         // friends cannot match: this is a whole-token comparison.
-         value = unquoted;
+         // Last one wins, as it does on a real command line.
+         value = next;
       }
       i++;
    }

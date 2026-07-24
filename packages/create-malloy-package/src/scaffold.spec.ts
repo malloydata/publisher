@@ -670,7 +670,10 @@ describe("SERVER_VALUE_FLAGS drift against packages/server", () => {
                .readFileSync(serverSource, "utf8")
                // Tolerates the wrapped branch: the chain puts one condition
                // across three lines.
-               .matchAll(/arg === "(--[a-z0-9_-]+)"\s*&&\s*args\[i \+ 1\]/g),
+               // Case-insensitive on purpose: the flag this exists to catch is
+               // the one nobody anticipated, and a lowercase-only class would
+               // wave `--basePath` straight through.
+               .matchAll(/arg === "(--[A-Za-z0-9_-]+)"\s*&&\s*args\[i \+ 1\]/g),
          ].map((match) => match[1]),
       );
 
