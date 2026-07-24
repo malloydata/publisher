@@ -1206,12 +1206,6 @@ const SHELL_CHAINING_CHARACTERS = /[&|;<>\n\r]/;
 const UNMODELLED_SHELL_SYNTAX = /[`$()#\\]/;
 
 /**
- * Command words a Publisher boot can legitimately be reached through. Anything
- * else in front of the server package (a wrapper script, `node <path>`, another
- * binary entirely) is a command this tool has not read, so the script is left
- * alone rather than adopted and described.
- */
-/**
  * What sh separates arguments on: its default IFS, and nothing else.
  *
  * Not `\s`, which is where this went wrong. JavaScript counts U+00A0, U+2000
@@ -1228,33 +1222,48 @@ function splitOnShellWhitespace(script: string): string[] {
    return script.split(/[ \t\n]+/).filter(Boolean);
 }
 
-const SCRIPT_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
-
 /**
- * Why this is three words and not the ten it used to be, and why the check
- * below is positional rather than a set membership test over every token.
+ * The commands that fetch-and-run a package and hand the rest of the line to it
+ * untouched. Each entry is the whole runner as its own tokens, because half of
+ * these are two words and the FIRST word alone is not safe: `pnpm` and `yarn`
+ * are multi-tool commands whose meaning is set by the word after them.
  *
- * `npm`, `pnpm`, `yarn` and `bun` are not package runners, they are multi-tool
- * commands whose meaning is decided by the word after them, and `run`, `exec`
- * and `dlx` were in the set as bare words, so any of them could appear in any
- * position. Two consequences, both reproduced against the built bin:
+ * Why exactly these, and not the ten bare words that were here before. `npm`,
+ * `pnpm`, `yarn`, `bun` on their own, and `run`/`exec`/`dlx` as bare words in
+ * any position, let two attacks through, both reproduced against the built bin:
  *
  * `npm run @malloy-publisher/server` resolves that argument against this
  * package.json's own `scripts` before it ever considers a package, and whoever
- * writes the start script writes that block too. A `scripts` entry named
- * `@malloy-publisher/server` therefore ran arbitrary code while this tool
- * printed "run this directory's own start script, which boots Publisher on a
- * loopback address". Same for `bun run`, bare `pnpm`, and `yarn run`.
+ * writes the start script writes that block too, so a `scripts` entry under
+ * that name ran arbitrary code while the tool called it a loopback Publisher
+ * boot. `npm exec` does run the real package but eats `--host` as npm's own
+ * config, so the server got no flags and bound 0.0.0.0 under the same claim.
  *
- * `npm exec` does run the real package, but consumes `--host` and friends as
- * npm's own config, so the server received no flags at all and bound 0.0.0.0
- * under a line claiming loopback.
- *
- * What is left is the three commands whose whole job is to execute a package
- * and hand the rest through untouched. Being strict costs nothing: a declined
- * script is left exactly as it is and the caller falls back to the explicit
- * command.
+ * `pnpm dlx`, `yarn dlx` and `bun x` are the pnpm/yarn/bun analogues of npx:
+ * verified to pass flags through unchanged, so they belong here. `pnpm exec`
+ * and `yarn exec` are also passthrough but rarer as a start script and one
+ * keystroke from the unsafe `npm exec`, so they stay out. `dlx`/`exec`/`run`
+ * are never accepted as a second word on their own merits, only `dlx`/`x` after
+ * the manager that owns them.
  */
+const SCRIPT_RUNNER_PREFIXES: readonly (readonly string[])[] = [
+   ["npx"],
+   ["bunx"],
+   ["pnpx"],
+   ["pnpm", "dlx"],
+   ["yarn", "dlx"],
+   ["bun", "x"],
+];
+
+/** How many leading tokens are the runner, or 0 if `before` does not start with one. */
+function runnerPrefixLength(before: readonly string[]): number {
+   for (const prefix of SCRIPT_RUNNER_PREFIXES) {
+      if (prefix.every((word, i) => before[i] === word)) {
+         return prefix.length;
+      }
+   }
+   return 0;
+}
 
 /**
  * The runner flags a Publisher boot can carry in front of the server spec.
@@ -1328,21 +1337,31 @@ function isSingleServerInvocation(script: string): boolean {
       // `@file:/tmp/evil`, `@git+ssh://...`, a tarball URL. Each of those runs
       // code that is not Publisher, under a script this tool then adopts and
       // describes as booting Publisher on a loopback address.
+      //
+      // The `:` and `/` those forms carry are already out, but the first
+      // character is load-bearing on its own: npm-package-arg reads a spec
+      // beginning with `.` as a DIRECTORY install, so `@.` runs the current
+      // folder and `@..` its parent, offline, with no registry involved, and a
+      // bare `-` is an arbitrary dist-tag. A real version or tag begins with a
+      // letter or a digit, so require that and both are gone.
       const spec = command.slice("@malloy-publisher/server@".length);
-      if (!/^[A-Za-z0-9.-]+$/.test(spec)) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(spec)) {
          return false;
       }
    }
    // Positional, not a set test over every token: the runner has to BE the
-   // command, and everything between it and the spec has to be a boolean flag.
-   // Accepting a runner word anywhere is what let `npm run @malloy-publisher/
-   // server` through, where the spec is not a package at all but a script name
-   // out of the same package.json.
+   // command (its one or two leading words), and everything between it and the
+   // spec has to be a boolean flag. Accepting a runner word anywhere is what let
+   // `npm run @malloy-publisher/server` through, where the spec is not a package
+   // at all but a script name out of the same package.json.
    const before = tokens.slice(0, index);
-   if (before.length === 0 || !SCRIPT_RUNNERS.has(before[0])) {
+   const runnerLength = runnerPrefixLength(before);
+   if (runnerLength === 0) {
       return false;
    }
-   return before.slice(1).every((token) => RUNNER_BOOLEAN_FLAGS.has(token));
+   return before
+      .slice(runnerLength)
+      .every((token) => RUNNER_BOOLEAN_FLAGS.has(token));
 }
 
 /**

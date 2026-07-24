@@ -643,51 +643,72 @@ describe("scaffold: binding host", () => {
    });
 });
 
-/**
- * SERVER_VALUE_FLAGS is a snapshot of a chain in another package, and the whole
- * point of reading the host positionally is that a flag missing its value
- * swallows `--host`. So a flag the server learns and this set does not is not a
- * cosmetic drift: `--new_flag --host 127.0.0.1` would put the server on 0.0.0.0
- * while this tool reported loopback and stayed silent about it, which is the
- * exact defect the positional walk was written to remove.
- */
-/**
- * Expected values are what `sh -c` produces, since that is what npm hands the
- * script to. Splitting on whitespace passes almost all of these, so the rows
- * that matter are the ones where a quote changes which tokens exist rather than
- * just their spelling.
- */
 describe("scaffold: a runner word is not a package runner", () => {
    const TAIL =
       "--server_root . --config ./publisher.config.json " +
       "--host 127.0.0.1 --watch-env default";
 
-   test.each([
-      // Each resolves its next argument against this package.json's own
-      // scripts before it considers a package, and whoever writes the start
-      // script writes that block too. Adopting these vouched for arbitrary
-      // code as "boots Publisher on a loopback address".
-      ["npm run", `npm run @malloy-publisher/server ${TAIL}`],
-      ["bun run", `bun run @malloy-publisher/server ${TAIL}`],
-      ["bare pnpm", `pnpm @malloy-publisher/server ${TAIL}`],
-      ["yarn run", `yarn run @malloy-publisher/server ${TAIL}`],
-      ["a bare runner subcommand", `run @malloy-publisher/server ${TAIL}`],
-      // Runs the real package, but eats --host as npm's own config, so the
-      // server got no flags and bound 0.0.0.0 under a loopback claim.
-      ["npm exec", `npm exec -y @malloy-publisher/server ${TAIL}`],
-   ])("%s is not adopted", (_label, start) => {
+   function declines(start: string): boolean {
       fs.writeFileSync(
          path.join(tmp, "package.json"),
          JSON.stringify(
             {
                name: "app",
+               // The threat model: whoever writes the start script writes this
+               // block too, so a manager that resolves its argument against
+               // scripts first would run it.
                scripts: { start, "@malloy-publisher/server": "id" },
             },
             null,
             2,
          ) + "\n",
       );
-      expect(run().hasStartScript).toBe(false);
+      return run().hasStartScript === false;
+   }
+
+   test.each([
+      // Resolve their argument against scripts before considering a package.
+      ["npm run", `npm run @malloy-publisher/server ${TAIL}`],
+      ["bun run", `bun run @malloy-publisher/server ${TAIL}`],
+      ["bare pnpm", `pnpm @malloy-publisher/server ${TAIL}`],
+      ["yarn run", `yarn run @malloy-publisher/server ${TAIL}`],
+      ["pnpm run", `pnpm run @malloy-publisher/server ${TAIL}`],
+      ["a bare runner subcommand", `run @malloy-publisher/server ${TAIL}`],
+      // Runs the real package, but eats --host as npm's own config, so the
+      // server got no flags and bound 0.0.0.0 under a loopback claim.
+      ["npm exec", `npm exec -y @malloy-publisher/server ${TAIL}`],
+   ])("%s is not adopted", (_label, start) => {
+      expect(declines(start)).toBe(true);
+   });
+
+   test.each([
+      // The pnpm/yarn/bun analogues of npx: they fetch-and-run and pass flags
+      // through unchanged, so declining them pushed those users onto npx with a
+      // false "could not establish what it binds". `dlx`/`x` only after the
+      // manager that owns them; `run`/`exec` after them stays declined above.
+      ["pnpm dlx", `pnpm dlx @malloy-publisher/server@0.0.231 ${TAIL}`],
+      ["yarn dlx", `yarn dlx @malloy-publisher/server@0.0.231 ${TAIL}`],
+      ["bun x", `bun x @malloy-publisher/server@0.0.231 ${TAIL}`],
+   ])("%s is adopted", (_label, start) => {
+      fs.writeFileSync(
+         path.join(tmp, "package.json"),
+         JSON.stringify({ name: "app", scripts: { start } }, null, 2) + "\n",
+      );
+      expect(run().hasStartScript).toBe(true);
+   });
+
+   test.each([
+      // npm-package-arg reads a spec beginning with `.` as a DIRECTORY install,
+      // so `@.` runs the current folder offline with no registry, and `@-` is
+      // an arbitrary dist-tag. Neither is a version this tool can vouch for.
+      ["a directory spec", "."],
+      ["a parent-directory spec", ".."],
+      ["a hidden-subdir spec", ".evil"],
+      ["a bare dist-tag dash", "-"],
+   ])("a runner whose spec is %s is not adopted", (_label, spec) => {
+      expect(declines(`npx -y @malloy-publisher/server@${spec} ${TAIL}`)).toBe(
+         true,
+      );
    });
 
    test("a real package runner is still adopted", () => {
