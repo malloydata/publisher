@@ -54,7 +54,24 @@ export function assertMaterializationEligible(
 ): void {
    const sourceName = persistSource.name;
 
-   const unbound = unboundParameterNames(persistSource);
+   // Fail closed, like referencesGiven / referencesAuthorize below: if the
+   // parameter surface can't be read, refuse rather than assume there are no
+   // free parameters (which would freeze one instantiation of a template).
+   let unbound: string[];
+   try {
+      unbound = unboundParameterNames(persistSource);
+   } catch (err) {
+      recordEligibilityRefused("free_parameter");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${sourceName}' cannot be materialized into a storage ` +
+            `destination: its parameter surface could not be determined ` +
+            `(${err instanceof Error ? err.message : String(err)}), so the ` +
+            `publisher cannot prove the source has no free parameters. This is ` +
+            `refused for safety. Drop 'storage=' to serve it live from the ` +
+            `source warehouse.`,
+      });
+   }
    if (unbound.length > 0) {
       recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
@@ -98,16 +115,44 @@ export function assertMaterializationEligible(
  * Names of the source's parameters that are declared but not bound to a value.
  * A Malloy `Parameter` carries `value: ConstantExpr | null`; `null` is an
  * unbound (free) parameter — bound-to-constant parameters have a non-null value.
+ *
+ * Fail-closed in the same spirit as the given/authorize walks (the caller turns
+ * a throw into a refusal): a parameter is treated as unbound unless it is
+ * demonstrably bound, so a compiler shift to `value: undefined` or a
+ * non-object entry can't silently let a template through. An unreadable
+ * `_sourceDef`/`parameters` shape throws rather than reporting "no parameters".
+ *
+ * A missing `parameters` field is NOT an error — the overwhelmingly common case
+ * is a source that declares none — so the residual risk this can't cover is the
+ * field being RENAMED or relocated by the compiler. The real-compiler
+ * eligibility spec pins that shape; keep it there.
  */
 function unboundParameterNames(persistSource: PersistSource): string[] {
-   const def = persistSource._sourceDef as {
-      parameters?: Record<string, { value: unknown } | undefined>;
-   };
-   const parameters = def.parameters;
-   if (!parameters) return [];
+   const def = persistSource._sourceDef as unknown;
+   if (def === null || typeof def !== "object") {
+      throw new Error("compiled source definition is not readable");
+   }
+   const parameters = (def as { parameters?: unknown }).parameters;
+   if (parameters === undefined || parameters === null) return [];
+   if (typeof parameters !== "object" || Array.isArray(parameters)) {
+      throw new Error(
+         `compiled source 'parameters' has an unexpected shape (${
+            Array.isArray(parameters) ? "array" : typeof parameters
+         })`,
+      );
+   }
    const unbound: string[] = [];
-   for (const [name, param] of Object.entries(parameters)) {
-      if (param && param.value === null) unbound.push(name);
+   for (const [name, param] of Object.entries(
+      parameters as Record<string, unknown>,
+   )) {
+      // Bound == a present, non-null `value`. Anything else (null, undefined,
+      // absent, or a non-object entry) counts as unbound.
+      const bound =
+         param !== null &&
+         typeof param === "object" &&
+         (param as { value?: unknown }).value !== null &&
+         (param as { value?: unknown }).value !== undefined;
+      if (!bound) unbound.push(name);
    }
    return unbound;
 }
