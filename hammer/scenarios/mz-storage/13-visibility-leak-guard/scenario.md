@@ -7,11 +7,12 @@ package: vis
 # Visibility: an `except:`-hidden column must not be reachable over storage
 
 A persisted source hides a column with `except:`. That column must not be
-reachable when the source is served from storage — the physical table is
-projected to the source's public surface at build time, so the hidden column is
-never materialized (a DuckLake virtual source exposes every physical column of
-the stored table regardless of the declared shape, so narrowing at serve alone is
-not enough). Public fields route; the hidden column is refused.
+reachable when the source is served from storage. Two independent things hold it
+back, and this scenario exercises both at once: the physical table is projected
+to the source's public surface at build time, so the hidden column is never
+materialized; and the declared serve shape is narrowed to the public surface, so
+it would not resolve even if it were present (`shape-bounds-physical-columns`
+isolates that half). Public fields route; the hidden column is refused.
 
 ## Publisher
 
