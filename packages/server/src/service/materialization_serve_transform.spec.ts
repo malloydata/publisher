@@ -877,7 +877,7 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
    });
 });
 
-describe("buildChainedStorageBuildModel (Tier 3 transient build model)", () => {
+describe("buildChainedStorageBuildModel (stack-on-parent transient build model)", () => {
    const parent: ServeBinding = {
       sourceName: "daily_orders",
       connectionName: "lake",

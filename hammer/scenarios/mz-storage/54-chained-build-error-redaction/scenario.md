@@ -4,7 +4,7 @@ tags: security, chained, needs-attention
 package: cbe
 ---
 
-# Chained (Tier-3) build errors must not leak the catalog connection secret
+# Chained build errors must not leak the catalog connection secret
 
 Every storage build path attaches its destination READ-WRITE, and a failing DuckDB
 statement echoes the offending SQL — so an unredacted build error can carry the
@@ -27,7 +27,7 @@ chained-failure error does not leak.
 catalog breaks reference resolution first, and a creds-only break would hit the
 shared test-container role, so the two can't be isolated black-box. That branch is
 pinned by a seam-level unit test instead (`materialization_service.spec.ts`,
-"redacts connection secrets in the chained (Tier-3) build refusal").
+"redacts connection secrets in the chained build refusal").
 
 ## Connection cbelake (type=ducklake)
 
@@ -78,7 +78,7 @@ Operator drops the isolated catalog DB out-of-band; the next build will fail.
 
 ## Build refused (orchestrated, strict, pkg=cbe)
 
-Strict chained rebuild of `rollup` reusing `daily` — fails (reaching the Tier-3
+Strict chained rebuild of `rollup` reusing `daily` — fails (reaching the chained
 error path).
 
 - rollup -> cbe_rollup__g2 @ cbelake

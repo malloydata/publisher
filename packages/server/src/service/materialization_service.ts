@@ -580,7 +580,7 @@ export class MaterializationService {
             //      cache) — same-worker reuse.
             // Each fills the storage fields (sourceName, storageConnectionName,
             // schema) a thin reference can't carry — required for a `storage=`
-            // upstream's Tier-3 "stack on the parent" rebind. Higher-precedence
+            // upstream's stack-on-the-parent rebind. Higher-precedence
             // fields win; each step is best-effort (a fetch/read failure leaves
             // the entries as they are).
             await this.seedFromBoundManifest(carried, pkg, instructions);
@@ -723,7 +723,7 @@ export class MaterializationService {
             // address and does NOT encode the destination, so a source that adds,
             // drops, or switches `storage=` must rebuild — otherwise a
             // warehouse-landed (colocated) table would be silently reused for a
-            // DuckLake serve that cannot resolve it (design §4).
+            // DuckLake serve that cannot resolve it.
             if (
                prior &&
                prior.physicalTableName &&
@@ -789,8 +789,8 @@ export class MaterializationService {
     * A reference is fundamentally an IDENTITY, not a copy: for each one that
     * matches a locally persisted entry, fill in the fields a thin reference
     * can't carry (sourceName, storageConnectionName, schema — needed for a
-    * `storage=` upstream's Tier-3 rebind) from the local entry, while letting any
-    * caller-supplied field WIN (the orchestrator is authoritative across a
+    * `storage=` upstream's stack-on-the-parent rebind) from the local entry, while
+    * letting any caller-supplied field WIN (the orchestrator is authoritative across a
     * stateless fleet). Mutates `carried` in place. Best-effort: a lookup failure
     * leaves the references exactly as supplied, so the cross-worker courier path
     * (a worker that never built the upstream, fed the full entry) is unaffected.
@@ -1224,7 +1224,7 @@ export class MaterializationService {
       // (recompute from raw against the warehouse) so a chained source still
       // materializes; under `strictUpstreams` the excluded reference becomes a
       // clean strict-miss error (the orchestrated contract — don't silently
-      // recompute). Tier 3 ("stack on the parent") reads the parent's lake table
+      // recompute). A stack-on-the-parent build reads the parent's lake table
       // instead, but via a separate DuckDB recompile that does NOT use this
       // warehouse buildSQL — this remains its recompute-from-raw fallback.
       const buildManifest = manifestExcludingStorage(manifest, builtEntries);
@@ -1239,7 +1239,7 @@ export class MaterializationService {
       // federation, and a captured authoritative schema for the serve transform.
       // Gated by the kill switch: when off, ignore a destination and do a colocated build.
       if (isStorageBuild) {
-         // Tier-3 detection: does the source's SQL change when storage upstreams
+         // Stack-on-the-parent detection: does the source's SQL change when storage upstreams
          // are PRESENT in the manifest (mapped to their lake tables) vs EXCLUDED
          // (inlined, the buildSQL above)? If so it reads a storage-materialized
          // upstream, so it can be built by reading the parent's lake table
@@ -1366,9 +1366,9 @@ export class MaterializationService {
       const startTime = performance.now();
       let result;
 
-      // Tier 3 ("stack on the parent"): a source that reads a storage-materialized
+      // Stack on the parent: a source that reads a storage-materialized
       // upstream is built by reading the parent's STORED lake table instead of
-      // recomputing it from raw against the warehouse (Tier 2). This reuses the
+      // recomputing it from raw against the warehouse. This reuses the
       // parent's work and is consistent-by-construction (the downstream is a pure
       // function of the parent's stored rows). Attempted only when the source
       // actually reads a storage upstream; on any ineligibility (a parent
@@ -1388,7 +1388,7 @@ export class MaterializationService {
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
-            // Same redaction contract as the Tier-2 path below (design §5): this
+            // Same redaction contract as the recompute-from-raw path below: this
             // branch's read-write ATTACH or CTAS can fail with the offending SQL
             // echoed back, catalog `password=` included. Redact before the
             // message reaches the thrown run `error` or the log.
@@ -1410,7 +1410,7 @@ export class MaterializationService {
             recordChainedStorageBuild("inline_fallback");
             logger.warn(
                "Chained storage build could not reuse the parent table; " +
-                  "recomputing the upstream from raw (Tier 2 fallback)",
+                  "recomputing the upstream from raw",
                {
                   sourceName: persistSource.name,
                   destinationName,
@@ -1420,9 +1420,10 @@ export class MaterializationService {
          }
       }
 
-      // Tier 2 / single-source passthrough: materialize `buildSQL` (with storage
-      // upstreams inlined) in the source warehouse and CTAS the result into the
-      // destination. Skipped when Tier 3 already produced the table above.
+      // Recompute from raw (the single-source passthrough): materialize `buildSQL`
+      // (with storage upstreams inlined) in the source warehouse and CTAS the result
+      // into the destination. Skipped when stacking on the parent already produced
+      // the table above.
       if (!result) {
          try {
             result = await buildSourceIntoStorage({
@@ -1434,7 +1435,7 @@ export class MaterializationService {
                environmentPath: environment.getEnvironmentPath(),
             });
          } catch (err) {
-            // Redaction (design §5): a failed federation / passthrough / attach
+            // Redaction: a failed federation / passthrough / attach
             // error can echo source- or catalog-connection detail (connstrings,
             // account names, service-account JSON) from the DuckDB engine. Strip
             // the actual credential VALUES but keep the message, so an operator
@@ -1516,7 +1517,7 @@ export class MaterializationService {
       }
 
       // Make this table visible to downstream sources built later in this run,
-      // so a chained storage source can be built by reading it (Tier 3, above).
+      // so a chained storage source can stack on it (above).
       manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
@@ -1545,7 +1546,7 @@ export class MaterializationService {
    }
 
    /**
-    * Tier 3 build: materialize a chained storage source by reading its
+    * Stack on the parent: materialize a chained storage source by reading its
     * already-materialized upstream(s) from the SAME destination store. Rebinds
     * every same-destination materialized upstream to a virtual source (base-only,
     * the captured schema), re-declares the downstream over them (its definition

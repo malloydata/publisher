@@ -36,10 +36,10 @@ export type EligibilityRefusalReason =
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
- * lake table (Tier 3, "stack on the parent" — reuses the parent's work and is
- * consistent-by-construction); `inline_fallback` = Tier 3 was ineligible/failed
- * so the upstream was recomputed from raw against the warehouse (Tier 2, non-
- * strict); `strict_refused` = Tier 3 was ineligible under `strictUpstreams`, so
+ * lake table ("stack on the parent" — reuses the parent's work and is
+ * consistent-by-construction); `inline_fallback` = stacking was ineligible/failed
+ * so the upstream was recomputed from raw against the warehouse (non-strict);
+ * `strict_refused` = stacking was ineligible under `strictUpstreams`, so
  * the build failed loudly rather than silently recomputing. This is the headline
  * signal for how far the parent-reuse path gets us in practice.
  */
@@ -157,7 +157,7 @@ const chainedStorageBuildCounter = lazyCounter(
    "Chained storage= source builds (a source reading a storage-materialized " +
       "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
       "'strict_refused'). The parent_reuse share is the headline signal for how " +
-      "far the parent-reuse (Tier 3) path gets us vs recompute-from-raw.",
+      "far the stack-on-the-parent path gets us vs recompute-from-raw.",
 );
 
 /**

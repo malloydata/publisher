@@ -195,12 +195,12 @@ describe("buildSourceIntoStorage gating (no session I/O before the gates)", () =
 // on a file database even after close(), so the re-open fails ("file is already
 // open in this process") — a same-process file-reopen limitation of the dev-only
 // duckdb-file destination (production materializes into DuckLake, a Postgres
-// catalog, with no file reopen). POSIX releases the handle promptly. The Tier-3
-// rebind mechanism's cross-platform correctness is pinned in-memory (no file) by
+// catalog, with no file reopen). POSIX releases the handle promptly. The
+// stack-on-parent rebind mechanism's cross-platform correctness is pinned in-memory (no file) by
 // the "runs the downstream over the parent's stored rows" test in
 // materialization_serve_transform.spec.ts.
 describe.skipIf(process.platform === "win32")(
-   "buildDownstreamIntoStorage (Tier 3 stack-on-parent, real DuckDB)",
+   "buildDownstreamIntoStorage (stack-on-parent, real DuckDB)",
    () => {
       const parent: ServeBinding = {
          sourceName: "daily_orders",

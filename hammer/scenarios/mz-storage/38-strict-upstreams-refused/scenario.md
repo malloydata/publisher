@@ -8,7 +8,7 @@ package: su
 
 A chained build whose parent isn't available to reuse has two documented
 outcomes, chosen by the orchestrated build's `strictUpstreams` flag: **without**
-strict, the parent is recomputed from raw (Tier 2) and the child builds; **with**
+strict, the parent is recomputed from raw and the child builds; **with**
 strict, that live recompute is forbidden, so the build refuses loudly rather than
 silently recomputing an upstream the orchestrator meant to pin.
 
@@ -69,7 +69,7 @@ cites: manifest
 
 ## Build (orchestrated, pkg=su)
 
-The SAME build without strict: `daily` is recomputed from raw (Tier 2) and
+The SAME build without strict: `daily` is recomputed from raw and
 `rollup` materializes into the lake at the caller-assigned name.
 
 - rollup -> su_rollup__g1 @ lake

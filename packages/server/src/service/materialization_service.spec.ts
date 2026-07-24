@@ -87,7 +87,7 @@ describe("redactConnectionSecrets", () => {
    // Stubbed at the seam because the leak needs an ATTACH (not CTAS) failure:
    // bad catalog creds fast-fail at connection validation, so no black-box test
    // can reach this branch.
-   it("redacts connection secrets in the chained (Tier-3) build refusal", async () => {
+   it("redacts connection secrets in the chained build refusal", async () => {
       const sandbox = sinon.createSandbox();
       try {
          const destinationConnection = {
@@ -143,7 +143,7 @@ describe("redactConnectionSecrets", () => {
                physicalTableName: "mz_orders_by_month",
                destination: "lake",
             },
-            // strict: throw instead of falling through to the Tier-2 build.
+            // strict: throw instead of falling through to recompute-from-raw.
             { strict: true, update: () => {} },
             environment,
             "SELECT 1",
@@ -951,7 +951,7 @@ describe("stagingSuffix", () => {
    });
 });
 
-describe("manifestExcludingStorage (Tier 2 chained-storage inline)", () => {
+describe("manifestExcludingStorage (chained-storage inline)", () => {
    it("drops storage entries, keeps colocated entries with the manifest's quoting, preserves strict", () => {
       // The source manifest is already dialect-quoted by the seed loop (#904);
       // manifestExcludingStorage reuses that quoting for the kept entries.
@@ -1682,7 +1682,7 @@ describe("buildOneSource", () => {
    });
 });
 
-describe("buildOneSourceIntoStorage (Tier-3 fallback ladder)", () => {
+describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
       ctx = createMocks();
@@ -1690,7 +1690,7 @@ describe("buildOneSourceIntoStorage (Tier-3 fallback ladder)", () => {
 
    function callInto(opts: {
       strict: boolean;
-      tier3: "ok" | "throw";
+      stackOnParent: "ok" | "throw";
    }): Promise<{
       physicalTableName: string;
       storageConnectionName?: string;
@@ -1731,9 +1731,9 @@ describe("buildOneSourceIntoStorage (Tier-3 fallback ladder)", () => {
             storageConnectionName?: string;
          }>;
       };
-      // Stub the Tier-3 seam so the test exercises the LADDER, not the build.
+      // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
       svc.buildDownstreamViaParents =
-         opts.tier3 === "ok"
+         opts.stackOnParent === "ok"
             ? sinon.stub().resolves({
                  storageConnectionName: "lake",
                  schema: [
@@ -1761,14 +1761,14 @@ describe("buildOneSourceIntoStorage (Tier-3 fallback ladder)", () => {
       );
    }
 
-   it("Tier 3 success: builds by reading the parent and returns the storage entry", async () => {
-      const entry = await callInto({ strict: false, tier3: "ok" });
+   it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
+      const entry = await callInto({ strict: false, stackOnParent: "ok" });
       expect(entry.storageConnectionName).toBe("lake");
       expect(entry.physicalTableName).toBe("monthly__mabc");
    });
 
-   it("strict + Tier 3 ineligible: refuses loudly instead of recomputing from raw", async () => {
-      await expect(callInto({ strict: true, tier3: "throw" })).rejects.toThrow(
+   it("strict + cannot stack on the parent: refuses loudly instead of recomputing from raw", async () => {
+      await expect(callInto({ strict: true, stackOnParent: "throw" })).rejects.toThrow(
          /strict upstreams forbid/i,
       );
    });
