@@ -90,12 +90,27 @@ Expect:
 | 2026-01-01 | 150          | 75              |
 | 2026-01-02 | 200          | 200             |
 
-## Hook assertExtendPersistIsNoOp
+## Build targets
 
-Prove it structurally: `daily` and `daily_with_avg` share one `sourceEntityId`
-(identical content address), and exactly ONE of `daily_tbl`/`daily_with_avg_tbl` is
-physically materialized (the other is deduped away). Persisting the `extend` added
-no table.
+Both sources are targets, each declaring its OWN physical name — and they share one
+content address (`entity` label `A`), which is why the build dedups them to a single
+table below.
+
+| source         | writes             | entity |
+| -------------- | ------------------ | ------ |
+| daily          | daily_tbl          | A      |
+| daily_with_avg | daily_with_avg_tbl | A      |
+
+## Connection lake (rows=1)
+
+Exactly ONE of the two declared names is physically materialized — the other is
+deduped away. A row count rather than a name, because which one wins depends on
+build iteration order.
+
+```sql
+SELECT table_name FROM information_schema.tables
+WHERE table_name IN ('daily_tbl','daily_with_avg_tbl')
+```
 
 ## Note (since=2026-07-24)
 

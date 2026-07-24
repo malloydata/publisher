@@ -21,7 +21,7 @@ plan still lists `daily_with_avg` as a second target writing the same warehouse 
 which collides when a host materializes per-source, and the collision guard misses
 it (it dedups by `sourceEntityId`, which these share).
 
-The hook surfaces the root cause: exactly ONE build target for `esc_daily`. RED
+The `## Build targets` step surfaces the root cause: exactly ONE build target for `esc_daily`. RED
 today; GREEN once malloy PR 3012 lands.
 
 ## Publisher
@@ -88,11 +88,15 @@ Expect:
 | 2026-01-01 | 150          | 75              |
 | 2026-01-02 | 200          | 200             |
 
-## Hook assertNoDuplicateInheritedTarget
+## Build targets
 
-The build plan must have exactly ONE build target for `esc_daily` (the base
-`daily`). RED today: `daily_with_avg` inherits `#@ persist` and appears as a second
-colocated target writing the same warehouse table.
+Only the base `daily` may write `esc_daily`. RED today for the same upstream
+reason as the external twin; here the duplicate target writes the customer's own
+warehouse.
+
+| source | writes    |
+| ------ | --------- |
+| daily  | esc_daily |
 
 ## Note (since=2026-07-24)
 

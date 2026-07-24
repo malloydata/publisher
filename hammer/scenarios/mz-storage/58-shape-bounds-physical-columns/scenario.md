@@ -100,19 +100,40 @@ which says nothing about the shape.
 INSERT INTO shp_orders VALUES (4, '2026-01-01', 1000);
 ```
 
-## Hook probeSmuggledColumn
+## Query smuggled column direct (refused)
 
-Three probes for `secret_col` through `daily`: a direct select, a group_by, and a
-`select: *` expansion. Each records whether the value came back.
-
-## Query base (again)
-
-The stale 150 proves these queries are served from the DuckLake snapshot — the
-one whose physical table now carries `secret_col` — and not recomputed live.
+A direct reference to the undeclared column does not resolve.
 
 ```malloy
-run: daily -> { select: order_date, total; order_by: order_date asc }
+run: daily -> { select: order_date, secret_col }
 ```
+
+cites: 'secret_col' is not defined
+
+## Query smuggled column group_by (refused)
+
+Nor does it as a group_by — so the refusal isn't one syntax being rejected.
+
+```malloy
+run: daily -> { group_by: secret_col }
+```
+
+cites: 'secret_col' is not defined
+
+## Query star expansion
+
+The discriminating probe: it must SUCCEED (so it is really being served, not
+refused) while expanding to the DECLARED columns only. `columns: exact` is what
+makes this an assertion — a plain Expect table only checks the columns it lists, so
+an extra `secret_col` would slip through. The stale 150 proves the row came from
+the snapshot, i.e. the probes above ran against the widened physical table rather
+than falling back to live.
+
+```malloy
+run: daily -> { select: *; order_by: order_date asc }
+```
+
+columns: exact
 
 Expect:
 

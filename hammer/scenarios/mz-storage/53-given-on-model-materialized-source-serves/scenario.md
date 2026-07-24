@@ -17,8 +17,8 @@ serve path therefore suppresses givens on the shape path alongside the build
 manifest. Clients routinely pass every model-level given, so this is the common case,
 not an edge one.
 
-A hook drives the query with the given supplied (markdown can't pass givens without a
-new grammar handler) and asserts it serves the materialized snapshot.
+The query below supplies the given and asserts it still serves the materialized
+snapshot.
 
 ## Publisher
 
@@ -61,7 +61,21 @@ source: daily is orders -> {
 
 expect binding: daily -> lake
 
-## Hook queryMaterializedWithGiven
+## Query materialized source with the model-level given supplied
 
-Query `daily` (routed to the lake shape) with the model-level given `REGION`
-supplied. It serves from storage.
+`daily` is routed to the lake shape. The given is on the model's surface but the
+materialized source does not reference it, so it must be dropped before the shape
+rather than reaching it as an unknown name.
+
+```malloy
+run: daily -> { select: order_date, total; order_by: order_date asc }
+```
+
+givens: REGION=US
+
+Expect:
+
+| order_date | total |
+| ---------- | ----- |
+| 2026-01-01 | 150   |
+| 2026-01-02 | 200   |
