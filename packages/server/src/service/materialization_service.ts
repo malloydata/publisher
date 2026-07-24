@@ -1370,6 +1370,17 @@ export class MaterializationService {
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
+            // Same redaction contract as the Tier-2 path below (design §5), and
+            // for the same reason: this branch's failure can come from the
+            // chained build's own read-write DuckLake ATTACH or its CTAS, and a
+            // failing DuckDB statement echoes the offending SQL — including the
+            // catalog connstring's `password=`. Redact before the message
+            // reaches either the thrown (user-visible) run `error` or the log.
+            const safeDetail = redactConnectionSecrets(
+               errMessage(err),
+               sourceConnection,
+               destinationConnection,
+            );
             if (manifest.strict) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
@@ -1377,7 +1388,7 @@ export class MaterializationService {
                   `Failed to materialize chained source '${persistSource.name}' ` +
                      `into storage destination '${destinationName}' by reading ` +
                      `its materialized upstream, and strict upstreams forbid ` +
-                     `recomputing it from raw: ${errMessage(err)}`,
+                     `recomputing it from raw: ${safeDetail}`,
                );
             }
             recordChainedStorageBuild("inline_fallback");
@@ -1387,7 +1398,7 @@ export class MaterializationService {
                {
                   sourceName: persistSource.name,
                   destinationName,
-                  reason: errMessage(err),
+                  reason: safeDetail,
                },
             );
          }
@@ -1475,7 +1486,14 @@ export class MaterializationService {
                   sourceName: persistSource.name,
                   destinationName,
                   physicalTableName,
-                  error: errMessage(dropErr),
+                  // Redacted for the same reason as the build paths above: the
+                  // drop runs on a read-write attach, so a failure can echo the
+                  // catalog connstring.
+                  error: redactConnectionSecrets(
+                     errMessage(dropErr),
+                     sourceConnection,
+                     destinationConnection,
+                  ),
                },
             );
          }
@@ -1819,12 +1837,13 @@ export class MaterializationService {
          // failure is logged and the sweep continues, so one unreachable
          // destination never blocks reclaiming the rest.
          if (entry.storageConnectionName) {
+            const destinationConnection = environment.getApiConnection(
+               entry.storageConnectionName,
+            );
             try {
                await dropStorageTable({
                   destinationName: entry.storageConnectionName,
-                  destinationConnection: environment.getApiConnection(
-                     entry.storageConnectionName,
-                  ),
+                  destinationConnection,
                   physicalTableName,
                   environmentPath: environment.getEnvironmentPath(),
                });
@@ -1840,7 +1859,14 @@ export class MaterializationService {
                   materializationId: m.id,
                   physicalTableName,
                   storageConnectionName: entry.storageConnectionName,
-                  error: errMessage(err),
+                  // The drop attaches the destination read-write, so a failure
+                  // can echo the catalog connstring — redact as the build paths
+                  // do. Log-only here (the sweep is best-effort), but the same
+                  // leak class.
+                  error: redactConnectionSecrets(
+                     errMessage(err),
+                     destinationConnection,
+                  ),
                });
             }
             continue;
