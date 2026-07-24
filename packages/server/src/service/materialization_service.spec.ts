@@ -825,7 +825,7 @@ describe("stagingSuffix", () => {
 });
 
 describe("manifestExcludingStorage (Tier 2 chained-storage inline)", () => {
-   it("drops storage entries, keeps path-C entries with the manifest's quoting, preserves strict", () => {
+   it("drops storage entries, keeps colocated entries with the manifest's quoting, preserves strict", () => {
       // The source manifest is already dialect-quoted by the seed loop (#904);
       // manifestExcludingStorage reuses that quoting for the kept entries.
       const manifest = new Manifest();
@@ -837,7 +837,7 @@ describe("manifestExcludingStorage (Tier 2 chained-storage inline)", () => {
             sourceEntityId: "wh_up",
             physicalTableName: "wh_up_v1",
             connectionName: "duckdb",
-            // no storageConnectionName -> in-warehouse (path C), keep it
+            // no storageConnectionName -> colocated, keep it
          },
          lake_up: {
             sourceEntityId: "lake_up",
@@ -898,7 +898,7 @@ describe("deriveSelfInstructions", () => {
       ).toBeDefined();
    });
 
-   it("self-assigns the name= verbatim for a storage= source, exactly as path C", () => {
+   it("self-assigns the name= verbatim for a storage= source, exactly as a colocated build", () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       try {
          const compiled = compiledWith(
@@ -930,10 +930,10 @@ describe("deriveSelfInstructions", () => {
          const lake = byId["aa11aa11aa11aa11aa11"];
          const wh = byId["bb22bb22bb22bb22bb22"];
          // storage= → the `name=` value verbatim in the destination (no
-         // content-hash decoration); only the destination differs from path C.
+         // content-hash decoration); only the destination differs from a colocated build.
          expect(lake.destination).toBe("lake");
          expect(lake.physicalTableName).toBe("daily");
-         // path C → the plain logical (source) name, no destination.
+         // colocated → the plain logical (source) name, no destination.
          expect(wh.destination).toBeUndefined();
          expect(wh.physicalTableName).toBe("wh_src");
       } finally {
@@ -1378,11 +1378,11 @@ describe("buildOneSource", () => {
          manifest,
          {
             getApiConnection: () => {
-               throw new Error("no connection config in this path-C test");
+               throw new Error("no connection config in this colocated test");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
-         {}, // builtEntries — path-C build with no prior storage upstreams
+         {}, // builtEntries — colocated build with no prior storage upstreams
       );
    }
 
@@ -1467,11 +1467,11 @@ describe("buildOneSource", () => {
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });
 
-   it("path-C build excludes a storage upstream from its warehouse manifest (mixed chain)", async () => {
-      // A path-C (in-warehouse) downstream that reads a storage-materialized
+   it("colocated build excludes a storage upstream from its warehouse manifest (mixed chain)", async () => {
+      // A colocated downstream that reads a storage-materialized
       // upstream must NOT get the lake table name in its warehouse build SQL —
       // the warehouse can't resolve it. The storage upstream is excluded (⇒
-      // inlined/recomputed); a path-C upstream is kept.
+      // inlined/recomputed); a colocated upstream is kept.
       const runSQL = sinon.stub().resolves();
       let seenManifest:
          | { entries?: Record<string, { tableName?: string }> }
@@ -1511,13 +1511,13 @@ describe("buildOneSource", () => {
             materializedTableId: "mt",
             physicalTableName: "down_v1",
             realization: "COPY",
-         }, // no destination ⇒ path C
+         }, // no destination ⇒ colocated
          { runSQL },
          { duckdb: "dig" },
          manifest,
          {
             getApiConnection: () => {
-               throw new Error("unused in path-C");
+               throw new Error("unused in the colocated build");
             },
             getEnvironmentPath: () => "/tmp/env",
          },

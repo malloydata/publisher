@@ -485,7 +485,7 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
  * `PERSIST_STORAGE_MODE`. This is a runtime kill switch — flipping DOWN must
  * never fail an already-loaded package, only change how `storage=` is honored:
  *
- *  - `off` (default): `storage=` is inert. Sources build into (path C) and serve
+ *  - `off` (default): `storage=` is inert. Sources build into (colocated) and serve
  *    from their own warehouse exactly as before the feature existed; a source
  *    that declares `storage=` is served live and surfaced as a package warning.
  *    The safe resting state and the incident kill switch.

@@ -13,11 +13,11 @@ type WireBuildManifest = components["schemas"]["BuildManifest"];
  * that carries `storageConnectionName`) is served cross-connection via the
  * virtual-source transform, so it becomes a serve BINDING — it must never enter
  * the same-connection `tableName` substitution. Everything else is an
- * in-warehouse (path-C) entry the Malloy runtime resolves by substituting its
+ * colocated entry the Malloy runtime resolves by substituting its
  * `tableName` at compile time.
  */
 export interface FetchedManifest {
-   /** In-warehouse (path-C) entries: same-connection `tableName` substitution. */
+   /** colocated entries: same-connection `tableName` substitution. */
    tableNameManifest: FreshnessManifest;
    /**
     * `storage=` entries keyed by sourceEntityId, carried as full
@@ -78,7 +78,7 @@ async function readManifestBytes(uri: string): Promise<string> {
 /**
  * Fetch and parse the host-computed build manifest at `uri`, split by
  * tier into {@link FetchedManifest}. The wire manifest keys physical tables
- * under `physicalTableName`; for an in-warehouse (path-C) entry the Malloy
+ * under `physicalTableName`; for an colocated entry the Malloy
  * runtime consumes `tableName`, so that field is translated here and the entry
  * lands in `tableNameManifest`, carrying the freshness fields verbatim (so the
  * serve path can gate `age vs window` per query) and `connectionName` (so the

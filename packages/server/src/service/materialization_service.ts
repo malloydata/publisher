@@ -117,7 +117,7 @@ function selfAssignTableName(persistSource: PersistSource): string {
  * cannot reference an upstream that landed in a DuckDB/DuckLake store — dropping
  * those entries makes the compiler INLINE the upstream (non-strict) or raise a
  * clean strict-miss (strict), instead of emitting a cross-engine table
- * reference. Path-C (in-warehouse) entries are kept — the warehouse build can
+ * reference. colocated entries are kept — the warehouse build can
  * reference them, carrying forward the DIALECT-QUOTED table path the seed loop
  * already stamped (publisher #904's quoteSeedTablePath), so the downstream FROM
  * resolves a case-preserved upstream on a case-folding engine. Preserves the
@@ -130,7 +130,7 @@ export function manifestExcludingStorage(
    const reduced = new Manifest();
    reduced.strict = manifest.strict;
    // The source manifest's entries are already dialect-quoted (#904); reuse that
-   // quoting rather than the raw physical name so the kept path-C references
+   // quoting rather than the raw physical name so the kept colocated references
    // stay canonical for the downstream FROM.
    const quoted = manifest.buildManifest.entries;
    for (const [id, entry] of Object.entries(builtEntries)) {
@@ -143,7 +143,7 @@ export function manifestExcludingStorage(
 
 /**
  * The reserved `storage=` value meaning "materialize into the persist source's
- * own warehouse" (path C, the default). A connection may not be named this
+ * own warehouse" (colocated, the default). A connection may not be named this
  * (enforced at registration in connection_config), so it never collides with a
  * real destination.
  */
@@ -155,12 +155,12 @@ const STORAGE_SOURCE_SENTINEL = "source";
  * in-warehouse path. Read publisher-side from the compiled annotation (the same
  * `annotationFields` map the plan echoes); the reference resolves generically
  * against registered connections. Absent or the reserved `source` value ⇒
- * undefined (path C). Any managed-tier alias is resolved by the host/control
+ * undefined (colocated). Any managed-tier alias is resolved by the host/control
  * plane upstream and set on the wire instruction's `destination` — it never
  * reaches this publisher-side generic resolution.
  *
  * When `PERSIST_STORAGE_MODE=off` this returns undefined regardless of the
- * annotation — the source builds path C — so the feature is a runtime kill
+ * annotation — the source is built colocated — so the feature is a runtime kill
  * switch that never fails a package (the ignored `storage=` is surfaced as a
  * package warning, not an error).
  */
@@ -701,7 +701,7 @@ export class MaterializationService {
             // landed in the SAME destination. sourceEntityId is a pure content
             // address and does NOT encode the destination, so a source that adds,
             // drops, or switches `storage=` must rebuild — otherwise a
-            // warehouse-landed (path-C) table would be silently reused for a
+            // warehouse-landed (colocated) table would be silently reused for a
             // DuckLake serve that cannot resolve it (design §4).
             if (
                prior &&
@@ -713,7 +713,7 @@ export class MaterializationService {
             }
 
             // Self-assign the physical name from `name=` (or the source name)
-            // verbatim for BOTH the in-warehouse (path C) and storage
+            // verbatim for BOTH the colocated and storage
             // destinations — the only difference between the two is which
             // connection the table lands in. A storage build replaces the table
             // atomically (`CREATE OR REPLACE`), so no generational decoration is
@@ -845,7 +845,7 @@ export class MaterializationService {
          return;
       }
       // Reconstruct a ManifestEntry map from both tiers of the fetched manifest:
-      // storage entries carry their full shape; path-C entries reconstruct from
+      // storage entries carry their full shape; colocated entries reconstruct from
       // the tableName manifest.
       const bound: Record<string, ManifestEntry> = {
          ...fetched.storageEntries,
@@ -930,7 +930,7 @@ export class MaterializationService {
          // bindings (below), NOT the same-connection manifest substitution —
          // putting one here would make the original model try to substitute the
          // source with a table on its OWN (source) connection, which doesn't
-         // exist there. Only path-C entries go into the tableName manifest.
+         // exist there. Only colocated entries go into the tableName manifest.
          if (entry.physicalTableName && !entry.storageConnectionName) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
@@ -1136,7 +1136,7 @@ export class MaterializationService {
             // (Auto-run already gated pre-getSQL in deriveSelfInstructions; a
             // second call here is idempotent and covers the orchestrated path.)
             // Skipped when the mode is off: the kill switch ignores a
-            // host-supplied destination too and builds path C.
+            // host-supplied destination too and does a colocated build.
             if (instruction.destination && getPersistStorageMode() !== "off") {
                assertMaterializationEligible(persistSource);
             }
@@ -1175,12 +1175,12 @@ export class MaterializationService {
       const physicalTableName = instruction.physicalTableName;
       const isStorageBuild =
          !!instruction.destination && getPersistStorageMode() !== "off";
-      // ANY warehouse-executed build SQL — a path-C CTAS or a storage build's
+      // ANY warehouse-executed build SQL — a colocated CTAS or a storage build's
       // native passthrough — runs against the SOURCE warehouse, which cannot see
       // a storage-materialized upstream's DuckDB/DuckLake table (a different
       // engine). Substituting that upstream's lake table name into warehouse SQL
       // would reference a table the warehouse can't resolve (a confusing "table
-      // not found"), whether the downstream is a storage build OR a path-C
+      // not found"), whether the downstream is a storage build OR a colocated
       // source reading a storage upstream. So exclude storage-materialized
       // upstreams from the build manifest in BOTH cases: non-strict, they INLINE
       // (recompute from raw against the warehouse) so a chained source still
@@ -1199,7 +1199,7 @@ export class MaterializationService {
       // build-scoped session (never on the source or serve connection). Diverges
       // fully from the in-warehouse CTAS below — different engine, credential
       // federation, and a captured authoritative schema for the serve transform.
-      // Gated by the kill switch: when off, ignore a destination and build path C.
+      // Gated by the kill switch: when off, ignore a destination and do a colocated build.
       if (isStorageBuild) {
          // Tier-3 detection: does the source's SQL change when storage upstreams
          // are PRESENT in the manifest (mapped to their lake tables) vs EXCLUDED
@@ -1702,7 +1702,7 @@ export class MaterializationService {
     * host-assigned name), so multiple generations of a source share one physical
     * name — dropping a superseded record's table would otherwise take out the
     * table the current generation still serves. The skip incidentally also
-    * protects the in-warehouse (path-C) case, where generations likewise share a
+    * protects the colocated case, where generations likewise share a
     * name.
     */
    private async dropMaterializedTables(

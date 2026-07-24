@@ -24,7 +24,7 @@ describe("fetchManifestEntries", () => {
       return file;
    }
 
-   it("maps physicalTableName to the Malloy runtime tableName (path-C entries)", async () => {
+   it("maps physicalTableName to the Malloy runtime tableName (colocated entries)", async () => {
       const file = await writeManifest({
          builtAt: new Date().toISOString(),
          strict: false,
@@ -57,7 +57,7 @@ describe("fetchManifestEntries", () => {
       ];
       const file = await writeManifest({
          entries: {
-            // path-C: in-warehouse substitution
+            // colocated: in-warehouse substitution
             wh: {
                sourceEntityId: "wh",
                physicalTableName: "orders_v1",
@@ -95,7 +95,7 @@ describe("fetchManifestEntries", () => {
       });
    });
 
-   it("carries the host-supplied freshness fields verbatim (path-C)", async () => {
+   it("carries the host-supplied freshness fields verbatim (colocated)", async () => {
       const dataAsOf = "2026-07-07T00:00:00.000Z";
       const file = await writeManifest({
          entries: {

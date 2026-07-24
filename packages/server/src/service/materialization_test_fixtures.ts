@@ -129,7 +129,7 @@ export function fakeSource(opts: {
    /**
     * The compiled `_sourceDef` the materialization-eligibility gate walks
     * (parameters/givens). Defaults to an empty def (eligible); the gate only
-    * runs for `storage=` sources, so path-C fakes never touch it.
+    * runs for `storage=` sources, so colocated fakes never touch it.
     */
    sourceDef?: unknown;
 }): PersistSource {

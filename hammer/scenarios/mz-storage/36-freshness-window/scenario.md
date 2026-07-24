@@ -7,10 +7,10 @@ package: fr
 # Freshness gate on the storage tier — enforced, uniform with in-warehouse
 
 `storage=` is a placement choice, orthogonal to freshness: the DuckLake serve path
-honors `{window, fallback}` the SAME way the in-warehouse (path-C) serve does (see
+honors `{window, fallback}` the SAME way the colocated serve does (see
 `freshness-window-in-warehouse`). When a bound entry is stale past its window, the
 per-query gate drops it from the serve shape and falls back per `fallback` — the
-storage analogue of path-C dropping it from the build manifest. This scenario drives
+storage analogue of the colocated path dropping it from the build manifest. This scenario drives
 both outcomes on the storage tier: `stale_ok` keeps serving the (stale) lake table;
 `live` recomputes from the source warehouse. Flip this source to `storage=source`
 and the behavior is identical.
