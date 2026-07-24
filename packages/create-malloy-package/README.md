@@ -10,7 +10,7 @@ instructions, and the Malloy agent skills copied in), so you can go from nothing
 
 ```bash
 mkdir my-data && cd my-data
-npm create malloy-package sales
+npm create @malloy-publisher/malloy-package sales
 npm start
 ```
 
@@ -91,7 +91,7 @@ briefing lists those tools.
 
 ## What it creates
 
-Running `npm create malloy-package sales` in an empty directory produces:
+Running `npm create @malloy-publisher/malloy-package sales` in an empty directory produces:
 
 ```
 publisher.config.json    the server config, with your package registered
@@ -282,7 +282,7 @@ and binds `0.0.0.0`. Write the flag and the address with a space between them.
 ## Options
 
 ```bash
-npm create malloy-package [name] -- [options]
+npm create @malloy-publisher/malloy-package [name] -- [options]
 ```
 
 `npm create` parses the command line with npm's own config parser before handing
@@ -291,15 +291,15 @@ it npm swallows `--force` as one of its own settings and turns `--data mydata.cs
 into two stray positional arguments:
 
 ```bash
-npm create malloy-package sales -- --data mydata.csv
-npm create malloy-package sales -- --client cursor
-npm create malloy-package sales -- --force
+npm create @malloy-publisher/malloy-package sales -- --data mydata.csv
+npm create @malloy-publisher/malloy-package sales -- --client cursor
+npm create @malloy-publisher/malloy-package sales -- --force
 ```
 
 Running the published bin directly takes the flags as-is, with no separator:
 
 ```bash
-npx create-malloy-package sales --data mydata.csv
+npx @malloy-publisher/create-malloy-package sales --data mydata.csv
 ```
 
 - `name` (positional): the package name. Omit it to only set up the agent workspace in

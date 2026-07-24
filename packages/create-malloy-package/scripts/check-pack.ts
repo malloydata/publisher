@@ -243,7 +243,7 @@ if (!bin) {
 
 // npm ships a workspace: range to the registry verbatim; rewriting it at pack
 // time is pnpm and yarn behaviour, not npm's. A published tarball carrying one
-// fails every `npm create malloy-package` with EUNSUPPORTEDPROTOCOL, and npm
+// fails every `npm create @malloy-publisher/malloy-package` with EUNSUPPORTEDPROTOCOL, and npm
 // versions are immutable, so the only repair is burning the version. The publish
 // path rewrites the range to a real one first; this is what proves it happened.
 const workspaceDeps = Object.entries({

@@ -770,7 +770,7 @@ export function formatSuccess(result: ScaffoldResult): string {
       // /api/v0/environments/<env>/packages answers 404. Saying so here is the
       // difference between "empty" and "broken" for whoever runs it next.
       lines.push(
-         `  ${log.cyan("npx create-malloy-package <name>")}   ${log.dim(
+         `  ${log.cyan("npx @malloy-publisher/create-malloy-package <name>")}   ${log.dim(
             "add a package; the server has nothing to serve without one",
          )}`,
       );
@@ -1019,7 +1019,7 @@ function startNote(
  */
 function excessArgumentsHint(): string {
    const npmCreateFix = `  ${log.cyan(
-      "npm create malloy-package sales -- --data mydata.csv",
+      "npm create @malloy-publisher/malloy-package sales -- --data mydata.csv",
    )}`;
    if (process.env.npm_command === "init") {
       return [
@@ -1039,7 +1039,7 @@ function excessArgumentsHint(): string {
       "",
       "With npx there is no separator: it forwards the flags as they are, and a",
       "-- would be passed through and counted as another argument.",
-      `  ${log.cyan("npx create-malloy-package sales --data mydata.csv")}`,
+      `  ${log.cyan("npx @malloy-publisher/create-malloy-package sales --data mydata.csv")}`,
       "",
    ].join("\n");
 }
