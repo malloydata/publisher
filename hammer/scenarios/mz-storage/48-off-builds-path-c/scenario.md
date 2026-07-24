@@ -1,6 +1,6 @@
 ---
 id: off-builds-path-c
-tags: config, kill-switch
+tags: config, kill-switch, needs-attention
 package: obp
 ---
 
@@ -83,3 +83,17 @@ Expect:
 | ---------- | ------------ |
 | 2026-01-01 | 150          |
 | 2026-01-02 | 200          |
+
+## Note (since=2026-07-23)
+
+> Open question — is "off (or storage= ignored) ⇒ build path-C" actually what we
+> want? Path C materializes by **writing a CTAS into the source warehouse**. In
+> production, users grant this server **read-only** warehouse access — the whole
+> point of the storage tier is to NOT write to their warehouse — so a path-C build
+> would fail (and a partial attempt could land in an unexpected schema). We may
+> prefer to **error with an explicit "this server will not write to your
+> warehouse" stance** rather than silently attempt a path-C materialization that
+> can't succeed. This scenario pins the CURRENT behavior (a storage= source builds
+> path-C when the tier is off); revisit whether it should refuse instead — likely
+> as a deployment policy, since a write-capable warehouse legitimately uses path-C
+> today (the v0 in-warehouse path).
