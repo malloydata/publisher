@@ -1344,8 +1344,17 @@ function isSingleServerInvocation(script: string): boolean {
       // folder and `@..` its parent, offline, with no registry involved, and a
       // bare `-` is an arbitrary dist-tag. A real version or tag begins with a
       // letter or a digit, so require that and both are gone.
+      //
+      // One non-registry form still starts alphanumeric: a spec ending in a
+      // tarball extension is a LOCAL FILE install to npm-package-arg, so
+      // `@evil.tgz` runs a tarball from the workspace, offline, the same
+      // arbitrary-code family as `@.`. npa's own file test is the extension
+      // set below, mirrored here since this regex is a proxy for npa.
       const spec = command.slice("@malloy-publisher/server@".length);
       if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(spec)) {
+         return false;
+      }
+      if (/\.(?:tgz|tar\.gz|tar)$/i.test(spec)) {
          return false;
       }
    }

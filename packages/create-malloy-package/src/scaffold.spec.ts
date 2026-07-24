@@ -705,6 +705,13 @@ describe("scaffold: a runner word is not a package runner", () => {
       ["a parent-directory spec", ".."],
       ["a hidden-subdir spec", ".evil"],
       ["a bare dist-tag dash", "-"],
+      // Starts alphanumeric so it clears the first-char rule, but npa reads a
+      // tarball extension as a local FILE install: `@evil.tgz` runs a tarball
+      // from the workspace, offline, the same family as the directory spec.
+      ["a tarball file", "evil.tgz"],
+      ["a .tar.gz file", "a.tar.gz"],
+      ["a .tar file", "server.tar"],
+      ["an uppercase tarball", "EVIL.TGZ"],
    ])("a runner whose spec is %s is not adopted", (_label, spec) => {
       expect(declines(`npx -y @malloy-publisher/server@${spec} ${TAIL}`)).toBe(
          true,
