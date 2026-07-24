@@ -85,8 +85,7 @@ export function passthroughSourceType(
    throw new BadRequestError(
       `Cannot materialize a '${type}' source into a storage destination: the ` +
          `native query-passthrough build supports source connections of type ` +
-         `${PASSTHROUGH_SOURCE_TYPES.join(", ")} only. (A DuckDB/DuckLake source ` +
-         `is already local and needs no passthrough.)`,
+         `${PASSTHROUGH_SOURCE_TYPES.join(", ")} only.`,
    );
 }
 
