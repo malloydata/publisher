@@ -359,8 +359,8 @@ export async function buildDownstreamIntoStorage(params: {
       // The downstream's materialization SQL, over the rebound parents — DuckDB
       // dialect, reading the attached lake tables via the virtualMap. Project to
       // the public columns so a hidden (`except:` / access-restricted) downstream
-      // column is not materialized (same rationale as the single-source build:
-      // a DuckLake virtual source is not restricted to its declared shape).
+      // column is not materialized — same rationale as the single-source build:
+      // keeping hidden values out of the store at rest.
       const sql = projectToPublicColumns(
          downstream,
          downstream.getSQL({ virtualMap }),

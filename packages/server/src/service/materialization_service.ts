@@ -1253,14 +1253,13 @@ export class MaterializationService {
             }) !== buildSQL;
          // Materialize ONLY the source's PUBLIC columns. `getSQL` projects every
          // underlying column, including ones the source hides (`except:`, non-public
-         // access modifiers). The serve transform narrows the declared ::Shape to
-         // the public surface, but a DuckLake virtual source is not restricted to
-         // its declared shape — it exposes every physical column of the stored
-         // table — so a hidden column materialized here would be reachable over
-         // storage (and would also sit at rest). Projecting to the public columns
-         // makes the physical table equal the public surface, closing that leak at
-         // the source. Falls back to the full buildSQL if the public columns can't
-         // be derived (never widens — worst case is the prior behavior).
+         // access modifiers). Query reachability is bounded by the declared
+         // ::Shape, which the serve transform narrows to the public surface
+         // (proven by the shape-bounds-physical-columns scenario) — so what this
+         // prevents is the hidden column's VALUES sitting at rest in the
+         // destination store, reachable by direct catalog access and possibly
+         // across a trust boundary the source's visibility was meant to hold.
+         // Refuses the build (422) if the public surface can't be determined.
          const publicBuildSQL = projectToPublicColumns(persistSource, buildSQL);
          return this.buildOneSourceIntoStorage(
             persistSource,
