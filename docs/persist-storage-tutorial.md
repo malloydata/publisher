@@ -462,6 +462,42 @@ debug: storage serve-shape ineligible for this query; serving live { modelPath: 
 Fallback means turning the feature on can never make a query wrong — at worst it
 serves live, exactly as it would with the feature off.
 
+### Opting a reader out: `#@ -persist`
+
+A source that `extend`s a persisted source is served from the lake too: the
+extension's own fields are computed over the stored rows. Annotate the extension
+with `#@ -persist` to force it live instead:
+
+```malloy
+#@ persist name="daily_orders" storage=lake
+source: daily_orders is orders -> {
+  group_by: order_date
+  aggregate: total_amount is amount.sum()
+}
+
+// Served from the lake — `doubled` is projected over the stored rows.
+source: daily_scaled is daily_orders extend {
+  dimension: doubled is total_amount * 2
+}
+
+// Recomputed in the warehouse on every query — never reads the lake table.
+#@ -persist
+source: daily_fresh is daily_orders extend {
+  dimension: doubled is total_amount * 2
+}
+```
+
+With the source mutated after a build, `daily_scaled` returns the stored snapshot
+and `daily_fresh` returns current rows — the same stale-vs-fresh check used in
+[Prove it's really the materialized table](#prove-its-really-the-materialized-table).
+
+Use it when a reader must not serve stale rows. The cost is the point of the
+feature: an opted-out source recomputes its upstream in the warehouse on every
+query, so it gives up the savings the materialization exists for. If freshness is
+the concern for *every* reader, a `freshness` policy on the persisted source
+itself is usually the better tool — it bounds staleness without giving up the
+stored table.
+
 ### Joining and chaining sources
 
 **Joining non-persisted sources is the simple case.** A persist source whose
