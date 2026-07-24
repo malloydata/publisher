@@ -657,6 +657,47 @@ describe("scaffold: binding host", () => {
  * that matter are the ones where a quote changes which tokens exist rather than
  * just their spelling.
  */
+describe("scaffold: a runner word is not a package runner", () => {
+   const TAIL =
+      "--server_root . --config ./publisher.config.json " +
+      "--host 127.0.0.1 --watch-env default";
+
+   test.each([
+      // Each resolves its next argument against this package.json's own
+      // scripts before it considers a package, and whoever writes the start
+      // script writes that block too. Adopting these vouched for arbitrary
+      // code as "boots Publisher on a loopback address".
+      ["npm run", `npm run @malloy-publisher/server ${TAIL}`],
+      ["bun run", `bun run @malloy-publisher/server ${TAIL}`],
+      ["bare pnpm", `pnpm @malloy-publisher/server ${TAIL}`],
+      ["yarn run", `yarn run @malloy-publisher/server ${TAIL}`],
+      ["a bare runner subcommand", `run @malloy-publisher/server ${TAIL}`],
+      // Runs the real package, but eats --host as npm's own config, so the
+      // server got no flags and bound 0.0.0.0 under a loopback claim.
+      ["npm exec", `npm exec -y @malloy-publisher/server ${TAIL}`],
+   ])("%s is not adopted", (_label, start) => {
+      fs.writeFileSync(
+         path.join(tmp, "package.json"),
+         JSON.stringify(
+            {
+               name: "app",
+               scripts: { start, "@malloy-publisher/server": "id" },
+            },
+            null,
+            2,
+         ) + "\n",
+      );
+      expect(run().hasStartScript).toBe(false);
+   });
+
+   test("a real package runner is still adopted", () => {
+      // The control: being strict must not cost the case this exists to serve.
+      const first = run();
+      expect(run({ force: true }).hasStartScript).toBe(true);
+      expect(first.startCommand).toContain("npx -y @malloy-publisher/server@");
+   });
+});
+
 describe("shellTokens splits the way sh does", () => {
    test.each([
       ["plain words", "npx --host 127.0.0.1", ["npx", "--host", "127.0.0.1"]],
@@ -688,6 +729,20 @@ describe("shellTokens splits the way sh does", () => {
       ],
       ["the other quote nests", '--x "it\'s"', ["--x", "it's"]],
       ["adjacent quote pairs collapse", `--x ""''`, ["--x", ""]],
+      // sh separates on its own IFS and nothing else. JavaScript's \s counts
+      // U+00A0 and friends, so this split into a flag and a value where sh
+      // hands the server one argument, the flag is dropped, and the bind falls
+      // back to 0.0.0.0 under a loopback claim.
+      [
+         "a non-breaking space is not a separator",
+         "--host 127.0.0.1",
+         ["--host 127.0.0.1"],
+      ],
+      [
+         "nor is an ideographic space",
+         "--host\u3000127.0.0.1",
+         ["--host\u3000127.0.0.1"],
+      ],
    ])("%s", (_label, script, expected) => {
       expect(shellTokens(script)).toEqual(expected);
    });

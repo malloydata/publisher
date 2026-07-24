@@ -1140,7 +1140,7 @@ function matchesGeneratedInvocation(
    envName: string,
    requireInit: boolean,
 ): boolean {
-   const tokens = script.trim().split(/\s+/).filter(Boolean);
+   const tokens = splitOnShellWhitespace(script);
    const index = tokens.findIndex((token) =>
       unquote(token).startsWith("@malloy-publisher/server"),
    );
@@ -1211,18 +1211,50 @@ const UNMODELLED_SHELL_SYNTAX = /[`$()#\\]/;
  * binary entirely) is a command this tool has not read, so the script is left
  * alone rather than adopted and described.
  */
-const SCRIPT_RUNNERS = new Set([
-   "npx",
-   "bunx",
-   "pnpx",
-   "pnpm",
-   "npm",
-   "yarn",
-   "bun",
-   "dlx",
-   "exec",
-   "run",
-]);
+/**
+ * What sh separates arguments on: its default IFS, and nothing else.
+ *
+ * Not `\s`, which is where this went wrong. JavaScript counts U+00A0, U+2000
+ * through U+200A, U+3000 and U+FEFF as whitespace and sh does not, so
+ * `--host<U+00A0>127.0.0.1` split here into a flag and a value while sh handed
+ * the server one argument. `arg === "--host"` then failed, the flag was dropped
+ * without a word, and the bind fell back to 0.0.0.0 under a line this tool had
+ * already called loopback. Reproduced end to end on all six characters.
+ */
+const SH_WHITESPACE = /[ \t\n]/;
+
+/** Split on runs of sh's own separators, the way word splitting does. */
+function splitOnShellWhitespace(script: string): string[] {
+   return script.split(/[ \t\n]+/).filter(Boolean);
+}
+
+const SCRIPT_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
+
+/**
+ * Why this is three words and not the ten it used to be, and why the check
+ * below is positional rather than a set membership test over every token.
+ *
+ * `npm`, `pnpm`, `yarn` and `bun` are not package runners, they are multi-tool
+ * commands whose meaning is decided by the word after them, and `run`, `exec`
+ * and `dlx` were in the set as bare words, so any of them could appear in any
+ * position. Two consequences, both reproduced against the built bin:
+ *
+ * `npm run @malloy-publisher/server` resolves that argument against this
+ * package.json's own `scripts` before it ever considers a package, and whoever
+ * writes the start script writes that block too. A `scripts` entry named
+ * `@malloy-publisher/server` therefore ran arbitrary code while this tool
+ * printed "run this directory's own start script, which boots Publisher on a
+ * loopback address". Same for `bun run`, bare `pnpm`, and `yarn run`.
+ *
+ * `npm exec` does run the real package, but consumes `--host` and friends as
+ * npm's own config, so the server received no flags at all and bound 0.0.0.0
+ * under a line claiming loopback.
+ *
+ * What is left is the three commands whose whole job is to execute a package
+ * and hand the rest through untouched. Being strict costs nothing: a declined
+ * script is left exactly as it is and the caller falls back to the explicit
+ * command.
+ */
 
 /**
  * The runner flags a Publisher boot can carry in front of the server spec.
@@ -1232,8 +1264,8 @@ const SCRIPT_RUNNERS = new Set([
  * that begins with a dash: `--package=evil` and `-p=evil` pick a different
  * package, `--call=evil` replaces the command outright, and
  * `--node-options=--require=/tmp/evil.js` preloads a file into the real server —
- * that last one carries no space, so tokenizing never splits it, `=` is not in
- * SHELL_CONTROL_CHARACTERS, and the boot that follows is a genuine Publisher on
+ * that last one carries no space, so tokenizing never splits it, `=` is in
+ * neither reject set below, and the boot that follows is a genuine Publisher on
  * a loopback address, so every claim this tool goes on to make stays true while
  * the script it adopted is not the one it read.
  *
@@ -1276,7 +1308,7 @@ function isSingleServerInvocation(script: string): boolean {
    if (SHELL_CHAINING_CHARACTERS.test(script)) {
       return false;
    }
-   const tokens = script.trim().split(/\s+/).filter(Boolean);
+   const tokens = splitOnShellWhitespace(script);
    const index = tokens.findIndex((token) =>
       token.includes("@malloy-publisher/server"),
    );
@@ -1301,14 +1333,16 @@ function isSingleServerInvocation(script: string): boolean {
          return false;
       }
    }
-   // Everything in front of it is a package runner or one of the boolean flags
-   // that cannot redirect what runs.
-   return tokens
-      .slice(0, index)
-      .every(
-         (token) =>
-            RUNNER_BOOLEAN_FLAGS.has(token) || SCRIPT_RUNNERS.has(token),
-      );
+   // Positional, not a set test over every token: the runner has to BE the
+   // command, and everything between it and the spec has to be a boolean flag.
+   // Accepting a runner word anywhere is what let `npm run @malloy-publisher/
+   // server` through, where the spec is not a package at all but a script name
+   // out of the same package.json.
+   const before = tokens.slice(0, index);
+   if (before.length === 0 || !SCRIPT_RUNNERS.has(before[0])) {
+      return false;
+   }
+   return before.slice(1).every((token) => RUNNER_BOOLEAN_FLAGS.has(token));
 }
 
 /**
@@ -1356,10 +1390,10 @@ function hasUnterminatedQuote(script: string): boolean {
 
 /**
  * Split a command the way `sh -c` would, which is what npm hands the script to.
- * Quoting is all this models, and SHELL_CONTROL_CHARACTERS is what makes that
+ * Quoting is all this models, and the two reject sets above are what make that
  * enough: everything else with shell meaning is declined before reaching here.
- * `#` and `\` are in that reject set for exactly this reason, having each been
- * caught reading a bind address the server never receives.
+ * `#` and `\` are in UNMODELLED_SHELL_SYNTAX for exactly this reason, having
+ * each been caught reading a bind address the server never receives.
  *
  * Splitting on whitespace instead lets a quoted flag name (`"--host"`) read as a
  * different token than the one the server is actually handed.
@@ -1386,7 +1420,7 @@ export function shellTokens(script: string): string[] {
          open = true;
          continue;
       }
-      if (/\s/.test(char)) {
+      if (SH_WHITESPACE.test(char)) {
          if (open) tokens.push(current);
          current = "";
          open = false;
