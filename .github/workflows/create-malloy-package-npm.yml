@@ -1,0 +1,227 @@
+name: create-malloy-package
+
+# create-malloy-package versions on its own line, like the skills package.
+# release.yml bumps sdk, app, and server in lockstep and is deliberately not used
+# here: a scaffolder change should not need a server release.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/create-malloy-package/**"
+      - ".github/workflows/create-malloy-package-npm.yml"
+  pull_request:
+    paths:
+      - "packages/create-malloy-package/**"
+      - ".github/workflows/create-malloy-package-npm.yml"
+  workflow_dispatch:
+
+env:
+  BUN_VERSION: 1.3.13
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  check_pack:
+    name: Verify the published tarball
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # A dropped dist/ or templates/ file packs to a bin that scaffolds nothing,
+      # with exit 0 and no warning; this is the only thing that would catch it.
+      - name: Check pack contents
+        run: bun run --cwd packages/create-malloy-package check-pack
+
+      # Every other job here runs the TypeScript under bun. What users get is
+      # dist/index.js under node, and the bundle is not the source: the
+      # `#!/usr/bin/env node` shebang, `--packages external`, and both
+      # templatesDir and version() resolving relative to dist/ are exercised
+      # nowhere else. build.yml smoke-tests the server bin under node for the
+      # same reason. Skills are built explicitly so this does not depend on a
+      # sibling step: a fresh checkout has no generated skills/ at all, and the
+      # scaffolder copies from it at runtime.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Smoke-test the built bin under Node
+        run: |
+          bun run --cwd packages/skills build
+          BIN="$PWD/packages/create-malloy-package/dist/index.js"
+          # Invoked directly, not as `node "$BIN"`: node strips the shebang as a
+          # comment, so running it that way would pass over a bin whose
+          # interpreter line is broken, which is the thing npm users depend on.
+          "$BIN" --version
+          # Assigned first, then cd. `cd "$(mktemp -d)"` fails open: bash -e does
+          # not catch a failing substitution used as an argument, and `cd ""`
+          # returns 0 and stays put, so a scaffold would land in the checkout the
+          # next step tests against.
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          "$BIN" smoke
+          test -f smoke/publisher.json
+          test -f publisher.config.json
+          test -f .claude/skills/malloy-getting-started/SKILL.md
+
+      - name: Test
+        run: bun run --cwd packages/create-malloy-package test
+
+  publish:
+    name: Publish to NPM
+    # workflow_dispatch offers every branch in the ref dropdown, and the
+    # definition that runs is the one on the ref you pick. npm's trusted
+    # publisher matches on this file's name, so the filename is effectively the
+    # credential and `needs: check_pack` is no protection: that job would verify
+    # the same branch's tarball. Without this check, dispatching from a stale or
+    # half-finished branch publishes that branch's code under the real name.
+    #
+    # A guardrail, not a boundary, and worth being honest about which: the same
+    # premise applies to this line, so anyone who can dispatch can push a branch
+    # whose copy of this file drops it. npm matches repo plus filename and never
+    # a ref. The control that survives that is binding the trusted-publisher
+    # entry to a GitHub Environment whose deployment branches are restricted to
+    # main; npm verifies the environment claim in the OIDC token. Land that
+    # before setting the environment name on npm, never after, or every publish
+    # fails on a mismatch.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: check_pack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Read version
+        id: version_step
+        run: |
+          CURRENT_VERSION="$(node -p "require('./packages/create-malloy-package/package.json').version")"
+
+          # Stable versions publish under "latest"; any pre-release under "next".
+          if [[ "$CURRENT_VERSION" == *-* ]]; then
+            NPM_TAG="next"
+          else
+            NPM_TAG="latest"
+          fi
+
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "npm_tag=$NPM_TAG" >> $GITHUB_OUTPUT
+          echo "::notice title=Current Version::Publishing create-malloy-package version $CURRENT_VERSION under npm dist-tag '$NPM_TAG'"
+
+      # npm ships a "workspace:*" range verbatim, and the consumer's install then
+      # dies with EUNSUPPORTEDPROTOCOL. Rewriting the protocol at pack time is
+      # pnpm and yarn behaviour, not npm's, so do it here: pin the skills dep to
+      # the skills package's current version, in the runner's working tree only
+      # (not committed), exactly as npm-sdk.yml de-workspaces app's sdk dep.
+      - name: Resolve workspace:* skills dep for publishing
+        id: skills_dep
+        run: |
+          SKILLS_VERSION="$(node -p "require('./packages/skills/package.json').version")"
+          sed -i "s/\"@malloy-publisher\/skills\": \"workspace:\*\"/\"@malloy-publisher\/skills\": \"^${SKILLS_VERSION}\"/" packages/create-malloy-package/package.json
+
+          # sed exits 0 when it matches nothing, so without this the notice below
+          # would announce a rewrite that never happened.
+          if ! grep -q "\"@malloy-publisher/skills\": \"\^${SKILLS_VERSION}\"" packages/create-malloy-package/package.json; then
+            echo "::error title=Skills dep::the workspace:* rewrite did not apply, so this would publish a range no install can resolve"
+            grep -n "@malloy-publisher/skills" packages/create-malloy-package/package.json || true
+            exit 1
+          fi
+
+          echo "skills_version=$SKILLS_VERSION" >> $GITHUB_OUTPUT
+          echo "::notice title=Skills dep::Pinned @malloy-publisher/skills to ^${SKILLS_VERSION}"
+
+      # The pin above comes from the monorepo, where bun resolves skills locally,
+      # so a version that was never published resolves fine here and fails at
+      # every user's install instead. Ask the registry before the version we are
+      # about to publish becomes immutable.
+      - name: Verify the pinned skills version is on npm
+        run: |
+          SKILLS_RANGE="@malloy-publisher/skills@^${{ steps.skills_dep.outputs.skills_version }}"
+          if ! RESOLVED="$(npm view "$SKILLS_RANGE" version 2>&1)" || [ -z "$RESOLVED" ]; then
+            echo "$RESOLVED"
+            echo "::error title=Skills dep::$SKILLS_RANGE does not resolve on npm; publish the skills package first"
+            exit 1
+          fi
+          echo "::notice title=Skills dep::$SKILLS_RANGE resolves to $(echo "$RESOLVED" | tail -n 1) on npm"
+
+      # Read the dependency ranges back out of a real tarball rather than trusting
+      # the two steps above, since an npm version cannot be republished. With
+      # --publish-ready this re-asks the registry as well, using the ranges the
+      # tarball actually declares rather than the version the sed above computed.
+      - name: Verify the tarball is publishable
+        run: bun run --cwd packages/create-malloy-package check-pack --publish-ready
+
+      # Trusted publishing (OIDC); there is no NPM_TOKEN fallback in this repo.
+      #
+      # Both prerequisites are already met, so no manual publish is needed:
+      # `create-malloy-package` exists on npm (0.0.0, a placeholder that
+      # scaffolds nothing, published 2026-07-23 to claim the name), and
+      # @malloy-publisher/skills is published (0.1.0), so the sed above resolves
+      # to a real range. This job publishes 0.0.1 on dispatch, and because 0.0.1
+      # sorts above the placeholder and carries no hyphen, it takes over `latest`
+      # and becomes what `npm create malloy-package` resolves.
+      #
+      # The trusted-publisher entry must name THIS file,
+      # create-malloy-package-npm.yml. npm allows one entry per package and
+      # matches it against the CALLING workflow's filename, so if the entry ever
+      # names another workflow, this job cannot authenticate and fails with a
+      # bare ENEEDAUTH after check_pack and both registry round-trips have
+      # passed. Verify the filename on the package settings page before the
+      # first dispatch. If this workflow is later invoked from release.yml via
+      # workflow_call, the entry has to be changed to release.yml for the same
+      # reason.
+      #
+      # Do not hand-publish from a workstation instead. It skips check_pack, the
+      # workspace:* rewrite above, and the registry check, which are the three
+      # things standing between a typo and an immutable broken version.
+      #
+      # The rewrite is also enforced by the package's prepublishOnly hook, which runs
+      # the same check-pack guard this job runs: it refuses to publish a
+      # workspace: range, and on the publish path it asks the registry whether
+      # every pinned range resolves. Both fail loudly rather than shipping a
+      # tarball that dies at every user's install, but only if you let the hook
+      # run; see the next paragraph.
+      #
+      # If you ever do have to hand-publish anyway, run it with scripts ENABLED.
+      # Never pass --ignore-scripts, and check your own npmrc for ignore-scripts=true,
+      # because npm skips prepack and prepublishOnly alike: dist/ is never
+      # rebuilt, so you ship whatever stale build is on disk or no bin at all,
+      # and the check-pack guard never runs, so `npm publish --ignore-scripts`
+      # exits 0 having uploaded a tarball that still carries the "workspace:*"
+      # range no install can resolve. That version is then dead on arrival for
+      # every user, and npm versions are immutable, so it cannot be replaced.
+      # Nothing expressible in package.json can defend against this, so the only
+      # guard is the person typing the command. The sibling skills-npm.yml
+      # carries the same warning for its own reason: there prepack is what copies
+      # skills/ in, so --ignore-scripts ships three files and no skills at all.
+      - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ""
+        run: |
+          cd packages/create-malloy-package
+          npm publish --access public --tag ${{ steps.version_step.outputs.npm_tag }}
