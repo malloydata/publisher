@@ -625,6 +625,61 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       expect(offeredCommands(output)).toContain(result.startCommand);
    });
 
+   test.each([
+      [
+         "a trailing shell comment",
+         "--host 0.0.0.0 --watch-env default # --host 127.0.0.1",
+      ],
+      ["a backslash-escaped quote", "--host 127.0.0.1 \\' --host 0.0.0.0 \\'"],
+   ])("%s does not hide the binding", (_label, tail) => {
+      // Both bind 0.0.0.0 under sh: `#` opens a comment, and `\'` emits a
+      // literal quote where a quote-only tokenizer sees a region opening and
+      // swallows the rest. shellTokens models quoting and nothing else, so
+      // these have to be declined up front rather than parsed, and a declined
+      // script is one whose binding is unknown, which warns.
+      const script = `npx -y @malloy-publisher/server@0.0.231 --server_root . --config ./publisher.config.json ${tail}`;
+      fs.writeFileSync(
+         path.join(tmp, "package.json"),
+         JSON.stringify({ name: "app", scripts: { start: script } }, null, 2) +
+            "\n",
+      );
+      const output = formatSuccess(
+         scaffold({
+            name: "sales",
+            cwd: tmp,
+            host: "claude-code",
+            force: false,
+         }),
+      );
+      expect(output).toContain("Do not use");
+   });
+
+   test("a script sh cannot even parse is never offered as npm start", () => {
+      // An unterminated quote is not a script with an unknown binding, it is a
+      // script that starts nothing: sh exits 2 with "unexpected EOF". Adopting
+      // it printed `npm start` as the way to boot this workspace, and wrote that
+      // into AGENTS.md, over a command that cannot run.
+      const script =
+         "npx -y @malloy-publisher/server@0.0.231 --server_root . " +
+         '--config ./publisher.config.json --host 127.0.0.1 --watch-env "default';
+      fs.writeFileSync(
+         path.join(tmp, "package.json"),
+         JSON.stringify({ name: "app", scripts: { start: script } }, null, 2) +
+            "\n",
+      );
+      const result = scaffold({
+         name: "sales",
+         cwd: tmp,
+         host: "claude-code",
+         force: false,
+      });
+      const output = formatSuccess(result);
+
+      expect(result.hasStartScript).toBe(false);
+      expect(offeredCommands(output)).not.toContain("npm start");
+      expect(offeredCommands(output)).toContain(result.startCommand);
+   });
+
    test("a --host swallowed as another flag's value still warns", () => {
       // The server walks argv positionally, so `--server_root` with its own
       // value missing consumes `--host` as that value and never sets a host at

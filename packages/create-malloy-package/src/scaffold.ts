@@ -1173,7 +1173,13 @@ function unquote(token: string): string {
  * bind address this tool can read, and a script it cannot read is a script it
  * must not describe.
  */
-const SHELL_CONTROL_CHARACTERS = /[&|;<>`$()\n\r]/;
+// `#` and `\` are here for the same reason as the rest: shellTokens models
+// quoting and nothing else, so anything with other shell meaning has to be
+// declined rather than parsed. Both flip the bind decision silently. `sh` treats
+// `--host 0.0.0.0 # --host 127.0.0.1` as a comment and binds 0.0.0.0 while a
+// reader of the text sees loopback, and `\'` emits a literal quote where the
+// tokenizer sees a quoted region opening and swallows the rest of the line.
+const SHELL_CONTROL_CHARACTERS = /[&|;<>`$()\n\r#\\]/;
 
 /**
  * Command words a Publisher boot can legitimately be reached through. Anything
@@ -1246,6 +1252,13 @@ function isSingleServerInvocation(script: string): boolean {
    if (SHELL_CONTROL_CHARACTERS.test(script)) {
       return false;
    }
+   // sh refuses an unterminated quote outright, so a script carrying one starts
+   // nothing at all. Adopting it would print `npm start` as the way to boot this
+   // workspace, and write it into AGENTS.md, over a command that only ever
+   // answers "unexpected EOF".
+   if (hasUnterminatedQuote(script)) {
+      return false;
+   }
    const tokens = script.trim().split(/\s+/).filter(Boolean);
    const index = tokens.findIndex((token) =>
       token.includes("@malloy-publisher/server"),
@@ -1311,15 +1324,34 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--watch-env",
 ]);
 
+/** True when a quote is left open, which sh refuses to run at all. */
+function hasUnterminatedQuote(script: string): boolean {
+   let quote: string | undefined;
+   for (const char of script) {
+      if (quote !== undefined) {
+         if (char === quote) quote = undefined;
+         continue;
+      }
+      if (char === '"' || char === "'") quote = char;
+   }
+   return quote !== undefined;
+}
+
 /**
- * Split a command the way `sh -c` would, which npm is what hands the script to.
- * Only the two quoting forms need handling: SHELL_CONTROL_CHARACTERS already
- * rejects backticks, `$`, parentheses, and the chaining and redirection
- * operators, so nothing else can reach here. Splitting on whitespace instead
- * lets a quoted flag name (`"--host"`) read as a different token than the one
- * the server is actually handed.
+ * Split a command the way `sh -c` would, which is what npm hands the script to.
+ * Quoting is all this models, and SHELL_CONTROL_CHARACTERS is what makes that
+ * enough: everything else with shell meaning is declined before reaching here.
+ * `#` and `\` are in that reject set for exactly this reason, having each been
+ * caught reading a bind address the server never receives.
+ *
+ * Splitting on whitespace instead lets a quoted flag name (`"--host"`) read as a
+ * different token than the one the server is actually handed.
+ *
+ * `~` and `*` are the known gap: sh expands them and this does not. Neither can
+ * hide an exposed bind, because an unexpanded value is not a loopback literal
+ * and so warns, and a glob's result depends on a directory this cannot see.
  */
-function shellTokens(script: string): string[] {
+export function shellTokens(script: string): string[] {
    const tokens: string[] = [];
    let current = "";
    let quote: string | undefined;

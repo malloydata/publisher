@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
    SERVER_VALUE_FLAGS,
    scaffold,
+   shellTokens,
    type ScaffoldOptions,
    type ScaffoldResult,
 } from "./scaffold";
@@ -650,6 +651,48 @@ describe("scaffold: binding host", () => {
  * while this tool reported loopback and stayed silent about it, which is the
  * exact defect the positional walk was written to remove.
  */
+/**
+ * Expected values are what `sh -c` produces, since that is what npm hands the
+ * script to. Splitting on whitespace passes almost all of these, so the rows
+ * that matter are the ones where a quote changes which tokens exist rather than
+ * just their spelling.
+ */
+describe("shellTokens splits the way sh does", () => {
+   test.each([
+      ["plain words", "npx --host 127.0.0.1", ["npx", "--host", "127.0.0.1"]],
+      ["runs of spaces and tabs", " a \t  b ", ["a", "b"]],
+      [
+         "double quotes are removed",
+         '--host "127.0.0.1"',
+         ["--host", "127.0.0.1"],
+      ],
+      [
+         "single quotes are removed",
+         "--host '127.0.0.1'",
+         ["--host", "127.0.0.1"],
+      ],
+      // The shape that defeated the whitespace split: sh hands over a plain
+      // --host, so reading a distinct token here is what hid the real binding.
+      [
+         "a quoted flag name is still that flag",
+         '--host 1.1.1.1 "--host" 2.2.2.2',
+         ["--host", "1.1.1.1", "--host", "2.2.2.2"],
+      ],
+      // A falsy argv entry, which is why the server drops the flag before it.
+      ["a quoted empty string is its own entry", '--host ""', ["--host", ""]],
+      ["quotes inside a word", '--config=a"b"c', ["--config=abc"]],
+      [
+         "a quoted value keeps its spaces",
+         '--server_root "a b"',
+         ["--server_root", "a b"],
+      ],
+      ["the other quote nests", '--x "it\'s"', ["--x", "it's"]],
+      ["adjacent quote pairs collapse", `--x ""''`, ["--x", ""]],
+   ])("%s", (_label, script, expected) => {
+      expect(shellTokens(script)).toEqual(expected);
+   });
+});
+
 describe("SERVER_VALUE_FLAGS drift against packages/server", () => {
    test("matches the server's own argv chain", () => {
       const serverSource = path.join(
