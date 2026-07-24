@@ -156,6 +156,41 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
 };
 
 /**
+ * Step kinds that legitimately assert NOTHING — they exist for their side effect
+ * (write a model, seed rows, boot a publisher, run operator DDL, PATCH a manifest).
+ * Every other kind must contribute at least one check, or the step ran and verified
+ * nothing: a `## Connection` with neither an `Expect:` table nor `(rows=N)` executes
+ * its SQL and passes silently, which reads in the report exactly like a real check.
+ *
+ * Measured at RUN time as a delta on the check count, not statically: several steps
+ * assert only through helpers (`compareRows`), so counting `assert.` calls in the
+ * source would undercount and exempt the wrong kinds.
+ *
+ * `publish` is exempt for now because `expect binding:` lines are optional and most
+ * scenarios publish purely to trigger a build. That leaves the analogous hole a
+ * misspelled `expect bindng:` would fall into — see the note in the commit; it wants
+ * a line-shape check on the publish body rather than an accounting rule.
+ *
+ * `hook` is exempt deliberately: a hook is sometimes pure setup (dropping a catalog),
+ * and requiring a check there only teaches authors to write a tautological
+ * `assert.ok(..., true)` to satisfy the rule, which is worse than nothing.
+ */
+export function stepMustAssert(kind: string): boolean {
+   return !SIDE_EFFECT_ONLY_STEPS.has(kind);
+}
+
+const SIDE_EFFECT_ONLY_STEPS = new Set([
+   "model",
+   "mutate",
+   "operator",
+   "publisher",
+   "restart",
+   "bind",
+   "hook",
+   "publish",
+]);
+
+/**
  * Candidate body keys in a section: a lowercase `word:` at the start of a line.
  * Fenced code blocks are skipped (Malloy's `group_by:` is not a body key), as are
  * blockquotes, table rows, and bullets (`- PERSIST_STORAGE_MODE: on` is publisher
@@ -1071,6 +1106,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
          `${parsed.defaultPackage}.malloy`;
 
       for (const step of parsed.steps) {
+         const checksBefore = assert.checks.length;
          switch (step.kind) {
             case "model":
                await ctx.editPackageModel(step.pkg, step.path, step.malloy, step.env);
@@ -1504,6 +1540,15 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                await fn({ ...ctx, modelPath, state: hookState }, assert);
                break;
             }
+         }
+         // A step that verified nothing is a false green in the making: it looks
+         // like coverage in the report and is not. See SIDE_EFFECT_ONLY_STEPS.
+         if (stepMustAssert(step.kind) && assert.checks.length === checksBefore) {
+            assert.fail(
+               `step "${step.kind}" asserted nothing`,
+               `this step ran but contributed no check — it needs an Expect: table, ` +
+                  `a cites:/excludes: key, or (rows=N), or it is not verifying anything`,
+            );
          }
       }
 

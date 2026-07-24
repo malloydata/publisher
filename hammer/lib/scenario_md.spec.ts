@@ -7,7 +7,7 @@
 // success for checks that do not exist.
 
 import { describe, expect, it } from "bun:test";
-import { parseMarkdownForTest } from "./scenario_md";
+import { parseMarkdownForTest, stepMustAssert } from "./scenario_md";
 
 const FRONT = `---
 id: t
@@ -98,5 +98,48 @@ describe("scenario grammar: strict parse", () => {
       // in the wrong mode and asserted against it.
       const parsed = parseMarkdownForTest(`${FRONT}\n## Publisher (off)\n`, "t");
       expect(parsed.steps[0]).toMatchObject({ kind: "publisher", mode: "off" });
+   });
+});
+
+describe("scenario grammar: every step must verify something", () => {
+   // A step that contributes no check looks like coverage in the report and is not.
+   // The kinds below assert; the exemptions are the ones that exist purely for a
+   // side effect. Pinned so an exemption is a deliberate edit, not a drive-by.
+   it("requires a check from every assertion-bearing kind", () => {
+      for (const kind of [
+         "query",
+         "connection",
+         "sql",
+         "buildTargets",
+         "buildRefused",
+         "orchestratedBuild",
+         "compile",
+         "warns",
+         "rejected",
+         "republish",
+         "await",
+         "delete",
+         "reclaim",
+      ]) {
+         expect(stepMustAssert(kind)).toBe(true);
+      }
+   });
+
+   it("exempts the side-effect-only kinds", () => {
+      for (const kind of [
+         "model",
+         "mutate",
+         "operator",
+         "publisher",
+         "restart",
+         "bind",
+         // Pure setup is a legitimate hook; requiring a check would only teach
+         // authors to write a tautological assert to satisfy the rule.
+         "hook",
+         // Optional `expect binding:` lines; most scenarios publish to build.
+         "publish",
+      ]) {
+         expect(stepMustAssert(kind)).toBe(false);
+      }
    });
 });
