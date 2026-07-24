@@ -101,6 +101,8 @@ Only the base `daily` may write `esi_daily`. RED today: the extended reader
 inherits `#@ persist` and becomes a second target for the same table (malloy PR
 3012). GREEN once malloy keys persist on the source's OWN annotation.
 
+Expect:
+
 | source | writes    |
 | ------ | --------- |
 | daily  | esi_daily |

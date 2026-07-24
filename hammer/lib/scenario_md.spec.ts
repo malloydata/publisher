@@ -192,3 +192,87 @@ describe("scenario loading: hooks.ts hygiene", () => {
       );
    });
 });
+
+describe("scenario grammar: prose tables vs assertion tables", () => {
+   const QUERY = (body: string) => `${FRONT}\n## Query q\n${body}`;
+
+   it("compares the table after Expect:, not one in the prose before it", () => {
+      // The illustrative table must be ignored entirely — not compared, and not
+      // merged into the real one (the old whole-body scan concatenated every table
+      // row in a section, so a second table arrived as data rows of the first).
+      const parsed = parseMarkdownForTest(
+         QUERY(`
+Background — the source data looks roughly like this:
+
+| whatever | junk |
+| -------- | ---- |
+| a        | b    |
+| c        | d    |
+
+\`\`\`malloy
+run: daily -> { select: total }
+\`\`\`
+
+Expect:
+
+| total |
+| ----- |
+| 150   |
+`),
+         "t",
+      );
+      const step = parsed.steps[0] as { expect?: { cols: { name: string }[]; rows: string[][] } };
+      expect(step.expect?.cols.map((c) => c.name)).toEqual(["total"]);
+      expect(step.expect?.rows).toEqual([["150"]]);
+   });
+
+   it("ignores a prose table AFTER the expectation", () => {
+      const parsed = parseMarkdownForTest(
+         QUERY(`
+\`\`\`malloy
+run: daily -> { select: total }
+\`\`\`
+
+Expect:
+
+| total |
+| ----- |
+| 150   |
+
+For contrast, serving live would give:
+
+| total |
+| ----- |
+| 1150  |
+`),
+         "t",
+      );
+      const step = parsed.steps[0] as { expect?: { rows: string[][] } };
+      expect(step.expect?.rows).toEqual([["150"]]);
+   });
+
+   it("rejects an assertion table with no Expect: label", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            QUERY(`
+\`\`\`malloy
+run: daily -> { select: total }
+\`\`\`
+
+| total |
+| ----- |
+| 150   |
+`),
+            "t",
+         ),
+      ).toThrow(/requires an "Expect:" line/);
+   });
+
+   it("still takes an input table unlabelled (## Data is a payload, not an assertion)", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Data orders_pg.t\n\n| id:int |\n| ------ |\n| 1      |\n`,
+         "t",
+      );
+      expect(parsed.dataSeeds[0].data.rows).toEqual([["1"]]);
+   });
+});

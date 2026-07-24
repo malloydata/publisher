@@ -363,14 +363,14 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
       switch (kind) {
          case "data": {
             const [conn, table] = splitConnTable(arg);
-            dataSeeds.push({ conn, table, data: requireTable(sec.body, sec.header) });
+            dataSeeds.push({ conn, table, data: requireDataTable(sec.body, sec.header) });
             break;
          }
          case "mutate": {
             const [conn, table] = splitConnTable(arg);
             const sql = extractCode(sec.body, "sql");
             if (sql) steps.push({ kind: "mutate", conn, table, sql });
-            else steps.push({ kind: "mutate", conn, table, rows: requireTable(sec.body, sec.header) });
+            else steps.push({ kind: "mutate", conn, table, rows: requireDataTable(sec.body, sec.header) });
             break;
          }
          case "model": {
@@ -421,7 +421,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   env,
                   pkg: (attrs.pkg as string) ?? defaultPackage,
                   mode,
-                  expect: requireTable(sec.body, sec.header),
+                  expect: requireExpectTable(sec.body, sec.header),
                });
                break;
             }
@@ -466,14 +466,14 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             if (refused) {
                steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: true, cites: firstKey(sec.body, "cites"), givens, exactColumns });
             } else {
-               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: false, expect: requireTable(sec.body, sec.header), givens, exactColumns });
+               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: false, expect: requireExpectTable(sec.body, sec.header), givens, exactColumns });
             }
             break;
          }
          case "sql": {
             const sql = extractCode(sec.body, "sql");
             if (!sql) throw new Error(`## SQL ${arg}: missing a \`\`\`sql block`);
-            steps.push({ kind: "sql", label: arg.trim() || "sql", sql, expect: requireTable(sec.body, sec.header) });
+            steps.push({ kind: "sql", label: arg.trim() || "sql", sql, expect: requireExpectTable(sec.body, sec.header) });
             break;
          }
          case "operator": {
@@ -505,7 +505,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             steps.push({
                kind: "connection", pub, env, conn: arg.trim(), mode, sql,
                refused: !!attrs.refused, cites: firstKey(sec.body, "cites"),
-               expect: attrs.refused ? undefined : parseTable(sec.body),
+               expect: attrs.refused ? undefined : parseExpectTable(sec.body),
                expectRows: attrs.rows !== undefined ? Number(attrs.rows) : undefined,
             });
             break;
@@ -655,10 +655,23 @@ function extractCode(body: string[], lang: string): string | undefined {
    return body.slice(open + 1, close).join("\n").trim();
 }
 
-function parseTable(body: string[]): Table | undefined {
-   const rowsRaw = body
-      .map((l) => l.trim())
-      .filter((l) => l.startsWith("|") && l.endsWith("|"));
+/**
+ * Parse the first CONTIGUOUS run of GFM table rows in `lines`.
+ *
+ * Contiguity matters: the previous implementation filtered EVERY table-ish line out
+ * of a section body and treated them as one table, so a second table in the same
+ * body was merged into the first — its header and separator arriving as data rows.
+ * A story is allowed to include an illustrative table, so a table block ends at the
+ * first line that is not a table row.
+ */
+function parseTableBlock(lines: string[]): Table | undefined {
+   const isRow = (l: string): boolean =>
+      l.trim().startsWith("|") && l.trim().endsWith("|");
+   const start = lines.findIndex(isRow);
+   if (start < 0) return undefined;
+   let end = start;
+   while (end < lines.length && isRow(lines[end])) end++;
+   const rowsRaw = lines.slice(start, end).map((l) => l.trim());
    if (rowsRaw.length < 2) return undefined;
    const cells = (l: string): string[] =>
       l.slice(1, -1).split("|").map((c) => c.trim());
@@ -673,9 +686,56 @@ function parseTable(body: string[]): Table | undefined {
    return { cols, rows };
 }
 
-function requireTable(body: string[], header: string): Table {
-   const t = parseTable(body);
+/** Body lines with fenced code blocks removed (a ```sql body can contain pipes). */
+function outsideFences(body: string[]): string[] {
+   const out: string[] = [];
+   let inFence = false;
+   for (const raw of body) {
+      if (/^\s*```/.test(raw)) {
+         inFence = !inFence;
+         continue;
+      }
+      if (!inFence) out.push(raw);
+   }
+   return out;
+}
+
+/**
+ * An INPUT table (`## Data`, `## Mutate`) — the section's payload, so it needs no
+ * label. The first table block wins.
+ */
+function parseDataTable(body: string[]): Table | undefined {
+   return parseTableBlock(outsideFences(body));
+}
+
+/**
+ * An ASSERTION table: the one a result must match. It must follow an `Expect:` line,
+ * which is what lets a section also carry an illustrative table in its prose — only
+ * the labelled one is compared. Every assertion table in the suite already carried
+ * the label; this makes it load-bearing instead of decorative.
+ */
+function parseExpectTable(body: string[]): Table | undefined {
+   const lines = outsideFences(body);
+   const at = lines.findIndex((l) => /^\s*expect\s*:?\s*$/i.test(l));
+   if (at < 0) return undefined;
+   return parseTableBlock(lines.slice(at + 1));
+}
+
+function requireDataTable(body: string[], header: string): Table {
+   const t = parseDataTable(body);
    if (!t) throw new Error(`section "## ${header}" requires a GFM table`);
+   return t;
+}
+
+function requireExpectTable(body: string[], header: string): Table {
+   const t = parseExpectTable(body);
+   if (!t) {
+      throw new Error(
+         `section "## ${header}" requires an "Expect:" line followed by a GFM ` +
+            `table. A table NOT preceded by "Expect:" is treated as prose and is ` +
+            `not compared.`,
+      );
+   }
    return t;
 }
 

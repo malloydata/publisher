@@ -96,6 +96,8 @@ Both sources are targets, each declaring its OWN physical name — and they shar
 content address (`entity` label `A`), which is why the build dedups them to a single
 table below.
 
+Expect:
+
 | source         | writes             | entity |
 | -------------- | ------------------ | ------ |
 | daily          | daily_tbl          | A      |
