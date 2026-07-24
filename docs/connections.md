@@ -63,14 +63,6 @@ for environment-level DuckDB connections (e.g. 'shared_duckdb').
 
 Use any other name for an environment-level DuckDB connection.
 
-### `source` (reserved)
-
-You cannot define a connection named `source`. It is the reserved sentinel for
-`#@ persist storage=source` — "materialize in the source's own warehouse" (the
-default), as opposed to `storage=<some-connection>`. Publisher rejects it at
-registration so the sentinel can't be shadowed by a real connection. See
-[persist-storage-tutorial.md](persist-storage-tutorial.md).
-
 ### Uniqueness within an environment
 
 Connection names must be unique within a single environment. Duplicate names after the first are silently ignored (later definitions don't override earlier ones), so prefer distinct, descriptive names.

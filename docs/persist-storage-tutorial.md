@@ -120,10 +120,6 @@ curl -s http://localhost:4000/api/v0/environments/examples/connections | jq '[.[
 # -> [ ..., "orders_pg", "lake" ]
 ```
 
-> **Reserved name.** A connection can't be named `source` — that's the reserved
-> `storage=source` sentinel ("materialize in the warehouse" — colocated). The server
-> rejects it at registration.
-
 ---
 
 ## 4. Author the package

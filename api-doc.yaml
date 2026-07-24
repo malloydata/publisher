@@ -4384,9 +4384,9 @@ components:
           type: string
           description: >-
             Optional name of a registered DuckDB/DuckLake connection to
-            materialize INTO (the `storage=` authoring axis). Absent (or the
-            reserved value `source`) means build into the persist source's own
-            warehouse — the default, unchanged path. When present, the build runs
+            materialize INTO (the `storage=` authoring axis). Absent means build
+            into the persist source's own warehouse — the default, unchanged
+            (colocated) path. When present, the build runs
             a native per-engine query-passthrough CTAS on a build-scoped session
             for this connection (the source computes; only results cross), and
             the manifest records the destination connection + captured schema so

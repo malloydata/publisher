@@ -142,22 +142,16 @@ export function manifestExcludingStorage(
 }
 
 /**
- * The reserved `storage=` value meaning "materialize into the persist source's
- * own warehouse" (colocated, the default). A connection may not be named this
- * (enforced at registration in connection_config), so it never collides with a
- * real destination.
- */
-const STORAGE_SOURCE_SENTINEL = "source";
-
 /**
  * Resolve a persist source's `#@ persist storage=<ref>` to the EFFECTIVE
  * destination connection name for a build, or undefined for the default
- * in-warehouse path. Read publisher-side from the compiled annotation (the same
- * `annotationFields` map the plan echoes); the reference resolves generically
- * against registered connections. Absent or the reserved `source` value ⇒
- * undefined (colocated). Any managed-tier alias is resolved by the host/control
- * plane upstream and set on the wire instruction's `destination` — it never
- * reaches this publisher-side generic resolution.
+ * colocated path (the source materializes into its own warehouse). Read
+ * publisher-side from the compiled annotation (the same `annotationFields` map
+ * the plan echoes); the reference resolves generically against registered
+ * connections. Absent `storage=` ⇒ undefined (colocated); any value names a
+ * registered connection to materialize into. Any managed-tier alias is resolved
+ * by the host upstream and set on the wire instruction's `destination` — it
+ * never reaches this publisher-side generic resolution.
  *
  * When `PERSIST_STORAGE_MODE=off` this returns undefined regardless of the
  * annotation — the source is built colocated — so the feature is a runtime kill
@@ -169,7 +163,7 @@ function resolveStorageDestination(
 ): string | undefined {
    if (getPersistStorageMode() === "off") return undefined;
    const storage = deriveAnnotationFields(persistSource).storage?.trim();
-   if (!storage || storage === STORAGE_SOURCE_SENTINEL) return undefined;
+   if (!storage) return undefined;
    return storage;
 }
 

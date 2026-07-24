@@ -6,7 +6,7 @@ import { parseAuthorizeAnnotation } from "./authorize";
 /**
  * Compile-time eligibility gate for materializing a persist source into a
  * *storage* destination (a DuckDB/DuckLake tier table), as opposed to the
- * default in-warehouse path (`storage=source`). This is a HARD REFUSE: an
+ * default colocated path (no `storage=`). This is a HARD REFUSE: an
  * ineligible source never builds an artifact.
  *
  * It exists because a `storage=<duckdb>` table is built once and served frozen

@@ -1797,7 +1797,7 @@ export class Model {
     * omits that source and any query touching it falls through to live — the SAME
     * freshness gate the colocated serve applies (`getFreshBuildManifest`
     * → `evaluateManifestFreshness`). Placement (`storage=`) is orthogonal to
-    * freshness: flip `storage=source`↔`storage=lake` and this behaves identically.
+    * freshness: flip a colocated build ↔ `storage=lake` and this behaves identically.
     */
    private freshServeBindings(now: number): ServeBinding[] {
       const at = new Date(now);
