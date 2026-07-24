@@ -56,6 +56,16 @@ describe("redactPgSecrets", () => {
       );
    });
 
+   // Documents the accepted residual: with BOTH a raw `@` and a later raw `/`
+   // in one password (doubly invalid per RFC 3986), pass 1 redacts through
+   // the first `@` and its inserted `***@` satisfies the mop-up's first-`@`
+   // before the raw `/`, so the password tail after the raw `@` survives.
+   it("keeps the post-@ tail of a password with both a raw @ and a raw /", () => {
+      expect(redactPgSecrets("postgres://u:p@a/b@h/d")).toBe(
+         "postgres://u:***@a/b@h/d",
+      );
+   });
+
    it("redacts the password when the username is empty", () => {
       expect(redactPgSecrets("postgres://:secret@h/d")).toBe(
          "postgres://:***@h/d",
