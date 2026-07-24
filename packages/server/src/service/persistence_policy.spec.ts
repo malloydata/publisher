@@ -266,7 +266,7 @@ source: f is duckdb.sql("SELECT 1 as x")
    // ── within-package persist-target collisions ──────────────────────────
 
    // Two DISTINCT sources both resolving to name="dup" in the same destination
-   // (here their own duckdb warehouse, path C) — a self-assign clobber.
+   // (here their own duckdb warehouse — colocated) — a self-assign clobber.
    const COLLIDING_MODEL = `##! experimental.persistence
 
 #@ persist name="dup"

@@ -118,7 +118,7 @@ export interface ServeBinding {
    freshAsOf?: string;
    /**
     * Optional freshness window + fallback, carried through verbatim so the serve
-    * path can gate this binding per query the SAME way the in-warehouse (path-C)
+    * path can gate this binding per query the SAME way the colocated
     * serve does — a stale binding whose fallback is `live`/`fail` is dropped from
     * the serve shape and served live; `stale_ok` (or un-gated) keeps serving the
     * materialized table. Placement (`storage=`) is orthogonal to freshness.
@@ -132,7 +132,7 @@ export interface ServeBinding {
  * entries — the standalone half of the injectable binding seam (a host/control
  * plane can supply {@link ServeBinding}s directly instead). Only entries that
  * were materialized into a storage destination (carrying `storageConnectionName`
- * and a captured `schema`) produce a binding; in-warehouse (path-C) entries do
+ * and a captured `schema`) produce a binding; colocated entries do
  * not (they serve through the same-connection manifest, not the transform).
  *
  * The virtual handle is the source's build-posture **content identity**

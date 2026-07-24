@@ -299,7 +299,7 @@ describe("assembleEnvironmentConnections — publisher", () => {
       );
    });
 
-   it("rejects the reserved 'source' name (the storage= path-C sentinel)", () => {
+   it("rejects the reserved 'source' name (the storage= colocated sentinel)", () => {
       const conn: ApiConnection = {
          name: "source",
          type: "duckdb",

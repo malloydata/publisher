@@ -15,10 +15,10 @@ eligibility refusals) so you can see exactly what the feature does and doesn't
 do. Every step here was run against a real server; the outputs shown are real.
 
 > **Terminology.** `storage=` is the authoring keyword on the persist
-> annotation. "Path C" is the default (no `storage=`): the source materializes
-> into and serves from its own warehouse, unchanged. This tutorial is about the
-> new path — materialize into a _separate_ DuckDB/DuckLake store and serve from
-> there.
+> annotation. The default (no `storage=`) is a **colocated** materialization: the
+> source materializes into and serves from its own warehouse, unchanged. This
+> tutorial is about **external** materialization — materialize into a _separate_
+> DuckDB/DuckLake store and serve from there.
 
 ---
 
@@ -121,7 +121,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/connections | jq '[.[
 ```
 
 > **Reserved name.** A connection can't be named `source` — that's the reserved
-> `storage=source` sentinel ("materialize in the warehouse", path C). The server
+> `storage=source` sentinel ("materialize in the warehouse" — colocated). The server
 > rejects it at registration.
 
 ---

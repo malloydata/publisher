@@ -1412,22 +1412,22 @@ export class Environment {
          // ServeBindings with the now-empty set clears them): a manifest whose
          // storage entries vanished must drop the old bindings, not leave them
          // routing at a table the host no longer vouches for. Mirrors the
-         // hadPathC guard below.
+         // hadColocated guard below.
          const hasStorage = Object.keys(storageEntries).length > 0;
          const hadStorage = pkg.hasStorageServeBindings();
          if (hasStorage || hadStorage) {
             pkg.bindStorageServeBindings(storageEntries);
          }
 
-         // Path-C entries drive the same-connection tableName substitution, which
+         // colocated entries drive the same-connection tableName substitution, which
          // is resolved at COMPILE time — so they require a reloadAllModels
          // recompile (v0's existing cost). Skip the recompile for a pure-storage
          // manifest flip: only when there is nothing to substitute AND nothing
          // previously substituted to clear (otherwise a package that just dropped
-         // its last path-C entry must still recompile to revert it).
-         const hasPathC = Object.keys(tableNameManifest).length > 0;
-         const hadPathC = pkg.hasBoundTableNameManifest();
-         if (hasPathC || hadPathC) {
+         // its last colocated entry must still recompile to revert it).
+         const hasColocated = Object.keys(tableNameManifest).length > 0;
+         const hadColocated = pkg.hasBoundTableNameManifest();
+         if (hasColocated || hadColocated) {
             await pkg.reloadAllModels(tableNameManifest);
          }
 
@@ -1439,7 +1439,7 @@ export class Environment {
             manifestLocation,
             tableNameEntryCount: Object.keys(tableNameManifest).length,
             storageEntryCount: Object.keys(storageEntries).length,
-            recompiled: hasPathC || hadPathC,
+            recompiled: hasColocated || hadColocated,
          });
       } catch (err) {
          pkg.markManifestBindFailed();
@@ -1687,7 +1687,7 @@ export class Environment {
             if (body.manifestLocation) {
                await this.bindManifest(_package, body.manifestLocation);
             } else {
-               // Revert to live: drop the path-C tableName substitution AND the
+               // Revert to live: drop the colocated tableName substitution AND the
                // cross-connection storage serve bindings the prior bindManifest
                // applied, so no query still routes to a materialized table after
                // the operator explicitly cleared the manifest.

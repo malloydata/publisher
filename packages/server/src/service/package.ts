@@ -700,11 +700,11 @@ export class Package {
 
    /**
     * Whether the package currently has a bound (non-empty) same-connection
-    * `tableName` manifest — i.e. a prior bind substituted path-C physical tables
+    * `tableName` manifest — i.e. a prior bind substituted colocated physical tables
     * at compile time. Used by the manifest-rebind tier split to decide whether a
     * pure-storage refresh can skip the {@link reloadAllModels} recompile: it can
     * only skip when there is nothing to substitute now AND nothing was
-    * substituted before (otherwise dropping the last path-C entry must recompile
+    * substituted before (otherwise dropping the last colocated entry must recompile
     * to revert it).
     */
    public hasBoundTableNameManifest(): boolean {
@@ -1094,7 +1094,7 @@ export class Package {
          const fields = source.annotationFields ?? {};
          const physicalName = (fields.name || source.name).trim();
          const storage = fields.storage?.trim();
-         // storage= into a real destination lands there; otherwise (path C, or
+         // storage= into a real destination lands there; otherwise (colocated, or
          // the reserved `storage=source`) it lands in the source's own warehouse.
          const destination =
             storage && storage !== "source" ? storage : source.connectionName;

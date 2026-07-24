@@ -21,7 +21,7 @@ export type MaterializationOutcome = "success" | "failed" | "cancelled";
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
  * Which engine a source build / table drop ran against: the source's own
- * warehouse (path C, in-warehouse CTAS) or a DuckDB/DuckLake `storage=`
+ * warehouse (colocated, in-warehouse CTAS) or a DuckDB/DuckLake `storage=`
  * destination (federated passthrough CTAS). The two have very different latency
  * and failure profiles, so build/drop metrics are labeled with it rather than
  * pooling the two into one series.

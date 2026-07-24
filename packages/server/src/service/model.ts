@@ -1795,7 +1795,7 @@ export class Model {
     * fresh, un-gated, or stale-under-`stale_ok`. A stale binding whose fallback is
     * `live`/`fail` evaluates to `serve_live` and is dropped, so the serve shape
     * omits that source and any query touching it falls through to live — the SAME
-    * freshness gate the in-warehouse (path-C) serve applies (`getFreshBuildManifest`
+    * freshness gate the colocated serve applies (`getFreshBuildManifest`
     * → `evaluateManifestFreshness`). Placement (`storage=`) is orthogonal to
     * freshness: flip `storage=source`↔`storage=lake` and this behaves identically.
     */
@@ -1822,7 +1822,7 @@ export class Model {
       // Gate by freshness first: only bindings that should serve their table now
       // enter the shape. Keying the cache on the FRESH subset means it recompiles
       // when a binding crosses its window (drops out) — the storage analogue of
-      // path-C's memoized getFreshBuildManifest.
+      // the colocated path's memoized getFreshBuildManifest.
       const freshBindings = this.freshServeBindings(Date.now());
       if (freshBindings.length === 0) {
          // Every bound source is stale past its window with a live/fail fallback —

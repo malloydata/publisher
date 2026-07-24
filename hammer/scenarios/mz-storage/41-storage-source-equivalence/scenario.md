@@ -7,7 +7,7 @@ package: ss
 # `storage=source` is the in-warehouse path (equivalent to no `storage=`)
 
 The connection name `source` is reserved: `#@ persist ... storage=source` is NOT a
-storage-tier materialization — it means the unchanged in-warehouse path (path C),
+storage-tier materialization — it means the unchanged in-warehouse path (colocated),
 byte-for-byte the same as declaring `#@ persist` with no `storage=` at all. The
 source materializes into its OWN warehouse and is served by same-connection
 table-name substitution; it never lands in a lake destination and produces no
@@ -51,7 +51,7 @@ source: daily is orders -> {
 
 ## Publish
 
-`storage=source` builds path C (in-warehouse) — no lake binding is produced.
+`storage=source` builds colocated — no lake binding is produced.
 
 ## Query daily
 
