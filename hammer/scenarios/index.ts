@@ -21,7 +21,8 @@ function findScenarioDirs(root: string): string[] {
 }
 
 /**
- * A scenario whose `scenario.md` could not be parsed, represented as one that FAILS
+ * A scenario that could not be LOADED — its markdown did not parse, or its hooks.ts
+ * was rejected — represented as one that FAILS
  * rather than one that is absent. A parse error is an authoring mistake in a single
  * file, so it should not stop the other 57 scenarios from running — but it must
  * never read as "skipped" or vanish, or a typo'd scenario would quietly contribute
@@ -46,11 +47,11 @@ function malformedScenario(dir: string, err: unknown): Scenario {
    return {
       id,
       tags: ["malformed"],
-      title: `MALFORMED scenario.md (${name})`,
+      title: `MALFORMED scenario (${name})`,
       requires: [],
       packages: [],
       run: async (_ctx, assert) => {
-         assert.fail(`${name}/scenario.md does not parse`, message);
+         assert.fail(`${name} failed to load`, message);
       },
    };
 }

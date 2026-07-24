@@ -312,6 +312,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
    for (const sec of sections) {
       const { kind, arg, attrs } = parseHeader(sec.header);
       validateSection(kind, sec.header, attrs, sec.body);
+      validateSubstitutions(sec.header, sec.body);
       if (kind === "note" || kind === "attention") {
          // A prose callout, not a step. Strip leading `> ` blockquote markers so
          // the stored note is clean; the .md keeps them for nicer rendering.
@@ -732,16 +733,73 @@ function parseKeyValues(
    return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Body keys whose value is substituted at run time (see {@link HARNESS_TOKENS}). */
+const SUBSTITUTED_KEYS = ["excludes"];
+
+/** The `${…}` tokens a scenario may use, and where each value comes from. */
+const HARNESS_TOKENS: Record<string, (ctx: ScenarioContext) => string> = {
+   "pg.password": (ctx) => ctx.pg.password,
+   "pg.user": (ctx) => ctx.pg.user,
+   "pg.host": (ctx) => ctx.pg.host,
+};
+
 /**
  * Substitute harness-runtime tokens into an expected/needle string, so a scenario
- * can assert against a value only the harness knows (e.g. the throwaway
- * container's password, for a secret-redaction check).
+ * can assert against a value only the harness knows (e.g. the throwaway container's
+ * password, for a secret-redaction check).
+ *
+ * A leftover `${…}` throws rather than being compared literally: an unsubstituted
+ * token can never match, so an `excludes:` carrying one would pass unconditionally —
+ * a redaction check that always says "no leak" regardless of the truth. Token names
+ * are validated at parse time ({@link validateSubstitutions}); this is the backstop.
  */
 function substituteHarnessTokens(raw: string, ctx: ScenarioContext): string {
-   return raw
-      .replace(/\$\{pg\.password\}/g, ctx.pg.password)
-      .replace(/\$\{pg\.user\}/g, ctx.pg.user)
-      .replace(/\$\{pg\.host\}/g, ctx.pg.host);
+   let out = raw;
+   for (const [token, read] of Object.entries(HARNESS_TOKENS)) {
+      out = out.split(`\${${token}}`).join(read(ctx));
+   }
+   if (out.includes("${")) {
+      throw new Error(
+         `unsubstituted token in "${raw}" — known tokens: ` +
+            `${Object.keys(HARNESS_TOKENS).map((k) => `\${${k}}`).join(", ")}`,
+      );
+   }
+   return out;
+}
+
+/**
+ * Reject a `${…}` token that is unknown, or one used in a body key whose value is
+ * never substituted. Both cases produce a needle that cannot match, so the
+ * assertion carrying it would pass no matter what the server did.
+ */
+function validateSubstitutions(header: string, body: string[]): void {
+   let inFence = false;
+   for (const raw of body) {
+      if (/^\s*```/.test(raw)) {
+         inFence = !inFence;
+         continue;
+      }
+      if (inFence) continue;
+      const m = raw.match(/^ {0,3}([a-z][a-z0-9_]*)\s*:\s*(.+)$/);
+      if (!m) continue;
+      const [, key, value] = m;
+      for (const token of value.match(/\$\{([^}]*)\}/g) ?? []) {
+         const name = token.slice(2, -1);
+         if (!(name in HARNESS_TOKENS)) {
+            throw new Error(
+               `## ${header}: unknown substitution "${token}" in "${key}:". Known: ` +
+                  `${Object.keys(HARNESS_TOKENS).map((k) => `\${${k}}`).join(", ")}`,
+            );
+         }
+         if (!SUBSTITUTED_KEYS.includes(key)) {
+            throw new Error(
+               `## ${header}: "${key}:" is not substituted, so "${token}" would be ` +
+                  `compared literally and could never match. Substitution is ` +
+                  `supported in: ${SUBSTITUTED_KEYS.join(", ")}`,
+            );
+         }
+      }
+   }
 }
 
 function firstKey(body: string[], key: string): string | undefined {
@@ -1036,6 +1094,22 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
    const hooksPath = path.join(dir, "hooks.ts");
    if (await Bun.file(hooksPath).exists()) {
       hooks = (await import(hooksPath)) as Hooks;
+      // An exported hook no `## Hook` step names is dead code — most often a
+      // renamed step or a deleted one, leaving its assertions in the file and never
+      // running them. That reads like coverage and is not, so it fails at load.
+      // (The reverse — a `## Hook` naming a missing export — already throws.)
+      const referenced = new Set(
+         parsed.steps.filter((s) => s.kind === "hook").map((s) => s.name),
+      );
+      const orphans = Object.entries(hooks)
+         .filter(([name, fn]) => typeof fn === "function" && !referenced.has(name))
+         .map(([name]) => name);
+      if (orphans.length) {
+         throw new Error(
+            `hooks.ts exports ${orphans.map((o) => `"${o}"`).join(", ")} that no ` +
+               `"## Hook" step references — reference them or delete them`,
+         );
+      }
    }
 
    // Pre-pass: packages (first Model per env+pkg) + source seeds for up-front
