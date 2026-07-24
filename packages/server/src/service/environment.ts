@@ -890,10 +890,13 @@ export class Environment {
             pkg.bindStorageServeBindings(storageEntries);
          }
       } catch (err) {
-         logger.warn("Failed to rebind serve bindings from local store on load", {
-            packageName,
-            error: err instanceof Error ? err.message : String(err),
-         });
+         logger.warn(
+            "Failed to rebind serve bindings from local store on load",
+            {
+               packageName,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
       }
    }
 

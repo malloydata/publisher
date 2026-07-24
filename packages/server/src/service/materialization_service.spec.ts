@@ -1768,9 +1768,9 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
    });
 
    it("strict + cannot stack on the parent: refuses loudly instead of recomputing from raw", async () => {
-      await expect(callInto({ strict: true, stackOnParent: "throw" })).rejects.toThrow(
-         /strict upstreams forbid/i,
-      );
+      await expect(
+         callInto({ strict: true, stackOnParent: "throw" }),
+      ).rejects.toThrow(/strict upstreams forbid/i);
    });
 });
 
