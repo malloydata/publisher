@@ -109,13 +109,30 @@ export async function fetchManifestEntries(
       );
    }
 
+   return splitManifestEntries(parsed.entries ?? {}, uri);
+}
+
+/**
+ * Split an already-in-hand manifest entry map by tier into
+ * {@link FetchedManifest}, applying the same wire→runtime translation as
+ * {@link fetchManifestEntries} (physicalTableName → colocated `tableName`
+ * substitution carrying freshness + connectionName; a `storageConnectionName`
+ * entry stays a full {@link ManifestEntry} for the virtual-source transform).
+ * Pure: no I/O, no freshness filtering. Shared by the URI-fetch path (host
+ * manifest) and the local-store rebind (a package's own latest persisted
+ * materialization, re-applied on load). `source` is a label for the skip log.
+ */
+export function splitManifestEntries(
+   entries: Record<string, ManifestEntry>,
+   source: string,
+): FetchedManifest {
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
-   for (const [sourceEntityId, entry] of Object.entries(parsed.entries ?? {})) {
+   for (const [sourceEntityId, entry] of Object.entries(entries)) {
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
          logger.warn("Manifest entry has no physicalTableName; skipping", {
-            uri,
+            source,
             sourceEntityId,
          });
          continue;
