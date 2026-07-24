@@ -142,6 +142,15 @@ export function manifestExcludingStorage(
 }
 
 /**
+ * The `storage=` destination a source DECLARES (external-tier intent), or
+ * undefined. Independent of `PERSIST_STORAGE_MODE` — reflects author intent, so
+ * the build can tell a `storage=` source apart from a plain colocated
+ * `#@ persist` even when the tier is off.
+ */
+function declaredStorage(persistSource: PersistSource): string | undefined {
+   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
+}
+
 /**
  * Resolve a persist source's `#@ persist storage=<ref>` to the EFFECTIVE
  * destination connection name for a build, or undefined for the default
@@ -154,20 +163,13 @@ export function manifestExcludingStorage(
  * never reaches this publisher-side generic resolution.
  *
  * When `PERSIST_STORAGE_MODE=off` this returns undefined regardless of the
- * annotation — the source is built colocated — so the feature is a runtime kill
- * switch that never fails a package (the ignored `storage=` is surfaced as a
- * package warning, not an error).
+ * annotation, so the feature is a runtime kill switch that never fails a
+ * package (the ignored `storage=` is surfaced as a package warning, not an
+ * error). Undefined here does NOT mean "build it colocated" for a source that
+ * declared `storage=`: the build skips such a source entirely (see
+ * {@link declaredStorage} in `deriveSelfInstructions`) so it serves LIVE rather
+ * than writing an unintended CTAS into the source's own warehouse.
  */
-/**
- * The `storage=` destination a source DECLARES (external-tier intent), or
- * undefined. Independent of `PERSIST_STORAGE_MODE` — reflects author intent, so
- * the build can tell a `storage=` source apart from a plain colocated
- * `#@ persist` even when the tier is off.
- */
-function declaredStorage(persistSource: PersistSource): string | undefined {
-   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
-}
-
 function resolveStorageDestination(
    persistSource: PersistSource,
 ): string | undefined {
@@ -1135,6 +1137,31 @@ export class MaterializationService {
          for (const persistSource of iterGraphSources(graph, sources)) {
             if (signal.aborted) throw new Error("Build cancelled");
 
+            // Prefer sourceID matching (so the caller's sourceEntityId scheme
+            // stays opaque to the build); the sourceEntityId lookup below is the
+            // fallback for instructions without a sourceID (auto-run). Resolved
+            // FIRST so the eligibility gate can run before computeSourceEntityId:
+            // that call invokes getSQL(), which throws opaquely for a
+            // free-parameter or given source, and the gate's clean 422 must win.
+            // deriveSelfInstructions orders it the same way on the auto-run path;
+            // this keeps the orchestrated path symmetric instead of surfacing an
+            // opaque compiler error for the same ineligible source.
+            const orchestratedInstruction = bySourceID.get(
+               persistSource.sourceID,
+            );
+
+            // Enforce the eligibility gate for any storage-targeted build,
+            // including orchestrated (host-supplied) instructions — the publisher
+            // refuses an ineligible source into the tier itself, not on trust.
+            // Skipped when the mode is off: the kill switch ignores a
+            // host-supplied destination too and does a colocated build.
+            if (
+               orchestratedInstruction?.destination &&
+               getPersistStorageMode() !== "off"
+            ) {
+               assertMaterializationEligible(persistSource);
+            }
+
             // The manifest is keyed by the content sourceEntityId — what Malloy
             // recomputes to resolve upstream persist references during SQL
             // generation — independent of the instruction's identity sourceEntityId.
@@ -1142,22 +1169,18 @@ export class MaterializationService {
                persistSource,
                connectionDigests,
             );
-            // Prefer sourceID matching (so the caller's sourceEntityId scheme stays
-            // opaque to the build); fall back to sourceEntityId for instructions
-            // without a sourceID (auto-run).
             const instruction =
-               bySourceID.get(persistSource.sourceID) ??
-               bySourceEntityId.get(sourceEntityId);
+               orchestratedInstruction ?? bySourceEntityId.get(sourceEntityId);
             if (!instruction) continue;
 
-            // Enforce the eligibility gate for any storage-targeted build,
-            // including orchestrated (host-supplied) instructions — the publisher
-            // refuses an ineligible source into the tier itself, not on trust.
-            // (Auto-run already gated pre-getSQL in deriveSelfInstructions; a
-            // second call here is idempotent and covers the orchestrated path.)
-            // Skipped when the mode is off: the kill switch ignores a
-            // host-supplied destination too and does a colocated build.
-            if (instruction.destination && getPersistStorageMode() !== "off") {
+            // The fallback (auto-run) instruction was already gated pre-getSQL in
+            // deriveSelfInstructions; re-assert anyway (idempotent) so no path
+            // into a storage build is ungated, regardless of how it was resolved.
+            if (
+               !orchestratedInstruction &&
+               instruction.destination &&
+               getPersistStorageMode() !== "off"
+            ) {
                assertMaterializationEligible(persistSource);
             }
 
