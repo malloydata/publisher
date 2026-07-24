@@ -11,7 +11,7 @@ import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
-import { quoteIdentifier, quoteTablePath } from "./quoting";
+import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
 import {
    attachDuckLakeReadWrite,
@@ -230,7 +230,14 @@ export async function buildSourceIntoStorage(params: {
       // session. DuckLake's
       // catalog swap is transactional, so CREATE OR REPLACE is atomic — no
       // staging/rename dance needed on this path.
-      const target = quoteTablePath(
+      // quoteManifestTablePath, NOT quoteTablePath: the serve side renders this same
+      // path with the manifest rule, which passes an already-quoted name through
+      // unchanged. Quoting unconditionally here would create a table whose NAME
+      // contains the author's quote characters while the serve side asks for the
+      // unquoted-inner form — and because that mismatch surfaces at shape RUN time,
+      // past the compile-time live fallback, every query on the source 400s. For an
+      // unquoted name the two functions are identical, so nothing else moves.
+      const target = quoteManifestTablePath(
          `${destinationName}.${physicalTableName}`,
          "duckdb",
       );
@@ -366,7 +373,8 @@ export async function buildDownstreamIntoStorage(params: {
          downstream.getSQL({ virtualMap }),
       );
 
-      const target = quoteTablePath(
+      // Same write/read mirror as the single-source build above.
+      const target = quoteManifestTablePath(
          `${destinationName}.${physicalTableName}`,
          "duckdb",
       );
@@ -439,7 +447,8 @@ export function dropStorageTableSql(
    destinationName: string,
    physicalTableName: string,
 ): string {
-   return `DROP TABLE IF EXISTS ${quoteTablePath(
+   // Must name the table the way the build CREATEd it (see the CTAS sites).
+   return `DROP TABLE IF EXISTS ${quoteManifestTablePath(
       `${destinationName}.${physicalTableName}`,
       "duckdb",
    )}`;
