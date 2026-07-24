@@ -25,7 +25,9 @@ import { DuckDBInstance } from "@duckdb/node-api";
 // Every extension the connection layer (packages/server/src/service/connection.ts)
 // and storage manager INSTALL/LOAD at runtime, for cloud attach, the per-package
 // sandbox, federated-database attach, and the materialization catalog. Keep this
-// in sync with the install sites in those files.
+// in sync with the install sites in those files. `excel` is the exception: it
+// has no INSTALL site because DuckDB autoloads it when a package reads an
+// .xlsx file, so baking is what makes those reads work offline.
 //
 // `community: true` marks the community-repo extensions (bigquery, snowflake);
 // the rest are core extensions installed by name. The bake deliberately uses
@@ -40,6 +42,7 @@ const EXTENSIONS = [
    { name: "azure", community: false }, // azure blob storage
    { name: "postgres", community: false, registered: "postgres_scanner" }, // postgres attach + ducklake postgres catalog
    { name: "ducklake", community: false }, // materialization catalog
+   { name: "excel", community: false }, // .xlsx reads in per-package sandboxes (autoloaded on demand)
    { name: "bigquery", community: true },
    { name: "snowflake", community: true },
 ];

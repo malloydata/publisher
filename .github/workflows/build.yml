@@ -313,7 +313,7 @@ jobs:
 
           # 2. Each core extension must LOAD with no network (--network none).
           #    INSTALL is a no-op when already baked; LOAD proves it's usable.
-          for ext in httpfs aws azure postgres ducklake; do
+          for ext in httpfs aws azure postgres ducklake excel; do
             docker run --rm --network none --entrypoint duckdb \
               malloy-publisher:smoke-test -c "INSTALL $ext; LOAD $ext;" \
               || { echo "✗ core extension '$ext' failed to load offline"; exit 1; }

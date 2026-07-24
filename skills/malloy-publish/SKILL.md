@@ -85,7 +85,7 @@ All `.malloy` files must be in the package root (flat layout: the publisher does
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
 - `.malloynb` files - Notebooks for exploration/documentation (see `skill:malloy-notebooks`)
-- Data files (CSV/Parquet) - Embedded data published with package
+- Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management
 

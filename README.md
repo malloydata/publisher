@@ -8,11 +8,9 @@ Serve governed data models to applications, BI tools, and AI agents — over RES
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d" poster="docs/malloy-publisher-demo.png" width="800" controls muted loop playsinline>
-    <img src="docs/malloy-publisher-demo.png" alt="Malloy Publisher serving the bundled storefront dashboard" width="800">
-  </video>
+  <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d"><img src="docs/malloy-publisher-demo.gif" alt="Malloy Publisher serving the bundled storefront dashboard" width="800"></a>
 </p>
-<p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze.</sub></p>
+<p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
 
 When an AI queries your database directly, it writes its own SQL — and gets it subtly wrong: the wrong
 join, an invented column, a fan-out that double-counts but still looks plausible. Publisher puts a
@@ -123,20 +121,20 @@ The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README
 | Topic                                               | Doc                                                                                                                                                                                      |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Runnable example packages                           | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
-| Connect an AI agent (MCP, or REST when unattended)  | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
-| No-code visual query builder                        | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
-| The Publisher App (navigation & features)           | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
-| Build a custom UI (no build step)                   | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
-| The package format (`publisher.json`, models, data) | [docs/packages.md](docs/packages.md)                                                                                                                                                     |
+| Architecture & how it fits together                 | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
 | REST & MCP API overview                             | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
+| The package format (`publisher.json`, models, data) | [docs/packages.md](docs/packages.md)                                                                                                                                                     |
+| The Publisher App (navigation & features)           | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
+| No-code visual query builder                        | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
+| Connect an AI agent (MCP, or REST when unattended)  | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
+| Build a custom UI (no build step)                   | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
 | Runtime parameters & access control                 | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md)                                     |
+| Deploy (npx / Docker / Compose)                     | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |
 | Database connections                                | [docs/connections.md](docs/connections.md)                                                                                                                                               |
 | Materialization & scheduling                        | [docs/materialization.md](docs/materialization.md)                                                                                                                                       |
-| Deploy (npx / Docker / Compose)                     | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |
 | Docker runtime deep-dive (layout, env, tuning)      | [packages/server/README.docker.md](packages/server/README.docker.md)                                                                                                                     |
-| Configuration & tuning reference                    | [docs/configuration.md](docs/configuration.md)                                                                                                                                           |
 | Theming (light/dark, palette)                       | [docs/theming.md](docs/theming.md)                                                                                                                                                       |
-| Architecture & how it fits together                 | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
+| Configuration & tuning reference                    | [docs/configuration.md](docs/configuration.md)                                                                                                                                           |
 | Build & develop from a clone                        | [docs/development.md](docs/development.md)                                                                                                                                               |
 
 The complete user guide also lives at
