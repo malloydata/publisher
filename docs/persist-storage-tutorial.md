@@ -450,10 +450,14 @@ invoking such a view by name is served from storage too.
 What still **falls back to serving live** (no error; the right answer, computed
 in the warehouse): a query that reaches something the serve shape can't
 reproduce — a join or view that reaches a **non-materialized source**, a
-**window/analytic** field defined on the source, or a query against a source
-that isn't materialized. (When a view reaches something not carried, only that
-view falls back; the source's other queries still serve from storage.) You'll
-see:
+**window/analytic** field defined on the source, a query that **traverses a
+nested field** (a `nest:`ed repeated record is materialized but carried as an
+opaque `json` column, so `by_region.region` does not resolve against the shape),
+or a query against a source that isn't materialized. (When a view reaches
+something not carried, only that view falls back; the source's other queries
+still serve from storage.) Note this is per-query, not per-source: a source with
+a nested field still serves its scalar columns from storage, and only the queries
+touching the nested field recompute. You'll see:
 
 ```
 debug: storage serve-shape ineligible for this query; serving live { modelPath: "orders.malloy", ... }
