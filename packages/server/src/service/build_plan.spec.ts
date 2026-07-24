@@ -191,6 +191,17 @@ describe("projectToPublicColumns", () => {
       const empty = sourceWithPublicCols([]);
       expect(projectToPublicColumns(empty, "SELECT 1")).toBe("SELECT 1");
    });
+
+   // OPEN QUESTION, deliberately not implemented — the posture above is the one
+   // that ships. Fail-open here is the only fail-open in an otherwise fail-closed
+   // confidentiality design: when deriveColumns throws, the build materializes the
+   // FULL getSQL projection, hidden `except:`/access-restricted columns included,
+   // and a DuckLake virtual source exposes every physical column at rest. The
+   // alternative is to refuse the storage build when the public surface can't be
+   // determined. Whichever is chosen, one of these two tests should be deleted.
+   it.todo(
+      "alternative posture: fail CLOSED when the public surface can't be derived",
+   );
 });
 
 describe("computeSourceEntityId", () => {
