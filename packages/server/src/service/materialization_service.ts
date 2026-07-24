@@ -690,8 +690,8 @@ export class MaterializationService {
             // for external storage; production grants this server read-only
             // warehouse access) and which could fail or land in an unexpected
             // schema. Skip it: the source is not materialized and serves LIVE, and
-            // the mode warning (Package.persistenceModeWarnings) surfaces the
-            // degraded state. A plain `#@ persist` (no `storage=`) is unaffected —
+            // the mode warning (Package.storageWarnings) surfaces the degraded
+            // state. A plain `#@ persist` (no `storage=`) is unaffected —
             // colocated IS its author's intent (the v0 path, ungated by the
             // storage kill switch).
             if (
