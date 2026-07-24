@@ -796,7 +796,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
    // Pre-pass: packages (first Model per env+pkg) + source seeds for up-front
    // setup. A package name can appear in more than one environment, each with its
    // own model, so packages are grouped by (env, pkg).
-   const pkgKey = (env: string, pkg: string): string => `${env} ${pkg}`;
+   const pkgKey = (env: string, pkg: string): string => `${env}:${pkg}`;
    const pkgModels = new Map<
       string,
       { env: string; name: string; models: Map<string, string> }

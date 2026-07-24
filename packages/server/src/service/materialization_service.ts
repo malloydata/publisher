@@ -1726,7 +1726,7 @@ export class MaterializationService {
       // this package (keyed destination-and-name), so a shared name is never
       // dropped out from under a live generation. `m` is still in the repo at
       // this point (deletion happens after this sweep), so exclude it by id.
-      const tableKey = (dest: string, table: string) => `${dest} ${table}`;
+      const tableKey = (dest: string, table: string) => `${dest}:${table}`;
       const stillReferenced = new Set<string>();
       const environmentId = await this.resolveEnvironmentId(environmentName);
       const others =
