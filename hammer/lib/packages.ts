@@ -11,7 +11,12 @@ export interface ModelFile {
 
 export async function writePackage(
    root: string,
-   spec: { name: string; version?: string; description?: string; models: ModelFile[] },
+   spec: {
+      name: string;
+      version?: string;
+      description?: string;
+      models: ModelFile[];
+   },
 ): Promise<string> {
    const dir = path.join(root, spec.name);
    await Bun.write(

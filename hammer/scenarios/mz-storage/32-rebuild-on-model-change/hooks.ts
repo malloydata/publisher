@@ -12,7 +12,10 @@ export async function captureEid1(api: HookApi, assert: Assert): Promise<void> {
    assert.ok("v1 has a content address", !!eid, JSON.stringify(eid));
 }
 
-export async function assertEidChanged(api: HookApi, assert: Assert): Promise<void> {
+export async function assertEidChanged(
+   api: HookApi,
+   assert: Assert,
+): Promise<void> {
    const on = await api.use("on");
    const eid2 = (await on.sourceEntityIds("rmc"))["daily"];
    assert.ne(

@@ -60,7 +60,14 @@ import { sleep } from "./util";
 
 /** The default environment every scenario runs in unless a step says `(env=…)`. */
 const PRIMARY_ENV = "default";
-import { Assert, type ConnectionDecl, type PackageSpec, type Scenario, type ScenarioContext, type SourceTable } from "../scenarios/framework";
+import {
+   Assert,
+   type ConnectionDecl,
+   type PackageSpec,
+   type Scenario,
+   type ScenarioContext,
+   type SourceTable,
+} from "../scenarios/framework";
 
 interface Col {
    name: string;
@@ -76,24 +83,147 @@ interface Table {
 // process serves every configured environment, so env is orthogonal to `pub`.
 type Step =
    | { kind: "model"; env: string; pkg: string; path: string; malloy: string }
-   | { kind: "publish"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; bindings: { source: string; conn: string }[]; forceRefresh: boolean; sourceNames?: string[]; async: boolean; label?: string }
+   | {
+        kind: "publish";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        bindings: { source: string; conn: string }[];
+        forceRefresh: boolean;
+        sourceNames?: string[];
+        async: boolean;
+        label?: string;
+     }
    | { kind: "await"; label?: string }
-   | { kind: "orchestratedBuild"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; refused: boolean; strict: boolean; sources: { src: string; name: string; dest: string }[]; references: { src: string; from?: string }[]; cites?: string; excludes?: string }
-   | { kind: "delete"; pub?: string; env: string; pkg: string; mode: PersistStorageMode }
-   | { kind: "reclaim"; pub?: string; env: string; pkg: string; mode: PersistStorageMode }
-   | { kind: "buildRefused"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites: string; excludes?: string }
-   | { kind: "query"; pub?: string; env: string; pkg: string; label: string; mode: PersistStorageMode; malloy?: string; again: boolean; refused: boolean; cites?: string; expect?: Table; givens?: Record<string, string>; exactColumns: boolean }
-   | { kind: "buildTargets"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; expect: Table }
+   | {
+        kind: "orchestratedBuild";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        refused: boolean;
+        strict: boolean;
+        sources: { src: string; name: string; dest: string }[];
+        references: { src: string; from?: string }[];
+        cites?: string;
+        excludes?: string;
+     }
+   | {
+        kind: "delete";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+     }
+   | {
+        kind: "reclaim";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+     }
+   | {
+        kind: "buildRefused";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        cites: string;
+        excludes?: string;
+     }
+   | {
+        kind: "query";
+        pub?: string;
+        env: string;
+        pkg: string;
+        label: string;
+        mode: PersistStorageMode;
+        malloy?: string;
+        again: boolean;
+        refused: boolean;
+        cites?: string;
+        expect?: Table;
+        givens?: Record<string, string>;
+        exactColumns: boolean;
+     }
+   | {
+        kind: "buildTargets";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expect: Table;
+     }
    | { kind: "mutate"; conn: string; table: string; rows?: Table; sql?: string }
    | { kind: "sql"; label: string; sql: string; expect: Table }
    | { kind: "operator"; conn: string; mode: PersistStorageMode; sql: string }
-   | { kind: "connection"; pub?: string; env: string; conn: string; mode: PersistStorageMode; sql: string; refused: boolean; cites?: string; expect?: Table; expectRows?: number }
-   | { kind: "rejected"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites?: string }
-   | { kind: "warns"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites: string }
-   | { kind: "compile"; pub?: string; env: string; pkg: string; label: string; mode: PersistStorageMode; source: string; refused: boolean; cites?: string }
-   | { kind: "bind"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; variant: "full" | "empty" | "clear" | "bad"; from?: string; fresh?: number; asof?: string; fallback?: string }
-   | { kind: "publisher"; mode: PersistStorageMode; name?: string; extraEnv?: Record<string, string> }
-   | { kind: "republish"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; refused: boolean; cites?: string }
+   | {
+        kind: "connection";
+        pub?: string;
+        env: string;
+        conn: string;
+        mode: PersistStorageMode;
+        sql: string;
+        refused: boolean;
+        cites?: string;
+        expect?: Table;
+        expectRows?: number;
+     }
+   | {
+        kind: "rejected";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        cites?: string;
+     }
+   | {
+        kind: "warns";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        cites: string;
+     }
+   | {
+        kind: "compile";
+        pub?: string;
+        env: string;
+        pkg: string;
+        label: string;
+        mode: PersistStorageMode;
+        source: string;
+        refused: boolean;
+        cites?: string;
+     }
+   | {
+        kind: "bind";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        variant: "full" | "empty" | "clear" | "bad";
+        from?: string;
+        fresh?: number;
+        asof?: string;
+        fallback?: string;
+     }
+   | {
+        kind: "publisher";
+        mode: PersistStorageMode;
+        name?: string;
+        extraEnv?: Record<string, string>;
+     }
+   | {
+        kind: "republish";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        refused: boolean;
+        cites?: string;
+     }
    | { kind: "restart"; mode: PersistStorageMode; init: boolean }
    | { kind: "hook"; name: string };
 
@@ -142,7 +272,10 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
       // `reference:` is an orchestrated-build body line, not an assertion key.
       keys: ["cites", "excludes", "reference"],
    },
-   query: { attrs: ["again", "refused", "pkg"], keys: ["cites", "givens", "columns"] },
+   query: {
+      attrs: ["again", "refused", "pkg"],
+      keys: ["cites", "givens", "columns"],
+   },
    sql: {},
    operator: {},
    connection: { attrs: ["type", "refused", "rows"], keys: ["cites"] },
@@ -150,7 +283,9 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    warns: { keys: ["cites"] },
    republish: { attrs: ["refused"], keys: ["cites"] },
    compile: { attrs: ["pkg", "refused"], keys: ["cites"] },
-   bind: { attrs: ["bad", "empty", "clear", "from", "fresh", "asof", "fallback"] },
+   bind: {
+      attrs: ["bad", "empty", "clear", "from", "fresh", "asof", "fallback"],
+   },
    restart: { attrs: ["init"] },
    hook: {},
 };
@@ -222,7 +357,10 @@ function validateSection(
 ): void {
    const spec = SECTION_SPEC[kind];
    if (!spec) return; // unknown kind is reported by the switch's default
-   const legalAttrs = new Set<string>([...(spec.attrs ?? []), ...UNIVERSAL_ATTRS]);
+   const legalAttrs = new Set<string>([
+      ...(spec.attrs ?? []),
+      ...UNIVERSAL_ATTRS,
+   ]);
    for (const a of Object.keys(attrs)) {
       if (!legalAttrs.has(a)) {
          throw new Error(
@@ -306,7 +444,8 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
    // the next `## Publisher`. `currentMode` tracks the running publisher's mode
    // as we walk the sections in order; steps inherit it (there is no per-step
    // `(mode=…)` override — switching modes means a new `## Publisher`).
-   let currentMode: PersistStorageMode = (fm.mode as PersistStorageMode) ?? "on";
+   let currentMode: PersistStorageMode =
+      (fm.mode as PersistStorageMode) ?? "on";
    let note: { since?: string; text: string } | undefined;
 
    for (const sec of sections) {
@@ -363,20 +502,31 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
       switch (kind) {
          case "data": {
             const [conn, table] = splitConnTable(arg);
-            dataSeeds.push({ conn, table, data: requireDataTable(sec.body, sec.header) });
+            dataSeeds.push({
+               conn,
+               table,
+               data: requireDataTable(sec.body, sec.header),
+            });
             break;
          }
          case "mutate": {
             const [conn, table] = splitConnTable(arg);
             const sql = extractCode(sec.body, "sql");
             if (sql) steps.push({ kind: "mutate", conn, table, sql });
-            else steps.push({ kind: "mutate", conn, table, rows: requireDataTable(sec.body, sec.header) });
+            else
+               steps.push({
+                  kind: "mutate",
+                  conn,
+                  table,
+                  rows: requireDataTable(sec.body, sec.header),
+               });
             break;
          }
          case "model": {
             const { pkg, rel } = splitPkgPath(arg, defaultPackage);
             const malloy = extractCode(sec.body, "malloy");
-            if (!malloy) throw new Error(`## Model ${arg}: missing a \`\`\`malloy block`);
+            if (!malloy)
+               throw new Error(`## Model ${arg}: missing a \`\`\`malloy block`);
             steps.push({ kind: "model", env, pkg, path: rel, malloy });
             break;
          }
@@ -387,25 +537,54 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             // `sourceNames` build filter. Multiple names are `+`-separated
             // (comma is the attribute delimiter). Omitted = build them all.
             const sourceNames = attrs.sources
-               ? String(attrs.sources).split("+").map((s) => s.trim()).filter(Boolean)
+               ? String(attrs.sources)
+                    .split("+")
+                    .map((s) => s.trim())
+                    .filter(Boolean)
                : undefined;
             // `(async[, label=x])` fires the build WITHOUT awaiting completion, so a
             // following step can observe it in flight (e.g. a conflicting build);
             // `## Await x` (or scenario teardown) drains it. Bindings can't be
             // asserted on an async publish — it hasn't finished.
-            steps.push({ kind: "publish", pub, env, pkg, mode, bindings, forceRefresh: !!attrs.forcerefresh, sourceNames, async: !!attrs.async, label: attrs.label as string | undefined });
+            steps.push({
+               kind: "publish",
+               pub,
+               env,
+               pkg,
+               mode,
+               bindings,
+               forceRefresh: !!attrs.forcerefresh,
+               sourceNames,
+               async: !!attrs.async,
+               label: attrs.label as string | undefined,
+            });
             break;
          }
          case "await": {
-            steps.push({ kind: "await", label: arg.trim() || (attrs.label as string) || undefined });
+            steps.push({
+               kind: "await",
+               label: arg.trim() || (attrs.label as string) || undefined,
+            });
             break;
          }
          case "delete": {
-            steps.push({ kind: "delete", pub, env, pkg: arg.trim() || defaultPackage, mode });
+            steps.push({
+               kind: "delete",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+            });
             break;
          }
          case "reclaim": {
-            steps.push({ kind: "reclaim", pub, env, pkg: arg.trim() || defaultPackage, mode });
+            steps.push({
+               kind: "reclaim",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+            });
             break;
          }
          case "build": {
@@ -446,7 +625,15 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                });
             } else {
                const cites = firstKey(sec.body, "cites") ?? "";
-               steps.push({ kind: "buildRefused", pub, env, pkg, mode, cites, excludes: firstKey(sec.body, "excludes") });
+               steps.push({
+                  kind: "buildRefused",
+                  pub,
+                  env,
+                  pkg,
+                  mode,
+                  cites,
+                  excludes: firstKey(sec.body, "excludes"),
+               });
             }
             break;
          }
@@ -462,23 +649,58 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             // `columns: exact` — the Expect table's columns are the COMPLETE result
             // column set. Needed because compareRows only checks the columns it was
             // given, so an unexpected EXTRA column is otherwise invisible.
-            const exactColumns = /^exact$/i.test(firstKey(sec.body, "columns") ?? "");
+            const exactColumns = /^exact$/i.test(
+               firstKey(sec.body, "columns") ?? "",
+            );
             if (refused) {
-               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: true, cites: firstKey(sec.body, "cites"), givens, exactColumns });
+               steps.push({
+                  kind: "query",
+                  pub,
+                  env,
+                  pkg,
+                  label: arg.trim(),
+                  mode,
+                  malloy,
+                  again,
+                  refused: true,
+                  cites: firstKey(sec.body, "cites"),
+                  givens,
+                  exactColumns,
+               });
             } else {
-               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: false, expect: requireExpectTable(sec.body, sec.header), givens, exactColumns });
+               steps.push({
+                  kind: "query",
+                  pub,
+                  env,
+                  pkg,
+                  label: arg.trim(),
+                  mode,
+                  malloy,
+                  again,
+                  refused: false,
+                  expect: requireExpectTable(sec.body, sec.header),
+                  givens,
+                  exactColumns,
+               });
             }
             break;
          }
          case "sql": {
             const sql = extractCode(sec.body, "sql");
-            if (!sql) throw new Error(`## SQL ${arg}: missing a \`\`\`sql block`);
-            steps.push({ kind: "sql", label: arg.trim() || "sql", sql, expect: requireExpectTable(sec.body, sec.header) });
+            if (!sql)
+               throw new Error(`## SQL ${arg}: missing a \`\`\`sql block`);
+            steps.push({
+               kind: "sql",
+               label: arg.trim() || "sql",
+               sql,
+               expect: requireExpectTable(sec.body, sec.header),
+            });
             break;
          }
          case "operator": {
             const sql = extractCode(sec.body, "sql");
-            if (!sql) throw new Error(`## Operator ${arg}: missing a \`\`\`sql block`);
+            if (!sql)
+               throw new Error(`## Operator ${arg}: missing a \`\`\`sql block`);
             steps.push({ kind: "operator", conn: arg.trim(), mode, sql });
             break;
          }
@@ -489,7 +711,11 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             // existing connection (the original behavior).
             if (attrs.type) {
                const kind = String(attrs.type).toLowerCase();
-               if (kind !== "postgres" && kind !== "ducklake" && kind !== "duckdb") {
+               if (
+                  kind !== "postgres" &&
+                  kind !== "ducklake" &&
+                  kind !== "duckdb"
+               ) {
                   throw new Error(
                      `## Connection ${arg}: unsupported type="${attrs.type}" (expected postgres | ducklake | duckdb)`,
                   );
@@ -498,24 +724,48 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                break;
             }
             const sql = extractCode(sec.body, "sql");
-            if (!sql) throw new Error(`## Connection ${arg}: missing a \`\`\`sql block`);
+            if (!sql)
+               throw new Error(
+                  `## Connection ${arg}: missing a \`\`\`sql block`,
+               );
             // A non-refused `## Connection` can assert its result: a GFM table
             // compares rows, or `rows=<n>` asserts only the count (for an
             // order-independent claim like "exactly one of these tables exists").
             steps.push({
-               kind: "connection", pub, env, conn: arg.trim(), mode, sql,
-               refused: !!attrs.refused, cites: firstKey(sec.body, "cites"),
+               kind: "connection",
+               pub,
+               env,
+               conn: arg.trim(),
+               mode,
+               sql,
+               refused: !!attrs.refused,
+               cites: firstKey(sec.body, "cites"),
                expect: attrs.refused ? undefined : parseExpectTable(sec.body),
-               expectRows: attrs.rows !== undefined ? Number(attrs.rows) : undefined,
+               expectRows:
+                  attrs.rows !== undefined ? Number(attrs.rows) : undefined,
             });
             break;
          }
          case "rejected": {
-            steps.push({ kind: "rejected", pub, env, pkg: arg.trim() || defaultPackage, mode, cites: firstKey(sec.body, "cites") });
+            steps.push({
+               kind: "rejected",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               cites: firstKey(sec.body, "cites"),
+            });
             break;
          }
          case "warns": {
-            steps.push({ kind: "warns", pub, env, pkg: arg.trim() || defaultPackage, mode, cites: firstKey(sec.body, "cites") ?? "" });
+            steps.push({
+               kind: "warns",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               cites: firstKey(sec.body, "cites") ?? "",
+            });
             break;
          }
          case "republish": {
@@ -541,7 +791,17 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             // for namespace context; omit it to compile the model as-is.
             const pkg = (attrs.pkg as string) ?? defaultPackage;
             const source = extractCode(sec.body, "malloy") ?? "";
-            steps.push({ kind: "compile", pub, env, pkg, label: arg.trim() || "compile", mode, source, refused: !!attrs.refused, cites: firstKey(sec.body, "cites") });
+            steps.push({
+               kind: "compile",
+               pub,
+               env,
+               pkg,
+               label: arg.trim() || "compile",
+               mode,
+               source,
+               refused: !!attrs.refused,
+               cites: firstKey(sec.body, "cites"),
+            });
             break;
          }
          case "bind": {
@@ -549,7 +809,13 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             // last build's manifest via manifestLocation; empty = a present-but-
             // empty manifest (host says "nothing to serve" → live); clear =
             // manifestLocation:null (revert to the publisher's local-store rebind).
-            const variant = attrs.bad ? "bad" : attrs.empty ? "empty" : attrs.clear ? "clear" : "full";
+            const variant = attrs.bad
+               ? "bad"
+               : attrs.empty
+                 ? "empty"
+                 : attrs.clear
+                   ? "clear"
+                   : "full";
             // `fresh=<seconds>` / `asof=<iso>` / `fallback=<live|stale_ok|fail>`
             // stamp freshness fields onto each bound entry — for exercising the
             // freshness gate (age = now - asof vs the window).
@@ -561,7 +827,8 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                mode,
                variant,
                from: attrs.from as string | undefined,
-               fresh: attrs.fresh !== undefined ? Number(attrs.fresh) : undefined,
+               fresh:
+                  attrs.fresh !== undefined ? Number(attrs.fresh) : undefined,
                asof: attrs.asof as string | undefined,
                fallback: attrs.fallback as string | undefined,
             });
@@ -579,11 +846,23 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             break;
          }
          default:
-            throw new Error(`Unknown section kind "${kind}" in header: ## ${sec.header}`);
+            throw new Error(
+               `Unknown section kind "${kind}" in header: ## ${sec.header}`,
+            );
       }
    }
 
-   return { id, title, tags, requires, note, defaultPackage, steps, dataSeeds, connectionDecls };
+   return {
+      id,
+      title,
+      tags,
+      requires,
+      note,
+      defaultPackage,
+      steps,
+      dataSeeds,
+      connectionDecls,
+   };
 }
 
 /**
@@ -614,7 +893,11 @@ function extractPublisherEnv(body: string[]): Record<string, string> {
    return env;
 }
 
-function parseHeader(header: string): { kind: string; arg: string; attrs: Record<string, string | boolean> } {
+function parseHeader(header: string): {
+   kind: string;
+   arg: string;
+   attrs: Record<string, string | boolean>;
+} {
    // Trailing "(k=v, flag, ...)" is attributes.
    const attrs: Record<string, string | boolean> = {};
    let h = header;
@@ -625,7 +908,10 @@ function parseHeader(header: string): { kind: string; arg: string; attrs: Record
          const kv = part.trim();
          if (!kv) continue;
          const eq = kv.indexOf("=");
-         if (eq >= 0) attrs[kv.slice(0, eq).trim().toLowerCase()] = kv.slice(eq + 1).trim();
+         if (eq >= 0)
+            attrs[kv.slice(0, eq).trim().toLowerCase()] = kv
+               .slice(eq + 1)
+               .trim();
          else attrs[kv.toLowerCase()] = true;
       }
    }
@@ -648,11 +934,16 @@ function splitPkgPath(arg: string, def: string): { pkg: string; rel: string } {
 }
 
 function extractCode(body: string[], lang: string): string | undefined {
-   const open = body.findIndex((l) => l.trim() === "```" + lang || l.trim().startsWith("```" + lang));
+   const open = body.findIndex(
+      (l) => l.trim() === "```" + lang || l.trim().startsWith("```" + lang),
+   );
    if (open < 0) return undefined;
    const close = body.findIndex((l, idx) => idx > open && l.trim() === "```");
    if (close < 0) return undefined;
-   return body.slice(open + 1, close).join("\n").trim();
+   return body
+      .slice(open + 1, close)
+      .join("\n")
+      .trim();
 }
 
 /**
@@ -674,12 +965,21 @@ function parseTableBlock(lines: string[]): Table | undefined {
    const rowsRaw = lines.slice(start, end).map((l) => l.trim());
    if (rowsRaw.length < 2) return undefined;
    const cells = (l: string): string[] =>
-      l.slice(1, -1).split("|").map((c) => c.trim());
+      l
+         .slice(1, -1)
+         .split("|")
+         .map((c) => c.trim());
    const cols: Col[] = cells(rowsRaw[0]).map((h) => {
       const c = h.indexOf(":");
       return c < 0
          ? { name: h.toLowerCase(), type: "text" }
-         : { name: h.slice(0, c).trim().toLowerCase(), type: h.slice(c + 1).trim().toLowerCase() };
+         : {
+              name: h.slice(0, c).trim().toLowerCase(),
+              type: h
+                 .slice(c + 1)
+                 .trim()
+                 .toLowerCase(),
+           };
    });
    // rowsRaw[1] is the |---|---| separator.
    const rows = rowsRaw.slice(2).map((l) => cells(l));
@@ -759,7 +1059,9 @@ function parseOrchestratedBody(body: string[]): {
          sources.push({ src: s[1], name: s[2], dest: s[3] });
          continue;
       }
-      const r = line.match(/^reference:\s*([^\s(]+)\s*(?:\(from=([^)]+)\))?\s*$/i);
+      const r = line.match(
+         /^reference:\s*([^\s(]+)\s*(?:\(from=([^)]+)\))?\s*$/i,
+      );
       if (r) references.push({ src: r[1], from: r[2]?.trim() || undefined });
    }
    return { sources, references };
@@ -821,7 +1123,9 @@ function substituteHarnessTokens(raw: string, ctx: ScenarioContext): string {
    if (out.includes("${")) {
       throw new Error(
          `unsubstituted token in "${raw}" — known tokens: ` +
-            `${Object.keys(HARNESS_TOKENS).map((k) => `\${${k}}`).join(", ")}`,
+            `${Object.keys(HARNESS_TOKENS)
+               .map((k) => `\${${k}}`)
+               .join(", ")}`,
       );
    }
    return out;
@@ -848,7 +1152,9 @@ function validateSubstitutions(header: string, body: string[]): void {
          if (!(name in HARNESS_TOKENS)) {
             throw new Error(
                `## ${header}: unknown substitution "${token}" in "${key}:". Known: ` +
-                  `${Object.keys(HARNESS_TOKENS).map((k) => `\${${k}}`).join(", ")}`,
+                  `${Object.keys(HARNESS_TOKENS)
+                     .map((k) => `\${${k}}`)
+                     .join(", ")}`,
             );
          }
          if (!SUBSTITUTED_KEYS.includes(key)) {
@@ -922,7 +1228,10 @@ function createAndInsert(table: string, data: Table): string {
       .map((c) => `${c.name} ${PG_TYPE[c.type] ?? "text"}`)
       .join(", ");
    const values = data.rows
-      .map((r) => `(${r.map((cell, i) => sqlLiteral(cell, data.cols[i].type)).join(", ")})`)
+      .map(
+         (r) =>
+            `(${r.map((cell, i) => sqlLiteral(cell, data.cols[i].type)).join(", ")})`,
+      )
       .join(",\n  ");
    return (
       `DROP TABLE IF EXISTS ${table};\n` +
@@ -933,7 +1242,10 @@ function createAndInsert(table: string, data: Table): string {
 
 function insertRows(table: string, data: Table): string {
    const values = data.rows
-      .map((r) => `(${r.map((cell, i) => sqlLiteral(cell, data.cols[i].type)).join(", ")})`)
+      .map(
+         (r) =>
+            `(${r.map((cell, i) => sqlLiteral(cell, data.cols[i].type)).join(", ")})`,
+      )
       .join(",\n  ");
    return `INSERT INTO ${table} VALUES\n  ${values};\n`;
 }
@@ -1010,7 +1322,10 @@ interface OrchestratedBody {
          realization: string;
          destination: string;
       }[];
-      referenceManifest?: { sourceEntityId: string; physicalTableName: string }[];
+      referenceManifest?: {
+         sourceEntityId: string;
+         physicalTableName: string;
+      }[];
       strictUpstreams: boolean;
    };
 }
@@ -1047,7 +1362,10 @@ async function buildOrchestratedBody(
          destination: s.dest,
       };
    });
-   const referenceManifest: { sourceEntityId: string; physicalTableName: string }[] = [];
+   const referenceManifest: {
+      sourceEntityId: string;
+      physicalTableName: string;
+   }[] = [];
    for (const ref of step.references) {
       const refRest = ref.from ? ctx.restOf(ref.from) : rest;
       const refEid = (await refRest.sourceEntityIds(step.pkg))[ref.src];
@@ -1141,7 +1459,10 @@ export interface HookApi extends ScenarioContext {
  * Test-only door onto {@link parseMarkdown}, so the grammar's strict parse can be
  * exercised without a scenario directory on disk. See scenario_md.spec.ts.
  */
-export function parseMarkdownForTest(text: string, fallbackId: string): ParsedMd {
+export function parseMarkdownForTest(
+   text: string,
+   fallbackId: string,
+): ParsedMd {
    return parseMarkdown(text, fallbackId);
 }
 
@@ -1162,7 +1483,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
          parsed.steps.filter((s) => s.kind === "hook").map((s) => s.name),
       );
       const orphans = Object.entries(hooks)
-         .filter(([name, fn]) => typeof fn === "function" && !referenced.has(name))
+         .filter(
+            ([name, fn]) => typeof fn === "function" && !referenced.has(name),
+         )
          .map(([name]) => name);
       if (orphans.length) {
          throw new Error(
@@ -1185,10 +1508,15 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       if (step.kind === "model") {
          const k = pkgKey(step.env, step.pkg);
          if (!pkgModels.has(k)) {
-            pkgModels.set(k, { env: step.env, name: step.pkg, models: new Map() });
+            pkgModels.set(k, {
+               env: step.env,
+               name: step.pkg,
+               models: new Map(),
+            });
          }
          const entry = pkgModels.get(k)!;
-         if (!entry.models.has(step.path)) entry.models.set(step.path, step.malloy);
+         if (!entry.models.has(step.path))
+            entry.models.set(step.path, step.malloy);
          if (!primaryModel.has(k)) primaryModel.set(k, step.path);
       }
    }
@@ -1222,7 +1550,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       let activeMode: PersistStorageMode = "on";
       let activeRest: Rest | null = null;
       const active = async (): Promise<Rest> => {
-         if (!activeRest) activeRest = await ctx.usePublisher(activeName, activeMode);
+         if (!activeRest)
+            activeRest = await ctx.usePublisher(activeName, activeMode);
          return activeRest;
       };
       // The server a step runs against: an explicit `(pub=<name>)` target (it must
@@ -1236,24 +1565,35 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
          return target === base.env ? base : new Rest(base.baseUrl, target);
       };
       const modelPath = (pkg?: string, env?: string): string =>
-         primaryModel.get(pkgKey(env ?? PRIMARY_ENV, pkg ?? parsed.defaultPackage)) ??
-         `${parsed.defaultPackage}.malloy`;
+         primaryModel.get(
+            pkgKey(env ?? PRIMARY_ENV, pkg ?? parsed.defaultPackage),
+         ) ?? `${parsed.defaultPackage}.malloy`;
 
       for (const step of parsed.steps) {
          const checksBefore = assert.checks.length;
          switch (step.kind) {
             case "model":
-               await ctx.editPackageModel(step.pkg, step.path, step.malloy, step.env);
+               await ctx.editPackageModel(
+                  step.pkg,
+                  step.path,
+                  step.malloy,
+                  step.env,
+               );
                break;
             case "publish": {
                const rest = await serverFor(step.pub, step.env);
                const buildBody = {
                   ...(step.forceRefresh ? { forceRefresh: true } : {}),
-                  ...(step.sourceNames ? { sourceNames: step.sourceNames } : {}),
+                  ...(step.sourceNames
+                     ? { sourceNames: step.sourceNames }
+                     : {}),
                };
                if (step.async) {
                   // Fire and DON'T await — a following step observes it in flight.
-                  const { id } = await rest.createMaterialization(step.pkg, buildBody);
+                  const { id } = await rest.createMaterialization(
+                     step.pkg,
+                     buildBody,
+                  );
                   const key = step.label ?? `${step.pkg}#${pendingBuilds.size}`;
                   pendingBuilds.set(key, { rest, pkg: step.pkg, id });
                   break;
@@ -1265,9 +1605,19 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   // reads the latest successful materialization — it is eventually
                   // consistent, not synchronous with the build response. Poll so
                   // the assertion is deterministic rather than racing the rebind.
-                  type Binding = { sourceName: string; storageConnectionName: string };
-                  const has = (bindings: Binding[], b: { source: string; conn: string }): boolean =>
-                     bindings.some((x) => x.sourceName === b.source && x.storageConnectionName === b.conn);
+                  type Binding = {
+                     sourceName: string;
+                     storageConnectionName: string;
+                  };
+                  const has = (
+                     bindings: Binding[],
+                     b: { source: string; conn: string },
+                  ): boolean =>
+                     bindings.some(
+                        (x) =>
+                           x.sourceName === b.source &&
+                           x.storageConnectionName === b.conn,
+                     );
                   let bindings: Binding[] = [];
                   for (let attempt = 0; attempt < 40; attempt++) {
                      const pkg = (await rest.getPackage(step.pkg)) as {
@@ -1293,12 +1643,22 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                const key = step.label ?? [...pendingBuilds.keys()][0];
                const pending = key ? pendingBuilds.get(key) : undefined;
                if (!pending) {
-                  assert.fail(`await ${step.label ?? ""}`, `no pending build to await`);
+                  assert.fail(
+                     `await ${step.label ?? ""}`,
+                     `no pending build to await`,
+                  );
                   break;
                }
                pendingBuilds.delete(key!);
-               const rec = await pending.rest.pollMaterialization(pending.pkg, pending.id);
-               assert.eq(`await ${key}: completes`, rec.status, "MANIFEST_FILE_READY");
+               const rec = await pending.rest.pollMaterialization(
+                  pending.pkg,
+                  pending.id,
+               );
+               assert.eq(
+                  `await ${key}: completes`,
+                  rec.status,
+                  "MANIFEST_FILE_READY",
+               );
                break;
             }
             case "buildRefused": {
@@ -1310,10 +1670,18 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   outcome.detail.slice(0, 200),
                );
                if (step.cites && outcome.refused)
-                  assert.includes(`refusal cites "${step.cites}"`, outcome.detail.toLowerCase(), step.cites.toLowerCase());
+                  assert.includes(
+                     `refusal cites "${step.cites}"`,
+                     outcome.detail.toLowerCase(),
+                     step.cites.toLowerCase(),
+                  );
                if (step.excludes) {
                   const needle = substituteHarnessTokens(step.excludes, ctx);
-                  assert.excludes(`refusal must not leak "${step.excludes}"`, outcome.detail, needle);
+                  assert.excludes(
+                     `refusal must not leak "${step.excludes}"`,
+                     outcome.detail,
+                     needle,
+                  );
                }
                break;
             }
@@ -1329,14 +1697,30 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      outcome.detail.slice(0, 200),
                   );
                   if (step.cites && outcome.refused)
-                     assert.includes(`refusal cites "${step.cites}"`, outcome.detail.toLowerCase(), step.cites.toLowerCase());
+                     assert.includes(
+                        `refusal cites "${step.cites}"`,
+                        outcome.detail.toLowerCase(),
+                        step.cites.toLowerCase(),
+                     );
                   if (step.excludes) {
                      const needle = substituteHarnessTokens(step.excludes, ctx);
-                     assert.excludes(`refusal must not leak "${step.excludes}"`, outcome.detail, needle);
+                     assert.excludes(
+                        `refusal must not leak "${step.excludes}"`,
+                        outcome.detail,
+                        needle,
+                     );
                   }
                } else {
                   const rec = await rest.build(step.pkg, wire);
-                  const entries = (rec.manifest as { entries?: Record<string, { physicalTableName?: string }> } | null)?.entries ?? {};
+                  const entries =
+                     (
+                        rec.manifest as {
+                           entries?: Record<
+                              string,
+                              { physicalTableName?: string }
+                           >;
+                        } | null
+                     )?.entries ?? {};
                   // Verify each built source landed in the caller-assigned name.
                   for (const s of body.buildInstructions.sources) {
                      assert.eq(
@@ -1350,25 +1734,47 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "query": {
                const rest = await serverFor(step.pub, step.env);
-               const malloy = step.malloy ?? (step.again ? malloyByLabel.get(step.label) : undefined);
+               const malloy =
+                  step.malloy ??
+                  (step.again ? malloyByLabel.get(step.label) : undefined);
                if (!malloy)
                   throw new Error(
                      `## Query ${step.label}: no malloy block and no prior query labeled "${step.label}" to reuse`,
                   );
                malloyByLabel.set(step.label, malloy);
                if (step.refused) {
-                  const res = await rest.tryQuery(step.pkg, modelPath(step.pkg, step.env), { query: malloy, givens: step.givens });
+                  const res = await rest.tryQuery(
+                     step.pkg,
+                     modelPath(step.pkg, step.env),
+                     { query: malloy, givens: step.givens },
+                  );
                   assert.ok(
                      `${step.label}: refused`,
                      !res.ok,
-                     res.ok ? `expected failure, but query succeeded: ${JSON.stringify(res.outcome.rows).slice(0, 150)}` : undefined,
+                     res.ok
+                        ? `expected failure, but query succeeded: ${JSON.stringify(res.outcome.rows).slice(0, 150)}`
+                        : undefined,
                   );
                   if (step.cites && !res.ok)
-                     assert.includes(`${step.label}: cites`, res.error.toLowerCase(), step.cites.toLowerCase());
+                     assert.includes(
+                        `${step.label}: cites`,
+                        res.error.toLowerCase(),
+                        step.cites.toLowerCase(),
+                     );
                } else {
-                  const out = await rest.query(step.pkg, modelPath(step.pkg, step.env), { query: malloy, givens: step.givens });
+                  const out = await rest.query(
+                     step.pkg,
+                     modelPath(step.pkg, step.env),
+                     { query: malloy, givens: step.givens },
+                  );
                   compareRows(assert, step.label, step.expect!, out.rows);
-                  if (step.exactColumns) assertExactColumns(assert, step.label, step.expect!, out.rows);
+                  if (step.exactColumns)
+                     assertExactColumns(
+                        assert,
+                        step.label,
+                        step.expect!,
+                        out.rows,
+                     );
                }
                break;
             }
@@ -1378,7 +1784,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   buildPlan?: {
                      sources?: Record<
                         string,
-                        { name?: string; sourceEntityId?: string; annotationFields?: { name?: string } }
+                        {
+                           name?: string;
+                           sourceEntityId?: string;
+                           annotationFields?: { name?: string };
+                        }
                      >;
                   };
                };
@@ -1391,26 +1801,45 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   ...new Map(
                      sources
                         .filter((s) => s.name)
-                        .map((s) => [s.name!, { source: s.name!, writes: s.annotationFields?.name ?? s.name! }]),
+                        .map((s) => [
+                           s.name!,
+                           {
+                              source: s.name!,
+                              writes: s.annotationFields?.name ?? s.name!,
+                           },
+                        ]),
                   ).values(),
                ].sort((a, b) => a.source.localeCompare(b.source));
                // `entity` is a grouping DIRECTIVE, not a value to compare (the real
                // ids are hashes) — drop it before the row comparison and handle it
                // separately below.
-               const entityCol = step.expect.cols.findIndex((c) => c.name === "entity");
-               const keep = step.expect.cols.map((_, idx) => idx).filter((idx) => idx !== entityCol);
+               const entityCol = step.expect.cols.findIndex(
+                  (c) => c.name === "entity",
+               );
+               const keep = step.expect.cols
+                  .map((_, idx) => idx)
+                  .filter((idx) => idx !== entityCol);
                const expectSorted: Table = {
                   cols: keep.map((idx) => step.expect.cols[idx]),
                   rows: [...step.expect.rows]
                      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
                      .map((row) => keep.map((idx) => row[idx])),
                };
-               compareRows(assert, `build targets (${step.pkg})`, expectSorted, actual as unknown as Record<string, unknown>[]);
+               compareRows(
+                  assert,
+                  `build targets (${step.pkg})`,
+                  expectSorted,
+                  actual as unknown as Record<string, unknown>[],
+               );
                // An `entity` column groups sources by content address: rows sharing
                // a label must share one sourceEntityId, and different labels must
                // differ. The label itself is arbitrary — the ids are hashes.
                if (entityCol >= 0) {
-                  const idByName = new Map(sources.filter((s) => s.name).map((s) => [s.name!, s.sourceEntityId]));
+                  const idByName = new Map(
+                     sources
+                        .filter((s) => s.name)
+                        .map((s) => [s.name!, s.sourceEntityId]),
+                  );
                   const groups = new Map<string, string[]>();
                   for (const row of step.expect.rows) {
                      const label = String(row[entityCol]).trim();
@@ -1441,7 +1870,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             case "mutate": {
                const table = step.table;
                if (step.sql) await ctx.pg.sql(ctx.sourceDb, step.sql);
-               else if (step.rows) await ctx.pg.sql(ctx.sourceDb, insertRows(table, step.rows));
+               else if (step.rows)
+                  await ctx.pg.sql(ctx.sourceDb, insertRows(table, step.rows));
                break;
             }
             case "sql": {
@@ -1474,16 +1904,40 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   assert.ok(
                      `connection ${step.conn}: refused`,
                      threw,
-                     threw ? undefined : "expected the connection SQL to be refused, but it succeeded",
+                     threw
+                        ? undefined
+                        : "expected the connection SQL to be refused, but it succeeded",
                   );
                   if (step.cites && threw)
-                     assert.includes(`connection ${step.conn}: cites`, err.toLowerCase(), step.cites.toLowerCase());
+                     assert.includes(
+                        `connection ${step.conn}: cites`,
+                        err.toLowerCase(),
+                        step.cites.toLowerCase(),
+                     );
                } else {
-                  const raw = (await rest.connectionSql(step.conn, step.sql)) as { data?: string };
-                  const rows = (JSON.parse(raw.data ?? '{"rows":[]}') as { rows?: Record<string, unknown>[] }).rows ?? [];
-                  if (step.expect) compareRows(assert, `connection ${step.conn}`, step.expect, rows);
+                  const raw = (await rest.connectionSql(
+                     step.conn,
+                     step.sql,
+                  )) as { data?: string };
+                  const rows =
+                     (
+                        JSON.parse(raw.data ?? '{"rows":[]}') as {
+                           rows?: Record<string, unknown>[];
+                        }
+                     ).rows ?? [];
+                  if (step.expect)
+                     compareRows(
+                        assert,
+                        `connection ${step.conn}`,
+                        step.expect,
+                        rows,
+                     );
                   if (step.expectRows !== undefined)
-                     assert.eq(`connection ${step.conn}: row count`, rows.length, step.expectRows);
+                     assert.eq(
+                        `connection ${step.conn}: row count`,
+                        rows.length,
+                        step.expectRows,
+                     );
                }
                break;
             }
@@ -1493,10 +1947,21 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                // /compile (the durable source of the error text; /status loadErrors
                // is pruned after the first call, so it isn't used here).
                const rest = await serverFor(step.pub, step.env);
-               await assertNotServed(rest, step.pkg, assert, `package ${step.pkg}`);
+               await assertNotServed(
+                  rest,
+                  step.pkg,
+                  assert,
+                  `package ${step.pkg}`,
+               );
                if (step.cites) {
-                  const res = await rest.compile(step.pkg, modelPath(step.pkg, step.env), "");
-                  const problems = JSON.stringify(res.problems ?? []).toLowerCase();
+                  const res = await rest.compile(
+                     step.pkg,
+                     modelPath(step.pkg, step.env),
+                     "",
+                  );
+                  const problems = JSON.stringify(
+                     res.problems ?? [],
+                  ).toLowerCase();
                   assert.includes(
                      `${step.pkg} compile error cites`,
                      problems,
@@ -1511,7 +1976,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                // load via getPackage, so the warning is present deterministically.
                const rest = await serverFor(step.pub, step.env);
                const pkg = (await rest.getPackage(step.pkg)) as {
-                  warnings?: { model?: string; target?: string; message?: string }[];
+                  warnings?: {
+                     model?: string;
+                     target?: string;
+                     message?: string;
+                  }[];
                };
                const blob = JSON.stringify(pkg.warnings ?? []).toLowerCase();
                assert.includes(
@@ -1523,8 +1992,14 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "compile": {
                const rest = await serverFor(step.pub, step.env);
-               const res = await rest.compile(step.pkg, modelPath(step.pkg, step.env), step.source);
-               const problems = JSON.stringify(res.problems ?? []).toLowerCase();
+               const res = await rest.compile(
+                  step.pkg,
+                  modelPath(step.pkg, step.env),
+                  step.source,
+               );
+               const problems = JSON.stringify(
+                  res.problems ?? [],
+               ).toLowerCase();
                if (step.refused) {
                   // Framework does the dance: an invalid model must ALSO not be
                   // served (backstop against the compile/load paths diverging) …
@@ -1533,15 +2008,23 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   assert.ok(
                      `${step.label}: compile refused`,
                      res.status === "error",
-                     res.status === "error" ? undefined : `expected a compile error, got status=${res.status} problems=${problems.slice(0, 200)}`,
+                     res.status === "error"
+                        ? undefined
+                        : `expected a compile error, got status=${res.status} problems=${problems.slice(0, 200)}`,
                   );
                   if (step.cites && res.status === "error")
-                     assert.includes(`${step.label}: cites`, problems, step.cites.toLowerCase());
+                     assert.includes(
+                        `${step.label}: cites`,
+                        problems,
+                        step.cites.toLowerCase(),
+                     );
                } else {
                   assert.ok(
                      `${step.label}: compiles`,
                      res.status === "success",
-                     res.status === "success" ? undefined : `expected success, got problems=${problems.slice(0, 200)}`,
+                     res.status === "success"
+                        ? undefined
+                        : `expected success, got problems=${problems.slice(0, 200)}`,
                   );
                }
                break;
@@ -1577,8 +2060,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      for (const e of Object.values(entries)) {
                         const entry = e as Record<string, unknown>;
                         if (step.asof) entry.dataAsOf = step.asof;
-                        if (step.fresh !== undefined) entry.freshnessWindowSeconds = step.fresh;
-                        if (step.fallback) entry.freshnessFallback = step.fallback;
+                        if (step.fresh !== undefined)
+                           entry.freshnessWindowSeconds = step.fresh;
+                        if (step.fallback)
+                           entry.freshnessFallback = step.fallback;
                      }
                   }
                   const uri = await ctx.writeManifest(
@@ -1641,15 +2126,23 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   assert.ok(
                      `republish ${step.pkg}: refused`,
                      !res.ok,
-                     res.ok ? "expected the publish to be rejected, but it succeeded" : undefined,
+                     res.ok
+                        ? "expected the publish to be rejected, but it succeeded"
+                        : undefined,
                   );
                   if (step.cites && !res.ok)
-                     assert.includes(`republish ${step.pkg}: cites`, res.error.toLowerCase(), step.cites.toLowerCase());
+                     assert.includes(
+                        `republish ${step.pkg}: cites`,
+                        res.error.toLowerCase(),
+                        step.cites.toLowerCase(),
+                     );
                } else {
                   assert.ok(
                      `republish ${step.pkg}: accepted`,
                      res.ok,
-                     res.ok ? undefined : `expected the publish to succeed, got: ${res.error.slice(0, 200)}`,
+                     res.ok
+                        ? undefined
+                        : `expected the publish to succeed, got: ${res.error.slice(0, 200)}`,
                   );
                }
                break;
@@ -1668,7 +2161,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "hook": {
                const fn = hooks[step.name];
-               if (!fn) throw new Error(`## Hook ${step.name}: no export named "${step.name}" in hooks.ts`);
+               if (!fn)
+                  throw new Error(
+                     `## Hook ${step.name}: no export named "${step.name}" in hooks.ts`,
+                  );
                // Hooks run in document order (interleaved with markdown steps) and
                // share `state`, so a small hook can stash a value another reads.
                await fn({ ...ctx, modelPath, state: hookState }, assert);
@@ -1677,7 +2173,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
          }
          // A step that verified nothing is a false green in the making: it looks
          // like coverage in the report and is not. See SIDE_EFFECT_ONLY_STEPS.
-         if (stepMustAssert(step.kind) && assert.checks.length === checksBefore) {
+         if (
+            stepMustAssert(step.kind) &&
+            assert.checks.length === checksBefore
+         ) {
             assert.fail(
                `step "${step.kind}" asserted nothing`,
                `this step ran but contributed no check — it needs an Expect: table, ` +

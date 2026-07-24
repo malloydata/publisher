@@ -33,9 +33,15 @@ export class Rest {
       return `${this.baseUrl}/api/v0/environments/${this.env}/packages/${pkg}${suffix}`;
    }
 
-   async status(): Promise<{ operationalState?: string; loadErrors?: unknown }> {
+   async status(): Promise<{
+      operationalState?: string;
+      loadErrors?: unknown;
+   }> {
       const res = await fetch(`${this.baseUrl}/api/v0/status`);
-      return (await res.json()) as { operationalState?: string; loadErrors?: unknown };
+      return (await res.json()) as {
+         operationalState?: string;
+         loadErrors?: unknown;
+      };
    }
 
    /**
@@ -65,7 +71,8 @@ export class Rest {
       const res = await fetch(
          `${this.baseUrl}/api/v0/environments/${this.env}/connections`,
       );
-      if (!res.ok) throw new Error(`listConnections ${res.status}: ${await res.text()}`);
+      if (!res.ok)
+         throw new Error(`listConnections ${res.status}: ${await res.text()}`);
       return (await res.json()) as { name: string }[];
    }
 
@@ -73,8 +80,13 @@ export class Rest {
       pkg: string,
       opts: { reload?: boolean } = {},
    ): Promise<Record<string, unknown>> {
-      const res = await fetch(this.pkgUrl(pkg, opts.reload ? "?reload=true" : ""));
-      if (!res.ok) throw new Error(`getPackage ${pkg} ${res.status}: ${await res.text()}`);
+      const res = await fetch(
+         this.pkgUrl(pkg, opts.reload ? "?reload=true" : ""),
+      );
+      if (!res.ok)
+         throw new Error(
+            `getPackage ${pkg} ${res.status}: ${await res.text()}`,
+         );
       return (await res.json()) as Record<string, unknown>;
    }
 
@@ -88,12 +100,18 @@ export class Rest {
       pkg: string,
       modelPath: string,
       source: string,
-   ): Promise<{ status: string; problems: { severity?: string; message?: string }[] }> {
-      const res = await fetch(this.pkgUrl(pkg, `/models/${modelPath}/compile`), {
-         method: "POST",
-         headers: { "content-type": "application/json" },
-         body: JSON.stringify({ source }),
-      });
+   ): Promise<{
+      status: string;
+      problems: { severity?: string; message?: string }[];
+   }> {
+      const res = await fetch(
+         this.pkgUrl(pkg, `/models/${modelPath}/compile`),
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ source }),
+         },
+      );
       const body = (await res.json()) as {
          status?: string;
          problems?: { severity?: string; message?: string }[];
@@ -111,9 +129,14 @@ export class Rest {
          };
       }
       if (res.status === 424) {
-         return { status: "error", problems: [{ message: body.message ?? "" }] };
+         return {
+            status: "error",
+            problems: [{ message: body.message ?? "" }],
+         };
       }
-      throw new Error(`compile ${pkg}/${modelPath} ${res.status}: ${JSON.stringify(body)}`);
+      throw new Error(
+         `compile ${pkg}/${modelPath} ${res.status}: ${JSON.stringify(body)}`,
+      );
    }
 
    /** Map sourceName -> sourceEntityId from the package build plan. */
@@ -133,7 +156,9 @@ export class Rest {
    async deletePackage(pkg: string): Promise<void> {
       const res = await fetch(this.pkgUrl(pkg), { method: "DELETE" });
       if (!res.ok)
-         throw new Error(`deletePackage ${pkg} ${res.status}: ${await res.text()}`);
+         throw new Error(
+            `deletePackage ${pkg} ${res.status}: ${await res.text()}`,
+         );
    }
 
    async patchPackage(
@@ -147,7 +172,9 @@ export class Rest {
       });
       const json = (await res.json()) as Record<string, unknown>;
       if (!res.ok)
-         throw new Error(`patchPackage ${pkg} ${res.status}: ${JSON.stringify(json)}`);
+         throw new Error(
+            `patchPackage ${pkg} ${res.status}: ${JSON.stringify(json)}`,
+         );
       return json;
    }
 
@@ -164,7 +191,9 @@ export class Rest {
             (m.status as string) === "MANIFEST_FILE_READY" &&
             (m.manifest as { entries?: unknown } | undefined)?.entries,
       );
-      const entries = (latest?.manifest as { entries?: Record<string, unknown> } | undefined)?.entries;
+      const entries = (
+         latest?.manifest as { entries?: Record<string, unknown> } | undefined
+      )?.entries;
       return entries ?? {};
    }
 
@@ -178,7 +207,10 @@ export class Rest {
          headers: { "content-type": "application/json" },
          body: JSON.stringify(body),
       });
-      const json = (await res.json()) as { id: string; status: MaterializationStatus };
+      const json = (await res.json()) as {
+         id: string;
+         status: MaterializationStatus;
+      };
       if (!res.ok)
          throw new Error(
             `createMaterialization ${pkg} ${res.status}: ${JSON.stringify(json)}`,
@@ -192,7 +224,9 @@ export class Rest {
    ): Promise<Record<string, unknown>> {
       const res = await fetch(this.pkgUrl(pkg, `/materializations/${id}`));
       if (!res.ok)
-         throw new Error(`getMaterialization ${res.status}: ${await res.text()}`);
+         throw new Error(
+            `getMaterialization ${res.status}: ${await res.text()}`,
+         );
       return (await res.json()) as Record<string, unknown>;
    }
 
@@ -249,7 +283,8 @@ export class Rest {
          .filter((m) => m.status === "MANIFEST_FILE_READY")
          .sort((a, b) => String(b.id).localeCompare(String(a.id)));
       const id = ready[0]?.id as string | undefined;
-      if (!id) throw new Error(`reclaimLatest ${pkg}: no successful materialization`);
+      if (!id)
+         throw new Error(`reclaimLatest ${pkg}: no successful materialization`);
       await this.deleteMaterialization(pkg, id, { dropTables: true });
       return id;
    }
@@ -258,10 +293,11 @@ export class Rest {
       const res = await fetch(this.pkgUrl(pkg, "/materializations"));
       if (!res.ok) throw new Error(`listMaterializations ${res.status}`);
       const json = (await res.json()) as unknown;
-      return (Array.isArray(json) ? json : ((json as { materializations?: [] }).materializations ?? [])) as Record<
-         string,
-         unknown
-      >[];
+      return (
+         Array.isArray(json)
+            ? json
+            : ((json as { materializations?: [] }).materializations ?? [])
+      ) as Record<string, unknown>[];
    }
 
    /** Run a raw SQL statement against a registered connection (e.g. operator DDL). */
@@ -276,7 +312,9 @@ export class Rest {
       );
       const json = (await res.json()) as unknown;
       if (!res.ok)
-         throw new Error(`connectionSql ${conn} ${res.status}: ${JSON.stringify(json)}`);
+         throw new Error(
+            `connectionSql ${conn} ${res.status}: ${JSON.stringify(json)}`,
+         );
       return json;
    }
 
@@ -328,7 +366,9 @@ export class Rest {
          queryName?: string;
          givens?: Record<string, unknown>;
       },
-   ): Promise<{ ok: true; outcome: QueryOutcome } | { ok: false; error: string }> {
+   ): Promise<
+      { ok: true; outcome: QueryOutcome } | { ok: false; error: string }
+   > {
       try {
          return { ok: true, outcome: await this.query(pkg, modelPath, spec) };
       } catch (e) {

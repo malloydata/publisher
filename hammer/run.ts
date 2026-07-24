@@ -32,7 +32,12 @@ import {
 } from "./lib/server";
 import { Rest } from "./lib/rest";
 import { log, setQuiet } from "./lib/util";
-import { Assert, ATTENTION_TAG, type Scenario, type ScenarioContext } from "./scenarios/framework";
+import {
+   Assert,
+   ATTENTION_TAG,
+   type Scenario,
+   type ScenarioContext,
+} from "./scenarios/framework";
 import { loadScenarios } from "./scenarios/index";
 
 interface Args {
@@ -61,9 +66,17 @@ function parseArgs(argv: string[]): Args {
    for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];
       const next = (): string => argv[++i];
-      if (arg === "--scenarios") a.scenarios = next().split(",").map((s) => s.trim());
-      else if (arg === "--tags") a.tags = next().split(",").map((s) => s.trim()).filter(Boolean);
-      else if (arg === "--attention-older-than") a.attentionOlderThan = Number(next());
+      if (arg === "--scenarios")
+         a.scenarios = next()
+            .split(",")
+            .map((s) => s.trim());
+      else if (arg === "--tags")
+         a.tags = next()
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+      else if (arg === "--attention-older-than")
+         a.attentionOlderThan = Number(next());
       else if (arg === "--keep") a.keep = true;
       else if (arg === "--rebuild") a.rebuild = true;
       else if (arg === "--reuse-pg") a.reusePg = true;
@@ -247,7 +260,10 @@ async function main(): Promise<void> {
 
    await buildServerIfNeeded(repoRoot, args.rebuild);
 
-   const pg = await startPostgres({ hostPort: args.pgPort, reuse: args.reusePg });
+   const pg = await startPostgres({
+      hostPort: args.pgPort,
+      reuse: args.reusePg,
+   });
    const results: ScenarioResult[] = [];
    let hardError: Error | null = null;
    const mgr = new PublisherCluster({
@@ -266,7 +282,8 @@ async function main(): Promise<void> {
       await pg.resetDb(catalogDb);
 
       for (const s of scenarios) {
-         for (const t of s.sourceTables ?? []) await pg.sql(t.db ?? sourceDb, t.sql);
+         for (const t of s.sourceTables ?? [])
+            await pg.sql(t.db ?? sourceDb, t.sql);
       }
       log.ok("source tables seeded");
 
@@ -376,7 +393,9 @@ async function main(): Promise<void> {
       // via a read-write attach (the publisher's serve attach is read-only).
       const operatorSql = async (conn: string, sql: string): Promise<void> => {
          if (conn !== "lake") {
-            throw new Error(`operatorSql: no read-write path wired for connection "${conn}"`);
+            throw new Error(
+               `operatorSql: no read-write path wired for connection "${conn}"`,
+            );
          }
          await runLakeSql(
             {
@@ -396,7 +415,11 @@ async function main(): Promise<void> {
          if (missing.length) {
             const reason = `requires ${missing.join(", ")}`;
             log.info(`[${s.id}] SKIPPED — ${reason}`);
-            results.push({ scenario: s, assert: new Assert(s.id), skipped: reason });
+            results.push({
+               scenario: s,
+               assert: new Assert(s.id),
+               skipped: reason,
+            });
             continue;
          }
          log.step(`[${s.id}] ${s.title}`);
@@ -437,7 +460,9 @@ async function main(): Promise<void> {
          await pg.stop();
          rmSync(workdir, { recursive: true, force: true });
       } else {
-         log.info(`--keep: left workdir ${workdir} and container ${pg.containerName} up`);
+         log.info(
+            `--keep: left workdir ${workdir} and container ${pg.containerName} up`,
+         );
       }
    }
 
@@ -450,8 +475,11 @@ function printScenario(r: ScenarioResult): void {
    if (bad.length === 0) {
       log.ok(`[${r.scenario.id}] ${r.assert.checks.length} checks passed`);
    } else {
-      log.err(`[${r.scenario.id}] ${bad.length}/${r.assert.checks.length} checks FAILED`);
-      for (const c of bad) log.err(`    ✗ ${c.name}${c.detail ? ` — ${c.detail}` : ""}`);
+      log.err(
+         `[${r.scenario.id}] ${bad.length}/${r.assert.checks.length} checks FAILED`,
+      );
+      for (const c of bad)
+         log.err(`    ✗ ${c.name}${c.detail ? ` — ${c.detail}` : ""}`);
       if (r.error) log.info(`    (${r.error.split("\n")[0]})`);
    }
 }
@@ -465,7 +493,10 @@ function ageInDays(since: string | undefined): number | null {
 }
 
 /** Prints the final table + a needs-attention block; returns true if anything failed. */
-function summarize(results: ScenarioResult[], attentionOlderThan?: number): boolean {
+function summarize(
+   results: ScenarioResult[],
+   attentionOlderThan?: number,
+): boolean {
    console.log("\n──────────── hammer summary ────────────");
    let anyFail = false;
    for (const r of results) {
