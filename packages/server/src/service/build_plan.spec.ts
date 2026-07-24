@@ -14,6 +14,7 @@ import {
    resolveFreshness,
    resolvePackageConnections,
 } from "./build_plan";
+import { MaterializationEligibilityError } from "../errors";
 import { fakeSource } from "./materialization_test_fixtures";
 import { Model } from "./model";
 
@@ -185,23 +186,33 @@ describe("projectToPublicColumns", () => {
       expect(outerProjection).not.toContain("region");
    });
 
-   it("fails open — returns the build SQL unchanged when columns can't be derived", () => {
-      const noExplore = {} as unknown as PersistSource; // deriveColumns throws → []
-      expect(projectToPublicColumns(noExplore, "SELECT 1")).toBe("SELECT 1");
-      const empty = sourceWithPublicCols([]);
-      expect(projectToPublicColumns(empty, "SELECT 1")).toBe("SELECT 1");
+   // Fails closed, like the rest of the eligibility surface: a public surface we
+   // can't determine refuses the build rather than widening to everything getSQL
+   // projects (which is where the hidden columns are).
+   it("refuses the build when the field list can't be read", () => {
+      const noExplore = {} as unknown as PersistSource;
+      expect(() => projectToPublicColumns(noExplore, "SELECT 1")).toThrow(
+         /public column surface could not be determined/,
+      );
    });
 
-   // OPEN QUESTION, deliberately not implemented — the posture above is the one
-   // that ships. Fail-open here is the only fail-open in an otherwise fail-closed
-   // confidentiality design: when deriveColumns throws, the build materializes the
-   // FULL getSQL projection, hidden `except:`/access-restricted columns included,
-   // and a DuckLake virtual source exposes every physical column at rest. The
-   // alternative is to refuse the storage build when the public surface can't be
-   // determined. Whichever is chosen, one of these two tests should be deleted.
-   it.todo(
-      "alternative posture: fail CLOSED when the public surface can't be derived",
-   );
+   it("refuses the build when the source exposes no public atomic columns", () => {
+      // Everything getSQL projects is hidden — the worst case to materialize.
+      expect(() =>
+         projectToPublicColumns(sourceWithPublicCols([]), "SELECT 1"),
+      ).toThrow(/no public atomic columns/);
+   });
+
+   it("refuses with an eligibility error (422), naming the source", () => {
+      const src = { ...sourceWithPublicCols([]), name: "daily" };
+      try {
+         projectToPublicColumns(src as unknown as PersistSource, "SELECT 1");
+         throw new Error("expected a refusal");
+      } catch (err) {
+         expect(err).toBeInstanceOf(MaterializationEligibilityError);
+         expect((err as Error).message).toContain("'daily'");
+      }
+   });
 });
 
 describe("computeSourceEntityId", () => {
