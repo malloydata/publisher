@@ -158,13 +158,21 @@ export function manifestExcludingStorage(
  * switch that never fails a package (the ignored `storage=` is surfaced as a
  * package warning, not an error).
  */
+/**
+ * The `storage=` destination a source DECLARES (external-tier intent), or
+ * undefined. Independent of `PERSIST_STORAGE_MODE` — reflects author intent, so
+ * the build can tell a `storage=` source apart from a plain colocated
+ * `#@ persist` even when the tier is off.
+ */
+function declaredStorage(persistSource: PersistSource): string | undefined {
+   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
+}
+
 function resolveStorageDestination(
    persistSource: PersistSource,
 ): string | undefined {
    if (getPersistStorageMode() === "off") return undefined;
-   const storage = deriveAnnotationFields(persistSource).storage?.trim();
-   if (!storage) return undefined;
-   return storage;
+   return declaredStorage(persistSource);
 }
 
 /** Connection-config keys whose string values are credentials to redact. */
@@ -673,6 +681,24 @@ export class MaterializationService {
             compiled.sources,
          )) {
             if (include && !include.has(persistSource.name)) continue;
+
+            // Safety: a source that DECLARES `storage=` must never silently
+            // downgrade to a colocated build when the external tier is disabled
+            // (PERSIST_STORAGE_MODE=off). A colocated build writes a CTAS into the
+            // source's OWN warehouse — which the author did not intend (they asked
+            // for external storage; production grants this server read-only
+            // warehouse access) and which could fail or land in an unexpected
+            // schema. Skip it: the source is not materialized and serves LIVE, and
+            // the mode warning (Package.persistenceModeWarnings) surfaces the
+            // degraded state. A plain `#@ persist` (no `storage=`) is unaffected —
+            // colocated IS its author's intent (the v0 path, ungated by the
+            // storage kill switch).
+            if (
+               getPersistStorageMode() === "off" &&
+               declaredStorage(persistSource)
+            ) {
+               continue;
+            }
 
             const destination = resolveStorageDestination(persistSource);
             if (destination) {

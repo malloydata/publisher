@@ -1,25 +1,31 @@
 ---
-id: off-builds-colocated
+id: off-serves-live
 tags: config, kill-switch, needs-attention
 package: obp
 ---
 
-# Kill switch off: a storage= source builds colocated, not the lake
+# Kill switch off: a storage= source serves LIVE, never a colocated build
 
-`mode-matrix` proves that `off` *serves* live; this pins the build side. When
-`PERSIST_STORAGE_MODE=off`, the `storage=` annotation is fully ignored — the
-source builds **colocated** (into its own warehouse), exactly as a plain
-`#@ persist` would, and never touches the lake. Off is the kill switch:
-byte-identical to the feature not existing.
+When `PERSIST_STORAGE_MODE=off`, a source that declares `storage=` is NOT
+materialized at all — the build skips it and it serves **live** from its own
+warehouse. It must NOT fall back to a colocated build: a colocated build writes a
+CTAS into the source's own warehouse, which the author did not intend (they asked
+for external storage, and production grants this server read-only warehouse
+access), so it could fail or land in an unexpected schema. Falling back to live is
+the safe default — the tier being off never mutates the customer warehouse.
 
-The proof is decisive by construction. Build a `storage=lake` source while off,
+(A plain `#@ persist` with NO `storage=` is unaffected: it still builds colocated,
+because that is its author's intent — the v0 path, ungated by the storage kill
+switch. This scenario is specifically about a `storage=`-declaring source.)
+
+The proof is decisive by construction. Publish a `storage=lake` source while off,
 then mutate and re-query:
-- **built colocated (correct):** the colocated table serves the pre-mutation
-  snapshot ⇒ **stale**.
-- if it had wrongly built into the lake: storage serve-routing is off AND there's
-  no colocated table, so it would serve **live** (mutation visible).
+- **served live (skipped, correct):** the query recomputes from the source
+  warehouse ⇒ the mutation is visible ⇒ **fresh**.
+- if it had wrongly built colocated: the frozen colocated table would serve the
+  pre-mutation snapshot ⇒ **stale**.
 
-So a stale re-query proves the build landed colocated, not in the lake.
+So a **fresh** re-query proves nothing was materialized into the warehouse.
 
 ## Publisher
 
@@ -49,8 +55,9 @@ source: daily is orders -> {
 
 ## Publish
 
-`storage=` is ignored while off; `daily` builds colocated (into its own
-warehouse). No lake binding is produced.
+`storage=` is disabled while off, and the source is NOT downgraded to a colocated
+build — the build skips it. No table is written to the warehouse; no binding is
+produced.
 
 ## Query base
 
@@ -73,28 +80,21 @@ Expect:
 
 ## Query base (again)
 
-Stale `150` ⇒ served from the colocated materialized snapshot. The kill switch
-treated `storage=lake` exactly as a plain `#@ persist` — it built colocated, not
-into the lake, and did not serve live.
+Fresh `1150` ⇒ served LIVE from the source warehouse — nothing was materialized.
+The kill switch did NOT write a colocated CTAS into the warehouse.
 
 Expect:
 
 | order_date | total_amount |
 | ---------- | ------------ |
-| 2026-01-01 | 150          |
+| 2026-01-01 | 1150         |
 | 2026-01-02 | 200          |
 
-## Note (since=2026-07-23)
+## Note (since=2026-07-24)
 
-> Open question — is "off (or `storage=` ignored) ⇒ build colocated" actually
-> what we want? A colocated build materializes by **writing a CTAS into the
-> source warehouse**. In production, users grant this server **read-only**
-> warehouse access — the whole point of the external (storage=) tier is to NOT
-> write to their warehouse — so a colocated build would fail (and a partial
-> attempt could land in an unexpected schema). We may prefer to **error with an
-> explicit "this server will not write to your warehouse" stance** rather than
-> silently attempt a colocated build that can't succeed. This scenario pins the
-> CURRENT behavior (a storage= source builds colocated when the tier is off);
-> revisit whether it should refuse instead — likely as a deployment policy, since
-> a write-capable warehouse legitimately uses colocated builds today (the v0
-> default).
+> Settled (2026-07-24): off ⇒ a `storage=` source serves LIVE, never a colocated
+> build — the safe default (the tier being off must not mutate the customer
+> warehouse). STILL OPEN: whether off should additionally REFUSE such a source at
+> publish (a loud error) rather than silently serving it live with only the
+> `storageWarnings()` operator warning. Serving live is the current behavior; the
+> error-vs-warn choice is deferred.
