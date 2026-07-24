@@ -48,14 +48,17 @@ describe("scenario grammar: strict parse", () => {
    });
 
    it("rejects an unknown section kind", () => {
-      expect(() => parseMarkdownForTest(`${FRONT}\n## Bulid targets\n`, "t")).toThrow(
-         /Unknown section kind "bulid"/,
-      );
+      expect(() =>
+         parseMarkdownForTest(`${FRONT}\n## Bulid targets\n`, "t"),
+      ).toThrow(/Unknown section kind "bulid"/);
    });
 
    it("rejects a misspelled body key, naming the valid ones", () => {
       expect(() =>
-         parseMarkdownForTest(`${FRONT}\n## Build refused\n\nexcldues: secret\n`, "t"),
+         parseMarkdownForTest(
+            `${FRONT}\n## Build refused\n\nexcldues: secret\n`,
+            "t",
+         ),
       ).toThrow(/unknown body key "excldues:".*cites, excludes, reference/s);
    });
 
@@ -101,7 +104,10 @@ describe("scenario grammar: strict parse", () => {
       // `## Publisher (off)` was accepted-but-unread before the strict parse
       // surfaced it; a scenario relying on the header form alone would have booted
       // in the wrong mode and asserted against it.
-      const parsed = parseMarkdownForTest(`${FRONT}\n## Publisher (off)\n`, "t");
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Publisher (off)\n`,
+         "t",
+      );
       expect(parsed.steps[0]).toMatchObject({ kind: "publisher", mode: "off" });
    });
 });
@@ -221,7 +227,9 @@ Expect:
 `),
          "t",
       );
-      const step = parsed.steps[0] as { expect?: { cols: { name: string }[]; rows: string[][] } };
+      const step = parsed.steps[0] as {
+         expect?: { cols: { name: string }[]; rows: string[][] };
+      };
       expect(step.expect?.cols.map((c) => c.name)).toEqual(["total"]);
       expect(step.expect?.rows).toEqual([["150"]]);
    });

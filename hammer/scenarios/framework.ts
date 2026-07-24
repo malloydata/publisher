@@ -102,7 +102,10 @@ export interface ScenarioContext extends ServerControl {
     * the publisher binds the orchestrator-authoritative manifest — the production serve
     * path, distinct from the publisher's own post-build local-store rebind.
     */
-   writeManifest(name: string, entries: Record<string, unknown>): Promise<string>;
+   writeManifest(
+      name: string,
+      entries: Record<string, unknown>,
+   ): Promise<string>;
 }
 
 export interface Scenario {
@@ -157,23 +160,42 @@ export class Assert {
       this.push(
          name,
          ok,
-         ok ? undefined : `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+         ok
+            ? undefined
+            : `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
       );
    }
 
    ne<T>(name: string, actual: T, notExpected: T, detail?: string): void {
       const ok = JSON.stringify(actual) !== JSON.stringify(notExpected);
-      this.push(name, ok, ok ? undefined : (detail ?? `unexpectedly equal to ${JSON.stringify(notExpected)}`));
+      this.push(
+         name,
+         ok,
+         ok
+            ? undefined
+            : (detail ??
+                 `unexpectedly equal to ${JSON.stringify(notExpected)}`),
+      );
    }
 
    includes(name: string, haystack: string, needle: string): void {
       const ok = haystack.includes(needle);
-      this.push(name, ok, ok ? undefined : `"${needle}" not found in: ${truncate(haystack)}`);
+      this.push(
+         name,
+         ok,
+         ok ? undefined : `"${needle}" not found in: ${truncate(haystack)}`,
+      );
    }
 
    excludes(name: string, haystack: string, needle: string): void {
       const ok = !haystack.includes(needle);
-      this.push(name, ok, ok ? undefined : `"${needle}" unexpectedly present in: ${truncate(haystack)}`);
+      this.push(
+         name,
+         ok,
+         ok
+            ? undefined
+            : `"${needle}" unexpectedly present in: ${truncate(haystack)}`,
+      );
    }
 
    fail(name: string, detail: string): void {

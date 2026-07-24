@@ -22,11 +22,16 @@ export interface LakeAttach {
 }
 
 /** Attach the DuckLake read-write and run one or more `;`-separated statements. */
-export async function runLakeSql(attach: LakeAttach, sql: string): Promise<void> {
+export async function runLakeSql(
+   attach: LakeAttach,
+   sql: string,
+): Promise<void> {
    const wd = mkdtempSync(path.join(os.tmpdir(), "hammer-lake-op-"));
    const conn = new DuckDBConnection("operator", ":memory:", wd);
    try {
-      await conn.runSQL("INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres;");
+      await conn.runSQL(
+         "INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres;",
+      );
       const cs = `host=${attach.host} port=${attach.port} dbname=${attach.catalogDb} user=${attach.user} password=${attach.password}`;
       await conn.runSQL(
          `ATTACH 'ducklake:postgres:${cs}' AS lake (DATA_PATH '${attach.storageDir}', OVERRIDE_DATA_PATH true)`,
@@ -34,7 +39,10 @@ export async function runLakeSql(attach: LakeAttach, sql: string): Promise<void>
       // Make `lake` the default catalog so unqualified DDL (e.g. CREATE SCHEMA
       // analytics) targets the lake, not the session's :memory: primary.
       await conn.runSQL("USE lake");
-      for (const stmt of sql.split(";").map((s) => s.trim()).filter(Boolean)) {
+      for (const stmt of sql
+         .split(";")
+         .map((s) => s.trim())
+         .filter(Boolean)) {
          await conn.runSQL(stmt);
       }
    } finally {

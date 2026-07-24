@@ -165,6 +165,7 @@ export async function writeConfig(opts: {
    return {
       configPath: opts.configPath,
       environmentName: opts.environments[0]?.name ?? "",
-      connectionNames: opts.environments[0]?.connections.map((c) => c.name) ?? [],
+      connectionNames:
+         opts.environments[0]?.connections.map((c) => c.name) ?? [],
    };
 }

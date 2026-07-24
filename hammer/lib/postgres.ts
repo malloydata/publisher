@@ -107,7 +107,11 @@ export async function startPostgres(
       async createDb(name: string): Promise<void> {
          if (await this.dbExists(name)) return;
          // CREATE DATABASE can't run in a transaction/among other statements.
-         await runOrThrow([...psqlBase("postgres"), "-c", `CREATE DATABASE ${name}`]);
+         await runOrThrow([
+            ...psqlBase("postgres"),
+            "-c",
+            `CREATE DATABASE ${name}`,
+         ]);
       },
       async dropDb(name: string): Promise<void> {
          await runOrThrow([
@@ -153,7 +157,8 @@ export async function startPostgres(
          async () => {
             const r = await run(["docker", "logs", containerName]);
             const logs = r.stdout + r.stderr;
-            const count = (logs.match(/ready to accept connections/g) ?? []).length;
+            const count = (logs.match(/ready to accept connections/g) ?? [])
+               .length;
             return count >= 2;
          },
          { timeoutMs: 60_000, intervalMs: 500 },
