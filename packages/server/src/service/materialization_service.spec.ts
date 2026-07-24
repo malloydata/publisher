@@ -83,6 +83,103 @@ describe("redactConnectionSecrets", () => {
       expect(out).not.toContain("pa''ss''word");
       expect(out).toContain("***");
    });
+
+   // Code-review finding #1: the Tier-3 CHAINED build path used to interpolate
+   // the raw errMessage(err) into both its strict-refused throw (a user-visible
+   // run `error`) and its non-strict warn, while the Tier-2 single-source path
+   // routed the same class of failure through redactConnectionSecrets. A chained
+   // build does its own read-write DuckLake ATTACH, whose connstring carries the
+   // catalog Postgres password, and a failing DuckDB statement echoes itself —
+   // so the password could reach the caller and the logs.
+   //
+   // Tested at the seam rather than end-to-end: the actual leak needs an ATTACH
+   // (not CTAS) failure, which needs bad catalog creds that fast-fail at
+   // connection validation — not reachable over REST, so hammer scenario 54 can
+   // only prove the COMMON chained error is clean. Here we stub the chained
+   // builder to reject with a connstring-echoing message and assert what the
+   // catch block does with it. Both branches now share one `safeDetail`, so the
+   // strict case (the user-visible one) pins the redaction for both.
+   it("redacts connection secrets in the chained (Tier-3) build refusal", async () => {
+      const sandbox = sinon.createSandbox();
+      try {
+         const destinationConnection = {
+            name: "lake",
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: {
+                  postgresConnection: {
+                     host: "catalog.internal",
+                     userName: "lake_rw",
+                     password: "c4talog-pw",
+                  },
+               },
+            },
+         };
+         const sourceConnection = {
+            name: "orders_pg",
+            type: "postgres",
+            postgresConnection: { host: "db.internal", password: "src-pw-99" },
+         };
+
+         // What a failed RW ATTACH looks like: DuckDB echoes the statement, so
+         // the catalog connstring (password included) is inside the message.
+         sandbox
+            .stub(
+               MaterializationService.prototype as unknown as Record<
+                  string,
+                  unknown
+               >,
+               "buildDownstreamViaParents" as never,
+            )
+            .rejects(
+               new Error(
+                  "IO Error: failed to ATTACH 'ducklake:postgres:host=catalog.internal " +
+                     "user=lake_rw password=c4talog-pw' (db lake)",
+               ),
+            );
+
+         const { service } = createMocks();
+         const environment = {
+            getApiConnection: (name: string) =>
+               name === "lake" ? destinationConnection : sourceConnection,
+            getEnvironmentPath: () => "/tmp/env",
+         };
+
+         const call = (
+            service as unknown as {
+               buildOneSourceIntoStorage: (...a: unknown[]) => Promise<unknown>;
+            }
+         ).buildOneSourceIntoStorage(
+            { name: "orders_by_month", connectionName: "orders_pg" },
+            {
+               sourceEntityId: "sid-1",
+               physicalTableName: "mz_orders_by_month",
+               destination: "lake",
+            },
+            // strict: forbids recomputing from raw, so the catch throws here
+            // instead of falling through to the Tier-2 build.
+            { strict: true, update: () => {} },
+            environment,
+            "SELECT 1",
+            {},
+            true, // dependsOnStorageUpstream — take the chained path
+         );
+
+         await expect(call).rejects.toThrow(/strict upstreams forbid/);
+         const message = await call.then(
+            () => "",
+            (e: unknown) => (e instanceof Error ? e.message : String(e)),
+         );
+         expect(message).not.toContain("c4talog-pw");
+         expect(message).toContain("***");
+         // Still legible: the non-secret detail an operator needs is intact.
+         expect(message).toContain("failed to ATTACH");
+         expect(message).toContain("catalog.internal");
+         expect(message).toContain("orders_by_month");
+      } finally {
+         sandbox.restore();
+      }
+   });
 });
 
 function createMocks() {
