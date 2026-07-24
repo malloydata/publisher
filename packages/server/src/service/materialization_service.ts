@@ -1131,12 +1131,12 @@ export class MaterializationService {
             if (!instruction) continue;
 
             // Enforce the eligibility gate for any storage-targeted build,
-            // including orchestrated (CP-supplied) instructions — the publisher
+            // including orchestrated (host-supplied) instructions — the publisher
             // refuses an ineligible source into the tier itself, not on trust.
             // (Auto-run already gated pre-getSQL in deriveSelfInstructions; a
             // second call here is idempotent and covers the orchestrated path.)
             // Skipped when the mode is off: the kill switch ignores a
-            // CP-supplied destination too and builds path C.
+            // host-supplied destination too and builds path C.
             if (instruction.destination && getPersistStorageMode() !== "off") {
                assertMaterializationEligible(persistSource);
             }
