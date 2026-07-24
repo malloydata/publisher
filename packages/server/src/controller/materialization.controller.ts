@@ -141,6 +141,14 @@ export class MaterializationController {
       return {
          sourceEntityId: ref.sourceEntityId as string,
          physicalTableName: ref.physicalTableName as string,
+         // The connection the upstream table lives on. Optional; carried through
+         // so the seed loop can dialect-quote the reference for a case-folding
+         // engine (#904). Dropping it silently reverts to an unquoted seed, which
+         // fails a downstream build on such an engine — the same manual-copy drift
+         // that dropped BuildInstruction.destination.
+         ...(typeof ref.connectionName === "string"
+            ? { connectionName: ref.connectionName }
+            : {}),
       };
    }
 
@@ -179,6 +187,13 @@ export class MaterializationController {
          materializedTableId: instruction.materializedTableId as string,
          physicalTableName: instruction.physicalTableName as string,
          realization: instruction.realization,
+         // The `storage=` destination the orchestrator targets. Optional in the
+         // schema; must be carried through, or an orchestrated build silently
+         // falls back to a colocated build (isStorageBuild=false) and
+         // never materializes into the storage destination.
+         ...(typeof instruction.destination === "string"
+            ? { destination: instruction.destination }
+            : {}),
       };
    }
 

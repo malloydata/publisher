@@ -262,4 +262,113 @@ source: f is duckdb.sql("SELECT 1 as x")
       },
       { timeout: 30000 },
    );
+
+   // ── within-package persist-target collisions ──────────────────────────
+
+   // Two DISTINCT sources both resolving to name="dup" in the same destination
+   // (here their own duckdb warehouse — colocated) — a self-assign clobber.
+   const COLLIDING_MODEL = `##! experimental.persistence
+
+#@ persist name="dup"
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="dup"
+source: b is duckdb.sql("SELECT 2 as y")
+`;
+
+   // Same name= but DIFFERENT destinations — no collision (different tables).
+   const SAME_NAME_DIFF_DEST_MODEL = `##! experimental.persistence
+
+#@ persist name="dup" storage=lake
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="dup"
+source: b is duckdb.sql("SELECT 2 as y")
+`;
+
+   it(
+      "warns when two distinct sources resolve to the same name= + destination",
+      async () => {
+         const pkg = await loadPackage(COLLIDING_MODEL);
+         const warnings = pkg.persistenceCollisionWarnings();
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain('"a"');
+         expect(warnings[0]).toContain('"b"');
+         expect(warnings[0]).toContain('"dup"');
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "surfaces the collision on the package status warnings (not just the log)",
+      async () => {
+         const pkg = await loadPackage(COLLIDING_MODEL);
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         const collision = warnings.find((w) =>
+            w.message?.includes("resolve to the same materialized table"),
+         );
+         expect(collision).toBeDefined();
+         expect(collision!.message).toContain('"dup"');
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "does not warn when the same name= targets different destinations",
+      async () => {
+         const pkg = await loadPackage(SAME_NAME_DIFF_DEST_MODEL);
+         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         expect(
+            warnings.some((w) =>
+               w.message?.includes("resolve to the same materialized table"),
+            ),
+         ).toBe(false);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "does not warn for a plain package with distinct persist names",
+      async () => {
+         const pkg = await loadPackage(PLAIN_MODEL);
+         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "collisions never enter persistencePolicyWarnings (the strict-publish set)",
+      async () => {
+         const pkg = await loadPackage(COLLIDING_MODEL);
+         // The collision is real…
+         expect(pkg.persistenceCollisionWarnings()).toHaveLength(1);
+         // …but it must not ride the always-strict-at-publish policy set.
+         expect(pkg.persistencePolicyWarnings()).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "gates the publish rejection behind PERSIST_COLLISION_ENFORCE",
+      async () => {
+         const pkg = await loadPackage(COLLIDING_MODEL);
+         const prev = process.env.PERSIST_COLLISION_ENFORCE;
+         try {
+            delete process.env.PERSIST_COLLISION_ENFORCE;
+            // Default: warn-only, so the publish gate string is empty.
+            expect(pkg.formatPersistenceCollisionRejections()).toBe("");
+            process.env.PERSIST_COLLISION_ENFORCE = "true";
+            // Enforced: the collision becomes a publish rejection.
+            expect(pkg.formatPersistenceCollisionRejections()).toContain(
+               '"dup"',
+            );
+         } finally {
+            if (prev === undefined)
+               delete process.env.PERSIST_COLLISION_ENFORCE;
+            else process.env.PERSIST_COLLISION_ENFORCE = prev;
+         }
+      },
+      { timeout: 30000 },
+   );
 });

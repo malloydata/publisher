@@ -1,0 +1,1239 @@
+// Markdown scenario interpreter (FitNesse-style). A scenario is a folder with a
+// `scenario.md` that reads like a story — starting data as tables, Malloy in code
+// blocks, a publish step, and query/expect pairs — plus an optional `hooks.ts`
+// escape hatch for exotic steps (e.g. orchestrated/operator builds).
+//
+// A parsed scenario implements the same `Scenario` interface the TS scenarios did
+// (`packages` + `sourceTables` for the orchestrator's up-front setup, `run()` as a
+// step executor), so the lib/ + orchestrator layer is unchanged.
+//
+// Section grammar (ASCII-friendly, human-authored):
+//   ## Publisher [<name>]               [body: `- PERSIST_STORAGE_MODE: on`, plus any
+//                                       `- SOME_ENV: value` bullets passed as extra env]  -> (re)start
+//                                       the publisher at that mode; following steps inherit it
+//   ## Data <conn>.<table>              + a GFM table (headers `name:type`)  -> seed
+//   ## Mutate <conn>.<table>            + a GFM table (append) OR a ```sql block
+//   ## Model [<pkg>/]<path.malloy>      + a ```malloy block                  -> write model
+//   ## Publish [<pkg>] [(forceRefresh, sources=a[+b])]  [body: `expect binding: src -> conn`]
+//   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
+//   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
+//                                        (destination-aware physical-table drop / GC)
+//   ## Build refused [<pkg>]             [body: `cites: <substring>`]
+//   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
+//   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
+//   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
+//                                        author-in-the-loop publish gate); `refused` asserts a 4xx
+//   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifestLocation PATCH
+//   ## Query <label> [(again)]           + ```malloy (or reuse last) + Expect: GFM table
+//   ## Note | ## Attention              -> a prose callout (`> …` blockquote),
+//                                          surfaced in the report's attention block
+//   ## Connection <name> (type=postgres|ducklake)  -> DECLARE a connection wired into the
+//                                        config (pre-pass; a postgres points at the source
+//                                        warehouse, a ducklake gets its own catalog+storage).
+//                                        WITHOUT type= (and with a ```sql block) it RUNS SQL.
+//   ## Hook <exportName>                -> call hooks.ts export(api, assert)
+// Server-facing steps (Publish/Query/Build/Compile/Warns/Bind/Connection/Rejected)
+// accept `(pub=<name>)` to target a specific started publisher instead of the
+// active one — e.g. query p1 and p2 side by side without switching active — and
+// `(env=<name>)` to target a specific environment (default: the primary env; a
+// publisher serves all configured environments). `## Model <pkg>/<path> (env=…)`
+// registers the package under that environment.
+// Front matter: `id`, `package`, `title`, `tags: a, b`, `requires: dialect:x`.
+
+import path from "path";
+import type { PersistStorageMode } from "./server";
+import { Rest } from "./rest";
+import { sleep } from "./util";
+
+/** The default environment every scenario runs in unless a step says `(env=…)`. */
+const PRIMARY_ENV = "default";
+import { Assert, type ConnectionDecl, type PackageSpec, type Scenario, type ScenarioContext, type SourceTable } from "../scenarios/framework";
+
+interface Col {
+   name: string;
+   type: string;
+}
+interface Table {
+   cols: Col[];
+   rows: string[][];
+}
+
+// Server-facing steps carry an optional `env` (from `(env=…)`), selecting which
+// environment the step runs against; it defaults to PRIMARY_ENV. A publisher
+// process serves every configured environment, so env is orthogonal to `pub`.
+type Step =
+   | { kind: "model"; env: string; pkg: string; path: string; malloy: string }
+   | { kind: "publish"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; bindings: { source: string; conn: string }[]; forceRefresh: boolean; sourceNames?: string[]; async: boolean; label?: string }
+   | { kind: "await"; label?: string }
+   | { kind: "orchestratedBuild"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; refused: boolean; strict: boolean; sources: { src: string; name: string; dest: string }[]; references: { src: string; from?: string }[]; cites?: string }
+   | { kind: "delete"; pub?: string; env: string; pkg: string; mode: PersistStorageMode }
+   | { kind: "reclaim"; pub?: string; env: string; pkg: string; mode: PersistStorageMode }
+   | { kind: "buildRefused"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites: string }
+   | { kind: "query"; pub?: string; env: string; pkg: string; label: string; mode: PersistStorageMode; malloy?: string; again: boolean; refused: boolean; cites?: string; expect?: Table }
+   | { kind: "mutate"; conn: string; table: string; rows?: Table; sql?: string }
+   | { kind: "sql"; label: string; sql: string; expect: Table }
+   | { kind: "operator"; conn: string; mode: PersistStorageMode; sql: string }
+   | { kind: "connection"; pub?: string; env: string; conn: string; mode: PersistStorageMode; sql: string; refused: boolean; cites?: string }
+   | { kind: "rejected"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites?: string }
+   | { kind: "warns"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites: string }
+   | { kind: "compile"; pub?: string; env: string; pkg: string; label: string; mode: PersistStorageMode; source: string; refused: boolean; cites?: string }
+   | { kind: "bind"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; variant: "full" | "empty" | "clear" | "bad"; from?: string; fresh?: number; asof?: string; fallback?: string }
+   | { kind: "publisher"; mode: PersistStorageMode; name?: string; extraEnv?: Record<string, string> }
+   | { kind: "republish"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; refused: boolean; cites?: string }
+   | { kind: "restart"; mode: PersistStorageMode; init: boolean }
+   | { kind: "hook"; name: string };
+
+interface ParsedMd {
+   id: string;
+   title: string;
+   tags: string[];
+   requires: string[];
+   note?: { since?: string; text: string };
+   defaultPackage: string;
+   steps: Step[];
+   dataSeeds: { conn: string; table: string; data: Table }[];
+   connectionDecls: ConnectionDecl[];
+}
+
+/** Split a `key: a, b, c` front-matter value into a trimmed, non-empty list. */
+function csv(value: string | undefined): string[] {
+   return (value ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+}
+
+// ─────────────────────────── parsing ───────────────────────────
+
+function parseMarkdown(text: string, fallbackId: string): ParsedMd {
+   const lines = text.split("\n");
+   let i = 0;
+
+   // Optional YAML-ish front matter: a leading `---` … `---` block of key: value.
+   const fm: Record<string, string> = {};
+   if (lines[0]?.trim() === "---") {
+      i = 1;
+      for (; i < lines.length && lines[i].trim() !== "---"; i++) {
+         const m = lines[i].match(/^([a-zA-Z_][\w-]*)\s*:\s*(.+)$/);
+         if (m) fm[m[1].toLowerCase()] = m[2].trim();
+      }
+      i++; // skip the closing ---
+   }
+
+   const id = fm.id ?? fallbackId;
+   const tags = csv(fm.tags);
+   const requires = csv(fm.requires);
+   const defaultPackage = fm.package ?? id.toLowerCase();
+   let title = fm.title ?? id;
+
+   // Title (H1) — everything else before the first `## ` is prose.
+   for (; i < lines.length && !lines[i].startsWith("## "); i++) {
+      const h1 = lines[i].trim().match(/^#\s+(.*)$/);
+      if (h1) title = h1[1].trim();
+   }
+
+   // Split the remainder into sections.
+   const sections: { header: string; body: string[] }[] = [];
+   let cur: { header: string; body: string[] } | null = null;
+   for (; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("## ")) {
+         if (cur) sections.push(cur);
+         cur = { header: line.slice(3).trim(), body: [] };
+      } else if (cur) {
+         cur.body.push(line);
+      }
+   }
+   if (cur) sections.push(cur);
+
+   const steps: Step[] = [];
+   const dataSeeds: { conn: string; table: string; data: Table }[] = [];
+   const connectionDecls: ConnectionDecl[] = [];
+
+   // PERSIST_STORAGE_MODE is a server-level setting fixed at process start — you
+   // change it by RESTARTING the publisher, not per request. So it is not a
+   // per-action attribute: a `## Publisher` section (re)starts the publisher at a
+   // declared mode, and every subsequent step runs against that publisher until
+   // the next `## Publisher`. `currentMode` tracks the running publisher's mode
+   // as we walk the sections in order; steps inherit it (there is no per-step
+   // `(mode=…)` override — switching modes means a new `## Publisher`).
+   let currentMode: PersistStorageMode = (fm.mode as PersistStorageMode) ?? "on";
+   let note: { since?: string; text: string } | undefined;
+
+   for (const sec of sections) {
+      const { kind, arg, attrs } = parseHeader(sec.header);
+      if (kind === "note" || kind === "attention") {
+         // A prose callout, not a step. Strip leading `> ` blockquote markers so
+         // the stored note is clean; the .md keeps them for nicer rendering.
+         // `## Note (since=YYYY-MM-DD)` records when the concern was raised, so
+         // the report can age it (surface follow-ups ignored for too long).
+         const text = sec.body
+            .map((l) => l.replace(/^\s*>\s?/, "").trimEnd())
+            .join("\n")
+            .trim();
+         const since = attrs.since as string | undefined;
+         if (text) {
+            note = note
+               ? { since: note.since ?? since, text: `${note.text}\n\n${text}` }
+               : { since, text };
+         }
+         continue;
+      }
+      if (kind === "publisher") {
+         const m =
+            (attrs.mode as PersistStorageMode) ?? extractPublisherMode(sec.body);
+         if (m) currentMode = m;
+         const extraEnv = extractPublisherEnv(sec.body);
+         steps.push({
+            kind: "publisher",
+            mode: currentMode,
+            name: arg.trim() || undefined,
+            extraEnv: Object.keys(extraEnv).length ? extraEnv : undefined,
+         });
+         continue;
+      }
+      const mode = currentMode;
+      // `(pub=<name>)` targets a specific (already-started) publisher for this
+      // step, instead of the active one — so a scenario can query p1 and p2
+      // side by side without switching the active publisher between them.
+      const pub = attrs.pub as string | undefined;
+      // `(env=<name>)` targets a specific environment (a publisher serves all of
+      // them); defaults to the primary environment. Model declarations use it to
+      // register the package under that environment.
+      const env = (attrs.env as string) || PRIMARY_ENV;
+      switch (kind) {
+         case "data": {
+            const [conn, table] = splitConnTable(arg);
+            dataSeeds.push({ conn, table, data: requireTable(sec.body, sec.header) });
+            break;
+         }
+         case "mutate": {
+            const [conn, table] = splitConnTable(arg);
+            const sql = extractCode(sec.body, "sql");
+            if (sql) steps.push({ kind: "mutate", conn, table, sql });
+            else steps.push({ kind: "mutate", conn, table, rows: requireTable(sec.body, sec.header) });
+            break;
+         }
+         case "model": {
+            const { pkg, rel } = splitPkgPath(arg, defaultPackage);
+            const malloy = extractCode(sec.body, "malloy");
+            if (!malloy) throw new Error(`## Model ${arg}: missing a \`\`\`malloy block`);
+            steps.push({ kind: "model", env, pkg, path: rel, malloy });
+            break;
+         }
+         case "publish": {
+            const pkg = arg.trim() || defaultPackage;
+            const bindings = parseBindings(sec.body);
+            // `(sources=a)` builds ONLY the named persist source(s) — the
+            // `sourceNames` build filter. Multiple names are `+`-separated
+            // (comma is the attribute delimiter). Omitted = build them all.
+            const sourceNames = attrs.sources
+               ? String(attrs.sources).split("+").map((s) => s.trim()).filter(Boolean)
+               : undefined;
+            // `(async[, label=x])` fires the build WITHOUT awaiting completion, so a
+            // following step can observe it in flight (e.g. a conflicting build);
+            // `## Await x` (or scenario teardown) drains it. Bindings can't be
+            // asserted on an async publish — it hasn't finished.
+            steps.push({ kind: "publish", pub, env, pkg, mode, bindings, forceRefresh: !!attrs.forcerefresh, sourceNames, async: !!attrs.async, label: attrs.label as string | undefined });
+            break;
+         }
+         case "await": {
+            steps.push({ kind: "await", label: arg.trim() || (attrs.label as string) || undefined });
+            break;
+         }
+         case "delete": {
+            steps.push({ kind: "delete", pub, env, pkg: arg.trim() || defaultPackage, mode });
+            break;
+         }
+         case "reclaim": {
+            steps.push({ kind: "reclaim", pub, env, pkg: arg.trim() || defaultPackage, mode });
+            break;
+         }
+         case "build": {
+            // "## Build refused …" (arg begins with "refused") asserts a build
+            // fails/refuses. "## Build (orchestrated, …)" runs a caller-instructed
+            // build; combine as "## Build refused (orchestrated, …)".
+            const refused = /^refused\b/i.test(arg);
+            const pkg =
+               (attrs.pkg as string) ??
+               (arg.replace(/^refused/i, "").trim() || defaultPackage);
+            if (attrs.orchestrated) {
+               const { sources, references } = parseOrchestratedBody(sec.body);
+               steps.push({
+                  kind: "orchestratedBuild",
+                  pub,
+                  env,
+                  pkg,
+                  mode,
+                  refused,
+                  strict: !!attrs.strict,
+                  sources,
+                  references,
+                  cites: firstKey(sec.body, "cites"),
+               });
+            } else {
+               const cites = firstKey(sec.body, "cites") ?? "";
+               steps.push({ kind: "buildRefused", pub, env, pkg, mode, cites });
+            }
+            break;
+         }
+         case "query": {
+            const again = !!attrs.again;
+            const refused = !!attrs.refused;
+            const pkg = (attrs.pkg as string) ?? defaultPackage;
+            const malloy = extractCode(sec.body, "malloy");
+            if (refused) {
+               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: true, cites: firstKey(sec.body, "cites") });
+            } else {
+               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: false, expect: requireTable(sec.body, sec.header) });
+            }
+            break;
+         }
+         case "sql": {
+            const sql = extractCode(sec.body, "sql");
+            if (!sql) throw new Error(`## SQL ${arg}: missing a \`\`\`sql block`);
+            steps.push({ kind: "sql", label: arg.trim() || "sql", sql, expect: requireTable(sec.body, sec.header) });
+            break;
+         }
+         case "operator": {
+            const sql = extractCode(sec.body, "sql");
+            if (!sql) throw new Error(`## Operator ${arg}: missing a \`\`\`sql block`);
+            steps.push({ kind: "operator", conn: arg.trim(), mode, sql });
+            break;
+         }
+         case "connection": {
+            // Two forms share this header. With a `(type=…)` attribute it DECLARES
+            // a connection to wire into the config (a pre-pass artifact, like a
+            // package — not a runtime step); otherwise it RUNS SQL against an
+            // existing connection (the original behavior).
+            if (attrs.type) {
+               const kind = String(attrs.type).toLowerCase();
+               if (kind !== "postgres" && kind !== "ducklake" && kind !== "duckdb") {
+                  throw new Error(
+                     `## Connection ${arg}: unsupported type="${attrs.type}" (expected postgres | ducklake | duckdb)`,
+                  );
+               }
+               connectionDecls.push({ env, name: arg.trim(), kind });
+               break;
+            }
+            const sql = extractCode(sec.body, "sql");
+            if (!sql) throw new Error(`## Connection ${arg}: missing a \`\`\`sql block`);
+            steps.push({ kind: "connection", pub, env, conn: arg.trim(), mode, sql, refused: !!attrs.refused, cites: firstKey(sec.body, "cites") });
+            break;
+         }
+         case "rejected": {
+            steps.push({ kind: "rejected", pub, env, pkg: arg.trim() || defaultPackage, mode, cites: firstKey(sec.body, "cites") });
+            break;
+         }
+         case "warns": {
+            steps.push({ kind: "warns", pub, env, pkg: arg.trim() || defaultPackage, mode, cites: firstKey(sec.body, "cites") ?? "" });
+            break;
+         }
+         case "republish": {
+            // Re-publish a package through the POST /packages endpoint (the
+            // author-in-the-loop gate), distinct from `## Publish` (a build). With
+            // `(refused)` it asserts the publish is rejected (e.g. a collision
+            // under PERSIST_COLLISION_ENFORCE) and cites the reason.
+            steps.push({
+               kind: "republish",
+               pub,
+               env,
+               pkg: arg.replace(/^refused/i, "").trim() || defaultPackage,
+               mode,
+               refused: /^refused\b/i.test(arg) || !!attrs.refused,
+               cites: firstKey(sec.body, "cites"),
+            });
+            break;
+         }
+         case "compile": {
+            // Compile-check a model on demand (POST /compile), without loading the
+            // package into the serving set — the deterministic way to assert a
+            // model does/doesn't compile. `source` is appended to the target model
+            // for namespace context; omit it to compile the model as-is.
+            const pkg = (attrs.pkg as string) ?? defaultPackage;
+            const source = extractCode(sec.body, "malloy") ?? "";
+            steps.push({ kind: "compile", pub, env, pkg, label: arg.trim() || "compile", mode, source, refused: !!attrs.refused, cites: firstKey(sec.body, "cites") });
+            break;
+         }
+         case "bind": {
+            // Simulate the orchestrator binding a manifest: full = re-serve the
+            // last build's manifest via manifestLocation; empty = a present-but-
+            // empty manifest (host says "nothing to serve" → live); clear =
+            // manifestLocation:null (revert to the publisher's local-store rebind).
+            const variant = attrs.bad ? "bad" : attrs.empty ? "empty" : attrs.clear ? "clear" : "full";
+            // `fresh=<seconds>` / `asof=<iso>` / `fallback=<live|stale_ok|fail>`
+            // stamp freshness fields onto each bound entry — for exercising the
+            // freshness gate (age = now - asof vs the window).
+            steps.push({
+               kind: "bind",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               variant,
+               from: attrs.from as string | undefined,
+               fresh: attrs.fresh !== undefined ? Number(attrs.fresh) : undefined,
+               asof: attrs.asof as string | undefined,
+               fallback: attrs.fallback as string | undefined,
+            });
+            break;
+         }
+         case "restart": {
+            // `(init)` reboots with --init: re-copies packages (picks up a mid-run
+            // `## Model` edit) and resets the store. Bare `## Restart` preserves the
+            // materialization store (no --init).
+            steps.push({ kind: "restart", mode, init: !!attrs.init });
+            break;
+         }
+         case "hook": {
+            steps.push({ kind: "hook", name: arg.trim() });
+            break;
+         }
+         default:
+            throw new Error(`Unknown section kind "${kind}" in header: ## ${sec.header}`);
+      }
+   }
+
+   return { id, title, tags, requires, note, defaultPackage, steps, dataSeeds, connectionDecls };
+}
+
+/**
+ * The publisher's `PERSIST_STORAGE_MODE` from a `## Publisher` section body.
+ * Accepts a `- PERSIST_STORAGE_MODE: on` bullet, a `KEY: value` line, or a
+ * `| PERSIST_STORAGE_MODE | on |` table row — whatever reads cleanest.
+ */
+function extractPublisherMode(body: string[]): PersistStorageMode | undefined {
+   const m = body
+      .join("\n")
+      .match(/PERSIST_STORAGE_MODE\s*[:|]?\s*\|?\s*(off|write-only|on)\b/i);
+   return m ? (m[1].toLowerCase() as PersistStorageMode) : undefined;
+}
+
+/**
+ * Extra environment variables from a `## Publisher` body — every
+ * `- KEY: value` (or `KEY: value`) bullet whose key is a SCREAMING_SNAKE env name,
+ * EXCEPT `PERSIST_STORAGE_MODE` (which is the mode, handled separately). Lets a
+ * scenario boot a publisher with a deployment flag fixed at process start, e.g.
+ * `- PERSIST_COLLISION_ENFORCE: true`.
+ */
+function extractPublisherEnv(body: string[]): Record<string, string> {
+   const env: Record<string, string> = {};
+   for (const raw of body) {
+      const m = raw.match(/^\s*-?\s*([A-Z][A-Z0-9_]*)\s*[:=]\s*(.+?)\s*$/);
+      if (m && m[1] !== "PERSIST_STORAGE_MODE") env[m[1]] = m[2].trim();
+   }
+   return env;
+}
+
+function parseHeader(header: string): { kind: string; arg: string; attrs: Record<string, string | boolean> } {
+   // Trailing "(k=v, flag, ...)" is attributes.
+   const attrs: Record<string, string | boolean> = {};
+   let h = header;
+   const paren = h.match(/\(([^)]*)\)\s*$/);
+   if (paren) {
+      h = h.slice(0, paren.index).trim();
+      for (const part of paren[1].split(",")) {
+         const kv = part.trim();
+         if (!kv) continue;
+         const eq = kv.indexOf("=");
+         if (eq >= 0) attrs[kv.slice(0, eq).trim().toLowerCase()] = kv.slice(eq + 1).trim();
+         else attrs[kv.toLowerCase()] = true;
+      }
+   }
+   const sp = h.indexOf(" ");
+   const kind = (sp < 0 ? h : h.slice(0, sp)).toLowerCase();
+   const arg = sp < 0 ? "" : h.slice(sp + 1).trim();
+   return { kind, arg, attrs };
+}
+
+function splitConnTable(arg: string): [string, string] {
+   const dot = arg.indexOf(".");
+   if (dot < 0) throw new Error(`expected <conn>.<table>, got "${arg}"`);
+   return [arg.slice(0, dot).trim(), arg.slice(dot + 1).trim()];
+}
+
+function splitPkgPath(arg: string, def: string): { pkg: string; rel: string } {
+   const slash = arg.indexOf("/");
+   if (slash < 0) return { pkg: def, rel: arg.trim() };
+   return { pkg: arg.slice(0, slash).trim(), rel: arg.slice(slash + 1).trim() };
+}
+
+function extractCode(body: string[], lang: string): string | undefined {
+   const open = body.findIndex((l) => l.trim() === "```" + lang || l.trim().startsWith("```" + lang));
+   if (open < 0) return undefined;
+   const close = body.findIndex((l, idx) => idx > open && l.trim() === "```");
+   if (close < 0) return undefined;
+   return body.slice(open + 1, close).join("\n").trim();
+}
+
+function parseTable(body: string[]): Table | undefined {
+   const rowsRaw = body
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("|") && l.endsWith("|"));
+   if (rowsRaw.length < 2) return undefined;
+   const cells = (l: string): string[] =>
+      l.slice(1, -1).split("|").map((c) => c.trim());
+   const cols: Col[] = cells(rowsRaw[0]).map((h) => {
+      const c = h.indexOf(":");
+      return c < 0
+         ? { name: h.toLowerCase(), type: "text" }
+         : { name: h.slice(0, c).trim().toLowerCase(), type: h.slice(c + 1).trim().toLowerCase() };
+   });
+   // rowsRaw[1] is the |---|---| separator.
+   const rows = rowsRaw.slice(2).map((l) => cells(l));
+   return { cols, rows };
+}
+
+function requireTable(body: string[], header: string): Table {
+   const t = parseTable(body);
+   if (!t) throw new Error(`section "## ${header}" requires a GFM table`);
+   return t;
+}
+
+/**
+ * Parse an orchestrated-build body: `- <src> -> <physicalName> @ <dest>` lines
+ * (the sources this build produces, with caller-assigned/generational names) and
+ * `reference: <upstreamSrc> [(from=<pub>)]` lines (upstreams to reuse, resolved by
+ * source name at run time). References are collected package-wide (they map to the
+ * build's `referenceManifest`), not nested under a source.
+ */
+function parseOrchestratedBody(body: string[]): {
+   sources: { src: string; name: string; dest: string }[];
+   references: { src: string; from?: string }[];
+} {
+   const sources: { src: string; name: string; dest: string }[] = [];
+   const references: { src: string; from?: string }[] = [];
+   for (const raw of body) {
+      const line = raw.trim();
+      const s = line.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      if (s) {
+         sources.push({ src: s[1], name: s[2], dest: s[3] });
+         continue;
+      }
+      const r = line.match(/^reference:\s*([^\s(]+)\s*(?:\(from=([^)]+)\))?\s*$/i);
+      if (r) references.push({ src: r[1], from: r[2]?.trim() || undefined });
+   }
+   return { sources, references };
+}
+
+function parseBindings(body: string[]): { source: string; conn: string }[] {
+   const out: { source: string; conn: string }[] = [];
+   for (const raw of body) {
+      const m = raw.match(/expect\s+binding\s*:\s*(\S+)\s*->\s*(\S+)/i);
+      if (m) out.push({ source: m[1], conn: m[2] });
+   }
+   return out;
+}
+
+function firstKey(body: string[], key: string): string | undefined {
+   for (const raw of body) {
+      const m = raw.match(new RegExp(`^\\s*${key}\\s*:\\s*(.+)$`, "i"));
+      if (m) return m[1].trim();
+   }
+   return undefined;
+}
+
+// ─────────────────────────── SQL generation ───────────────────────────
+
+const PG_TYPE: Record<string, string> = {
+   int: "int",
+   integer: "int",
+   bigint: "bigint",
+   num: "numeric",
+   number: "numeric",
+   numeric: "numeric",
+   decimal: "numeric",
+   float: "double precision",
+   double: "double precision",
+   date: "date",
+   timestamp: "timestamp",
+   text: "text",
+   string: "text",
+   varchar: "text",
+   bool: "boolean",
+   boolean: "boolean",
+};
+
+function sqlLiteral(value: string, type: string): string {
+   const v = value.trim();
+   if (v === "" || v.toLowerCase() === "null") return "NULL";
+   switch (type) {
+      case "date":
+         return `DATE '${v}'`;
+      case "timestamp":
+         return `TIMESTAMP '${v}'`;
+      case "int":
+      case "integer":
+      case "bigint":
+      case "num":
+      case "number":
+      case "numeric":
+      case "decimal":
+      case "float":
+      case "double":
+         return v;
+      case "bool":
+      case "boolean":
+         return v.toLowerCase();
+      default:
+         return `'${v.replace(/'/g, "''")}'`;
+   }
+}
+
+function createAndInsert(table: string, data: Table): string {
+   const colDefs = data.cols
+      .map((c) => `${c.name} ${PG_TYPE[c.type] ?? "text"}`)
+      .join(", ");
+   const values = data.rows
+      .map((r) => `(${r.map((cell, i) => sqlLiteral(cell, data.cols[i].type)).join(", ")})`)
+      .join(",\n  ");
+   return (
+      `DROP TABLE IF EXISTS ${table};\n` +
+      `CREATE TABLE ${table} (${colDefs});\n` +
+      (data.rows.length ? `INSERT INTO ${table} VALUES\n  ${values};\n` : "")
+   );
+}
+
+function insertRows(table: string, data: Table): string {
+   const values = data.rows
+      .map((r) => `(${r.map((cell, i) => sqlLiteral(cell, data.cols[i].type)).join(", ")})`)
+      .join(",\n  ");
+   return `INSERT INTO ${table} VALUES\n  ${values};\n`;
+}
+
+// ─────────────────────────── value comparison ───────────────────────────
+
+function normalizeCell(v: unknown): string | number | null {
+   if (v == null || v === "") return null;
+   const s = String(v).trim();
+   if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+   const dm = s.match(/^(\d{4}-\d{2}-\d{2})/);
+   if (dm) return dm[1];
+   return s;
+}
+
+/** Compare actual query rows against an expected GFM table (ordered, on the expected columns). */
+function compareRows(
+   assert: Assert,
+   label: string,
+   expect: Table,
+   actual: Record<string, unknown>[],
+): void {
+   const cols = expect.cols.map((c) => c.name);
+   if (expect.rows.length !== actual.length) {
+      assert.fail(
+         `${label}: row count`,
+         `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
+      );
+      return;
+   }
+   for (let r = 0; r < expect.rows.length; r++) {
+      for (let c = 0; c < cols.length; c++) {
+         const exp = normalizeCell(expect.rows[r][c]);
+         const act = normalizeCell(actual[r]?.[cols[c]]);
+         if (JSON.stringify(exp) !== JSON.stringify(act)) {
+            assert.fail(
+               `${label}: row ${r + 1} col ${cols[c]}`,
+               `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
+            );
+            return;
+         }
+      }
+   }
+   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+}
+
+// ─────────────────────────── build helpers ───────────────────────────
+
+/** A caller-instructed build body derived from an orchestrated `## Build`. */
+interface OrchestratedBody {
+   buildInstructions: {
+      sources: {
+         sourceEntityId: string;
+         materializedTableId: string;
+         physicalTableName: string;
+         realization: string;
+         destination: string;
+      }[];
+      referenceManifest?: { sourceEntityId: string; physicalTableName: string }[];
+      strictUpstreams: boolean;
+   };
+}
+
+/**
+ * Turn an orchestrated `## Build` step into a build body, resolving names to ids
+ * at run time: each built source's `sourceEntityId` from the target's build plan,
+ * and each `reference:`d upstream's id + physical table from a publisher's latest
+ * manifest (the target, or `(from=<pub>)`). Authors name sources, never ids.
+ */
+async function buildOrchestratedBody(
+   ctx: ScenarioContext,
+   rest: Rest,
+   step: {
+      pkg: string;
+      strict: boolean;
+      sources: { src: string; name: string; dest: string }[];
+      references: { src: string; from?: string }[];
+   },
+): Promise<OrchestratedBody> {
+   const eids = await rest.sourceEntityIds(step.pkg);
+   const sources = step.sources.map((s) => {
+      const eid = eids[s.src];
+      if (!eid) {
+         throw new Error(
+            `## Build (orchestrated): source '${s.src}' not in ${step.pkg} build plan (have: ${Object.keys(eids).join(", ")})`,
+         );
+      }
+      return {
+         sourceEntityId: eid,
+         materializedTableId: `mt-${s.name}`,
+         physicalTableName: s.name,
+         realization: "COPY",
+         destination: s.dest,
+      };
+   });
+   const referenceManifest: { sourceEntityId: string; physicalTableName: string }[] = [];
+   for (const ref of step.references) {
+      const refRest = ref.from ? ctx.restOf(ref.from) : rest;
+      const refEid = (await refRest.sourceEntityIds(step.pkg))[ref.src];
+      if (!refEid) {
+         throw new Error(
+            `## Build (orchestrated): reference '${ref.src}' not in ${step.pkg} build plan`,
+         );
+      }
+      const entry = (await refRest.latestManifestEntries(step.pkg))[refEid] as
+         | { physicalTableName?: string }
+         | undefined;
+      referenceManifest.push({
+         sourceEntityId: refEid,
+         physicalTableName: entry?.physicalTableName ?? "",
+      });
+   }
+   return {
+      buildInstructions: {
+         sources,
+         ...(referenceManifest.length ? { referenceManifest } : {}),
+         strictUpstreams: step.strict,
+      },
+   };
+}
+
+/**
+ * Run a build expected to be refused, tolerating BOTH failure modes: a build that
+ * reaches FAILED, and a `createMaterialization` that itself throws (the package
+ * won't load / 4xx). Returns whether it refused and a detail string for `cites`.
+ */
+async function refusedOutcome(
+   rest: Rest,
+   pkg: string,
+   body?: Record<string, unknown>,
+): Promise<{ refused: boolean; detail: string }> {
+   try {
+      const { id } = await rest.createMaterialization(pkg, body ?? {});
+      const rec = await rest.pollMaterialization(pkg, id);
+      return { refused: rec.status === "FAILED", detail: JSON.stringify(rec) };
+   } catch (e) {
+      return { refused: true, detail: (e as Error).message };
+   }
+}
+
+/**
+ * Assert a package is NOT served: `getPackage` must fail (the package never
+ * entered the serving set). This is the divergence backstop behind an invalid
+ * model — even when `/compile` reports errors, the publisher must not ALSO report
+ * the package as served ("compile errors, yet it thinks it's serving fine"). Uses
+ * `getPackage` (a durable per-package probe) rather than `/status` loadErrors
+ * (which is pruned after the first call, so it's unreliable mid-session).
+ */
+async function assertNotServed(
+   rest: Rest,
+   pkg: string,
+   assert: Assert,
+   label: string,
+): Promise<void> {
+   let served = false;
+   try {
+      await rest.getPackage(pkg);
+      served = true;
+   } catch {
+      // getPackage failed ⇒ not served — the expected outcome for an invalid model.
+   }
+   assert.ok(
+      `${label}: not served`,
+      !served,
+      served
+         ? `'${pkg}' does not compile, yet the publisher reports it as served — the compile and load paths diverged`
+         : undefined,
+   );
+}
+
+// ─────────────────────────── the Scenario ───────────────────────────
+
+type Hooks = Record<string, (api: HookApi, assert: Assert) => Promise<void>>;
+
+/** What a hooks.ts export receives — the full runtime, so it can do exotic things. */
+export interface HookApi extends ScenarioContext {
+   modelPath(pkg?: string, env?: string): string;
+   /**
+    * Mutable state shared across all `## Hook` steps in one scenario, so a tiny
+    * hook can stash a value (e.g. a captured sourceEntityId) that a later hook
+    * reads/asserts — keeping the flow in markdown and hooks small + interleaved.
+    */
+   state: Record<string, unknown>;
+}
+
+export async function parseScenarioFile(dir: string): Promise<Scenario> {
+   const fallbackId = path.basename(dir);
+   const md = await Bun.file(path.join(dir, "scenario.md")).text();
+   const parsed = parseMarkdown(md, fallbackId);
+
+   let hooks: Hooks = {};
+   const hooksPath = path.join(dir, "hooks.ts");
+   if (await Bun.file(hooksPath).exists()) {
+      hooks = (await import(hooksPath)) as Hooks;
+   }
+
+   // Pre-pass: packages (first Model per env+pkg) + source seeds for up-front
+   // setup. A package name can appear in more than one environment, each with its
+   // own model, so packages are grouped by (env, pkg).
+   const pkgKey = (env: string, pkg: string): string => `${env}:${pkg}`;
+   const pkgModels = new Map<
+      string,
+      { env: string; name: string; models: Map<string, string> }
+   >();
+   const primaryModel = new Map<string, string>(); // (env,pkg) -> first model path
+   for (const step of parsed.steps) {
+      if (step.kind === "model") {
+         const k = pkgKey(step.env, step.pkg);
+         if (!pkgModels.has(k)) {
+            pkgModels.set(k, { env: step.env, name: step.pkg, models: new Map() });
+         }
+         const entry = pkgModels.get(k)!;
+         if (!entry.models.has(step.path)) entry.models.set(step.path, step.malloy);
+         if (!primaryModel.has(k)) primaryModel.set(k, step.path);
+      }
+   }
+   const packages: PackageSpec[] = [...pkgModels.values()].map((e) => ({
+      name: e.name,
+      env: e.env,
+      models: [...e.models.entries()].map(([p, text]) => ({ path: p, text })),
+   }));
+   const sourceTables: SourceTable[] = parsed.dataSeeds.map((d) => ({
+      sql: createAndInsert(d.table, d.data),
+   }));
+
+   const run = async (ctx: ScenarioContext, assert: Assert): Promise<void> => {
+      // `(again)` re-runs the most recent query WITH THE SAME LABEL — so
+      // intervening queries of other labels don't hijack the reuse.
+      const malloyByLabel = new Map<string, string>();
+      // Async publishes fire without awaiting; `## Await <label>` (or teardown)
+      // drains them. Keyed by label (or an auto key when unlabeled).
+      const pendingBuilds = new Map<
+         string,
+         { rest: Rest; pkg: string; id: string }
+      >();
+      // Shared mutable state for hooks — lets a tiny `## Hook` stash a value (e.g.
+      // a captured sourceEntityId) that a later `## Hook` reads/asserts, so the
+      // markdown carries the flow and hooks stay small and interleaved.
+      const hookState: Record<string, unknown> = {};
+      // The ACTIVE publisher — set by each `## Publisher` step and used by every
+      // subsequent step. Steps run against whichever publisher is active, so a
+      // multi-publisher scenario just switches focus with `## Publisher <name>`.
+      let activeName = "default";
+      let activeMode: PersistStorageMode = "on";
+      let activeRest: Rest | null = null;
+      const active = async (): Promise<Rest> => {
+         if (!activeRest) activeRest = await ctx.usePublisher(activeName, activeMode);
+         return activeRest;
+      };
+      // The server a step runs against: an explicit `(pub=<name>)` target (it must
+      // already be started via `## Publisher <name>`), else the active publisher —
+      // bound to the step's environment. One server process serves every
+      // configured environment, so an env-targeted step just rebinds the REST
+      // client to that env against the same base URL.
+      const serverFor = async (pub?: string, env?: string): Promise<Rest> => {
+         const base = pub ? ctx.restOf(pub) : await active();
+         const target = env ?? PRIMARY_ENV;
+         return target === base.env ? base : new Rest(base.baseUrl, target);
+      };
+      const modelPath = (pkg?: string, env?: string): string =>
+         primaryModel.get(pkgKey(env ?? PRIMARY_ENV, pkg ?? parsed.defaultPackage)) ??
+         `${parsed.defaultPackage}.malloy`;
+
+      for (const step of parsed.steps) {
+         switch (step.kind) {
+            case "model":
+               await ctx.editPackageModel(step.pkg, step.path, step.malloy, step.env);
+               break;
+            case "publish": {
+               const rest = await serverFor(step.pub, step.env);
+               const buildBody = {
+                  ...(step.forceRefresh ? { forceRefresh: true } : {}),
+                  ...(step.sourceNames ? { sourceNames: step.sourceNames } : {}),
+               };
+               if (step.async) {
+                  // Fire and DON'T await — a following step observes it in flight.
+                  const { id } = await rest.createMaterialization(step.pkg, buildBody);
+                  const key = step.label ?? `${step.pkg}#${pendingBuilds.size}`;
+                  pendingBuilds.set(key, { rest, pkg: step.pkg, id });
+                  break;
+               }
+               await rest.build(step.pkg, buildBody);
+               if (step.bindings.length) {
+                  // The build returns at MANIFEST_FILE_READY, but the serve
+                  // binding is re-established by an async package reload that
+                  // reads the latest successful materialization — it is eventually
+                  // consistent, not synchronous with the build response. Poll so
+                  // the assertion is deterministic rather than racing the rebind.
+                  type Binding = { sourceName: string; storageConnectionName: string };
+                  const has = (bindings: Binding[], b: { source: string; conn: string }): boolean =>
+                     bindings.some((x) => x.sourceName === b.source && x.storageConnectionName === b.conn);
+                  let bindings: Binding[] = [];
+                  for (let attempt = 0; attempt < 40; attempt++) {
+                     const pkg = (await rest.getPackage(step.pkg)) as {
+                        storageServeBindings?: Binding[];
+                     };
+                     bindings = pkg.storageServeBindings ?? [];
+                     if (step.bindings.every((b) => has(bindings, b))) break;
+                     await sleep(250);
+                  }
+                  for (const b of step.bindings) {
+                     assert.ok(
+                        `binding ${b.source} -> ${b.conn}`,
+                        has(bindings, b),
+                        JSON.stringify(bindings),
+                     );
+                  }
+               }
+               break;
+            }
+            case "await": {
+               // Drain a specific async build (or, if unlabeled, the oldest
+               // pending one) and assert it completed successfully.
+               const key = step.label ?? [...pendingBuilds.keys()][0];
+               const pending = key ? pendingBuilds.get(key) : undefined;
+               if (!pending) {
+                  assert.fail(`await ${step.label ?? ""}`, `no pending build to await`);
+                  break;
+               }
+               pendingBuilds.delete(key!);
+               const rec = await pending.rest.pollMaterialization(pending.pkg, pending.id);
+               assert.eq(`await ${key}: completes`, rec.status, "MANIFEST_FILE_READY");
+               break;
+            }
+            case "buildRefused": {
+               const rest = await serverFor(step.pub, step.env);
+               const outcome = await refusedOutcome(rest, step.pkg);
+               assert.ok(
+                  `build refused (${step.pkg})`,
+                  outcome.refused,
+                  outcome.detail.slice(0, 200),
+               );
+               if (step.cites && outcome.refused)
+                  assert.includes(`refusal cites "${step.cites}"`, outcome.detail.toLowerCase(), step.cites.toLowerCase());
+               break;
+            }
+            case "orchestratedBuild": {
+               const rest = await serverFor(step.pub, step.env);
+               const body = await buildOrchestratedBody(ctx, rest, step);
+               const wire = body as unknown as Record<string, unknown>;
+               if (step.refused) {
+                  const outcome = await refusedOutcome(rest, step.pkg, wire);
+                  assert.ok(
+                     `orchestrated build refused (${step.pkg})`,
+                     outcome.refused,
+                     outcome.detail.slice(0, 200),
+                  );
+                  if (step.cites && outcome.refused)
+                     assert.includes(`refusal cites "${step.cites}"`, outcome.detail.toLowerCase(), step.cites.toLowerCase());
+               } else {
+                  const rec = await rest.build(step.pkg, wire);
+                  const entries = (rec.manifest as { entries?: Record<string, { physicalTableName?: string }> } | null)?.entries ?? {};
+                  // Verify each built source landed in the caller-assigned name.
+                  for (const s of body.buildInstructions.sources) {
+                     assert.eq(
+                        `built ${s.physicalTableName}`,
+                        entries[s.sourceEntityId]?.physicalTableName,
+                        s.physicalTableName,
+                     );
+                  }
+               }
+               break;
+            }
+            case "query": {
+               const rest = await serverFor(step.pub, step.env);
+               const malloy = step.malloy ?? (step.again ? malloyByLabel.get(step.label) : undefined);
+               if (!malloy)
+                  throw new Error(
+                     `## Query ${step.label}: no malloy block and no prior query labeled "${step.label}" to reuse`,
+                  );
+               malloyByLabel.set(step.label, malloy);
+               if (step.refused) {
+                  const res = await rest.tryQuery(step.pkg, modelPath(step.pkg, step.env), { query: malloy });
+                  assert.ok(
+                     `${step.label}: refused`,
+                     !res.ok,
+                     res.ok ? `expected failure, but query succeeded: ${JSON.stringify(res.outcome.rows).slice(0, 150)}` : undefined,
+                  );
+                  if (step.cites && !res.ok)
+                     assert.includes(`${step.label}: cites`, res.error.toLowerCase(), step.cites.toLowerCase());
+               } else {
+                  const out = await rest.query(step.pkg, modelPath(step.pkg, step.env), { query: malloy });
+                  compareRows(assert, step.label, step.expect!, out.rows);
+               }
+               break;
+            }
+            case "mutate": {
+               const table = step.table;
+               if (step.sql) await ctx.pg.sql(ctx.sourceDb, step.sql);
+               else if (step.rows) await ctx.pg.sql(ctx.sourceDb, insertRows(table, step.rows));
+               break;
+            }
+            case "sql": {
+               const rows = await ctx.pg.query(ctx.sourceDb, step.sql);
+               compareRows(assert, step.label, step.expect, rows);
+               break;
+            }
+            case "operator": {
+               // Ensure a server is up in the requested mode (some flows expect
+               // one running), then run the operator's read-write DDL out-of-band
+               // (via the operator's OWN DuckLake client, not the publisher).
+               await active();
+               await ctx.operatorSql(step.conn, step.sql);
+               break;
+            }
+            case "connection": {
+               // Runs THROUGH the publisher's connection sqlQuery endpoint (what a
+               // caller can reach). For a storage destination this attach is
+               // read-only, so `refused` asserts DDL is rejected.
+               const rest = await serverFor(step.pub, step.env);
+               if (step.refused) {
+                  let threw = false;
+                  let err = "";
+                  try {
+                     await rest.connectionSql(step.conn, step.sql);
+                  } catch (e) {
+                     threw = true;
+                     err = (e as Error).message;
+                  }
+                  assert.ok(
+                     `connection ${step.conn}: refused`,
+                     threw,
+                     threw ? undefined : "expected the connection SQL to be refused, but it succeeded",
+                  );
+                  if (step.cites && threw)
+                     assert.includes(`connection ${step.conn}: cites`, err.toLowerCase(), step.cites.toLowerCase());
+               } else {
+                  await rest.connectionSql(step.conn, step.sql);
+               }
+               break;
+            }
+            case "rejected": {
+               // The package's model is invalid: assert it is NOT served (durable
+               // probe), and — if a `cites:` is given — confirm the diagnostic via
+               // /compile (the durable source of the error text; /status loadErrors
+               // is pruned after the first call, so it isn't used here).
+               const rest = await serverFor(step.pub, step.env);
+               await assertNotServed(rest, step.pkg, assert, `package ${step.pkg}`);
+               if (step.cites) {
+                  const res = await rest.compile(step.pkg, modelPath(step.pkg, step.env), "");
+                  const problems = JSON.stringify(res.problems ?? []).toLowerCase();
+                  assert.includes(
+                     `${step.pkg} compile error cites`,
+                     problems,
+                     step.cites.toLowerCase(),
+                  );
+               }
+               break;
+            }
+            case "warns": {
+               // Assert the package surfaces an operator warning citing a
+               // substring (getPackageMetadata().warnings). Forces the package to
+               // load via getPackage, so the warning is present deterministically.
+               const rest = await serverFor(step.pub, step.env);
+               const pkg = (await rest.getPackage(step.pkg)) as {
+                  warnings?: { model?: string; target?: string; message?: string }[];
+               };
+               const blob = JSON.stringify(pkg.warnings ?? []).toLowerCase();
+               assert.includes(
+                  `package ${step.pkg} warns: "${step.cites}"`,
+                  blob,
+                  step.cites.toLowerCase(),
+               );
+               break;
+            }
+            case "compile": {
+               const rest = await serverFor(step.pub, step.env);
+               const res = await rest.compile(step.pkg, modelPath(step.pkg, step.env), step.source);
+               const problems = JSON.stringify(res.problems ?? []).toLowerCase();
+               if (step.refused) {
+                  // Framework does the dance: an invalid model must ALSO not be
+                  // served (backstop against the compile/load paths diverging) …
+                  await assertNotServed(rest, step.pkg, assert, step.label);
+                  // … and /compile reports the diagnostic text.
+                  assert.ok(
+                     `${step.label}: compile refused`,
+                     res.status === "error",
+                     res.status === "error" ? undefined : `expected a compile error, got status=${res.status} problems=${problems.slice(0, 200)}`,
+                  );
+                  if (step.cites && res.status === "error")
+                     assert.includes(`${step.label}: cites`, problems, step.cites.toLowerCase());
+               } else {
+                  assert.ok(
+                     `${step.label}: compiles`,
+                     res.status === "success",
+                     res.status === "success" ? undefined : `expected success, got problems=${problems.slice(0, 200)}`,
+                  );
+               }
+               break;
+            }
+            case "bind": {
+               const rest = await serverFor(step.pub, step.env);
+               if (step.variant === "clear") {
+                  // manifestLocation:null → drop the orchestrator binding; the publisher
+                  // reverts to its own local-store rebind (from the latest build).
+                  await rest.patchPackage(step.pkg, { manifestLocation: null });
+               } else if (step.variant === "bad") {
+                  // Bind an unreachable manifestLocation (a file:// URI that does
+                  // not exist). The publisher must fetch-fail and fall back to
+                  // serving live rather than erroring the package — the degraded
+                  // path in bindManifest ("serving live" on fetch failure).
+                  await rest.patchPackage(step.pkg, {
+                     manifestLocation: `file:///hammer/nonexistent/${step.pkg}-missing.json`,
+                  });
+               } else {
+                  // `from=<publisher>` sources the manifest from ANOTHER publisher's
+                  // build — the cluster pattern: one worker builds the table, the
+                  // orchestrator distributes that manifest to the others. Default is
+                  // self (the active publisher's own latest build).
+                  const source = step.from ? ctx.restOf(step.from) : rest;
+                  const entries =
+                     step.variant === "empty"
+                        ? {}
+                        : await source.latestManifestEntries(step.pkg);
+                  // Stamp freshness fields onto each entry when requested, so the
+                  // scenario can drive the age-vs-window gate (dataAsOf is the age
+                  // anchor; the window + fallback decide stale handling).
+                  if (step.asof || step.fresh !== undefined || step.fallback) {
+                     for (const e of Object.values(entries)) {
+                        const entry = e as Record<string, unknown>;
+                        if (step.asof) entry.dataAsOf = step.asof;
+                        if (step.fresh !== undefined) entry.freshnessWindowSeconds = step.fresh;
+                        if (step.fallback) entry.freshnessFallback = step.fallback;
+                     }
+                  }
+                  const uri = await ctx.writeManifest(
+                     `${step.pkg}-${activeName}-${step.variant}`,
+                     entries,
+                  );
+                  await rest.patchPackage(step.pkg, { manifestLocation: uri });
+               }
+               break;
+            }
+            case "reclaim": {
+               // Reclaim the latest successful materialization: DELETE it with
+               // dropTables (the destination-aware read-write drop of the physical
+               // table). A following `## Restart` re-establishes serving from the
+               // store — now empty for this source — so it reverts to live.
+               const rest = await serverFor(step.pub, step.env);
+               const id = await rest.reclaimLatest(step.pkg);
+               assert.ok(`reclaim ${step.pkg}`, !!id, `reclaimed ${id}`);
+               break;
+            }
+            case "delete": {
+               // Unload + delete the package from the serving set. A following
+               // `## Query (refused)` proves serving stopped; here we assert the
+               // package no longer resolves.
+               const rest = await serverFor(step.pub, step.env);
+               await rest.deletePackage(step.pkg);
+               let gone = false;
+               try {
+                  await rest.getPackage(step.pkg);
+               } catch {
+                  gone = true;
+               }
+               assert.ok(
+                  `package ${step.pkg} unloaded after delete`,
+                  gone,
+                  "getPackage still resolves after DELETE",
+               );
+               break;
+            }
+            case "publisher": {
+               // Make <name> the active publisher, (re)starting it at this mode.
+               // usePublisher boots it (or restarts on a mode change), so the
+               // narrative shows each mode as a distinct publisher process — which
+               // is what changing PERSIST_STORAGE_MODE actually requires — and a
+               // named publisher is addressable for a multi-publisher scenario.
+               activeName = step.name ?? "default";
+               activeMode = step.mode;
+               activeRest = await ctx.usePublisher(activeName, activeMode, {
+                  extraEnv: step.extraEnv,
+               });
+               break;
+            }
+            case "republish": {
+               // POST /packages to re-publish through the author-in-the-loop gate
+               // (addPackage), which — unlike startup/reload — is strict: under
+               // PERSIST_COLLISION_ENFORCE a colliding package is rejected here.
+               const rest = await serverFor(step.pub, step.env);
+               const res = await rest.addPackage(step.pkg);
+               if (step.refused) {
+                  assert.ok(
+                     `republish ${step.pkg}: refused`,
+                     !res.ok,
+                     res.ok ? "expected the publish to be rejected, but it succeeded" : undefined,
+                  );
+                  if (step.cites && !res.ok)
+                     assert.includes(`republish ${step.pkg}: cites`, res.error.toLowerCase(), step.cites.toLowerCase());
+               } else {
+                  assert.ok(
+                     `republish ${step.pkg}: accepted`,
+                     res.ok,
+                     res.ok ? undefined : `expected the publish to succeed, got: ${res.error.slice(0, 200)}`,
+                  );
+               }
+               break;
+            }
+            case "restart": {
+               // Reboot the active publisher. Bare `## Restart` preserves the
+               // materialization store (no --init), so serving is re-established
+               // from the persisted store on load; `## Restart (init)` re-copies
+               // packages (picking up a mid-run `## Model` edit) and resets it.
+               activeRest = await ctx.reboot({
+                  name: activeName,
+                  mode: activeMode,
+                  init: step.init,
+               });
+               break;
+            }
+            case "hook": {
+               const fn = hooks[step.name];
+               if (!fn) throw new Error(`## Hook ${step.name}: no export named "${step.name}" in hooks.ts`);
+               // Hooks run in document order (interleaved with markdown steps) and
+               // share `state`, so a small hook can stash a value another reads.
+               await fn({ ...ctx, modelPath, state: hookState }, assert);
+               break;
+            }
+         }
+      }
+
+      // Drain any async publishes the scenario didn't explicitly `## Await`, so a
+      // background build doesn't outlive the scenario (best-effort; not asserted).
+      for (const { rest, pkg, id } of pendingBuilds.values()) {
+         await rest.pollMaterialization(pkg, id).catch(() => undefined);
+      }
+   };
+
+   return {
+      id: parsed.id,
+      tags: parsed.tags,
+      requires: parsed.requires,
+      note: parsed.note,
+      title: parsed.title,
+      packages,
+      sourceTables,
+      connections: parsed.connectionDecls,
+      run,
+   };
+}

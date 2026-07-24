@@ -7,17 +7,20 @@ import {
    BadRequestError,
    InvalidStateTransitionError,
    MaterializationConflictError,
+   MaterializationEligibilityError,
    MaterializationNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
 import {
    MaterializationMode,
    recordAutoLoadOutcome,
+   recordChainedStorageBuild,
    recordDropTables,
    recordManifestBindDegraded,
    recordMaterializationRun,
    recordSourceBuildDuration,
    recordSourcesOutcome,
+   recordStorageBuildFailure,
 } from "../materialization_metrics";
 import {
    BuildInstruction,
@@ -38,9 +41,32 @@ import {
    compilePackageBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
+   projectToPublicColumns,
    iterGraphSources,
 } from "./build_plan";
+import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
+import { assertMaterializationEligible } from "./materialization_eligibility";
+import {
+   assertStorageServeShapeCompiles,
+   buildDownstreamIntoStorage,
+   buildSourceIntoStorage,
+   dropStorageTable,
+   type StorageBuildResult,
+} from "./materialization_build_session";
+import { escapeSQL } from "./connection";
+import {
+   buildChainedStorageBuildModel,
+   buildVirtualMap,
+   deriveServeBindings,
+   type ServeBinding,
+   type SourceLocation,
+   sliceSourceRange,
+} from "./materialization_serve_transform";
+import type { ApiConnection } from "./model";
+import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
 import {
    bareTableName,
    quoteIdentifier,
@@ -48,6 +74,19 @@ import {
    quoteTablePath,
 } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
+import { redactPgSecrets } from "../pg_helpers";
+
+/**
+ * The narrow environment surface the build path needs to materialize into a
+ * `storage=` destination: resolve a connection's config by name (source creds to
+ * federate, destination catalog to attach) and the environment root (to derive a
+ * plain-DuckDB destination's file path). Kept minimal to avoid coupling the
+ * materialization service to the full Environment type.
+ */
+interface BuildEnvironment {
+   getApiConnection(connectionName: string): ApiConnection;
+   getEnvironmentPath(): string;
+}
 
 /**
  * Length of the sourceEntityId prefix used when synthesizing staging table
@@ -70,6 +109,117 @@ export function stagingSuffix(sourceEntityId: string): string {
  */
 function selfAssignTableName(persistSource: PersistSource): string {
    return deriveAnnotationFields(persistSource).name || persistSource.name;
+}
+
+/**
+ * The build manifest for a `storage=` build, with storage-materialized entries
+ * removed. A storage build runs in the source warehouse (passthrough), so it
+ * cannot reference an upstream that landed in a DuckDB/DuckLake store — dropping
+ * those entries makes the compiler INLINE the upstream (non-strict) or raise a
+ * clean strict-miss (strict), instead of emitting a cross-engine table
+ * reference. colocated entries are kept — the warehouse build can
+ * reference them, carrying forward the DIALECT-QUOTED table path the seed loop
+ * already stamped (publisher #904's quoteSeedTablePath), so the downstream FROM
+ * resolves a case-preserved upstream on a case-folding engine. Preserves the
+ * manifest's `strict` flag.
+ */
+export function manifestExcludingStorage(
+   manifest: Manifest,
+   builtEntries: Record<string, ManifestEntry>,
+): Manifest["buildManifest"] {
+   const reduced = new Manifest();
+   reduced.strict = manifest.strict;
+   // The source manifest's entries are already dialect-quoted (#904); reuse that
+   // quoting rather than the raw physical name so the kept colocated references
+   // stay canonical for the downstream FROM.
+   const quoted = manifest.buildManifest.entries;
+   for (const [id, entry] of Object.entries(builtEntries)) {
+      if (!entry.storageConnectionName && quoted[id]) {
+         reduced.update(id, { tableName: quoted[id].tableName });
+      }
+   }
+   return reduced.buildManifest;
+}
+
+/**
+ * The `storage=` destination a source DECLARES (external-tier intent), or
+ * undefined. Independent of `PERSIST_STORAGE_MODE` — reflects author intent, so
+ * the build can tell a `storage=` source apart from a plain colocated
+ * `#@ persist` even when the tier is off.
+ */
+function declaredStorage(persistSource: PersistSource): string | undefined {
+   return deriveAnnotationFields(persistSource).storage?.trim() || undefined;
+}
+
+/**
+ * Resolve a persist source's `#@ persist storage=<ref>` to the EFFECTIVE
+ * destination connection name for a build, or undefined for the default
+ * colocated path (the source materializes into its own warehouse). Read
+ * publisher-side from the compiled annotation (the same `annotationFields` map
+ * the plan echoes); the reference resolves generically against registered
+ * connections. Absent `storage=` ⇒ undefined (colocated); any value names a
+ * registered connection to materialize into. Any managed-tier alias is resolved
+ * by the host upstream and set on the wire instruction's `destination` — it
+ * never reaches this publisher-side generic resolution.
+ *
+ * When `PERSIST_STORAGE_MODE=off` this returns undefined regardless of the
+ * annotation, so the feature is a runtime kill switch that never fails a
+ * package (the ignored `storage=` is surfaced as a package warning, not an
+ * error). Undefined here does NOT mean "build it colocated" for a source that
+ * declared `storage=` — `deriveSelfInstructions` skips such a source entirely so
+ * it serves live; see {@link declaredStorage}.
+ */
+function resolveStorageDestination(
+   persistSource: PersistSource,
+): string | undefined {
+   if (getPersistStorageMode() === "off") return undefined;
+   return declaredStorage(persistSource);
+}
+
+/** Connection-config keys whose string values are credentials to redact. */
+const SENSITIVE_KEY =
+   /pass(word)?|secret|private_?key|service_?account|access_?key|token|connection_?string|account/i;
+
+/** Collect credential string values (from sensitively-named keys) in a config. */
+function collectSensitiveValues(value: unknown, out: Set<string>): void {
+   if (value === null || typeof value !== "object") return;
+   if (Array.isArray(value)) {
+      for (const v of value) collectSensitiveValues(v, out);
+      return;
+   }
+   for (const [key, v] of Object.entries(value)) {
+      if (typeof v === "string" && v.length >= 4 && SENSITIVE_KEY.test(key)) {
+         out.add(v);
+      } else {
+         collectSensitiveValues(v, out);
+      }
+   }
+}
+
+/**
+ * Redact the actual credential values (from the given connection configs) out
+ * of an error message, then surface the message. This keeps a build error
+ * legible — a "schema not found" or "table does not exist" tells the operator
+ * exactly what to fix — while never leaking the passwords / secrets / service
+ * account JSON / connection strings a federation or attach error can echo. Only
+ * the concrete secret values are removed, not the message structure.
+ */
+export function redactConnectionSecrets(
+   message: string,
+   ...connections: unknown[]
+): string {
+   const secrets = new Set<string>();
+   for (const c of connections) collectSensitiveValues(c, secrets);
+   let redacted = redactPgSecrets(message);
+   for (const s of secrets) {
+      redacted = redacted.split(s).join("***");
+      // A DuckDB error often echoes the offending SQL statement, in which a
+      // secret containing a single quote appears single-quote-escaped (`''`) —
+      // so the raw value won't match. Also redact the escaped form.
+      const escaped = escapeSQL(s);
+      if (escaped !== s) redacted = redacted.split(escaped).join("***");
+   }
+   return redacted;
 }
 
 /** Classify a thrown build error as cancelled (cooperative abort) or failed. */
@@ -384,6 +534,29 @@ export class MaterializationService {
             compilePackageBuildPlan(pkg, signal),
          );
 
+         // Backstop: refuse loudly if the package annotated a `#@ persist` source
+         // that Malloy's getBuildPlan() silently dropped (a shape it doesn't
+         // treat as a materializable root — see detectDroppedPersistSources).
+         // Without this the build would report success with an empty manifest and
+         // the source would serve live, contradicting the "hard refuse, never a
+         // silent fallback" contract. Scoped to the sources this build targets so
+         // a build of unrelated sources isn't blocked by a dropped sibling.
+         const relevantDropped = (compiled.droppedPersistSources ?? []).filter(
+            (d) => !opts.sourceNames || opts.sourceNames.includes(d.name),
+         );
+         if (relevantDropped.length > 0) {
+            const names = relevantDropped.map((d) => `'${d.name}'`).join(", ");
+            throw new MaterializationEligibilityError({
+               message:
+                  `Source(s) ${names} are annotated '#@ persist' but were not ` +
+                  `recognized as a materializable source, so nothing would be ` +
+                  `built (they would be served live). Only query/aggregate ` +
+                  `sources materialize; a filtered pass-through does not. Persist ` +
+                  `a query source, or invoke a parameterized source with a bound ` +
+                  `argument, or drop the annotation to serve live.`,
+            });
+         }
+
          let instructions: BuildInstruction[];
          let carried: Record<string, ManifestEntry>;
          if (orchestrated) {
@@ -394,6 +567,31 @@ export class MaterializationService {
             // table instead of recomputing live. The reference key is the
             // compiler's manifest-lookup sourceEntityId (see ManifestReference).
             carried = this.referenceManifestToEntries(opts.referenceManifest);
+            // Upstream resolution for an orchestrated build draws on three
+            // sources, in DESCENDING precedence — a reference is an IDENTITY, not
+            // a copy the caller must fully courier:
+            //   1. The explicit `referenceManifest` couriered in THIS build call.
+            //   2. The package's BOUND manifest (`manifestLocation`) — the set the
+            //      orchestrator distributed to this worker. This is what makes the
+            //      cross-worker flow work: a worker that never built the upstream
+            //      still holds its full entry via the refreshed manifest, so a
+            //      downstream can reuse the upstream's materialized table.
+            //   3. This worker's own most-recent local manifest (skip-if-unchanged
+            //      cache) — same-worker reuse.
+            // Each fills the storage fields (sourceName, storageConnectionName,
+            // schema) a thin reference can't carry — required for a `storage=`
+            // upstream's stack-on-the-parent rebind. Higher-precedence
+            // fields win; each step is best-effort (a fetch/read failure leaves
+            // the entries as they are).
+            await this.seedFromBoundManifest(carried, pkg, instructions);
+            if (Object.keys(carried).length > 0) {
+               await this.resolveReferencesFromStore(
+                  carried,
+                  environmentId,
+                  packageName,
+                  id,
+               );
+            }
          } else {
             // Skip-if-unchanged: reuse tables from the most recent successful
             // manifest for sources whose sourceEntityId is unchanged, unless
@@ -414,6 +612,7 @@ export class MaterializationService {
 
          const entries = await this.executeInstructedBuild(
             compiled,
+            environment,
             instructions,
             carried,
             signal,
@@ -484,6 +683,33 @@ export class MaterializationService {
          )) {
             if (include && !include.has(persistSource.name)) continue;
 
+            // Safety: a source that DECLARES `storage=` must never silently
+            // downgrade to a colocated build when the external tier is disabled
+            // (PERSIST_STORAGE_MODE=off). A colocated build writes a CTAS into the
+            // source's OWN warehouse — which the author did not intend (they asked
+            // for external storage; production grants this server read-only
+            // warehouse access) and which could fail or land in an unexpected
+            // schema. Skip it: the source is not materialized and serves LIVE, and
+            // the mode warning (Package.storageWarnings) surfaces the degraded
+            // state. A plain `#@ persist` (no `storage=`) is unaffected —
+            // colocated IS its author's intent (the v0 path, ungated by the
+            // storage kill switch).
+            if (
+               getPersistStorageMode() === "off" &&
+               declaredStorage(persistSource)
+            ) {
+               continue;
+            }
+
+            const destination = resolveStorageDestination(persistSource);
+            if (destination) {
+               // Gate BEFORE computeSourceEntityId: an unbound parameter or a
+               // given makes getSQL() (called inside computeSourceEntityId)
+               // throw opaquely, so the eligibility refusal must fire first to
+               // give a clean, actionable 422.
+               assertMaterializationEligible(persistSource);
+            }
+
             const sourceEntityId = computeSourceEntityId(
                persistSource,
                compiled.connectionDigests,
@@ -492,19 +718,39 @@ export class MaterializationService {
             seen.add(sourceEntityId);
 
             const prior = priorEntries[sourceEntityId];
-            if (prior && prior.physicalTableName) {
+            // Destination-scoped reuse: carry a prior table forward only when it
+            // landed in the SAME destination. sourceEntityId is a pure content
+            // address and does NOT encode the destination, so a source that adds,
+            // drops, or switches `storage=` must rebuild — otherwise a
+            // warehouse-landed (colocated) table would be silently reused for a
+            // DuckLake serve that cannot resolve it.
+            if (
+               prior &&
+               prior.physicalTableName &&
+               (prior.storageConnectionName ?? undefined) === destination
+            ) {
                carried[sourceEntityId] = prior;
                continue;
             }
 
+            // Self-assign the physical name from `name=` (or the source name)
+            // verbatim for BOTH the colocated and storage
+            // destinations — the only difference between the two is which
+            // connection the table lands in. A storage build replaces the table
+            // atomically (`CREATE OR REPLACE`), so no generational decoration is
+            // needed to make a rebuild safe. An orchestrated build ignores this
+            // and trusts the host-supplied `physicalTableName`; the host owns any
+            // generational, ownership-scoped naming.
+            const logicalName = selfAssignTableName(persistSource);
             instructions.push({
                sourceEntityId,
                materializedTableId: `local-${sourceEntityId.substring(
                   0,
                   STAGING_ID_LEN,
                )}`,
-               physicalTableName: selfAssignTableName(persistSource),
+               physicalTableName: logicalName,
                realization: "COPY",
+               ...(destination ? { destination } : {}),
             });
          }
       }
@@ -538,6 +784,122 @@ export class MaterializationService {
    }
 
    /**
+    * Resolve upstream references against this publisher's OWN most-recent
+    * manifest, keyed by sourceEntityId (the same cache skip-if-unchanged reads).
+    * A reference is fundamentally an IDENTITY, not a copy: for each one that
+    * matches a locally persisted entry, fill in the fields a thin reference
+    * can't carry (sourceName, storageConnectionName, schema — needed for a
+    * `storage=` upstream's stack-on-the-parent rebind) from the local entry, while
+    * letting any caller-supplied field WIN (the orchestrator is authoritative across a
+    * stateless fleet). Mutates `carried` in place. Best-effort: a lookup failure
+    * leaves the references exactly as supplied, so the cross-worker courier path
+    * (a worker that never built the upstream, fed the full entry) is unaffected.
+    */
+   private async resolveReferencesFromStore(
+      carried: Record<string, ManifestEntry>,
+      environmentId: string,
+      packageName: string,
+      excludeId: string,
+   ): Promise<void> {
+      let cached: Record<string, ManifestEntry>;
+      try {
+         cached = await this.getMostRecentManifestEntries(
+            environmentId,
+            packageName,
+            excludeId,
+         );
+      } catch (err) {
+         logger.warn(
+            "Reference resolve-local lookup failed; using references as supplied",
+            {
+               packageName,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+         return;
+      }
+      for (const [sourceEntityId, ref] of Object.entries(carried)) {
+         const local = cached[sourceEntityId];
+         if (!local) continue;
+         // Local entry is the base; caller-supplied (defined) fields override it.
+         const merged: ManifestEntry = { ...local };
+         for (const [key, value] of Object.entries(ref)) {
+            if (value !== undefined) {
+               (merged as Record<string, unknown>)[key] = value;
+            }
+         }
+         carried[sourceEntityId] = merged;
+      }
+   }
+
+   /**
+    * Seed upstream reuse from the package's BOUND manifest — the set the
+    * orchestrator distributed to this worker via `manifestLocation`. This is the
+    * cross-worker path: a worker that never built an upstream still holds its full
+    * entry here (`storageConnectionName` + `schema` + `sourceName`), so a
+    * downstream can reuse the upstream's materialized table instead of recomputing
+    * it from raw. Adds any bound upstream not already carried (so a build needs no
+    * explicit reference when the manifest is refreshed), and fills gaps in a
+    * thin explicit reference — but an explicit `referenceManifest` field always
+    * wins (it targets THIS build). Sources this build is producing are skipped
+    * (built fresh, not reused). Best-effort: a fetch failure is ignored (the build
+    * falls back to the local store / inline recompute). Mutates `carried`.
+    */
+   private async seedFromBoundManifest(
+      carried: Record<string, ManifestEntry>,
+      pkg: { getPackageMetadata(): { manifestLocation?: string | null } },
+      instructions: BuildInstruction[],
+   ): Promise<void> {
+      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+      if (!manifestLocation) return;
+      let fetched;
+      try {
+         fetched = await fetchManifestEntries(manifestLocation);
+      } catch (err) {
+         logger.warn(
+            "Build upstream resolution: bound manifest fetch failed; ignoring",
+            {
+               manifestLocation,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+         return;
+      }
+      // Reconstruct a ManifestEntry map from both tiers of the fetched manifest:
+      // storage entries carry their full shape; colocated entries reconstruct from
+      // the tableName manifest.
+      const bound: Record<string, ManifestEntry> = {
+         ...fetched.storageEntries,
+      };
+      for (const [eid, e] of Object.entries(fetched.tableNameManifest)) {
+         if (!bound[eid]) {
+            bound[eid] = {
+               sourceEntityId: eid,
+               physicalTableName: e.tableName,
+               connectionName: e.connectionName,
+            };
+         }
+      }
+      const building = new Set(instructions.map((i) => i.sourceEntityId));
+      for (const [eid, entry] of Object.entries(bound)) {
+         if (building.has(eid)) continue;
+         const existing = carried[eid];
+         if (!existing) {
+            carried[eid] = entry;
+            continue;
+         }
+         // Explicit reference wins; the bound entry fills the gaps it left.
+         const merged: ManifestEntry = { ...entry };
+         for (const [key, value] of Object.entries(existing)) {
+            if (value !== undefined) {
+               (merged as Record<string, unknown>)[key] = value;
+            }
+         }
+         carried[eid] = merged;
+      }
+   }
+
+   /**
     * Entries of the most recent successful (MANIFEST_FILE_READY) materialization
     * for this package, used for skip-if-unchanged. Excludes the in-flight run.
     */
@@ -546,10 +908,11 @@ export class MaterializationService {
       packageName: string,
       excludeId: string,
    ): Promise<Record<string, ManifestEntry>> {
-      const list = await this.repository.listMaterializations(
-         environmentId,
-         packageName,
-      );
+      const list =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? [];
       for (const m of list) {
          if (m.id === excludeId) continue;
          if (m.status === "MANIFEST_FILE_READY" && m.manifest?.entries) {
@@ -570,6 +933,10 @@ export class MaterializationService {
             packageName: string,
             manifest: FreshnessManifest,
          ): Promise<void>;
+         bindPackageStorageServeBindings(
+            packageName: string,
+            entries: Record<string, ManifestEntry>,
+         ): Promise<void>;
       },
       packageName: string,
       entries: Record<string, ManifestEntry>,
@@ -580,7 +947,12 @@ export class MaterializationService {
       // bound un-gated (always serve the freshly-built table).
       const manifestEntries: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
-         if (entry.physicalTableName) {
+         // Storage entries serve cross-connection via the virtual-source
+         // bindings (below), NOT the same-connection manifest substitution —
+         // putting one here would make the original model try to substitute the
+         // source with a table on its OWN (source) connection, which doesn't
+         // exist there. Only colocated entries go into the tableName manifest.
+         if (entry.physicalTableName && !entry.storageConnectionName) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // Carried so the bind step can quote the physical path for the
@@ -596,6 +968,14 @@ export class MaterializationService {
          await environment.reloadAllModelsForPackage(
             packageName,
             manifestEntries,
+         );
+         // Separately bind the FULL entries as storage serve bindings — sources
+         // materialized into a storage destination serve cross-connection via
+         // the virtual-source transform, not the tableName manifest above. No-op
+         // for a package with no storage= sources (deriveServeBindings → []).
+         await environment.bindPackageStorageServeBindings(
+            packageName,
+            entries,
          );
          recordAutoLoadOutcome("success");
          logger.info("Auto-run: loaded manifest into package models", {
@@ -692,6 +1072,7 @@ export class MaterializationService {
     */
    private async executeInstructedBuild(
       compiled: CompiledBuildPlan,
+      environment: BuildEnvironment,
       instructions: BuildInstruction[],
       seedEntries: Record<string, ManifestEntry>,
       signal: AbortSignal,
@@ -755,6 +1136,28 @@ export class MaterializationService {
          for (const persistSource of iterGraphSources(graph, sources)) {
             if (signal.aborted) throw new Error("Build cancelled");
 
+            // Prefer sourceID matching (so the caller's sourceEntityId scheme
+            // stays opaque to the build); the sourceEntityId lookup below is the
+            // fallback for instructions without a sourceID (auto-run). Resolved
+            // before computeSourceEntityId so the eligibility gate wins: that
+            // call invokes getSQL(), which throws opaquely for a free-parameter
+            // or given source, losing the clean 422.
+            const orchestratedInstruction = bySourceID.get(
+               persistSource.sourceID,
+            );
+
+            // Enforce the eligibility gate for any storage-targeted build,
+            // including orchestrated (host-supplied) instructions — the publisher
+            // refuses an ineligible source into the tier itself, not on trust.
+            // Skipped when the mode is off: the kill switch ignores a
+            // host-supplied destination too and does a colocated build.
+            if (
+               orchestratedInstruction?.destination &&
+               getPersistStorageMode() !== "off"
+            ) {
+               assertMaterializationEligible(persistSource);
+            }
+
             // The manifest is keyed by the content sourceEntityId — what Malloy
             // recomputes to resolve upstream persist references during SQL
             // generation — independent of the instruction's identity sourceEntityId.
@@ -762,13 +1165,19 @@ export class MaterializationService {
                persistSource,
                connectionDigests,
             );
-            // Prefer sourceID matching (so the caller's sourceEntityId scheme stays
-            // opaque to the build); fall back to sourceEntityId for instructions
-            // without a sourceID (auto-run).
             const instruction =
-               bySourceID.get(persistSource.sourceID) ??
-               bySourceEntityId.get(sourceEntityId);
+               orchestratedInstruction ?? bySourceEntityId.get(sourceEntityId);
             if (!instruction) continue;
+
+            // Auto-run already gated pre-getSQL in deriveSelfInstructions;
+            // re-assert (idempotent) so no path into a storage build is ungated.
+            if (
+               !orchestratedInstruction &&
+               instruction.destination &&
+               getPersistStorageMode() !== "off"
+            ) {
+               assertMaterializationEligible(persistSource);
+            }
 
             const entry = await this.buildOneSource(
                persistSource,
@@ -776,6 +1185,8 @@ export class MaterializationService {
                connection,
                connectionDigests,
                manifest,
+               environment,
+               entries,
             );
             entries[sourceEntityId] = entry;
          }
@@ -795,13 +1206,71 @@ export class MaterializationService {
       connection: MalloyConnection,
       connectionDigests: Record<string, string>,
       manifest: Manifest,
+      environment: BuildEnvironment,
+      builtEntries: Record<string, ManifestEntry>,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
+      const isStorageBuild =
+         !!instruction.destination && getPersistStorageMode() !== "off";
+      // ANY warehouse-executed build SQL — a colocated CTAS or a storage build's
+      // native passthrough — runs against the SOURCE warehouse, which cannot see
+      // a storage-materialized upstream's DuckDB/DuckLake table (a different
+      // engine). Substituting that upstream's lake table name into warehouse SQL
+      // would reference a table the warehouse can't resolve (a confusing "table
+      // not found"), whether the downstream is a storage build OR a colocated
+      // source reading a storage upstream. So exclude storage-materialized
+      // upstreams from the build manifest in BOTH cases: non-strict, they INLINE
+      // (recompute from raw against the warehouse) so a chained source still
+      // materializes; under `strictUpstreams` the excluded reference becomes a
+      // clean strict-miss error (the orchestrated contract — don't silently
+      // recompute). A stack-on-the-parent build reads the parent's lake table
+      // instead, but via a separate DuckDB recompile that does NOT use this
+      // warehouse buildSQL — this remains its recompute-from-raw fallback.
+      const buildManifest = manifestExcludingStorage(manifest, builtEntries);
       const buildSQL = persistSource.getSQL({
-         buildManifest: manifest.buildManifest,
+         buildManifest,
          connectionDigests,
       });
+
+      // `storage=` build: materialize into a DuckDB/DuckLake destination via a
+      // build-scoped session (never on the source or serve connection). Diverges
+      // fully from the in-warehouse CTAS below — different engine, credential
+      // federation, and a captured authoritative schema for the serve transform.
+      // Gated by the kill switch: when off, ignore a destination and do a colocated build.
+      if (isStorageBuild) {
+         // Stack-on-the-parent detection: does the source's SQL change when storage upstreams
+         // are PRESENT in the manifest (mapped to their lake tables) vs EXCLUDED
+         // (inlined, the buildSQL above)? If so it reads a storage-materialized
+         // upstream, so it can be built by reading the parent's lake table
+         // ("stack on the parent") instead of recomputing from raw. The compare
+         // is graph-free and self-contained; a single-source build's two SQLs are
+         // identical, so it skips straight to the passthrough below.
+         const dependsOnStorageUpstream =
+            persistSource.getSQL({
+               buildManifest: manifest.buildManifest,
+               connectionDigests,
+            }) !== buildSQL;
+         // Materialize ONLY the source's PUBLIC columns. `getSQL` projects every
+         // underlying column, including ones the source hides (`except:`, non-public
+         // access modifiers). Query reachability is bounded by the declared
+         // ::Shape, which the serve transform narrows to the public surface
+         // (proven by the shape-bounds-physical-columns scenario) — so what this
+         // prevents is the hidden column's VALUES sitting at rest in the
+         // destination store, reachable by direct catalog access and possibly
+         // across a trust boundary the source's visibility was meant to hold.
+         // Refuses the build (422) if the public surface can't be determined.
+         const publicBuildSQL = projectToPublicColumns(persistSource, buildSQL);
+         return this.buildOneSourceIntoStorage(
+            persistSource,
+            instruction,
+            manifest,
+            environment,
+            publicBuildSQL,
+            builtEntries,
+            dependsOnStorageUpstream,
+         );
+      }
 
       const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
@@ -849,7 +1318,7 @@ export class MaterializationService {
       manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
-      recordSourceBuildDuration(durationMs);
+      recordSourceBuildDuration(durationMs, "in_warehouse");
       logger.info(`Built materialized source ${persistSource.name}`, {
          physicalTableName,
          durationMs,
@@ -864,6 +1333,298 @@ export class MaterializationService {
          realization: instruction.realization,
          rowCount: null,
       };
+   }
+
+   /**
+    * Materialize a source into a `storage=` destination (a DuckDB/DuckLake
+    * connection) via a native query-passthrough CTAS on a build-scoped session.
+    * Records the destination connection and the captured authoritative DuckDB
+    * schema on the manifest entry so the source can later be served
+    * cross-dialect from the destination (the serve transform declares that
+    * schema). `connectionName` still names the SOURCE warehouse (where data is
+    * read from); `storageConnectionName` names where the table now lives.
+    */
+   private async buildOneSourceIntoStorage(
+      persistSource: PersistSource,
+      instruction: BuildInstruction,
+      manifest: Manifest,
+      environment: BuildEnvironment,
+      buildSQL: string,
+      builtEntries: Record<string, ManifestEntry>,
+      dependsOnStorageUpstream: boolean,
+   ): Promise<ManifestEntry> {
+      const sourceEntityId = instruction.sourceEntityId;
+      const physicalTableName = instruction.physicalTableName;
+      const destinationName = instruction.destination!;
+      const sourceConnection = environment.getApiConnection(
+         persistSource.connectionName,
+      );
+      const destinationConnection =
+         environment.getApiConnection(destinationName);
+
+      const startTime = performance.now();
+      let result;
+
+      // Stack on the parent: a source that reads a storage-materialized
+      // upstream is built by reading the parent's STORED lake table instead of
+      // recomputing it from raw against the warehouse. This reuses the
+      // parent's work and is consistent-by-construction (the downstream is a pure
+      // function of the parent's stored rows). Attempted only when the source
+      // actually reads a storage upstream; on any ineligibility (a parent
+      // refinement not carried into the rebind, a live-warehouse join, a
+      // cross-catalog parent) it throws and we fall back: recompute-from-raw when
+      // non-strict, or a loud refusal under `strictUpstreams` (the orchestrated
+      // contract — never silently recompute).
+      if (dependsOnStorageUpstream) {
+         try {
+            result = await this.buildDownstreamViaParents(
+               persistSource,
+               destinationName,
+               destinationConnection,
+               builtEntries,
+               environment,
+               physicalTableName,
+            );
+            recordChainedStorageBuild("parent_reuse");
+         } catch (err) {
+            // Same redaction contract as the recompute-from-raw path below: this
+            // branch's read-write ATTACH or CTAS can fail with the offending SQL
+            // echoed back, catalog `password=` included. Redact before the
+            // message reaches the thrown run `error` or the log.
+            const safeDetail = redactConnectionSecrets(
+               errMessage(err),
+               sourceConnection,
+               destinationConnection,
+            );
+            if (manifest.strict) {
+               recordChainedStorageBuild("strict_refused");
+               recordStorageBuildFailure(destinationName);
+               throw new Error(
+                  `Failed to materialize chained source '${persistSource.name}' ` +
+                     `into storage destination '${destinationName}' by reading ` +
+                     `its materialized upstream, and strict upstreams forbid ` +
+                     `recomputing it from raw: ${safeDetail}`,
+               );
+            }
+            recordChainedStorageBuild("inline_fallback");
+            logger.warn(
+               "Chained storage build could not reuse the parent table; " +
+                  "recomputing the upstream from raw",
+               {
+                  sourceName: persistSource.name,
+                  destinationName,
+                  reason: safeDetail,
+               },
+            );
+         }
+      }
+
+      // Recompute from raw (the single-source passthrough): materialize `buildSQL`
+      // (with storage upstreams inlined) in the source warehouse and CTAS the result
+      // into the destination. Skipped when stacking on the parent already produced
+      // the table above.
+      if (!result) {
+         try {
+            result = await buildSourceIntoStorage({
+               destinationName,
+               destinationConnection,
+               sourceConnection,
+               buildSQL,
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+            });
+         } catch (err) {
+            // Redaction: a failed federation / passthrough / attach
+            // error can echo source- or catalog-connection detail (connstrings,
+            // account names, service-account JSON) from the DuckDB engine. Strip
+            // the actual credential VALUES but keep the message, so an operator
+            // sees a legible, actionable error (e.g. "schema 'analytics' not
+            // found" when a `name=schema.table` target's schema wasn't
+            // provisioned) rather than an opaque failure — without leaking
+            // secrets into the user-visible run `error` column.
+            const safeDetail = redactConnectionSecrets(
+               errMessage(err),
+               sourceConnection,
+               destinationConnection,
+            );
+            recordStorageBuildFailure(destinationName);
+            logger.warn("Storage materialization build failed", {
+               sourceName: persistSource.name,
+               destinationName,
+               error: safeDetail,
+            });
+            throw new Error(
+               `Failed to materialize source '${persistSource.name}' into ` +
+                  `storage destination '${destinationName}': ${safeDetail}`,
+            );
+         }
+      }
+
+      // Build-time servability gate: the serve-shape must compile in DuckDB
+      // against the authoritative post-build schema, or the build is refused
+      // (HTTP 422) — a serve-time execution error turned into a fail-loud
+      // build-time refusal. Outside the redaction try above so the eligibility
+      // error surfaces as-is (it carries no connection secrets). Runs here, in
+      // stage→validate, because it needs the captured schema.
+      try {
+         await assertStorageServeShapeCompiles({
+            destinationName,
+            sourceName: persistSource.name,
+            virtualHandle: sourceEntityId,
+            physicalTableName,
+            schema: result.schema,
+         });
+      } catch (gateErr) {
+         // The table was already CTAS'd before this post-build gate, and no
+         // manifest entry records it yet — so a refusal would strand it where
+         // manifest-driven GC (which only drops names it recorded building) can
+         // never see it. Best-effort drop of the just-built table so a refused
+         // build doesn't leak an orphaned table.
+         //
+         // Note (in-place naming): the CTAS above already replaced any prior
+         // generation at this name, so a failed-gate rebuild has no earlier
+         // table to fall back to — the source reverts to serving live until a
+         // subsequent successful build. Rollback-safe regeneration (keep the
+         // prior generation until the new one is validated) requires the
+         // host-generational orchestrated path, not the auto-run server.
+         try {
+            await dropStorageTable({
+               destinationName,
+               destinationConnection,
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+            });
+         } catch (dropErr) {
+            logger.warn(
+               "Failed to drop a storage table stranded by a serve-shape gate " +
+                  "refusal (physical leak)",
+               {
+                  sourceName: persistSource.name,
+                  destinationName,
+                  physicalTableName,
+                  // The drop runs on a read-write attach, so a failure can echo
+                  // the catalog connstring.
+                  error: redactConnectionSecrets(
+                     errMessage(dropErr),
+                     sourceConnection,
+                     destinationConnection,
+                  ),
+               },
+            );
+         }
+         throw gateErr;
+      }
+
+      // Make this table visible to downstream sources built later in this run,
+      // so a chained storage source can stack on it (above).
+      manifest.update(sourceEntityId, { tableName: physicalTableName });
+
+      const durationMs = Math.round(performance.now() - startTime);
+      recordSourceBuildDuration(durationMs, "storage");
+      logger.info(
+         `Built materialized source ${persistSource.name} into storage`,
+         {
+            physicalTableName,
+            storageConnectionName: result.storageConnectionName,
+            columns: result.schema.length,
+            durationMs,
+         },
+      );
+
+      return {
+         sourceEntityId,
+         sourceName: persistSource.name,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName,
+         connectionName: persistSource.connectionName,
+         storageConnectionName: result.storageConnectionName,
+         schema: result.schema,
+         realization: instruction.realization,
+         rowCount: null,
+      };
+   }
+
+   /**
+    * Stack on the parent: materialize a chained storage source by reading its
+    * already-materialized upstream(s) from the SAME destination store. Rebinds
+    * every same-destination materialized upstream to a virtual source (base-only,
+    * the captured schema), re-declares the downstream over them (its definition
+    * text lifted from the author's model), and hands the assembled transient
+    * model to {@link buildDownstreamIntoStorage}, which compiles it against the
+    * build session and CTASes the downstream's SQL — now reading the parents'
+    * lake tables — into the destination.
+    *
+    * Throws (⇒ the caller falls back to recompute-from-raw) when there is no
+    * same-destination upstream to build on, the definition text can't be lifted,
+    * or the transient model doesn't compile (a parent refinement not carried, a
+    * live-warehouse join, a cross-catalog parent).
+    */
+   private async buildDownstreamViaParents(
+      persistSource: PersistSource,
+      destinationName: string,
+      destinationConnection: ApiConnection,
+      builtEntries: Record<string, ManifestEntry>,
+      environment: BuildEnvironment,
+      physicalTableName: string,
+   ): Promise<StorageBuildResult> {
+      // Rebind every upstream materialized into THIS destination. A parent in a
+      // DIFFERENT destination is absent here, so the downstream def fails to
+      // compile against the rebind model and the caller falls back — cross-catalog
+      // parent reuse is out of scope for the spike.
+      const upstreams: ServeBinding[] = deriveServeBindings(
+         builtEntries,
+      ).filter((b) => b.connectionName === destinationName);
+      if (upstreams.length === 0) {
+         throw new Error(
+            "no materialized upstream is available in this destination to build on",
+         );
+      }
+      const downstreamDefText = this.liftDownstreamDefText(persistSource);
+      if (!downstreamDefText) {
+         throw new Error(
+            "could not recover the downstream source definition text from the model",
+         );
+      }
+      const transientModel = buildChainedStorageBuildModel({
+         upstreams,
+         downstreamName: persistSource.name,
+         downstreamDefText,
+         destinationName,
+      });
+      return buildDownstreamIntoStorage({
+         destinationName,
+         destinationConnection,
+         transientModel,
+         downstreamName: persistSource.name,
+         virtualMap: buildVirtualMap(upstreams),
+         physicalTableName,
+         environmentPath: environment.getEnvironmentPath(),
+      });
+   }
+
+   /**
+    * Lift the verbatim RHS of a persist source's `source: <name> is …`
+    * declaration from the author's model file (same technique as the serve
+    * transform's join/view lift): read the file named by the source's compiled
+    * `location`, slice the covered range. A top-level source's range starts just
+    * after the `source: ` keyword, so the result is `<name> is <def>` and the
+    * transient-model assembler prepends `source: `. Returns undefined (⇒ fall
+    * back) when there is no file-backed location or the file can't be read/sliced.
+    */
+   private liftDownstreamDefText(
+      persistSource: PersistSource,
+   ): string | undefined {
+      const location = (
+         persistSource._explore as unknown as { location?: SourceLocation }
+      ).location;
+      if (!location?.url?.startsWith("file:")) return undefined;
+      let text: string;
+      try {
+         text = readFileSync(fileURLToPath(location.url), "utf8");
+      } catch {
+         return undefined;
+      }
+      return sliceSourceRange(text, location.range);
    }
 
    // ==================== CANCELLATION ====================
@@ -932,6 +1693,74 @@ export class MaterializationService {
       }
 
       await this.repository.deleteMaterialization(id);
+
+      // Re-derive the package's serve routing from the latest REMAINING
+      // successful materialization — BOTH tiers. The deleted run may have been
+      // the one bound for serving — and with `dropTables` its tables are now gone
+      // — so without this a query would keep routing (schema-on-faith, no
+      // run-time fallback) to a deleted/dropped table and error until the next
+      // reload or build. Rebinding picks the next-latest generation, or CLEARS
+      // the bindings when none remain (empty ⇒ serve live).
+      await this.rebindServeBindingsAfterDelete(environmentName, packageName);
+   }
+
+   /**
+    * Re-derive a package's serve routing from its latest remaining successful
+    * materialization and push it onto the loaded models — BOTH tiers, mirroring
+    * the load-time {@link Environment.rebindServeBindingsFromLocalStore}. Called
+    * after a delete so serving never points at a removed table; picks the
+    * next-latest generation, or clears the bindings when none remain.
+    * Best-effort (a failure logs and leaves the current bindings — a later
+    * reload/build re-derives).
+    *
+    * The manifest is split by tier:
+    *  - **colocated** (same-connection) → re-derived regardless of
+    *    `PERSIST_STORAGE_MODE`: colocated is the v0 path and is not gated by the
+    *    storage kill switch, so a reclaimed colocated table must not be left
+    *    routed even when the tier is off.
+    *  - **storage=** (cross-connection) → re-derived only when the tier is not
+    *    `off` (its serve routing requires the tier on; an off deployment does no
+    *    extra work here).
+    */
+   private async rebindServeBindingsAfterDelete(
+      environmentName: string,
+      packageName: string,
+   ): Promise<void> {
+      try {
+         const environmentId = await this.resolveEnvironmentId(environmentName);
+         // "" excludes nothing — the deleted record is already gone from the repo.
+         const entries = await this.getMostRecentManifestEntries(
+            environmentId,
+            packageName,
+            "",
+         );
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const { tableNameManifest, storageEntries } = splitManifestEntries(
+            entries,
+            `post-delete rebind (package ${packageName})`,
+         );
+         // Colocated: re-derive (or clear) regardless of mode.
+         await environment.bindPackageColocatedServeManifest(
+            packageName,
+            tableNameManifest,
+         );
+         // Storage=: only meaningful when the tier is not off.
+         if (getPersistStorageMode() !== "off") {
+            await environment.bindPackageStorageServeBindings(
+               packageName,
+               storageEntries,
+            );
+         }
+      } catch (err) {
+         logger.warn(
+            "Failed to rebind serve bindings after delete (leaving current " +
+               "bindings; a reload/build will re-derive)",
+            { packageName, error: errMessage(err) },
+         );
+      }
    }
 
    /**
@@ -940,6 +1769,14 @@ export class MaterializationService {
     * issues `DROP TABLE IF EXISTS` for the physical table and its (possible)
     * leftover staging table. Failures are logged and swallowed so a partial
     * cleanup never blocks deletion of the record.
+    *
+    * A physical name is dropped only when NO other remaining MANIFEST_FILE_READY
+    * run references it. Physical names are the source's `name=` verbatim (or a
+    * host-assigned name), so multiple generations of a source share one physical
+    * name — dropping a superseded record's table would otherwise take out the
+    * table the current generation still serves. The skip incidentally also
+    * protects the colocated case, where generations likewise share a
+    * name.
     */
    private async dropMaterializedTables(
       environmentName: string,
@@ -958,6 +1795,29 @@ export class MaterializationService {
       const pkg = await environment.getPackage(packageName, false);
       const connectionCache = new Map<string, MalloyConnection>();
 
+      // Physical names still referenced by ANOTHER MANIFEST_FILE_READY run for
+      // this package (keyed destination-and-name), so a shared name is never
+      // dropped out from under a live generation. `m` is still in the repo at
+      // this point (deletion happens after this sweep), so exclude it by id.
+      const tableKey = (dest: string, table: string) => `${dest}:${table}`;
+      const stillReferenced = new Set<string>();
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      const others =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+         )) ?? [];
+      for (const other of others) {
+         if (other.id === m.id) continue;
+         if (other.status !== "MANIFEST_FILE_READY") continue;
+         for (const e of Object.values(other.manifest?.entries ?? {})) {
+            const dest = e.storageConnectionName ?? e.connectionName;
+            if (dest && e.physicalTableName) {
+               stillReferenced.add(tableKey(dest, e.physicalTableName));
+            }
+         }
+      }
+
       for (const entry of Object.values(entries)) {
          const connectionName = entry.connectionName;
          const physicalTableName = entry.physicalTableName;
@@ -966,6 +1826,62 @@ export class MaterializationService {
                materializationId: m.id,
                sourceEntityId: entry.sourceEntityId,
             });
+            continue;
+         }
+
+         // Do not drop a table another live generation still serves (shared
+         // physical name — see the method doc).
+         const destForKey = entry.storageConnectionName ?? connectionName;
+         if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
+            logger.info(
+               "Skipping drop: table still referenced by another materialization",
+               {
+                  materializationId: m.id,
+                  physicalTableName,
+                  destination: destForKey,
+               },
+            );
+            continue;
+         }
+
+         // A storage= table lives in `storageConnectionName` (a DuckDB/DuckLake
+         // destination), not in `connectionName` (the source warehouse), and
+         // dropping it needs a build-scoped READ-WRITE attach — the serve attach
+         // is read-only — so it is dropped on its own RW session rather than on
+         // the (wrong-engine, read-only) source connection. Best-effort: a
+         // failure is logged and the sweep continues, so one unreachable
+         // destination never blocks reclaiming the rest.
+         if (entry.storageConnectionName) {
+            const destinationConnection = environment.getApiConnection(
+               entry.storageConnectionName,
+            );
+            try {
+               await dropStorageTable({
+                  destinationName: entry.storageConnectionName,
+                  destinationConnection,
+                  physicalTableName,
+                  environmentPath: environment.getEnvironmentPath(),
+               });
+               recordDropTables("success", "storage");
+               logger.info("Dropped materialized storage table on delete", {
+                  materializationId: m.id,
+                  physicalTableName,
+                  storageConnectionName: entry.storageConnectionName,
+               });
+            } catch (err) {
+               recordDropTables("failure", "storage");
+               logger.warn("Failed to drop a storage-materialized table", {
+                  materializationId: m.id,
+                  physicalTableName,
+                  storageConnectionName: entry.storageConnectionName,
+                  // The drop attaches read-write, so a failure can echo the
+                  // catalog connstring.
+                  error: redactConnectionSecrets(
+                     errMessage(err),
+                     destinationConnection,
+                  ),
+               });
+            }
             continue;
          }
 
@@ -994,14 +1910,14 @@ export class MaterializationService {
                   dialect,
                )}`,
             );
-            recordDropTables("success");
+            recordDropTables("success", "in_warehouse");
             logger.info("Dropped materialized table on delete", {
                materializationId: m.id,
                physicalTableName,
                connectionName,
             });
          } catch (err) {
-            recordDropTables("failure");
+            recordDropTables("failure", "in_warehouse");
             logger.warn("Failed to drop materialized table on delete", {
                materializationId: m.id,
                physicalTableName,

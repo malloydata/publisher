@@ -1,0 +1,297 @@
+import type { PersistSource } from "@malloydata/malloy";
+import { MaterializationEligibilityError } from "../errors";
+import { recordEligibilityRefused } from "../materialization_metrics";
+import { parseAuthorizeAnnotation } from "./authorize";
+
+/**
+ * Compile-time eligibility gate for materializing a persist source into a
+ * *storage* destination (a DuckDB/DuckLake tier table), as opposed to the
+ * default colocated path (no `storage=`). This is a HARD REFUSE: an
+ * ineligible source never builds an artifact.
+ *
+ * It exists because a `storage=<duckdb>` table is built once and served frozen
+ * to every subsequent query. Two properties that hold for a live query — the
+ * relation is recomputed per query, and per-tenant access filters bind at query
+ * time — are lost the moment the relation is frozen. So a source is only
+ * materializable when its relation is fully determined at build time:
+ *
+ *  1. **No unbound (free) parameters.** A source declaring an unbound parameter
+ *     is a *template* instantiated per query — there is no single relation to
+ *     freeze. Parameters bound to a constant are fine (the relation is fixed,
+ *     and the bound value already distinguishes the content address).
+ *  2. **No given references — a security refusal.** Givens bind at the
+ *     runtime/query layer and are the documented mechanism for row-level access
+ *     control (RLAC). A source filtered by a given (`where: tenant_id = $TENANT`)
+ *     materialized once and served frozen would leak one tenant's rows to every
+ *     tenant. This check fails closed: if the source references any given, it is
+ *     refused, no exceptions.
+ *  3. **No `#(authorize)` gate — a security refusal.** An authorize expression
+ *     is a per-request *who-can-query* gate evaluated at query time. The served
+ *     virtual shape of a materialized source carries no gate to evaluate, so a
+ *     materialized authorize-gated source would be served to everyone,
+ *     bypassing the gate. Fails closed and reaches a gate on a JOINED source too
+ *     (a join must not launder an authorize-gated source), mirroring the
+ *     transitive `#(authorize)` enforcement on the live serve path (#906).
+ *
+ * One further eligibility property from the design — the served source must
+ * compile in DuckDB (portability) — is enforced at *build* time against the
+ * captured table schema (see the DuckDB-compile gate in the build path), not
+ * here: it needs the post-build authoritative schema this compile-time pass
+ * does not have. This pass covers the properties determinable from the compiled
+ * source alone (free parameters, given references, authorize gates), so it can
+ * fail fast before any warehouse work.
+ *
+ * The gate reads the *compiled* source (only the compiled `ModelDef` sees
+ * effective annotations, parameters, and given usage through `extend`/imports —
+ * a raw-source scan would miss inherited declarations), so it must run after
+ * compilation and before the build.
+ *
+ * @throws {MaterializationEligibilityError} (HTTP 422) naming the source and the
+ *   specific reason, so the author can either fix the source or drop `storage=`.
+ */
+export function assertMaterializationEligible(
+   persistSource: PersistSource,
+): void {
+   const sourceName = persistSource.name;
+
+   // Fail closed, like referencesGiven / referencesAuthorize below: an unreadable
+   // parameter surface is a refusal, not an assumed absence of free parameters.
+   let unbound: string[];
+   try {
+      unbound = unboundParameterNames(persistSource);
+   } catch (err) {
+      recordEligibilityRefused("free_parameter");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${sourceName}' cannot be materialized into a storage ` +
+            `destination: its parameter surface could not be determined ` +
+            `(${err instanceof Error ? err.message : String(err)}), so the ` +
+            `publisher cannot prove the source has no free parameters. This is ` +
+            `refused for safety. Drop 'storage=' to serve it live from the ` +
+            `source warehouse.`,
+      });
+   }
+   if (unbound.length > 0) {
+      recordEligibilityRefused("free_parameter");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${sourceName}' cannot be materialized into a storage ` +
+            `destination: it has unbound parameter(s) ` +
+            `${unbound.map((p) => `'${p}'`).join(", ")}. A source with a free ` +
+            `parameter is a template instantiated per query, so there is no ` +
+            `single relation to materialize. Bind the parameter to a constant, ` +
+            `or drop 'storage=' to serve it live from the source warehouse.`,
+      });
+   }
+
+   if (referencesGiven(persistSource)) {
+      recordEligibilityRefused("given");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${sourceName}' cannot be materialized into a storage ` +
+            `destination: it references a given. Givens bind per query and are ` +
+            `used for row-level access control, so a materialized-once table ` +
+            `served to everyone would leak filtered rows across tenants. This ` +
+            `is refused for safety. Serve this source live (drop 'storage=').`,
+      });
+   }
+
+   if (referencesAuthorize(persistSource)) {
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${sourceName}' cannot be materialized into a storage ` +
+            `destination: it is protected by an #(authorize) gate (its own or a ` +
+            `joined source's). An authorize expression is evaluated per request; ` +
+            `a materialized-once table served frozen carries no gate, so it would ` +
+            `be served to everyone, bypassing authorization. This is refused for ` +
+            `safety. Serve this source live (drop 'storage=').`,
+      });
+   }
+}
+
+/**
+ * Names of the source's parameters that are declared but not bound to a value.
+ * A Malloy `Parameter` carries `value: ConstantExpr | null`; `null` is an
+ * unbound (free) parameter — bound-to-constant parameters have a non-null value.
+ *
+ * Fail-closed like the given/authorize walks (the caller turns a throw into a
+ * refusal): a parameter counts as unbound unless demonstrably bound, so a
+ * compiler shift to `value: undefined` can't let a template through. A MISSING
+ * `parameters` field is not an error — most sources declare none — so a renamed
+ * or relocated field is the one drift this can't catch; the real-compiler
+ * eligibility spec is what pins that shape.
+ */
+function unboundParameterNames(persistSource: PersistSource): string[] {
+   const def = persistSource._sourceDef as unknown;
+   if (def === null || typeof def !== "object") {
+      throw new Error("compiled source definition is not readable");
+   }
+   const parameters = (def as { parameters?: unknown }).parameters;
+   if (parameters === undefined || parameters === null) return [];
+   if (typeof parameters !== "object" || Array.isArray(parameters)) {
+      throw new Error(
+         `compiled source 'parameters' has an unexpected shape (${
+            Array.isArray(parameters) ? "array" : typeof parameters
+         })`,
+      );
+   }
+   const unbound: string[] = [];
+   for (const [name, param] of Object.entries(
+      parameters as Record<string, unknown>,
+   )) {
+      const bound =
+         param !== null &&
+         typeof param === "object" &&
+         (param as { value?: unknown }).value !== null &&
+         (param as { value?: unknown }).value !== undefined;
+      if (!bound) unbound.push(name);
+   }
+   return unbound;
+}
+
+/**
+ * Whether the compiled source (transitively) references any given. Fail-closed:
+ * walks the compiled source definition for both of Malloy's given signals —
+ * a non-empty `refSummary.givenUsage` (populated on filters and expressions by
+ * the reference-tracking walker) and any `given` / `givenReference` IR node —
+ * anywhere in the source's filter list, field expressions, or nested pipeline.
+ *
+ * A generic bounded walk (rather than reading a single well-known field) is
+ * deliberate: a given can hide in a field expression or a nested view, not just
+ * a top-level `where:`, and missing one is a tenant-isolation breach. The walk
+ * is depth- and visited-bounded so a cyclic IR graph cannot hang it, and any
+ * introspection failure is treated as "references a given" (fail closed).
+ */
+function referencesGiven(persistSource: PersistSource): boolean {
+   try {
+      return walkForGiven(persistSource._sourceDef, new WeakSet(), 0);
+   } catch {
+      // Fail closed: if we cannot prove the source is given-free, refuse it.
+      return true;
+   }
+}
+
+/** Max IR depth to walk; deep enough for real sources, a hang backstop. */
+const MAX_GIVEN_WALK_DEPTH = 200;
+
+function walkForGiven(
+   node: unknown,
+   seen: WeakSet<object>,
+   depth: number,
+): boolean {
+   if (depth > MAX_GIVEN_WALK_DEPTH) {
+      // Refuse rather than risk an unbounded structure hiding a given.
+      throw new Error("given-usage walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node as object)) return false;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      for (const item of node) {
+         if (walkForGiven(item, seen, depth + 1)) return true;
+      }
+      return false;
+   }
+
+   const record = node as Record<string, unknown>;
+
+   // A given declaration or reference IR node.
+   const nodeKind = record.node;
+   if (nodeKind === "given" || nodeKind === "givenReference") return true;
+   if (record.givenRef !== undefined) return true;
+
+   // Reference-tracking summary: a non-empty givenUsage means this fragment
+   // reads a given (the precise, per-fragment signal). It appears either nested
+   // under refSummary (per-fragment) OR as a bare `givenUsage` on a query/struct
+   // node — treat a non-empty array in EITHER shape as a hit, so the walk stays
+   // correct if a future compiler keeps only the summary and prunes the embedded
+   // `node:'given'` leaves.
+   const refSummary = record.refSummary as
+      | { givenUsage?: unknown[] }
+      | undefined;
+   if (refSummary?.givenUsage && refSummary.givenUsage.length > 0) return true;
+   if (Array.isArray(record.givenUsage) && record.givenUsage.length > 0) {
+      return true;
+   }
+
+   for (const value of Object.values(record)) {
+      if (walkForGiven(value, seen, depth + 1)) return true;
+   }
+   return false;
+}
+
+/**
+ * Whether the compiled source (transitively) carries an `#(authorize)` gate —
+ * on the source itself or on any source reachable through a join. Fail-closed:
+ * walks the compiled source definition for annotation notes (`blockNotes` /
+ * `notes`) whose text is an authorize annotation. A join embeds the joined
+ * SourceDef (with its own blockNotes), so a gate reached only through a join is
+ * still found — a join must not launder an authorize-gated source, matching the
+ * transitive enforcement on the live serve path (#906). Any introspection or
+ * parse failure is treated as "carries a gate" (fail closed).
+ */
+function referencesAuthorize(persistSource: PersistSource): boolean {
+   try {
+      return walkForAuthorize(persistSource._sourceDef, new WeakSet(), 0);
+   } catch {
+      // Fail closed: if we cannot prove the source is authorize-free, refuse it.
+      return true;
+   }
+}
+
+/** True if an annotation string is an `#(authorize)`/`##(authorize)` gate. */
+function isAuthorizeAnnotation(text: string): boolean {
+   try {
+      return parseAuthorizeAnnotation(text) !== null;
+   } catch {
+      // A malformed authorize annotation still means the author intended a gate.
+      return true;
+   }
+}
+
+function walkForAuthorize(
+   node: unknown,
+   seen: WeakSet<object>,
+   depth: number,
+): boolean {
+   if (depth > MAX_GIVEN_WALK_DEPTH) {
+      throw new Error("authorize-usage walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node as object)) return false;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      for (const item of node) {
+         if (walkForAuthorize(item, seen, depth + 1)) return true;
+      }
+      return false;
+   }
+
+   const record = node as Record<string, unknown>;
+
+   // Annotation notes live under `blockNotes` (source/statement) or `notes`
+   // (model/file), as either bare strings or `{ text }` objects.
+   for (const key of ["blockNotes", "notes"]) {
+      const arr = record[key];
+      if (!Array.isArray(arr)) continue;
+      for (const n of arr) {
+         const text =
+            typeof n === "string"
+               ? n
+               : n &&
+                   typeof n === "object" &&
+                   typeof (n as { text?: unknown }).text === "string"
+                 ? (n as { text: string }).text
+                 : undefined;
+         if (text !== undefined && isAuthorizeAnnotation(text)) return true;
+      }
+   }
+
+   for (const value of Object.values(record)) {
+      if (walkForAuthorize(value, seen, depth + 1)) return true;
+   }
+   return false;
+}

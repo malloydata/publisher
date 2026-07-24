@@ -10,9 +10,11 @@ import {
    deriveBuildPlan,
    flattenDependsOn,
    iterGraphSources,
+   projectToPublicColumns,
    resolveFreshness,
    resolvePackageConnections,
 } from "./build_plan";
+import { MaterializationEligibilityError } from "../errors";
 import { fakeSource } from "./materialization_test_fixtures";
 import { Model } from "./model";
 
@@ -147,6 +149,69 @@ describe("deriveAnnotationFields", () => {
       } as unknown as PersistSource;
 
       expect(deriveAnnotationFields(source)).toEqual({});
+   });
+});
+
+describe("projectToPublicColumns", () => {
+   // A source whose PUBLIC surface (intrinsic atomic fields) is `cols` — i.e. any
+   // `except:`-ed / access-restricted column is already absent here, as Malloy
+   // reflects it. deriveColumns reads exactly this.
+   const sourceWithPublicCols = (cols: string[]): PersistSource =>
+      ({
+         dialectName: "postgres",
+         _explore: {
+            intrinsicFields: cols.map((name) => ({
+               name,
+               isAtomicField: () => true,
+               type: "string",
+            })),
+         },
+      }) as unknown as PersistSource;
+
+   it("wraps the build SQL to project only the source's public columns", () => {
+      const src = sourceWithPublicCols(["order_date", "amount"]); // `region` hidden → absent
+      const out = projectToPublicColumns(
+         src,
+         "SELECT order_date, region, amount FROM t",
+      );
+      // Outer projection lists ONLY the public columns; the hidden one is dropped.
+      expect(out).toMatch(/^SELECT\b/);
+      expect(out).toContain("order_date");
+      expect(out).toContain("amount");
+      expect(out).toContain(
+         "FROM (SELECT order_date, region, amount FROM t) AS __public",
+      );
+      // `region` must not appear in the OUTER projection (before the subquery).
+      const outerProjection = out.slice(0, out.indexOf("FROM ("));
+      expect(outerProjection).not.toContain("region");
+   });
+
+   // Fails closed, like the rest of the eligibility surface: a public surface we
+   // can't determine refuses the build rather than widening to everything getSQL
+   // projects (which is where the hidden columns are).
+   it("refuses the build when the field list can't be read", () => {
+      const noExplore = {} as unknown as PersistSource;
+      expect(() => projectToPublicColumns(noExplore, "SELECT 1")).toThrow(
+         /public column surface could not be determined/,
+      );
+   });
+
+   it("refuses the build when the source exposes no public atomic columns", () => {
+      // Everything getSQL projects is hidden — the worst case to materialize.
+      expect(() =>
+         projectToPublicColumns(sourceWithPublicCols([]), "SELECT 1"),
+      ).toThrow(/no public atomic columns/);
+   });
+
+   it("refuses with an eligibility error (422), naming the source", () => {
+      const src = { ...sourceWithPublicCols([]), name: "daily" };
+      try {
+         projectToPublicColumns(src as unknown as PersistSource, "SELECT 1");
+         throw new Error("expected a refusal");
+      } catch (err) {
+         expect(err).toBeInstanceOf(MaterializationEligibilityError);
+         expect((err as Error).message).toContain("'daily'");
+      }
    });
 });
 
@@ -418,10 +483,68 @@ describe("compilePackageBuildPlan", () => {
          getModelRuntime.restore();
       }
    });
+
+   it("skips a model lacking ##! experimental.persistence instead of aborting the package", async () => {
+      // getBuildPlan() THROWS on a model without the flag (it does not return
+      // empty), so a header-less non-persist model — e.g. an imported base that
+      // only defines raw sources — must be skipped, or it would abort the whole
+      // package plan and drop the persist source in the sibling model.
+      const fakeModel = (hasFlag: boolean, graphs: MalloyBuildGraph[]) => ({
+         modelAnnotations: {
+            parseAsTag: () => ({ tag: { has: () => hasFlag } }),
+         },
+         getBuildPlan: () => {
+            if (!hasFlag) {
+               throw new Error(
+                  "Model must have ##! experimental.persistence to use getBuildPlan()",
+               );
+            }
+            return { graphs, sources: {}, tagParseLog: [] };
+         },
+      });
+      const models: Record<string, ReturnType<typeof fakeModel>> = {
+         "base.malloy": fakeModel(false, []), // header-less: must be skipped
+         "agg.malloy": fakeModel(true, [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "daily@agg", dependsOn: [] }]],
+            },
+         ] as unknown as MalloyBuildGraph[]),
+      };
+      const getModelRuntime = sinon
+         .stub(Model, "getModelRuntime")
+         .callsFake((async (_path: unknown, modelPath: unknown) => ({
+            runtime: {
+               loadModel: () => ({
+                  getModel: async () => models[modelPath as string],
+               }),
+            },
+            modelURL: new URL(`file:///${modelPath}`),
+            importBaseURL: new URL("file:///"),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         })) as any);
+      try {
+         const pkg = {
+            getModelPaths: () => ["base.malloy", "agg.malloy"],
+            getPackagePath: () => "/test",
+            getMalloyConfig: () => ({}),
+            getMalloyConnection: async () => ({ getDigest: async () => "dig" }),
+         } as unknown as Parameters<typeof compilePackageBuildPlan>[0];
+
+         // Would throw here before the guard (base.malloy's getBuildPlan).
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         // The header-less model is skipped; the persist source in agg survives.
+         expect(compiled.graphs).toHaveLength(1);
+         expect(compiled.graphs[0].nodes[0][0].sourceID).toBe("daily@agg");
+      } finally {
+         getModelRuntime.restore();
+      }
+   });
 });
 
 describe("computePackageBuildPlan", () => {
-   it("returns null when the package declares no persist sources", async () => {
+   it("returns a null plan and no dropped sources when the package declares no persist sources", async () => {
       const pkg = {
          getModelPaths: () => [],
          getPackagePath: () => "/test",
@@ -429,6 +552,9 @@ describe("computePackageBuildPlan", () => {
          getMalloyConnection: async () => ({}),
       } as unknown as Parameters<typeof computePackageBuildPlan>[0];
 
-      expect(await computePackageBuildPlan(pkg)).toBeNull();
+      const { plan, droppedPersistSources } =
+         await computePackageBuildPlan(pkg);
+      expect(plan).toBeNull();
+      expect(droppedPersistSources).toEqual([]);
    });
 });

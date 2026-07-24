@@ -126,6 +126,12 @@ export function fakeSource(opts: {
     * assert what physical name a downstream build sees for its upstream.
     */
    onGetSQL?: (sqlOpts: unknown) => void;
+   /**
+    * The compiled `_sourceDef` the materialization-eligibility gate walks
+    * (parameters/givens). Defaults to an empty def (eligible); the gate only
+    * runs for `storage=` sources, so colocated fakes never touch it.
+    */
+   sourceDef?: unknown;
 }): PersistSource {
    const fields = opts.annotationFields;
    return {
@@ -133,6 +139,7 @@ export function fakeSource(opts: {
       sourceID: opts.name,
       connectionName: opts.connectionName ?? "duckdb",
       dialectName: opts.dialectName ?? "duckdb",
+      _sourceDef: opts.sourceDef ?? {},
       makeBuildId: () => opts.sourceEntityId,
       getSQL: (sqlOpts?: unknown) => {
          opts.onGetSQL?.(sqlOpts);

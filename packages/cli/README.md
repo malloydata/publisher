@@ -3,11 +3,13 @@
 Command-line interface for managing Malloy Publisher resources.
 
 ## Installation
+
 ```bash
 npm install -g @malloydata/publisher-cli
 ```
 
 ## Usage
+
 ```bash
 # Set the Publisher server URL (optional, defaults to http://localhost:4000)
 export MALLOY_PUBLISHER_URL=http://localhost:4000
@@ -24,7 +26,7 @@ malloy-pub list materialization --environment my-environment --package my-packag
 malloy-pub materialize --environment my-environment --package my-package --wait
 malloy-pub get materialization <id> --environment my-environment --package my-package
 malloy-pub stop-materialization <id> --environment my-environment --package my-package
-malloy-pub delete materialization <id> --environment my-environment --package my-package
+malloy-pub delete materialization <id> --environment my-environment --package my-package --drop-tables
 
 # Build manifest (the tables a materialization produced)
 malloy-pub get manifest --environment my-environment --package my-package
@@ -38,6 +40,7 @@ malloy-pub list database --environment my-environment --package my-package
 ```
 
 ## Development
+
 ```bash
 # Install dependencies
 npm install
@@ -63,7 +66,7 @@ Resource (CRUD) verbs:
 - `malloy-pub get <resource> [name]` - Get resource details (environment, package, connection, materialization, model, notebook, manifest)
 - `malloy-pub create <resource> [name]` - Create a resource (environment, package, connection)
 - `malloy-pub update <resource> [name]` - Update a resource (environment, package, connection)
-- `malloy-pub delete <resource> [name]` - Delete a resource (environment, package, connection, materialization)
+- `malloy-pub delete <resource> [name]` - Delete a resource (environment, package, connection, materialization). `delete materialization <id> [--drop-tables]` also drops the materialized physical tables — including tables built into a `storage=` DuckDB/DuckLake destination (a destination-aware drop), not just in-warehouse tables.
 
 Action commands:
 

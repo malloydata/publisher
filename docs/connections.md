@@ -23,7 +23,30 @@ An env-level DuckDB connection must declare at least one attached database. If y
 
 ## DuckLake connections (`type: "ducklake"`)
 
-A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path — and queries it read-only. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.
+A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.
+
+It also doubles as a materialization **destination** for the storage tier: a `#@ persist storage=<name>` source is built into it and served back from it (see [persist-storage-tutorial.md](persist-storage-tutorial.md)). The live user-facing attach is read-only; a build materializes over a transient, build-scoped read-write session. It pairs a **catalog** — a metadata database, typically Postgres — with **storage** — a `bucketUrl` for the Parquet data (an `s3://`/`gs://` URL in the cloud, or a local directory for dev):
+
+```json
+{
+  "name": "lake",
+  "type": "ducklake",
+  "ducklakeConnection": {
+    "catalog": {
+      "postgresConnection": {
+        "host": "…",
+        "port": 5432,
+        "databaseName": "ducklake_catalog",
+        "userName": "…",
+        "password": "…"
+      }
+    },
+    "storage": { "bucketUrl": "/path/or/s3://bucket/prefix" }
+  }
+}
+```
+
+Materialized data always lands as **Parquet** in the storage bucket (Publisher disables DuckLake small-table inlining on the write path, so it never accumulates in the catalog database). The materialization tier is gated by `PERSIST_STORAGE_MODE` — see [configuration.md](configuration.md).
 
 ## Connection naming rules
 

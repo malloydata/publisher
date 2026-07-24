@@ -24,7 +24,7 @@ describe("fetchManifestEntries", () => {
       return file;
    }
 
-   it("maps physicalTableName to the Malloy runtime tableName", async () => {
+   it("maps physicalTableName to the Malloy runtime tableName (colocated entries)", async () => {
       const file = await writeManifest({
          builtAt: new Date().toISOString(),
          strict: false,
@@ -38,17 +38,64 @@ describe("fetchManifestEntries", () => {
          },
       });
 
-      const entries = await fetchManifestEntries(file);
+      const { tableNameManifest, storageEntries } =
+         await fetchManifestEntries(file);
 
-      expect(entries).toEqual({
+      expect(tableNameManifest).toEqual({
          b1: { tableName: "schema.orders_mz" },
          // connectionName is carried through so the bind step can quote the
          // table path for that connection's dialect (Package.quoteBoundTableNames).
          b2: { tableName: "schema.daily_mz", connectionName: "bq" },
       });
+      expect(storageEntries).toEqual({});
    });
 
-   it("carries the control-plane freshness fields verbatim", async () => {
+   it("routes storage= entries (with storageConnectionName) to storageEntries, not the tableName manifest", async () => {
+      const schema = [
+         { name: "d", type: "DATE" },
+         { name: "n", type: "BIGINT" },
+      ];
+      const file = await writeManifest({
+         entries: {
+            // colocated: in-warehouse substitution
+            wh: {
+               sourceEntityId: "wh",
+               physicalTableName: "orders_v1",
+               connectionName: "bq",
+            },
+            // storage tier: cross-connection serve binding (full entry retained)
+            lake: {
+               sourceEntityId: "lake",
+               sourceName: "daily_orders",
+               physicalTableName: "daily_orders",
+               connectionName: "bq",
+               storageConnectionName: "lake",
+               schema,
+            },
+         },
+      });
+
+      const { tableNameManifest, storageEntries } =
+         await fetchManifestEntries(file);
+
+      // The storage entry must NOT enter the same-connection tableName manifest.
+      expect(tableNameManifest).toEqual({
+         wh: { tableName: "orders_v1", connectionName: "bq" },
+      });
+      // …and is preserved as a full entry (schema + sourceName + destination).
+      expect(storageEntries).toEqual({
+         lake: {
+            sourceEntityId: "lake",
+            sourceName: "daily_orders",
+            physicalTableName: "daily_orders",
+            connectionName: "bq",
+            storageConnectionName: "lake",
+            schema,
+         },
+      });
+   });
+
+   it("carries the host-supplied freshness fields verbatim (colocated)", async () => {
       const dataAsOf = "2026-07-07T00:00:00.000Z";
       const file = await writeManifest({
          entries: {
@@ -66,11 +113,11 @@ describe("fetchManifestEntries", () => {
          },
       });
 
-      const entries = await fetchManifestEntries(file);
+      const { tableNameManifest } = await fetchManifestEntries(file);
 
       // Filter-free: freshness fields are retained for the serve-path gate; a
       // window-less entry is left un-gated.
-      expect(entries).toEqual({
+      expect(tableNameManifest).toEqual({
          gated: {
             tableName: "schema.gated_mz",
             dataAsOf,
@@ -86,9 +133,11 @@ describe("fetchManifestEntries", () => {
          entries: { b1: { sourceEntityId: "b1", physicalTableName: "t1" } },
       });
 
-      const entries = await fetchManifestEntries(pathToFileURL(file).href);
+      const { tableNameManifest } = await fetchManifestEntries(
+         pathToFileURL(file).href,
+      );
 
-      expect(entries).toEqual({ b1: { tableName: "t1" } });
+      expect(tableNameManifest).toEqual({ b1: { tableName: "t1" } });
    });
 
    it("skips entries without a physicalTableName", async () => {
@@ -99,17 +148,23 @@ describe("fetchManifestEntries", () => {
          },
       });
 
-      const entries = await fetchManifestEntries(file);
+      const { tableNameManifest } = await fetchManifestEntries(file);
 
-      expect(entries).toEqual({ good: { tableName: "t1" } });
+      expect(tableNameManifest).toEqual({ good: { tableName: "t1" } });
    });
 
-   it("returns an empty map when there are no entries", async () => {
+   it("returns empty maps when there are no entries", async () => {
       const file = await writeManifest({ entries: {} });
-      expect(await fetchManifestEntries(file)).toEqual({});
+      expect(await fetchManifestEntries(file)).toEqual({
+         tableNameManifest: {},
+         storageEntries: {},
+      });
 
       const file2 = await writeManifest({});
-      expect(await fetchManifestEntries(file2)).toEqual({});
+      expect(await fetchManifestEntries(file2)).toEqual({
+         tableNameManifest: {},
+         storageEntries: {},
+      });
    });
 
    it("throws on malformed JSON", async () => {

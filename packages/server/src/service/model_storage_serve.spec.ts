@@ -1,0 +1,193 @@
+// End-to-end routing contract for the `storage=` virtual-source serve path,
+// exercised through the real Model.getQueryResults against a real in-memory
+// DuckDB. The ORIGINAL source returns 0; the serve binding points at a table
+// returning 60 — so the value observed proves whether the query was routed
+// through the serve-shape transform (60) or served live from the original
+// model (0). This pins the mode gate, the binding gate, and the safe fallback.
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   modelDefToModelInfo,
+   Runtime,
+} from "@malloydata/malloy";
+import { afterEach, describe, expect, it } from "bun:test";
+import { Model } from "./model";
+import type { ServeBinding } from "./materialization_serve_transform";
+
+const ROOT = "file:///storage-serve-e2e/";
+const QUERY = "run: X -> { aggregate: t is total.sum() }";
+const BINDING: ServeBinding = {
+   sourceName: "X",
+   connectionName: "duckdb",
+   virtualHandle: "h",
+   tablePath: "mz_real",
+   schema: [{ name: "total", type: "BIGINT" }],
+};
+
+/**
+ * A Model whose original source `X` yields total=0, with a real DuckDB
+ * connection carrying `mz_real` (total=60) that the serve binding rebinds to.
+ */
+async function buildModel(opts?: {
+   originalText?: string;
+   storageSQL?: string;
+}): Promise<Model> {
+   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   // DuckDB shares a process-global :memory: db by connection name, so a prior
+   // test's table can linger — replace it.
+   await duckdb.runSQL(
+      opts?.storageSQL ??
+         "CREATE OR REPLACE TABLE mz_real AS SELECT 60 AS total",
+   );
+   const connMap = new Map<string, DuckDBConnection>([["duckdb", duckdb]]);
+   const originalText =
+      opts?.originalText ?? `source: X is duckdb.sql("SELECT 0 AS total")`;
+   const urlReader = new InMemoryURLReader(
+      new Map([[`${ROOT}m.malloy`, originalText]]),
+   );
+   const runtime = new Runtime({
+      urlReader,
+      connections: new FixedConnectionMap(connMap, "duckdb"),
+   });
+   const mm = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
+      importBaseURL: new URL(ROOT),
+   });
+   const compiled = await mm.getModel();
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   const modelDef = (compiled as any)._modelDef;
+   const modelInfo = modelDefToModelInfo(modelDef);
+   const model = new Model(
+      "pkg",
+      "m.malloy",
+      {},
+      "model",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mm as any,
+      modelDef,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      modelInfo,
+   );
+   model.setServeMalloyConfig(connMap);
+   return model;
+}
+
+async function runTotal(model: Model): Promise<number> {
+   const res = await model.getQueryResults(
+      undefined,
+      undefined,
+      QUERY,
+      {},
+      true,
+   );
+   // compactResult is the row value array: [{ t: <sum> }].
+   const rows = res.compactResult as unknown as { t: number }[];
+   return Number(rows[0].t);
+}
+
+describe("storage= serve routing (end-to-end)", () => {
+   afterEach(() => {
+      delete process.env.PERSIST_STORAGE_MODE;
+   });
+
+   it("mode=on + a binding routes the query to the materialized table", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+      model.setServeBindings([BINDING]);
+      expect(await runTotal(model)).toBe(60);
+   });
+
+   it("mode=off serves live even with a binding present (kill switch)", async () => {
+      process.env.PERSIST_STORAGE_MODE = "off";
+      const model = await buildModel();
+      model.setServeBindings([BINDING]);
+      expect(await runTotal(model)).toBe(0);
+   });
+
+   it("mode=write-only serves live (build-only rung)", async () => {
+      process.env.PERSIST_STORAGE_MODE = "write-only";
+      const model = await buildModel();
+      model.setServeBindings([BINDING]);
+      expect(await runTotal(model)).toBe(0);
+   });
+
+   it("mode=on with no bindings serves live", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+      expect(await runTotal(model)).toBe(0);
+   });
+
+   it("falls back to live when the serve shape cannot compile (bad connection)", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+      // A binding on a connection the config doesn't have — the serve-shape
+      // compile throws, and the query must still succeed, served live.
+      model.setServeBindings([{ ...BINDING, connectionName: "missing_conn" }]);
+      expect(await runTotal(model)).toBe(0);
+   });
+
+   it("a binding for a source this model does not define does not break serving the model's own sources", async () => {
+      // Bindings are pushed to EVERY model in the package, so a model can receive
+      // a binding for a source it doesn't define (defined in a sibling model).
+      // That source has no field list here, so its narrowed schema is empty — the
+      // serve shape must simply omit it, not emit an empty `type: {}` that fails
+      // the whole shape model and drops storage serving for X too.
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel();
+      model.setServeBindings([
+         BINDING,
+         {
+            sourceName: "OtherModelSource", // not defined in this model
+            connectionName: "duckdb",
+            virtualHandle: "h2",
+            tablePath: "mz_real",
+            schema: [{ name: "total", type: "BIGINT" }],
+         },
+      ]);
+      expect(await runTotal(model)).toBe(60);
+   });
+
+   it("does not serve an except:-hidden column from storage (vector A)", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      // X hides `secret` via except:, but the built table still carries it (the
+      // build's getSQL projected it) and the binding schema captured it.
+      const model = await buildModel({
+         originalText:
+            `source: X is duckdb.sql("SELECT 0 AS total, 'live' AS secret") ` +
+            `extend { except: secret }`,
+         storageSQL:
+            "CREATE OR REPLACE TABLE mz_real AS " +
+            "SELECT 60 AS total, 'from_storage' AS secret",
+      });
+      model.setServeBindings([
+         {
+            ...BINDING,
+            schema: [
+               { name: "total", type: "BIGINT" },
+               { name: "secret", type: "VARCHAR" },
+            ],
+         },
+      ]);
+      // The public column still serves from storage (narrowing didn't break it).
+      expect(await runTotal(model)).toBe(60);
+      // A query on the hidden column must NOT be served from storage: the shape
+      // no longer declares `secret`, so it falls back to live, where X's
+      // `except:` makes `secret` undefined → the query is refused. (Before the
+      // fix this returned 'from_storage' — the leak.)
+      await expect(
+         model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { group_by: secret }",
+            {},
+            true,
+         ),
+      ).rejects.toThrow();
+   });
+});
