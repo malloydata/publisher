@@ -370,8 +370,7 @@ export async function resolvePackageConnections(
  * `table`; only query-shaped sources are treated as roots). Without this check
  * the annotation is a silent no-op (served live, no build, no error). The primary
  * fix is in Malloy (recognize the shape or emit a diagnostic); until then, detect
- * the annotated-but-absent source here so callers can refuse loudly. See
- * ~/dev/scratch/malloy-getbuildplan-drops-extend-where-persist.md.
+ * the annotated-but-absent source here so callers can refuse loudly.
  *
  * Reads the annotation exactly as Malloy's own checkPersistAnnotation does
  * (`Annotations(def.annotations).parseAsTag('@').tag.has('persist')`). Best-effort
