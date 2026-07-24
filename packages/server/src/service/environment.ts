@@ -38,7 +38,11 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
-import { fetchManifestEntries, type FetchedManifest } from "./manifest_loader";
+import {
+   fetchManifestEntries,
+   splitManifestEntries,
+   type FetchedManifest,
+} from "./manifest_loader";
 import { ApiConnection } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
@@ -168,12 +172,14 @@ export class Environment {
    private apiConnections: ApiConnection[];
    private environmentPath: string;
    private environmentName: string;
-   // Resolves a package's latest persisted storage-materialization manifest
-   // entries (with storageConnectionName + captured schema), so `storage=` serve
-   // bindings are re-established when a package (re)loads — e.g. after a worker
-   // restart — instead of only when a build's auto-load runs. Injected by the
-   // EnvironmentStore, which owns the materialization repository. Undefined ⇒ no
-   // re-bind on load (bindings then depend on a fresh build, the old behavior).
+   // Resolves a package's latest persisted materialization manifest entries
+   // (the full map — colocated tableName entries AND `storage=` cross-connection
+   // entries), so serve routing for BOTH tiers is re-established when a package
+   // (re)loads — e.g. after a worker restart — instead of only when a build's
+   // auto-load runs. Injected by the EnvironmentStore, which owns the
+   // materialization repository. Undefined ⇒ no re-bind on load (routing then
+   // depends on a fresh build, the old behavior). See
+   // {@link rebindServeBindingsFromLocalStore}.
    private storageBindingResolver?: (
       packageName: string,
    ) => Promise<Record<string, ManifestEntry>>;
@@ -813,8 +819,8 @@ export class Environment {
    }
 
    /**
-    * Inject the resolver that fetches a package's latest persisted storage
-    * materialization entries (see {@link storageBindingResolver}).
+    * Inject the resolver that fetches a package's latest persisted
+    * materialization entries — both tiers (see {@link storageBindingResolver}).
     */
    public setStorageBindingResolver(
       resolver: (packageName: string) => Promise<Record<string, ManifestEntry>>,
@@ -823,40 +829,68 @@ export class Environment {
    }
 
    /**
-    * Re-establish a package's `storage=` serve bindings from its latest
-    * persisted materialization when it (re)loads, so serving survives a restart
-    * (bindings are otherwise in-memory, set only by a build's auto-load). Runs
-    * beside {@link bindManifestIfConfigured} — same "bind serve state on load"
-    * step, for the cross-connection tier. Best-effort: a lookup failure logs and
-    * leaves the package serving live (a subsequent build will bind it).
+    * Re-establish a package's serve routing from its latest persisted
+    * materialization when it (re)loads, so serving survives a restart — both
+    * tiers, not just one. Serve bindings are otherwise in-memory, set only by a
+    * build's post-run auto-load, so a worker restart silently reverted a
+    * materialized source to serving live until the next build. Runs beside
+    * {@link bindManifestIfConfigured} — the same "bind serve state on load" step.
+    * Best-effort: a lookup failure logs and leaves the package serving live (a
+    * subsequent build will bind it).
     *
-    * Skipped when the package has a bound `manifestLocation`: the two storage
-    * serve-binding producers (this local materialization store and the host's
-    * fetched manifest, applied by {@link bindManifest}) are mutually exclusive
-    * by manifest presence, and the host is authoritative when one is set. An
-    * orchestrated publisher STILL persists its own local materialization records
-    * (the host triggers builds through it), so without this guard the local
-    * rebind — which runs AFTER {@link bindManifestIfConfigured} on load — would
-    * overwrite the host's bindings with a possibly-staler local generation.
+    * Both tiers are restored from the SAME persisted manifest, split by
+    * {@link splitManifestEntries}, mirroring {@link bindManifest}:
+    *  - **colocated** (same-connection) → {@link Package.bindColocatedServeManifest},
+    *    applied as a per-query `buildManifest` override at serve time (no
+    *    recompile — the load-time compile already produced flag-carrying models).
+    *    Independent of `PERSIST_STORAGE_MODE`: colocated is the v0 path and is
+    *    not gated by the storage kill switch (a plain `#@ persist` materializes
+    *    and serves even when the tier is `off`), so its routing is restored
+    *    regardless of mode.
+    *  - **storage=** (cross-connection) → {@link Package.bindStorageServeBindings},
+    *    the virtual-source transform. Restored only when the tier is not `off`:
+    *    storage serve routing requires the tier on, so an off deployment skips it.
+    *
+    * Skipped entirely when the package has a bound `manifestLocation`: the two
+    * binding producers (this local store and the host's fetched manifest, applied
+    * by {@link bindManifest}) are mutually exclusive by manifest presence, and the
+    * host is authoritative when one is set. An orchestrated publisher STILL
+    * persists its own local materialization records (the host triggers builds
+    * through it), so without this guard the local rebind — which runs AFTER
+    * {@link bindManifestIfConfigured} on load — would overwrite the host's
+    * bindings with a possibly-staler local generation.
     */
-   private async rebindStorageServeBindings(pkg: Package): Promise<void> {
+   private async rebindServeBindingsFromLocalStore(
+      pkg: Package,
+   ): Promise<void> {
       if (!this.storageBindingResolver) return;
-      // Ships dark: when the storage tier is off, serve bindings are never
-      // consumed (serve routing requires mode `on`), so skip the per-load
-      // materialization lookup entirely — an off deployment does no extra work.
-      if (getPersistStorageMode() === "off") return;
       // Host-authoritative: a bound manifestLocation means bindManifest already
-      // supplied the storage serve bindings from the host's manifest; the local
+      // supplied both tiers' serve bindings from the host's manifest; the local
       // store must not clobber them (mutually-exclusive binding sources).
       if (pkg.getPackageMetadata().manifestLocation) return;
       const packageName = pkg.getPackageName();
       try {
-         const entries = await this.storageBindingResolver(packageName);
-         if (Object.keys(entries).length > 0) {
-            pkg.bindStorageServeBindings(entries);
+         const rawEntries = await this.storageBindingResolver(packageName);
+         if (Object.keys(rawEntries).length === 0) return;
+         const { tableNameManifest, storageEntries } = splitManifestEntries(
+            rawEntries,
+            `local store (package ${packageName})`,
+         );
+         // Colocated: restore regardless of PERSIST_STORAGE_MODE (v0 path, not
+         // gated by the storage kill switch).
+         if (Object.keys(tableNameManifest).length > 0) {
+            pkg.bindColocatedServeManifest(tableNameManifest);
+         }
+         // Storage=: only meaningful when the tier is not off (serve routing to
+         // the external store requires it). Ships dark otherwise.
+         if (
+            getPersistStorageMode() !== "off" &&
+            Object.keys(storageEntries).length > 0
+         ) {
+            pkg.bindStorageServeBindings(storageEntries);
          }
       } catch (err) {
-         logger.warn("Failed to rebind storage serve bindings on load", {
+         logger.warn("Failed to rebind serve bindings from local store on load", {
             packageName,
             error: err instanceof Error ? err.message : String(err),
          });
@@ -990,7 +1024,7 @@ export class Environment {
             () => this.malloyConfig.malloyConfig,
          );
          await this.bindManifestIfConfigured(_package);
-         await this.rebindStorageServeBindings(_package);
+         await this.rebindServeBindingsFromLocalStore(_package);
          if (existingPackage !== undefined && reload) {
             this.retireConnectionGeneration(`package ${packageName}`, () =>
                existingPackage.getMalloyConfig().shutdown("close"),
@@ -1271,7 +1305,7 @@ export class Environment {
          // rollback window: a manifest that can't be fetched must not undo an
          // otherwise-successful install (the package serves live instead).
          await this.bindManifestIfConfigured(newPackage);
-         await this.rebindStorageServeBindings(newPackage);
+         await this.rebindServeBindingsFromLocalStore(newPackage);
 
          this.packages.set(packageName, newPackage);
          this.setPackageStatus(packageName, PackageStatus.SERVING);
@@ -1354,7 +1388,7 @@ export class Environment {
          }
          // Host-authoritative: when a manifestLocation is bound, the host's
          // manifest is the sole source of storage serve bindings (see
-         // bindManifest + rebindStorageServeBindings' matching guard). This
+         // bindManifest + rebindServeBindingsFromLocalStore' matching guard). This
          // method is the LOCAL-store binding path (post-build auto-load and the
          // post-delete rebind); on an orchestrated deployment the publisher
          // still writes its own local materialization records, so without this
@@ -1407,7 +1441,8 @@ export class Environment {
          // WITHOUT a recompile — they apply to the already-compiled models via
          // Model.setServeBindings. The host is the authoritative producer here,
          // so this also supersedes the local-store rebind (see
-         // rebindStorageServeBindings, which no-ops when manifestLocation is set).
+         // rebindServeBindingsFromLocalStore, which no-ops when manifestLocation
+         // is set).
          // Bind whenever there ARE storage entries OR there WERE (bindStorage-
          // ServeBindings with the now-empty set clears them): a manifest whose
          // storage entries vanished must drop the old bindings, not leave them

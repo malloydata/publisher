@@ -679,9 +679,12 @@ export class EnvironmentStore {
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
                         );
-                        // Re-establish storage= serve bindings when a package
-                        // loads, from its latest successful materialization —
-                        // so serving survives a restart, not only a fresh build.
+                        // Re-establish serve routing when a package loads, from
+                        // its latest successful materialization — so serving
+                        // survives a restart, not only a fresh build. The full
+                        // entry map is returned; the environment splits it by
+                        // tier (colocated + storage=) in
+                        // rebindServeBindingsFromLocalStore.
                         const envId = dbEnvironment.id;
                         environmentInstance.setStorageBindingResolver(
                            async (packageName) => {

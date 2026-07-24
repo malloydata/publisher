@@ -818,6 +818,24 @@ export class Package {
     * were materialized into a storage destination produce a binding. Re-applied
     * on model reload via {@link pushStorageServeBindingsToModels}.
     */
+   /**
+    * Re-establish the colocated (same-connection) serve routing from a
+    * FreshnessManifest WITHOUT recompiling — the analogue of
+    * {@link bindStorageServeBindings} for the in-warehouse tier, used to
+    * restore serving on load from the package's own latest persisted
+    * materialization. Colocated routing is applied at query time as a per-query
+    * `buildManifest` override (see {@link getFreshBuildManifest} and
+    * Model.getQueryResults), so setting the in-memory entries is sufficient; the
+    * freshness resolver is already wired on every model from
+    * {@link Package.create}. Distinct from {@link reloadAllModels}, which also
+    * recompiles — the recompile is not what routes the query, so a pure
+    * restore-on-load skips it (no double compile after the load-time compile).
+    * An empty map clears the binding (reverts to serving live).
+    */
+   public bindColocatedServeManifest(entries: FreshnessManifest): void {
+      this.recordManifestBinding(entries);
+   }
+
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
