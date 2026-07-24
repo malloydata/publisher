@@ -7,7 +7,12 @@
 // success for checks that do not exist.
 
 import { describe, expect, it } from "bun:test";
-import { parseMarkdownForTest, stepMustAssert } from "./scenario_md";
+import path from "path";
+import {
+   parseMarkdownForTest,
+   parseScenarioFile,
+   stepMustAssert,
+} from "./scenario_md";
 
 const FRONT = `---
 id: t
@@ -141,5 +146,49 @@ describe("scenario grammar: every step must verify something", () => {
       ]) {
          expect(stepMustAssert(kind)).toBe(false);
       }
+   });
+});
+
+describe("scenario grammar: ${…} substitutions", () => {
+   // An unsubstituted token can never match, so an `excludes:` carrying one would
+   // pass unconditionally — a redaction check that always reports "no leak".
+   it("rejects an unknown token", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build refused\n\nexcludes: password=\${pg.passwrod}\n`,
+            "t",
+         ),
+      ).toThrow(/unknown substitution "\$\{pg\.passwrod\}"/);
+   });
+
+   it("rejects a token in a key that is never substituted", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Build refused\n\ncites: host=\${pg.host}\n`,
+            "t",
+         ),
+      ).toThrow(/"cites:" is not substituted/);
+   });
+
+   it("accepts a known token in excludes", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Build refused\n\nexcludes: password=\${pg.password}\n`,
+         "t",
+      );
+      expect(parsed.steps[0]).toMatchObject({
+         kind: "buildRefused",
+         excludes: "password=${pg.password}",
+      });
+   });
+});
+
+describe("scenario loading: hooks.ts hygiene", () => {
+   // A hook no step references is dead code — usually a renamed or deleted step
+   // leaving its assertions behind, never running them.
+   it("rejects an exported hook that no ## Hook step references", async () => {
+      const dir = path.join(import.meta.dir, "__fixtures__", "orphan-hook");
+      await expect(parseScenarioFile(dir)).rejects.toThrow(
+         /exports "neverReferenced" that no "## Hook" step references/,
+      );
    });
 });
