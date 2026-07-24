@@ -33,10 +33,8 @@ After the build, the live source is mutated, so a STALE answer means the reader 
 served from the stored snapshot and a FRESH one means it was recomputed.
 
 Two things are asserted separately, because the annotation could plausibly affect
-one and not the other:
-
-1. `daily_optout` is not a build target (it must not materialize a second table).
-2. Whether querying `daily_optout` returns stale or fresh rows.
+one and not the other: that `daily_optout` is not a build target, and that querying
+it returns fresh rather than stored rows.
 
 Related: `extended-source-inherits-persist` pins that a PLAIN extension of a
 persisted source wrongly becomes a duplicate build target (malloy PR 3012). If
@@ -82,10 +80,14 @@ source: daily_optout is daily extend {
 
 expect binding: daily -> lake
 
-## Hook assertOptOutIsNotABuildTarget
+## Build targets
 
-`daily_optout` must not appear as a build target, and only `nop_daily` may be
-written.
+`daily_optout` must not appear at all — the opt-out keeps it from being a target,
+so only the base writes `nop_daily`.
+
+| source | writes    |
+| ------ | --------- |
+| daily  | nop_daily |
 
 ## Query base
 
@@ -121,7 +123,19 @@ Expect:
 | 2026-01-01 | 150   |
 | 2026-01-02 | 200   |
 
-## Hook probeOptOutFreshness
+## Query the opted-out reader
 
-Query `daily_optout` and record whether it recomputed (1150) or read the stored
-snapshot (150).
+FRESH (1150, not the stored 150) ⇒ recomputed rather than read from the stored
+table. Contrast `## Query base (again)` directly above, which is stale from the same
+package in the same run.
+
+```malloy
+run: daily_optout -> { select: order_date, total, doubled; order_by: order_date asc }
+```
+
+Expect:
+
+| order_date | total | doubled |
+| ---------- | ----- | ------- |
+| 2026-01-01 | 1150  | 2300    |
+| 2026-01-02 | 200   | 400     |

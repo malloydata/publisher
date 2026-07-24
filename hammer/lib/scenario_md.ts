@@ -18,19 +18,32 @@
 //   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
 //   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
 //                                        (destination-aware physical-table drop / GC)
-//   ## Build refused [<pkg>]             [body: `cites: <substring>`]
+//   ## Build refused [<pkg>]             [body: `cites: <substring>`, `excludes: <substring>`;
+//                                        `${pg.password}` / `${pg.user}` / `${pg.host}` are
+//                                        substituted with the throwaway container's values, so a
+//                                        redaction check can name a secret only the harness knows]
 //   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
 //                                        author-in-the-loop publish gate); `refused` asserts a 4xx
 //   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifestLocation PATCH
-//   ## Query <label> [(again)]           + ```malloy (or reuse last) + Expect: GFM table
+//   ## Query <label> [(again|refused)]   + ```malloy (or reuse last) + Expect: GFM table
+//                                        [body: `givens: NAME=v; OTHER=v` to supply runtime
+//                                        givens; `columns: exact` to assert the Expect table's
+//                                        columns are the COMPLETE result column set]
+//   ## Build targets [(pkg=P)]           + GFM table `source | writes [| entity]` -> assert the
+//                                        compiled build plan's persist sources and the physical
+//                                        name each writes. An `entity` column groups by content
+//                                        address: same label = same sourceEntityId, different
+//                                        labels must differ (the label is arbitrary).
 //   ## Note | ## Attention              -> a prose callout (`> …` blockquote),
 //                                          surfaced in the report's attention block
 //   ## Connection <name> (type=postgres|ducklake)  -> DECLARE a connection wired into the
 //                                        config (pre-pass; a postgres points at the source
 //                                        warehouse, a ducklake gets its own catalog+storage).
-//                                        WITHOUT type= (and with a ```sql block) it RUNS SQL.
+//                                        WITHOUT type= (and with a ```sql block) it RUNS SQL —
+//                                        add an Expect: table to compare its rows, or `(rows=<n>)`
+//                                        to assert only the count (an order-independent claim).
 //   ## Hook <exportName>                -> call hooks.ts export(api, assert)
 // Server-facing steps (Publish/Query/Build/Compile/Warns/Bind/Connection/Rejected)
 // accept `(pub=<name>)` to target a specific started publisher instead of the
@@ -65,15 +78,16 @@ type Step =
    | { kind: "model"; env: string; pkg: string; path: string; malloy: string }
    | { kind: "publish"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; bindings: { source: string; conn: string }[]; forceRefresh: boolean; sourceNames?: string[]; async: boolean; label?: string }
    | { kind: "await"; label?: string }
-   | { kind: "orchestratedBuild"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; refused: boolean; strict: boolean; sources: { src: string; name: string; dest: string }[]; references: { src: string; from?: string }[]; cites?: string }
+   | { kind: "orchestratedBuild"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; refused: boolean; strict: boolean; sources: { src: string; name: string; dest: string }[]; references: { src: string; from?: string }[]; cites?: string; excludes?: string }
    | { kind: "delete"; pub?: string; env: string; pkg: string; mode: PersistStorageMode }
    | { kind: "reclaim"; pub?: string; env: string; pkg: string; mode: PersistStorageMode }
-   | { kind: "buildRefused"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites: string }
-   | { kind: "query"; pub?: string; env: string; pkg: string; label: string; mode: PersistStorageMode; malloy?: string; again: boolean; refused: boolean; cites?: string; expect?: Table }
+   | { kind: "buildRefused"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites: string; excludes?: string }
+   | { kind: "query"; pub?: string; env: string; pkg: string; label: string; mode: PersistStorageMode; malloy?: string; again: boolean; refused: boolean; cites?: string; expect?: Table; givens?: Record<string, string>; exactColumns: boolean }
+   | { kind: "buildTargets"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; expect: Table }
    | { kind: "mutate"; conn: string; table: string; rows?: Table; sql?: string }
    | { kind: "sql"; label: string; sql: string; expect: Table }
    | { kind: "operator"; conn: string; mode: PersistStorageMode; sql: string }
-   | { kind: "connection"; pub?: string; env: string; conn: string; mode: PersistStorageMode; sql: string; refused: boolean; cites?: string }
+   | { kind: "connection"; pub?: string; env: string; conn: string; mode: PersistStorageMode; sql: string; refused: boolean; cites?: string; expect?: Table; expectRows?: number }
    | { kind: "rejected"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites?: string }
    | { kind: "warns"; pub?: string; env: string; pkg: string; mode: PersistStorageMode; cites: string }
    | { kind: "compile"; pub?: string; env: string; pkg: string; label: string; mode: PersistStorageMode; source: string; refused: boolean; cites?: string }
@@ -250,9 +264,22 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             break;
          }
          case "build": {
+            // "## Build targets" asserts what the compiled build plan CONTAINS
+            // (a source -> written-name table); it runs nothing.
             // "## Build refused …" (arg begins with "refused") asserts a build
             // fails/refuses. "## Build (orchestrated, …)" runs a caller-instructed
             // build; combine as "## Build refused (orchestrated, …)".
+            if (/^targets\b/i.test(arg)) {
+               steps.push({
+                  kind: "buildTargets",
+                  pub,
+                  env,
+                  pkg: (attrs.pkg as string) ?? defaultPackage,
+                  mode,
+                  expect: requireTable(sec.body, sec.header),
+               });
+               break;
+            }
             const refused = /^refused\b/i.test(arg);
             const pkg =
                (attrs.pkg as string) ??
@@ -270,10 +297,11 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   sources,
                   references,
                   cites: firstKey(sec.body, "cites"),
+                  excludes: firstKey(sec.body, "excludes"),
                });
             } else {
                const cites = firstKey(sec.body, "cites") ?? "";
-               steps.push({ kind: "buildRefused", pub, env, pkg, mode, cites });
+               steps.push({ kind: "buildRefused", pub, env, pkg, mode, cites, excludes: firstKey(sec.body, "excludes") });
             }
             break;
          }
@@ -282,10 +310,18 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             const refused = !!attrs.refused;
             const pkg = (attrs.pkg as string) ?? defaultPackage;
             const malloy = extractCode(sec.body, "malloy");
+            // `givens: NAME=value; OTHER=value` — runtime givens supplied with the
+            // query, so a scenario can exercise a given-carrying request in
+            // markdown instead of a hook.
+            const givens = parseKeyValues(firstKey(sec.body, "givens"));
+            // `columns: exact` — the Expect table's columns are the COMPLETE result
+            // column set. Needed because compareRows only checks the columns it was
+            // given, so an unexpected EXTRA column is otherwise invisible.
+            const exactColumns = /^exact$/i.test(firstKey(sec.body, "columns") ?? "");
             if (refused) {
-               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: true, cites: firstKey(sec.body, "cites") });
+               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: true, cites: firstKey(sec.body, "cites"), givens, exactColumns });
             } else {
-               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: false, expect: requireTable(sec.body, sec.header) });
+               steps.push({ kind: "query", pub, env, pkg, label: arg.trim(), mode, malloy, again, refused: false, expect: requireTable(sec.body, sec.header), givens, exactColumns });
             }
             break;
          }
@@ -318,7 +354,15 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             }
             const sql = extractCode(sec.body, "sql");
             if (!sql) throw new Error(`## Connection ${arg}: missing a \`\`\`sql block`);
-            steps.push({ kind: "connection", pub, env, conn: arg.trim(), mode, sql, refused: !!attrs.refused, cites: firstKey(sec.body, "cites") });
+            // A non-refused `## Connection` can assert its result: a GFM table
+            // compares rows, or `rows=<n>` asserts only the count (for an
+            // order-independent claim like "exactly one of these tables exists").
+            steps.push({
+               kind: "connection", pub, env, conn: arg.trim(), mode, sql,
+               refused: !!attrs.refused, cites: firstKey(sec.body, "cites"),
+               expect: attrs.refused ? undefined : parseTable(sec.body),
+               expectRows: attrs.rows !== undefined ? Number(attrs.rows) : undefined,
+            });
             break;
          }
          case "rejected": {
@@ -525,6 +569,37 @@ function parseBindings(body: string[]): { source: string; conn: string }[] {
    return out;
 }
 
+/**
+ * Parse a `NAME=value; OTHER=value` body value into a map. Semicolon-separated so
+ * a value may contain commas (the header attribute syntax splits on those).
+ * Returns undefined for an absent/empty value, so callers can omit the field.
+ */
+function parseKeyValues(
+   raw: string | undefined,
+): Record<string, string> | undefined {
+   if (!raw?.trim()) return undefined;
+   const out: Record<string, string> = {};
+   for (const part of raw.split(";")) {
+      const eq = part.indexOf("=");
+      if (eq < 0) continue;
+      const name = part.slice(0, eq).trim();
+      if (name) out[name] = part.slice(eq + 1).trim();
+   }
+   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Substitute harness-runtime tokens into an expected/needle string, so a scenario
+ * can assert against a value only the harness knows (e.g. the throwaway
+ * container's password, for a secret-redaction check).
+ */
+function substituteHarnessTokens(raw: string, ctx: ScenarioContext): string {
+   return raw
+      .replace(/\$\{pg\.password\}/g, ctx.pg.password)
+      .replace(/\$\{pg\.user\}/g, ctx.pg.user)
+      .replace(/\$\{pg\.host\}/g, ctx.pg.host);
+}
+
 function firstKey(body: string[], key: string): string | undefined {
    for (const raw of body) {
       const m = raw.match(new RegExp(`^\\s*${key}\\s*:\\s*(.+)$`, "i"));
@@ -610,6 +685,24 @@ function normalizeCell(v: unknown): string | number | null {
    const dm = s.match(/^(\d{4}-\d{2}-\d{2})/);
    if (dm) return dm[1];
    return s;
+}
+
+/**
+ * Assert the result's column set is EXACTLY the expected table's columns.
+ * {@link compareRows} only inspects the columns it was given, so an unexpected
+ * extra column (a physical column leaking into a served shape, say) passes it
+ * silently; this closes that gap for a scenario that says `columns: exact`.
+ */
+function assertExactColumns(
+   assert: Assert,
+   label: string,
+   expect: Table,
+   actual: Record<string, unknown>[],
+): void {
+   if (actual.length === 0) return;
+   const got = Object.keys(actual[0]).sort();
+   const want = expect.cols.map((c) => c.name).sort();
+   assert.eq(`${label}: exact column set`, got, want);
 }
 
 /** Compare actual query rows against an expected GFM table (ordered, on the expected columns). */
@@ -931,6 +1024,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                );
                if (step.cites && outcome.refused)
                   assert.includes(`refusal cites "${step.cites}"`, outcome.detail.toLowerCase(), step.cites.toLowerCase());
+               if (step.excludes) {
+                  const needle = substituteHarnessTokens(step.excludes, ctx);
+                  assert.excludes(`refusal must not leak "${step.excludes}"`, outcome.detail, needle);
+               }
                break;
             }
             case "orchestratedBuild": {
@@ -946,6 +1043,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   );
                   if (step.cites && outcome.refused)
                      assert.includes(`refusal cites "${step.cites}"`, outcome.detail.toLowerCase(), step.cites.toLowerCase());
+                  if (step.excludes) {
+                     const needle = substituteHarnessTokens(step.excludes, ctx);
+                     assert.excludes(`refusal must not leak "${step.excludes}"`, outcome.detail, needle);
+                  }
                } else {
                   const rec = await rest.build(step.pkg, wire);
                   const entries = (rec.manifest as { entries?: Record<string, { physicalTableName?: string }> } | null)?.entries ?? {};
@@ -969,7 +1070,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   );
                malloyByLabel.set(step.label, malloy);
                if (step.refused) {
-                  const res = await rest.tryQuery(step.pkg, modelPath(step.pkg, step.env), { query: malloy });
+                  const res = await rest.tryQuery(step.pkg, modelPath(step.pkg, step.env), { query: malloy, givens: step.givens });
                   assert.ok(
                      `${step.label}: refused`,
                      !res.ok,
@@ -978,8 +1079,75 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   if (step.cites && !res.ok)
                      assert.includes(`${step.label}: cites`, res.error.toLowerCase(), step.cites.toLowerCase());
                } else {
-                  const out = await rest.query(step.pkg, modelPath(step.pkg, step.env), { query: malloy });
+                  const out = await rest.query(step.pkg, modelPath(step.pkg, step.env), { query: malloy, givens: step.givens });
                   compareRows(assert, step.label, step.expect!, out.rows);
+                  if (step.exactColumns) assertExactColumns(assert, step.label, step.expect!, out.rows);
+               }
+               break;
+            }
+            case "buildTargets": {
+               const rest = await serverFor(step.pub, step.env);
+               const pkg = (await rest.getPackage(step.pkg)) as {
+                  buildPlan?: {
+                     sources?: Record<
+                        string,
+                        { name?: string; sourceEntityId?: string; annotationFields?: { name?: string } }
+                     >;
+                  };
+               };
+               const sources = Object.values(pkg.buildPlan?.sources ?? {});
+               // One row per DISTINCT source name: `source | writes` (the resolved
+               // `#@ persist name=`, else the source name). Sorted both sides so the
+               // comparison is order-independent — build iteration order is not a
+               // contract.
+               const actual = [
+                  ...new Map(
+                     sources
+                        .filter((s) => s.name)
+                        .map((s) => [s.name!, { source: s.name!, writes: s.annotationFields?.name ?? s.name! }]),
+                  ).values(),
+               ].sort((a, b) => a.source.localeCompare(b.source));
+               // `entity` is a grouping DIRECTIVE, not a value to compare (the real
+               // ids are hashes) — drop it before the row comparison and handle it
+               // separately below.
+               const entityCol = step.expect.cols.findIndex((c) => c.name === "entity");
+               const keep = step.expect.cols.map((_, idx) => idx).filter((idx) => idx !== entityCol);
+               const expectSorted: Table = {
+                  cols: keep.map((idx) => step.expect.cols[idx]),
+                  rows: [...step.expect.rows]
+                     .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+                     .map((row) => keep.map((idx) => row[idx])),
+               };
+               compareRows(assert, `build targets (${step.pkg})`, expectSorted, actual as unknown as Record<string, unknown>[]);
+               // An `entity` column groups sources by content address: rows sharing
+               // a label must share one sourceEntityId, and different labels must
+               // differ. The label itself is arbitrary — the ids are hashes.
+               if (entityCol >= 0) {
+                  const idByName = new Map(sources.filter((s) => s.name).map((s) => [s.name!, s.sourceEntityId]));
+                  const groups = new Map<string, string[]>();
+                  for (const row of step.expect.rows) {
+                     const label = String(row[entityCol]).trim();
+                     if (!groups.has(label)) groups.set(label, []);
+                     groups.get(label)!.push(String(row[0]).trim());
+                  }
+                  const repr = new Map<string, string | undefined>();
+                  for (const [label, names] of groups) {
+                     const ids = names.map((n) => idByName.get(n));
+                     assert.ok(
+                        `entity ${label}: ${names.join(" + ")} share one content address`,
+                        ids.every((id) => id && id === ids[0]),
+                        `ids: ${JSON.stringify(ids)}`,
+                     );
+                     repr.set(label, ids[0]);
+                  }
+                  const labels = [...repr.keys()];
+                  for (let a = 0; a < labels.length; a++)
+                     for (let b = a + 1; b < labels.length; b++)
+                        assert.ne(
+                           `entity ${labels[a]} differs from ${labels[b]}`,
+                           repr.get(labels[a]),
+                           repr.get(labels[b]),
+                        );
                }
                break;
             }
@@ -1024,7 +1192,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   if (step.cites && threw)
                      assert.includes(`connection ${step.conn}: cites`, err.toLowerCase(), step.cites.toLowerCase());
                } else {
-                  await rest.connectionSql(step.conn, step.sql);
+                  const raw = (await rest.connectionSql(step.conn, step.sql)) as { data?: string };
+                  const rows = (JSON.parse(raw.data ?? '{"rows":[]}') as { rows?: Record<string, unknown>[] }).rows ?? [];
+                  if (step.expect) compareRows(assert, `connection ${step.conn}`, step.expect, rows);
+                  if (step.expectRows !== undefined)
+                     assert.eq(`connection ${step.conn}: row count`, rows.length, step.expectRows);
                }
                break;
             }

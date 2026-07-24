@@ -79,14 +79,17 @@ Operator drops the isolated catalog DB out-of-band; the next build will fail.
 ## Build refused (orchestrated, strict, pkg=cbe)
 
 Strict chained rebuild of `rollup` reusing `daily` — fails (reaching the chained
-error path).
+error path), and its error must not carry the catalog password.
+
+`excludes:` matches the connstring form (`password=<value>`), not the bare value:
+the harness container name and temp paths contain the value, so a bare needle would
+false-positive. `${pg.password}` is substituted with the throwaway container's
+password at run time.
 
 - rollup -> cbe_rollup__g2 @ cbelake
   reference: daily
 
-## Hook assertChainedErrorRedacted
-
-Assert the failed build's error carries no catalog password.
+excludes: password=${pg.password}
 
 ## Note (since=2026-07-24)
 

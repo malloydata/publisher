@@ -22,9 +22,10 @@ same physical table — a silent overwrite, or a collision — and the publisher
 collision guard misses it (it dedups by `sourceEntityId`, which these share). Malloy
 compiles it, so nothing fails at publish.
 
-The final hook surfaces the root cause: the build plan must have exactly ONE target
-for `esi_daily`. RED today (`daily_with_avg` inherits the tag); GREEN once malloy PR 3012
-lands and `daily_with_avg` reads `daily`'s table instead of becoming a target.
+The `## Build targets` step surfaces the root cause: the plan must have exactly ONE
+target for `esi_daily`. RED today (`daily_with_avg` inherits the tag); GREEN once
+malloy PR 3012 lands and `daily_with_avg` reads `daily`'s table instead of becoming
+a target.
 
 ## Publisher
 
@@ -61,7 +62,7 @@ source: daily_with_avg is daily extend {
 ## Publish
 
 Materialize the package. (`daily_with_avg` should read `daily`'s table, not be a
-second target — see the hook below.)
+second target — see `## Build targets` below.)
 
 ## Query daily
 
@@ -94,11 +95,15 @@ Expect:
 | 2026-01-01 | 150          | 75              |
 | 2026-01-02 | 200          | 200             |
 
-## Hook assertNoDuplicateInheritedTarget
+## Build targets
 
-The build plan must have exactly ONE build target for `esi_daily` (the base
-`daily`). RED today: `daily_with_avg` inherits `#@ persist` and appears as a second
-target writing the same table.
+Only the base `daily` may write `esi_daily`. RED today: the extended reader
+inherits `#@ persist` and becomes a second target for the same table (malloy PR
+3012). GREEN once malloy keys persist on the source's OWN annotation.
+
+| source | writes    |
+| ------ | --------- |
+| daily  | esi_daily |
 
 ## Note (since=2026-07-24)
 
