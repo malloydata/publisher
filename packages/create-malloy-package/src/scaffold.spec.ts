@@ -1059,6 +1059,65 @@ describe("scaffold: which existing start script counts as ours", () => {
    }
 
    /**
+    * The other half of the same question, on the other side of the server spec.
+    *
+    * Adoption used to accept any token in front of the package that began with a
+    * dash, on the reasoning that it was "a runner or one of its flags". Every
+    * runner here takes flags that choose what actually runs, and joined into one
+    * token each of those begins with a dash: `--package=`/`-p=` pick a different
+    * package, `--call=` replaces the command, and `--node-options=--require=`
+    * preloads a file into the real server. The separated forms were already
+    * refused, because the value lands as a bare token; joining them was the
+    * whole bypass, and it carries no space, so nothing splits it and `=` is not
+    * a shell control character.
+    *
+    * The last row is the one that matters most: it runs the genuine Publisher
+    * afterwards, so the ports, the bind and the watch are all exactly what this
+    * tool goes on to claim. Nothing downstream looks wrong.
+    */
+   const runnerPrefixCases: { label: string; prefix: string; ok: boolean }[] = [
+      { label: "-y", prefix: "-y", ok: true },
+      { label: "--yes", prefix: "--yes", ok: true },
+      { label: "no runner flag at all", prefix: "", ok: true },
+      // A value as its own token is a bare word: neither flag nor runner.
+      { label: "--package evil", prefix: "--package evil", ok: false },
+      // ...and joined, so the whole thing is one token starting with "-".
+      { label: "--package=evil", prefix: "--package=evil", ok: false },
+      { label: "-p=evil", prefix: "-p=evil", ok: false },
+      { label: "--call=evil", prefix: "--call=evil", ok: false },
+      {
+         label: "--node-options=--require=/tmp/evil.js",
+         prefix: "--node-options=--require=/tmp/evil.js",
+         ok: false,
+      },
+      // An unknown boolean flag declines too: this is an allowlist, and a flag
+      // nothing here has read is a flag that might redirect what runs.
+      { label: "--unknown-flag", prefix: "--unknown-flag", ok: false },
+   ];
+
+   for (const { label, prefix, ok } of runnerPrefixCases) {
+      test(`runner prefix ${label} is ${ok ? "adopted" : "not adopted"}`, () => {
+         const script =
+            `npx ${prefix} @malloy-publisher/server --server_root . ` +
+            `--config ./publisher.config.json --host 127.0.0.1 ` +
+            `--watch-env default`.replace(/\s+/g, " ");
+         writePackageJson({ start: script });
+         const result = run();
+
+         expect(result.hasStartScript).toBe(ok);
+         // Adopted or not, the script is the user's and stays as it is.
+         expect(workspaceScripts().start).toBe(script);
+         if (!ok) {
+            // The briefing must not hand an agent a command this tool could not
+            // read. That is the whole harm: not new execution, but this tool
+            // vouching for a script it never parsed.
+            expect(agentsFile()).not.toContain("npm start");
+         }
+         expectEveryBootIsPrivatePublisher();
+      });
+   }
+
+   /**
     * The declined script has to reach the caller with a reason, because the
     * caller is what prints the warning. A `--host=` script that is merely not
     * adopted, with nothing recorded, is silently identical to a script that has

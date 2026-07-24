@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { MalloyTranslator } from "@malloydata/malloy";
 import { ScaffoldError } from "./errors";
-import { toMalloyIdentifier, validatePackageName } from "./names";
+import {
+   preview,
+   printable,
+   toMalloyIdentifier,
+   validatePackageName,
+} from "./names";
 
 /**
  * The keyword table and the standard function table are the machine-readable
@@ -180,5 +185,84 @@ describe("MALLOY_RESERVED drift against the installed @malloydata/malloy", () =>
             toMalloyIdentifier(word) !== word,
       );
       expect(overReached).toEqual([]);
+   });
+});
+
+/**
+ * printable() is the one thing standing between a string read off the user's
+ * disk and their terminal, and nothing exercised it directly.
+ *
+ * Everything here is a character that changes what the terminal shows without
+ * adding a character the reader can see, which is why they are shown rather than
+ * sent: an ESC repaints the line above, a lone CR overwrites the line in place,
+ * and the bidi overrides reorder the run that follows. All three turn a sentence
+ * this tool composed into a different sentence the reader believes it composed.
+ */
+describe("printable", () => {
+   const cases: { label: string; raw: string; expected: string }[] = [
+      { label: "ESC", raw: "a\u001bb", expected: "a\\u001Bb" },
+      { label: "CR", raw: "a\rb", expected: "a\\rb" },
+      { label: "LF", raw: "a\nb", expected: "a\\nb" },
+      { label: "TAB", raw: "a\tb", expected: "a\\tb" },
+      { label: "DEL", raw: "a\u007fb", expected: "a\\u007Fb" },
+      { label: "C1 (U+0085)", raw: "a\u0085b", expected: "a\\u0085b" },
+      { label: "LINE SEPARATOR", raw: "a\u2028b", expected: "a\\u2028b" },
+      // The bidi set. Invisible on their own, so an unescaped one is a
+      // reordering the reader has no way to notice.
+      { label: "RLO (U+202E)", raw: "a\u202eb", expected: "a\\u202Eb" },
+      { label: "LRO (U+202D)", raw: "a\u202db", expected: "a\\u202Db" },
+      { label: "RLE (U+202B)", raw: "a\u202bb", expected: "a\\u202Bb" },
+      { label: "PDF (U+202C)", raw: "a\u202cb", expected: "a\\u202Cb" },
+      { label: "RLI (U+2067)", raw: "a\u2067b", expected: "a\\u2067b" },
+      { label: "PDI (U+2069)", raw: "a\u2069b", expected: "a\\u2069b" },
+      { label: "RLM (U+200F)", raw: "a\u200fb", expected: "a\\u200Fb" },
+      { label: "ALM (U+061C)", raw: "a\u061cb", expected: "a\\u061Cb" },
+   ];
+
+   for (const { label, raw, expected } of cases) {
+      test(`escapes ${label}`, () => {
+         expect(printable(raw)).toBe(expected);
+      });
+   }
+
+   test("leaves ordinary text, including non-Latin scripts, alone", () => {
+      // Only the characters that steer the terminal are escaped. Arabic and
+      // Hebrew are right-to-left by their own character properties, which needs
+      // no override and is not what this guards against.
+      for (const text of [
+         "plain",
+         "café",
+         "日本語",
+         "مرحبا",
+         "שלום",
+         "1.2-3_4",
+      ]) {
+         expect(printable(text)).toBe(text);
+      }
+   });
+
+   /**
+    * The output holds only characters printable() leaves alone, so running it
+    * twice cannot double-escape. The property the doc comment claims.
+    */
+   test("is idempotent", () => {
+      for (const { raw } of cases) {
+         expect(printable(printable(raw))).toBe(printable(raw));
+      }
+   });
+
+   /**
+    * preview() is what the CLI reaches for on strings under no length rule at
+    * all (a scripts.start entry out of somebody else's package.json), so it has
+    * to cap before it escapes: escaping first would let 60 ESCs become a 360
+    * character line that is still "within" the limit.
+    */
+   test("preview caps length and escapes what survives", () => {
+      expect(preview("x".repeat(100))).toBe(`${"x".repeat(60)}...`);
+      // 60 characters kept, then escaped: the cap counts what was read off
+      // disk, not the longer text the escaping produces. Written as an escape,
+      // never as the literal character: a raw RLO in a source file reorders the
+      // line for everyone reading it afterwards, which is the whole point.
+      expect(preview("\u202e".repeat(100))).toBe(`${"\\u202E".repeat(60)}...`);
    });
 });

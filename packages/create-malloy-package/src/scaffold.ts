@@ -1195,6 +1195,36 @@ const SCRIPT_RUNNERS = new Set([
 ]);
 
 /**
+ * The runner flags a Publisher boot can carry in front of the server spec.
+ *
+ * An allowlist, not `token.startsWith("-")`. Every runner here takes flags that
+ * choose what actually runs, and in their joined form those are a single token
+ * that begins with a dash: `--package=evil` and `-p=evil` pick a different
+ * package, `--call=evil` replaces the command outright, and
+ * `--node-options=--require=/tmp/evil.js` preloads a file into the real server —
+ * that last one carries no space, so tokenizing never splits it, `=` is not in
+ * SHELL_CONTROL_CHARACTERS, and the boot that follows is a genuine Publisher on
+ * a loopback address, so every claim this tool goes on to make stays true while
+ * the script it adopted is not the one it read.
+ *
+ * The separated forms were already refused, because the value lands as a bare
+ * token that is neither a flag nor a runner. Joining them was the whole bypass.
+ *
+ * So this mirrors what matchesGeneratedInvocation does on the other side of the
+ * spec: an unknown flag declines. Only boolean flags belong here — anything that
+ * takes a value can carry one in its joined form, which is the bug. Nothing is
+ * lost by being strict: a declined script is left exactly as it is and the
+ * caller falls back to the explicit command.
+ */
+const RUNNER_BOOLEAN_FLAGS = new Set([
+   "-y",
+   "--yes",
+   "-q",
+   "--quiet",
+   "--silent",
+]);
+
+/**
  * Whether the whole scripts entry is one invocation of the Publisher server and
  * nothing else.
  *
@@ -1241,10 +1271,14 @@ function isSingleServerInvocation(script: string): boolean {
          return false;
       }
    }
-   // Everything in front of it is a package runner or one of its flags.
+   // Everything in front of it is a package runner or one of the boolean flags
+   // that cannot redirect what runs.
    return tokens
       .slice(0, index)
-      .every((token) => token.startsWith("-") || SCRIPT_RUNNERS.has(token));
+      .every(
+         (token) =>
+            RUNNER_BOOLEAN_FLAGS.has(token) || SCRIPT_RUNNERS.has(token),
+      );
 }
 
 /**

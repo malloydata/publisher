@@ -161,7 +161,20 @@ export function printable(value: string): string {
    return out;
 }
 
-/** C0 controls, DEL, the C1 range, and the two Unicode line breaks. */
+/**
+ * C0 controls, DEL, the C1 range, the two Unicode line breaks, and the bidi
+ * formatting characters.
+ *
+ * The bidi set is here for the same reason as the rest: it changes what the
+ * terminal shows without adding a character the reader can see. U+202E
+ * (RIGHT-TO-LEFT OVERRIDE) and the isolates reorder the run that follows them,
+ * so a decline reason quoting a `scripts.start` off somebody else's
+ * package.json can be made to read as a different sentence than the one this
+ * tool composed — the same "a line that reads as a promise it did not make"
+ * failure the escaping above exists to prevent, reached by reordering rather
+ * than repainting. They are invisible on their own, so showing the escape is
+ * the only way a reader learns they were there at all.
+ */
 function isControl(character: string): boolean {
    const code = character.codePointAt(0) as number;
    return (
@@ -169,7 +182,15 @@ function isControl(character: string): boolean {
       code === 0x7f ||
       (code >= 0x80 && code <= 0x9f) ||
       code === 0x2028 ||
-      code === 0x2029
+      code === 0x2029 ||
+      // LRM, RLM, and ALM: directional marks.
+      code === 0x200e ||
+      code === 0x200f ||
+      code === 0x061c ||
+      // LRE, RLE, PDF, LRO, RLO: the embedding and override pair.
+      (code >= 0x202a && code <= 0x202e) ||
+      // LRI, RLI, FSI, PDI: the isolates that replaced them.
+      (code >= 0x2066 && code <= 0x2069)
    );
 }
 
