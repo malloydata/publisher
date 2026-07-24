@@ -790,7 +790,10 @@ export class MaterializationService {
       } catch (err) {
          logger.warn(
             "Reference resolve-local lookup failed; using references as supplied",
-            { packageName, error: err instanceof Error ? err.message : String(err) },
+            {
+               packageName,
+               error: err instanceof Error ? err.message : String(err),
+            },
          );
          return;
       }
@@ -844,7 +847,9 @@ export class MaterializationService {
       // Reconstruct a ManifestEntry map from both tiers of the fetched manifest:
       // storage entries carry their full shape; path-C entries reconstruct from
       // the tableName manifest.
-      const bound: Record<string, ManifestEntry> = { ...fetched.storageEntries };
+      const bound: Record<string, ManifestEntry> = {
+         ...fetched.storageEntries,
+      };
       for (const [eid, e] of Object.entries(fetched.tableNameManifest)) {
          if (!bound[eid]) {
             bound[eid] = {

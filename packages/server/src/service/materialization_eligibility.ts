@@ -243,7 +243,9 @@ function walkForAuthorize(
          const text =
             typeof n === "string"
                ? n
-               : n && typeof n === "object" && typeof (n as { text?: unknown }).text === "string"
+               : n &&
+                   typeof n === "object" &&
+                   typeof (n as { text?: unknown }).text === "string"
                  ? (n as { text: string }).text
                  : undefined;
          if (text !== undefined && isAuthorizeAnnotation(text)) return true;
