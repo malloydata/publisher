@@ -4,16 +4,11 @@ name: create-malloy-package
 # release.yml bumps sdk, app, and server in lockstep and is deliberately not used
 # here: a scaffolder change should not need a server release.
 
+# Run on demand only. The package's tests run in build.yml on every PR, so this
+# workflow exists solely to publish, which should never happen automatically on
+# a push or a PR. A follow-up wires it into the Create Release workflow so a
+# single release triggers all packages (Sagar review, PR #926).
 on:
-  push:
-    branches: [main]
-    paths:
-      - "packages/create-malloy-package/**"
-      - ".github/workflows/create-malloy-package-npm.yml"
-  pull_request:
-    paths:
-      - "packages/create-malloy-package/**"
-      - ".github/workflows/create-malloy-package-npm.yml"
   workflow_dispatch:
 
 env:
@@ -178,13 +173,17 @@ jobs:
 
       # Trusted publishing (OIDC); there is no NPM_TOKEN fallback in this repo.
       #
-      # Both prerequisites are already met, so no manual publish is needed:
-      # `create-malloy-package` exists on npm (0.0.0, a placeholder that
-      # scaffolds nothing, published 2026-07-23 to claim the name), and
+      # The scoped name `@malloy-publisher/create-malloy-package` is new, so its
+      # FIRST publish is manual, by an @malloy-publisher owner: npm will not
+      # accept a trusted-publisher entry until the package exists. Do that first
+      # publish with the workspace:* rewrite done by hand (change the skills dep
+      # to ^<published skills version>) and scripts enabled, then add the
+      # trusted-publisher entry, then every release after is a dispatch here.
       # @malloy-publisher/skills is published (0.1.0), so the sed above resolves
-      # to a real range. This job publishes 0.0.1 on dispatch, and because 0.0.1
-      # sorts above the placeholder and carries no hyphen, it takes over `latest`
-      # and becomes what `npm create malloy-package` resolves.
+      # to a real range for the automated path. Any 0.0.x with no hyphen takes
+      # over `latest`, which is what `npm create @malloy-publisher/malloy-package`
+      # resolves. The old unscoped `create-malloy-package` is deprecated and
+      # points here.
       #
       # The trusted-publisher entry must name THIS file,
       # create-malloy-package-npm.yml. npm allows one entry per package and

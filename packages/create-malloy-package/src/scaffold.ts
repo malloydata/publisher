@@ -458,7 +458,7 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
             `If you passed --force to \`npm create\`, npm read it as one of its ` +
             `own settings and it never reached this tool. Options need a \`--\` ` +
             `in front of them there:\n` +
-            `  npm create malloy-package ${name} -- --force`,
+            `  npm create @malloy-publisher/malloy-package ${name} -- --force`,
       );
    }
 
