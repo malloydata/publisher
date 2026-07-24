@@ -984,6 +984,14 @@ export interface HookApi extends ScenarioContext {
    state: Record<string, unknown>;
 }
 
+/**
+ * Test-only door onto {@link parseMarkdown}, so the grammar's strict parse can be
+ * exercised without a scenario directory on disk. See scenario_md.spec.ts.
+ */
+export function parseMarkdownForTest(text: string, fallbackId: string): ParsedMd {
+   return parseMarkdown(text, fallbackId);
+}
+
 export async function parseScenarioFile(dir: string): Promise<Scenario> {
    const fallbackId = path.basename(dir);
    const md = await Bun.file(path.join(dir, "scenario.md")).text();
