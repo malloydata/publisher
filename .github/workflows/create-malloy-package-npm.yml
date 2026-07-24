@@ -4,16 +4,11 @@ name: create-malloy-package
 # release.yml bumps sdk, app, and server in lockstep and is deliberately not used
 # here: a scaffolder change should not need a server release.
 
+# Run on demand only. The package's tests run in build.yml on every PR, so this
+# workflow exists solely to publish, which should never happen automatically on
+# a push or a PR. A follow-up wires it into the Create Release workflow so a
+# single release triggers all packages (Sagar review, PR #926).
 on:
-  push:
-    branches: [main]
-    paths:
-      - "packages/create-malloy-package/**"
-      - ".github/workflows/create-malloy-package-npm.yml"
-  pull_request:
-    paths:
-      - "packages/create-malloy-package/**"
-      - ".github/workflows/create-malloy-package-npm.yml"
   workflow_dispatch:
 
 env:
