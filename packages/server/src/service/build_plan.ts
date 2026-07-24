@@ -8,9 +8,13 @@ import type {
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
+import { MaterializationEligibilityError } from "../errors";
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { logger } from "../logger";
-import { recordConnectionDigestSkipped } from "../materialization_metrics";
+import {
+   recordConnectionDigestSkipped,
+   recordEligibilityRefused,
+} from "../materialization_metrics";
 import { errMessage } from "../utils";
 import { Model } from "./model";
 import { quoteIdentifier } from "./quoting";
@@ -106,26 +110,78 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
 }
 
 /**
+ * A source's PUBLIC column names, or a throw if they can't be determined. The
+ * strict counterpart to {@link deriveColumns}, which degrades to `[]` because its
+ * caller (the wire build plan) only reports columns. Here the list decides what
+ * gets WRITTEN, so "unknown" must not read as "nothing to narrow".
+ *
+ * A name is returned only for a field that is demonstrably a public atomic field;
+ * an unreadable field list, an unreadable individual field, or an empty result all
+ * throw. Empty is a throw rather than a pass-through because a source with no
+ * public atomic columns means everything `getSQL` projects is hidden — the worst
+ * case to materialize, not a benign one.
+ */
+function publicColumnNames(persistSource: PersistSource): string[] {
+   let names: string[];
+   try {
+      names = persistSource._explore.intrinsicFields
+         .filter((f) => f.isAtomicField())
+         .map((f) => f.name)
+         .filter((n): n is string => typeof n === "string" && n.length > 0);
+   } catch (err) {
+      throw new Error(
+         `the compiled source's field list could not be read (${errMessage(err)})`,
+      );
+   }
+   if (names.length === 0) {
+      throw new Error("the compiled source exposes no public atomic columns");
+   }
+   return names;
+}
+
+/**
  * Wrap a source's build SQL to project only its PUBLIC columns. `getSQL` emits
  * every underlying column, including ones the source hides (`except:`, non-public
- * access modifiers); {@link deriveColumns} returns just the public surface (the
- * source's intrinsic atomic fields). A `storage=` build must not materialize a
- * hidden column: a DuckLake virtual source exposes every physical column of the
- * stored table regardless of the served `::Shape`, so a hidden column would be
- * reachable over storage (and would sit at rest). Projecting here makes the
- * physical table equal the public surface. Applies to BOTH storage build paths
- * (the warehouse-passthrough single-source build and the chained "stack on the
- * parent" downstream build). Fails open: if the public columns can't be derived,
- * returns `buildSQL` unchanged — never widens beyond what `getSQL` projected.
+ * access modifiers); this narrows the physical table to the public surface.
+ *
+ * A `storage=` build must not materialize a hidden column. Reachability THROUGH
+ * the source is separately bounded by the declared serve shape (see
+ * `narrowSchemaToPublic`, and the `shape-bounds-physical-columns` scenario that
+ * proves a physical column absent from the shape does not resolve). What this
+ * projection prevents is the hidden column's values sitting AT REST in the
+ * destination store, where direct catalog access reaches them and where the data
+ * may have crossed a trust boundary the source's visibility rules were meant to
+ * hold. Applies to BOTH storage build paths (the warehouse-passthrough
+ * single-source build and the chained "stack on the parent" downstream build).
+ *
+ * Fails CLOSED: if the public surface can't be determined the build is refused,
+ * rather than widening to everything `getSQL` projects. This matches the rest of
+ * the eligibility surface (see `assertMaterializationEligible`), and it fires
+ * before any warehouse or destination SQL runs, so a refusal writes nothing and
+ * leaves the previous generation serving.
+ *
+ * @throws {MaterializationEligibilityError} (HTTP 422) naming the source.
  */
 export function projectToPublicColumns(
    persistSource: PersistSource,
    buildSQL: string,
 ): string {
-   const cols = deriveColumns(persistSource)
-      .map((c) => c.name)
-      .filter((n): n is string => typeof n === "string" && n.length > 0);
-   if (cols.length === 0) return buildSQL;
+   let cols: string[];
+   try {
+      cols = publicColumnNames(persistSource);
+   } catch (err) {
+      recordEligibilityRefused("public_surface_unknown");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${persistSource.name}' cannot be materialized into a ` +
+            `storage destination: its public column surface could not be ` +
+            `determined — ${errMessage(err)}. The publisher narrows a stored ` +
+            `table to the source's public columns, so it refuses the build ` +
+            `rather than materialize columns the source hides. This usually ` +
+            `means the compiled-source shape changed; drop 'storage=' to serve ` +
+            `this source live in the meantime.`,
+      });
+   }
    const projection = cols
       .map((n) => quoteIdentifier(n, persistSource.dialectName))
       .join(", ");

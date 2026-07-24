@@ -32,7 +32,8 @@ export type EligibilityRefusalReason =
    | "free_parameter"
    | "given"
    | "authorize"
-   | "not_duckdb_portable";
+   | "not_duckdb_portable"
+   | "public_surface_unknown";
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
@@ -139,7 +140,8 @@ const storageBuildFailureCounter = lazyCounter(
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
    "storage= materialization-eligibility refusals. Label: reason " +
-      "('free_parameter'|'given'|'authorize'|'not_duckdb_portable').",
+      "('free_parameter'|'given'|'authorize'|'not_duckdb_portable'|" +
+      "'public_surface_unknown').",
 );
 const serveShapeTierDropCounter = lazyCounter(
    "publisher_storage_serve_shape_tier_drop_total",
