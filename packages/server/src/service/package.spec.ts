@@ -486,11 +486,13 @@ describe("service/package", () => {
       });
 
       describe("readDatabases", () => {
-         it("should skip an unreadable database file instead of failing the package", async () => {
+         it("should report an unreadable database file instead of failing the package", async () => {
             // A corrupt or partial spreadsheet must not take the whole package
-            // down: it is omitted from the listing while the valid files still
-            // load. Extension-independent: broken.xlsx throws whether excel
-            // loads or not, so this holds on runners without the CDN too.
+            // down, but it must not vanish silently either: it stays in the
+            // listing carrying `error` instead of `info`, the same way a model
+            // that fails to compile is reported. Extension-independent:
+            // broken.xlsx throws whether excel loads or not, so this holds on
+            // runners without the CDN too.
             await fs.writeFile(
                join(testPackageDirectory, "broken.xlsx"),
                "not a real xlsx",
@@ -505,11 +507,22 @@ describe("service/package", () => {
                (await Package.readDatabases(
                   testPackageDirectory,
                   malloyConfig,
-               )) as { path: string }[];
-            const paths = databases.map((d) => d.path);
+               )) as {
+                  path: string;
+                  info?: unknown;
+                  error?: string;
+               }[];
 
-            expect(paths).toContain("database.csv");
-            expect(paths).not.toContain("broken.xlsx");
+            // The valid file still loads with a full probe.
+            const good = databases.find((d) => d.path === "database.csv");
+            expect(good?.info).toBeDefined();
+            expect(good?.error).toBeUndefined();
+
+            // The broken one is visible over the API, with a reason.
+            const bad = databases.find((d) => d.path === "broken.xlsx");
+            expect(bad).toBeDefined();
+            expect(bad?.info).toBeUndefined();
+            expect(bad?.error).toBeTruthy();
          });
       });
    });

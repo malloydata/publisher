@@ -3333,6 +3333,12 @@ components:
           type: string
           description: Type of embedded database
           enum: ["embedded", "materialized"]
+        error:
+          type: string
+          description: >-
+            Error message if the data file could not be read. When set, `info`
+            is absent: the file is listed so the failure is visible, but its
+            schema and row count could not be probed.
 
     Schema:
       description: A schema name in a Connection.

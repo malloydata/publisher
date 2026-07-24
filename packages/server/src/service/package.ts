@@ -1328,37 +1328,41 @@ export class Package {
       // we go from `databasePaths.length` separate DuckDBConnections
       // (each doing its own native init + extension load) to one.
       const conn = await malloyConfig.connections.lookupConnection("duckdb");
-      const databases = await Promise.all(
-         databasePaths.map(
-            async (databasePath): Promise<ApiDatabase | null> => {
-               try {
-                  return {
-                     path: databasePath,
-                     info: await Package.getDatabaseInfo(
-                        packagePath,
-                        databasePath,
-                        conn,
-                     ),
-                     type: "embedded" as const,
-                  };
-               } catch (error) {
-                  // One unreadable data file (a partial or corrupt spreadsheet,
-                  // an interrupted download) must not drop the whole package.
-                  // Omit it from the listing; a model that actually references
-                  // it still fails the package load loudly via the worker
-                  // compile path, so a genuinely-needed file is never hidden.
-                  logger.warn("Skipping unreadable package database", {
+      return await Promise.all(
+         databasePaths.map(async (databasePath): Promise<ApiDatabase> => {
+            try {
+               return {
+                  path: databasePath,
+                  info: await Package.getDatabaseInfo(
                      packagePath,
                      databasePath,
-                     error:
-                        error instanceof Error ? error.message : String(error),
-                  });
-                  return null;
-               }
-            },
-         ),
+                     conn,
+                  ),
+                  type: "embedded" as const,
+               };
+            } catch (error) {
+               // One unreadable data file (a partial or corrupt spreadsheet,
+               // an interrupted download, an extension that failed to bake)
+               // must not drop the whole package. Report it the way a model
+               // that fails to compile is reported: the entry stays in the
+               // listing carrying `error` instead of `info`, so the failure
+               // is visible over the API rather than looking like the file
+               // was never there.
+               const message =
+                  error instanceof Error ? error.message : String(error);
+               logger.warn("Could not read package database", {
+                  packagePath,
+                  databasePath,
+                  error: message,
+               });
+               return {
+                  path: databasePath,
+                  type: "embedded" as const,
+                  error: message,
+               };
+            }
+         }),
       );
-      return databases.filter((db): db is ApiDatabase => db !== null);
    }
 
    private static async getDatabasePaths(
