@@ -105,10 +105,24 @@ target writing the same table.
 > Two things. (1) UPSTREAM: malloy propagates `#@ persist` through `extend`, so an
 > extended reader becomes a duplicate build target (fix: malloydata/malloy PR 3012 — a
 > `persistDeclared` flag from the source's OWN annotation only). This is the primary
-> fix; the scenario goes green when we adopt a malloy carrying it. (2) OURS: this
-> serves fine in auto-run only because the base and reader share a `sourceEntityId`
-> and get deduped; the orchestrated/host path materializes per-source and issues two
-> builds to one table (silent overwrite / collision), and
-> `persistenceCollisionWarnings` misses it because it also dedups by
-> `sourceEntityId`. Consider hardening the guard to flag two DISTINCT source names
-> resolving to the same persist target even when their content address matches.
+> fix; the scenario goes green when we adopt a malloy carrying it. (2) OURS: the
+> orchestrated/host path materializes per-source and issues two builds to one table
+> (silent overwrite / collision), and `persistenceCollisionWarnings` misses it
+> because it also dedups by `sourceEntityId`. Consider hardening the guard to flag
+> two DISTINCT source names resolving to the same persist target even when their
+> content address matches.
+>
+> (3) AUTO-RUN IS NOT SAFE EITHER — worse than this note first claimed. The base and
+> the reader share a `sourceEntityId`, so the build dedups to one manifest entry, but
+> that entry can be attributed to the READER: a probe with a mutated source observed
+> the single storage binding land on the extension (`sourceName: daily_plain`,
+> `tablePath: lake.<base target>`) while the declared persist source silently served
+> LIVE. Which name wins is build-iteration order (same mechanism as
+> `extend-persist-materializes-nothing-new`), so the persisted source may or may not
+> keep its routing from run to run. Not pinned as an assertion here precisely because
+> it is non-deterministic; the reason this scenario's own `## Query daily` step still
+> passes is that it does not mutate the source, so stored and live values are
+> identical and a lost binding is invisible. Measured on the storage tier; the
+> colocated twin is unverified for this effect. This raises the stakes on adopting
+> PR 3012: the failure is not only a duplicate build, it is the declared source
+> quietly losing the materialization it asked for.
