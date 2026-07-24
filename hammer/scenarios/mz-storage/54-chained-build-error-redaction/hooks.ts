@@ -1,8 +1,7 @@
-// Operator-style fault injection for code-review finding #1: drop the isolated
-// DuckLake catalog DB out-of-band (no role/creds change — safe for other scenarios
-// and the harness's own Postgres client), then assert the resulting chained-build
-// error does not echo the catalog connection password. RED if the Tier-3 path
-// leaks the connstring (it lacks the redactConnectionSecrets the Tier-2 path has).
+// Operator-style fault injection: drop the isolated DuckLake catalog DB
+// out-of-band (no role/creds change — safe for other scenarios and the harness's
+// own Postgres client), then assert the resulting chained-build error does not
+// echo the catalog connection password.
 
 import type { HookApi } from "../../../lib/scenario_md";
 import type { Assert } from "../../framework";
@@ -28,12 +27,11 @@ export async function assertChainedErrorRedacted(
       `statuses: ${JSON.stringify(mats.map((m) => m.status))}`,
    );
    const errText = String(failed?.error ?? "");
-   // The connstring form of the secret (`password=<value>`) — distinguishes a real
-   // connstring leak from a benign mention of the value elsewhere (the harness
-   // container name / temp path contains "hammer", so the bare value is not a
-   // usable needle here). Passes today: the strict reference-miss error is clean.
+   // Match the connstring form (`password=<value>`), not the bare value: the
+   // harness container name and temp paths contain the value, so a bare needle
+   // would false-positive.
    assert.excludes(
-      "chained build error must not echo the catalog connstring (finding #1)",
+      "chained build error must not echo the catalog connstring",
       errText,
       `password=${api.pg.password}`,
    );

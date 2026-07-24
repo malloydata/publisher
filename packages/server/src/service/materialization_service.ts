@@ -166,9 +166,8 @@ function declaredStorage(persistSource: PersistSource): string | undefined {
  * annotation, so the feature is a runtime kill switch that never fails a
  * package (the ignored `storage=` is surfaced as a package warning, not an
  * error). Undefined here does NOT mean "build it colocated" for a source that
- * declared `storage=`: the build skips such a source entirely (see
- * {@link declaredStorage} in `deriveSelfInstructions`) so it serves LIVE rather
- * than writing an unintended CTAS into the source's own warehouse.
+ * declared `storage=` — `deriveSelfInstructions` skips such a source entirely so
+ * it serves live; see {@link declaredStorage}.
  */
 function resolveStorageDestination(
    persistSource: PersistSource,
@@ -1140,12 +1139,9 @@ export class MaterializationService {
             // Prefer sourceID matching (so the caller's sourceEntityId scheme
             // stays opaque to the build); the sourceEntityId lookup below is the
             // fallback for instructions without a sourceID (auto-run). Resolved
-            // FIRST so the eligibility gate can run before computeSourceEntityId:
-            // that call invokes getSQL(), which throws opaquely for a
-            // free-parameter or given source, and the gate's clean 422 must win.
-            // deriveSelfInstructions orders it the same way on the auto-run path;
-            // this keeps the orchestrated path symmetric instead of surfacing an
-            // opaque compiler error for the same ineligible source.
+            // before computeSourceEntityId so the eligibility gate wins: that
+            // call invokes getSQL(), which throws opaquely for a free-parameter
+            // or given source, losing the clean 422.
             const orchestratedInstruction = bySourceID.get(
                persistSource.sourceID,
             );
@@ -1173,9 +1169,8 @@ export class MaterializationService {
                orchestratedInstruction ?? bySourceEntityId.get(sourceEntityId);
             if (!instruction) continue;
 
-            // The fallback (auto-run) instruction was already gated pre-getSQL in
-            // deriveSelfInstructions; re-assert anyway (idempotent) so no path
-            // into a storage build is ungated, regardless of how it was resolved.
+            // Auto-run already gated pre-getSQL in deriveSelfInstructions;
+            // re-assert (idempotent) so no path into a storage build is ungated.
             if (
                !orchestratedInstruction &&
                instruction.destination &&
@@ -1393,12 +1388,10 @@ export class MaterializationService {
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
-            // Same redaction contract as the Tier-2 path below (design §5), and
-            // for the same reason: this branch's failure can come from the
-            // chained build's own read-write DuckLake ATTACH or its CTAS, and a
-            // failing DuckDB statement echoes the offending SQL — including the
-            // catalog connstring's `password=`. Redact before the message
-            // reaches either the thrown (user-visible) run `error` or the log.
+            // Same redaction contract as the Tier-2 path below (design §5): this
+            // branch's read-write ATTACH or CTAS can fail with the offending SQL
+            // echoed back, catalog `password=` included. Redact before the
+            // message reaches the thrown run `error` or the log.
             const safeDetail = redactConnectionSecrets(
                errMessage(err),
                sourceConnection,
@@ -1509,9 +1502,8 @@ export class MaterializationService {
                   sourceName: persistSource.name,
                   destinationName,
                   physicalTableName,
-                  // Redacted for the same reason as the build paths above: the
-                  // drop runs on a read-write attach, so a failure can echo the
-                  // catalog connstring.
+                  // The drop runs on a read-write attach, so a failure can echo
+                  // the catalog connstring.
                   error: redactConnectionSecrets(
                      errMessage(dropErr),
                      sourceConnection,
@@ -1882,10 +1874,8 @@ export class MaterializationService {
                   materializationId: m.id,
                   physicalTableName,
                   storageConnectionName: entry.storageConnectionName,
-                  // The drop attaches the destination read-write, so a failure
-                  // can echo the catalog connstring — redact as the build paths
-                  // do. Log-only here (the sweep is best-effort), but the same
-                  // leak class.
+                  // The drop attaches read-write, so a failure can echo the
+                  // catalog connstring.
                   error: redactConnectionSecrets(
                      errMessage(err),
                      destinationConnection,
