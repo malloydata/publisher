@@ -57,7 +57,7 @@ The command above serves the bundled examples. To build a package around your ow
 scaffold one:
 
 ```bash
-npm create malloy-package sales
+npm create @malloy-publisher/malloy-package sales
 ```
 
 That writes the package (a manifest and a starter model), registers it so the server actually serves
@@ -68,8 +68,8 @@ Seed the starter model from a local file with `--data` (CSV, Parquet, or Excel).
 differ in one way that matters, so both forms are shown:
 
 ```bash
-npm create malloy-package sales -- --data ./orders.csv   # npm create needs the --
-npx create-malloy-package sales --data ./orders.csv      # npx does not, and rejects it
+npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv   # npm create needs the --
+npx @malloy-publisher/create-malloy-package sales --data ./orders.csv      # npx does not, and rejects it
 ```
 
 `npm create` reads anything before the `--` as one of its own options, so the separator is required
