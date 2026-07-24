@@ -6,18 +6,16 @@ package: gx
 
 # A model-level given must not break serving a given-free materialized source
 
-**Regression guard for code-review finding #3 (fixed).**
-
 When a model declares a `given:` and *also* has a materialized (`storage=`) source
 that is itself given-free (hence eligible), a query on the materialized source that
-carries the model-level given must still serve from storage. It previously did not:
-the storage serve path suppressed the build manifest on the shape runnable but still
-forwarded `querySurfaceGivens`; the transient serve-shape model declares no `given:`,
-so its prepare threw Malloy's "unknown given" — which lands past the routing
-fallback and surfaced as a spurious 400 (no fall-back to live). The serve path now
-suppresses givens on the shape path too, alongside the manifest (safe: the shape is
-given-free, and the authorize check already ran against the full unfiltered givens
-before routing).
+carries the model-level given must still serve from storage.
+
+The trap: the transient serve-shape model declares no `given:` of its own, so any
+given forwarded to it fails Malloy's "unknown given" check — and a prepare/run throw
+lands past the routing fallback, surfacing as a 400 instead of retrying live. The
+serve path therefore suppresses givens on the shape path alongside the build
+manifest. Clients routinely pass every model-level given, so this is the common case,
+not an edge one.
 
 A hook drives the query with the given supplied (markdown can't pass givens without a
 new grammar handler) and asserts it serves the materialized snapshot.
@@ -65,5 +63,5 @@ expect binding: daily -> lake
 
 ## Hook queryMaterializedWithGiven
 
-Query `daily` (routed to the lake shape) with the model-level given `REGION` supplied.
-It serves from storage; before the fix it 400'd with "unknown given" (finding #3).
+Query `daily` (routed to the lake shape) with the model-level given `REGION`
+supplied. It serves from storage.

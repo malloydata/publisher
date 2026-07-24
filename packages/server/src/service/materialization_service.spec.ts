@@ -84,21 +84,9 @@ describe("redactConnectionSecrets", () => {
       expect(out).toContain("***");
    });
 
-   // Code-review finding #1: the Tier-3 CHAINED build path used to interpolate
-   // the raw errMessage(err) into both its strict-refused throw (a user-visible
-   // run `error`) and its non-strict warn, while the Tier-2 single-source path
-   // routed the same class of failure through redactConnectionSecrets. A chained
-   // build does its own read-write DuckLake ATTACH, whose connstring carries the
-   // catalog Postgres password, and a failing DuckDB statement echoes itself —
-   // so the password could reach the caller and the logs.
-   //
-   // Tested at the seam rather than end-to-end: the actual leak needs an ATTACH
-   // (not CTAS) failure, which needs bad catalog creds that fast-fail at
-   // connection validation — not reachable over REST, so hammer scenario 54 can
-   // only prove the COMMON chained error is clean. Here we stub the chained
-   // builder to reject with a connstring-echoing message and assert what the
-   // catch block does with it. Both branches now share one `safeDetail`, so the
-   // strict case (the user-visible one) pins the redaction for both.
+   // Stubbed at the seam because the leak needs an ATTACH (not CTAS) failure:
+   // bad catalog creds fast-fail at connection validation, so no black-box test
+   // can reach this branch.
    it("redacts connection secrets in the chained (Tier-3) build refusal", async () => {
       const sandbox = sinon.createSandbox();
       try {
@@ -121,8 +109,7 @@ describe("redactConnectionSecrets", () => {
             postgresConnection: { host: "db.internal", password: "src-pw-99" },
          };
 
-         // What a failed RW ATTACH looks like: DuckDB echoes the statement, so
-         // the catalog connstring (password included) is inside the message.
+         // A failed RW ATTACH echoes the statement, connstring included.
          sandbox
             .stub(
                MaterializationService.prototype as unknown as Record<
@@ -156,8 +143,7 @@ describe("redactConnectionSecrets", () => {
                physicalTableName: "mz_orders_by_month",
                destination: "lake",
             },
-            // strict: forbids recomputing from raw, so the catch throws here
-            // instead of falling through to the Tier-2 build.
+            // strict: throw instead of falling through to the Tier-2 build.
             { strict: true, update: () => {} },
             environment,
             "SELECT 1",
@@ -172,7 +158,7 @@ describe("redactConnectionSecrets", () => {
          );
          expect(message).not.toContain("c4talog-pw");
          expect(message).toContain("***");
-         // Still legible: the non-secret detail an operator needs is intact.
+         // Redacted but still legible.
          expect(message).toContain("failed to ATTACH");
          expect(message).toContain("catalog.internal");
          expect(message).toContain("orders_by_month");

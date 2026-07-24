@@ -6,11 +6,10 @@ package: cbe
 
 # Chained (Tier-3) build errors must not leak the catalog connection secret
 
-Relates to code-review finding #1 (**fixed**). The single-source (Tier-2) build path
-runs its failure through `redactConnectionSecrets`; the chained "stack on the parent"
-(Tier-3) path used to throw/log the raw `errMessage(err)`, which for a failed DuckLake
-catalog RW **attach** could echo the catalog Postgres connection string (incl.
-password) into the user-visible build error. Both chained branches now redact.
+Every storage build path attaches its destination READ-WRITE, and a failing DuckDB
+statement echoes the offending SQL — so an unredacted build error can carry the
+catalog Postgres connection string, password included, into the user-visible run
+`error`. Each path must run its failure through `redactConnectionSecrets`.
 
 This scenario induces a chained-build failure by an operator-style out-of-band drop
 of the isolated DuckLake catalog database (no role/creds change — safe for other
@@ -23,14 +22,12 @@ fails EARLY at upstream reference resolution (`strict manifest mode forbids fall
 to live`) — a clean, secret-free error, well before the RW attach. So the common
 chained-failure error does not leak.
 
-**What it does NOT cover:** the specific sub-path where the reference resolves but
-the RW **attach itself** fails is not reached here — dropping the catalog breaks
-reference resolution first, so the two can't be isolated black-box, and a creds-only
-break would hit the shared test-container role. That branch is covered instead by a
-seam-level unit test (`materialization_service.spec.ts`, "redacts connection secrets
-in the chained (Tier-3) build refusal") which stubs the chained builder to reject
-with a connstring-echoing message and asserts the refusal is redacted. This scenario
-stays `needs-attention` only as the reminder of what black-box coverage can't reach.
+**What it does NOT cover:** the sub-path where the reference resolves but the RW
+**attach itself** fails — the one that can actually echo a connstring. Dropping the
+catalog breaks reference resolution first, and a creds-only break would hit the
+shared test-container role, so the two can't be isolated black-box. That branch is
+pinned by a seam-level unit test instead (`materialization_service.spec.ts`,
+"redacts connection secrets in the chained (Tier-3) build refusal").
 
 ## Connection cbelake (type=ducklake)
 
@@ -93,11 +90,7 @@ Assert the failed build's error carries no catalog password.
 
 ## Note (since=2026-07-24)
 
-> Finding #1 is FIXED (both chained branches now share one redacted `safeDetail`,
-> like Tier-2), but the coverage asymmetry it exposed remains: this scenario can
-> only prove the EARLY (strict reference-miss) failure is clean. The
-> RW-attach-failure sub-path — the one that can actually echo the connstring — is
-> not reachable black-box (dropping the catalog breaks reference resolution first;
-> a creds-only break hits the shared container role), so it is pinned by a
-> seam-level unit test instead. If the harness ever gains a per-scenario Postgres
-> role, revisit and assert the attach failure end-to-end here.
+> Coverage gap, not a product gap: this scenario can only prove the EARLY (strict
+> reference-miss) failure is clean. Reaching the RW-attach failure needs a
+> per-scenario Postgres role the harness doesn't have yet — if it gains one,
+> revisit and assert the attach failure end-to-end here instead of at the unit seam.

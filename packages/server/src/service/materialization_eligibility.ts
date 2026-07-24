@@ -54,9 +54,8 @@ export function assertMaterializationEligible(
 ): void {
    const sourceName = persistSource.name;
 
-   // Fail closed, like referencesGiven / referencesAuthorize below: if the
-   // parameter surface can't be read, refuse rather than assume there are no
-   // free parameters (which would freeze one instantiation of a template).
+   // Fail closed, like referencesGiven / referencesAuthorize below: an unreadable
+   // parameter surface is a refusal, not an assumed absence of free parameters.
    let unbound: string[];
    try {
       unbound = unboundParameterNames(persistSource);
@@ -116,16 +115,12 @@ export function assertMaterializationEligible(
  * A Malloy `Parameter` carries `value: ConstantExpr | null`; `null` is an
  * unbound (free) parameter — bound-to-constant parameters have a non-null value.
  *
- * Fail-closed in the same spirit as the given/authorize walks (the caller turns
- * a throw into a refusal): a parameter is treated as unbound unless it is
- * demonstrably bound, so a compiler shift to `value: undefined` or a
- * non-object entry can't silently let a template through. An unreadable
- * `_sourceDef`/`parameters` shape throws rather than reporting "no parameters".
- *
- * A missing `parameters` field is NOT an error — the overwhelmingly common case
- * is a source that declares none — so the residual risk this can't cover is the
- * field being RENAMED or relocated by the compiler. The real-compiler
- * eligibility spec pins that shape; keep it there.
+ * Fail-closed like the given/authorize walks (the caller turns a throw into a
+ * refusal): a parameter counts as unbound unless demonstrably bound, so a
+ * compiler shift to `value: undefined` can't let a template through. A MISSING
+ * `parameters` field is not an error — most sources declare none — so a renamed
+ * or relocated field is the one drift this can't catch; the real-compiler
+ * eligibility spec is what pins that shape.
  */
 function unboundParameterNames(persistSource: PersistSource): string[] {
    const def = persistSource._sourceDef as unknown;
@@ -145,8 +140,6 @@ function unboundParameterNames(persistSource: PersistSource): string[] {
    for (const [name, param] of Object.entries(
       parameters as Record<string, unknown>,
    )) {
-      // Bound == a present, non-null `value`. Anything else (null, undefined,
-      // absent, or a non-object entry) counts as unbound.
       const bound =
          param !== null &&
          typeof param === "object" &&
