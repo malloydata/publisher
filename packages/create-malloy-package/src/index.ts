@@ -498,6 +498,21 @@ function declinedScriptReason(
             "a longer command line, so what it runs, and what it binds, is not " +
             "something this tool established"
          );
+      case "unmodelled-shell-syntax":
+         // Deliberately not the sentence above: this one may well be a single
+         // Publisher boot, and saying it sits inside a longer command line
+         // would be a claim the code never checked.
+         return (
+            `this directory's ${kind} script uses shell syntax this tool does ` +
+            "not read (a comment, an escape, or a substitution), so what the " +
+            "server is handed, and what it binds, is not something this tool " +
+            "established"
+         );
+      case "unparseable":
+         return (
+            `this directory's ${kind} script leaves a quote open, so the shell ` +
+            "refuses to run it at all and it starts nothing"
+         );
       case "different-invocation":
          // Distinct from the case above, which this used to share. Such a script
          // IS a single Publisher invocation, and its --host was read and found
@@ -598,7 +613,14 @@ function bindRisk(declined: DeclinedScript | undefined): BindRisk | undefined {
          return declined.host === undefined
             ? { known: false }
             : { known: true, address: printable(declined.host) };
+      case "unparseable":
+         // Nothing to expose: the shell refuses the script, so no listener ever
+         // starts. Warning about an unauthenticated endpoint here would name a
+         // risk that cannot occur, and bury the real problem, which is that
+         // their start script does not run.
+         return undefined;
       case "unrecognised-shape":
+      case "unmodelled-shell-syntax":
          return { known: false };
       default:
          return { known: false };

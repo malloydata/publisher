@@ -51,6 +51,15 @@ export interface DeclinedScript {
       // than one command. Distinct from "different-invocation" below, which is
       // a single clean invocation that simply is not the one we would write.
       | "unrecognised-shape"
+      // Shell syntax this tool does not model, so what the server is handed was
+      // never established. Separate from "unrecognised-shape" because there is
+      // no longer command line to describe: `--watch-env default # note` is one
+      // command, and saying otherwise is a claim the code did not check.
+      | "unmodelled-shell-syntax"
+      // sh refuses the script outright, so it boots nothing at all. Separate
+      // again because the others describe an unknown binding and this one has
+      // no binding to be unknown about.
+      | "unparseable"
       | "different-invocation"
       | "no-host-flag"
       | "non-loopback-host"
@@ -1027,6 +1036,16 @@ function declineReasonFor(
    if (!script.includes("@malloy-publisher/server")) {
       return { script, reason: "not-publisher" };
    }
+   // Ordered so each reason describes what was actually detected. The
+   // unmodelled-syntax test must come first: hasUnterminatedQuote reads a
+   // backslash-escaped quote as opening a region, so it reports `\'` as
+   // unterminated where sh is perfectly happy.
+   if (UNMODELLED_SHELL_SYNTAX.test(script)) {
+      return { script, reason: "unmodelled-shell-syntax" };
+   }
+   if (hasUnterminatedQuote(script)) {
+      return { script, reason: "unparseable" };
+   }
    if (!isSingleServerInvocation(script)) {
       return { script, reason: "unrecognised-shape" };
    }
@@ -1173,13 +1192,18 @@ function unquote(token: string): string {
  * bind address this tool can read, and a script it cannot read is a script it
  * must not describe.
  */
-// `#` and `\` are here for the same reason as the rest: shellTokens models
-// quoting and nothing else, so anything with other shell meaning has to be
-// declined rather than parsed. Both flip the bind decision silently. `sh` treats
-// `--host 0.0.0.0 # --host 127.0.0.1` as a comment and binds 0.0.0.0 while a
-// reader of the text sees loopback, and `\'` emits a literal quote where the
-// tokenizer sees a quoted region opening and swallows the rest of the line.
-const SHELL_CONTROL_CHARACTERS = /[&|;<>`$()\n\r#\\]/;
+// Two reject sets rather than one, because the decline message has to say what
+// was actually found. These genuinely put the server inside something larger:
+// a chain, a pipeline, a redirect.
+const SHELL_CHAINING_CHARACTERS = /[&|;<>\n\r]/;
+
+// These do not. Each is shell syntax shellTokens does not model, in a command
+// that may well be a single Publisher boot, and each has been caught reporting a
+// bind address the server never receives: sh reads
+// `--host 0.0.0.0 # --host 127.0.0.1` as a comment and binds 0.0.0.0 while the
+// text says loopback, and `\'` emits a literal quote where a quote-only
+// tokenizer sees a region opening and swallows the rest of the line.
+const UNMODELLED_SHELL_SYNTAX = /[`$()#\\]/;
 
 /**
  * Command words a Publisher boot can legitimately be reached through. Anything
@@ -1249,14 +1273,7 @@ const RUNNER_BOOLEAN_FLAGS = new Set([
  * Publisher on 127.0.0.1.
  */
 function isSingleServerInvocation(script: string): boolean {
-   if (SHELL_CONTROL_CHARACTERS.test(script)) {
-      return false;
-   }
-   // sh refuses an unterminated quote outright, so a script carrying one starts
-   // nothing at all. Adopting it would print `npm start` as the way to boot this
-   // workspace, and write it into AGENTS.md, over a command that only ever
-   // answers "unexpected EOF".
-   if (hasUnterminatedQuote(script)) {
+   if (SHELL_CHAINING_CHARACTERS.test(script)) {
       return false;
    }
    const tokens = script.trim().split(/\s+/).filter(Boolean);

@@ -643,15 +643,21 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
          JSON.stringify({ name: "app", scripts: { start: script } }, null, 2) +
             "\n",
       );
-      const output = formatSuccess(
-         scaffold({
-            name: "sales",
-            cwd: tmp,
-            host: "claude-code",
-            force: false,
-         }),
+      const result = scaffold({
+         name: "sales",
+         cwd: tmp,
+         host: "claude-code",
+         force: false,
+      });
+      const output = formatSuccess(result);
+      // Pin the reason, not just the warning: this must not drift back into
+      // unrecognised-shape, whose sentence claims a longer command line that
+      // neither of these has.
+      expect(result.declinedStartScript?.reason).toBe(
+         "unmodelled-shell-syntax",
       );
       expect(output).toContain("Do not use");
+      expect(output).not.toContain("longer command line");
    });
 
    test("a script sh cannot even parse is never offered as npm start", () => {
@@ -676,8 +682,13 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       const output = formatSuccess(result);
 
       expect(result.hasStartScript).toBe(false);
+      expect(result.declinedStartScript?.reason).toBe("unparseable");
       expect(offeredCommands(output)).not.toContain("npm start");
       expect(offeredCommands(output)).toContain(result.startCommand);
+      // It binds nothing, so warning that it serves an unauthenticated API
+      // names a risk that cannot occur and buries the real problem.
+      expect(output).not.toContain("Do not use");
+      expect(output).toContain("leaves a quote open");
    });
 
    test("a --host swallowed as another flag's value still warns", () => {
