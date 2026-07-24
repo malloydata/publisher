@@ -64,7 +64,7 @@ import {
    sliceSourceRange,
 } from "./materialization_serve_transform";
 import type { ApiConnection } from "./model";
-import { fetchManifestEntries } from "./manifest_loader";
+import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
@@ -1635,30 +1635,38 @@ export class MaterializationService {
 
       await this.repository.deleteMaterialization(id);
 
-      // Re-derive the package's storage serve bindings from the latest REMAINING
-      // successful materialization. The deleted run may have been the one bound
-      // for serving — and with `dropTables` its tables are now gone — so without
-      // this a query would keep routing (schema-on-faith, no run-time fallback)
-      // to a deleted/dropped table and error until the next reload or build.
-      // Rebinding picks the next-latest generation, or CLEARS the bindings when
-      // none remain (empty entries ⇒ deriveServeBindings([]) ⇒ serve live).
-      await this.rebindStorageServeBindings(environmentName, packageName);
+      // Re-derive the package's serve routing from the latest REMAINING
+      // successful materialization — BOTH tiers. The deleted run may have been
+      // the one bound for serving — and with `dropTables` its tables are now gone
+      // — so without this a query would keep routing (schema-on-faith, no
+      // run-time fallback) to a deleted/dropped table and error until the next
+      // reload or build. Rebinding picks the next-latest generation, or CLEARS
+      // the bindings when none remain (empty ⇒ serve live).
+      await this.rebindServeBindingsAfterDelete(environmentName, packageName);
    }
 
    /**
-    * Re-derive a package's `storage=` serve bindings from its latest remaining
-    * successful materialization and push them onto the loaded models. Called
+    * Re-derive a package's serve routing from its latest remaining successful
+    * materialization and push it onto the loaded models — BOTH tiers, mirroring
+    * the load-time {@link Environment.rebindServeBindingsFromLocalStore}. Called
     * after a delete so serving never points at a removed table; picks the
-    * next-latest generation, or clears the bindings when none remain. Dark-ship
-    * (no-op when the tier is off, so an off deployment does no extra work) and
-    * best-effort (a failure logs and leaves the current bindings — a later
+    * next-latest generation, or clears the bindings when none remain.
+    * Best-effort (a failure logs and leaves the current bindings — a later
     * reload/build re-derives).
+    *
+    * The manifest is split by tier:
+    *  - **colocated** (same-connection) → re-derived regardless of
+    *    `PERSIST_STORAGE_MODE`: colocated is the v0 path and is not gated by the
+    *    storage kill switch, so a reclaimed colocated table must not be left
+    *    routed even when the tier is off.
+    *  - **storage=** (cross-connection) → re-derived only when the tier is not
+    *    `off` (its serve routing requires the tier on; an off deployment does no
+    *    extra work here).
     */
-   private async rebindStorageServeBindings(
+   private async rebindServeBindingsAfterDelete(
       environmentName: string,
       packageName: string,
    ): Promise<void> {
-      if (getPersistStorageMode() === "off") return;
       try {
          const environmentId = await this.resolveEnvironmentId(environmentName);
          // "" excludes nothing — the deleted record is already gone from the repo.
@@ -1671,14 +1679,26 @@ export class MaterializationService {
             environmentName,
             false,
          );
-         await environment.bindPackageStorageServeBindings(
-            packageName,
+         const { tableNameManifest, storageEntries } = splitManifestEntries(
             entries,
+            `post-delete rebind (package ${packageName})`,
          );
+         // Colocated: re-derive (or clear) regardless of mode.
+         await environment.bindPackageColocatedServeManifest(
+            packageName,
+            tableNameManifest,
+         );
+         // Storage=: only meaningful when the tier is not off.
+         if (getPersistStorageMode() !== "off") {
+            await environment.bindPackageStorageServeBindings(
+               packageName,
+               storageEntries,
+            );
+         }
       } catch (err) {
          logger.warn(
-            "Failed to rebind storage serve bindings after delete (leaving " +
-               "current bindings; a reload/build will re-derive)",
+            "Failed to rebind serve bindings after delete (leaving current " +
+               "bindings; a reload/build will re-derive)",
             { packageName, error: errMessage(err) },
          );
       }

@@ -266,7 +266,7 @@ describe("MaterializationService", () => {
       });
    });
 
-   describe("deleteMaterialization rebinds storage serve bindings", () => {
+   describe("deleteMaterialization rebinds serve bindings (both tiers)", () => {
       const storageEntry = {
          se1: {
             sourceEntityId: "se1",
@@ -277,16 +277,30 @@ describe("MaterializationService", () => {
             schema: [{ name: "a", type: "BIGINT" }],
          },
       };
+      // A colocated entry carries NO storageConnectionName.
+      const colocatedEntry = {
+         ce1: {
+            sourceEntityId: "ce1",
+            sourceName: "daily",
+            physicalTableName: "daily__cabc",
+            connectionName: "wh",
+         },
+      };
 
-      function setupEnv(): sinon.SinonStub {
-         const bindSpy = sinon.stub().resolves();
+      function setupEnv(): {
+         storageSpy: sinon.SinonStub;
+         colocatedSpy: sinon.SinonStub;
+      } {
+         const storageSpy = sinon.stub().resolves();
+         const colocatedSpy = sinon.stub().resolves();
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
             getApiConnection: () => ({ name: "lake", type: "duckdb" }),
             getEnvironmentPath: () => "/test",
-            bindPackageStorageServeBindings: bindSpy,
+            bindPackageStorageServeBindings: storageSpy,
+            bindPackageColocatedServeManifest: colocatedSpy,
          });
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
@@ -295,13 +309,13 @@ describe("MaterializationService", () => {
                manifest: { entries: {} } as any,
             }),
          );
-         return bindSpy;
+         return { storageSpy, colocatedSpy };
       }
 
-      it("re-derives from the next-latest materialization after delete (on)", async () => {
+      it("re-derives storage bindings from the next-latest materialization (on)", async () => {
          process.env.PERSIST_STORAGE_MODE = "on";
          try {
-            const bindSpy = setupEnv();
+            const { storageSpy, colocatedSpy } = setupEnv();
             // The latest REMAINING successful run carries a storage entry.
             ctx.repository.listMaterializations.resolves([
                makeMaterialization({
@@ -314,32 +328,62 @@ describe("MaterializationService", () => {
 
             await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
 
-            expect(bindSpy.calledOnce).toBe(true);
-            expect(Object.keys(bindSpy.firstCall.args[1])).toContain("se1");
+            expect(storageSpy.calledOnce).toBe(true);
+            expect(Object.keys(storageSpy.firstCall.args[1])).toContain("se1");
+            // Colocated is re-derived too (with no colocated entries ⇒ cleared).
+            expect(colocatedSpy.calledOnce).toBe(true);
+            expect(colocatedSpy.firstCall.args[1]).toEqual({});
          } finally {
             delete process.env.PERSIST_STORAGE_MODE;
          }
       });
 
-      it("clears bindings when no successful materialization remains (on)", async () => {
+      it("re-derives colocated bindings regardless of tier mode (off)", async () => {
+         // PERSIST_STORAGE_MODE unset ⇒ off. Colocated is the v0 path, not gated
+         // by the storage kill switch, so it is still re-derived; storage is not.
+         const { storageSpy, colocatedSpy } = setupEnv();
+         ctx.repository.listMaterializations.resolves([
+            makeMaterialization({
+               id: "m-prev",
+               status: "MANIFEST_FILE_READY",
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               manifest: { entries: colocatedEntry } as any,
+            }),
+         ]);
+
+         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
+
+         expect(colocatedSpy.calledOnce).toBe(true);
+         expect(Object.keys(colocatedSpy.firstCall.args[1])).toContain("ce1");
+         // Storage rebind is skipped when the tier is off.
+         expect(storageSpy.called).toBe(false);
+      });
+
+      it("clears both tiers' bindings when no successful materialization remains (on)", async () => {
          process.env.PERSIST_STORAGE_MODE = "on";
          try {
-            const bindSpy = setupEnv();
+            const { storageSpy, colocatedSpy } = setupEnv();
             ctx.repository.listMaterializations.resolves([]); // none remain
 
             await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
 
-            expect(bindSpy.calledOnce).toBe(true);
-            expect(bindSpy.firstCall.args[1]).toEqual({}); // empty ⇒ serve live
+            expect(storageSpy.calledOnce).toBe(true);
+            expect(storageSpy.firstCall.args[1]).toEqual({}); // empty ⇒ serve live
+            expect(colocatedSpy.calledOnce).toBe(true);
+            expect(colocatedSpy.firstCall.args[1]).toEqual({});
          } finally {
             delete process.env.PERSIST_STORAGE_MODE;
          }
       });
 
-      it("does not rebind when the tier is off (dark-ship)", async () => {
-         const bindSpy = setupEnv(); // PERSIST_STORAGE_MODE unset ⇒ off
+      it("skips only the storage rebind when the tier is off (dark-ship)", async () => {
+         const { storageSpy, colocatedSpy } = setupEnv(); // off
+         ctx.repository.listMaterializations.resolves([]); // none remain
          await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
-         expect(bindSpy.called).toBe(false);
+         // Storage is skipped when off; colocated still re-derives (to clear).
+         expect(storageSpy.called).toBe(false);
+         expect(colocatedSpy.calledOnce).toBe(true);
+         expect(colocatedSpy.firstCall.args[1]).toEqual({});
       });
    });
 
