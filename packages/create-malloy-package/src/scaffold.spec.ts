@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+   SERVER_VALUE_FLAGS,
    scaffold,
    type ScaffoldOptions,
    type ScaffoldResult,
@@ -638,6 +639,44 @@ describe("scaffold: binding host", () => {
       };
       expect(pkg.scripts.start).toContain("--host 127.0.0.1");
       expect(pkg.scripts.reset).toContain("--host 127.0.0.1");
+   });
+});
+
+/**
+ * SERVER_VALUE_FLAGS is a snapshot of a chain in another package, and the whole
+ * point of reading the host positionally is that a flag missing its value
+ * swallows `--host`. So a flag the server learns and this set does not is not a
+ * cosmetic drift: `--new_flag --host 127.0.0.1` would put the server on 0.0.0.0
+ * while this tool reported loopback and stayed silent about it, which is the
+ * exact defect the positional walk was written to remove.
+ */
+describe("SERVER_VALUE_FLAGS drift against packages/server", () => {
+   test("matches the server's own argv chain", () => {
+      const serverSource = path.join(
+         import.meta.dir,
+         "..",
+         "..",
+         "server",
+         "src",
+         "server.ts",
+      );
+      // A monorepo path, so say why it is missing rather than failing on a
+      // regex that matched nothing.
+      expect(fs.existsSync(serverSource)).toBe(true);
+
+      const declared = new Set(
+         [
+            ...fs
+               .readFileSync(serverSource, "utf8")
+               // Tolerates the wrapped branch: the chain puts one condition
+               // across three lines.
+               .matchAll(/arg === "(--[a-z0-9_-]+)"\s*&&\s*args\[i \+ 1\]/g),
+         ].map((match) => match[1]),
+      );
+
+      // A sweep that found nothing would pass vacuously.
+      expect(declared.size).toBeGreaterThan(4);
+      expect([...SERVER_VALUE_FLAGS].sort()).toEqual([...declared].sort());
    });
 });
 

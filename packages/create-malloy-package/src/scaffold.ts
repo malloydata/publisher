@@ -1300,7 +1300,7 @@ function isSingleServerInvocation(script: string): boolean {
  * `arg === "--x" && args[i + 1]` chain in `packages/server/src/server.ts`.
  * `--init` and `--help` take no value and so are deliberately absent.
  */
-const SERVER_VALUE_FLAGS = new Set([
+export const SERVER_VALUE_FLAGS = new Set([
    "--port",
    "--host",
    "--server_root",
@@ -1323,15 +1323,23 @@ function hostFlagOf(script: string): string | undefined {
    let value: string | undefined;
    for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i];
+      const next = tokens[i + 1];
       // A value flag with nothing after it matches no branch in that chain and
       // consumes nothing, so it must not swallow anything here either.
-      if (!SERVER_VALUE_FLAGS.has(token) || tokens[i + 1] === undefined) {
+      if (!SERVER_VALUE_FLAGS.has(token) || next === undefined) {
+         continue;
+      }
+      const unquoted = next.replace(/^["']|["']$/g, "");
+      // The chain tests `args[i + 1]` for truthiness, and the one falsy argv
+      // entry is the empty string, so `--host ""` matches no branch either: the
+      // flag is dropped, nothing is consumed, and the bind falls back.
+      if (unquoted === "") {
          continue;
       }
       if (token === "--host") {
          // Last one wins, as it does on a real command line. `--hostname` and
          // friends cannot match: this is a whole-token comparison.
-         value = tokens[i + 1].replace(/^["']|["']$/g, "");
+         value = unquoted;
       }
       i++;
    }
