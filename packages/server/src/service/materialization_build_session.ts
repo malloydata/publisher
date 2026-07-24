@@ -362,7 +362,10 @@ export async function buildDownstreamIntoStorage(params: {
       // the public columns so a hidden (`except:` / access-restricted) downstream
       // column is not materialized (same rationale as the single-source build:
       // a DuckLake virtual source is not restricted to its declared shape).
-      const sql = projectToPublicColumns(downstream, downstream.getSQL({ virtualMap }));
+      const sql = projectToPublicColumns(
+         downstream,
+         downstream.getSQL({ virtualMap }),
+      );
 
       const target = quoteTablePath(
          `${destinationName}.${physicalTableName}`,
