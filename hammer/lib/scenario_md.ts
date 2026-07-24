@@ -109,6 +109,106 @@ interface ParsedMd {
    connectionDecls: ConnectionDecl[];
 }
 
+/**
+ * Per-section grammar: the header attributes `(k=v, flag)` and the body keys
+ * `key: value` each section kind actually READS. Anything else is a parse error.
+ *
+ * This exists because the failure it prevents is invisible: a misspelled
+ * `excldues:` or `(row=1)` is simply not read, the assertion it was supposed to
+ * carry never runs, and the scenario passes — reporting success for a check that
+ * does not exist. The same goes for a key that is valid on a DIFFERENT kind (an
+ * `excludes:` on a step whose branch never consumed it, which is precisely how a
+ * silently-passing redaction check reached this suite). Strictness here converts
+ * every one of those into a loud failure at load, before anything runs.
+ *
+ * Adding a handler means adding its keys here — the parse error names the section
+ * and lists what is legal, so the next author is told rather than left guessing.
+ */
+const UNIVERSAL_ATTRS = ["pub", "env"] as const;
+const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
+   note: { attrs: ["since"] },
+   attention: { attrs: ["since"] },
+   // A bare mode reads better than `mode=off` and is already in use; both work.
+   publisher: { attrs: ["mode", "off", "write-only", "on"] },
+   data: {},
+   mutate: {},
+   model: {},
+   publish: { attrs: ["sources", "forcerefresh", "async", "label"] },
+   await: { attrs: ["label"] },
+   delete: {},
+   reclaim: {},
+   build: {
+      attrs: ["orchestrated", "strict", "pkg"],
+      // `reference:` is an orchestrated-build body line, not an assertion key.
+      keys: ["cites", "excludes", "reference"],
+   },
+   query: { attrs: ["again", "refused", "pkg"], keys: ["cites", "givens", "columns"] },
+   sql: {},
+   operator: {},
+   connection: { attrs: ["type", "refused", "rows"], keys: ["cites"] },
+   rejected: { keys: ["cites"] },
+   warns: { keys: ["cites"] },
+   republish: { attrs: ["refused"], keys: ["cites"] },
+   compile: { attrs: ["pkg", "refused"], keys: ["cites"] },
+   bind: { attrs: ["bad", "empty", "clear", "from", "fresh", "asof", "fallback"] },
+   restart: { attrs: ["init"] },
+   hook: {},
+};
+
+/**
+ * Candidate body keys in a section: a lowercase `word:` at the start of a line.
+ * Fenced code blocks are skipped (Malloy's `group_by:` is not a body key), as are
+ * blockquotes, table rows, and bullets (`- PERSIST_STORAGE_MODE: on` is publisher
+ * env, and `expect binding: …` has a space before the colon so it never matches).
+ * Prose is excluded in practice by the lowercase-first-word rule.
+ */
+function bodyKeys(body: string[]): string[] {
+   const keys = new Set<string>();
+   let inFence = false;
+   for (const raw of body) {
+      if (/^\s*```/.test(raw)) {
+         inFence = !inFence;
+         continue;
+      }
+      if (inFence) continue;
+      if (/^\s*[>|\-*]/.test(raw)) continue;
+      const m = raw.match(/^ {0,3}([a-z][a-z0-9_]*)\s*:/);
+      if (m) keys.add(m[1].toLowerCase());
+   }
+   return [...keys];
+}
+
+/** Reject unknown attributes / body keys on a section (see {@link SECTION_SPEC}). */
+function validateSection(
+   kind: string,
+   header: string,
+   attrs: Record<string, string | boolean>,
+   body: string[],
+): void {
+   const spec = SECTION_SPEC[kind];
+   if (!spec) return; // unknown kind is reported by the switch's default
+   const legalAttrs = new Set<string>([...(spec.attrs ?? []), ...UNIVERSAL_ATTRS]);
+   for (const a of Object.keys(attrs)) {
+      if (!legalAttrs.has(a)) {
+         throw new Error(
+            `## ${header}: unknown attribute "${a}". Valid for "${kind}": ` +
+               `${[...legalAttrs].sort().join(", ")}`,
+         );
+      }
+   }
+   const legalKeys = new Set(spec.keys ?? []);
+   for (const k of bodyKeys(body)) {
+      if (!legalKeys.has(k)) {
+         throw new Error(
+            `## ${header}: unknown body key "${k}:". ` +
+               (legalKeys.size
+                  ? `Valid for "${kind}": ${[...legalKeys].sort().join(", ")}`
+                  : `"${kind}" takes no body keys`),
+         );
+      }
+   }
+}
+
 /** Split a `key: a, b, c` front-matter value into a trimmed, non-empty list. */
 function csv(value: string | undefined): string[] {
    return (value ?? "")
@@ -176,6 +276,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
 
    for (const sec of sections) {
       const { kind, arg, attrs } = parseHeader(sec.header);
+      validateSection(kind, sec.header, attrs, sec.body);
       if (kind === "note" || kind === "attention") {
          // A prose callout, not a step. Strip leading `> ` blockquote markers so
          // the stored note is clean; the .md keeps them for nicer rendering.
@@ -194,8 +295,16 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
          continue;
       }
       if (kind === "publisher") {
+         // `## Publisher (off)` — a bare mode flag. Resolved here as well as from
+         // `mode=` and the body bullet, so the header form is not silently
+         // decorative (it was, until the strict parse surfaced it).
+         const bareMode = (["off", "write-only", "on"] as const).find(
+            (candidate) => attrs[candidate] === true,
+         );
          const m =
-            (attrs.mode as PersistStorageMode) ?? extractPublisherMode(sec.body);
+            (attrs.mode as PersistStorageMode) ??
+            bareMode ??
+            extractPublisherMode(sec.body);
          if (m) currentMode = m;
          const extraEnv = extractPublisherEnv(sec.body);
          steps.push({
