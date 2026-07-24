@@ -22,7 +22,7 @@ export async function assertChainedErrorRedacted(
       .filter((m) => m.status === "FAILED")
       .sort((a, b) => String(b.id).localeCompare(String(a.id)))[0];
    assert.ok(
-      "the strict chained build failed (Tier-3 error path exercised)",
+      "the strict chained build failed (chained error path exercised)",
       !!failed,
       `statuses: ${JSON.stringify(mats.map((m) => m.status))}`,
    );

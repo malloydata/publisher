@@ -259,9 +259,9 @@ export async function buildSourceIntoStorage(params: {
 
 /**
  * Build a CHAINED `storage=` source by reading its already-materialized
- * upstream(s) from the destination store — the "stack on the parent" (Tier 3)
- * path — instead of recomputing the upstream from raw against the source
- * warehouse (Tier 2). Reuses the parent's work and is consistent-by-construction
+ * upstream(s) from the destination store — the "stack on the parent" path —
+ * instead of recomputing the upstream from raw against the source
+ * warehouse. Reuses the parent's work and is consistent-by-construction
  * (the downstream is a pure function of the parent's STORED rows).
  *
  * The `transientModel` (assembled by the caller from the serve-shape rebind

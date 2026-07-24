@@ -377,7 +377,7 @@ export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
 
 /**
  * Assemble the transient BUILD model for a chained `storage=` source — the
- * "stack on the parent" (Tier 3) build. Every materialized upstream is rebound
+ * "stack on the parent" build. Every materialized upstream is rebound
  * to a virtual source on its storage connection (via the SAME serve-shape rebind
  * as the serve path), so the downstream computes over the parents' STORED lake
  * tables in DuckDB; the downstream source is then re-declared over them and
@@ -396,7 +396,7 @@ export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
  * dimensions/joins/views): the dominant chained case is a rollup over the
  * parent's stored OUTPUT columns. A downstream that references a parent
  * refinement not carried here fails to compile against this model, and the
- * caller falls back to recompute-from-raw (Tier 2) — re-emitting parent
+ * caller falls back to recompute-from-raw — re-emitting parent
  * refinements to widen coverage is a follow-on.
  */
 export function buildChainedStorageBuildModel(params: {
