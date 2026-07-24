@@ -1408,6 +1408,56 @@ export class Environment {
    }
 
    /**
+    * Re-establish a package's COLOCATED (same-connection) serve routing from a
+    * FreshnessManifest, holding the package lock — the colocated analogue of
+    * {@link bindPackageStorageServeBindings}, used by the post-delete rebind so a
+    * reclaimed colocated table is not left routed. No-op (logged) if the package
+    * isn't loaded, and skipped when a `manifestLocation` is bound (host
+    * authoritative, same as the storage variant). An empty manifest reverts to
+    * serving live.
+    *
+    * Unlike the storage tier — and unlike the load-time colocated rebind
+    * ({@link Package.bindColocatedServeManifest}, which restores routing onto
+    * FRESHLY-compiled models with a per-query overlay, no recompile) — this path
+    * runs against models that a build's auto-load already recompiled with the
+    * substitution BAKED IN. Clearing the per-query overlay would not strip a
+    * baked substitution, so reverting/rebinding here requires a recompile
+    * ({@link Package.reloadAllModels}), exactly as {@link bindManifest} does for
+    * colocated. Skipped when there is nothing to substitute AND nothing was
+    * previously substituted to clear (no needless recompile for a storage-only or
+    * never-materialized package).
+    */
+   public async bindPackageColocatedServeManifest(
+      packageName: string,
+      entries: FreshnessManifest,
+   ): Promise<void> {
+      assertSafePackageName(packageName);
+      return this.withPackageLock(packageName, async () => {
+         const pkg = this.packages.get(packageName);
+         if (!pkg) {
+            logger.warn(
+               "Cannot bind colocated serve manifest: package not loaded",
+               { packageName },
+            );
+            return;
+         }
+         if (pkg.getPackageMetadata().manifestLocation) {
+            logger.debug(
+               "Skipping local-store colocated serve binding: manifestLocation " +
+                  "is bound (host authoritative)",
+               { packageName },
+            );
+            return;
+         }
+         const hasColocated = Object.keys(entries).length > 0;
+         const hadColocated = pkg.hasBoundTableNameManifest();
+         if (hasColocated || hadColocated) {
+            await pkg.reloadAllModels(entries);
+         }
+      });
+   }
+
+   /**
     * If the freshly-loaded package declares a `manifestLocation`, fetch the
     * control-plane-computed build manifest and rebind its models so persist
     * references resolve to the materialized tables. Best-effort: a fetch/bind
