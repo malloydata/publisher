@@ -625,6 +625,35 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       expect(offeredCommands(output)).toContain(result.startCommand);
    });
 
+   test("a loopback boot this tool did not write is not called unknown", () => {
+      // `--port 4100` makes this a boot this tool could not have written, so it
+      // is declined and the explicit command is offered instead. But its
+      // `--host` was read and is loopback: saying the binding could not be
+      // established would contradict the flag this code just parsed, in the one
+      // paragraph that exists to be trusted about binding.
+      const script =
+         "npx -y @malloy-publisher/server@0.0.231 --server_root . " +
+         "--config ./publisher.config.json --host 127.0.0.1 " +
+         "--watch-env default --port 4100";
+      fs.writeFileSync(
+         path.join(tmp, "package.json"),
+         JSON.stringify({ name: "app", scripts: { start: script } }, null, 2) +
+            "\n",
+      );
+      const result = scaffold({
+         name: "sales",
+         cwd: tmp,
+         host: "claude-code",
+         force: false,
+      });
+      const output = formatSuccess(result);
+
+      expect(result.hasStartScript).toBe(false);
+      expect(output).not.toContain("could not establish");
+      expect(output).not.toContain("0.0.0.0");
+      expect(offeredCommands(output)).toContain(result.startCommand);
+   });
+
    test("a script with nothing to do with Publisher is not described as a risk", () => {
       fs.writeFileSync(
          path.join(tmp, "package.json"),

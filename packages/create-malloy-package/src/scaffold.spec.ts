@@ -668,6 +668,27 @@ describe("scaffold: reset script", () => {
       expect(pkg.scripts.reset).toContain("--init");
    });
 
+   test("re-running does not report our own reset script as overwritten", () => {
+      // The reset we generate is the start boot plus --init, so recognising it
+      // needs requireInit. Without that it reads as someone else's script and
+      // the second run tells the user it overwrote something they wrote, naming
+      // a command this tool had written itself moments earlier.
+      run();
+      const first = readJson("package.json") as {
+         scripts: { start: string; reset: string };
+      };
+      const second = run({ force: true });
+      const reported = second.replaced.filter((entry) =>
+         entry.includes("script"),
+      );
+      expect(reported).toEqual([]);
+      const after = readJson("package.json") as {
+         scripts: { start: string; reset: string };
+      };
+      expect(after.scripts.start).toBe(first.scripts.start);
+      expect(after.scripts.reset).toBe(first.scripts.reset);
+   });
+
    test("a foreign package.json we leave alone reports no reset script", () => {
       fs.writeFileSync(
          path.join(tmp, "package.json"),

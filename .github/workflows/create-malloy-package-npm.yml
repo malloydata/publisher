@@ -42,12 +42,42 @@ jobs:
       - name: Check pack contents
         run: bun run --cwd packages/create-malloy-package check-pack
 
+      # Every other job here runs the TypeScript under bun. What users get is
+      # dist/index.js under node, and the bundle is not the source: the
+      # `#!/usr/bin/env node` shebang, `--packages external`, and both
+      # templatesDir and version() resolving relative to dist/ are exercised
+      # nowhere else. build.yml smoke-tests the server bin under node for the
+      # same reason. Skills are built explicitly so this does not depend on a
+      # sibling step: a fresh checkout has no generated skills/ at all, and the
+      # scaffolder copies from it at runtime.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Smoke-test the built bin under Node
+        run: |
+          bun run --cwd packages/skills build
+          BIN="$PWD/packages/create-malloy-package/dist/index.js"
+          node "$BIN" --version
+          cd "$(mktemp -d)"
+          node "$BIN" smoke
+          test -f smoke/publisher.json
+          test -f publisher.config.json
+          test -d .claude/skills
+
       - name: Test
         run: bun run --cwd packages/create-malloy-package test
 
   publish:
     name: Publish to NPM
-    if: github.event_name == 'workflow_dispatch'
+    # workflow_dispatch offers every branch in the ref dropdown, and the
+    # definition that runs is the one on the ref you pick. npm's trusted
+    # publisher matches on this file's name, so the filename is effectively the
+    # credential and `needs: check_pack` is no protection: that job would verify
+    # the same branch's tarball. Without the ref check, a dispatch from any
+    # branch publishes that branch's code under the real package name.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: check_pack
     runs-on: ubuntu-latest
     permissions:
@@ -131,31 +161,29 @@ jobs:
 
       # Trusted publishing (OIDC); there is no NPM_TOKEN fallback in this repo.
       #
-      # npm configures trusted publishing per package, on the package's own
-      # settings page, so the package must exist before the entry can be created.
-      # The first publish of this new name is therefore manual, by an
-      # @malloy-publisher owner: publish once by hand, add the trusted-publisher
-      # entry naming this workflow file, then every release after that is a
-      # dispatch here.
+      # Both prerequisites are already met, so no manual publish is needed:
+      # `create-malloy-package` exists on npm (0.0.0, a placeholder that
+      # scaffolds nothing, published 2026-07-23 to claim the name), and
+      # @malloy-publisher/skills is published (0.1.0), so the sed above resolves
+      # to a real range. This job publishes 0.0.1 on dispatch, and because 0.0.1
+      # sorts above the placeholder and carries no hyphen, it takes over `latest`
+      # and becomes what `npm create malloy-package` resolves.
       #
-      # That manual publish does not run the rewrite step above, nor the
-      # registry check after it, so do both by hand first:
+      # The trusted-publisher entry must name THIS file,
+      # create-malloy-package-npm.yml. npm allows one entry per package and
+      # matches it against the CALLING workflow's filename, so if the entry ever
+      # names another workflow, this job cannot authenticate and fails with a
+      # bare ENEEDAUTH after check_pack and both registry round-trips have
+      # passed. Verify the filename on the package settings page before the
+      # first dispatch. If this workflow is later invoked from release.yml via
+      # workflow_call, the entry has to be changed to release.yml for the same
+      # reason.
       #
-      #   1. Edit packages/create-malloy-package/package.json to replace
-      #      "@malloy-publisher/skills": "workspace:*" with "^<published skills
-      #      version>".
-      #   2. Confirm that pin actually exists on npm, because nothing about
-      #      publishing will tell you it does not:
-      #        npm view "@malloy-publisher/skills@^<that version>" version
-      #      It must print a version. An E404, or no output at all, means the
-      #      pin resolves to nothing and every user's install of what you are
-      #      about to publish would fail on it. Publish skills first.
-      #   3. npm publish --access public --tag <latest|next>
-      #   4. Revert the edit. Do not commit it.
+      # Do not hand-publish from a workstation instead. It skips check_pack, the
+      # workspace:* rewrite below, and the registry check, which are the three
+      # things standing between a typo and an immutable broken version.
       #
-      # @malloy-publisher/skills has to be on npm before any of this.
-      #
-      # Step 2 is also enforced by the package's prepublishOnly hook, which runs
+      # The rewrite is also enforced by the package's prepublishOnly hook, which runs
       # the same check-pack guard this job runs: it refuses to publish a
       # workspace: range, and on the publish path it asks the registry whether
       # every pinned range resolves. Both fail loudly rather than shipping a

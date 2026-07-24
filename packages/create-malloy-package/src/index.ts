@@ -584,8 +584,11 @@ function bindRisk(declined: DeclinedScript | undefined): BindRisk | undefined {
          // ours for it to expose.
          return undefined;
       case "no-init-flag":
+      case "different-invocation":
          // The binding was established and it is loopback; what is wrong with
-         // this one is said by declinedScriptReason instead.
+         // this one is said by declinedScriptReason instead. Both of these sit
+         // past the non-loopback-host check, so warning that the binding is
+         // unknown would contradict the flag this code just read.
          return undefined;
       case "no-host-flag":
          // True of the joined `--host=<addr>` form as well: the server drops it

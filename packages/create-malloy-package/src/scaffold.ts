@@ -257,7 +257,7 @@ const BIND_HOST = "127.0.0.1";
  * and confirm the new version still honours --host. A generated workspace can
  * move itself off it by editing the scripts in its own package.json.
  */
-export const SERVER_VERSION = "0.0.228";
+export const SERVER_VERSION = "0.0.231";
 
 function startCommandFor(envName: string): string {
    return (
@@ -994,10 +994,14 @@ function workspaceScripts(cwd: string): Record<string, unknown> | undefined {
  * falls back to the explicit command, which does bind loopback, so every command
  * this tool prints or writes matches what it says about the binding.
  */
-function isPublisherScript(script: unknown, envName: string): boolean {
+function isPublisherScript(
+   script: unknown,
+   envName: string,
+   requireInit = false,
+): boolean {
    return (
       typeof script === "string" &&
-      declineReasonFor(script, envName) === undefined
+      declineReasonFor(script, envName, requireInit) === undefined
    );
 }
 
@@ -1372,7 +1376,10 @@ function writeWorkspacePackageJson(
       const previous = scripts[name];
       if (
          typeof previous === "string" &&
-         !isPublisherScript(previous, result.envName)
+         // `reset` is the same boot plus --init, so it has to be recognised
+         // with requireInit or this tool reports its own generated reset as
+         // someone else's script it overwrote.
+         !isPublisherScript(previous, result.envName, name === "reset")
       ) {
          // Only someone else's script is worth reporting as lost. It is echoed
          // through printable() because it came out of a package.json in a
