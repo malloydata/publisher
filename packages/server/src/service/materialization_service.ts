@@ -617,6 +617,7 @@ export class MaterializationService {
             carried,
             signal,
             opts.strictUpstreams ?? false,
+            { environmentId, packageName },
          );
 
          const sourcesBuilt = instructions.length;
@@ -1077,6 +1078,9 @@ export class MaterializationService {
       seedEntries: Record<string, ManifestEntry>,
       signal: AbortSignal,
       strict = false,
+      // Identity of the run, used only to reclaim storage tables this run created
+      // if it fails part-way (see reclaimStorageTablesFromFailedRun).
+      owner?: { environmentId: string; packageName: string },
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -1126,73 +1130,188 @@ export class MaterializationService {
          entries[sourceEntityId] = entry;
       }
 
-      for (const graph of graphs) {
-         const connection = connections.get(graph.connectionName);
-         if (!connection) {
-            throw new BadRequestError(
-               `Connection '${graph.connectionName}' not found`,
-            );
+      // Entries this run actually CREATED, as opposed to the seeded/carried ones
+      // above. Only these are eligible for failure-path reclaim: a carried entry
+      // names a table an earlier successful run built and a live manifest may still
+      // serve, so dropping one would be data loss rather than cleanup.
+      const builtThisRun: ManifestEntry[] = [];
+      try {
+         for (const graph of graphs) {
+            const connection = connections.get(graph.connectionName);
+            if (!connection) {
+               throw new BadRequestError(
+                  `Connection '${graph.connectionName}' not found`,
+               );
+            }
+            for (const persistSource of iterGraphSources(graph, sources)) {
+               if (signal.aborted) throw new Error("Build cancelled");
+
+               // Prefer sourceID matching (so the caller's sourceEntityId scheme
+               // stays opaque to the build); the sourceEntityId lookup below is the
+               // fallback for instructions without a sourceID (auto-run). Resolved
+               // before computeSourceEntityId so the eligibility gate wins: that
+               // call invokes getSQL(), which throws opaquely for a free-parameter
+               // or given source, losing the clean 422.
+               const orchestratedInstruction = bySourceID.get(
+                  persistSource.sourceID,
+               );
+
+               // Enforce the eligibility gate for any storage-targeted build,
+               // including orchestrated (host-supplied) instructions — the publisher
+               // refuses an ineligible source into the tier itself, not on trust.
+               // Skipped when the mode is off: the kill switch ignores a
+               // host-supplied destination too and does a colocated build.
+               if (
+                  orchestratedInstruction?.destination &&
+                  getPersistStorageMode() !== "off"
+               ) {
+                  assertMaterializationEligible(persistSource);
+               }
+
+               // The manifest is keyed by the content sourceEntityId — what Malloy
+               // recomputes to resolve upstream persist references during SQL
+               // generation — independent of the instruction's identity sourceEntityId.
+               const sourceEntityId = computeSourceEntityId(
+                  persistSource,
+                  connectionDigests,
+               );
+               const instruction =
+                  orchestratedInstruction ??
+                  bySourceEntityId.get(sourceEntityId);
+               if (!instruction) continue;
+
+               // Auto-run already gated pre-getSQL in deriveSelfInstructions;
+               // re-assert (idempotent) so no path into a storage build is ungated.
+               if (
+                  !orchestratedInstruction &&
+                  instruction.destination &&
+                  getPersistStorageMode() !== "off"
+               ) {
+                  assertMaterializationEligible(persistSource);
+               }
+
+               const entry = await this.buildOneSource(
+                  persistSource,
+                  instruction,
+                  connection,
+                  connectionDigests,
+                  manifest,
+                  environment,
+                  entries,
+               );
+               entries[sourceEntityId] = entry;
+               if (entry.storageConnectionName) builtThisRun.push(entry);
+            }
          }
-         for (const persistSource of iterGraphSources(graph, sources)) {
-            if (signal.aborted) throw new Error("Build cancelled");
-
-            // Prefer sourceID matching (so the caller's sourceEntityId scheme
-            // stays opaque to the build); the sourceEntityId lookup below is the
-            // fallback for instructions without a sourceID (auto-run). Resolved
-            // before computeSourceEntityId so the eligibility gate wins: that
-            // call invokes getSQL(), which throws opaquely for a free-parameter
-            // or given source, losing the clean 422.
-            const orchestratedInstruction = bySourceID.get(
-               persistSource.sourceID,
-            );
-
-            // Enforce the eligibility gate for any storage-targeted build,
-            // including orchestrated (host-supplied) instructions — the publisher
-            // refuses an ineligible source into the tier itself, not on trust.
-            // Skipped when the mode is off: the kill switch ignores a
-            // host-supplied destination too and does a colocated build.
-            if (
-               orchestratedInstruction?.destination &&
-               getPersistStorageMode() !== "off"
-            ) {
-               assertMaterializationEligible(persistSource);
-            }
-
-            // The manifest is keyed by the content sourceEntityId — what Malloy
-            // recomputes to resolve upstream persist references during SQL
-            // generation — independent of the instruction's identity sourceEntityId.
-            const sourceEntityId = computeSourceEntityId(
-               persistSource,
-               connectionDigests,
-            );
-            const instruction =
-               orchestratedInstruction ?? bySourceEntityId.get(sourceEntityId);
-            if (!instruction) continue;
-
-            // Auto-run already gated pre-getSQL in deriveSelfInstructions;
-            // re-assert (idempotent) so no path into a storage build is ungated.
-            if (
-               !orchestratedInstruction &&
-               instruction.destination &&
-               getPersistStorageMode() !== "off"
-            ) {
-               assertMaterializationEligible(persistSource);
-            }
-
-            const entry = await this.buildOneSource(
-               persistSource,
-               instruction,
-               connection,
-               connectionDigests,
-               manifest,
+      } catch (err) {
+         // A run that fails part-way commits NO manifest, and manifest-driven GC
+         // only drops names a manifest records — so a table an earlier source in
+         // this run already wrote would be unreachable forever. Reclaim those
+         // before rethrowing. Best-effort and non-fatal: the build's own failure is
+         // what the caller needs to see.
+         if (owner) {
+            await this.reclaimStorageTablesFromFailedRun(
+               builtThisRun,
                environment,
-               entries,
+               owner,
             );
-            entries[sourceEntityId] = entry;
          }
+         throw err;
       }
 
       return entries;
+   }
+
+   /**
+    * Drop the storage tables a FAILED run created, so a partial build does not
+    * leak an unreferenced table. For DuckLake that is data plus Parquet files at
+    * rest, and nothing else will ever name them: the run commits no manifest, and
+    * GC reclaims only what a manifest records.
+    *
+    * Two guards make this safe, and both matter:
+    *
+    * - Only entries this run CREATED (never a carried-forward one).
+    * - Only names no other MANIFEST_FILE_READY run references, the same
+    *   destination-and-name check {@link dropMaterializedTables} applies. Auto-run
+    *   assigns STABLE physical names, so a rebuild writes in place over the very
+    *   table the previous manifest still serves; dropping that would take a
+    *   working source offline to tidy up. Generational names (the orchestrated
+    *   path) are unreferenced by construction, which is where the leak actually
+    *   bites.
+    *
+    * Scoped to `storage=` entries. A colocated failure is left alone: those names
+    * are stable and in the customer's own warehouse, so the next successful build
+    * overwrites in place and a failure-path DROP there would be a far larger
+    * blast radius for no reclaim.
+    */
+   private async reclaimStorageTablesFromFailedRun(
+      builtThisRun: ManifestEntry[],
+      environment: BuildEnvironment,
+      owner: { environmentId: string; packageName: string },
+   ): Promise<void> {
+      if (builtThisRun.length === 0) return;
+      try {
+         const tableKey = (dest: string, table: string) => `${dest}:${table}`;
+         const stillReferenced = new Set<string>();
+         const others =
+            (await this.repository.listMaterializations(
+               owner.environmentId,
+               owner.packageName,
+            )) ?? [];
+         for (const other of others) {
+            if (other.status !== "MANIFEST_FILE_READY") continue;
+            for (const e of Object.values(other.manifest?.entries ?? {})) {
+               const dest = e.storageConnectionName ?? e.connectionName;
+               if (dest && e.physicalTableName) {
+                  stillReferenced.add(tableKey(dest, e.physicalTableName));
+               }
+            }
+         }
+
+         for (const entry of builtThisRun) {
+            const dest = entry.storageConnectionName;
+            const table = entry.physicalTableName;
+            if (!dest || !table) continue;
+            if (stillReferenced.has(tableKey(dest, table))) {
+               logger.info(
+                  "Keeping a table from a failed run: a live manifest still serves it",
+                  { destinationName: dest, physicalTableName: table },
+               );
+               continue;
+            }
+            try {
+               await dropStorageTable({
+                  destinationName: dest,
+                  destinationConnection: environment.getApiConnection(dest),
+                  physicalTableName: table,
+                  environmentPath: environment.getEnvironmentPath(),
+               });
+               recordDropTables("success", "storage");
+               logger.info("Reclaimed a table stranded by a failed build", {
+                  destinationName: dest,
+                  physicalTableName: table,
+               });
+            } catch (dropErr) {
+               recordDropTables("failure", "storage");
+               logger.warn(
+                  "Failed to reclaim a table stranded by a failed build",
+                  {
+                     destinationName: dest,
+                     physicalTableName: table,
+                     error: redactConnectionSecrets(
+                        errMessage(dropErr),
+                        environment.getApiConnection(dest),
+                     ),
+                  },
+               );
+            }
+         }
+      } catch (err) {
+         // Never let cleanup mask the build failure that triggered it.
+         logger.warn("Failed-run table reclaim did not complete", {
+            error: errMessage(err),
+         });
+      }
    }
 
    /**
