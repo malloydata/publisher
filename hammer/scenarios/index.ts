@@ -56,6 +56,82 @@ function malformedScenario(dir: string, err: unknown): Scenario {
    };
 }
 
+/**
+ * Scenarios share physical stores: ONE Postgres source database and ONE DuckLake
+ * destination for the whole run. So two scenarios that pick the same package name or
+ * seed the same source table are not independent — they read and write each other's
+ * state, and the symptom is a mystery failure in an unrelated, previously-green
+ * scenario rather than an error where the mistake is.
+ *
+ * Detected here and reported as a FAILURE on each colliding scenario, so the rest of
+ * the suite still runs and the message names the counterpart.
+ *
+ * Package names are keyed by ENVIRONMENT, because registering one package name under
+ * two environments inside a single scenario is legitimate (see
+ * cross-environment-same-name).
+ *
+ * Persist `name=` values are deliberately NOT checked. Whether two of them collide
+ * depends on the destination — a `storage=` name lands in the lake while a colocated
+ * one lands in the source warehouse — so two scenarios can share a name harmlessly
+ * (quoted-persist-name and its colocated twin do exactly that). Deciding it from
+ * model text would mean parsing `storage=` and the source connection, and a
+ * false positive here would block a legitimate scenario.
+ */
+function collisionMessages(scenarios: Scenario[]): Map<string, string[]> {
+   const owners = (
+      pick: (s: Scenario) => string[],
+      label: string,
+   ): Map<string, string[]> => {
+      const byKey = new Map<string, Set<string>>();
+      for (const s of scenarios) {
+         for (const key of pick(s)) {
+            if (!byKey.has(key)) byKey.set(key, new Set());
+            byKey.get(key)!.add(s.id);
+         }
+      }
+      const out = new Map<string, string[]>();
+      for (const [key, ids] of byKey) {
+         if (ids.size < 2) continue;
+         for (const id of ids) {
+            const others = [...ids].filter((o) => o !== id).sort();
+            if (!out.has(id)) out.set(id, []);
+            out
+               .get(id)!
+               .push(`${label} "${key}" is also used by ${others.join(", ")}`);
+         }
+      }
+      return out;
+   };
+
+   const merged = new Map<string, string[]>();
+   const add = (m: Map<string, string[]>) => {
+      for (const [id, msgs] of m) {
+         merged.set(id, [...(merged.get(id) ?? []), ...msgs]);
+      }
+   };
+   add(
+      owners(
+         (s) => (s.packages ?? []).map((p) => `${p.env ?? "default"}:${p.name}`),
+         "package",
+      ),
+   );
+   // A seed's table name lives in its SQL (`CREATE TABLE <name> (...)`), not as a
+   // field, so read it back out.
+   add(
+      owners(
+         (s) =>
+            (s.sourceTables ?? []).flatMap((st) => {
+               const names = [...st.sql.matchAll(/CREATE TABLE\s+(\S+)/gi)].map(
+                  (m) => m[1],
+               );
+               return names.map((n) => `${st.db ?? "default"}.${n}`);
+            }),
+         "source table",
+      ),
+   );
+   return merged;
+}
+
 export async function loadScenarios(
    ids?: string[],
    tags?: string[],
@@ -68,6 +144,31 @@ export async function loadScenarios(
       } catch (err) {
          scenarios.push(malformedScenario(dir, err));
       }
+   }
+
+   // Collisions are computed over EVERY scenario, before filtering, so a filtered
+   // run still reports one rather than appearing to pass in isolation.
+   const collisions = collisionMessages(scenarios);
+   if (collisions.size > 0) {
+      scenarios = scenarios.map((s) => {
+         const msgs = collisions.get(s.id);
+         if (!msgs) return s;
+         return {
+            ...s,
+            tags: [...s.tags, "collision"],
+            title: `COLLIDES with another scenario (${s.title})`,
+            packages: [],
+            sourceTables: [],
+            connections: [],
+            run: async (_ctx, assert) => {
+               assert.fail(
+                  `${s.id}: shares state with another scenario`,
+                  `${msgs.join("; ")} — scenarios share one source database and one ` +
+                     `destination, so these must be unique`,
+               );
+            },
+         };
+      });
    }
 
    // `--scenarios` matches the id by substring; `--tags` matches any tag exactly.
