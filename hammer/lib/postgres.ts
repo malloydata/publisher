@@ -16,6 +16,12 @@ export interface PostgresHandle {
    dropDb(name: string): Promise<void>;
    /** Drop then create — a guaranteed-empty database. */
    resetDb(name: string): Promise<void>;
+   /**
+    * Drop-then-create many databases in ONE psql session. Every `docker exec psql`
+    * costs ~100ms of process spawn, which dominates the statement itself, so
+    * resetting a scenario per database serially is mostly overhead.
+    */
+   resetDbs(names: string[]): Promise<void>;
    /** Run SQL against a database (via `psql`), throwing on error. */
    sql(db: string, statements: string): Promise<void>;
    /** Run a SELECT and return rows as objects (column name -> string value). */
@@ -79,13 +85,26 @@ export async function startPostgres(
          "-p",
          `${hostPort}:5432`,
          image,
-         // Each publisher holds pools for every connection in its config, and a run
-         // configures one source + one catalog per scenario — so a concurrent run needs
-         // far more than the default 100. Exhausting it surfaces as
+         // A publisher leaks ~3 idle backends per environment it BUILDS (2 to the
+         // DuckLake catalog, 1 to the source warehouse) and releases none until the
+         // process exits, so a run's floor is ~3x the scenarios that build. The
+         // default 100 is exceeded well before the end. Exhausting it surfaces as
          // "sorry, too many clients already" from a schema fetch mid-scenario, which
          // reads like a product failure rather than a harness limit.
          "-c",
-         "max_connections=200",
+         "max_connections=300",
+         // A throwaway container: durability buys nothing and costs a lot. Creating
+         // ~130 databases leaves enough dirty buffers that the FIRST `DROP DATABASE`
+         // — which forces an immediate checkpoint — blocks for ~18s, landing on
+         // whichever scenario happens to drop something first and reading as a
+         // mystery slow scenario. With fsync off that drop is 0.2s, and provisioning
+         // is ~20% quicker as well.
+         "-c",
+         "fsync=off",
+         "-c",
+         "full_page_writes=off",
+         "-c",
+         "synchronous_commit=off",
       ]);
    }
 
@@ -130,6 +149,18 @@ export async function startPostgres(
       async resetDb(name: string): Promise<void> {
          await this.dropDb(name);
          await this.createDb(name);
+      },
+      async resetDbs(names: string[]): Promise<void> {
+         if (names.length === 0) return;
+         // CREATE/DROP DATABASE cannot run inside a transaction, so no -1 here;
+         // ON_ERROR_STOP still aborts the batch on the first failure.
+         const script = names
+            .flatMap((n) => [
+               `DROP DATABASE IF EXISTS ${n} WITH (FORCE);`,
+               `CREATE DATABASE ${n};`,
+            ])
+            .join("\n");
+         await runOrThrow(psqlBase("postgres"), { stdin: script });
       },
       async dbExists(name: string): Promise<boolean> {
          const r = await run([
