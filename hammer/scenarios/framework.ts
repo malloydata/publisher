@@ -141,6 +141,12 @@ export interface Scenario {
     */
    note?: { since?: string; text: string };
    sourceTables?: SourceTable[];
+   /**
+    * The `PERSIST_STORAGE_MODE` values this scenario asks for, in order. A mode is
+    * fixed at publisher start, so changing it restarts the server — the runner uses
+    * this to run same-mode scenarios consecutively and stop paying for churn.
+    */
+   modes?: string[];
    packages: PackageSpec[];
    /** Connections to wire into the config beyond the defaults (see {@link ConnectionDecl}). */
    connections?: ConnectionDecl[];

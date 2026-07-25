@@ -2202,6 +2202,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       title: parsed.title,
       packages,
       sourceTables,
+      // Every mode this scenario will boot at, in order (see Scenario.modes).
+      modes: parsed.steps
+         .filter((s): s is Extract<Step, { kind: "publisher" }> => s.kind === "publisher")
+         .map((s) => s.mode),
       connections: parsed.connectionDecls,
       run,
    };

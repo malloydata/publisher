@@ -324,11 +324,33 @@ async function main(): Promise<void> {
    const packagesDir = path.join(workdir, "packages");
    log.info(`workdir: ${workdir}`);
 
-   const scenarios = await loadScenarios(args.scenarios, args.tags);
+   let scenarios = await loadScenarios(args.scenarios, args.tags);
    if (scenarios.length === 0) {
       log.err("no scenarios selected");
       process.exit(2);
    }
+   // Execution ORDER is a performance lever, not a semantic one: per-scenario
+   // isolation means scenarios cannot influence each other, so they are free to
+   // reorder. PERSIST_STORAGE_MODE is fixed at publisher start, so every switch
+   // costs a full server boot (~3.3s, because a boot loads every configured
+   // package). Interleaved by directory number, ~6 non-`on` scenarios among 53
+   // `on` ones cost TWELVE boots — each excursion pays to leave and to come back,
+   // once per worker. Grouped, that collapses to one transition per mode.
+   //
+   // Scenarios that switch mode internally sort last within their group: they will
+   // boot regardless, so they should not fragment a run of single-mode ones.
+   const MODE_RANK: Record<string, number> = { on: 0, "write-only": 1, off: 2 };
+   const orderKey = (s: Scenario): [number, number, string] => [
+      MODE_RANK[s.modes?.[0] ?? "on"] ?? 0,
+      new Set(s.modes ?? []).size > 1 ? 1 : 0,
+      s.id,
+   ];
+   const declaredOrder = new Map(scenarios.map((s, i) => [s.id, i]));
+   scenarios = [...scenarios].sort((a, b) => {
+      const [am, ax, aid] = orderKey(a);
+      const [bm, bx, bid] = orderKey(b);
+      return am - bm || ax - bx || aid.localeCompare(bid);
+   });
    log.info(`scenarios: ${scenarios.map((s) => s.id).join(", ")}`);
 
    // Capabilities this run provides. A scenario whose `requires` names a token
@@ -655,6 +677,14 @@ async function main(): Promise<void> {
       }
    }
 
+   // Report in declared (directory) order: execution order is now mode-grouped and,
+   // with workers, completion order is nondeterministic — neither should show up as
+   // a shuffled summary.
+   results.sort(
+      (a, b) =>
+         (declaredOrder.get(a.scenario.id) ?? 0) -
+         (declaredOrder.get(b.scenario.id) ?? 0),
+   );
    const failed = summarize(results, args.attentionOlderThan) || !!hardError;
    process.exit(failed ? 1 : 0);
 }

@@ -85,9 +85,7 @@ export async function startPostgres(
          // "sorry, too many clients already" from a schema fetch mid-scenario, which
          // reads like a product failure rather than a harness limit.
          "-c",
-         "max_connections=500",
-         "-c",
-         "shared_buffers=256MB",
+         "max_connections=200",
       ]);
    }
 
