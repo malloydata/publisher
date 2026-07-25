@@ -56,7 +56,7 @@
 import path from "path";
 import type { PersistStorageMode } from "./server";
 import { Rest } from "./rest";
-import { sleep } from "./util";
+import { log, sleep } from "./util";
 
 /** The default environment every scenario runs in unless a step says `(env=…)`. */
 const PRIMARY_ENV = "default";
@@ -1571,8 +1571,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             pkgKey(env ?? PRIMARY_ENV, pkg ?? parsed.defaultPackage),
          ) ?? `${parsed.defaultPackage}.malloy`;
 
+      // HAMMER_STEP_TIMING=1 reports every step slower than 500ms, so a scenario
+      // that is slow only inside a full run localizes itself without bisecting.
+      const stepTiming = process.env.HAMMER_STEP_TIMING === "1";
       for (const step of parsed.steps) {
          const checksBefore = assert.checks.length;
+         const stepStart = stepTiming ? performance.now() : 0;
          switch (step.kind) {
             case "model":
                await ctx.editPackageModel(
@@ -2185,6 +2189,14 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   `a cites:/excludes: key, or (rows=N), or it is not verifying anything`,
             );
          }
+         if (stepTiming) {
+            const took = performance.now() - stepStart;
+            if (took >= 500) {
+               log.info(
+                  `[${parsed.id}] step "${step.kind}" took ${(took / 1000).toFixed(1)}s`,
+               );
+            }
+         }
       }
 
       // Drain any async publishes the scenario didn't explicitly `## Await`, so a
@@ -2204,7 +2216,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       sourceTables,
       // Every mode this scenario will boot at, in order (see Scenario.modes).
       modes: parsed.steps
-         .filter((s): s is Extract<Step, { kind: "publisher" }> => s.kind === "publisher")
+         .filter(
+            (s): s is Extract<Step, { kind: "publisher" }> =>
+               s.kind === "publisher",
+         )
          .map((s) => s.mode),
       connections: parsed.connectionDecls,
       run,
