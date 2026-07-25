@@ -95,3 +95,20 @@ rather than taking a working source offline.
 ```sql
 SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g2'
 ```
+
+## Note (since=2026-07-24)
+
+> Reclaim is deliberately ORCHESTRATED-ONLY. The still-referenced check reads this
+> environment and package only, and a BuildID carries no environment input — so two
+> environments sharing a destination can resolve a source to the same physical name,
+> and a reclaim trusting a per-environment check could drop a table another
+> environment is serving. That exact shape caused a cross-environment data-loss
+> incident on the hosted side. Generational (host-assigned) names remove the
+> collision instead of racing it, and auto-run's stable names are overwritten in
+> place by the next build, so skipping them forgoes little.
+>
+> The durable fix is refusing a colliding persist target at validation time —
+> today `persistenceCollisionWarnings` only looks WITHIN a package, so a
+> cross-package or cross-environment collision is undetected (see
+> `cross-environment-same-name`). Widening reclaim before that lands would be
+> unsafe.

@@ -617,7 +617,9 @@ export class MaterializationService {
             carried,
             signal,
             opts.strictUpstreams ?? false,
-            { environmentId, packageName },
+            // Failure-path reclaim is ORCHESTRATED-ONLY on purpose — see
+            // reclaimStorageTablesFromFailedRun.
+            orchestrated ? { environmentId, packageName } : undefined,
          );
 
          const sourcesBuilt = instructions.length;
@@ -1228,16 +1230,27 @@ export class MaterializationService {
     * rest, and nothing else will ever name them: the run commits no manifest, and
     * GC reclaims only what a manifest records.
     *
-    * Two guards make this safe, and both matter:
+    * Three guards make this safe, and each closes a real way to destroy live data:
+    *
+    * - ORCHESTRATED runs only (the caller passes no `owner` for auto-run). Those
+    *   names are host-assigned and generational, so unique by construction — which
+    *   is both where the leak actually bites and the only case where a drop cannot
+    *   hit something another run owns. Auto-run's STABLE names are overwritten in
+    *   place by the next build, so skipping them forgoes little.
+    *
+    *   This gate is what bounds the cross-environment hazard. The
+    *   still-referenced check below reads THIS environment and package only, and a
+    *   BuildID carries no environment input, so two environments sharing a
+    *   destination can resolve a source to the SAME physical name. A reclaim that
+    *   trusted a per-environment check could then drop a table another environment
+    *   is actively serving — the failure mode behind a real cross-environment
+    *   data-loss incident on the hosted side. Generational names remove the
+    *   collision rather than racing it. The durable fix is refusing a colliding
+    *   persist target at validation time; until then, do not widen this.
     *
     * - Only entries this run CREATED (never a carried-forward one).
     * - Only names no other MANIFEST_FILE_READY run references, the same
-    *   destination-and-name check {@link dropMaterializedTables} applies. Auto-run
-    *   assigns STABLE physical names, so a rebuild writes in place over the very
-    *   table the previous manifest still serves; dropping that would take a
-    *   working source offline to tidy up. Generational names (the orchestrated
-    *   path) are unreferenced by construction, which is where the leak actually
-    *   bites.
+    *   destination-and-name check {@link dropMaterializedTables} applies.
     *
     * Scoped to `storage=` entries. A colocated failure is left alone: those names
     * are stable and in the customer's own warehouse, so the next successful build
