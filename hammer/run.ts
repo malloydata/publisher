@@ -52,8 +52,9 @@ interface Args {
    port: number;
    mcpPort: number;
    /**
-    * Scenarios to run concurrently; each worker owns its own publishers. Defaults
-    * to 2 — see parseArgs for why not more.
+    * Scenarios to run concurrently. Each worker owns its own publishers and a
+    * config holding only its own scenarios' environments — see parseArgs for the
+    * measured default.
     */
    workers: number;
 }
@@ -67,11 +68,12 @@ function parseArgs(argv: string[]): Args {
       pgPort: 55432,
       port: 14000,
       mcpPort: 14040,
-      // 2 measured fastest on a laptop: 60 scenarios in ~99s vs ~132s serially.
-      // 4 REGRESSES to ~134s — publisher boots, DuckDB, and malloy compiles are all
-      // CPU-bound, so oversubscribing costs more than the overlap buys. Raise it only
-      // with a measurement on the machine in question.
-      workers: 2,
+      // 4 measured fastest on a 10-core laptop: ~42s, against ~82s serially and
+      // ~48s at 6 (where per-worker boots start costing more than the overlap buys).
+      // Server boots are ~half of a run's total, and they are what degrades under
+      // concurrency, so the ceiling moves with boot cost rather than with core count.
+      // Re-measure before changing it on another machine.
+      workers: 4,
    };
    for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];
@@ -111,7 +113,14 @@ interface ScenarioResult {
    error?: string;
    /** Set when the scenario was skipped (unmet `requires`); reason for the report. */
    skipped?: string;
+   /** Wall-clock the scenario took, and how much of it was server boots. */
+   ms?: number;
+   bootMs?: number;
+   boots?: number;
 }
+
+/** Server-boot accounting, so a slow scenario can be attributed to boots or to work. */
+const bootStats = { count: 0, ms: 0, stopMs: 0, startMs: 0 };
 
 /**
  * A cluster of named publisher processes sharing one config (so they share the
@@ -205,7 +214,9 @@ class PublisherCluster {
    ): Promise<Rest> {
       const existing = this.pubs.get(name);
       if (existing) {
+         const stopStart = performance.now();
          await existing.server.stop();
+         bootStats.stopMs += performance.now() - stopStart;
          this.pubs.delete(name);
       }
       const { port, mcpPort } = this.portsFor(name);
@@ -214,6 +225,7 @@ class PublisherCluster {
          `server-${this.cfg.tag}${name}`,
       );
       mkdirSync(serverRoot, { recursive: true });
+      const bootStart = performance.now();
       const server = await startServer({
          repoRoot: this.cfg.repoRoot,
          serverRoot,
@@ -228,8 +240,11 @@ class PublisherCluster {
             `server-${this.cfg.tag}${name}.log`,
          ),
       });
+      bootStats.count++;
+      bootStats.startMs += performance.now() - bootStart;
       const rest = new Rest(server.baseUrl, this.cfg.env);
       const st = await rest.status();
+      bootStats.ms = bootStats.startMs + bootStats.stopMs;
       if (st.loadErrors)
          log.warn(
             `[${this.cfg.tag}${name}] load errors: ${JSON.stringify(st.loadErrors)}`,
@@ -261,8 +276,6 @@ class PublisherCluster {
  *
  * The environment is what makes that possible: the generated config keys connections
  * by (environment, name), so sixty scenarios can each define their own `lake`.
- * Boot cost is indifferent to environment count — measured at ~2.4s for both 60
- * environments holding one package each and one environment holding sixty.
  */
 interface ScenarioResources {
    slug: string;
@@ -276,7 +289,10 @@ interface ScenarioResources {
 
 /** Postgres-safe, collision-free stem for a scenario id. */
 function slugOf(id: string, index: number): string {
-   const base = id.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+   const base = id
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
    // Index-suffixed so truncation of two long ids cannot converge.
    return `${base.slice(0, 40)}_${index}`;
 }
@@ -332,8 +348,8 @@ async function main(): Promise<void> {
    // Execution ORDER is a performance lever, not a semantic one: per-scenario
    // isolation means scenarios cannot influence each other, so they are free to
    // reorder. PERSIST_STORAGE_MODE is fixed at publisher start, so every switch
-   // costs a full server boot (~3.3s, because a boot loads every configured
-   // package). Interleaved by directory number, ~6 non-`on` scenarios among 53
+   // costs a full server boot (~2.3s), and boots are the single largest line item
+   // in a run. Interleaved by directory number, ~6 non-`on` scenarios among 53
    // `on` ones cost TWELVE boots — each excursion pays to leave and to come back,
    // once per worker. Grouped, that collapses to one transition per mode.
    //
@@ -384,28 +400,34 @@ async function main(): Promise<void> {
    try {
       // Fresh databases each run (matters when reusing the pg container): a stale
       // DuckLake catalog would carry old data-path bindings and table metadata.
-      // Provisioned concurrently — it is all IO against one Postgres, and serially
-      // this is ~0.5s per scenario.
-      await pooled(scenarios, 8, async (s) => {
+      // Every database in ONE psql session — a `docker exec psql` per database was
+      // ~100ms of spawn overhead each, several times the statement's own cost.
+      const lakesOf = (s: Scenario): string[] => [
+         "lake",
+         ...(s.connections ?? [])
+            .filter((c) => c.kind === "ducklake")
+            .map((c) => c.name),
+      ];
+      const dbs: string[] = [];
+      for (const s of scenarios) {
          const r = resources.get(s.id)!;
-         await pg.resetDb(r.sourceDb);
-         // Every ducklake destination this scenario can reach: the implicit `lake`
-         // plus any it declared.
-         const lakes = [
-            "lake",
-            ...(s.connections ?? [])
-               .filter((c) => c.kind === "ducklake")
-               .map((c) => c.name),
-         ];
-         for (const name of lakes) {
-            await pg.resetDb(r.catalogDbFor(name));
+         dbs.push(r.sourceDb);
+         for (const name of lakesOf(s)) {
+            dbs.push(r.catalogDbFor(name));
             mkdirSync(r.storageDirFor(name), { recursive: true });
          }
+      }
+      await pg.resetDbs(dbs);
+      // Seeding is per-database, so it still fans out.
+      await pooled(scenarios, 8, async (s) => {
+         const r = resources.get(s.id)!;
          for (const st of s.sourceTables ?? []) {
             await pg.sql(st.db ?? r.sourceDb, st.sql);
          }
       });
-      log.ok(`provisioned ${scenarios.length} isolated scenario environment(s)`);
+      log.ok(
+         `provisioned ${scenarios.length} isolated scenario environment(s)`,
+      );
 
       // A package belongs to an environment (default = the primary `env`). Write
       // each (env, package) to packagesDir/<env>/<pkg> and register it under its
@@ -487,7 +509,12 @@ async function main(): Promise<void> {
          if (!r) throw new Error(`no scenario owns environment "${envName}"`);
          return [
             postgresSource("orders_pg", pg, r.sourceDb),
-            ducklakeDest("lake", pg, r.catalogDbFor("lake"), r.storageDirFor("lake")),
+            ducklakeDest(
+               "lake",
+               pg,
+               r.catalogDbFor("lake"),
+               r.storageDirFor("lake"),
+            ),
             ...(declaredByEnv.get(envName) ?? []),
          ];
       };
@@ -497,10 +524,42 @@ async function main(): Promise<void> {
          connections: connectionsFor(name),
          packages: pkgsByEnv.get(name) ?? [],
       }));
-      await writeConfig({
-         configPath: path.join(workdir, "publisher.config.json"),
-         environments,
-      });
+
+      // Scenarios are assigned to workers UP FRONT rather than pulled from a shared
+      // queue, so each worker's config can hold only the environments its own
+      // scenarios need. That matters because `--init` re-copies every configured
+      // package on every boot: a boot against all 64 environments measured 2.31s
+      // against 1.45s for 16 of them, and four workers doing the 64-env copy at once
+      // stretched it to 5-6s. Sharding makes the copy shrink as workers are added
+      // instead of contending W ways for the same work.
+      //
+      // Round-robin over the mode-grouped order keeps each worker's slice balanced
+      // AND mode-grouped, so the one-transition-per-mode property survives.
+      // Trade-off: no work stealing, so an unlucky slice can idle its neighbours.
+      // Scenario durations are tight enough (most under 1.5s) that this has not
+      // shown up; the per-scenario timings in the report are how you would notice.
+      const shards: Scenario[][] = Array.from(
+         { length: args.workers },
+         () => [] as Scenario[],
+      );
+      scenarios.forEach((s, i) => shards[i % args.workers].push(s));
+
+      const shardConfigPaths = await Promise.all(
+         shards.map(async (shard, w) => {
+            const slugs = new Set(shard.map((s) => resources.get(s.id)!.slug));
+            const mine = environments.filter((e) =>
+               slugs.has(ownerOf.get(e.name)!.slug),
+            );
+            const configPath = path.join(
+               workdir,
+               args.workers > 1
+                  ? `publisher.config.w${w}.json`
+                  : "publisher.config.json",
+            );
+            await writeConfig({ configPath, environments: mine });
+            return configPath;
+         }),
+      );
 
       // Bound per scenario below: the caller names a LOGICAL env, the file lands in
       // that scenario's physical env directory.
@@ -560,10 +619,10 @@ async function main(): Promise<void> {
          };
 
       // One PublisherCluster per WORKER, not per scenario. Isolation already comes
-      // from per-scenario environments (phase B), so a worker's server can serve any
-      // scenario's environment from the one config — which keeps boots proportional
-      // to MODE SWITCHES rather than to scenario count. Per-scenario servers would
-      // mean ~60 boots instead of ~22, i.e. slower, for no isolation gain.
+      // from per-scenario environments, so a worker's server serves every scenario
+      // in its shard from one config — which keeps boots proportional to MODE
+      // SWITCHES rather than to scenario count. Per-scenario servers would mean ~60
+      // boots instead of ~15, i.e. slower, for no isolation gain.
       //
       // What a worker does need is its own publishers: a scenario declaring
       // `## Publisher (off)` reboots the server it is talking to, and two scenarios
@@ -574,7 +633,7 @@ async function main(): Promise<void> {
             new PublisherCluster({
                repoRoot,
                workdir,
-               configPath: path.join(workdir, "publisher.config.json"),
+               configPath: shardConfigPaths[w],
                env: PRIMARY,
                // Publisher NAMES stride by 100 within a cluster, so workers stride
                // by 1000 to keep every REST/MCP port distinct.
@@ -605,6 +664,8 @@ async function main(): Promise<void> {
          log.step(`[${s.id}] ${s.title}`);
          const assert = new Assert(s.id);
          let error: string | undefined;
+         const started = performance.now();
+         const bootsBefore = { ...bootStats };
          const r = resources.get(s.id)!;
          const lakes = new Set<string>([
             "lake",
@@ -627,12 +688,17 @@ async function main(): Promise<void> {
             usePublisher: async (name, mode, opts) =>
                bind(await mgr.use(name, mode, opts)),
             // Backward-compat shorthand for the single "default" publisher (hooks).
-            use: async (mode, opts) => bind(await mgr.use("default", mode, opts)),
+            use: async (mode, opts) =>
+               bind(await mgr.use("default", mode, opts)),
             reboot: async (opts) =>
                bind(
-                  await mgr.reboot(opts?.name ?? "default", opts?.mode ?? "on", {
-                     init: opts?.init,
-                  }),
+                  await mgr.reboot(
+                     opts?.name ?? "default",
+                     opts?.mode ?? "on",
+                     {
+                        init: opts?.init,
+                     },
+                  ),
                ),
             restOf: (name) => bind(mgr.restOf(name)),
             editPackageModel: editPackageModelFor(r),
@@ -645,20 +711,23 @@ async function main(): Promise<void> {
             error = (e as Error).stack ?? (e as Error).message;
             assert.fail("scenario threw", (e as Error).message);
          }
-         const result: ScenarioResult = { scenario: s, assert, error };
+         const result: ScenarioResult = {
+            scenario: s,
+            assert,
+            error,
+            ms: performance.now() - started,
+            // Boots are global, so a concurrent worker's boot can be misattributed;
+            // the aggregate at the bottom of the report is the reliable figure.
+            bootMs: bootStats.ms - bootsBefore.ms,
+            boots: bootStats.count - bootsBefore.count,
+         };
          results.push(result);
          printScenario(result);
       };
 
-      // Workers pull from one queue, so a slow scenario does not idle the others.
-      let nextIdx = 0;
       await Promise.all(
-         clusters.map(async (mgr) => {
-            for (;;) {
-               const i = nextIdx++;
-               if (i >= scenarios.length) break;
-               await runOne(scenarios[i], mgr);
-            }
+         clusters.map(async (mgr, w) => {
+            for (const s of shards[w]) await runOne(s, mgr);
             await mgr.stop();
          }),
       );
@@ -729,12 +798,35 @@ function summarize(
       const total = r.assert.checks.length;
       const mark = bad === 0 ? "\x1b[32mPASS\x1b[0m" : "\x1b[31mFAIL\x1b[0m";
       const tags = r.scenario.tags.join(",");
+      const timing =
+         r.ms === undefined
+            ? ""
+            : ` \x1b[2m${(r.ms / 1000).toFixed(1)}s${r.boots ? `/${r.boots}b` : ""}\x1b[0m`;
       console.log(
-         `  ${mark}  ${r.scenario.id.padEnd(28)} ${String(total - bad).padStart(2)}/${total}  ${r.scenario.title}${tags ? `  \x1b[2m[${tags}]\x1b[0m` : ""}`,
+         `  ${mark}  ${r.scenario.id.padEnd(28)} ${String(total - bad).padStart(2)}/${total}${timing}  ${r.scenario.title}${tags ? `  \x1b[2m[${tags}]\x1b[0m` : ""}`,
       );
       if (bad > 0) anyFail = true;
    }
    console.log("─────────────────────────────────────────");
+
+   // Where the wall clock went. Scenario time SUMS across workers, so with N
+   // workers it exceeds the elapsed run; the ratio of boot to work is the point.
+   const timed = results.filter((r) => r.ms !== undefined);
+   if (timed.length) {
+      const total = timed.reduce((n, r) => n + (r.ms ?? 0), 0);
+      console.log(
+         `  \x1b[2mscenario time ${(total / 1000).toFixed(1)}s summed across workers; ` +
+            `${bootStats.count} server boots costing ${(bootStats.ms / 1000).toFixed(1)}s ` +
+            `(${Math.round((bootStats.ms / total) * 100)}%) — ` +
+            `${(bootStats.startMs / 1000).toFixed(1)}s starting, ` +
+            `${(bootStats.stopMs / 1000).toFixed(1)}s stopping the old one\x1b[0m`,
+      );
+      const slow = [...timed]
+         .sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0))
+         .slice(0, 5)
+         .map((r) => `${r.scenario.id} ${((r.ms ?? 0) / 1000).toFixed(1)}s`);
+      console.log(`  \x1b[2mslowest: ${slow.join(", ")}\x1b[0m`);
+   }
 
    // Self-documenting follow-ups: any scenario tagged `needs-attention` or
    // carrying an author `## Note` is surfaced here so open questions don't get
