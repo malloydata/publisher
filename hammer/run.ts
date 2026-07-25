@@ -68,12 +68,13 @@ function parseArgs(argv: string[]): Args {
       pgPort: 55432,
       port: 14000,
       mcpPort: 14040,
-      // 4 measured fastest on a 10-core laptop: ~42s, against ~82s serially and
-      // ~48s at 6 (where per-worker boots start costing more than the overlap buys).
-      // Server boots are ~half of a run's total, and they are what degrades under
-      // concurrency, so the ceiling moves with boot cost rather than with core count.
-      // Re-measure before changing it on another machine.
-      workers: 4,
+      // 6 measured fastest on a 10-core / 17GB laptop: ~51s, against ~57s at 4 and
+      // ~51s at 8 (no further gain). Every scenario boots its own publisher, so
+      // boots are ~73% of the total and the ceiling is set by how many can boot at
+      // once. That limit is MEMORY, not cores — a publisher is ~450MB, and 12
+      // concurrent boots stretch from 1.4s to 4.7s as the host starts compressing
+      // and swapping. Lower this on a smaller machine; raise it on a bigger one.
+      workers: 6,
    };
    for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];
@@ -123,12 +124,21 @@ interface ScenarioResult {
 const bootStats = { count: 0, ms: 0, stopMs: 0, startMs: 0 };
 
 /**
- * A cluster of named publisher processes sharing one config (so they share the
- * source warehouse + DuckLake tier). Each name is a distinct server on its own
- * ports and server-root; `use(name, …)` boots it on first reference and restarts
- * it when the mode changes. Most scenarios touch only the "default" publisher; a
- * multi-publisher scenario addresses several (`p1`, `p2`, …) to model the real
- * stateless-worker topology — build on one, bind the manifest to the others.
+ * The publishers ONE scenario runs against: named processes sharing that
+ * scenario's config, so they share its source warehouse + DuckLake tier. Each
+ * name is a distinct server on its own ports and server-root; `use(name, …)`
+ * boots it on first reference and restarts it when the mode changes. Most
+ * scenarios touch only the "default" publisher; a multi-publisher scenario
+ * addresses several (`p1`, `p2`, …) to model the real stateless-worker
+ * topology — build on one, bind the manifest to the others.
+ *
+ * A cluster lives and dies with its scenario. That is what makes a scenario a
+ * clean room: the publisher it talks to was started for it, from a config
+ * naming only its own environments and packages, and is torn down with its
+ * storage afterwards. Sharing one publisher across scenarios would be cheaper,
+ * but every scenario would then be read against a server that had already
+ * loaded sixty other scenarios' packages — which is not what the markdown says
+ * is happening, and the point of the markdown is that you can trust it.
  */
 class PublisherCluster {
    private pubs = new Map<
@@ -137,6 +147,8 @@ class PublisherCluster {
    >();
    private ports = new Map<string, { port: number; mcpPort: number }>();
    private nextIdx = 0;
+   /** Every server root this cluster created, so teardown can remove them. */
+   private roots: string[] = [];
 
    constructor(
       private readonly cfg: {
@@ -147,7 +159,7 @@ class PublisherCluster {
          basePort: number;
          baseMcpPort: number;
          /**
-          * Prefix for this cluster's server roots and log files. Workers run
+          * Prefix for this cluster's server roots and log files. Scenarios run
           * concurrently and each owns its own publishers, so a shared root would
           * mean two servers wiping each other's storage on `--init`.
           */
@@ -225,6 +237,7 @@ class PublisherCluster {
          `server-${this.cfg.tag}${name}`,
       );
       mkdirSync(serverRoot, { recursive: true });
+      if (!this.roots.includes(serverRoot)) this.roots.push(serverRoot);
       const bootStart = performance.now();
       const server = await startServer({
          repoRoot: this.cfg.repoRoot,
@@ -260,9 +273,20 @@ class PublisherCluster {
       return p.rest;
    }
 
-   async stop(): Promise<void> {
+   /**
+    * Stop every publisher and delete its storage. `keepRoots` leaves the trees in
+    * place for `--keep`; otherwise they go, because a run of sixty scenarios
+    * otherwise leaves sixty `publisher_data` trees on disk.
+    */
+   async stop(keepRoots = false): Promise<void> {
       for (const { server } of this.pubs.values()) await server.stop();
       this.pubs.clear();
+      if (!keepRoots) {
+         for (const root of this.roots) {
+            rmSync(root, { recursive: true, force: true });
+         }
+      }
+      this.roots = [];
    }
 }
 
@@ -274,8 +298,10 @@ class PublisherCluster {
  * its own environment, source database, and catalog, addressed through the SAME
  * connection names (`orders_pg`, `lake`) so scenario markdown is unchanged.
  *
- * The environment is what makes that possible: the generated config keys connections
- * by (environment, name), so sixty scenarios can each define their own `lake`.
+ * One Postgres server is still shared — a warehouse legitimately pre-exists a
+ * scenario — so the physical database names carry the scenario slug. The
+ * environment name does too, which is what lets a scenario's own config be
+ * selected out of the whole set by owner.
  */
 interface ScenarioResources {
    slug: string;
@@ -525,39 +551,26 @@ async function main(): Promise<void> {
          packages: pkgsByEnv.get(name) ?? [],
       }));
 
-      // Scenarios are assigned to workers UP FRONT rather than pulled from a shared
-      // queue, so each worker's config can hold only the environments its own
-      // scenarios need. That matters because `--init` re-copies every configured
-      // package on every boot: a boot against all 64 environments measured 2.31s
-      // against 1.45s for 16 of them, and four workers doing the 64-env copy at once
-      // stretched it to 5-6s. Sharding makes the copy shrink as workers are added
-      // instead of contending W ways for the same work.
+      // ONE CONFIG PER SCENARIO, naming only that scenario's own environments,
+      // connections and packages. Nothing another scenario declared is present, so
+      // the publisher a scenario talks to has never seen another scenario's
+      // packages — the markdown describes the whole world the server knows about.
       //
-      // Round-robin over the mode-grouped order keeps each worker's slice balanced
-      // AND mode-grouped, so the one-transition-per-mode property survives.
-      // Trade-off: no work stealing, so an unlucky slice can idle its neighbours.
-      // Scenario durations are tight enough (most under 1.5s) that this has not
-      // shown up; the per-scenario timings in the report are how you would notice.
-      const shards: Scenario[][] = Array.from(
-         { length: args.workers },
-         () => [] as Scenario[],
-      );
-      scenarios.forEach((s, i) => shards[i % args.workers].push(s));
-
-      const shardConfigPaths = await Promise.all(
-         shards.map(async (shard, w) => {
-            const slugs = new Set(shard.map((s) => resources.get(s.id)!.slug));
-            const mine = environments.filter((e) =>
-               slugs.has(ownerOf.get(e.name)!.slug),
+      // Concurrency does not have to be paid for with fidelity here: N publishers
+      // booting at once with a one-environment config each measured 1.36s for two,
+      // 1.62s for four and 2.19s for six, against 1.36s for one. Boots overlap
+      // almost freely; what degrades past ~6 is host memory (each publisher is
+      // ~450MB), not any lock.
+      const scenarioConfigPath = new Map<string, string>();
+      await Promise.all(
+         scenarios.map(async (s) => {
+            const r = resources.get(s.id)!;
+            const mine = environments.filter(
+               (e) => ownerOf.get(e.name)!.slug === r.slug,
             );
-            const configPath = path.join(
-               workdir,
-               args.workers > 1
-                  ? `publisher.config.w${w}.json`
-                  : "publisher.config.json",
-            );
+            const configPath = path.join(workdir, `config-${r.slug}.json`);
             await writeConfig({ configPath, environments: mine });
-            return configPath;
+            scenarioConfigPath.set(s.id, configPath);
          }),
       );
 
@@ -618,30 +631,20 @@ async function main(): Promise<void> {
             );
          };
 
-      // One PublisherCluster per WORKER, not per scenario. Isolation already comes
-      // from per-scenario environments, so a worker's server serves every scenario
-      // in its shard from one config — which keeps boots proportional to MODE
-      // SWITCHES rather than to scenario count. Per-scenario servers would mean ~60
-      // boots instead of ~15, i.e. slower, for no isolation gain.
-      //
-      // What a worker does need is its own publishers: a scenario declaring
-      // `## Publisher (off)` reboots the server it is talking to, and two scenarios
-      // doing that on one server would restart each other mid-run.
-      const clusters: PublisherCluster[] = Array.from(
-         { length: args.workers },
-         (_unused, w) =>
-            new PublisherCluster({
-               repoRoot,
-               workdir,
-               configPath: shardConfigPaths[w],
-               env: PRIMARY,
-               // Publisher NAMES stride by 100 within a cluster, so workers stride
-               // by 1000 to keep every REST/MCP port distinct.
-               basePort: args.port + w * 1000,
-               baseMcpPort: args.mcpPort + w * 1000,
-               tag: args.workers > 1 ? `w${w}-` : "",
-            }),
-      );
+      // A worker's port block. Publisher NAMES stride by 100 within a cluster, so
+      // workers stride by 1000 to keep every REST/MCP port distinct. Clusters are
+      // per scenario but a worker only ever runs one at a time, so its block is
+      // free to be reused by its next scenario.
+      const clusterFor = (s: Scenario, w: number): PublisherCluster =>
+         new PublisherCluster({
+            repoRoot,
+            workdir,
+            configPath: scenarioConfigPath.get(s.id)!,
+            env: PRIMARY,
+            basePort: args.port + w * 1000,
+            baseMcpPort: args.mcpPort + w * 1000,
+            tag: `${resources.get(s.id)!.slug}-`,
+         });
       if (args.workers > 1) {
          log.info(`running ${args.workers} scenarios concurrently`);
       }
@@ -673,8 +676,8 @@ async function main(): Promise<void> {
                .filter((c) => c.kind === "ducklake")
                .map((c) => c.name),
          ]);
-         // Publishers are shared across scenarios, so every Rest handed to a
-         // scenario is rebound to ITS environment.
+         // A scenario may address a non-primary environment of its own, so every
+         // Rest is bound to the environment the step meant.
          const bind = (rest: Rest): Rest =>
             rest.env === r.envFor(PRIMARY)
                ? rest
@@ -725,10 +728,23 @@ async function main(): Promise<void> {
          printScenario(result);
       };
 
+      // Workers pull from one queue, so a slow scenario does not idle the others.
+      // Each takes a scenario, starts a publisher FOR it, runs it, and tears the
+      // publisher and its storage down before taking the next one.
+      let nextIdx = 0;
       await Promise.all(
-         clusters.map(async (mgr, w) => {
-            for (const s of shards[w]) await runOne(s, mgr);
-            await mgr.stop();
+         Array.from({ length: args.workers }, async (_unused, w) => {
+            for (;;) {
+               const i = nextIdx++;
+               if (i >= scenarios.length) break;
+               const s = scenarios[i];
+               const mgr = clusterFor(s, w);
+               try {
+                  await runOne(s, mgr);
+               } finally {
+                  await mgr.stop(args.keep);
+               }
+            }
          }),
       );
    } catch (e) {

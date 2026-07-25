@@ -85,14 +85,16 @@ export async function startPostgres(
          "-p",
          `${hostPort}:5432`,
          image,
-         // A publisher leaks ~3 idle backends per environment it BUILDS (2 to the
-         // DuckLake catalog, 1 to the source warehouse) and releases none until the
-         // process exits, so a run's floor is ~3x the scenarios that build. The
-         // default 100 is exceeded well before the end. Exhausting it surfaces as
-         // "sorry, too many clients already" from a schema fetch mid-scenario, which
-         // reads like a product failure rather than a harness limit.
-         "-c",
-         "max_connections=300",
+         // No `max_connections` override: the default 100 is ample now that a
+         // publisher lives for one scenario. Publisher leaks 2 idle backends per
+         // materialization build and frees none until it exits, so a publisher
+         // shared across a whole run climbed past 100 by itself — a peak of 127
+         // measured serially. Per-scenario publishers bound that to one scenario's
+         // builds, and a measured run peaks at 15 even with 8 workers. If that ever
+         // regresses it shows up as "sorry, too many clients already" from a schema
+         // fetch mid-scenario, which reads like a product failure rather than a
+         // harness limit.
+         //
          // A throwaway container: durability buys nothing and costs a lot. Creating
          // ~130 databases leaves enough dirty buffers that the FIRST `DROP DATABASE`
          // — which forces an immediate checkpoint — blocks for ~18s, landing on
