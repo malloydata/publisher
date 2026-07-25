@@ -51,7 +51,10 @@ interface Args {
    pgPort: number;
    port: number;
    mcpPort: number;
-   /** Scenarios to run concurrently (each worker owns its own publishers). */
+   /**
+    * Scenarios to run concurrently; each worker owns its own publishers. Defaults
+    * to 2 — see parseArgs for why not more.
+    */
    workers: number;
 }
 
@@ -64,7 +67,11 @@ function parseArgs(argv: string[]): Args {
       pgPort: 55432,
       port: 14000,
       mcpPort: 14040,
-      workers: 1,
+      // 2 measured fastest on a laptop: 60 scenarios in ~99s vs ~132s serially.
+      // 4 REGRESSES to ~134s — publisher boots, DuckDB, and malloy compiles are all
+      // CPU-bound, so oversubscribing costs more than the overlap buys. Raise it only
+      // with a measurement on the machine in question.
+      workers: 2,
    };
    for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];

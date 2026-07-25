@@ -79,6 +79,15 @@ export async function startPostgres(
          "-p",
          `${hostPort}:5432`,
          image,
+         // Each publisher holds pools for every connection in its config, and a run
+         // configures one source + one catalog per scenario — so a concurrent run needs
+         // far more than the default 100. Exhausting it surfaces as
+         // "sorry, too many clients already" from a schema fetch mid-scenario, which
+         // reads like a product failure rather than a harness limit.
+         "-c",
+         "max_connections=500",
+         "-c",
+         "shared_buffers=256MB",
       ]);
    }
 
