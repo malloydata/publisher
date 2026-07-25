@@ -73,9 +73,23 @@ export interface ServerControl {
 
 export interface ScenarioContext extends ServerControl {
    pg: PostgresHandle;
+   /** This scenario's PHYSICAL primary environment (see {@link envFor}). */
    env: string;
-   /** The shared Postgres source database name. */
+   /**
+    * Map a scenario-authored (logical) environment name to the physical one this
+    * scenario runs under. Every scenario gets its own environment so it cannot
+    * share publisher-side state with another, while its markdown keeps saying
+    * `default` / `prod`.
+    */
+   envFor(logical: string): string;
+   /** This scenario's OWN Postgres source database. */
    sourceDb: string;
+   /**
+    * The Postgres database backing a DuckLake connection's catalog. Per-scenario,
+    * so a hook that needs to interfere with a catalog out-of-band (dropping it to
+    * induce a build failure) can name it without hardcoding the layout.
+    */
+   catalogDbFor(connectionName: string): string;
    /**
     * Overwrite a model file in the generated SOURCE package dir. Takes effect on
     * the next `--init` boot (which re-copies the package). Used by the migration

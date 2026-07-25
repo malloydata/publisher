@@ -226,15 +226,76 @@ class PublisherCluster {
    }
 }
 
+/**
+ * Per-scenario physical resources. Scenarios used to share one Postgres source
+ * database, one DuckLake catalog, and one environment, so any two that picked the
+ * same package name or seeded the same table silently corrupted each other — the
+ * symptom being a mystery failure in an unrelated scenario. Each scenario now gets
+ * its own environment, source database, and catalog, addressed through the SAME
+ * connection names (`orders_pg`, `lake`) so scenario markdown is unchanged.
+ *
+ * The environment is what makes that possible: the generated config keys connections
+ * by (environment, name), so sixty scenarios can each define their own `lake`.
+ * Boot cost is indifferent to environment count — measured at ~2.4s for both 60
+ * environments holding one package each and one environment holding sixty.
+ */
+interface ScenarioResources {
+   slug: string;
+   sourceDb: string;
+   /** Logical env name -> physical env name. */
+   envFor(logical: string): string;
+   /** Connection name -> its catalog database (ducklake connections only). */
+   catalogDbFor(conn: string): string;
+   storageDirFor(conn: string): string;
+}
+
+/** Postgres-safe, collision-free stem for a scenario id. */
+function slugOf(id: string, index: number): string {
+   const base = id.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+   // Index-suffixed so truncation of two long ids cannot converge.
+   return `${base.slice(0, 40)}_${index}`;
+}
+
+function resourcesFor(
+   id: string,
+   index: number,
+   workdir: string,
+): ScenarioResources {
+   const slug = slugOf(id, index);
+   return {
+      slug,
+      sourceDb: `src_${slug}`,
+      envFor: (logical) => `${slug}__${logical}`,
+      catalogDbFor: (conn) => `cat_${slug}__${conn}`,
+      storageDirFor: (conn) => path.join(workdir, `store_${slug}__${conn}`),
+   };
+}
+
+/** Run `tasks` with at most `limit` in flight (provisioning is IO-bound). */
+async function pooled<T>(
+   items: T[],
+   limit: number,
+   fn: (item: T) => Promise<void>,
+): Promise<void> {
+   let next = 0;
+   const worker = async (): Promise<void> => {
+      while (next < items.length) {
+         const i = next++;
+         await fn(items[i]);
+      }
+   };
+   await Promise.all(
+      Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+   );
+}
+
 async function main(): Promise<void> {
    const args = parseArgs(process.argv.slice(2));
    setQuiet(args.quiet);
 
    const repoRoot = path.resolve(import.meta.dir, "..");
    const workdir = mkdtempSync(path.join(os.tmpdir(), "publisher-hammer-"));
-   const env = "default";
-   const sourceDb = "hammer_src";
-   const catalogDb = "ducklake_catalog";
+   const PRIMARY = "default";
    const packagesDir = path.join(workdir, "packages");
    log.info(`workdir: ${workdir}`);
 
@@ -270,36 +331,58 @@ async function main(): Promise<void> {
       repoRoot,
       workdir,
       configPath: path.join(workdir, "publisher.config.json"),
-      env,
+      env: PRIMARY,
       basePort: args.port,
       baseMcpPort: args.mcpPort,
    });
 
+   // One set of physical resources per scenario, addressed through the same
+   // connection names its markdown already uses.
+   const resources = new Map<string, ScenarioResources>();
+   scenarios.forEach((s, i) =>
+      resources.set(s.id, resourcesFor(s.id, i, workdir)),
+   );
+
    try {
       // Fresh databases each run (matters when reusing the pg container): a stale
       // DuckLake catalog would carry old data-path bindings and table metadata.
-      await pg.resetDb(sourceDb);
-      await pg.resetDb(catalogDb);
-
-      for (const s of scenarios) {
-         for (const t of s.sourceTables ?? [])
-            await pg.sql(t.db ?? sourceDb, t.sql);
-      }
-      log.ok("source tables seeded");
-
-      const storageDir = path.join(workdir, "lake-storage");
-      mkdirSync(storageDir, { recursive: true });
+      // Provisioned concurrently — it is all IO against one Postgres, and serially
+      // this is ~0.5s per scenario.
+      await pooled(scenarios, 8, async (s) => {
+         const r = resources.get(s.id)!;
+         await pg.resetDb(r.sourceDb);
+         // Every ducklake destination this scenario can reach: the implicit `lake`
+         // plus any it declared.
+         const lakes = [
+            "lake",
+            ...(s.connections ?? [])
+               .filter((c) => c.kind === "ducklake")
+               .map((c) => c.name),
+         ];
+         for (const name of lakes) {
+            await pg.resetDb(r.catalogDbFor(name));
+            mkdirSync(r.storageDirFor(name), { recursive: true });
+         }
+         for (const st of s.sourceTables ?? []) {
+            await pg.sql(st.db ?? r.sourceDb, st.sql);
+         }
+      });
+      log.ok(`provisioned ${scenarios.length} isolated scenario environment(s)`);
 
       // A package belongs to an environment (default = the primary `env`). Write
       // each (env, package) to packagesDir/<env>/<pkg> and register it under its
       // environment — a package name may recur across environments with a
       // different model. The config gets one entry per distinct environment.
-      const envs = new Set<string>([env]);
+      const envs = new Set<string>();
       const pkgsByEnv = new Map<string, PackageRef[]>();
       const seen = new Set<string>();
       for (const s of scenarios) {
+         const r = resources.get(s.id)!;
+         // Every scenario has its own primary environment even if it declares no
+         // package there, so its connections always have a home.
+         envs.add(r.envFor(PRIMARY));
          for (const p of s.packages) {
-            const pEnv = p.env ?? env;
+            const pEnv = r.envFor(p.env ?? PRIMARY);
             envs.add(pEnv);
             const key = `${pEnv} ${p.name}`;
             if (seen.has(key)) continue;
@@ -319,23 +402,26 @@ async function main(): Promise<void> {
       const declaredByEnv = new Map<string, ConnectionConfig[]>();
       const declaredSeen = new Set<string>();
       for (const s of scenarios) {
+         const r = resources.get(s.id)!;
          for (const c of s.connections ?? []) {
-            const cEnv = c.env ?? env;
+            const cEnv = r.envFor(c.env ?? PRIMARY);
             envs.add(cEnv);
             const key = `${cEnv} ${c.name}`;
             if (declaredSeen.has(key)) continue;
             declaredSeen.add(key);
             let conn: ConnectionConfig;
             if (c.kind === "ducklake") {
-               const catDb = `ducklake_catalog_${c.name}`;
-               const store = path.join(workdir, `lake-storage-${c.name}`);
-               mkdirSync(store, { recursive: true });
-               await pg.resetDb(catDb);
-               conn = ducklakeDest(c.name, pg, catDb, store);
+               // Catalog + storage already provisioned above.
+               conn = ducklakeDest(
+                  c.name,
+                  pg,
+                  r.catalogDbFor(c.name),
+                  r.storageDirFor(c.name),
+               );
             } else if (c.kind === "duckdb") {
-               conn = duckdbConn(c.name, pg, sourceDb);
+               conn = duckdbConn(c.name, pg, r.sourceDb);
             } else {
-               conn = postgresSource(c.name, pg, sourceDb);
+               conn = postgresSource(c.name, pg, r.sourceDb);
             }
             if (!declaredByEnv.has(cEnv)) declaredByEnv.set(cEnv, []);
             declaredByEnv.get(cEnv)!.push(conn);
@@ -347,11 +433,26 @@ async function main(): Promise<void> {
       // warehouse and, deliberately, the SAME DuckLake catalog + storage (so a
       // cross-environment same-name collision is observable against a SHARED
       // destination) — plus any connections that env's scenarios declared.
-      const connectionsFor = (envName: string): ConnectionConfig[] => [
-         postgresSource("orders_pg", pg, sourceDb),
-         ducklakeDest("lake", pg, catalogDb, storageDir),
-         ...(declaredByEnv.get(envName) ?? []),
-      ];
+      // A physical env name is `<scenarioSlug>__<logicalEnv>`, so the owning
+      // scenario's resources are recoverable from it. Both of a two-environment
+      // scenario's envs therefore share ONE catalog — which is what keeps
+      // cross-environment-same-name's premise (a SHARED destination) intact.
+      const ownerOf = new Map<string, ScenarioResources>();
+      for (const s of scenarios) {
+         const r = resources.get(s.id)!;
+         for (const e of envs) {
+            if (e.startsWith(`${r.slug}__`)) ownerOf.set(e, r);
+         }
+      }
+      const connectionsFor = (envName: string): ConnectionConfig[] => {
+         const r = ownerOf.get(envName);
+         if (!r) throw new Error(`no scenario owns environment "${envName}"`);
+         return [
+            postgresSource("orders_pg", pg, r.sourceDb),
+            ducklakeDest("lake", pg, r.catalogDbFor("lake"), r.storageDirFor("lake")),
+            ...(declaredByEnv.get(envName) ?? []),
+         ];
+      };
 
       const environments: EnvSpec[] = [...envs].map((name) => ({
          name,
@@ -363,14 +464,21 @@ async function main(): Promise<void> {
          environments,
       });
 
-      const editPackageModel = async (
-         pkg: string,
-         modelPath: string,
-         text: string,
-         pkgEnv: string = env,
-      ): Promise<void> => {
-         await Bun.write(path.join(packagesDir, pkgEnv, pkg, modelPath), text);
-      };
+      // Bound per scenario below: the caller names a LOGICAL env, the file lands in
+      // that scenario's physical env directory.
+      const editPackageModelFor =
+         (r: ScenarioResources) =>
+         async (
+            pkg: string,
+            modelPath: string,
+            text: string,
+            pkgEnv: string = PRIMARY,
+         ): Promise<void> => {
+            await Bun.write(
+               path.join(packagesDir, r.envFor(pkgEnv), pkg, modelPath),
+               text,
+            );
+         };
 
       // Act as the orchestrator's manifest store: write a build manifest to a
       // local file and hand back a file:// URI the publisher can fetch. The
@@ -391,24 +499,27 @@ async function main(): Promise<void> {
 
       // Operator DDL: the DuckLake destination `lake` is provisioned out-of-band
       // via a read-write attach (the publisher's serve attach is read-only).
-      const operatorSql = async (conn: string, sql: string): Promise<void> => {
-         if (conn !== "lake") {
-            throw new Error(
-               `operatorSql: no read-write path wired for connection "${conn}"`,
+      const operatorSqlFor =
+         (r: ScenarioResources, lakes: Set<string>) =>
+         async (conn: string, sql: string): Promise<void> => {
+            if (!lakes.has(conn)) {
+               throw new Error(
+                  `operatorSql: no read-write path wired for connection "${conn}" ` +
+                     `(this scenario's ducklake destinations: ${[...lakes].join(", ")})`,
+               );
+            }
+            await runLakeSql(
+               {
+                  host: pg.host,
+                  port: pg.hostPort,
+                  user: pg.user,
+                  password: pg.password,
+                  catalogDb: r.catalogDbFor(conn),
+                  storageDir: r.storageDirFor(conn),
+               },
+               sql,
             );
-         }
-         await runLakeSql(
-            {
-               host: pg.host,
-               port: pg.hostPort,
-               user: pg.user,
-               password: pg.password,
-               catalogDb,
-               storageDir,
-            },
-            sql,
-         );
-      };
+         };
 
       for (const s of scenarios) {
          const missing = s.requires.filter((r) => !available.has(r));
@@ -425,20 +536,38 @@ async function main(): Promise<void> {
          log.step(`[${s.id}] ${s.title}`);
          const assert = new Assert(s.id);
          let error: string | undefined;
+         const r = resources.get(s.id)!;
+         const lakes = new Set<string>([
+            "lake",
+            ...(s.connections ?? [])
+               .filter((c) => c.kind === "ducklake")
+               .map((c) => c.name),
+         ]);
+         // Publishers are shared across scenarios, so every Rest handed to a
+         // scenario is rebound to ITS environment.
+         const bind = (rest: Rest): Rest =>
+            rest.env === r.envFor(PRIMARY)
+               ? rest
+               : new Rest(rest.baseUrl, r.envFor(PRIMARY));
          const ctx: ScenarioContext = {
             pg,
-            env,
-            sourceDb,
-            usePublisher: (name, mode, opts) => mgr.use(name, mode, opts),
+            env: r.envFor(PRIMARY),
+            envFor: (logical) => r.envFor(logical),
+            sourceDb: r.sourceDb,
+            catalogDbFor: (conn) => r.catalogDbFor(conn),
+            usePublisher: async (name, mode, opts) =>
+               bind(await mgr.use(name, mode, opts)),
             // Backward-compat shorthand for the single "default" publisher (hooks).
-            use: (mode, opts) => mgr.use("default", mode, opts),
-            reboot: (opts) =>
-               mgr.reboot(opts?.name ?? "default", opts?.mode ?? "on", {
-                  init: opts?.init,
-               }),
-            restOf: (name) => mgr.restOf(name),
-            editPackageModel,
-            operatorSql,
+            use: async (mode, opts) => bind(await mgr.use("default", mode, opts)),
+            reboot: async (opts) =>
+               bind(
+                  await mgr.reboot(opts?.name ?? "default", opts?.mode ?? "on", {
+                     init: opts?.init,
+                  }),
+               ),
+            restOf: (name) => bind(mgr.restOf(name)),
+            editPackageModel: editPackageModelFor(r),
+            operatorSql: operatorSqlFor(r, lakes),
             writeManifest,
          };
          try {

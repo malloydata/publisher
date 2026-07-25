@@ -57,25 +57,19 @@ function malformedScenario(dir: string, err: unknown): Scenario {
 }
 
 /**
- * Scenarios share physical stores: ONE Postgres source database and ONE DuckLake
- * destination for the whole run. So two scenarios that pick the same package name or
- * seed the same source table are not independent — they read and write each other's
- * state, and the symptom is a mystery failure in an unrelated, previously-green
- * scenario rather than an error where the mistake is.
+ * Cross-scenario collisions in state the harness does NOT isolate.
  *
- * Detected here and reported as a FAILURE on each colliding scenario, so the rest of
- * the suite still runs and the message names the counterpart.
+ * Each scenario now gets its own environment, Postgres source database, and DuckLake
+ * catalog (see run.ts), so package names and seeded table names are private and two
+ * scenarios may reuse them freely — copying a scenario as a template is expected to
+ * work. Those are therefore no longer checked; they were, until isolation landed.
  *
- * Package names are keyed by ENVIRONMENT, because registering one package name under
- * two environments inside a single scenario is legitimate (see
- * cross-environment-same-name).
- *
- * Persist `name=` values are deliberately NOT checked. Whether two of them collide
- * depends on the destination — a `storage=` name lands in the lake while a colocated
- * one lands in the source warehouse — so two scenarios can share a name harmlessly
- * (quoted-persist-name and its colocated twin do exactly that). Deciding it from
- * model text would mean parsing `storage=` and the source connection, and a
- * false positive here would block a legitimate scenario.
+ * What remains shared is a source table that names its database EXPLICITLY (`db` on
+ * a SourceTable), which is opt-in sharing available to a TypeScript scenario. Two
+ * scenarios seeding the same table in the same explicit database do read and write
+ * each other's rows, and the symptom is a mystery failure in an unrelated scenario
+ * rather than an error where the mistake is — so that one is reported as a FAILURE on
+ * each colliding scenario, naming the counterpart, while the rest of the suite runs.
  */
 function collisionMessages(scenarios: Scenario[]): Map<string, string[]> {
    const owners = (
@@ -109,24 +103,20 @@ function collisionMessages(scenarios: Scenario[]): Map<string, string[]> {
          merged.set(id, [...(merged.get(id) ?? []), ...msgs]);
       }
    };
-   add(
-      owners(
-         (s) => (s.packages ?? []).map((p) => `${p.env ?? "default"}:${p.name}`),
-         "package",
-      ),
-   );
+   // Only EXPLICIT databases are shared; an omitted `db` means the scenario's own.
    // A seed's table name lives in its SQL (`CREATE TABLE <name> (...)`), not as a
    // field, so read it back out.
    add(
       owners(
          (s) =>
-            (s.sourceTables ?? []).flatMap((st) => {
-               const names = [...st.sql.matchAll(/CREATE TABLE\s+(\S+)/gi)].map(
-                  (m) => m[1],
-               );
-               return names.map((n) => `${st.db ?? "default"}.${n}`);
-            }),
-         "source table",
+            (s.sourceTables ?? [])
+               .filter((st) => st.db)
+               .flatMap((st) =>
+                  [...st.sql.matchAll(/CREATE TABLE\s+(\S+)/gi)].map(
+                     (m) => `${st.db}.${m[1]}`,
+                  ),
+               ),
+         "shared source table",
       ),
    );
    return merged;

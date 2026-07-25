@@ -1559,9 +1559,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       // bound to the step's environment. One server process serves every
       // configured environment, so an env-targeted step just rebinds the REST
       // client to that env against the same base URL.
+      // `env` here is the scenario-authored (logical) name; ctx maps it to the
+      // physical environment this scenario owns.
       const serverFor = async (pub?: string, env?: string): Promise<Rest> => {
          const base = pub ? ctx.restOf(pub) : await active();
-         const target = env ?? PRIMARY_ENV;
+         const target = ctx.envFor(env ?? PRIMARY_ENV);
          return target === base.env ? base : new Rest(base.baseUrl, target);
       };
       const modelPath = (pkg?: string, env?: string): string =>
