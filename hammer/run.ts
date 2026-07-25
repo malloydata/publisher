@@ -51,6 +51,8 @@ interface Args {
    pgPort: number;
    port: number;
    mcpPort: number;
+   /** Scenarios to run concurrently (each worker owns its own publishers). */
+   workers: number;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -62,6 +64,7 @@ function parseArgs(argv: string[]): Args {
       pgPort: 55432,
       port: 14000,
       mcpPort: 14040,
+      workers: 1,
    };
    for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];
@@ -84,9 +87,10 @@ function parseArgs(argv: string[]): Args {
       else if (arg === "--pg-port") a.pgPort = Number(next());
       else if (arg === "--port") a.port = Number(next());
       else if (arg === "--mcp-port") a.mcpPort = Number(next());
+      else if (arg === "--workers") a.workers = Math.max(1, Number(next()));
       else if (arg === "--help" || arg === "-h") {
          console.log(
-            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--port N] [--mcp-port N] [--quiet]",
+            "Usage: bun hammer/run.ts [--scenarios a,b] [--tags security,orchestration] [--attention-older-than DAYS] [--keep] [--rebuild] [--reuse-pg] [--pg-port N] [--port N] [--mcp-port N] [--workers N] [--quiet]",
          );
          process.exit(0);
       }
@@ -126,6 +130,12 @@ class PublisherCluster {
          env: string;
          basePort: number;
          baseMcpPort: number;
+         /**
+          * Prefix for this cluster's server roots and log files. Workers run
+          * concurrently and each owns its own publishers, so a shared root would
+          * mean two servers wiping each other's storage on `--init`.
+          */
+         tag: string;
       },
    ) {}
 
@@ -192,7 +202,10 @@ class PublisherCluster {
          this.pubs.delete(name);
       }
       const { port, mcpPort } = this.portsFor(name);
-      const serverRoot = path.join(this.cfg.workdir, `server-${name}`);
+      const serverRoot = path.join(
+         this.cfg.workdir,
+         `server-${this.cfg.tag}${name}`,
+      );
       mkdirSync(serverRoot, { recursive: true });
       const server = await startServer({
          repoRoot: this.cfg.repoRoot,
@@ -203,12 +216,17 @@ class PublisherCluster {
          mode,
          init,
          extraEnv,
-         logFile: path.join(this.cfg.workdir, `server-${name}.log`),
+         logFile: path.join(
+            this.cfg.workdir,
+            `server-${this.cfg.tag}${name}.log`,
+         ),
       });
       const rest = new Rest(server.baseUrl, this.cfg.env);
       const st = await rest.status();
       if (st.loadErrors)
-         log.warn(`[${name}] load errors: ${JSON.stringify(st.loadErrors)}`);
+         log.warn(
+            `[${this.cfg.tag}${name}] load errors: ${JSON.stringify(st.loadErrors)}`,
+         );
       this.pubs.set(name, { server, rest, mode });
       return rest;
    }
@@ -327,15 +345,6 @@ async function main(): Promise<void> {
    });
    const results: ScenarioResult[] = [];
    let hardError: Error | null = null;
-   const mgr = new PublisherCluster({
-      repoRoot,
-      workdir,
-      configPath: path.join(workdir, "publisher.config.json"),
-      env: PRIMARY,
-      basePort: args.port,
-      baseMcpPort: args.mcpPort,
-   });
-
    // One set of physical resources per scenario, addressed through the same
    // connection names its markdown already uses.
    const resources = new Map<string, ScenarioResources>();
@@ -521,7 +530,38 @@ async function main(): Promise<void> {
             );
          };
 
-      for (const s of scenarios) {
+      // One PublisherCluster per WORKER, not per scenario. Isolation already comes
+      // from per-scenario environments (phase B), so a worker's server can serve any
+      // scenario's environment from the one config — which keeps boots proportional
+      // to MODE SWITCHES rather than to scenario count. Per-scenario servers would
+      // mean ~60 boots instead of ~22, i.e. slower, for no isolation gain.
+      //
+      // What a worker does need is its own publishers: a scenario declaring
+      // `## Publisher (off)` reboots the server it is talking to, and two scenarios
+      // doing that on one server would restart each other mid-run.
+      const clusters: PublisherCluster[] = Array.from(
+         { length: args.workers },
+         (_unused, w) =>
+            new PublisherCluster({
+               repoRoot,
+               workdir,
+               configPath: path.join(workdir, "publisher.config.json"),
+               env: PRIMARY,
+               // Publisher NAMES stride by 100 within a cluster, so workers stride
+               // by 1000 to keep every REST/MCP port distinct.
+               basePort: args.port + w * 1000,
+               baseMcpPort: args.mcpPort + w * 1000,
+               tag: args.workers > 1 ? `w${w}-` : "",
+            }),
+      );
+      if (args.workers > 1) {
+         log.info(`running ${args.workers} scenarios concurrently`);
+      }
+
+      const runOne = async (
+         s: Scenario,
+         mgr: PublisherCluster,
+      ): Promise<void> => {
          const missing = s.requires.filter((r) => !available.has(r));
          if (missing.length) {
             const reason = `requires ${missing.join(", ")}`;
@@ -531,7 +571,7 @@ async function main(): Promise<void> {
                assert: new Assert(s.id),
                skipped: reason,
             });
-            continue;
+            return;
          }
          log.step(`[${s.id}] ${s.title}`);
          const assert = new Assert(s.id);
@@ -576,15 +616,28 @@ async function main(): Promise<void> {
             error = (e as Error).stack ?? (e as Error).message;
             assert.fail("scenario threw", (e as Error).message);
          }
-         results.push({ scenario: s, assert, error });
-         printScenario(results[results.length - 1]);
-      }
+         const result: ScenarioResult = { scenario: s, assert, error };
+         results.push(result);
+         printScenario(result);
+      };
+
+      // Workers pull from one queue, so a slow scenario does not idle the others.
+      let nextIdx = 0;
+      await Promise.all(
+         clusters.map(async (mgr) => {
+            for (;;) {
+               const i = nextIdx++;
+               if (i >= scenarios.length) break;
+               await runOne(scenarios[i], mgr);
+            }
+            await mgr.stop();
+         }),
+      );
    } catch (e) {
       hardError = e as Error;
       log.err(`harness error: ${hardError.message}`);
       if (hardError.stack) log.info(hardError.stack);
    } finally {
-      await mgr.stop();
       if (!args.keep) {
          await pg.stop();
          rmSync(workdir, { recursive: true, force: true });
