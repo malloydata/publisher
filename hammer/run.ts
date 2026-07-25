@@ -68,12 +68,19 @@ function parseArgs(argv: string[]): Args {
       pgPort: 55432,
       port: 14000,
       mcpPort: 14040,
-      // 6 measured fastest on a 10-core / 17GB laptop: ~51s, against ~57s at 4 and
-      // ~51s at 8 (no further gain). Every scenario boots its own publisher, so
-      // boots are ~73% of the total and the ceiling is set by how many can boot at
-      // once. That limit is MEMORY, not cores — a publisher is ~450MB, and 12
-      // concurrent boots stretch from 1.4s to 4.7s as the host starts compressing
-      // and swapping. Lower this on a smaller machine; raise it on a bigger one.
+      // 6 measured fastest on a 10-core laptop: ~51s, against ~57s at 4 and flat at
+      // ~51-54s for 8, 10 and 12. The run is CPU-SATURATED — not memory- or
+      // IO-bound, verified by re-running the whole sweep with 61% of RAM free and
+      // getting the same curve. At 6 workers it burns 323 CPU-seconds over 51s wall
+      // (6.3 cores); 12 workers burns 368 for the same wall, which is pure
+      // overhead. The ceiling is therefore total CPU work over usable cores, and
+      // workers past saturation only add context switching.
+      //
+      // So scale this with CORES, not memory. For sizing: a boot costs ~1.6 CPU-s
+      // — 0.97 fixed, plus a ~0.67 step that appears once a config names any
+      // package (the package-load worker; connections and environment count are
+      // lazy and cost nothing) — so the run's 76 boots are ~125 of those CPU
+      // seconds and the scenarios' own work is the rest.
       workers: 6,
    };
    for (let i = 0; i < argv.length; i++) {
