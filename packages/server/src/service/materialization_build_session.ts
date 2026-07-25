@@ -123,10 +123,36 @@ export function createIsolatedBuildSession(sessionName: string): {
    const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
    const session = new DuckDBConnection(sessionName, ":memory:", workDir);
    const dispose = async () => {
+      // `close()` alone does not end the session. It refcount-decrements the
+      // DuckDBInstance, but the node-api Connection holds a C++ ClientContext that
+      // keeps the refcount above zero — so the in-memory database survives, and with
+      // it the destination's ATTACH and the source's federated credentials. Measured:
+      // 2 idle Postgres backends stranded per build, freed only at process exit,
+      // where the whole point of a per-build session is that they exist only for
+      // the build.
+      //
+      // db-duckdb cannot do this itself: 0.0.389 disconnected unconditionally and
+      // had to be reverted (PR #2793) because malloy's translate layer holds
+      // weak_ptrs to the C++ Connection and the language server segfaulted. A build
+      // session is different in the way that matters — server-owned, single-use, and
+      // nothing outside this function ever sees it — so it can release what a
+      // general-purpose connection cannot. Reached through a cast because the handle
+      // is library-internal; if db-duckdb ever grows an explicit hard-close, use it.
+      const nodeConnection = (
+         session as unknown as { connection?: { disconnectSync?: () => void } }
+      ).connection;
       try {
          await session.close();
       } catch (err) {
          logger.warn("Failed to close build session (leaked session)", {
+            sessionName,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+      try {
+         nodeConnection?.disconnectSync?.();
+      } catch (err) {
+         logger.warn("Failed to disconnect build session (leaked connection)", {
             sessionName,
             error: err instanceof Error ? err.message : String(err),
          });
