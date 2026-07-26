@@ -25,6 +25,14 @@ import {
 } from "./materialization_serve_transform";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+/**
+ * The process-wide session the build-time servability gate compiles against.
+ * Created on first use and deliberately never disposed: it holds no attach and
+ * no credentials, and recreating it per build was the single largest source of
+ * per-build memory growth.
+ */
+let sharedGateSession: DuckDBConnection | undefined;
 type WireColumn = components["schemas"]["Column"];
 
 /** Source warehouse types the native query-passthrough build supports. */
@@ -446,26 +454,28 @@ export async function assertStorageServeShapeCompiles(params: {
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string })),
    };
-   // Own isolated instance, like the build/GC sessions: this gate compiles a
-   // throwaway serve shape (no attach, no credentials), so it has no cross-tenant
-   // collision surface of its own, but isolating it keeps every build-path
-   // session off the shared instance pool uniformly (see
-   // createIsolatedBuildSession).
-   const { session: conn, dispose } = createIsolatedBuildSession(
-      `gate_${destinationName}`,
+   // ONE session for the process, not one per build. The build and GC sessions
+   // need their own instance because they ATTACH a destination read-write and
+   // federate customer credentials; this gate does neither — it compiles a
+   // throwaway serve shape against a captured schema — so it has no cross-tenant
+   // collision surface to isolate. A fresh instance per build cost ~5.9MB of RSS
+   // per build on the production image, roughly three quarters of the build
+   // path's total growth, and it is never reclaimed.
+   //
+   // The risk of sharing is a shared CATALOG: every compile declares a virtual
+   // source into it, so a later shape could in principle pass on declarations
+   // left by an earlier one. Pinned in the spec — refusals still refuse after 25
+   // successful compiles, a refusal does not poison the session, and the same
+   // handle recompiled with a different schema sees the new one.
+   sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
+   await assertServesInDuckDB(
+      sourceName,
+      binding,
+      new FixedConnectionMap(
+         new Map([[destinationName, sharedGateSession]]),
+         destinationName,
+      ),
    );
-   try {
-      await assertServesInDuckDB(
-         sourceName,
-         binding,
-         new FixedConnectionMap(
-            new Map([[destinationName, conn]]),
-            destinationName,
-         ),
-      );
-   } finally {
-      await dispose();
-   }
 }
 
 /** DDL to drop a storage table by its recorded name, catalog-qualified for DuckDB. */

@@ -76,6 +76,65 @@ describe("assertStorageServeShapeCompiles (build-time servability gate)", () => 
    });
 });
 
+describe("serve-shape gate shares one session across builds", () => {
+   // The gate compiles against ONE process-wide session rather than a fresh
+   // DuckDB instance per build (~5.9MB/build of unreclaimed RSS on the
+   // production image). Sharing is safe on paper — the gate does no ATTACH and
+   // establishes no credentials — but a shared session means a shared CATALOG,
+   // and every compile declares a virtual source into it.
+   //
+   // The failure that would matter is a false PASS: a later shape satisfied by
+   // declarations an earlier compile left behind. No end-to-end scenario reaches
+   // it, because each hammer scenario gets a fresh publisher and so never
+   // compiles many shapes through one session.
+   const valid = (i: number) => ({
+      destinationName: "lake",
+      sourceName: `daily_${i}`,
+      virtualHandle: `se_${i}`,
+      physicalTableName: `daily_${i}__mabc`,
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "total_amount", type: "DOUBLE" },
+      ],
+   });
+
+   it("still refuses an unservable shape after many successful compiles", async () => {
+      for (let i = 0; i < 25; i++) {
+         await assertStorageServeShapeCompiles(valid(i));
+      }
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(99), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+      await expect(
+         assertStorageServeShapeCompiles({
+            ...valid(98),
+            schema: [{ name: "a", type: "NOT_A_REAL_TYPE" }],
+         }),
+      ).rejects.toThrow(/cannot be served/i);
+   });
+
+   it("a refusal does not poison the session for later valid shapes", async () => {
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(31), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+      await expect(
+         assertStorageServeShapeCompiles(valid(32)),
+      ).resolves.toBeUndefined();
+   });
+
+   it("reusing one handle with a DIFFERENT schema sees the new schema", async () => {
+      // The sharpest false-pass shape: if the first declaration lingered, the
+      // second would compile against stale columns and wrongly pass.
+      await assertStorageServeShapeCompiles({
+         ...valid(41),
+         schema: [{ name: "kept", type: "BIGINT" }],
+      });
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(41), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+   });
+});
+
 describe("dropStorageTableSql", () => {
    it("drops the content-addressed table, catalog-qualified and quoted", () => {
       expect(dropStorageTableSql("lake", "daily__mabc123")).toBe(
