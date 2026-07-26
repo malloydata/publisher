@@ -129,7 +129,16 @@ export function createIsolatedBuildSession(sessionName: string): {
    dispose: () => Promise<void>;
 } {
    const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
-   const session = new DuckDBConnection(sessionName, ":memory:", workDir);
+   // The disposer that owns removing workDir does not exist until this function
+   // returns, so a throw from the constructor would strand the directory with
+   // nothing left holding a reference to it.
+   let session: DuckDBConnection;
+   try {
+      session = new DuckDBConnection(sessionName, ":memory:", workDir);
+   } catch (err) {
+      rmSync(workDir, { recursive: true, force: true });
+      throw err;
+   }
    const dispose = async () => {
       // `close()` alone does not end the session. It refcount-decrements the
       // DuckDBInstance, but the node-api Connection holds a C++ ClientContext that
