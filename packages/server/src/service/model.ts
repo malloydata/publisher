@@ -2070,6 +2070,7 @@ export class Model {
       }
 
       let runnable: QueryMaterializer;
+      let liveRunnable: QueryMaterializer | undefined;
       // Set when this query is routed through the `storage=` serve-shape
       // transform; threaded into prepare + run so the virtual sources resolve to
       // their physical tables. Undefined ⇒ served live (the default path).
@@ -2165,6 +2166,9 @@ export class Model {
          // `sourceName`/`queryName` pair are untrusted, so both compile here;
          // only author-curated notebook cells use the unrestricted `loadQuery`.
          runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
+         // Kept so a routed query can still be answered live if the store fails
+         // underneath it at RUN time (see the freshnessFallback retry below).
+         liveRunnable = runnable;
 
          // storage= serve routing: when enabled and this package has sources
          // materialized into a storage destination, try compiling the query
@@ -2326,65 +2330,115 @@ export class Model {
             virtualMap: serveVirtualMap,
          });
       } catch (error) {
-         // Record error metrics
-         const errorEndTime = performance.now();
-         const errorExecutionTime = errorEndTime - startTime;
-         this.queryExecutionHistogram.record(errorExecutionTime, {
-            "malloy.model.path": this.modelPath,
-            "malloy.model.query.name": queryName,
-            "malloy.model.query.source": sourceName,
-            "malloy.model.query.query": query,
-            "malloy.model.query.status": "error",
-            // Ships dark: only tag storage-served queries. A live/off query gets
-            // no new attribute, so an off deployment's histogram is unchanged.
-            ...(serveVirtualMap
-               ? { "malloy.model.query.served_from": "storage" }
-               : {}),
-         });
+         // A binding that declares `freshnessFallback=live` is saying the tier is
+         // a performance optimisation, not a dependency — so a store that fails
+         // UNDER a routed query should degrade to serving live, the same answer
+         // the compile-time ladder already gives when the shape can't be built.
+         // Without this the store is a hard dependency the moment a query routes:
+         // a not-yet-converged rebind or an over-eager GC turns into a user-facing
+         // error for a source explicitly marked as safe to serve live.
+         //
+         // Deliberately narrow:
+         //  - only when the query actually routed to storage (`serveVirtualMap`);
+         //  - only when EVERY binding says `live` — `fail` (and the `stale_ok`
+         //    default) keep surfacing, so one fail-closed source is not degraded
+         //    by a permissive neighbour;
+         //  - never for a client error (a bad given) or an abort, where a retry
+         //    would just reproduce it or defy the caller;
+         //  - the retry re-supplies the REAL givens. The storage path suppresses
+         //    them because the shape is built from given-free sources; the live
+         //    source may filter on them, and running it without them would serve
+         //    unfiltered rows.
+         const canDegradeToLive =
+            !!serveVirtualMap &&
+            !!liveRunnable &&
+            !abortSignal?.aborted &&
+            !String((error as { code?: string })?.code ?? "").startsWith(
+               "runtime-given-",
+            ) &&
+            this.serveBindings.length > 0 &&
+            this.serveBindings.every((b) => b.freshnessFallback === "live");
+         if (canDegradeToLive) {
+            logger.warn(
+               "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
+               {
+                  modelPath: this.modelPath,
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+            recordStorageServeRouting("runtime_live_fallback");
+            queryResults = await liveRunnable!.run({
+               rowLimit,
+               givens: querySurfaceGivens,
+               abortSignal,
+               buildManifest,
+            });
+            executionTime = performance.now() - startTime;
+            // Fall through: `queryResults` is set, so the normal post-run path
+            // wraps and returns it exactly as a live query would.
+         } else {
+            // Record error metrics
+            const errorEndTime = performance.now();
+            const errorExecutionTime = errorEndTime - startTime;
+            this.queryExecutionHistogram.record(errorExecutionTime, {
+               "malloy.model.path": this.modelPath,
+               "malloy.model.query.name": queryName,
+               "malloy.model.query.source": sourceName,
+               "malloy.model.query.query": query,
+               "malloy.model.query.status": "error",
+               // Ships dark: only tag storage-served queries. A live/off query gets
+               // no new attribute, so an off deployment's histogram is unchanged.
+               ...(serveVirtualMap
+                  ? { "malloy.model.query.served_from": "storage" }
+                  : {}),
+            });
 
-         // Bad client-supplied givens (unknown name, wrong-typed value, an
-         // operator-finalized override, ...) all surface as a Malloy
-         // `runtime-given-*` error. Malloy is the single validator; the publisher
-         // just maps its rejection to a clean 400. Duck-type on `.code`
-         // (MalloyCompileError extends Error, not MalloyError, and isn't
-         // root-exported). The `runtime-given-` prefix is a pinned coupling to
-         // Malloy's error codes (@malloydata/malloy given_binding.ts / runtime.ts);
-         // if they're renamed upstream, update it here (and in environment.ts) —
-         // otherwise these fall through to the generic 400 below with a worse
-         // message, and the /compile path silently omits `sql`.
-         const givenCode = (error as { code?: string })?.code;
-         if (
-            typeof givenCode === "string" &&
-            givenCode.startsWith("runtime-given-")
-         ) {
-            logger.debug("Rejected client-supplied given", {
+            // Bad client-supplied givens (unknown name, wrong-typed value, an
+            // operator-finalized override, ...) all surface as a Malloy
+            // `runtime-given-*` error. Malloy is the single validator; the publisher
+            // just maps its rejection to a clean 400. Duck-type on `.code`
+            // (MalloyCompileError extends Error, not MalloyError, and isn't
+            // root-exported). The `runtime-given-` prefix is a pinned coupling to
+            // Malloy's error codes (@malloydata/malloy given_binding.ts / runtime.ts);
+            // if they're renamed upstream, update it here (and in environment.ts) —
+            // otherwise these fall through to the generic 400 below with a worse
+            // message, and the /compile path silently omits `sql`.
+            const givenCode = (error as { code?: string })?.code;
+            if (
+               typeof givenCode === "string" &&
+               givenCode.startsWith("runtime-given-")
+            ) {
+               logger.debug("Rejected client-supplied given", {
+                  environmentName: this.packageName,
+                  modelPath: this.modelPath,
+                  error: error instanceof Error ? error.message : String(error),
+               });
+               throw new BadRequestError(
+                  error instanceof Error ? error.message : String(error),
+               );
+            }
+
+            // Re-throw Malloy errors as-is (they will be handled by error handler)
+            if (error instanceof MalloyError) {
+               throw error;
+            }
+
+            // For other runtime errors (like divide by zero), throw as BadRequestError
+            const errorMessage =
+               error instanceof Error ? error.message : String(error);
+            logger.error("Query execution error", {
+               error,
+               errorMessage,
                environmentName: this.packageName,
                modelPath: this.modelPath,
-               error: error instanceof Error ? error.message : String(error),
+               query,
+               queryName,
+               sourceName,
             });
             throw new BadRequestError(
-               error instanceof Error ? error.message : String(error),
+               `Query execution failed: ${errorMessage}`,
             );
          }
-
-         // Re-throw Malloy errors as-is (they will be handled by error handler)
-         if (error instanceof MalloyError) {
-            throw error;
-         }
-
-         // For other runtime errors (like divide by zero), throw as BadRequestError
-         const errorMessage =
-            error instanceof Error ? error.message : String(error);
-         logger.error("Query execution error", {
-            error,
-            errorMessage,
-            environmentName: this.packageName,
-            modelPath: this.modelPath,
-            query,
-            queryName,
-            sourceName,
-         });
-         throw new BadRequestError(`Query execution failed: ${errorMessage}`);
       }
 
       const wrappedResult = API.util.wrapResult(queryResults);
