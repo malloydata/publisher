@@ -156,6 +156,13 @@ export interface Scenario {
 /** The single tag that marks a scenario as carrying an open question / follow-up. */
 export const ATTENTION_TAG = "needs-attention";
 
+/**
+ * A scenario asserting a rule the Publisher does not meet yet. It is EXPECTED to
+ * fail, so it does not fail the run — but a known-red that PASSES does, because
+ * that means the rule now holds and the tag is a lie. See hammer/README.md.
+ */
+export const KNOWN_RED_TAG = "known-red";
+
 export interface Check {
    name: string;
    ok: boolean;

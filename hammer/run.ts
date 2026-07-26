@@ -35,6 +35,7 @@ import { log, setQuiet } from "./lib/util";
 import {
    Assert,
    ATTENTION_TAG,
+   KNOWN_RED_TAG,
    type Scenario,
    type ScenarioContext,
 } from "./scenarios/framework";
@@ -819,7 +820,18 @@ function summarize(
       }
       const bad = r.assert.checks.filter((c) => !c.ok).length;
       const total = r.assert.checks.length;
-      const mark = bad === 0 ? "\x1b[32mPASS\x1b[0m" : "\x1b[31mFAIL\x1b[0m";
+      const knownRed = r.scenario.tags.includes(KNOWN_RED_TAG);
+      // A known-red is expected to fail, so failing is not a run failure. Passing
+      // IS: the rule now holds and the tag has become a lie — which is exactly how
+      // a fix lands without anyone remembering to retire the scenario's tag.
+      const mark =
+         bad === 0
+            ? knownRed
+               ? "\x1b[31mFIXED\x1b[0m"
+               : "\x1b[32mPASS\x1b[0m"
+            : knownRed
+              ? "\x1b[33mKRED\x1b[0m"
+              : "\x1b[31mFAIL\x1b[0m";
       const tags = r.scenario.tags.join(",");
       const timing =
          r.ms === undefined
@@ -828,7 +840,7 @@ function summarize(
       console.log(
          `  ${mark}  ${r.scenario.id.padEnd(28)} ${String(total - bad).padStart(2)}/${total}${timing}  ${r.scenario.title}${tags ? `  \x1b[2m[${tags}]\x1b[0m` : ""}`,
       );
-      if (bad > 0) anyFail = true;
+      if (knownRed ? bad === 0 : bad > 0) anyFail = true;
    }
    console.log("─────────────────────────────────────────");
 
@@ -849,6 +861,42 @@ function summarize(
          .slice(0, 5)
          .map((r) => `${r.scenario.id} ${((r.ms ?? 0) / 1000).toFixed(1)}s`);
       console.log(`  \x1b[2mslowest: ${slow.join(", ")}\x1b[0m`);
+   }
+
+   // Known-reds get their own block, ages included. A rule the Publisher does not
+   // meet yet is a debt, and debt that nobody re-reads stops being a decision and
+   // becomes furniture. `--attention-older-than N` filters this the same way it
+   // filters the callouts below, so "what have we been red on for a month?" is one
+   // flag away. Age comes from the scenario's `## Note (since=…)`; an undated one
+   // always shows, because it cannot be proven fresh.
+   let reds = results.filter(
+      (r) => !r.skipped && r.scenario.tags.includes(KNOWN_RED_TAG),
+   );
+   if (attentionOlderThan !== undefined) {
+      reds = reds.filter((r) => {
+         const age = ageInDays(r.scenario.note?.since);
+         return age === null || age >= attentionOlderThan;
+      });
+   }
+   if (reds.length) {
+      const header =
+         attentionOlderThan !== undefined
+            ? `● known-red (declared ≥ ${attentionOlderThan}d ago)`
+            : "● known-red — rules not met yet";
+      console.log(`\n\x1b[33m${header}\x1b[0m`);
+      for (const r of reds) {
+         const age = ageInDays(r.scenario.note?.since);
+         const since = r.scenario.note?.since;
+         const when = since
+            ? ` \x1b[2m(declared ${since}${age !== null ? `, ${age}d ago` : ""})\x1b[0m`
+            : " \x1b[2m(undated)\x1b[0m";
+         const passed = r.assert.checks.every((c) => c.ok);
+         console.log(
+            `  • ${r.scenario.id}${when}${passed ? "  \x1b[31m← PASSES NOW; retire the tag\x1b[0m" : ""}`,
+         );
+         console.log(`      ${r.scenario.title}`);
+      }
+      console.log("─────────────────────────────────────────");
    }
 
    // Self-documenting follow-ups: any scenario tagged `needs-attention` or
