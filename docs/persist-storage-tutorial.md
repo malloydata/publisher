@@ -403,10 +403,12 @@ is a brief window where the running server's serve binding still describes the
 old columns, until it rebinds on the build's auto-load — and the two directions
 differ. A query that reaches a **newly added** field fails the serve-shape
 compile and falls back to serving live (safe). A query over a **removed** field
-still compiles against the stale binding and then errors at run against the new
-table — there is no run-time fallback (see "Compile-time fallback only" in the
-release notes). So a column-removing rebuild can surface transient query errors
-until the binding refreshes; it does not return wrong data. Explicit generation
+still compiles against the stale binding and then fails at run against the new
+table. What happens next depends on the binding's `fallback`: `live` recomputes
+the source from the warehouse and answers correctly, while `fail` (and the
+`stale_ok` default) surface the error. So a column-removing rebuild can surface
+transient query errors until the binding refreshes unless the source declares
+`fallback=live`; either way it does not return wrong data. Explicit generation
 management — immutable generations, a staged cutover, rollback — that closes this
 window is the job of a caller that assigns physical names per build and
 distributes serve bindings (the orchestrated build path), not of the auto-run

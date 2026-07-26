@@ -88,7 +88,7 @@ describe("redactConnectionSecrets", () => {
    // Stubbed at the seam because the leak needs an ATTACH (not CTAS) failure:
    // bad catalog creds fast-fail at connection validation, so no black-box test
    // can reach this branch.
-   it("redacts connection secrets in the chained build refusal", async () => {
+   it("redacts an INFRA chained-build failure, and does not call it a refusal", async () => {
       const sandbox = sinon.createSandbox();
       try {
          const destinationConnection = {
