@@ -425,6 +425,26 @@ function validateConnectionShape(connection: ApiConnection): void {
             throw new Error("MotherDuck access token is required.");
          }
          break;
+      case "ducklake":
+         // Every field the ATTACH demands (see attachDuckLakeWithMode), checked
+         // together here rather than split between this validator and the pojo
+         // assembler below. `bucketUrl` was the one nobody checked: a destination
+         // is only attached at its first BUILD, so a missing bucket surfaced
+         // hours after the config change that caused it.
+         if (!connection.ducklakeConnection) {
+            throw new Error("DuckLake connection configuration is missing.");
+         }
+         if (!connection.ducklakeConnection.catalog?.postgresConnection) {
+            throw new Error(
+               `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
+            );
+         }
+         if (!connection.ducklakeConnection.storage?.bucketUrl) {
+            throw new Error(
+               `Storage bucketUrl is required for DuckLake: ${connection.name}`,
+            );
+         }
+         break;
       case "trino":
          if (!connection.trinoConnection) {
             throw new Error("Trino connection configuration is missing.");
@@ -725,14 +745,7 @@ export function assembleEnvironmentConnections(
          }
 
          case "ducklake": {
-            if (!connection.ducklakeConnection) {
-               throw new Error("DuckLake connection configuration is missing.");
-            }
-            if (!connection.ducklakeConnection.catalog?.postgresConnection) {
-               throw new Error(
-                  `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
-               );
-            }
+            // Shape is validated up front by validateConnectionShape.
             pojo.connections[connection.name] = buildDuckdbEntry(
                connection.name,
                environmentPath,
