@@ -4,7 +4,7 @@ tags: serve-correctness, sql-select
 package: ss
 ---
 
-# A persisted `sql_select` served from storage
+# A persisted `sql_select` is served from storage
 
 Malloy persists two source types — `query_source` (`-> { … }`) and `sql_select`
 (`conn.sql("…")`) — but its compile-time substitution only rewrites a

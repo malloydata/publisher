@@ -4,7 +4,7 @@ tags: serve-correctness, chained
 package: xm
 ---
 
-# Cross-model DAG: persist source builds from an imported model
+# A persist source resolves and materializes across an `import`
 
 The source dependency spans two model files in the same package. The entry model
 (`agg.malloy`) imports a base model (`base.malloy`) and declares the persist

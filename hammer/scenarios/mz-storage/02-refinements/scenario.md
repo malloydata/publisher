@@ -4,7 +4,7 @@ tags: serve-correctness
 package: d1
 ---
 
-# Refinements re-emitted over storage
+# A source's dimensions, measures and views are all re-declared over the stored table
 
 A persist source extended with a dimension, a measure, and a view. The serve-shape
 transform must re-emit all three over the materialized table, so querying the view

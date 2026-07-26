@@ -4,16 +4,21 @@ tags: serve-correctness, safety, known-red
 package: esi
 ---
 
-# Extending a persisted source publishes and serves — but inherits its `#@ persist`
+# An extension of a persisted source must not become a second build target
 
 The user flow: author a persisted source `daily`, then a source `daily_with_avg` that
 extends it to add a derived field, expecting `daily_with_avg` to READ `daily`'s
 materialized table (per the docs), not re-materialize. Publish, materialize, and
 query both — that all works here.
 
-What's wrong is latent: malloy propagates `#@ persist` through `extend` (bug, fix:
-malloydata/malloy PR 3012), so `daily_with_avg` inherits `name="esi_daily"` and the build
-plan lists it as a SECOND target writing the same table. It happens to serve
+Malloy propagating `#@ persist` through `extend` is **by design**, and load-bearing:
+without it, an extension of a persisted source could never be served from a table at
+all. `#@ -persist` is the documented opt-out (see `opt-out-persist-recomputes`).
+
+The defect is what that inheritance implies downstream: the extension inherits
+`name="esi_daily"` too, so the build plan lists it as a SECOND target writing the
+same table. An inherited annotation should let a source READ the parent's table, not
+claim it as a target of its own. It happens to serve
 correctly today only because `daily` and `daily_with_avg` are content-addressed
 identically (same `sourceEntityId`), so the publisher's auto-run dedups the
 duplicate and both read the one table. But that duplicate target is a landmine: a
@@ -23,9 +28,9 @@ collision guard misses it (it dedups by `sourceEntityId`, which these share). Ma
 compiles it, so nothing fails at publish.
 
 The `## Build targets` step surfaces the root cause: the plan must have exactly ONE
-target for `esi_daily`. RED today (`daily_with_avg` inherits the tag); GREEN once
-malloy PR 3012 lands and `daily_with_avg` reads `daily`'s table instead of becoming
-a target.
+target for `esi_daily`. RED today; GREEN once an inherited `name=` stops minting a
+duplicate target — the extension should read the parent's table rather than claim
+it.
 
 ## Publisher
 

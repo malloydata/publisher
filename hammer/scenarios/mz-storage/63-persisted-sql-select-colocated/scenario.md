@@ -4,7 +4,7 @@ tags: serve-correctness, sql-select, needs-attention
 package: sc
 ---
 
-# A persisted `sql_select` on the COLOCATED path
+# A persisted `sql_select` is built but never read on the COLOCATED path
 
 Malloy persists two source types — `query_source` (`-> { … }`) and `sql_select`
 (`conn.sql("…")`) — but its compile-time substitution only rewrites a

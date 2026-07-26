@@ -7,16 +7,164 @@ executes it end to end: it stands up real infrastructure (a throwaway Postgres,
 a local DuckLake), builds and boots the actual server, runs the steps, prints a
 check report, and tears everything down. No cloud creds; nothing to hand-wire.
 
-It's deliberately **separate** from the `bun test` unit/integration suites — a
-hammer you run by hand for one-off, production-shaped confidence, not a CI gate.
+It runs **separately** from the `bun test` unit/integration suites: one command,
+real infrastructure, production-shaped confidence. Today you run it by hand.
+Wiring it into CI is an accepted follow-up — reviewers have asked more than once —
+and the harness is built for it: the whole suite is ~50s, self-contained apart from
+Docker, order-independent, and exits nonzero on failure.
 
-Scenarios live in **suites** under `scenarios/<suite>/`. The harness itself — the
-markdown interpreter, the publisher-process/cluster management, the assertion
-recorder — is suite-agnostic. Today the one suite, `mz-storage`, exercises the
-`storage=` materialization tier (a Postgres source warehouse + a DuckLake
-destination), and the run fixtures in `run.ts` are wired for it; a new suite that
-needs the same fixtures is just a new folder, one needing different infra extends
-`run.ts`.
+The step vocabulary lives in **[GRAMMAR.md](GRAMMAR.md)**. This file is about
+what a scenario is *for*.
+
+---
+
+## Why this exists
+
+Testing a data-intensive product is its own kind of hard, and it fails in a
+recognisable way.
+
+An integration test needs a running system, so it opens with pages of setup. Then
+it needs data, and there are two bad options. **Shared seed data**: a golden
+fixture every test reads, which never quite has what the next test needs — so you
+add a row, and three other tests change their answers. **Per-test data**: pages of
+loader code and inline structs, slow to run, and it *still* collides with whatever
+else touches the same tables.
+
+So people copy. You find the closest working test, paste it, change a few values,
+and move on — because writing one from scratch means re-deriving all that setup.
+The suite grows by cloning. Then someone asks "do we have a test for this?" and
+the answer is "yeah… somewhere… I think this one?" — and reading it, you spend
+several minutes wading through fixtures and loaders before you can even tell what
+behaviour it was defending.
+
+Slow, hard to read, occasionally flaky. It grows to some size and plateaus,
+because navigating it costs more than the confidence it returns. And eventually:
+*let's delete the integration tests and start over — the new ones will be better.*
+
+This is that new one. So the fair question is why it won't plateau the same way.
+
+**The data lives in the scenario, and so does the assertion.** A few rows as a
+markdown table, immediately above the query that reads them and the rows expected
+back. No loader, no fixture file, nothing shared to break.
+
+**Nothing is shared, structurally.** Every scenario gets its own source database,
+its own DuckLake catalog, its own environment, and a publisher started from a
+config naming only its own packages. The shared-fixture death spiral — where
+adding a row for one test breaks three others — cannot start, because there is no
+shared fixture to add a row to. That is what most of the harness's complexity buys,
+and it is the actual reason the suite can keep growing.
+
+**It is deliberately not code.** Code pulls attention toward the shape of the test
+— the helpers, the builders, the mocks — and away from the behaviour being
+described. Prose plus a table has nowhere to hide: if a scenario is hard to read,
+it is because the *rule* is unclear, which is worth knowing. It also means a
+refactor underneath usually changes nothing here; at most a small part of the
+engine moves.
+
+**Both people and agents can read and write them.** A coding agent can add a
+scenario without absorbing a test framework, and — the direction that matters more
+— anyone, human or agent, can learn what the system actually promises by reading
+runnable specs instead of inferring it from implementation.
+
+None of this is new. It is the FitNesse / BDD / executable-specification argument,
+and the debt is happily acknowledged. What is specific here is the isolation
+model: those approaches usually still sit on shared fixtures, and that is the part
+that historically rots.
+
+## What a scenario is
+
+**A scenario states a rule the Publisher commits to, and proves it end to end.**
+
+That is the whole test. Not "here is a sequence I tried and here is what
+happened" — a promise, written so a reader who has never opened the source can
+tell what the system guarantees.
+
+The distinction that matters is **rule vs. observation**, and it is not the same
+as positive vs. negative. Plenty of good scenarios have negative outcomes:
+
+- `givens-refused` — a given-referencing source is refused. That refusal *is* the
+  contract.
+- `security-user-sql-cannot-mutate-lake` — the boundary is the promise.
+- `off-serves-live` — the kill switch's guarantee.
+
+Those read as spec because each says *this is the rule*. A scenario drifts wrong
+when its title and prose describe **what currently happens** instead:
+
+> ~~A host-supplied serve binding is not re-checked for eligibility~~
+> **A host-supplied binding must not bypass row-level access control**
+
+Same steps, same assertion, same red — but the first is a bug report that stops
+making sense the day it is fixed, and the second is a promise that stays true
+forever. Write the second. Put the investigation in a `## Note`.
+
+## Red scenarios, and why there is no `bug-report` tag
+
+A scenario may assert a rule the Publisher does **not yet** meet. Tag it
+`known-red`: it fails on purpose, and the fix turns it green.
+
+The runner treats that as a first-class status, not a convention:
+
+- it reports **KRED** rather than FAIL, and **does not fail the run** — so a suite
+  carrying known debt can still be green, which is what makes it usable as a gate;
+- a known-red that **passes** reports **FIXED** and *does* fail the run. The rule
+  now holds and the tag has become a lie — which is exactly how a fix lands
+  without anyone remembering to retire the scenario;
+- they get their own report block with ages, taken from `## Note (since=…)`, and
+  `--attention-older-than N` filters it the same way it filters the callouts. Debt
+  nobody re-reads stops being a decision and becomes furniture, so
+  "what have we been red on for a month?" is one flag away. An undated known-red
+  always shows — it cannot be proven fresh.
+
+What a scenario must never do is assert the *broken* behaviour as if it were the
+contract. That rots in a specific and nasty way — someone fixes the bug, the
+scenario goes red, and the next person "fixes the test" by re-pinning the bug.
+The guard silently becomes its own opposite.
+
+So: always assert the rule. `known-red` carries "we don't comply yet." There is
+deliberately no `bug-report` tag, because it would license the rotting kind.
+
+## Two kinds of tag
+
+- **Topic** — `serve-correctness`, `security`, `eligibility`, `lifecycle`, … What
+  area this is about. Free-form; used by `--tags` and for grouping the report.
+- **Status** — how to read a result:
+  - `known-red` — asserts a rule not yet met. Expected to fail; reported KRED and
+    excluded from the exit code, but FIXED (and failing) if it starts passing.
+  - `needs-attention` — passes, but carries an open question. Surfaced in the
+    report's **⚠ needs attention** block along with the `## Note`.
+
+Date a callout as `## Note (since=YYYY-MM-DD)` so `--attention-older-than DAYS`
+can surface follow-ups that have gone stale.
+
+## When *not* to write a scenario
+
+When the **mechanism** is the point rather than the **promise**. A scenario is
+the wrong shape for "this function handles an empty array" — that is a unit test,
+and it will be clearer, faster, and easier to run there.
+
+The useful signal is the hook. `## Hook` exists for what markdown genuinely
+cannot express, and reaching for one means **one of two things**:
+
+1. **The grammar is missing a step** — the flow *is* user-visible and should be
+   expressible. Add the step; the scenario gets shorter and every future scenario
+   benefits.
+2. **The scenario is reaching below the API** — it wants an internal, which is
+   unit-test work.
+
+Ask which one every time — the first case is common. The scenario that motivated
+`## Manifest` started as a hook that hand-built a manifest; the flow turned out to
+be a real consumer's (a host authors manifests), so it became a step and the hook
+disappeared. Of ~65 scenarios, two keep a hook; that ratio is the health metric,
+not any individual hook.
+
+The reason to hold this line: a scenario's value is that it is *separate from the
+code*. Steps in, outcome out, and when it fails you can see why without reading
+the implementation. The same reason a wireframe beats a prototype for settling
+what a screen means — get too close to the real thing and the essence disappears
+into the mechanics. A scenario that starts specifying internals has stopped being
+a wireframe.
+
+---
 
 ## Prerequisites
 
@@ -33,6 +181,7 @@ bun hammer/run.ts                          # all scenarios
 bun hammer/run.ts --scenarios flat-source  # one (by id substring; comma-separated for several)
 bun hammer/run.ts --tags security          # by tag (match-any; comma-separated for several)
 bun hammer/run.ts --attention-older-than 30 # show only ⚠ callouts raised ≥30 days ago
+bun hammer/run.ts --workers 2              # scenarios in parallel (default 6)
 bun hammer/run.ts --rebuild                # force a fresh server build first
 bun hammer/run.ts --keep                   # leave the pg container + workdir up to inspect
 bun hammer/run.ts --reuse-pg               # reuse a running hammer pg container (fast iteration)
@@ -43,33 +192,44 @@ bun hammer/run.ts --reuse-pg               # reuse a running hammer pg container
 Flags: `--pg-port` (default 55432), `--port` (14000), `--mcp-port` (14040),
 `--quiet`. Exit code is nonzero if any scenario fails.
 
+Set `HAMMER_STEP_TIMING=1` to report any step over 500ms — how you localise a
+scenario that is slow only inside a full run.
+
 The harness picks non-default ports so it won't collide with your own stacks.
 If you used `--keep`, tear the container down with:
 
 ```bash
-docker rm -f publisher-hammer-pg
+docker rm -fv publisher-hammer-pg
 ```
 
-## What it does, each run
+## Each scenario is a clean room
 
-1. Build the server if needed.
-2. Spawn Postgres; create the source db (`hammer_src`) and the DuckLake catalog
-   db (`ducklake_catalog`).
-3. Seed every selected scenario's source tables; write their packages; generate
-   a `publisher.config.json` with a Postgres source connection (`orders_pg`) and
-   a DuckLake destination (`lake`, storage = a local dir), plus any connections a
-   scenario declared with `## Connection` (each `ducklake` gets its own catalog +
-   storage).
-4. Run each scenario. Its `## Publisher` sections start real server processes on
-   demand (a named publisher per cluster worker, each on its own ports, sharing
-   the one config); because `PERSIST_STORAGE_MODE` is read at startup, changing a
-   publisher's mode restarts it. Publishers are reused across scenarios.
+This is the property the harness spends most of its complexity on.
+
+1. Build the server if needed; spawn one Postgres for the whole run.
+2. Give **every scenario its own** source database, DuckLake catalog, storage
+   directory and environment — addressed through the same connection names
+   (`orders_pg`, `lake`) so the markdown never mentions the physical layout.
+3. Write each scenario's packages, and generate **a config per scenario** naming
+   only its own environments, connections and packages.
+4. Run it against **a publisher started for it**, from that config, torn down
+   with its storage afterwards.
 5. Print a per-scenario check report; tear everything down (unless `--keep`).
+
+Steps 2–4 are why a scenario can be trusted as a specification: the server it
+talks to has never seen another scenario's packages, so what the markdown
+describes really is the whole world the server knows about. A shared publisher
+would be cheaper and would quietly make every scenario a half-truth.
+
+Scenarios run in parallel (default 6 workers) and are order-independent by
+construction.
 
 ## Layout
 
 ```
 hammer/
+  README.md            # this file — what a scenario is for
+  GRAMMAR.md           # the step vocabulary
   run.ts               # orchestrator / entrypoint
   lib/
     util.ts            # process spawn, polling, logging
@@ -79,6 +239,7 @@ hammer/
     packages.ts        # write generated Malloy packages to disk
     rest.ts            # REST client: build, poll, query (SQL + row values), bind, republish, reclaim
     scenario_md.ts     # the markdown scenario interpreter (parse -> Scenario)
+    scenario_md.spec.ts # grammar tests — a malformed scenario must fail loudly
   scenarios/
     framework.ts       # Scenario contract + assertion recorder + ServerControl
     index.ts           # recursively discovers */scenario.md
@@ -86,100 +247,10 @@ hammer/
       01-flat-source/scenario.md
       02-refinements/scenario.md
       ...                              # (a folder per scenario)
-      06-operator-generational/{scenario.md, hooks.ts}   # + hooks.ts for exotic steps
+      32-rebuild-on-model-change/{scenario.md, hooks.ts}  # + hooks.ts where markdown can't reach
 ```
 
-## Authoring a scenario (markdown)
-
-Scenarios live under a **suite** folder, `scenarios/<suite>/<NN-name>/`, each with a
-`scenario.md` that reads like a story. A YAML front-matter block sets the metadata,
-then an H1 title, then ordered sections:
-
-```
----
-id: flat-source                # report id + selection key (defaults to folder name)
-package: d0                    # default package name for Model/Publish/Query
-tags: serve-correctness        # optional labels: --tags filter + report grouping
-requires: dialect:snowflake    # optional: capability tokens beyond the defaults;
-                               #   unmet -> the scenario is SKIPPED, not failed
----
-# Flat persist source: Postgres → DuckLake
-```
-
-**Tags** are free-form. One carries meaning to the runner: `needs-attention` marks
-a scenario as carrying an open question — it's listed in the report's **⚠ needs
-attention** block, along with any `## Note` callout, so follow-ups stay visible
-instead of getting lost in a sea of green. Date the callout with
-`## Note (since=YYYY-MM-DD)`; `--attention-older-than DAYS` then shows only the
-callouts that have gone unaddressed for at least that long (undated ones always
-show).
-
-**Requires** lists capability tokens a scenario needs *beyond* the always-present
-defaults (`connection:orders_pg`/`dialect:postgres`, `connection:lake`/
-`dialect:duckdb`). The run advertises what it provides; a scenario that needs
-something else — e.g. a `dialect:snowflake` scenario with no Snowflake connection
-wired — is reported **SKIPPED** rather than failed. A `## Connection <name>
-(type=…)` declaration adds its own `connection:<name>` token automatically, so a
-scenario that declares what it needs won't skip; wiring a brand-new *warehouse*
-type (BigQuery/Snowflake, which need creds) still means extending `run.ts` and the
-`available` set.
-
-The section vocabulary is small and fixed:
-
-| section | body | effect |
-|---|---|---|
-| `## Publisher [<name>]` | `- PERSIST_STORAGE_MODE: on` (+ any `- SOME_ENV: value` bullets) | (re)start a publisher at that mode and make it the active target. A `<name>` identifies a distinct, concurrent publisher process (a cluster worker); reusing a name restarts THAT one, new names start more. Nameless = the single `default` publisher; switching its mode = another `## Publisher` (the mode is fixed at process start). Extra `- KEY: value` bullets are passed as environment to the spawned server — for a deployment flag also fixed at startup, e.g. `- PERSIST_COLLISION_ENFORCE: true` (see `collision-enforce-refuses-publish`) |
-| `## Data <conn>.<table>` | GFM table, headers `name:type` | seed/replace source rows |
-| `## Mutate <conn>.<table>` | GFM table (append) **or** ` ```sql ` block | change source rows mid-run |
-| `## SQL <label>` | ` ```sql ` block + `Expect:` table | run raw SQL on the source warehouse, compare rows (e.g. *prove* the source really changed) |
-| `## Operator <conn>` | ` ```sql ` block | orchestrator DDL on a destination via the operator's OWN read-write DuckLake client, **external to the publisher** (e.g. `CREATE SCHEMA` on `lake`) |
-| `## Connection <name> (type=postgres\|ducklake\|duckdb)` | — | **DECLARE** a connection wired into the config beyond the always-present `orders_pg` + `lake` (a pre-pass artifact, like a package — not a runtime step). `postgres` reuses the source warehouse; `ducklake` gets its OWN catalog + storage (a genuinely separate destination — see `cross-connection-destinations`); `duckdb` is a local-dialect source (see `duckdb-source-not-materializable`). The name becomes a `connection:<name>` capability token |
-| `## Connection <conn> (refused)` | ` ```sql ` block | run SQL THROUGH the publisher's `sqlQuery` endpoint; `refused` asserts it's rejected (storage attach is read-only). (Same header as the declaration above — the `type=` attribute picks the declaration form; a ` ```sql ` block picks this one) |
-| `## Model [<pkg>/]<path>` | ` ```malloy ` block | write a package model file (re-declaring it mid-run = an edit) |
-| `## Publish [<pkg>] (forceRefresh, sources=a[+b], async, label=X)` | optional `expect binding: src -> conn` | load + build the package; `forceRefresh` rebuilds even if unchanged; `sources=` builds only the named persist source(s) (the `sourceNames` filter; `+`-separated), leaving the rest live; `async` fires the build WITHOUT awaiting (see `## Await`) so a following step can observe it in flight |
-| `## Await [<label>]` | — | drain an async publish (by `label`, else the oldest pending) and assert it completed |
-| `## Build [refused] (orchestrated, pkg=P, pub=, env=, strict)` | `- <src> -> <physicalName> @ <dest>` lines + `reference: <src> [(from=<pub>)]` lines; optional `cites:` | orchestrated (caller-instructed) build: each source builds into the caller-assigned physical name (verified) at the destination; `reference:` reuses an already-built upstream, resolved BY NAME from the latest manifest (the target's, or `from=<pub>`); `refused` asserts it fails |
-| `## Delete [<pkg>]` | — | unload + `DELETE` the package from the serving set (asserts it no longer resolves) |
-| `## Reclaim [<pkg>]` | — | `DELETE` the latest successful materialization with `?dropTables=true` — the destination-aware physical-table drop (GC). Pair with `## Restart` to prove serving reverts to live once the table is reclaimed (see `reclaim-drop-tables`) |
-| `## Republish [refused] [<pkg>]` | `cites: <substring>` | (re)publish through the author-in-the-loop `POST /packages` gate (distinct from `## Publish`, which is a build). Unlike startup/reload (fail-safe, warn-only) this path is strict, so `refused` asserts a 4xx — e.g. a collision under `PERSIST_COLLISION_ENFORCE` (see `collision-enforce-refuses-publish`) |
-| `## Build refused [<pkg>]` | `cites: <substring>` | build must be refused — a build that reaches FAILED **or** a package that won't load so the build can't start — citing … |
-| `## Rejected <pkg>` | optional `cites: <substring>` | the package's model is invalid: assert it is NOT served (durable `getPackage` probe) and — if `cites:` — confirm the diagnostic via `/compile`. (Uses `getPackage`, not `/status` loadErrors, which is pruned after the first call.) |
-| `## Warns [<pkg>]` | `cites: <substring>` | package must surface an operator warning citing … (`/status` warnings) |
-| `## Compile <label> (pkg=P[, refused])` | optional ` ```malloy ` + `cites:` | compile-check a model via `/compile` (deterministic). When `refused`, the framework ALSO asserts the package is NOT served — the divergence backstop (a non-compiling model must not be reported as serving) — so a scenario just declares a model invalid and the framework proves both |
-| `## Bind [<pkg>] (empty\|clear\|bad\|from=<publisher>\|asof=,fresh=,fallback=)` | — | play the orchestrator: PATCH the ACTIVE publisher's `manifestLocation` — full (re-serve last build), `empty` (drop → live), `clear` (null → live), `bad` (unreachable URI → fetch-fail → live), `from=<publisher>` (bind another publisher's build manifest — the cluster distribute pattern). `asof=<iso>`/`fresh=<seconds>`/`fallback=<live\|stale_ok\|fail>` stamp freshness fields on each bound entry to drive the age-vs-window gate |
-| `## Query <label> (again, refused)` | ` ```malloy ` (or reuse by label) + `Expect:` table | run + compare rows; `refused` = the query MUST fail (optional `cites:`) |
-| `## Restart [(init)]` | — | reboot the active publisher. Bare: **preserve** the materialization store (no `--init`), so serving re-establishes from the persisted store on load. `(init)` re-copies packages (picks up a mid-run `## Model` edit) and resets the store |
-| `## Note [(since=YYYY-MM-DD)]` (or `## Attention`) | `> …` blockquote | a prose callout surfaced in the report's **⚠ needs attention** block — the open question or thing to review (pairs with the `needs-attention` tag); `since` dates it for `--attention-older-than` |
-| `## Hook <exportName>` | — | call a `hooks.ts` export, in document order (interleave with markdown steps). Receives a shared `state` object, so a tiny hook can stash a value another hook reads. Reserved for what markdown genuinely can't express (e.g. capturing + comparing an internal `sourceEntityId`) — most flows are pure markdown |
-
-Column types (`order_date:date`, `amount:num`, …) drive both the `CREATE TABLE`
-and value coercion. **`PERSIST_STORAGE_MODE` is a server-level setting fixed at
-process start** — it is NOT a per-request parameter. A `## Publisher` section
-(re)starts the publisher at a mode (defaulting to `on`), and every following step
-runs against that publisher; to change the mode you write another `## Publisher`
-(a fresh process), which is what `mode-matrix` and `migrate-persist-to-storage` do. There
-is no per-step `(mode=…)`. Naming a publisher (`## Publisher p1`) starts a
-distinct, concurrent process — a cluster worker — so a scenario can build on one
-and `## Bind … (from=p1)` the manifest to another; they share one config, hence
-the same warehouse and DuckLake tier (see `multi-publisher-shared-table`).
-`(again)` re-runs the most recent query of the same label — the basis of the
-routing proof (mutate the source, run the query again, expect the value
-**unchanged**). Server-facing steps take `(pub=<name>)` to run against a
-specific started publisher instead of the active one — so you can query `p1` and
-`p2` side by side without switching active.
-
-Steps also take `(env=<name>)` to run against a specific **environment**, and
-`## Model <pkg>/<path> (env=<name>)` registers a package under that environment. A
-package name may recur across environments with a different model. Every step
-defaults to the primary environment (`default`); naming any other environment adds
-it to the generated config. One server process serves all environments (env is
-orthogonal to `pub`), and they share the same connections — including the same
-DuckLake destination, so a cross-environment collision is observable (see
-`cross-environment-same-name`).
-
-Orchestrated (caller-instructed) builds — generational names, cross-run/cross-worker
-reference reuse — are first-class markdown now (`## Build (orchestrated, …)`). A
-`hooks.ts` is the escape hatch for the rare thing markdown genuinely can't express
-(capturing and comparing an internal identity like a `sourceEntityId`); such hooks
-should be tiny, run in document order, and share `state` with each other — the flow
-stays in the `.md`. Of the current suite only one scenario keeps a hook.
+Scenarios live in **suites** under `scenarios/<suite>/`. The harness itself is
+suite-agnostic. Today the one suite, `mz-storage`, exercises the `storage=`
+materialization tier; a new suite needing the same fixtures is just a new folder,
+one needing different infra extends `run.ts`.

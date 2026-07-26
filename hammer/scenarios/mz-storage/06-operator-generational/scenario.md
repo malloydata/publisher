@@ -4,7 +4,7 @@ tags: orchestration, operator
 package: dop
 ---
 
-# Operator orchestrated build with generational names
+# An orchestrated build lands at the caller's own generational table name
 
 The orchestrator ("operator") drives the build itself via an orchestrated
 `## Build`, assigning its own generational physical table names (`dop_daily__g001`,
