@@ -16,6 +16,7 @@ import {
    recordEligibilityRefused,
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
+import { assertMaterializationEligible } from "./materialization_eligibility";
 import { Model } from "./model";
 import { quoteIdentifier } from "./quoting";
 
@@ -633,6 +634,7 @@ export async function computePackageBuildPlan(
 ): Promise<{
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
+   ineligibleSources: Record<string, string>;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
@@ -647,5 +649,32 @@ export async function computePackageBuildPlan(
               compiled.sourceModelPaths,
               pkg.getMaterializationConfig?.() ?? null,
            );
-   return { plan, droppedPersistSources };
+   return {
+      plan,
+      droppedPersistSources,
+      ineligibleSources: collectIneligibleSources(compiled.sources),
+   };
+}
+
+/**
+ * Source name -> why it may not be served from a materialized table, decided
+ * HERE because this is where the compiled sources exist. The serve side needs
+ * the answer without them: binding a host's manifest deliberately skips the
+ * recompile, so it cannot re-derive eligibility and would otherwise have to take
+ * the host's word for it.
+ *
+ * Keyed by source NAME because that is what a serve binding carries.
+ */
+function collectIneligibleSources(
+   sources: Record<string, PersistSource>,
+): Record<string, string> {
+   const out: Record<string, string> = {};
+   for (const source of Object.values(sources)) {
+      try {
+         assertMaterializationEligible(source);
+      } catch (err) {
+         out[source.name] = errMessage(err);
+      }
+   }
+   return out;
 }

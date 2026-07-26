@@ -159,6 +159,11 @@ export class Package {
    // and would be a silent no-op (served live). Surfaced as an operator warning
    // and hard-refused at build. See build_plan.detectDroppedPersistSources.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
+   // Source name -> why it may not be served from a materialized table, decided
+   // at compile (build_plan.collectIneligibleSources) because that is where the
+   // compiled sources exist. Consulted when binding serve bindings, which
+   // deliberately does not recompile.
+   private ineligibleSources: Record<string, string> = {};
    // Non-fatal render-tag findings aggregated across the package's models (each
    // tagged with its model path), surfaced read-only on
    // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
@@ -553,10 +558,11 @@ export class Package {
       // compile); accepted for now.
       try {
          const buildPlanStart = Date.now();
-         const { plan, droppedPersistSources } =
+         const { plan, droppedPersistSources, ineligibleSources } =
             await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
+         pkg.ineligibleSources = ineligibleSources;
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
          logger.warn(
@@ -836,10 +842,44 @@ export class Package {
       this.recordManifestBinding(entries);
    }
 
+   /**
+    * Bind the storage serve bindings a host vouches for — minus any whose source
+    * this package's own eligibility gate refuses.
+    *
+    * The host is authoritative about WHICH TABLE backs a source; it owns
+    * generations and rollout. It cannot be authoritative about WHETHER a source
+    * may be served from a frozen table at all, because that is decided by
+    * compiling the model, which the host does not do. A `given`-referencing
+    * source is the case that matters: a given binds per query for row-level
+    * access control, so one table built once and served to everyone hands every
+    * caller the rows filtered for whoever built it.
+    *
+    * A manifest can name such a source without anyone being careless — a source
+    * that was given-free when it was built acquires a `given` on the next model
+    * edit, and the old manifest still points at a real table until convergence
+    * catches up.
+    *
+    * Refused bindings are DROPPED, not fatal: that source serves live, which is
+    * always correct because the tier is a performance tier. The rest bind.
+    */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
-      this.storageServeBindings = deriveServeBindings(entries);
+      const derived = deriveServeBindings(entries);
+      const allowed = derived.filter((binding) => {
+         const reason = this.ineligibleSources[binding.sourceName];
+         if (!reason) return true;
+         logger.warn(
+            "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
+            {
+               packageName: this.packageName,
+               sourceName: binding.sourceName,
+               reason,
+            },
+         );
+         return false;
+      });
+      this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
    }
 
