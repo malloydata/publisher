@@ -198,6 +198,14 @@ type Step =
         cites?: string;
      }
    | {
+        kind: "manifest";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        entries: { src: string; table: string; dest: string }[];
+     }
+   | {
         kind: "bind";
         pub?: string;
         env: string;
@@ -286,6 +294,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    bind: {
       attrs: ["bad", "empty", "clear", "from", "fresh", "asof", "fallback"],
    },
+   manifest: { attrs: ["pkg"] },
    restart: { attrs: ["init"] },
    hook: {},
 };
@@ -321,6 +330,7 @@ const SIDE_EFFECT_ONLY_STEPS = new Set([
    "publisher",
    "restart",
    "bind",
+   "manifest",
    "hook",
    "publish",
 ]);
@@ -804,6 +814,28 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             });
             break;
          }
+         case "manifest": {
+            // A host authoring a manifest BY HAND, rather than `## Bind` replaying
+            // one the publisher produced. That is a real consumer's flow — the
+            // orchestrator writes these — and the interesting cases are the ones
+            // the publisher would never generate itself: an entry for a source it
+            // refused to build, a stale generation, a table it does not own.
+            const entries = parseManifestBody(sec.body);
+            if (entries.length === 0) {
+               throw new Error(
+                  `${sec.header}: no entries — expected \`- <source> -> <table> @ <destination>\` lines`,
+               );
+            }
+            steps.push({
+               kind: "manifest",
+               pub,
+               env,
+               pkg: (attrs.pkg as string) ?? (arg.trim() || defaultPackage),
+               mode,
+               entries,
+            });
+            break;
+         }
          case "bind": {
             // Simulate the orchestrator binding a manifest: full = re-serve the
             // last build's manifest via manifestLocation; empty = a present-but-
@@ -1065,6 +1097,18 @@ function parseOrchestratedBody(body: string[]): {
       if (r) references.push({ src: r[1], from: r[2]?.trim() || undefined });
    }
    return { sources, references };
+}
+
+/** `- <source> -> <table> @ <destination>` lines for a hand-authored manifest. */
+function parseManifestBody(
+   body: string[],
+): { src: string; table: string; dest: string }[] {
+   const out: { src: string; table: string; dest: string }[] = [];
+   for (const raw of body) {
+      const m = raw.trim().match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      if (m) out.push({ src: m[1], table: m[2], dest: m[3] });
+   }
+   return out;
 }
 
 function parseBindings(body: string[]): { source: string; conn: string }[] {
@@ -2033,6 +2077,50 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                         : `expected success, got problems=${problems.slice(0, 200)}`,
                   );
                }
+               break;
+            }
+            case "manifest": {
+               // Author the manifest a host would send, and bind it. The schema is
+               // copied from whichever CAPTURED entry already describes that
+               // physical table — a real build has to have produced it, which is
+               // what keeps the forged entry honest about the table's shape while
+               // being dishonest about which source may be served from it.
+               const rest = await serverFor(step.pub, step.env);
+               const captured = await rest.latestManifestEntries(step.pkg);
+               const ids = await rest.sourceEntityIds(step.pkg);
+               const entries: Record<string, unknown> = {};
+               for (const e of step.entries) {
+                  const eid = ids[e.src];
+                  if (!eid) {
+                     throw new Error(
+                        `## Manifest: source "${e.src}" is not in ${step.pkg}'s build plan ` +
+                           `(planned: ${Object.keys(ids).join(", ") || "none"})`,
+                     );
+                  }
+                  const schemaOf = Object.values(captured).find(
+                     (c) =>
+                        (c as { physicalTableName?: string })
+                           .physicalTableName === e.table,
+                  ) as { schema?: unknown } | undefined;
+                  if (!schemaOf?.schema) {
+                     throw new Error(
+                        `## Manifest: no captured schema for table "${e.table}" — ` +
+                           `a real build must have produced it before a manifest can name it`,
+                     );
+                  }
+                  entries[eid] = {
+                     sourceEntityId: eid,
+                     sourceName: e.src,
+                     physicalTableName: e.table,
+                     storageConnectionName: e.dest,
+                     schema: schemaOf.schema,
+                  };
+               }
+               const uri = await ctx.writeManifest(
+                  `${step.pkg}-authored`,
+                  entries,
+               );
+               await rest.patchPackage(step.pkg, { manifestLocation: uri });
                break;
             }
             case "bind": {
