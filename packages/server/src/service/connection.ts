@@ -52,6 +52,7 @@ import {
 } from "./connection_config";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
+import { quoteIdentifier } from "./quoting";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -148,7 +149,7 @@ export async function applyExtensionSessionSettings(
    }
 }
 
-async function installAndLoadExtension(
+export async function installAndLoadExtension(
    connection: DuckDBConnection,
    extensionName: string,
    fromCommunity = false,
@@ -232,7 +233,7 @@ function sanitizeSecretName(name: string): string {
    return `secret_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
 }
 
-function escapeSQL(value: string): string {
+export function escapeSQL(value: string): string {
    return value.replace(/'/g, "''");
 }
 
@@ -574,10 +575,21 @@ async function preflightDuckLakeCatalogFormat(
    );
 }
 
-async function attachDuckLake(
+/**
+ * Attach a DuckLake catalog in a given access mode. `readOnly: true` (the live
+ * user-facing connection path) attaches with `READ_ONLY true`; `readOnly: false`
+ * produces the read-WRITE build variant used only on a transient, build-scoped
+ * session so a materialization can `CREATE TABLE` into the catalog. Both keep
+ * `OVERRIDE_DATA_PATH true` and NEVER pass `AUTOMATIC_MIGRATION` — catalog-format
+ * migration is a coordinated fleet cutover, never an implicit side effect of a
+ * build attach. Both range-preflight the catalog format first (see
+ * {@link preflightDuckLakeCatalogFormat}).
+ */
+async function attachDuckLakeWithMode(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
+   options: { readOnly: boolean },
 ): Promise<void> {
    // Tier build/serve DuckLake sessions never implicitly auto-install (Publisher
    // installs the DuckLake stack explicitly below) — regardless of the policy.
@@ -618,8 +630,9 @@ async function attachDuckLake(
 
    const pg = ducklakeConfig.catalog.postgresConnection;
    const pgConnString: string = buildPgConnectionString(pg);
-   // Attach DuckLake with Postgres catalog and cloud storage data path in READ_ONLY mode
-   // The client manages metadata - we only read from the catalogs
+   const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
+   // READ_ONLY: the client manages metadata, we only read the catalog.
+   // READ_WRITE (build only): a build-scoped session materializes into it.
    logger.info(`pgConnString: ${redactPgSecrets(pgConnString)}`);
    const escapedPgConnString = escapeSQL(pgConnString);
    logger.info(
@@ -630,14 +643,17 @@ async function attachDuckLake(
    // Range-preflight the catalog's recorded format version so an unsupported
    // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500.
    await preflightDuckLakeCatalogFormat(connection, dbName, pgConnString);
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true, READ_ONLY true);`;
+   // READ_ONLY is stated explicitly; read-write omits the flag (DuckLake's
+   // default is writable). AUTOMATIC_MIGRATION is never set in either mode.
+   const readOnlyClause = options.readOnly ? ", READ_ONLY true" : "";
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause});`;
    logger.info(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
    try {
       await connection.runSQL(attachCommand);
       logger.info(
-         `Successfully attached DuckLake database in READ_ONLY mode: ${dbName}`,
+         `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
       );
    } catch (error) {
       // Handle case where DuckLake database is already attached
@@ -653,6 +669,246 @@ async function attachDuckLake(
          throw error;
       }
    }
+}
+
+async function attachDuckLake(
+   connection: DuckDBConnection,
+   dbName: string,
+   ducklakeConfig: components["schemas"]["DucklakeConnection"],
+): Promise<void> {
+   await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
+      readOnly: true,
+   });
+}
+
+/**
+ * Read-WRITE DuckLake attach for a materialization build. Identical to the
+ * read-only user-facing attach except the catalog is writable, so a build-scoped
+ * session can `CREATE TABLE ... AS` into it. Least privilege: this variant is
+ * only ever used on a transient build session (never the serve connection), for
+ * the duration of one build. Like the read-only attach it is lazy and never on
+ * the worker boot path.
+ */
+export async function attachDuckLakeReadWrite(
+   connection: DuckDBConnection,
+   dbName: string,
+   ducklakeConfig: components["schemas"]["DucklakeConnection"],
+): Promise<void> {
+   await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
+      readOnly: false,
+   });
+}
+
+/** A source warehouse type that exposes a native DuckDB query-passthrough. */
+export type FederatedSourceType = "bigquery" | "snowflake" | "postgres";
+
+/**
+ * The result of federating a source connection onto a build session: the
+ * `handle` a passthrough table function needs to reach it —
+ *  - bigquery: the resolved project id (`bigquery_query('<project>', '<sql>')`),
+ *  - snowflake: the created secret name (`snowflake_query('<sql>', '<secret>')`),
+ *  - postgres: the ATTACH alias (`postgres_query('<alias>', '<sql>')`).
+ */
+export interface FederatedHandle {
+   handle: string;
+   sourceType: FederatedSourceType;
+}
+
+/**
+ * The source connection's configuration needed to federate it onto a build
+ * session. `name` is a caller-supplied, already-safe base for the secret/alias
+ * identifiers; the type-specific config carries the credentials.
+ */
+export interface FederationConfig {
+   name: string;
+   bigqueryConnection?: components["schemas"]["BigqueryConnection"];
+   snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+   postgresConnection?: components["schemas"]["PostgresConnection"];
+}
+
+/**
+ * Establish a SOURCE warehouse's credentials on a build-scoped DuckDB session so
+ * a native query-passthrough (`bigquery_query`/`snowflake_query`/`postgres_query`)
+ * can push the compiled SELECT to that warehouse and stream back result rows.
+ * This is the credential-federation half of the build path: it runs ONLY on the
+ * transient build session, on demand, for the build's duration — the source
+ * creds are never established on the serve connection and never persisted into a
+ * connection config. It mirrors the existing read-only attach handlers but
+ * targets the passthrough functions (bigquery/snowflake need only a SECRET, no
+ * ATTACH; postgres needs an ATTACH whose alias the function references).
+ *
+ * @returns the {@link FederatedHandle} the caller passes to `wrapPassthrough`.
+ * @throws for a source type without a native passthrough, or missing/invalid
+ *   credentials, so a build fails loud rather than producing a wrong table.
+ */
+export async function federateSourceForPassthrough(
+   connection: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   config: FederationConfig,
+): Promise<FederatedHandle> {
+   switch (sourceType) {
+      case "bigquery":
+         return federateBigQuery(connection, config);
+      case "snowflake":
+         return federateSnowflake(connection, config);
+      case "postgres":
+         return federatePostgres(connection, config);
+      default: {
+         // Exhaustiveness guard: a new FederatedSourceType must add a branch.
+         const exhaustive: never = sourceType;
+         throw new Error(
+            `No native query-passthrough for source type '${String(exhaustive)}'`,
+         );
+      }
+   }
+}
+
+async function federateBigQuery(
+   connection: DuckDBConnection,
+   config: FederationConfig,
+): Promise<FederatedHandle> {
+   const bq = config.bigqueryConnection;
+   if (!bq) {
+      throw new Error(
+         `BigQuery connection configuration missing for: ${config.name}`,
+      );
+   }
+
+   let projectId = bq.defaultProjectId;
+   let serviceAccountJson: string | undefined;
+   if (bq.serviceAccountKeyJson) {
+      const keyData = JSON.parse(bq.serviceAccountKeyJson as string);
+      const requiredFields = [
+         "type",
+         "project_id",
+         "private_key",
+         "client_email",
+      ];
+      for (const field of requiredFields) {
+         if (!keyData[field]) {
+            throw new Error(
+               `Invalid service account key: missing "${field}" field`,
+            );
+         }
+      }
+      if (keyData.type !== "service_account") {
+         throw new Error('Invalid service account key: incorrect "type" field');
+      }
+      projectId = keyData.project_id || bq.defaultProjectId;
+      serviceAccountJson = bq.serviceAccountKeyJson as string;
+   }
+
+   if (!projectId || !serviceAccountJson) {
+      throw new Error(
+         `BigQuery project_id and service account key required for: ${config.name}`,
+      );
+   }
+
+   await installAndLoadExtension(connection, "bigquery", true);
+
+   const secretName = sanitizeSecretName(`bigquery_${config.name}`);
+   const escapedJson = escapeSQL(serviceAccountJson);
+   await connection.runSQL(`
+      CREATE OR REPLACE SECRET ${secretName} (
+         TYPE BIGQUERY,
+         SCOPE 'bq://${projectId}',
+         SERVICE_ACCOUNT_JSON '${escapedJson}'
+      );
+   `);
+   logger.info(
+      `Federated BigQuery source for passthrough: project ${projectId}`,
+   );
+   // bigquery_query resolves credentials from the secret scoped to bq://<project>
+   // — the project id is the passthrough handle; no ATTACH is needed.
+   return { handle: projectId, sourceType: "bigquery" };
+}
+
+async function federateSnowflake(
+   connection: DuckDBConnection,
+   config: FederationConfig,
+): Promise<FederatedHandle> {
+   const sf = config.snowflakeConnection;
+   if (!sf) {
+      throw new Error(
+         `Snowflake connection configuration missing for: ${config.name}`,
+      );
+   }
+   const required = {
+      account: sf.account,
+      username: sf.username,
+      password: sf.password,
+   };
+   for (const [field, value] of Object.entries(required)) {
+      if (!value) {
+         throw new Error(`Snowflake ${field} is required for: ${config.name}`);
+      }
+   }
+
+   await installAndLoadExtension(connection, "snowflake", true);
+
+   const params = {
+      account: escapeSQL(sf.account || ""),
+      user: escapeSQL(sf.username || ""),
+      password: escapeSQL(sf.password || ""),
+      database: sf.database ? escapeSQL(sf.database) : undefined,
+      warehouse: sf.warehouse ? escapeSQL(sf.warehouse) : undefined,
+   };
+   const secretName = sanitizeSecretName(`snowflake_${config.name}`);
+   // DATABASE/WAREHOUSE are optional — emit them only when supplied, so an
+   // absent one doesn't interpolate the literal string 'undefined' into the
+   // secret (which Snowflake would then try to use as a real db/warehouse name).
+   const secretLines = [
+      `   TYPE snowflake`,
+      `   ACCOUNT '${params.account}'`,
+      `   USER '${params.user}'`,
+      `   PASSWORD '${params.password}'`,
+      ...(params.database ? [`   DATABASE '${params.database}'`] : []),
+      ...(params.warehouse ? [`   WAREHOUSE '${params.warehouse}'`] : []),
+   ];
+   await connection.runSQL(
+      `CREATE OR REPLACE SECRET ${secretName} (\n${secretLines.join(",\n")}\n);`,
+   );
+   logger.info(`Federated Snowflake source for passthrough: ${secretName}`);
+   // snowflake_query takes the SQL first and the secret name second — the secret
+   // name is the passthrough handle; no ATTACH is needed.
+   return { handle: secretName, sourceType: "snowflake" };
+}
+
+async function federatePostgres(
+   connection: DuckDBConnection,
+   config: FederationConfig,
+): Promise<FederatedHandle> {
+   const pg = config.postgresConnection;
+   if (!pg) {
+      throw new Error(
+         `PostgreSQL connection configuration missing for: ${config.name}`,
+      );
+   }
+
+   await installAndLoadExtension(connection, "postgres");
+
+   const attachString = buildPgConnectionString(pg);
+   // `name` is the ATTACH alias AND (verbatim) the postgres_query handle, so the
+   // handle stays the raw name while the ATTACH identifier is dialect-quoted —
+   // a name needing quoting (e.g. a hyphen) would otherwise be a parser error.
+   const alias = config.name;
+   logger.info(
+      `Federating Postgres source for passthrough as alias '${alias}': ${redactPgSecrets(attachString)}`,
+   );
+   // OR REPLACE for within-session idempotency. The cross-build/cross-tenant
+   // alias-collision boundary is the build session's PRIVATE DuckDB instance
+   // (see createIsolatedBuildSession): each build runs on its own instance, so
+   // its postgres attach cannot collide with another build's or another tenant's
+   // on a shared instance. OR REPLACE is kept as belt-and-suspenders for a
+   // re-attach of the identical source within one session (the alias is the
+   // connection name, the config is that connection's, so replacing is a no-op
+   // rebind to the same source). (bigquery/snowflake federate via CREATE OR
+   // REPLACE SECRET with no ATTACH; secrets are instance-scoped, so isolation
+   // covers them too.)
+   await connection.runSQL(
+      `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
+   );
+   return { handle: alias, sourceType: "postgres" };
 }
 
 async function attachCloudStorage(

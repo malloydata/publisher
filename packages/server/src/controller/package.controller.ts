@@ -18,19 +18,24 @@ export type PackageReloadMode = "in-place" | "reinstalled";
  * the Malloy Persistence policy gate (scope is package-level; a
  * `materialization.schedule` is package-root-only + version-scope-only and
  * mutually exclusive with freshness; per-source `sharing`/`schedule` are
- * retired — see Package.persistencePolicyWarnings). At startup/reload both are
- * warn-only instead (fail-safe; see Package.loadViaWorker).
+ * retired — see Package.persistencePolicyWarnings), plus persist-target
+ * collisions ONLY when `PERSIST_COLLISION_ENFORCE` is set (otherwise those are
+ * surfaced warn-only so a pre-existing latent collision doesn't block a routine
+ * re-publish — see Package.formatPersistenceCollisionRejections). At
+ * startup/reload all are warn-only instead (fail-safe; see Package.loadViaWorker).
  */
 function formatPublishRejections(
    pkg: {
       formatInvalidExplores(exploresOverride?: string[]): string;
       formatInvalidPersistencePolicy(): string;
+      formatPersistenceCollisionRejections(): string;
    },
    exploresOverride?: string[],
 ): string | undefined {
    const message = [
       pkg.formatInvalidExplores(exploresOverride),
       pkg.formatInvalidPersistencePolicy(),
+      pkg.formatPersistenceCollisionRejections(),
    ]
       .filter(Boolean)
       .join("\n");

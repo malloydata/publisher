@@ -480,6 +480,72 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
    );
 };
 
+/**
+ * The three `#@ persist storage=<conn>` deployment modes, read from
+ * `PERSIST_STORAGE_MODE`. This is a runtime kill switch — flipping DOWN must
+ * never fail an already-loaded package, only change how `storage=` is honored:
+ *
+ *  - `off` (default): `storage=` is inert. Sources build into (colocated) and serve
+ *    from their own warehouse exactly as before the feature existed; a source
+ *    that declares `storage=` is served live and surfaced as a package warning.
+ *    The safe resting state and the incident kill switch.
+ *  - `write-only`: builds materialize into the storage destination (so operators
+ *    can measure and inspect the tables), but the serve path still ignores
+ *    `storage=` and serves live. The de-risking / measurement rung.
+ *  - `on`: full end to end — build into storage AND serve via the virtual-source
+ *    transform, with a per-query fallback to live for anything the transform
+ *    cannot yet serve.
+ *
+ * The publisher NEVER hard-fails a package on `storage=` in any mode; any
+ * stricter "refuse a new package that uses storage= while off" policy is the
+ * caller's, not here (the mechanism/policy split).
+ */
+export type PersistStorageMode = "off" | "write-only" | "on";
+
+const PERSIST_STORAGE_MODES: readonly PersistStorageMode[] = [
+   "off",
+   "write-only",
+   "on",
+];
+
+/**
+ * Resolve the `storage=` deployment mode from `PERSIST_STORAGE_MODE`. Defaults
+ * to `off` (feature dark) when unset/empty; loud-fails on an unrecognized value
+ * so a typo can't silently leave the fleet in a surprising mode. Case-insensitive,
+ * like the sibling `PERSIST_COLLISION_ENFORCE`.
+ */
+export const getPersistStorageMode = (): PersistStorageMode => {
+   const raw = process.env.PERSIST_STORAGE_MODE;
+   if (raw === undefined || raw.trim() === "") return "off";
+   const value = raw.trim().toLowerCase();
+   if ((PERSIST_STORAGE_MODES as readonly string[]).includes(value)) {
+      return value as PersistStorageMode;
+   }
+   throw new Error(
+      `PERSIST_STORAGE_MODE must be one of ${PERSIST_STORAGE_MODES.join(
+         " | ",
+      )} (got ${JSON.stringify(raw)})`,
+   );
+};
+
+/**
+ * Whether a within-package persist-target COLLISION (two distinct persist
+ * sources resolving to the same physical table in the same destination) is a
+ * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).
+ *
+ * Staged on purpose: a package published BEFORE this check existed may carry a
+ * latent collision, so the check ships warn-only — surfaced at load and publish
+ * (so operators can find and remediate) but NOT blocking a re-publish. Flip this
+ * to `true` only after auditing and remediating known collisions, so the
+ * transition to reject-at-publish is deliberate and doesn't break routine
+ * re-publishes of existing packages. Load is ALWAYS warn-only regardless — the
+ * flag only governs whether publish rejects.
+ */
+export const getPersistCollisionEnforce = (): boolean => {
+   const raw = process.env.PERSIST_COLLISION_ENFORCE;
+   return raw !== undefined && raw.trim().toLowerCase() === "true";
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

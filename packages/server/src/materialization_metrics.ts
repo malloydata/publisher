@@ -19,6 +19,35 @@ export type MaterializationMode = "auto" | "orchestrated";
 export type MaterializationOutcome = "success" | "failed" | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
+/**
+ * Which engine a source build / table drop ran against: the source's own
+ * warehouse (colocated, in-warehouse CTAS) or a DuckDB/DuckLake `storage=`
+ * destination (federated passthrough CTAS). The two have very different latency
+ * and failure profiles, so build/drop metrics are labeled with it rather than
+ * pooling the two into one series.
+ */
+export type StorageBuildEngine = "storage" | "in_warehouse";
+/** Why a source was refused materialization into a storage destination. */
+export type EligibilityRefusalReason =
+   | "free_parameter"
+   | "given"
+   | "authorize"
+   | "not_duckdb_portable"
+   | "public_surface_unknown";
+/**
+ * How a chained `storage=` source (one that reads a storage-materialized
+ * upstream) was built: `parent_reuse` = built by reading the upstream's stored
+ * lake table ("stack on the parent" — reuses the parent's work and is
+ * consistent-by-construction); `inline_fallback` = stacking was ineligible/failed
+ * so the upstream was recomputed from raw against the warehouse (non-strict);
+ * `strict_refused` = stacking was ineligible under `strictUpstreams`, so
+ * the build failed loudly rather than silently recomputing. This is the headline
+ * signal for how far the parent-reuse path gets us in practice.
+ */
+export type ChainedStorageBuildOutcome =
+   | "parent_reuse"
+   | "inline_fallback"
+   | "strict_refused";
 
 const resetHooks: (() => void)[] = [];
 
@@ -98,6 +127,39 @@ const scheduledFireCounter = lazyCounter(
    "publisher_materialization_scheduled_fires_total",
    "Standalone-scheduler attempts to fire a package's materialization.schedule. " +
       "Label: outcome ('fired'|'conflict'|'error').",
+);
+const storageServeRoutingCounter = lazyCounter(
+   "publisher_storage_serve_routing_total",
+   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback').",
+);
+const storageBuildFailureCounter = lazyCounter(
+   "publisher_storage_build_failures_total",
+   "storage= build failures (federation/passthrough/attach/CTAS), distinct from " +
+      "in-warehouse build failures. Label: destination (connection name).",
+);
+const eligibilityRefusedCounter = lazyCounter(
+   "publisher_materialization_eligibility_refused_total",
+   "storage= materialization-eligibility refusals. Label: reason " +
+      "('free_parameter'|'given'|'authorize'|'not_duckdb_portable'|" +
+      "'public_surface_unknown').",
+);
+const serveShapeTierDropCounter = lazyCounter(
+   "publisher_storage_serve_shape_tier_drop_total",
+   "storage serve-shape compile escalations: a refinement tier failed to " +
+      "compile and the riskiest category was dropped. Label: tier (the failed " +
+      "tier index, 0=full).",
+);
+const serveShapeTypeFallbackCounter = lazyCounter(
+   "publisher_storage_serve_shape_type_fallback_total",
+   "Captured DuckDB column types mapped to json in the serve shape (type " +
+      "fidelity loss). Label: kind ('array'|'unrecognized').",
+);
+const chainedStorageBuildCounter = lazyCounter(
+   "publisher_storage_chained_build_total",
+   "Chained storage= source builds (a source reading a storage-materialized " +
+      "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
+      "'strict_refused'). The parent_reuse share is the headline signal for how " +
+      "far the stack-on-the-parent path gets us vs recompute-from-raw.",
 );
 
 /**
@@ -180,14 +242,93 @@ export function recordManifestBindDegraded(): void {
    manifestBindDegradedCounter().add(1);
 }
 
-/** Record the wall-clock duration of building one persist source's table. */
-export function recordSourceBuildDuration(durationMs: number): void {
-   sourceBuildDuration().record(durationMs);
+/**
+ * Record the wall-clock duration of building one persist source's table,
+ * labeled by engine so the DuckDB passthrough path and the in-warehouse CTAS
+ * path (very different latency profiles) don't pool into one series.
+ */
+export function recordSourceBuildDuration(
+   durationMs: number,
+   engine: StorageBuildEngine,
+): void {
+   sourceBuildDuration().record(durationMs, { engine });
 }
 
 /** Record a best-effort physical-table drop on materialization delete. */
-export function recordDropTables(outcome: "success" | "failure"): void {
-   dropTablesCounter().add(1, { outcome });
+export function recordDropTables(
+   outcome: "success" | "failure",
+   engine: StorageBuildEngine,
+): void {
+   dropTablesCounter().add(1, { outcome, engine });
+}
+
+/**
+ * Record a `storage=` build failure (federation / passthrough / attach / CTAS),
+ * counted separately from in-warehouse build failures because the storage path
+ * has its own failure modes and destination axis.
+ */
+export function recordStorageBuildFailure(destination: string): void {
+   storageBuildFailureCounter().add(1, { destination });
+}
+
+/**
+ * Record a materialization-eligibility refusal (a source that can't be safely
+ * materialized into a storage destination). The `given` reason is a security
+ * refusal (a frozen given-filtered table would leak rows across tenants); worth
+ * tracking how often authors attempt it.
+ */
+export function recordEligibilityRefused(
+   reason: EligibilityRefusalReason,
+): void {
+   eligibilityRefusedCounter().add(1, { reason });
+}
+
+/**
+ * Record a serve-shape compile escalation: the refinement tier at `failedTier`
+ * did not compile, so the riskiest category was dropped and the shape retried.
+ * A systematically-dropping source tells authors which refinements aren't
+ * servable from storage.
+ */
+export function recordServeShapeTierDrop(failedTier: number): void {
+   serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
+}
+
+/**
+ * Record a captured DuckDB column type that could not map onto a Malloy basic
+ * type and was carried as json in the serve shape — a type-fidelity loss
+ * specific to the storage tier. `array` = a collection/array type; `unrecognized`
+ * = an unknown/nested/struct/enum/blob type.
+ */
+export function recordServeShapeTypeFallback(
+   kind: "array" | "unrecognized",
+): void {
+   serveShapeTypeFallbackCounter().add(1, { kind });
+}
+
+/**
+ * Record a `storage=` serve-routing decision: `storage` = the query was served
+ * from the materialized table via the virtual-source transform; `live_fallback`
+ * = the transform was ineligible for this query (a refinement it can't
+ * reproduce, an unbound source, mode not `on`) so it was served live. This hit
+ * rate is the headline KPI of the storage tier — otherwise the fallback side is
+ * only a DEBUG log.
+ */
+export function recordStorageServeRouting(
+   outcome: "storage" | "live_fallback",
+): void {
+   storageServeRoutingCounter().add(1, { outcome });
+}
+
+/**
+ * Record how a chained `storage=` source was built (see
+ * {@link ChainedStorageBuildOutcome}). Only fired for a source that actually
+ * reads a storage-materialized upstream — a single-source build emits nothing
+ * here. The parent_reuse : inline_fallback ratio is the spike's key learning.
+ */
+export function recordChainedStorageBuild(
+   outcome: ChainedStorageBuildOutcome,
+): void {
+   chainedStorageBuildCounter().add(1, { outcome });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

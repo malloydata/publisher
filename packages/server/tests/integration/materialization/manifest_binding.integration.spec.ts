@@ -192,6 +192,37 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       return file;
    }
 
+   /**
+    * Write a manifest carrying a `storage=` (cross-connection) entry — one that
+    * names a `storageConnectionName` and carries a captured `schema`. Such an
+    * entry serves through the virtual-source transform, so it must bind as a
+    * serve BINDING, never as a same-connection tableName substitution.
+    */
+   async function writeStorageManifest(
+      sourceEntityId: string,
+   ): Promise<string> {
+      const file = path.join(tmpDir, `storage-manifest-${Date.now()}.json`);
+      await fsp.writeFile(
+         file,
+         JSON.stringify({
+            builtAt: new Date().toISOString(),
+            strict: false,
+            entries: {
+               [sourceEntityId]: {
+                  sourceEntityId,
+                  sourceName: "order_summary",
+                  physicalTableName: "order_summary",
+                  connectionName: "duckdb",
+                  storageConnectionName: "lake",
+                  schema: [{ name: "c", type: "BIGINT" }],
+               },
+            },
+         }),
+         "utf8",
+      );
+      return file;
+   }
+
    async function writeManifest(): Promise<string> {
       const file = path.join(tmpDir, `manifest-${Date.now()}.json`);
       await fsp.writeFile(
@@ -301,6 +332,79 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          await getPackage(true);
       },
       { timeout: 120_000 },
+   );
+
+   it(
+      "binds a storage= entry as a cross-connection serve binding, not a tableName substitution",
+      async () => {
+         await getPackage(true); // start from live (unbound)
+         const sourceEntityId = await orderSummarySourceEntityId();
+         const manifestFile = await writeStorageManifest(sourceEntityId);
+
+         const patchRes = await patchPackage({
+            manifestLocation: manifestFile,
+         });
+         expect(patchRes.status).toBe(200);
+         const patched = (await patchRes.json()) as Record<string, unknown>;
+
+         // The storage entry never enters the same-connection tableName manifest,
+         // so there is nothing to substitute (and no recompile happened).
+         expect(patched.manifestEntryCount).toBe(0);
+         // It surfaces instead as a cross-connection storage serve binding.
+         expect(patched.storageServeBindings).toEqual([
+            {
+               sourceName: "order_summary",
+               storageConnectionName: "lake",
+               tablePath: "lake.order_summary",
+            },
+         ]);
+         // The bound URI is recorded even though no tableName manifest bound.
+         expect(patched.boundManifestUri).toBe(manifestFile);
+
+         // Clearing reverts: the storage serve binding is dropped.
+         const clearRes = await patchPackage({ manifestLocation: null });
+         expect(clearRes.status).toBe(200);
+         const cleared = (await clearRes.json()) as Record<string, unknown>;
+         expect(cleared.storageServeBindings ?? null).toBeNull();
+         await getPackage(true);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a rebind to a manifest whose storage entries vanished clears the old bindings",
+      async () => {
+         // Regression (MED-2): bindManifest must drop storage serve bindings when
+         // a NEW manifest (still a real URI, not a clear) no longer carries them —
+         // otherwise stale bindings keep routing at a table the host no longer
+         // vouches for.
+         await getPackage(true);
+         const sourceEntityId = await orderSummarySourceEntityId();
+         const withStorage = await writeStorageManifest(sourceEntityId);
+         const bound = (await (
+            await patchPackage({ manifestLocation: withStorage })
+         ).json()) as Record<string, unknown>;
+         expect(
+            (bound.storageServeBindings as unknown[] | undefined)?.length,
+         ).toBe(1);
+
+         // Rebind to a DIFFERENT manifest URI that carries no storage entries.
+         const noStorage = path.join(tmpDir, `no-storage-${Date.now()}.json`);
+         await fsp.writeFile(
+            noStorage,
+            JSON.stringify({ builtAt: new Date().toISOString(), entries: {} }),
+            "utf8",
+         );
+         const rebound = (await (
+            await patchPackage({ manifestLocation: noStorage })
+         ).json()) as Record<string, unknown>;
+         // Stale storage binding must be gone, not left routing.
+         expect(rebound.storageServeBindings ?? null).toBeNull();
+
+         await patchPackage({ manifestLocation: null });
+         await getPackage(true);
+      },
+      { timeout: 60_000 },
    );
 
    it("degrades to serving live when the manifest is unreachable", async () => {
