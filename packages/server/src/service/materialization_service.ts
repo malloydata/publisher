@@ -1528,6 +1528,21 @@ export class MaterializationService {
                sourceConnection,
                destinationConnection,
             );
+            // Only a SHAPE failure justifies recomputing from raw: the downstream
+            // could not be expressed over its rebound parents, so building it the
+            // other way is a genuinely different attempt. An INFRA failure (the
+            // read-write attach, the CTAS, the destination being down) is not —
+            // recompute-from-raw writes to the SAME destination and fails the same
+            // way, and metering it as `inline_fallback` files an outage in the same
+            // bucket as a legitimate shape miss.
+            if (!(err instanceof MaterializationEligibilityError)) {
+               recordChainedStorageBuild("infra_failure");
+               recordStorageBuildFailure(destinationName);
+               throw new Error(
+                  `Failed to materialize chained source '${persistSource.name}' ` +
+                     `into storage destination '${destinationName}': ${safeDetail}`,
+               );
+            }
             if (manifest.strict) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
@@ -1707,15 +1722,17 @@ export class MaterializationService {
          builtEntries,
       ).filter((b) => b.connectionName === destinationName);
       if (upstreams.length === 0) {
-         throw new Error(
-            "no materialized upstream is available in this destination to build on",
-         );
+         throw new MaterializationEligibilityError({
+            message:
+               "no materialized upstream is available in this destination to build on",
+         });
       }
       const downstreamDefText = this.liftDownstreamDefText(persistSource);
       if (!downstreamDefText) {
-         throw new Error(
-            "could not recover the downstream source definition text from the model",
-         );
+         throw new MaterializationEligibilityError({
+            message:
+               "could not recover the downstream source definition text from the model",
+         });
       }
       const transientModel = buildChainedStorageBuildModel({
          upstreams,

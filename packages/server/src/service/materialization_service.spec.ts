@@ -3,6 +3,7 @@ import { Manifest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
+   MaterializationEligibilityError,
    BadRequestError,
    EnvironmentNotFoundError,
    InvalidStateTransitionError,
@@ -151,7 +152,14 @@ describe("redactConnectionSecrets", () => {
             true, // dependsOnStorageUpstream — take the chained path
          );
 
-         await expect(call).rejects.toThrow(/strict upstreams forbid/);
+         // A failed ATTACH is infrastructure, not a shape limit: it must NOT
+         // present as the strict-upstreams refusal (that message means "we could
+         // have recomputed from raw but you forbade it", which is not what
+         // happened here).
+         await expect(call).rejects.toThrow(
+            /Failed to materialize chained source/i,
+         );
+         await expect(call).rejects.not.toThrow(/strict upstreams forbid/i);
          const message = await call.then(
             () => "",
             (e: unknown) => (e instanceof Error ? e.message : String(e)),
@@ -1690,7 +1698,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
 
    function callInto(opts: {
       strict: boolean;
-      stackOnParent: "ok" | "throw";
+      stackOnParent: "ok" | "throw" | "infra";
    }): Promise<{
       physicalTableName: string;
       storageConnectionName?: string;
@@ -1741,7 +1749,17 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                     { name: "monthly_total", type: "DOUBLE" },
                  ],
               })
-            : sinon.stub().rejects(new Error("uncarried parent"));
+            : opts.stackOnParent === "infra"
+              ? // An outage, not a modelling limit: a plain Error, as a failed
+                // ATTACH or CTAS would throw.
+                sinon.stub().rejects(new Error("IO Error: destination is down"))
+              : // A shape limit: the downstream cannot be expressed over its
+                // rebound parents.
+                sinon.stub().rejects(
+                   new MaterializationEligibilityError({
+                      message: "uncarried parent",
+                   }),
+                );
       return svc.buildOneSourceIntoStorage(
          source,
          instruction,
@@ -1771,6 +1789,27 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       await expect(
          callInto({ strict: true, stackOnParent: "throw" }),
       ).rejects.toThrow(/strict upstreams forbid/i);
+   });
+
+   it("non-strict + an INFRA failure fails rather than recomputing from raw", async () => {
+      // Recompute-from-raw writes to the same destination, so retrying an outage
+      // there just fails again — and metering it as a fallback files the outage
+      // under the same label as a legitimate shape miss. Only a shape failure is
+      // a reason to try the other path.
+      await expect(
+         callInto({ strict: false, stackOnParent: "infra" }),
+      ).rejects.toThrow(/Failed to materialize chained source/i);
+   });
+
+   it("non-strict + a SHAPE failure falls through to recompute-from-raw", async () => {
+      // Only the parent-reuse seam is stubbed, so the recompute runs for real and
+      // fails for its own reason (no destination file). That is the proof it was
+      // reached: the two paths report differently — the chained path says
+      // "chained source", the single-source recompute says "source". A shape
+      // failure must reach the second; an infra failure must not.
+      await expect(
+         callInto({ strict: false, stackOnParent: "throw" }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
    });
 });
 

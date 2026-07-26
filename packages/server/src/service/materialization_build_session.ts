@@ -9,8 +9,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
-import { BadRequestError } from "../errors";
+import { BadRequestError, MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
 import {
@@ -385,9 +386,23 @@ export async function buildDownstreamIntoStorage(params: {
             destinationName,
          ),
       });
-      const model = await runtime
-         .loadModel(new URL(url), { importBaseURL: new URL(root) })
-         .getModel();
+      // Compiling the transient model is the only SHAPE step in this function:
+      // a failure means the downstream cannot be expressed over its rebound
+      // parents, which is a legitimate reason to fall back and recompute from
+      // raw. Everything around it — the attach, the CTAS, the DESCRIBE — is
+      // infrastructure, where falling back would just fail the same way against
+      // the same destination. Marking the shape failures lets the caller tell
+      // them apart.
+      let model;
+      try {
+         model = await runtime
+            .loadModel(new URL(url), { importBaseURL: new URL(root) })
+            .getModel();
+      } catch (err) {
+         throw new MaterializationEligibilityError({
+            message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+         });
+      }
       const plan = model.getBuildPlan();
       let downstream: PersistSource | undefined;
       for (const ps of Object.values(plan.sources)) {
@@ -400,11 +415,12 @@ export async function buildDownstreamIntoStorage(params: {
          // The downstream didn't survive as a persist source — its definition
          // references something the rebind model doesn't provide (a parent
          // refinement not carried, a live leaf). The caller falls back.
-         throw new Error(
-            `Chained build model did not yield a persist source named ` +
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained build model did not yield a persist source named ` +
                `'${downstreamName}' (the downstream references something the ` +
                `rebound parents don't provide).`,
-         );
+         });
       }
       // The downstream's materialization SQL, over the rebound parents — DuckDB
       // dialect, reading the attached lake tables via the virtualMap. Project to

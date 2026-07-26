@@ -47,7 +47,12 @@ export type EligibilityRefusalReason =
 export type ChainedStorageBuildOutcome =
    | "parent_reuse"
    | "inline_fallback"
-   | "strict_refused";
+   | "strict_refused"
+   // The parent-reuse attempt failed on infrastructure (attach, CTAS, the
+   // destination being unreachable) rather than on shape. Distinct from
+   // `inline_fallback` because it is an outage, not a modelling limit: the build
+   // fails rather than recomputing from raw against the same destination.
+   | "infra_failure";
 
 const resetHooks: (() => void)[] = [];
 
