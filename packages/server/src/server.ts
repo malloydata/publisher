@@ -38,6 +38,7 @@ import {
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
+   getPersistCollisionEnforce,
    getPersistStorageMode,
 } from "./config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
@@ -170,6 +171,10 @@ parseArgs();
 // package-metadata call (storageWarnings), on every deployment regardless of
 // whether the tier is used. Reading it once here surfaces a typo at startup.
 getPersistStorageMode();
+// Same for PERSIST_COLLISION_ENFORCE, whose only other caller is the publish
+// path — so a typo would otherwise surface as a failed publish request rather
+// than a failed boot.
+getPersistCollisionEnforce();
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
