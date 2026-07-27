@@ -500,7 +500,7 @@ and `daily_fresh` returns current rows — the same stale-vs-fresh check used in
 Use it when a reader must not serve stale rows. The cost is the point of the
 feature: an opted-out source recomputes its upstream in the warehouse on every
 query, so it gives up the savings the materialization exists for. If freshness is
-the concern for *every* reader, a `freshness` policy on the persisted source
+the concern for _every_ reader, a `freshness` policy on the persisted source
 itself is usually the better tool — it bounds staleness without giving up the
 stored table.
 
@@ -679,14 +679,21 @@ Everything you need is on the package status and the logs:
 - Server logs → `info` when a query serves from storage; `debug` when a query
   falls back to live.
 - Metrics (OpenTelemetry, under the `publisher` meter):
-  - `publisher_storage_serve_routing_total{outcome=storage|live_fallback}` — the
-    serve hit rate; the headline signal for "is the tier actually serving?"
-  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused}`
+  - `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback}`
+    — the serve hit rate; the headline signal for "is the tier actually serving?"
+    `runtime_live_fallback` is the one to watch: the query **routed** and then the
+    store failed under it, so the caller still got a correct answer from the
+    warehouse while the tier is broken. The hit rate alone will not show that.
+  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused|infra_failure}`
     — for a chained source, whether it built by reading its parent's stored table
-    (`parent_reuse`) or fell back to recompute-from-raw.
-  - `malloy_model_query_duration` tags storage-served queries with
-    `served_from=storage` (the attribute is absent otherwise, so an `off`
-    deployment's histogram is unchanged), isolating storage-served latency.
+    (`parent_reuse`) or fell back to recompute-from-raw. `infra_failure` is a
+    destination that was unreachable, kept distinct from the shape limits so a
+    store outage is not read as an un-carriable query.
+  - `malloy_model_query_duration` tags a routed query with
+    `served_from=storage`, or `served_from=live_fallback` when a run-time store
+    failure degraded it to live (so a fallback never counts as a storage hit).
+    The attribute is absent for a query that never routed, so an `off`
+    deployment's histogram is unchanged.
 
 `PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a
