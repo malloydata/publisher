@@ -38,7 +38,10 @@ export interface EmbeddableEntity {
    name: string;
    source: string | undefined;
    modelPath: string;
-   doc: string;
+   // #(doc)-only text (see get_context_tool docOnlyText). Deliberately NOT
+   // the response `doc`, which can fall back to raw annotation lines and
+   // would leak #(authorize) predicates to the embedding provider.
+   embedDoc: string;
 }
 
 export interface SemanticHit {
@@ -85,7 +88,7 @@ export function humanizeName(name: string): string {
  */
 export function embeddingText(entity: EmbeddableEntity): string {
    const name = humanizeName(entity.name) || entity.name;
-   return entity.doc ? `${name}: ${entity.doc}` : name;
+   return entity.embedDoc ? `${name}: ${entity.embedDoc}` : name;
 }
 
 function contentHash(text: string): string {
@@ -97,7 +100,16 @@ function sourceColumn(source: string | undefined): string {
    return source ?? "";
 }
 
-function entityRowKey(kind: string, source: string, name: string): string {
+/**
+ * The stable key for one entity: `kind|source|name`. Shared by the index
+ * dedup, the WeakMap-free row identity, and the tool's result mapping so
+ * the format lives in exactly one place. Pass "" for a sourceless entity.
+ */
+export function entityRowKey(
+   kind: string,
+   source: string,
+   name: string,
+): string {
    return `${kind}|${source}|${name}`;
 }
 
@@ -108,9 +120,16 @@ function entityRowKey(kind: string, source: string, name: string): string {
 // cannot tear rows; a `generation` counter bumped by every purge, so a
 // purge invalidates the memo of EVERY Package instance, not just the
 // caller's (a reloaded instance's `done` memo must not survive a purge
-// over a now-empty table); and `lastPurgeAtMs`, which bounds how often the
+// over a now-empty table); `lastPurgeAtMs`, which bounds how often the
 // heal may purge (a backend serving inconsistent dimensionalities
-// otherwise causes an unbounded purge / full-re-embed loop).
+// otherwise causes an unbounded purge / full-re-embed loop); and
+// `failureAtMs`, the per-package provider cool-down. The cool-down is
+// scoped per package, NOT global: a query timeout or dims-mismatch on
+// one package must not force every other healthy, correctly-cached
+// package to lexical for the window. If the endpoint is genuinely down,
+// each package cools itself on its own first failed probe (one wasted
+// probe per package per window, negligible at the entity counts a single
+// Publisher serves).
 //
 // Per package INSTANCE (`syncState`, WeakMap): memoizes "this instance is
 // synced" (reload swaps the instance, so entity-set staleness clears
@@ -122,6 +141,7 @@ interface PackageSyncMeta {
    mutex: Mutex;
    generation: number;
    lastPurgeAtMs: number;
+   failureAtMs: number;
 }
 interface SyncState {
    done: boolean;
@@ -136,7 +156,6 @@ const syncMeta = new Map<string, PackageSyncMeta>();
 // a generation some live memo recorded under the old meta, which would
 // let that memo be trusted over a table the deletion just emptied.
 let generationCounter = 0;
-let providerFailureAtMs = 0;
 const oversizeWarned = new Set<string>();
 
 function metaKey(environmentName: string, packageName: string): string {
@@ -154,35 +173,45 @@ function metaFor(
          mutex: new Mutex(),
          generation: ++generationCounter,
          lastPurgeAtMs: 0,
+         failureAtMs: 0,
       };
       syncMeta.set(key, meta);
    }
    return meta;
 }
 
-function markProviderFailure(): void {
-   providerFailureAtMs = Date.now();
+function markProviderFailure(meta: PackageSyncMeta): void {
+   meta.failureAtMs = Date.now();
 }
 
-function inCooldown(): boolean {
-   return Date.now() - providerFailureAtMs < PROVIDER_FAILURE_COOLDOWN_MS;
+function inCooldown(meta: PackageSyncMeta): boolean {
+   return Date.now() - meta.failureAtMs < PROVIDER_FAILURE_COOLDOWN_MS;
 }
 
 /** Test seam: forget cool-down, purge, and oversize-warning state. */
 export function _resetEmbeddingIndexStateForTests(): void {
-   providerFailureAtMs = 0;
    oversizeWarned.clear();
    syncMeta.clear();
 }
 
-/** Test seam: clear only the provider cool-down, keeping sync metas. */
+/** Test seam: clear the per-package cool-downs, keeping sync metas. */
 export function _clearProviderCooldownForTests(): void {
-   providerFailureAtMs = 0;
+   for (const meta of syncMeta.values()) {
+      meta.failureAtMs = 0;
+   }
 }
 
 /** Test seam: observe syncMeta growth (the churn-leak pin). */
 export function _syncMetaSizeForTests(): number {
    return syncMeta.size;
+}
+
+/** Test seam: read a package's lastPurgeAtMs (the heal-terminal pin). */
+export function _lastPurgeAtMsForTests(
+   environmentName: string,
+   packageName: string,
+): number | undefined {
+   return syncMeta.get(metaKey(environmentName, packageName))?.lastPurgeAtMs;
 }
 
 interface ExistingRow {
@@ -470,10 +499,6 @@ export async function trySemanticSearch(args: {
       sourceName,
    } = args;
 
-   if (inCooldown()) {
-      return { unavailable: "cooldown" };
-   }
-
    if (entities.length > MAX_EMBEDDED_ENTITIES) {
       const key = `${environmentName}\x00${packageName}`;
       if (!oversizeWarned.has(key)) {
@@ -493,6 +518,12 @@ export async function trySemanticSearch(args: {
 
    const providerKey = `${provider.model}\x00${provider.dimensions ?? ""}`;
    const meta = metaFor(environmentName, packageName);
+   // Per-package cool-down: a recent provider failure for THIS package
+   // (sync, query embed, or a dims-mismatch backoff) keeps it lexical for
+   // the window without touching any other package.
+   if (inCooldown(meta)) {
+      return { unavailable: "cooldown" };
+   }
    // Captured at entry: if a concurrent heal purges rows while this call
    // is searching, the generation moves and this call must not assert
    // anything about the (now-changed) table; see the re-check below.
@@ -532,7 +563,7 @@ export async function trySemanticSearch(args: {
             if (syncState.get(pkg) === tracked) {
                syncState.delete(pkg);
             }
-            markProviderFailure();
+            markProviderFailure(meta);
             logger.warn(
                "[MCP Tool getContext] Embedding sync failed; semantic ranking cooling down",
                {
@@ -557,7 +588,7 @@ export async function trySemanticSearch(args: {
          EMBEDDING_QUERY_TIMEOUT_MS,
       );
    } catch (error) {
-      markProviderFailure();
+      markProviderFailure(meta);
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
          "[MCP Tool getContext] Query embedding failed; falling back to lexical ranking",
@@ -655,7 +686,14 @@ export async function trySemanticSearch(args: {
                // indefinitely, so treat it as provider instability.
                const now = Date.now();
                if (now - meta.lastPurgeAtMs < PROVIDER_FAILURE_COOLDOWN_MS) {
-                  markProviderFailure();
+                  // Advance lastPurgeAtMs so continuous mismatches stay in
+                  // backoff indefinitely rather than clearing the guard
+                  // every window and re-purging: for a durably-inconsistent
+                  // provider this is the terminal state (one purge, then
+                  // lexical), NOT a throttled re-embed loop. A genuine gap
+                  // of >1 window lets it re-heal once, which is intended.
+                  meta.lastPurgeAtMs = now;
+                  markProviderFailure(meta);
                   logger.warn(
                      "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
                      {

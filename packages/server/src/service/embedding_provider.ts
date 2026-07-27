@@ -152,6 +152,12 @@ export class EmbeddingProvider {
          if (
             !Array.isArray(item?.embedding) ||
             item.embedding.length === 0 ||
+            // Numeric contents, not just shape: a provider returning
+            // [1, null, "x"] would otherwise be stored and misbehave
+            // silently (NaN scores) at search time.
+            !item.embedding.every(
+               (n: unknown) => typeof n === "number" && Number.isFinite(n),
+            ) ||
             idx < 0 ||
             idx >= inputs.length ||
             vectors[idx] !== undefined

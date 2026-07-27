@@ -10,7 +10,7 @@ import {
 } from "../../service/embedding_provider";
 import { buildMalloyUri } from "../handler_utils";
 import { logger } from "../../logger";
-import { trySemanticSearch } from "./embedding_index";
+import { entityRowKey, trySemanticSearch } from "./embedding_index";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -24,7 +24,11 @@ interface Entity {
    name: string;
    source: string | undefined;
    modelPath: string;
+   // Human-facing doc for the response (may fall back to raw annotations).
    doc: string;
+   // #(doc)-only text used as embedding input; never carries predicate
+   // annotations (#(authorize) etc.) that must not leave the machine.
+   embedDoc: string;
 }
 
 /** One tier-4 result. `score` (cosine) rides only on semantic results. */
@@ -80,16 +84,38 @@ type GetContextParams = z.infer<z.ZodObject<typeof getContextShape>>;
  * SourceInfo sources/fields carry Annotation objects ({ value }); named queries
  * carry raw strings, so accept both.
  */
-export function docText(
+/**
+ * Extract ONLY `#(doc)` annotation text, empty when there is none. This is
+ * the safe input for embedding: unlike docText it never falls back to the
+ * raw annotation lines, so predicate-bearing annotations (`#(authorize)`
+ * row-level-security rules, tenant lists, `#(malloy)` internals) are never
+ * sent to an external embedding provider.
+ */
+export function docOnlyText(
    annotations?: Array<string | { value: string }>,
 ): string {
    if (!annotations || annotations.length === 0) return "";
-   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
-   const docs = lines
+   const docs = annotations
+      .map((a) => (typeof a === "string" ? a : a.value))
       .map((a) => a.match(/#\(doc\)\s*(.*)/)?.[1]?.trim() ?? "")
       .filter(Boolean);
-   const chosen = docs.length > 0 ? docs : lines;
-   return chosen.join(" ").replace(/\s+/g, " ").trim();
+   return docs.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Human-facing doc text for the response `doc` field. Prefers `#(doc)`
+ * text and falls back to the raw annotation lines when there is none.
+ * Pre-existing lexical behaviour; NOT used as embedding input (see
+ * docOnlyText and Entity.embedDoc).
+ */
+export function docText(
+   annotations?: Array<string | { value: string }>,
+): string {
+   const doc = docOnlyText(annotations);
+   if (doc) return doc;
+   if (!annotations || annotations.length === 0) return "";
+   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
+   return lines.join(" ").replace(/\s+/g, " ").trim();
 }
 
 export function sanitize(query: string): string {
@@ -127,6 +153,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
             source: sourceName,
             modelPath,
             doc: docText(sourceInfo.annotations),
+            embedDoc: docOnlyText(sourceInfo.annotations),
          });
          for (const field of sourceInfo.schema.fields ?? []) {
             // v1 indexes the queryable surface: views and dimension/measure
@@ -145,6 +172,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
                source: sourceName,
                modelPath,
                doc: docText(field.annotations),
+               embedDoc: docOnlyText(field.annotations),
             });
          }
       }
@@ -158,6 +186,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
             source: query.sourceName,
             modelPath,
             doc: docText(query.annotations),
+            embedDoc: docOnlyText(query.annotations),
          });
       }
    }
@@ -167,7 +196,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
    // first occurrence per (kind, source, name).
    const seen = new Set<string>();
    return entities.filter((e) => {
-      const key = `${e.kind}|${e.source ?? ""}|${e.name}`;
+      const key = entityRowKey(e.kind, e.source ?? "", e.name);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -471,7 +500,7 @@ export function registerGetContextTool(
                   if ("hits" in semantic) {
                      const byKey = new Map(
                         Array.from(byId.values()).map((e) => [
-                           `${e.kind}|${e.source ?? ""}|${e.name}`,
+                           entityRowKey(e.kind, e.source ?? "", e.name),
                            e,
                         ]),
                      );
@@ -480,7 +509,7 @@ export function registerGetContextTool(
                      // entity (deleted since the last sync) is dropped.
                      semanticResults = semantic.hits.flatMap((hit) => {
                         const e = byKey.get(
-                           `${hit.kind}|${hit.source ?? ""}|${hit.name}`,
+                           entityRowKey(hit.kind, hit.source ?? "", hit.name),
                         );
                         if (!e) return [];
                         return [

@@ -227,6 +227,25 @@ describe("EmbeddingProvider", () => {
          "malformed",
       );
    });
+
+   it("rejects a vector with non-finite or non-numeric contents", async () => {
+      const provider = new EmbeddingProvider(
+         CONFIG,
+         stubFetch(
+            [],
+            () =>
+               new Response(
+                  JSON.stringify({
+                     data: [{ index: 0, embedding: [1, null, "x"] }],
+                  }),
+                  { status: 200 },
+               ),
+         ),
+      );
+      await expect(provider.embedBatch(["a"], 1000)).rejects.toThrow(
+         "malformed",
+      );
+   });
 });
 
 describe("getEmbeddingProvider / embeddingConfigured", () => {

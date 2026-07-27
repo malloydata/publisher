@@ -18,6 +18,7 @@ import {
    MIN_SIMILARITY,
    SemanticSearchResult,
    _clearProviderCooldownForTests,
+   _lastPurgeAtMsForTests,
    _resetEmbeddingIndexStateForTests,
    _syncMetaSizeForTests,
    deleteEnvironmentEmbeddings,
@@ -97,9 +98,9 @@ function mapProvider(
 function entity(
    name: string,
    source: string | undefined,
-   doc = "",
+   embedDoc = "",
 ): EmbeddableEntity {
-   return { kind: "measure", name, source, modelPath: "m.malloy", doc };
+   return { kind: "measure", name, source, modelPath: "m.malloy", embedDoc };
 }
 
 /** Poll through the cold-start "indexing" response until the sync lands. */
@@ -1015,6 +1016,109 @@ describe("trySemanticSearch", () => {
          "SELECT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
       );
       expect(rows.map((r) => r.dims)).toEqual([4]);
+   });
+
+   it("a backoff advances lastPurgeAtMs so continuous mismatches never re-purge", async () => {
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      await searchReady({
+         ...base,
+         provider: narrow.provider,
+         pkg: {} as unknown as Package,
+      });
+
+      // First 3 -> 4 dims flip: the one allowed purge sets lastPurgeAtMs.
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const healed = await searchReady({
+         ...base,
+         provider: wide.provider,
+         pkg: {} as unknown as Package,
+      });
+      if (!("hits" in healed)) throw new Error("expected hits");
+      const afterPurge = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
+      expect(afterPurge).toBeGreaterThan(0);
+
+      // Guarantee the wall clock advances so "advanced" is unambiguous.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      // Second flip back to 3 dims within the window: must backoff, and
+      // the fix advances lastPurgeAtMs past the purge time. Without it,
+      // lastPurgeAtMs would stay at afterPurge and a mismatch after the
+      // window would re-purge + full-re-embed forever.
+      const pkgC = {} as unknown as Package;
+      let result = await trySemanticSearch({
+         ...base,
+         provider: narrow.provider,
+         pkg: pkgC,
+      });
+      for (
+         let i = 0;
+         i < 200 &&
+         "unavailable" in result &&
+         result.unavailable === "indexing";
+         i++
+      ) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         result = await trySemanticSearch({
+            ...base,
+            provider: narrow.provider,
+            pkg: pkgC,
+         });
+      }
+      expect(result).toEqual({ unavailable: "cooldown" });
+      const afterBackoff = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
+      expect(afterBackoff).toBeGreaterThan(afterPurge);
+   });
+
+   it("a provider failure cools down only its own package, not healthy siblings", async () => {
+      // pkg-a's provider fails on every call; pkg-b (same env) is healthy.
+      const failing = mapProvider(
+         { ...ENTITY_VECTORS, ...QUERY_VECTORS },
+         { fail: () => true },
+      );
+      const argsA = {
+         db,
+         provider: failing.provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "pkg-a",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      let a = await trySemanticSearch(argsA);
+      expect(a).toEqual({ unavailable: "indexing" });
+      for (let i = 0; i < 200 && !isCooldown(a); i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         a = await trySemanticSearch(argsA);
+      }
+      expect(a).toEqual({ unavailable: "cooldown" });
+
+      // pkg-b, healthy, same env: a per-package cool-down leaves it able
+      // to reach semantic. A global cool-down (the old bug) would make
+      // this return cooldown and never produce hits.
+      const healthy = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const b = await searchReady({
+         db,
+         provider: healthy.provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "pkg-b",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      });
+      expect("hits" in b).toBe(true);
    });
 
    it("cools down after a provider failure instead of erroring every call", async () => {

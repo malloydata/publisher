@@ -10,7 +10,13 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { docText, sanitize, registerGetContextTool } from "./get_context_tool";
+import {
+   docOnlyText,
+   docText,
+   sanitize,
+   registerGetContextTool,
+} from "./get_context_tool";
+import { embeddingText } from "./embedding_index";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
@@ -58,6 +64,56 @@ describe("get_context docText", () => {
    it("returns an empty string for missing or empty annotations", () => {
       expect(docText()).toBe("");
       expect(docText([])).toBe("");
+   });
+});
+
+describe("get_context docOnlyText (embedding-input safety)", () => {
+   it("extracts #(doc) text like docText", () => {
+      expect(docOnlyText(["#(doc) Total revenue."])).toBe("Total revenue.");
+      expect(docOnlyText([{ value: "#(doc) Customer state." }])).toBe(
+         "Customer state.",
+      );
+   });
+
+   it("does NOT fall back to raw lines: no #(doc) yields empty", () => {
+      // The security-critical difference from docText: predicate-bearing
+      // annotations must never become embedding input.
+      expect(docOnlyText(["# bar_chart"])).toBe("");
+      expect(
+         docOnlyText([
+            "#(authorize) \"$ROLE = 'admin'\"",
+            "#(malloy) drillable",
+         ]),
+      ).toBe("");
+   });
+
+   it("keeps only the #(doc) line when mixed with predicate annotations", () => {
+      expect(
+         docOnlyText([
+            "#(authorize) \"$TENANT = 'acme'\"",
+            "#(doc) Secured orders.",
+         ]),
+      ).toBe("Secured orders.");
+   });
+
+   it("an #(authorize)-only entity produces no embedding text beyond its name", () => {
+      // End-to-end: what embeddingText actually sends for a governed,
+      // undocumented entity is the humanized name only, never the predicate.
+      const embedDoc = docOnlyText([
+         "#(authorize) \"$ROLE = 'admin'\"",
+         "#(authorize) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
+      ]);
+      const text = embeddingText({
+         kind: "source",
+         name: "orders_secured",
+         source: "orders_secured",
+         modelPath: "m.malloy",
+         embedDoc,
+      });
+      expect(text).toBe("orders secured");
+      expect(text).not.toContain("authorize");
+      expect(text).not.toContain("ROLE");
+      expect(text).not.toContain("acme");
    });
 });
 
@@ -437,5 +493,40 @@ describe("get_context semantic retrieval", () => {
       expect(
          payload.results.some((r: { name: string }) => r.name === "state"),
       ).toBe(true);
+   });
+
+   it("degrades to lexical (never throws) when the real config is malformed", async () => {
+      // Exercises the tool-path catch with REAL env parsing, not the
+      // _setEmbeddingProviderForTests override: a malformed base makes
+      // getEmbeddingProvider() throw, and tier 4 must swallow it and
+      // answer marked lexical (embeddingConfigured() is still true).
+      const saved = {
+         key: process.env.EMBEDDING_API_KEY,
+         base: process.env.EMBEDDING_API_BASE,
+      };
+      process.env.EMBEDDING_API_KEY = "k";
+      process.env.EMBEDDING_API_BASE = "not a url";
+      _clearEmbeddingProviderForTests();
+      try {
+         const handler = captureHandler(semanticStore());
+         const payload = parse(
+            await handler({
+               environmentName: "specs",
+               packageName: "malformed-cfg-pkg",
+               query: "state",
+            }),
+         );
+         expect(payload.retrieval).toBe("lexical");
+         expect(
+            payload.results.some((r: { name: string }) => r.name === "state"),
+         ).toBe(true);
+      } finally {
+         if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
+         else process.env.EMBEDDING_API_KEY = saved.key;
+         if (saved.base === undefined) delete process.env.EMBEDDING_API_BASE;
+         else process.env.EMBEDDING_API_BASE = saved.base;
+         _clearEmbeddingProviderForTests();
+         _setEmbeddingProviderForTests(null);
+      }
    });
 });
