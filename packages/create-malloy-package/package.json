@@ -50,7 +50,7 @@
    },
    "devDependencies": {
       "@eslint/js": "^8.57.0",
-      "@malloydata/malloy": "^0.0.422",
+      "@malloydata/malloy": "^0.0.426",
       "@modelcontextprotocol/sdk": "^1.13.2",
       "@types/bun": "^1.2.21",
       "@types/node": "^24.10.0",
