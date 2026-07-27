@@ -14,7 +14,7 @@ and the harness is built for it: the whole suite is ~50s, self-contained apart f
 Docker, order-independent, and exits nonzero on failure.
 
 The step vocabulary lives in **[GRAMMAR.md](GRAMMAR.md)**. This file is about
-what a scenario is *for*.
+what a scenario is _for_.
 
 ---
 
@@ -24,11 +24,12 @@ Testing a data-intensive product is its own kind of hard, and it fails in a
 recognisable way.
 
 An integration test needs a running system, so it opens with pages of setup. Then
-it needs data, and there are two bad options. **Shared seed data**: a golden
-fixture every test reads, which never quite has what the next test needs — so you
-add a row, and three other tests change their answers. **Per-test data**: pages of
-loader code and inline structs, slow to run, and it *still* collides with whatever
-else touches the same tables.
+it needs data, and both of the usual answers cost something. **A shared seed
+fixture**: loaded once, which is efficient — but if tests can _change_ it, it
+never quite has what the next one needs, so you add a row and three other tests
+change their answers. **Per-test data**: nothing to collide over, but pages of
+loader code and inline structs, and it still collides anyway if everything shares
+the same tables.
 
 So people copy. You find the closest working test, paste it, change a few values,
 and move on — because writing one from scratch means re-deriving all that setup.
@@ -39,25 +40,37 @@ behaviour it was defending.
 
 Slow, hard to read, occasionally flaky. It grows to some size and plateaus,
 because navigating it costs more than the confidence it returns. And eventually:
-*let's delete the integration tests and start over — the new ones will be better.*
+_let's delete the integration tests and start over — the new ones will be better._
 
 This is that new one. So the fair question is why it won't plateau the same way.
 
-**The data lives in the scenario, and so does the assertion.** A few rows as a
-markdown table, immediately above the query that reads them and the rows expected
-back. No loader, no fixture file, nothing shared to break.
+**The data lives in the scenario, and so does the assertion.** Most rules need
+only a handful of rows, and then they belong as a markdown table immediately above
+the query that reads them and the rows expected back — no loader, no separate
+fixture file to keep in sync.
 
 **Nothing is shared, structurally.** Every scenario gets its own source database,
 its own DuckLake catalog, its own environment, and a publisher started from a
-config naming only its own packages. The shared-fixture death spiral — where
-adding a row for one test breaks three others — cannot start, because there is no
-shared fixture to add a row to. That is what most of the harness's complexity buys,
-and it is the actual reason the suite can keep growing.
+config naming only its own packages. What that rules out is specifically the
+_mutable_ shared fixture, where adding a row for one test changes three other
+answers — there is nothing shared to add a row to. That is what most of the
+harness's complexity buys, and it is the reason the suite can keep growing.
+
+Isolation is not free, and bytes are bytes: this suite got sluggish fast enough to
+need real work on parallelism and startup cost, and that pressure only grows. A
+**sealed** dataset is the escape valve — a historical snapshot nobody edits, of
+the kind already used in demos and other user-facing places. It has none of the
+failure mode above, because the thing that rots a shared fixture is _mutation_,
+not sharing. When a scenario needs data bigger or more realistic than a table of
+rows, reaching for one of those is the right move. The line to hold is narrower
+than "share nothing": a scenario must never mutate data another scenario reads.
+Loading the same immutable snapshot twice is a cost question, not a correctness
+one — and cost questions have ordinary engineering answers.
 
 **It is deliberately not code.** Code pulls attention toward the shape of the test
 — the helpers, the builders, the mocks — and away from the behaviour being
 described. Prose plus a table has nowhere to hide: if a scenario is hard to read,
-it is because the *rule* is unclear, which is worth knowing. It also means a
+it is because the _rule_ is unclear, which is worth knowing. It also means a
 refactor underneath usually changes nothing here; at most a small part of the
 engine moves.
 
@@ -68,8 +81,8 @@ runnable specs instead of inferring it from implementation.
 
 None of this is new. It is the FitNesse / BDD / executable-specification argument,
 and the debt is happily acknowledged. What is specific here is the isolation
-model: those approaches usually still sit on shared fixtures, and that is the part
-that historically rots.
+model: those approaches usually still sit on a fixture every test can write to,
+and that is the part that historically rots.
 
 ## What a scenario is
 
@@ -82,12 +95,12 @@ tell what the system guarantees.
 The distinction that matters is **rule vs. observation**, and it is not the same
 as positive vs. negative. Plenty of good scenarios have negative outcomes:
 
-- `givens-refused` — a given-referencing source is refused. That refusal *is* the
+- `givens-refused` — a given-referencing source is refused. That refusal _is_ the
   contract.
 - `security-user-sql-cannot-mutate-lake` — the boundary is the promise.
 - `off-serves-live` — the kill switch's guarantee.
 
-Those read as spec because each says *this is the rule*. A scenario drifts wrong
+Those read as spec because each says _this is the rule_. A scenario drifts wrong
 when its title and prose describe **what currently happens** instead:
 
 > ~~A host-supplied serve binding is not re-checked for eligibility~~
@@ -106,7 +119,7 @@ The runner treats that as a first-class status, not a convention:
 
 - it reports **KRED** rather than FAIL, and **does not fail the run** — so a suite
   carrying known debt can still be green, which is what makes it usable as a gate;
-- a known-red that **passes** reports **FIXED** and *does* fail the run. The rule
+- a known-red that **passes** reports **FIXED** and _does_ fail the run. The rule
   now holds and the tag has become a lie — which is exactly how a fix lands
   without anyone remembering to retire the scenario;
 - they get their own report block with ages, taken from `## Note (since=…)`, and
@@ -115,7 +128,7 @@ The runner treats that as a first-class status, not a convention:
   "what have we been red on for a month?" is one flag away. An undated known-red
   always shows — it cannot be proven fresh.
 
-What a scenario must never do is assert the *broken* behaviour as if it were the
+What a scenario must never do is assert the _broken_ behaviour as if it were the
 contract. That rots in a specific and nasty way — someone fixes the bug, the
 scenario goes red, and the next person "fixes the test" by re-pinning the bug.
 The guard silently becomes its own opposite.
@@ -128,15 +141,15 @@ deliberately no `bug-report` tag, because it would license the rotting kind.
 - **Topic** — `serve-correctness`, `security`, `eligibility`, `lifecycle`, … What
   area this is about. Free-form; used by `--tags` and for grouping the report.
 - **Status** — how to read a result:
-  - `known-red` — asserts a rule not yet met. Expected to fail; reported KRED and
-    excluded from the exit code, but FIXED (and failing) if it starts passing.
-  - `needs-attention` — passes, but carries an open question. Surfaced in the
-    report's **⚠ needs attention** block along with the `## Note`.
+   - `known-red` — asserts a rule not yet met. Expected to fail; reported KRED and
+     excluded from the exit code, but FIXED (and failing) if it starts passing.
+   - `needs-attention` — passes, but carries an open question. Surfaced in the
+     report's **⚠ needs attention** block along with the `## Note`.
 
 Date a callout as `## Note (since=YYYY-MM-DD)` so `--attention-older-than DAYS`
 can surface follow-ups that have gone stale.
 
-## When *not* to write a scenario
+## When _not_ to write a scenario
 
 When the **mechanism** is the point rather than the **promise**. A scenario is
 the wrong shape for "this function handles an empty array" — that is a unit test,
@@ -145,7 +158,7 @@ and it will be clearer, faster, and easier to run there.
 The useful signal is the hook. `## Hook` exists for what markdown genuinely
 cannot express, and reaching for one means **one of two things**:
 
-1. **The grammar is missing a step** — the flow *is* user-visible and should be
+1. **The grammar is missing a step** — the flow _is_ user-visible and should be
    expressible. Add the step; the scenario gets shorter and every future scenario
    benefits.
 2. **The scenario is reaching below the API** — it wants an internal, which is
@@ -157,8 +170,8 @@ be a real consumer's (a host authors manifests), so it became a step and the hoo
 disappeared. Of ~65 scenarios, two keep a hook; that ratio is the health metric,
 not any individual hook.
 
-The reason to hold this line: a scenario's value is that it is *separate from the
-code*. Steps in, outcome out, and when it fails you can see why without reading
+The reason to hold this line: a scenario's value is that it is _separate from the
+code_. Steps in, outcome out, and when it fails you can see why without reading
 the implementation. The same reason a wireframe beats a prototype for settling
 what a screen means — get too close to the real thing and the essence disappears
 into the mechanics. A scenario that starts specifying internals has stopped being
