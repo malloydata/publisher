@@ -15,6 +15,7 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError } from "../errors";
+import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { Environment, PackageStatus } from "./environment";
 import {
    CloneProgressReporter,
@@ -36,11 +37,31 @@ type MockData = Record<string, unknown>;
 // so a test can assign it before constructing the store.
 let mockDbEnvironments: unknown[] = [];
 
+// Recorder for the embeddings-cleanup wiring tests: every SQL statement
+// the store's cleanup path issues lands here. When `blocks` is true the
+// statements never resolve, which pins that the delete APIs do not await
+// the cleanup (it can queue for minutes behind a bulk embed).
+const embeddingCleanupRuns: Array<{ sql: string; params: unknown[] }> = [];
+let embeddingCleanupBlocks = false;
+
 mock.module("../storage/StorageManager", () => {
    return {
       StorageManager: class MockStorageManager {
          async initialize(_reInit?: boolean): Promise<void> {
             return;
+         }
+
+         getDuckDbConnection() {
+            return {
+               run: (sql: string, params?: unknown[]) => {
+                  embeddingCleanupRuns.push({ sql, params: params ?? [] });
+                  return embeddingCleanupBlocks
+                     ? new Promise<void>(() => {})
+                     : Promise.resolve();
+               },
+               all: async () => [],
+               get: async () => null,
+            };
          }
 
          getRepository() {
