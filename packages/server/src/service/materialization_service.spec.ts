@@ -30,6 +30,7 @@ import {
    redactConnectionSecrets,
    stagingSuffix,
 } from "./materialization_service";
+import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import {
    startMetricsHarness,
@@ -2130,5 +2131,124 @@ describe("transition (state machine)", () => {
             status: "MANIFEST_ROWS_READY",
          }),
       ).toBe(true);
+   });
+});
+
+// The only path here that issues a DROP against a customer's warehouse, so its
+// guards get assertions rather than a trace. Scenario 64 covers it end to end,
+// but hammer does not run in CI — and the failure mode is silent data loss, not
+// a broken build.
+describe("reclaimStorageTablesFromFailedRun", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   let infoLog: sinon.SinonStub;
+   let warnLog: sinon.SinonStub;
+
+   beforeEach(() => {
+      ctx = createMocks();
+      infoLog = ctx.sandbox.stub(logger, "info");
+      warnLog = ctx.sandbox.stub(logger, "warn");
+   });
+   afterEach(() => ctx.sandbox.restore());
+
+   const entry = (table: string) =>
+      ({
+         sourceEntityId: `eid-${table}`,
+         sourceName: "daily",
+         physicalTableName: table,
+         storageConnectionName: "lake",
+      }) as unknown as Parameters<
+         MaterializationService["reclaimStorageTablesFromFailedRun"]
+      >[0][number];
+
+   /** A destination whose drop would fail loudly if one were ever attempted. */
+   const environment = {
+      getApiConnection: () => ({ name: "lake", type: "duckdb" }),
+      getEnvironmentPath: () => "/test",
+   } as unknown as Parameters<
+      MaterializationService["reclaimStorageTablesFromFailedRun"]
+   >[1];
+
+   const reclaim = (
+      built: ReturnType<typeof entry>[],
+      others: unknown[],
+   ): Promise<void> => {
+      (ctx.repository.listMaterializations as sinon.SinonStub).resolves(others);
+      return (
+         ctx.service as unknown as {
+            reclaimStorageTablesFromFailedRun: (
+               b: unknown,
+               e: unknown,
+               o: unknown,
+            ) => Promise<void>;
+         }
+      ).reclaimStorageTablesFromFailedRun(built, environment, {
+         environmentId: "env-1",
+         packageName: "pkg",
+      });
+   };
+
+   const said = (stub: sinon.SinonStub, needle: RegExp) =>
+      stub.getCalls().some((c) => needle.test(String(c.args[0])));
+
+   it("never drops a table a live manifest still serves", async () => {
+      // The carried-forward case: a previous successful run's manifest names the
+      // same destination + table. Dropping it would delete a table that is being
+      // served right now.
+      await reclaim(
+         [entry("daily_v1")],
+         [
+            {
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  entries: {
+                     other: {
+                        storageConnectionName: "lake",
+                        physicalTableName: "daily_v1",
+                     },
+                  },
+               },
+            },
+         ],
+      );
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(true);
+      expect(said(infoLog, /Reclaimed a table/)).toBe(false);
+      expect(said(warnLog, /Failed to reclaim/)).toBe(false);
+   });
+
+   it("does attempt the drop when nothing references the table", async () => {
+      // The inverse, so the test above is known to be the still-referenced check
+      // doing the work rather than the reclaim being inert. No real destination
+      // exists here, so the attempt surfaces as the drop-failure warning.
+      await reclaim([entry("daily_v2")], []);
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(false);
+      expect(
+         said(warnLog, /Failed to reclaim/) ||
+            said(infoLog, /Reclaimed a table/),
+      ).toBe(true);
+   });
+
+   it("ignores a superseded run's entries when deciding", async () => {
+      // Only MANIFEST_FILE_READY runs count as live. A superseded run naming the
+      // same table must not pin it forever.
+      await reclaim(
+         [entry("daily_v3")],
+         [
+            {
+               status: "SUPERSEDED",
+               manifest: {
+                  entries: {
+                     old: {
+                        storageConnectionName: "lake",
+                        physicalTableName: "daily_v3",
+                     },
+                  },
+               },
+            },
+         ],
+      );
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(false);
    });
 });
