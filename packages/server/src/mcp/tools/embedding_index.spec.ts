@@ -20,6 +20,7 @@ import {
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
    _resetEmbeddingIndexStateForTests,
+   _setTimingForTests,
    _syncMetaSizeForTests,
    deleteEnvironmentEmbeddings,
    deletePackageEmbeddings,
@@ -1018,7 +1019,80 @@ describe("trySemanticSearch", () => {
       expect(rows.map((r) => r.dims)).toEqual([4]);
    });
 
-   it("a backoff advances lastPurgeAtMs so continuous mismatches never re-purge", async () => {
+   it("does not re-purge once per cooldown window: suppression outlasts the cooldown", async () => {
+      // The core of blocker 4. cooldown 15ms, suppression 400ms: after
+      // the cooldown clears (but well inside the suppression window) a
+      // fresh mismatch must BACK OFF, not re-purge. With the co-anchored
+      // bug (equal windows) the first post-cooldown call re-purges and
+      // full-re-embeds; this test fails against that.
+      _setTimingForTests({ cooldownMs: 15, purgeSuppressionMs: 400 });
+      const base = {
+         db,
+         environmentName: "env",
+         packageName: "pkg",
+         entities: [entity("alpha", "src")],
+         query: "find alpha",
+         limit: 10,
+      };
+      // Sync at 3 dims, then flip to 4: one purge + resync leaves 4-dim rows.
+      const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      await searchReady({
+         ...base,
+         provider: narrow.provider,
+         pkg: {} as unknown as Package,
+      });
+      const wide = mapProvider({
+         alpha: [1, 0, 0, 0],
+         "find alpha": [1, 0, 0, 0],
+      });
+      const healed = await searchReady({
+         ...base,
+         provider: wide.provider,
+         pkg: {} as unknown as Package,
+      });
+      if (!("hits" in healed)) throw new Error("expected hits");
+      const purgeAt = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
+      expect(purgeAt).toBeGreaterThan(0);
+
+      // Query back at 3 dims (rows are 4-dim, so stale) across several
+      // cooldown-expiry cycles, all inside the 400ms suppression window.
+      const pkgQ = {} as unknown as Package;
+      for (let cycle = 0; cycle < 4; cycle++) {
+         let r = await trySemanticSearch({
+            ...base,
+            provider: narrow.provider,
+            pkg: pkgQ,
+         });
+         for (
+            let j = 0;
+            j < 200 && "unavailable" in r && r.unavailable === "indexing";
+            j++
+         ) {
+            await new Promise((resolve) => setTimeout(resolve, 3));
+            r = await trySemanticSearch({
+               ...base,
+               provider: narrow.provider,
+               pkg: pkgQ,
+            });
+         }
+         expect(r).toEqual({ unavailable: "cooldown" });
+         await new Promise((resolve) => setTimeout(resolve, 20)); // clear the 15ms cooldown
+      }
+
+      // Never re-purged: lastPurgeAtMs unchanged and the 4-dim rows survive
+      // (the 3-dim vector was only ever the query, never re-embedded).
+      expect(_lastPurgeAtMsForTests("env", "pkg")).toBe(purgeAt);
+      const dims = await db.all<{ dims: number }>(
+         "SELECT DISTINCT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
+      );
+      expect(dims.map((d) => d.dims)).toEqual([4]);
+   });
+
+   it("re-heals once the suppression window elapses (self-recovery)", async () => {
+      // Same setup but a short suppression window: after it elapses a
+      // mismatch re-purges and re-adopts the current dims, so a provider
+      // that stabilizes on a new dimensionality is not stranded lexical.
+      _setTimingForTests({ cooldownMs: 10, purgeSuppressionMs: 60 });
       const base = {
          db,
          environmentName: "env",
@@ -1033,8 +1107,6 @@ describe("trySemanticSearch", () => {
          provider: narrow.provider,
          pkg: {} as unknown as Package,
       });
-
-      // First 3 -> 4 dims flip: the one allowed purge sets lastPurgeAtMs.
       const wide = mapProvider({
          alpha: [1, 0, 0, 0],
          "find alpha": [1, 0, 0, 0],
@@ -1045,39 +1117,26 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
       });
       if (!("hits" in healed)) throw new Error("expected hits");
-      const afterPurge = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
-      expect(afterPurge).toBeGreaterThan(0);
+      const purgeAt = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
 
-      // Guarantee the wall clock advances so "advanced" is unambiguous.
-      await new Promise((resolve) => setTimeout(resolve, 5));
-
-      // Second flip back to 3 dims within the window: must backoff, and
-      // the fix advances lastPurgeAtMs past the purge time. Without it,
-      // lastPurgeAtMs would stay at afterPurge and a mismatch after the
-      // window would re-purge + full-re-embed forever.
-      const pkgC = {} as unknown as Package;
-      let result = await trySemanticSearch({
+      // Wait past the 60ms suppression window, then the provider is now
+      // stably 3-dim: the next mismatch re-purges and re-adopts 3 dims.
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      const recovered = await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: pkgC,
+         pkg: {} as unknown as Package,
       });
-      for (
-         let i = 0;
-         i < 200 &&
-         "unavailable" in result &&
-         result.unavailable === "indexing";
-         i++
-      ) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-         result = await trySemanticSearch({
-            ...base,
-            provider: narrow.provider,
-            pkg: pkgC,
-         });
-      }
-      expect(result).toEqual({ unavailable: "cooldown" });
-      const afterBackoff = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
-      expect(afterBackoff).toBeGreaterThan(afterPurge);
+      if (!("hits" in recovered))
+         throw new Error("expected hits after re-heal");
+      expect(recovered.hits.map((h) => h.name)).toEqual(["alpha"]);
+      expect(_lastPurgeAtMsForTests("env", "pkg") ?? 0).toBeGreaterThan(
+         purgeAt,
+      );
+      const dims = await db.all<{ dims: number }>(
+         "SELECT DISTINCT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
+      );
+      expect(dims.map((d) => d.dims)).toEqual([3]);
    });
 
    it("a provider failure cools down only its own package, not healthy siblings", async () => {

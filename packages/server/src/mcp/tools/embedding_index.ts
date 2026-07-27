@@ -31,6 +31,21 @@ export const MAX_EMBEDDED_ENTITIES = 5_000;
  * per window, not one per call.
  */
 export const PROVIDER_FAILURE_COOLDOWN_MS = 60_000;
+/**
+ * After a dims-mismatch purge, suppress further purges for this long. It
+ * MUST exceed PROVIDER_FAILURE_COOLDOWN_MS. A dims-mismatch backoff arms
+ * the cooldown, which then blocks every heal-reaching call for one
+ * cooldown window; if the two windows were equal, the first call past the
+ * cooldown would always find the purge guard expired too and re-purge,
+ * re-embedding the whole package once per cooldown window forever. With a
+ * longer window a durably dims-inconsistent provider (e.g. mid-migration
+ * replicas serving different dims under one model name) is throttled to
+ * at most one re-embed per this interval, staying lexical between, while
+ * still re-adopting a genuinely-new stable dimensionality within the
+ * window. Deliberately not "never re-purge": that would strand the cache
+ * on the old dims if the provider later settles on a new one.
+ */
+export const HEAL_PURGE_SUPPRESSION_MS = 10 * PROVIDER_FAILURE_COOLDOWN_MS;
 
 /** The subset of the tool's Entity shape the index needs. */
 export interface EmbeddableEntity {
@@ -158,6 +173,13 @@ const syncMeta = new Map<string, PackageSyncMeta>();
 let generationCounter = 0;
 const oversizeWarned = new Set<string>();
 
+// Effective timing windows. Mutable only so tests can drive real expiry
+// deterministically with small sleeps (the cooldown-vs-suppression
+// relationship is real-time and not otherwise unit-observable); production
+// always uses the exported constants.
+let cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
+let purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
+
 function metaKey(environmentName: string, packageName: string): string {
    return `${environmentName}\x00${packageName}`;
 }
@@ -185,13 +207,25 @@ function markProviderFailure(meta: PackageSyncMeta): void {
 }
 
 function inCooldown(meta: PackageSyncMeta): boolean {
-   return Date.now() - meta.failureAtMs < PROVIDER_FAILURE_COOLDOWN_MS;
+   return Date.now() - meta.failureAtMs < cooldownMs;
 }
 
-/** Test seam: forget cool-down, purge, and oversize-warning state. */
+/** Test seam: forget cool-down, purge, timing, and oversize state. */
 export function _resetEmbeddingIndexStateForTests(): void {
    oversizeWarned.clear();
    syncMeta.clear();
+   cooldownMs = PROVIDER_FAILURE_COOLDOWN_MS;
+   purgeSuppressionMs = HEAL_PURGE_SUPPRESSION_MS;
+}
+
+/** Test seam: shrink the timing windows to drive real expiry in tests. */
+export function _setTimingForTests(t: {
+   cooldownMs?: number;
+   purgeSuppressionMs?: number;
+}): void {
+   if (t.cooldownMs !== undefined) cooldownMs = t.cooldownMs;
+   if (t.purgeSuppressionMs !== undefined)
+      purgeSuppressionMs = t.purgeSuppressionMs;
 }
 
 /** Test seam: clear the per-package cool-downs, keeping sync metas. */
@@ -679,20 +713,19 @@ export async function trySemanticSearch(args: {
                   ],
                );
                if ((again?.n ?? 0) === 0) return "none";
-               // Backoff: at most one purge per cool-down window. A
-               // second mismatch inside the window means the endpoint is
-               // serving inconsistent dimensionalities (e.g. mid-upgrade
-               // replicas); purging again would loop full re-embeds
-               // indefinitely, so treat it as provider instability.
+               // Backoff: at most one purge per suppression window. Within
+               // it, a fresh mismatch means the endpoint is serving
+               // inconsistent dimensionalities; re-purging would re-embed
+               // the whole package, so cool down and stay lexical instead.
+               // lastPurgeAtMs is NOT advanced here: the window is measured
+               // from the last real PURGE, and because the suppression
+               // window is longer than the cooldown (see
+               // HEAL_PURGE_SUPPRESSION_MS), a call arriving after the
+               // cooldown clears still lands inside the suppression window
+               // and backs off, so a durably-inconsistent provider does
+               // NOT re-purge once per cooldown window.
                const now = Date.now();
-               if (now - meta.lastPurgeAtMs < PROVIDER_FAILURE_COOLDOWN_MS) {
-                  // Advance lastPurgeAtMs so continuous mismatches stay in
-                  // backoff indefinitely rather than clearing the guard
-                  // every window and re-purging: for a durably-inconsistent
-                  // provider this is the terminal state (one purge, then
-                  // lexical), NOT a throttled re-embed loop. A genuine gap
-                  // of >1 window lets it re-heal once, which is intended.
-                  meta.lastPurgeAtMs = now;
+               if (now - meta.lastPurgeAtMs < purgeSuppressionMs) {
                   markProviderFailure(meta);
                   logger.warn(
                      "[MCP Tool getContext] Repeated embedding dimensionality mismatch; the endpoint looks inconsistent, cooling down",
