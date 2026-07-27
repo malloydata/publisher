@@ -291,13 +291,10 @@ export async function buildSourceIntoStorage(params: {
          buildSQL,
       );
 
-      await session.runSQL(
-         `CREATE OR REPLACE TABLE ${target} AS (${passthrough})`,
-      );
       // Capture the authoritative schema from the freshly-built table — the
       // serve transform declares exactly this, and the compiler does not
       // type-check a virtual source's declared columns.
-      const schema = await describeTable(session, target);
+      const schema = await createTableAndDescribe(session, target, passthrough);
 
       return { storageConnectionName: destinationName, schema };
    } finally {
@@ -437,8 +434,7 @@ export async function buildDownstreamIntoStorage(params: {
          `${destinationName}.${physicalTableName}`,
          "duckdb",
       );
-      await session.runSQL(`CREATE OR REPLACE TABLE ${target} AS (${sql})`);
-      const schema = await describeTable(session, target);
+      const schema = await createTableAndDescribe(session, target, sql);
 
       return { storageConnectionName: destinationName, schema };
    } finally {
@@ -624,6 +620,49 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
  * mapping DuckDB's `column_name`/`column_type` rows to the wire {@link Column}
  * shape the manifest carries. This is the schema the serve transform declares.
  */
+/**
+ * CTAS the table, then read back its authoritative schema — dropping the table
+ * again if that read-back fails.
+ *
+ * The window this closes: the CTAS has committed by the time DESCRIBE runs, and
+ * the caller records nothing until this function RETURNS. So a DESCRIBE failure
+ * propagates past a committed table that no manifest entry names and that
+ * `builtThisRun` never saw — leaving it unreachable by the failed-run reclaim
+ * and by manifest-driven GC alike, which only drop names they recorded building.
+ * Same class the post-build serve-shape gate already closes with its own
+ * targeted drop (see materialization_service), and closed the same way.
+ *
+ * Best-effort: a failed drop is logged, never raised, and never replaces the
+ * DESCRIBE error that is the actual failure. The drop runs on the session that
+ * created the table, whose read-write attach is still open.
+ */
+export async function createTableAndDescribe(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+   selectSQL: string,
+): Promise<WireColumn[]> {
+   await session.runSQL(
+      `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
+   );
+   try {
+      return await describeTable(session, quotedTablePath);
+   } catch (describeErr) {
+      try {
+         await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
+      } catch (dropErr) {
+         logger.warn(
+            "Failed to drop a storage table stranded by a schema read-back " +
+               "failure (physical leak)",
+            {
+               table: quotedTablePath,
+               error: errMessage(dropErr),
+            },
+         );
+      }
+      throw describeErr;
+   }
+}
+
 async function describeTable(
    session: DuckDBConnection,
    quotedTablePath: string,

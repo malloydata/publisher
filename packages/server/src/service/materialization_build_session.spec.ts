@@ -10,6 +10,7 @@ import {
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    createIsolatedBuildSession,
+   createTableAndDescribe,
    dropStorageTable,
    dropStorageTableSql,
    passthroughSourceType,
@@ -365,3 +366,70 @@ describe.skipIf(process.platform === "win32")(
       });
    },
 );
+
+describe("createTableAndDescribe (schema read-back window)", () => {
+   /** A session that CTASs fine and fails the read-back, recording every stmt. */
+   const sessionThatFailsDescribe = (opts: { dropFails?: boolean } = {}) => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql);
+            if (/^DESCRIBE/i.test(sql.trim())) throw new Error("describe boom");
+            if (/^DROP TABLE/i.test(sql.trim()) && opts.dropFails) {
+               throw new Error("drop boom");
+            }
+            return { rows: [] };
+         },
+      } as unknown as DuckDBConnection;
+      return { session, issued };
+   };
+
+   it("drops the just-created table when the schema read-back fails", async () => {
+      // The CTAS has committed by now and the caller records nothing until this
+      // returns — so without the drop the table is reachable by neither the
+      // failed-run reclaim nor manifest GC, which only drop names they recorded.
+      const { session, issued } = sessionThatFailsDescribe();
+
+      await expect(
+         createTableAndDescribe(session, `"lake"."t"`, "SELECT 1"),
+      ).rejects.toThrow(/describe boom/);
+
+      expect(issued.some((s) => /^CREATE OR REPLACE TABLE/i.test(s))).toBe(
+         true,
+      );
+      expect(
+         issued.some((s) => /^DROP TABLE IF EXISTS "lake"\."t"/i.test(s)),
+      ).toBe(true);
+   });
+
+   it("surfaces the read-back failure, not a failure of the cleanup drop", async () => {
+      // The DESCRIBE error is the diagnosis; a drop that also fails must not
+      // replace it (the leak is then logged and still surfaced by the warning).
+      const { session } = sessionThatFailsDescribe({ dropFails: true });
+
+      await expect(
+         createTableAndDescribe(session, `"lake"."t"`, "SELECT 1"),
+      ).rejects.toThrow(/describe boom/);
+   });
+
+   it("issues no drop on the happy path", async () => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql);
+            return {
+               rows: [{ column_name: "a", column_type: "VARCHAR" }],
+            };
+         },
+      } as unknown as DuckDBConnection;
+
+      const schema = await createTableAndDescribe(
+         session,
+         `"lake"."t"`,
+         "SELECT 1",
+      );
+
+      expect(schema).toEqual([{ name: "a", type: "VARCHAR" }]);
+      expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
+   });
+});
