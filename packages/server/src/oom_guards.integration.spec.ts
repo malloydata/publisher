@@ -256,6 +256,9 @@ describe("OOM guardrails: end-to-end chain", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
          data: JSON.stringify({ rows, totalRows: rows.length }),
+         // Raw SQL against a connection is `ops` class, tagged with the
+         // environment it ran in (see service/query_metadata.ts).
+         appliedQueryMetadata: { class: "ops", environment: "e" },
       });
    });
 });

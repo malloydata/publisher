@@ -98,9 +98,28 @@ import {
 } from "./model_limits";
 import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
 import {
+   mergeQueryMetadata,
+   type QueryClass,
+   type QueryMetadata,
+} from "./query_metadata";
+import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "./source_extraction";
+
+/**
+ * What a request boundary contributes to a model query's per-query metadata: the
+ * caller's own properties and class, the environment the query runs in, and a
+ * reader for the executing connection's default (the controller owns the
+ * environment, so it supplies the lookup rather than the model reaching for it).
+ */
+export interface ModelQueryMetadataInput {
+   request?: QueryMetadata;
+   queryClass?: QueryClass;
+   environment?: string;
+   version?: string;
+   connectionDefault?: (connectionName: string) => QueryMetadata | null;
+}
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -2056,6 +2075,12 @@ export class Model {
       // background callers (materialization, tests) that own their
       // own deadline.
       abortSignal?: AbortSignal,
+      /**
+       * Per-query metadata inputs from the request boundary (see
+       * {@link ModelQueryMetadataInput}). Omitted by callers with no request layer
+       * (notebook cells, MCP, tests), which still get the server context.
+       */
+      queryMetadataInput?: ModelQueryMetadataInput,
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
@@ -2065,6 +2090,8 @@ export class Model {
       rowLimit: number;
       /** Which of those two the cap came from. */
       rowLimitSource: QueryRowLimitSource;
+      /** The metadata attached to this query's statements; null when none was. */
+      appliedQueryMetadata: QueryMetadata | null;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
@@ -2327,6 +2354,7 @@ export class Model {
       let rowLimitSource: QueryRowLimitSource = "server_default";
       let executionTime = 0;
       let queryResults;
+      let appliedQueryMetadata: QueryMetadata | null = null;
       // Givens supplied only so a joined source's authorize gate could see
       // them (checked above, against the full unfiltered set) must not reach
       // the real query if this model doesn't itself surface them — see
@@ -2339,18 +2367,24 @@ export class Model {
       // shape can read them; the authorize gate above already saw the full set.
       const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
-         const preparedLimit = (
-            await runnable.getPreparedResult({
-               givens: effectiveGivens,
-               buildManifest: effectiveBuildManifest,
-               virtualMap: serveVirtualMap,
-            })
-         ).resultExplore.limit;
+         // The prepared result is also where the executing connection's name
+         // comes from, which is what makes the connection's default metadata
+         // layer resolvable BEFORE the statement is issued.
+         const preparedResult = await runnable.getPreparedResult({
+            givens: effectiveGivens,
+            buildManifest: effectiveBuildManifest,
+            virtualMap: serveVirtualMap,
+         });
+         const preparedLimit = preparedResult.resultExplore.limit;
          rowLimitSource = queryRowLimitSource(preparedLimit);
          rowLimit = resolveModelQueryRowLimit(preparedLimit, {
             defaultLimit: getDefaultQueryRowLimit(),
             maxRows,
          });
+         appliedQueryMetadata = this.resolveQueryMetadata(
+            queryMetadataInput,
+            preparedResult.connectionName,
+         );
          executionTime = performance.now() - startTime;
 
          queryResults = await runnable.run({
@@ -2359,6 +2393,7 @@ export class Model {
             abortSignal,
             buildManifest: effectiveBuildManifest,
             virtualMap: serveVirtualMap,
+            queryMetadata: appliedQueryMetadata ?? undefined,
          });
       } catch (error) {
          // A binding that declares `freshnessFallback=live` is saying the tier is
@@ -2558,7 +2593,53 @@ export class Model {
          // default. Only the second means rows were probably left behind; a
          // deliberate `top: 10` returning 10 rows is a complete answer.
          rowLimitSource,
+         appliedQueryMetadata,
       };
+   }
+
+   /**
+    * The per-query metadata for one model query: the executing connection's
+    * default, the caller's request override, and the server's context (which
+    * package, which model, which class of work), merged most-specific-wins.
+    *
+    * There is no model-side layer here. `materialization.queryMetadata` describes
+    * how a persist source is BUILT; a live query against the model is a different
+    * unit of work, and inheriting a build's tags would attribute interactive
+    * traffic to the build that happens to share the source.
+    *
+    * Fails open, like every other metadata path: a connection whose config can't
+    * be read contributes no default rather than failing the query.
+    */
+   private resolveQueryMetadata(
+      input: ModelQueryMetadataInput | undefined,
+      connectionName: string | undefined,
+   ): QueryMetadata | null {
+      let connectionDefault: QueryMetadata | null = null;
+      if (connectionName && input?.connectionDefault) {
+         try {
+            connectionDefault = input.connectionDefault(connectionName);
+         } catch {
+            connectionDefault = null;
+         }
+      }
+      const resolved = mergeQueryMetadata({
+         connection: connectionDefault,
+         request: input?.request,
+         context: {
+            queryClass: input?.queryClass ?? "interactive",
+            environment: input?.environment,
+            package: this.packageName,
+            model: this.modelPath,
+            version: input?.version,
+         },
+      });
+      if (resolved.drops.length > 0) {
+         logger.warn("Dropped query-metadata properties for a query", {
+            modelPath: this.modelPath,
+            drops: resolved.drops,
+         });
+      }
+      return resolved.metadata ?? null;
    }
 
    private getStandardModel(): ApiCompiledModel {

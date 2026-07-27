@@ -27,6 +27,7 @@ type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
 type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
+type QueryMetadata = components["schemas"]["QueryMetadata"];
 
 /** The freshness `fallback` values the publisher recognizes; others are dropped. */
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
@@ -38,9 +39,15 @@ interface FreshnessLayer {
    fallback?: FreshnessFallback;
 }
 
-/** Minimal path-reader over a Malloy `Tag` (see `@malloydata/malloy-tag`). */
+/**
+ * Minimal reader over a Malloy `Tag` (see `@malloydata/malloy-tag`): scalar
+ * reads by path, plus the subtree read that a property collection like
+ * `queryMetadata { … }` needs.
+ */
 interface ReadableTag {
    text(...path: string[]): string | undefined;
+   tag(...path: string[]): ReadableTag | undefined;
+   entries?(): Iterable<[string, { text(): string | undefined }]>;
 }
 
 /**
@@ -238,6 +245,29 @@ function tagFreshnessLayer(tag: ReadableTag | undefined): FreshnessLayer {
    return layer;
 }
 
+/**
+ * The two homes a model-file (`##`) knob can be declared in, most specific
+ * first: the `materialization` envelope, then the bare form.
+ *
+ * The model-file level mirrors the manifest's shape verbatim — `##
+ * materialization.freshness.window="24h"` is the manifest's block in tag syntax
+ * — so that is where a file-level reader looks. The bare form
+ * (`## freshness.window="24h"`), which shipped first, stays readable underneath:
+ * the annotation rides the published package, so a package published before the
+ * envelope existed keeps resolving until it is republished. Resolution is
+ * per-property, so a file may declare one knob in each home without the envelope
+ * hiding the other.
+ */
+function modelTagLayers(
+   tag: ReadableTag | undefined,
+): (ReadableTag | undefined)[] {
+   const envelope =
+      tag && typeof tag.tag === "function"
+         ? tag.tag("materialization")
+         : undefined;
+   return [envelope, tag];
+}
+
 /** The package-level `materialization.freshness` as a resolution layer. */
 function packageFreshnessLayer(
    cfg: WirePackageMaterialization | null | undefined,
@@ -289,19 +319,85 @@ export function resolveFreshness(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): WireFreshness | null {
-   const sourceLayer = tagFreshnessLayer(safeSourceTag(source));
-   const modelLayer = tagFreshnessLayer(safeModelTag(source));
-   const pkgLayer = packageFreshnessLayer(packageMaterialization);
+   const layers: FreshnessLayer[] = [
+      // `#@ persist` declares knobs bare — the annotation IS a materialization
+      // declaration, so there is no envelope to look under.
+      tagFreshnessLayer(safeSourceTag(source)),
+      ...modelTagLayers(safeModelTag(source)).map(tagFreshnessLayer),
+      packageFreshnessLayer(packageMaterialization),
+   ];
 
-   const window = sourceLayer.window ?? modelLayer.window ?? pkgLayer.window;
-   const fallback =
-      sourceLayer.fallback ?? modelLayer.fallback ?? pkgLayer.fallback;
+   const window = layers.map((l) => l.window).find((v) => v !== undefined);
+   const fallback = layers.map((l) => l.fallback).find((v) => v !== undefined);
 
    if (window === undefined && fallback === undefined) return null;
    const freshness: WireFreshness = {};
    if (window !== undefined) freshness.window = window;
    if (fallback !== undefined) freshness.fallback = fallback;
    return freshness;
+}
+
+/**
+ * Read the `queryMetadata` property collection from one tag layer. A collection,
+ * not a scalar: `queryMetadata { team="finance" env="prod" }` and the equivalent
+ * dotted form `queryMetadata.team="finance"` both land here, and neither is
+ * captured by the scalar {@link deriveAnnotationFields} loop.
+ *
+ * Every string-valued property is kept verbatim, including ones that violate
+ * Malloy's bag contract — publish reports those as warnings and the runtime
+ * clamps them, so an author's typo is visible somewhere instead of vanishing
+ * between the annotation and the warehouse.
+ */
+function tagQueryMetadataLayer(tag: ReadableTag | undefined): QueryMetadata {
+   const subtree =
+      tag && typeof tag.tag === "function"
+         ? tag.tag("queryMetadata")
+         : undefined;
+   if (!subtree || typeof subtree.entries !== "function") return {};
+   const layer: QueryMetadata = {};
+   try {
+      for (const [name, value] of subtree.entries()) {
+         const text = value.text();
+         if (text !== undefined) layer[name] = text;
+      }
+   } catch {
+      // Degrade to {} — mirrors deriveAnnotationFields / deriveColumns.
+      return {};
+   }
+   return layer;
+}
+
+/**
+ * Resolve a source's EFFECTIVE per-query metadata, most-specific-wins PER
+ * PROPERTY: `#@ persist queryMetadata.*` > model-file
+ * `## materialization.queryMetadata.*` (bare `## queryMetadata.*` underneath) >
+ * package `materialization.queryMetadata`.
+ *
+ * Per-property rather than per-layer, exactly like {@link resolveFreshness}, so a
+ * package-wide `team` property survives a source that only overrides `workload`.
+ * Null when no layer declares anything, so absence on the wire always means
+ * "declared nowhere" rather than "declared empty".
+ *
+ * This is the value the publisher attaches (merged under its own context) to
+ * every statement it issues while building the source. It is deliberately absent
+ * from the source's content address: changing a tag must never re-address a
+ * table.
+ */
+export function resolveQueryMetadata(
+   source: PersistSource,
+   packageMaterialization: WirePackageMaterialization | null | undefined,
+): QueryMetadata | null {
+   // Least specific first, so a more specific layer overwrites property by
+   // property.
+   const layers: QueryMetadata[] = [
+      packageMaterialization?.queryMetadata ?? {},
+      ...modelTagLayers(safeModelTag(source))
+         .map(tagQueryMetadataLayer)
+         .reverse(),
+      tagQueryMetadataLayer(safeSourceTag(source)),
+   ];
+   const resolved: QueryMetadata = Object.assign({}, ...layers);
+   return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
 /** Flatten Malloy's nested BuildNode.dependsOn into a list of sourceIDs. */
@@ -612,6 +708,11 @@ export function deriveBuildPlan(
          sql: source.getSQL(),
          refresh: annotationFields.refresh ?? null,
          freshness: resolveFreshness(source, packageMaterialization),
+         // EFFECTIVE per-source query metadata, resolved per property across the
+         // same layer stack as freshness. A property collection rather than a
+         // scalar, so it comes from resolveQueryMetadata rather than the
+         // annotationFields map.
+         queryMetadata: resolveQueryMetadata(source, packageMaterialization),
          columns: deriveColumns(source),
          annotationFields,
          modelPath: sourceModelPaths?.[sourceID],

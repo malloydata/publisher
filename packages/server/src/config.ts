@@ -615,6 +615,32 @@ export const getPersistCollisionEnforce = (): boolean =>
    // prevent. A typo throws at startup, like every other flag here.
    parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
+/**
+ * Whether the publisher attaches per-query metadata at all, from
+ * `PUBLISHER_QUERY_METADATA` (default `on`).
+ *
+ * `off` is the escape hatch for a deployment that wants the statements it sends
+ * left exactly as Malloy compiles them: no server context, and no caller-supplied
+ * bag forwarded either. It matters because on a backend with no native tag
+ * facility the metadata rides as a leading SQL comment, so `on` does change the
+ * text of the statement (never its meaning or its results) — and on those
+ * backends the bag is visible in query logs and `pg_stat_activity`.
+ *
+ * Case-insensitive; loud-fails on an unrecognized value, like the sibling
+ * `PERSIST_STORAGE_MODE`, so a typo cannot silently disable attribution.
+ */
+export type QueryMetadataMode = "on" | "off";
+
+export const getQueryMetadataMode = (): QueryMetadataMode => {
+   const raw = process.env.PUBLISHER_QUERY_METADATA;
+   if (raw === undefined || raw.trim() === "") return "on";
+   const value = raw.trim().toLowerCase();
+   if (value === "on" || value === "off") return value;
+   throw new Error(
+      `PUBLISHER_QUERY_METADATA must be on | off (got ${JSON.stringify(raw)})`,
+   );
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

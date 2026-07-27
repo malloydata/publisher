@@ -50,6 +50,7 @@ import { errMessage, ignoreDotfiles } from "../utils";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
 import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
+import { materializationConfigWarnings } from "./materialization_config_validation";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
@@ -175,6 +176,12 @@ export class Package {
    // tag does not fail the load (see Model.validateRenderTags); this is the
    // response-level signal that a tag is misconfigured.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /**
+    * Manifest-shape deprecations the load tolerated (a root-level `scope`), kept
+    * so publish can report a still-parsing-but-outdated manifest. Not on the wire
+    * package: it is a property of the manifest text, not of the loaded package.
+    */
+   private manifestWarnings: string[] = [];
    private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -550,6 +557,7 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
+      pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
@@ -688,6 +696,16 @@ export class Package {
          // (alongside the load-path log) so an operator can see it on the status
          // API like the other persist warnings — see persistenceCollisionWarnings.
          ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+         // Materialization-config findings: a queryMetadata property that will
+         // not do what it says, and manifest shapes that still parse but are
+         // deprecated. Advisory by design — none of these blocks a publish.
+         ...materializationConfigWarnings({
+            packageMaterialization: this.packageMetadata.materialization,
+            sources: this.buildPlan?.sources
+               ? Object.values(this.buildPlan.sources)
+               : [],
+            manifestWarnings: this.manifestWarnings,
+         }),
       ];
       if (allWarnings.length > 0) {
          metadata.warnings = allWarnings;
@@ -1059,6 +1077,10 @@ export class Package {
    }
 
    public persistencePolicyWarnings(): string[] {
+      // REJECTION rules only: a non-empty result fails a publish and disarms the
+      // scheduler. Advisory findings (queryMetadata problems, a deprecated
+      // manifest shape) go to the operator warnings array instead — see
+      // materializationConfigWarnings.
       const warnings: string[] = [];
       const sources = this.buildPlan?.sources
          ? Object.values(this.buildPlan.sources)
@@ -1480,6 +1502,7 @@ export class Package {
       // package's current storage= bindings so a reload preserves serve routing.
       this.pushStorageServeBindingsToModels();
       this.renderTagWarnings = renderTagWarnings;
+      this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
       // reflect edited explores without a full Package.create.

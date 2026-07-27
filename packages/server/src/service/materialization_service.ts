@@ -43,7 +43,14 @@ import {
    deriveAnnotationFields,
    projectToPublicColumns,
    iterGraphSources,
+   resolveQueryMetadata,
 } from "./build_plan";
+import {
+   mergeQueryMetadata,
+   type QueryContext,
+   type QueryMetadata,
+} from "./query_metadata";
+import type { components } from "../api";
 import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
@@ -86,6 +93,18 @@ import { redactPgSecrets } from "../pg_helpers";
 interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
    getEnvironmentPath(): string;
+}
+
+/**
+ * What a build needs to tag the statements it issues: the package-level layer of
+ * per-query metadata, and the run's own context. Assembled once per run — every
+ * field is constant for the run, so a source only adds its own name.
+ */
+interface BuildQueryMetadata {
+   packageMaterialization:
+      | components["schemas"]["PackageMaterializationConfig"]
+      | null;
+   context: QueryContext;
 }
 
 /**
@@ -413,6 +432,14 @@ export class MaterializationService {
           * metadata so a scheduled rebuild is distinguishable from a manual one.
           */
          trigger?: "ON_DEMAND" | "SCHEDULER";
+         /**
+          * What the caller knows about this run and the publisher does not,
+          * attached as query metadata to the statements the build issues. Its
+          * `trigger` also covers the case the publisher's own `trigger` cannot
+          * express (a publish), and its `runId` lets a caller's own id group the
+          * build's statements instead of the publisher's materialization id.
+          */
+         runContext?: components["schemas"]["RunContext"] | null;
       } = {},
    ): Promise<Materialization> {
       const environmentId = await this.resolveEnvironmentId(environmentName);
@@ -477,6 +504,7 @@ export class MaterializationService {
                referenceManifest: options.referenceManifest,
                strictUpstreams: options.strictUpstreams,
                trigger,
+               runContext: options.runContext ?? undefined,
             },
             signal,
          ),
@@ -504,6 +532,7 @@ export class MaterializationService {
          referenceManifest: ManifestReference[] | undefined;
          strictUpstreams: boolean | undefined;
          trigger: "ON_DEMAND" | "SCHEDULER";
+         runContext?: components["schemas"]["RunContext"];
       },
       signal: AbortSignal,
    ): Promise<void> {
@@ -620,6 +649,25 @@ export class MaterializationService {
             // Failure-path reclaim is ORCHESTRATED-ONLY on purpose — see
             // reclaimStorageTablesFromFailedRun.
             orchestrated ? { environmentId, packageName } : undefined,
+            {
+               // Optional for the same reason build_plan reads it optionally:
+               // callers that build from a lighter package surface still resolve,
+               // just without a package-level layer.
+               packageMaterialization: pkg.getMaterializationConfig?.() ?? null,
+               context: {
+                  queryClass: "materialize",
+                  environment: environmentName,
+                  package: packageName,
+                  // The caller's trigger wins because it can express a publish,
+                  // which the publisher's own two-value trigger cannot.
+                  trigger:
+                     opts.runContext?.trigger ?? opts.trigger?.toLowerCase(),
+                  // Default to the materialization id: the publisher always has a
+                  // run id, so a build's statements group in the backend's query
+                  // history whether or not the caller supplied one.
+                  runId: opts.runContext?.runId ?? id,
+               },
+            },
          );
 
          const sourcesBuilt = instructions.length;
@@ -1083,6 +1131,7 @@ export class MaterializationService {
       // Identity of the run, used only to reclaim storage tables this run created
       // if it fails part-way (see reclaimStorageTablesFromFailedRun).
       owner?: { environmentId: string; packageName: string },
+      buildMetadata?: BuildQueryMetadata,
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -1200,6 +1249,7 @@ export class MaterializationService {
                   manifest,
                   environment,
                   entries,
+                  buildMetadata,
                );
                entries[sourceEntityId] = entry;
                if (entry.storageConnectionName) builtThisRun.push(entry);
@@ -1328,6 +1378,51 @@ export class MaterializationService {
    }
 
    /**
+    * The `RunSQLOptions` for one source's build statements: its resolved
+    * per-query metadata, merged under this run's context.
+    *
+    * Layers, least specific first: the executing connection's default, then what
+    * the model side declared for this source (package → model-file → `#@ persist`,
+    * already resolved by {@link resolveQueryMetadata}), then the run's context,
+    * which names the source. There is no request layer — a build has no request.
+    *
+    * Fails OPEN: a build must not fail because metadata could not be assembled,
+    * so an unresolvable connection just contributes no default, and a dropped
+    * property is logged and metered rather than thrown.
+    */
+   private buildRunSQLOptions(
+      persistSource: PersistSource,
+      environment: BuildEnvironment,
+      buildMetadata: BuildQueryMetadata | undefined,
+   ): { queryMetadata?: QueryMetadata } {
+      if (!buildMetadata) return {};
+      let connectionDefault: QueryMetadata | null = null;
+      try {
+         connectionDefault =
+            environment.getApiConnection(persistSource.connectionName)
+               ?.queryMetadata ?? null;
+      } catch {
+         // The connection resolves for the build itself; if its config can't be
+         // read here, the default layer is simply absent.
+      }
+      const resolved = mergeQueryMetadata({
+         connection: connectionDefault,
+         model: resolveQueryMetadata(
+            persistSource,
+            buildMetadata.packageMaterialization,
+         ),
+         context: { ...buildMetadata.context, source: persistSource.name },
+      });
+      if (resolved.drops.length > 0) {
+         logger.warn("Dropped query-metadata properties for a build", {
+            sourceName: persistSource.name,
+            drops: resolved.drops,
+         });
+      }
+      return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
+   }
+
+   /**
     * Build a single instructed source into its assigned physical table.
     * COPY uses a staging table + atomic rename for crash-safety; the staging
     * name derives from the sourceEntityId. Records and returns the manifest entry.
@@ -1340,6 +1435,7 @@ export class MaterializationService {
       manifest: Manifest,
       environment: BuildEnvironment,
       builtEntries: Record<string, ManifestEntry>,
+      buildMetadata?: BuildQueryMetadata,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -1404,6 +1500,15 @@ export class MaterializationService {
          );
       }
 
+      // Every statement of this source's build carries the same metadata, so the
+      // warehouse's query history shows the staging CTAS, the drop and the rename
+      // as one attributable unit of work.
+      const runOptions = this.buildRunSQLOptions(
+         persistSource,
+         environment,
+         buildMetadata,
+      );
+
       const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
       // The control plane sends the logical (unquoted) physical name; dialect-
@@ -1416,18 +1521,29 @@ export class MaterializationService {
       const quotedBareName = quoteIdentifier(bareName, dialect);
 
       const startTime = performance.now();
-      await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quotedStaging}`,
+         runOptions,
+      );
       try {
          await connection.runSQL(
             `CREATE TABLE ${quotedStaging} AS (${buildSQL})`,
+            runOptions,
          );
-         await connection.runSQL(`DROP TABLE IF EXISTS ${quotedPhysical}`);
+         await connection.runSQL(
+            `DROP TABLE IF EXISTS ${quotedPhysical}`,
+            runOptions,
+         );
          await connection.runSQL(
             `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
+            runOptions,
          );
       } catch (err) {
          try {
-            await connection.runSQL(`DROP TABLE IF EXISTS ${quotedStaging}`);
+            await connection.runSQL(
+               `DROP TABLE IF EXISTS ${quotedStaging}`,
+               runOptions,
+            );
          } catch (cleanupErr) {
             logger.warn(
                "Failed to clean up staging table after a failed build; physical leak",

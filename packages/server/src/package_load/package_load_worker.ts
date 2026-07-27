@@ -87,7 +87,7 @@ import {
    PackageMaterializationConfig,
    PackageScope,
    parsePackageMaterialization,
-   parsePackageScope,
+   resolvePackageScope,
 } from "../service/package_manifest";
 import {
    extractQueriesFromModelDef,
@@ -411,6 +411,7 @@ async function readPackageMetadata(packagePath: string): Promise<{
    manifestLocation?: string | null;
    materialization?: PackageMaterializationConfig | null;
    scope?: PackageScope;
+   manifestWarnings?: string[];
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    const contents = await fs.promises.readFile(manifestPath, "utf8");
@@ -423,6 +424,10 @@ async function readPackageMetadata(packagePath: string): Promise<{
       materialization?: unknown;
       scope?: unknown;
    };
+   // Scope has two homes (canonical `materialization.scope`, deprecated root);
+   // an invalid value or a conflict between the two throws and fails the load,
+   // and the deprecation rides back as a warning.
+   const scope = resolvePackageScope(parsed.scope, parsed.materialization);
    return {
       name: parsed.name,
       description: parsed.description,
@@ -439,11 +444,12 @@ async function readPackageMetadata(packagePath: string): Promise<{
             ? parsed.manifestLocation
             : null,
       // Package-level Malloy Persistence policy; surfaced to the control plane,
-      // which owns scheduling. Only `schedule` is read today.
+      // which owns scheduling. `schedule`/`freshness` are for the control plane;
+      // `queryMetadata` is the publisher's own package-level layer.
       materialization: parsePackageMaterialization(parsed.materialization),
-      // Package-level persist scope mode; defaults to "package". An invalid
-      // value throws here and fails the load (scope is load-bearing).
-      scope: parsePackageScope(parsed.scope),
+      // Package-level persist scope mode; defaults to "package".
+      scope: scope.scope,
+      manifestWarnings: scope.warnings.length > 0 ? scope.warnings : undefined,
    };
 }
 

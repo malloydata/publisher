@@ -1273,6 +1273,11 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.body?.options as string,
+               undefined,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+               },
             ),
          );
       } catch (error) {
@@ -1295,6 +1300,10 @@ app.post(
                req.body.sqlStatement as string,
                req.body?.options as string,
                req.params.packageName,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+               },
             ),
          );
       } catch (error) {
@@ -1664,6 +1673,11 @@ app.post(
                | undefined,
             req.body.bypassFilters === true ? true : undefined,
             req.body.givens as Record<string, GivenValue> | undefined,
+            {
+               queryMetadata: req.body?.queryMetadata,
+               queryClass: req.body?.queryClass,
+               versionId: req.body?.versionId as string | undefined,
+            },
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,

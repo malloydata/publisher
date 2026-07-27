@@ -792,6 +792,22 @@ paths:
                 options:
                   type: string
                   description: Options
+                queryMetadata:
+                  $ref: "#/components/schemas/QueryMetadata"
+                  description: >-
+                    Per-query metadata to attach to this statement, overriding
+                    the connection default property by property. A bag that
+                    violates the contract is rejected with 400.
+                    (`options.queryMetadata` is honored too, since `options` is
+                    forwarded as `RunSQLOptions`, but this field is the
+                    documented surface and wins when both are present.)
+                queryClass:
+                  $ref: "#/components/schemas/QueryClass"
+                  description: >-
+                    What class of work this statement belongs to, attached as the
+                    `class` property. Defaults to `ops`: raw SQL against a
+                    connection is platform maintenance unless the caller says
+                    otherwise.
       responses:
         "200":
           description: Query execution results
@@ -1142,6 +1158,22 @@ paths:
                 options:
                   type: string
                   description: Options
+                queryMetadata:
+                  $ref: "#/components/schemas/QueryMetadata"
+                  description: >-
+                    Per-query metadata to attach to this statement, overriding
+                    the connection default property by property. A bag that
+                    violates the contract is rejected with 400.
+                    (`options.queryMetadata` is honored too, since `options` is
+                    forwarded as `RunSQLOptions`, but this field is the
+                    documented surface and wins when both are present.)
+                queryClass:
+                  $ref: "#/components/schemas/QueryClass"
+                  description: >-
+                    What class of work this statement belongs to, attached as the
+                    `class` property. Defaults to `ops`: raw SQL against a
+                    connection is platform maintenance unless the caller says
+                    otherwise.
       responses:
         "200":
           description: Query execution results
@@ -2886,6 +2918,16 @@ components:
             `fallback` is the declared query-time behavior when the objective
             is missed. The publisher only surfaces the values — the control
             plane owns the scheduling and gating logic.
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: >-
+            The manifest's `materialization.queryMetadata` block, verbatim. Null
+            = none declared. The package-level layer of per-query metadata: it
+            applies to every statement the package's sources issue, and a
+            model-file, source or per-request declaration overrides it property
+            by property.
 
     Freshness:
       type: object
@@ -3247,6 +3289,30 @@ components:
             When true, skip server-side `#(filter)` injection entirely.
         givens:
           $ref: "#/components/schemas/Givens"
+        queryMetadata:
+          $ref: "#/components/schemas/QueryMetadata"
+          description: >-
+            Per-request metadata to attach to the statements this query issues —
+            the most specific author layer, overriding the connection default and
+            any package/model/source declaration property by property. Rejected
+            with 400 when it violates the contract (see `QueryMetadata`), so a
+            caller learns at the boundary rather than having a backend refuse the
+            statement.
+        queryClass:
+          $ref: "#/components/schemas/QueryClass"
+          description: >-
+            What class of work this request represents, attached as the `class`
+            property. Defaults to `interactive`.
+
+    QueryClass:
+      type: string
+      enum: [interactive, materialize, index, ops]
+      description: >-
+        The class of work a statement belongs to, attached as the `class`
+        query-metadata property: `interactive` (a user or application query),
+        `materialize` (a persist-source build), `index` (an index build or scan),
+        `ops` (platform maintenance). Attribution's primary axis — a backend bill
+        separates traffic from builds only if every statement says which it is.
 
     NotebookCell:
       type: object
@@ -3294,6 +3360,38 @@ components:
           items:
             type: string
 
+    QueryMetadata:
+      type: object
+      additionalProperties:
+        type: string
+      description: >-
+        Per-query metadata: a flat bag of string properties attached to the
+        statements a query issues, for the backend's own reporting — cost
+        attribution, workload classification, tracing. Each backend applies it
+        through a per-query mechanism: Snowflake a per-statement `QUERY_TAG`
+        (the bag as JSON, so its properties are queryable in `QUERY_HISTORY`),
+        BigQuery per-job `labels` (queryable in `INFORMATION_SCHEMA.JOBS`), and
+        every other backend a leading SQL comment (`-- team="finance"`, visible
+        in query history / `pg_stat_activity`). It never affects results, and it
+        is excluded from connection fingerprints and from build identity, so
+        changing a property never re-addresses or rebuilds anything.
+
+        The contract, which every backend can render and which the connector
+        enforces at dispatch: property names are ASCII alphanumerics and
+        underscore (<=128 chars), values are printable ASCII without `"`
+        (<=256 chars), and a bag holds at most 20 properties. Declare a name
+        starting with a LETTER: BigQuery drops a name it cannot fit to its label
+        grammar while other backends keep it.
+
+        Layers, most specific wins per property: connection default < package
+        `materialization.queryMetadata` < model-file
+        `## materialization.queryMetadata.*` < `#@ persist queryMetadata.*` <
+        per-request `queryMetadata`. The publisher's own context (`class`,
+        `environment`, `package`, `model`, `source`, `trigger`, `run_id`) is
+        applied on top and cannot be overwritten by a declaration. Put no
+        secrets or personal data here — a tag is visible to anyone who can read
+        the backend's query history.
+
     QueryResult:
       type: object
       description: Results from executing a Malloy query
@@ -3306,6 +3404,20 @@ components:
         resource:
           type: string
           description: Resource path to the query result
+        appliedQueryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: >-
+            The metadata actually attached to this query's statements, after
+            layer resolution and after any clamping (see `QueryMetadata`). Null
+            when none was attached. This is the join key back to the backend's
+            own query record: to correlate an API call with a warehouse query,
+            send a property that identifies the call (e.g. a request id) and
+            find the same value in `QUERY_HISTORY` /
+            `INFORMATION_SCHEMA.JOBS` / the query text. Echoed rather than
+            assumed so a caller can see when a property it declared did not fit
+            and was dropped.
         renderLogs:
           type: array
           description:
@@ -3443,6 +3555,15 @@ components:
             use the supplied value verbatim rather than deriving their own. This
             field is optional — when omitted, a connection identity is derived
             locally instead.
+        queryMetadata:
+          $ref: "#/components/schemas/QueryMetadata"
+          description: >-
+            Default per-query metadata for every statement this connection
+            issues — the least specific layer, overridden per property by a
+            package/model/source declaration or a per-request value. Use it for
+            properties that are true of the whole connection (which deployment,
+            which team owns it). Not a secret: it round-trips like any plain
+            field and is never redacted.
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         proxy:
@@ -3988,6 +4109,14 @@ components:
         # Pass result as an opaque JSON string that is malloyVersion dependent.
         data:
           type: string
+        appliedQueryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: >-
+            The metadata actually attached to this statement, after resolution
+            and clamping. Same contract and correlation use as
+            `QueryResult.appliedQueryMetadata`.
 
     Error:
       type: object
@@ -4168,6 +4297,36 @@ components:
           description:
             Restrict the plan/build to these persist source names. Omit = all
             persist sources.
+        runContext:
+          oneOf:
+            - $ref: "#/components/schemas/RunContext"
+            - type: "null"
+          description: >-
+            What the caller knows about this run and the publisher does not,
+            attached as query metadata to every statement the build issues so the
+            backend's own reporting can attribute the build. Omit when there is
+            nothing to add.
+
+    RunContext:
+      type: object
+      description: >-
+        Caller-supplied context for one materialization run, folded into the
+        per-query metadata of the statements it issues (see `QueryMetadata`).
+        Observability only — it never affects what gets built or how anything is
+        addressed.
+      properties:
+        trigger:
+          type: string
+          enum: [publish, on_demand, scheduler]
+          description: >-
+            What started this run, attached as the `trigger` property: a package
+            publish, an explicit request, or the caller's scheduler.
+        runId:
+          type: string
+          description: >-
+            The caller's id for this run, attached as the `run_id` property so
+            every statement of one build groups together in the backend's query
+            history.
 
     MaterializationStatus:
       type: string
@@ -4314,6 +4473,20 @@ components:
             scope modes. (Per-source `sharing`/`schedule` were retired: scope is
             a single package-level mode and a schedule is package-root-only —
             declaring either on a source is a publish-time manifest error.)
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: >-
+            The source's EFFECTIVE per-query metadata after most-specific-wins
+            resolution per property (`#@ persist queryMetadata.*` > model-file
+            `## materialization.queryMetadata.*` > package
+            `materialization.queryMetadata`). Null = declared at no level. The
+            publisher attaches it — merged under its own context — to every
+            statement it issues while building this source, and reports it here so
+            a caller can see how a build will be tagged and tag its own queries
+            the same way. Observability only: excluded from `sourceEntityId`, so
+            editing it never re-addresses the source or orphans its table.
         columns:
           type: array
           description: Output schema of the source.

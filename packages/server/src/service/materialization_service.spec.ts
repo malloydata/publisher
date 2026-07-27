@@ -1481,12 +1481,19 @@ describe("buildOneSource", () => {
       physicalTableName: string,
       dialectName?: string,
       manifest: Manifest = new Manifest(),
+      metadata?: {
+         source?: Record<string, string>;
+         package?: Record<string, string>;
+         connection?: Record<string, string>;
+         context?: Record<string, string | undefined>;
+      },
    ): Promise<{ sourceEntityId: string; physicalTableName: string }> {
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "abcdef1234567890",
          sql: "SELECT * FROM t",
          dialectName,
+         queryMetadata: metadata?.source,
       });
       const instruction: BuildInstruction = {
          sourceEntityId: "abcdef1234567890",
@@ -1504,6 +1511,7 @@ describe("buildOneSource", () => {
                m: Manifest,
                env: unknown,
                built: Record<string, unknown>,
+               buildMetadata?: unknown,
             ) => Promise<{ sourceEntityId: string; physicalTableName: string }>;
          }
       ).buildOneSource(
@@ -1514,13 +1522,84 @@ describe("buildOneSource", () => {
          manifest,
          {
             getApiConnection: () => {
+               if (metadata?.connection) {
+                  return { queryMetadata: metadata.connection };
+               }
                throw new Error("no connection config in this colocated test");
             },
             getEnvironmentPath: () => "/tmp/env",
          },
          {}, // builtEntries — colocated build with no prior storage upstreams
+         metadata
+            ? {
+                 packageMaterialization: metadata.package
+                    ? {
+                         schedule: null,
+                         freshness: null,
+                         queryMetadata: metadata.package,
+                      }
+                    : null,
+                 context: metadata.context ?? { queryClass: "materialize" },
+              }
+            : undefined,
       );
    }
+
+   it("tags every statement of the build with the resolved metadata", async () => {
+      // One unit of work: the warehouse's query history has to show the staging
+      // drop, the CTAS, the swap and the rename as the same build.
+      const runSQL = sinon.stub().resolves();
+      await callBuildOneSource({ runSQL }, "orders_v1", undefined, undefined, {
+         connection: { deployment: "eu" },
+         package: { team: "finance", tier: "bronze" },
+         source: { tier: "gold" },
+         context: { queryClass: "materialize", runId: "run-7" },
+      });
+
+      const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
+      expect(bags).toHaveLength(4);
+      for (const bag of bags) {
+         expect(bag).toEqual({
+            deployment: "eu",
+            team: "finance",
+            // The source's own declaration wins over the package's.
+            tier: "gold",
+            class: "materialize",
+            run_id: "run-7",
+            source: "orders",
+         });
+      }
+   });
+
+   it("issues untagged statements when nothing declares metadata", async () => {
+      // No metadata context (an internal caller) means the statements are exactly
+      // what they were before this existed.
+      const runSQL = sinon.stub().resolves();
+      await callBuildOneSource({ runSQL }, "orders_v1");
+      for (const call of runSQL.getCalls()) {
+         expect(call.args[1]?.queryMetadata).toBeUndefined();
+      }
+   });
+
+   it("tags the cleanup drop after a failed build", async () => {
+      // The cleanup statement belongs to the same build, and it is the one an
+      // operator goes looking for after a failure.
+      const runSQL = sinon.stub();
+      runSQL.onCall(0).resolves();
+      runSQL.onCall(1).rejects(new Error("create boom"));
+      runSQL.onCall(2).resolves();
+      await expect(
+         callBuildOneSource({ runSQL }, "orders_v1", undefined, undefined, {
+            source: { team: "finance" },
+            context: { queryClass: "materialize" },
+         }),
+      ).rejects.toThrow("create boom");
+      expect(runSQL.lastCall.args[1]?.queryMetadata).toEqual({
+         team: "finance",
+         class: "materialize",
+         source: "orders",
+      });
+   });
 
    it("stages, swaps, and renames in a crash-safe order", async () => {
       const runSQL = sinon.stub().resolves();

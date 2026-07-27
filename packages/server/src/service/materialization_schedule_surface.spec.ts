@@ -54,6 +54,7 @@ describe("materialization schedule surfacing", () => {
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: "0 6 * * *",
             freshness: null,
+            queryMetadata: null,
          });
       },
       { timeout: 20000 },
@@ -77,6 +78,7 @@ describe("materialization schedule surfacing", () => {
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: null,
             freshness: { window: "24h", fallback: "stale_ok" },
+            queryMetadata: null,
          });
       },
       { timeout: 20000 },
@@ -119,12 +121,14 @@ describe("materialization schedule surfacing", () => {
          expect(updated.materialization).toEqual({
             schedule: "0 6 * * *",
             freshness: null,
+            queryMetadata: null,
          });
 
          const pkg = await env.getPackage("pkg", false);
          expect(pkg.getPackageMetadata().materialization).toEqual({
             schedule: "0 6 * * *",
             freshness: null,
+            queryMetadata: null,
          });
       },
       { timeout: 20000 },

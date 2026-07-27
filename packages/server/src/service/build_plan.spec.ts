@@ -12,6 +12,7 @@ import {
    iterGraphSources,
    projectToPublicColumns,
    resolveFreshness,
+   resolveQueryMetadata,
    resolvePackageConnections,
 } from "./build_plan";
 import { MaterializationEligibilityError } from "../errors";
@@ -418,6 +419,130 @@ describe("resolveFreshness", () => {
          freshnessSchedule: { freshness: { window: "1h", fallback: "bogus" } },
       });
       expect(resolveFreshness(source, null)).toEqual({ window: "1h" });
+   });
+
+   it("reads the model-file `materialization` envelope", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         modelMaterialization: { freshness: { freshness: { window: "12h" } } },
+      });
+      expect(resolveFreshness(source, null)).toEqual({ window: "12h" });
+   });
+
+   it("prefers the envelope over the deprecated bare model-file form", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         modelFreshnessSchedule: { freshness: { window: "48h" } },
+         modelMaterialization: { freshness: { freshness: { window: "12h" } } },
+      });
+      expect(resolveFreshness(source, null)).toEqual({ window: "12h" });
+   });
+
+   it("still reads a bare model-file knob the envelope does not declare", () => {
+      // A package published before the envelope existed keeps resolving, and the
+      // envelope does not hide the knobs it says nothing about.
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         modelFreshnessSchedule: { freshness: { fallback: "fail" } },
+         modelMaterialization: { freshness: { freshness: { window: "12h" } } },
+      });
+      expect(resolveFreshness(source, null)).toEqual({
+         window: "12h",
+         fallback: "fail",
+      });
+   });
+});
+
+describe("resolveQueryMetadata", () => {
+   it("returns null when no layer declares anything", () => {
+      const source = fakeSource({ name: "s", sourceEntityId: "bid" });
+      expect(resolveQueryMetadata(source, null)).toBeNull();
+      expect(
+         resolveQueryMetadata(source, {
+            schedule: null,
+            freshness: null,
+            queryMetadata: null,
+         }),
+      ).toBeNull();
+   });
+
+   it("reads the source's `#@ persist queryMetadata.*` properties", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         queryMetadata: { team: "finance", workload: "orders" },
+      });
+      expect(resolveQueryMetadata(source, null)).toEqual({
+         team: "finance",
+         workload: "orders",
+      });
+   });
+
+   it("resolves most-specific-wins PER PROPERTY across all four layers", () => {
+      // Package declares team+tier, the model-file envelope overrides tier and
+      // adds one of its own, the source overrides only workload: every property
+      // nothing more specific overrides has to survive.
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         queryMetadata: { workload: "orders" },
+         modelMaterialization: {
+            queryMetadata: { tier: "gold", surface: "marts" },
+         },
+      });
+      expect(
+         resolveQueryMetadata(source, {
+            schedule: null,
+            freshness: null,
+            queryMetadata: { team: "finance", tier: "bronze" },
+         }),
+      ).toEqual({
+         team: "finance",
+         tier: "gold",
+         surface: "marts",
+         workload: "orders",
+      });
+   });
+
+   it("prefers the model-file envelope over the bare form, per property", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         modelQueryMetadata: { tier: "bronze", legacy: "kept" },
+         modelMaterialization: { queryMetadata: { tier: "gold" } },
+      });
+      expect(resolveQueryMetadata(source, null)).toEqual({
+         tier: "gold",
+         legacy: "kept",
+      });
+   });
+
+   it("keeps a contract-violating property for the validator to report", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         queryMetadata: { "team.name": "finance" },
+      });
+      expect(resolveQueryMetadata(source, null)).toEqual({
+         "team.name": "finance",
+      });
+   });
+
+   it("does not confuse the scalar `#@ persist` fields beside it", () => {
+      const source = fakeSource({
+         name: "s",
+         sourceEntityId: "bid",
+         annotationFields: { name: "s_table", refresh: "full" },
+         queryMetadata: { team: "finance" },
+      });
+      expect(resolveQueryMetadata(source, null)).toEqual({ team: "finance" });
+      expect(deriveAnnotationFields(source)).toEqual({
+         name: "s_table",
+         refresh: "full",
+      });
    });
 });
 
