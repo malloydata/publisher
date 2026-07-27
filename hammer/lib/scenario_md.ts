@@ -78,6 +78,18 @@ interface Table {
    rows: string[][];
 }
 
+/** One `## Manifest` line: an entry a host would send, with its per-entry stamps. */
+interface ManifestEntrySpec {
+   src: string;
+   table: string;
+   dest: string;
+   /** The build plan has no id for this source; use the name as the handle. */
+   unplanned: boolean;
+   fallback?: string;
+   asof?: string;
+   fresh?: number;
+}
+
 // Server-facing steps carry an optional `env` (from `(env=…)`), selecting which
 // environment the step runs against; it defaults to PRIMARY_ENV. A publisher
 // process serves every configured environment, so env is orthogonal to `pub`.
@@ -203,7 +215,7 @@ type Step =
         env: string;
         pkg: string;
         mode: PersistStorageMode;
-        entries: { src: string; table: string; dest: string }[];
+        entries: ManifestEntrySpec[];
      }
    | {
         kind: "bind";
@@ -1099,14 +1111,58 @@ function parseOrchestratedBody(body: string[]): {
    return { sources, references };
 }
 
-/** `- <source> -> <table> @ <destination>` lines for a hand-authored manifest. */
-function parseManifestBody(
-   body: string[],
-): { src: string; table: string; dest: string }[] {
-   const out: { src: string; table: string; dest: string }[] = [];
+/**
+ * `- <source> -> <table> @ <destination> [(attr, …)]` lines for a hand-authored
+ * manifest. Per-entry attributes, because a host stamps a manifest entry by
+ * entry and the interesting forgeries are per entry:
+ *
+ * - `unplanned` — the package build plan does not know this source, so the step
+ *   cannot look up its `sourceEntityId` and uses the source name as the handle.
+ *   Say it out loud in the markdown: without the attribute an unknown source is
+ *   a typo and still throws.
+ * - `fallback=<live|stale_ok|fail>`, `asof=<iso>`, `fresh=<seconds>` — stamp the
+ *   freshness fields on THIS entry. `## Bind` stamps every entry with one value,
+ *   so a MIXED set is only expressible here — and mixed is the normal case for a
+ *   host, since it stamps per generation.
+ */
+function parseManifestBody(body: string[]): ManifestEntrySpec[] {
+   const out: ManifestEntrySpec[] = [];
    for (const raw of body) {
-      const m = raw.trim().match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
-      if (m) out.push({ src: m[1], table: m[2], dest: m[3] });
+      // Split a trailing (…) off first so the destination match stays simple.
+      const line = raw.trim();
+      const withAttrs = line.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+      const head = withAttrs ? withAttrs[1] : line;
+      const attrs = withAttrs
+         ? withAttrs[2]
+              .split(",")
+              .map((a) => a.trim())
+              .filter(Boolean)
+         : [];
+      const m = head.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      if (!m) continue;
+      const entry: ManifestEntrySpec = {
+         src: m[1],
+         table: m[2],
+         dest: m[3],
+         unplanned: false,
+      };
+      for (const a of attrs) {
+         const [key, value] = a.includes("=")
+            ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]
+            : [a, undefined];
+         if (key === "unplanned" && value === undefined) entry.unplanned = true;
+         else if (key === "fallback" && value) entry.fallback = value;
+         else if (key === "asof" && value) entry.asof = value;
+         else if (key === "fresh" && value) entry.fresh = Number(value);
+         else
+            throw new Error(
+               `## Manifest: unknown attribute "${a}" on "${line}"`,
+            );
+      }
+      if (entry.fresh !== undefined && Number.isNaN(entry.fresh)) {
+         throw new Error(`## Manifest: fresh= must be a number on "${line}"`);
+      }
+      out.push(entry);
    }
    return out;
 }
@@ -2090,11 +2146,21 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                const ids = await rest.sourceEntityIds(step.pkg);
                const entries: Record<string, unknown> = {};
                for (const e of step.entries) {
-                  const eid = ids[e.src];
+                  // `unplanned`: the plan has no id for this source, which is the
+                  // point — a host naming a source the publisher's plan dropped.
+                  // The handle only has to be stable, so the source name serves.
+                  const eid = e.unplanned ? e.src : ids[e.src];
                   if (!eid) {
                      throw new Error(
                         `## Manifest: source "${e.src}" is not in ${step.pkg}'s build plan ` +
-                           `(planned: ${Object.keys(ids).join(", ") || "none"})`,
+                           `(planned: ${Object.keys(ids).join(", ") || "none"}). ` +
+                           `Add \`(unplanned)\` if that is the point of the scenario.`,
+                     );
+                  }
+                  if (e.unplanned && ids[e.src]) {
+                     throw new Error(
+                        `## Manifest: source "${e.src}" is marked \`(unplanned)\` but IS in ` +
+                           `${step.pkg}'s build plan — the scenario's premise no longer holds`,
                      );
                   }
                   const schemaOf = Object.values(captured).find(
@@ -2114,6 +2180,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      physicalTableName: e.table,
                      storageConnectionName: e.dest,
                      schema: schemaOf.schema,
+                     ...(e.fallback ? { freshnessFallback: e.fallback } : {}),
+                     ...(e.asof ? { dataAsOf: e.asof } : {}),
+                     ...(e.fresh !== undefined
+                        ? { freshnessWindowSeconds: e.fresh }
+                        : {}),
                   };
                }
                const uri = await ctx.writeManifest(
