@@ -118,6 +118,12 @@ export interface ModelQueryMetadataInput {
    queryClass?: QueryClass;
    environment?: string;
    version?: string;
+   /**
+    * The id this query is correlated by, minted by the boundary that returns it
+    * (see `mintCorrelationId`). Omitted by callers with no response field to
+    * carry it, which is why it is not minted here.
+    */
+   correlationId?: string;
    connectionDefault?: (connectionName: string) => QueryMetadata | null;
 }
 
@@ -2090,8 +2096,12 @@ export class Model {
       rowLimit: number;
       /** Which of those two the cap came from. */
       rowLimitSource: QueryRowLimitSource;
-      /** The metadata attached to this query's statements; null when none was. */
-      appliedQueryMetadata: QueryMetadata | null;
+      /**
+       * The `query_id` property attached to this query's statements, which is the
+       * caller's join key into the backend's own query record. Null when no
+       * metadata was attached.
+       */
+      queryCorrelationId: string | null;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
@@ -2354,7 +2364,7 @@ export class Model {
       let rowLimitSource: QueryRowLimitSource = "server_default";
       let executionTime = 0;
       let queryResults;
-      let appliedQueryMetadata: QueryMetadata | null = null;
+      let appliedQueryMetadata: QueryMetadata | undefined;
       // Givens supplied only so a joined source's authorize gate could see
       // them (checked above, against the full unfiltered set) must not reach
       // the real query if this model doesn't itself surface them — see
@@ -2393,7 +2403,7 @@ export class Model {
             abortSignal,
             buildManifest: effectiveBuildManifest,
             virtualMap: serveVirtualMap,
-            queryMetadata: appliedQueryMetadata ?? undefined,
+            queryMetadata: appliedQueryMetadata,
          });
       } catch (error) {
          // A binding that declares `freshnessFallback=live` is saying the tier is
@@ -2593,7 +2603,10 @@ export class Model {
          // default. Only the second means rows were probably left behind; a
          // deliberate `top: 10` returning 10 rows is a complete answer.
          rowLimitSource,
-         appliedQueryMetadata,
+         // The id from the bag that was actually attached, not the one supplied:
+         // a bag shed under budget pressure sheds context last, but a caller
+         // should be told the truth about what it can look up.
+         queryCorrelationId: appliedQueryMetadata?.query_id ?? null,
       };
    }
 
@@ -2613,7 +2626,7 @@ export class Model {
    private resolveQueryMetadata(
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,
-   ): QueryMetadata | null {
+   ): QueryMetadata | undefined {
       let connectionDefault: QueryMetadata | null = null;
       if (connectionName && input?.connectionDefault) {
          try {
@@ -2631,6 +2644,7 @@ export class Model {
             package: this.packageName,
             model: this.modelPath,
             version: input?.version,
+            correlationId: input?.correlationId,
          },
       });
       if (resolved.drops.length > 0) {
@@ -2639,7 +2653,7 @@ export class Model {
             drops: resolved.drops,
          });
       }
-      return resolved.metadata ?? null;
+      return resolved.metadata;
    }
 
    private getStandardModel(): ApiCompiledModel {

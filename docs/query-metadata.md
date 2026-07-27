@@ -27,10 +27,13 @@ Publisher attaches its own context to every statement, so attribution needs no m
 | `model` | the model a query ran against |
 | `source` | the persist source a build was materializing |
 | `trigger`, `run_id` | what started a build, and which run it belongs to |
+| `query_id` | identifies this one query; the response hands it back (see below) |
 
-These are properties of the unit of work, not of the individual call, so repeating the same query produces the same bag — the comment-carrying backends keep whatever result caching they do. Context wins over a declared property of the same name: a caller cannot label its own query as a build.
+Context wins over a declared property of the same name: a caller cannot label its own query as a build, and cannot supply its own `query_id`.
 
-Set `PUBLISHER_QUERY_METADATA=off` to attach nothing at all, including caller-supplied properties. That is the escape hatch for a deployment that wants its statements left exactly as Malloy compiles them.
+Everything except `query_id` is a property of the unit of work rather than of the individual call, so a repeated query produces the same values. `query_id` is per call by definition, which on a backend with no native tag mechanism makes the statement text unique and so bypasses an exact-text result cache. That is the deliberate cost of being able to find one query again.
+
+Set `PUBLISHER_QUERY_METADATA=off` to attach nothing at all, including caller-supplied properties: the escape hatch for a deployment that wants its statements left exactly as Malloy compiles them, and the way out if you would rather have the result cache than the correlation id.
 
 ## Declaring your own properties
 
@@ -66,7 +69,22 @@ Layers 2–4 describe how a source is **built**. A live query against the model 
 
 ## Correlating an API call with a backend query
 
-There is no backend query id in the response, on purpose — the property bag is a better join key because it works the same way on every backend. Send something that identifies the call and look for it on the other side:
+A query response carries `queryCorrelationId` — the id Publisher minted for that query and attached as its `query_id` property. Look the same value up on the other side:
+
+```sql
+-- Snowflake: the bag is the JSON QUERY_TAG
+select * from snowflake.account_usage.query_history
+where try_parse_json(query_tag):query_id = '<queryCorrelationId>';
+
+-- BigQuery: the bag is the job's labels
+select * from `region-us`.INFORMATION_SCHEMA.JOBS
+where exists (select 1 from unnest(labels) l
+              where l.key = 'query_id' and l.value = '<queryCorrelationId>');
+```
+
+On the backends that carry the bag as a comment, the id is in the statement text, so a query-history text search finds it.
+
+Publisher mints the id rather than accepting one because it is the platform's join key: a caller-supplied value can be omitted, reused across calls, or collide with another caller's, and then the response has nothing meaningful to hand back. To carry your own id as well, declare it under your own property name — `query_id` is reserved:
 
 ```bash
 curl -X POST .../models/orders.malloy/query \
@@ -74,7 +92,7 @@ curl -X POST .../models/orders.malloy/query \
        "queryMetadata":{"request_id":"7f3a"}}'
 ```
 
-The response echoes what was actually attached as `appliedQueryMetadata`, so you can see when a property you declared was clamped or dropped rather than assuming it landed.
+A build needs no response field: every statement of one build carries `run_id`, which is the materialization id the create call already returned (or the caller's own, via `runContext.runId`).
 
 ## The contract
 
@@ -87,6 +105,6 @@ Malloy validates the bag when it issues the statement and **refuses a statement 
 Two things worth knowing:
 
 - **Start a name with a letter.** BigQuery drops a label name it cannot fit to its own grammar (a leading digit or underscore) while every other backend keeps it. Publisher reports that as a package warning rather than letting the property quietly go missing on one backend.
-- **Nothing is silently dropped.** A declaration that violates the contract shows up as a warning on the package; at query time the bag is clamped rather than throwing, and every dropped property is counted in `publisher_query_metadata_properties_dropped_total`. A per-request bag is rejected outright with a 400, since there is a caller to tell.
+- **Nothing is silently dropped.** A declaration that violates the contract shows up as a warning on the package; at query time the bag is clamped rather than throwing, and every dropped property is counted in `publisher_query_metadata_properties_dropped_total`. A per-request bag is rejected outright with a 400, since there is a caller to tell. Under a budget the server's own context is shed last, so `queryCorrelationId` stays usable.
 
 Put no secrets or personal data in a tag — it is visible to anyone who can read the backend's query history, and on the comment-carrying backends it is visible in the query text itself.

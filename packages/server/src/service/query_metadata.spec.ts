@@ -3,6 +3,7 @@ import {
    MAX_PROPERTIES,
    MAX_PROPERTY_VALUE_LENGTH,
    mergeQueryMetadata,
+   mintCorrelationId,
    parseQueryClass,
    parseSuppliedQueryMetadata,
    queryContextProperties,
@@ -94,6 +95,7 @@ describe("queryContextProperties", () => {
             source: "order_rollup",
             trigger: "scheduler",
             runId: "run-7",
+            correlationId: "q-1",
          }),
       ).toEqual({
          class: "materialize",
@@ -102,8 +104,17 @@ describe("queryContextProperties", () => {
          source: "order_rollup",
          trigger: "scheduler",
          run_id: "run-7",
+         query_id: "q-1",
       });
       expect(queryContextProperties({})).toEqual({});
+   });
+});
+
+describe("mintCorrelationId", () => {
+   it("mints a distinct id per call", () => {
+      const first = mintCorrelationId();
+      expect(first).toMatch(/^[0-9a-f-]{36}$/);
+      expect(mintCorrelationId()).not.toBe(first);
    });
 });
 
@@ -137,6 +148,16 @@ describe("mergeQueryMetadata", () => {
          class: "interactive",
          package: "sales",
       });
+   });
+
+   it("reserves query_id: a caller cannot supply the correlation key", () => {
+      // The response hands this back as the join key, so a caller-owned value
+      // would let two calls claim the same id.
+      const resolved = mergeQueryMetadata({
+         request: { query_id: "mine" },
+         context: { correlationId: "server-minted" },
+      });
+      expect(resolved.metadata?.query_id).toBe("server-minted");
    });
 
    it("drops a property whose name violates the contract", () => {

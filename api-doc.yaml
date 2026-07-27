@@ -3387,10 +3387,12 @@ components:
         `materialization.queryMetadata` < model-file
         `## materialization.queryMetadata.*` < `#@ persist queryMetadata.*` <
         per-request `queryMetadata`. The publisher's own context (`class`,
-        `environment`, `package`, `model`, `source`, `trigger`, `run_id`) is
-        applied on top and cannot be overwritten by a declaration. Put no
-        secrets or personal data here — a tag is visible to anyone who can read
-        the backend's query history.
+        `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
+        `query_id`) is applied on top and cannot be overwritten by a declaration
+        — it is what the server is actually doing, and a caller must not be able
+        to relabel it. Put no secrets or personal data here: a tag is visible to
+        anyone who can read the backend's query history, and on a backend with no
+        native tag mechanism it is visible in the statement text.
 
     QueryResult:
       type: object
@@ -3404,20 +3406,23 @@ components:
         resource:
           type: string
           description: Resource path to the query result
-        appliedQueryMetadata:
-          oneOf:
-            - $ref: "#/components/schemas/QueryMetadata"
-            - type: "null"
+        queryCorrelationId:
+          type: ["string", "null"]
           description: >-
-            The metadata actually attached to this query's statements, after
-            layer resolution and after any clamping (see `QueryMetadata`). Null
-            when none was attached. This is the join key back to the backend's
-            own query record: to correlate an API call with a warehouse query,
-            send a property that identifies the call (e.g. a request id) and
-            find the same value in `QUERY_HISTORY` /
-            `INFORMATION_SCHEMA.JOBS` / the query text. Echoed rather than
-            assumed so a caller can see when a property it declared did not fit
-            and was dropped.
+            Id the server minted for this query and attached to its statements as
+            the `query_id` query-metadata property — the join key back to the
+            backend's own record of the query. Find the same value in
+            `QUERY_HISTORY.query_tag` (Snowflake, inside the JSON tag),
+            `INFORMATION_SCHEMA.JOBS.labels` (BigQuery), or the statement text
+            (every other backend), and you have the warehouse-side row for this
+            API call: its cost, its duration, its plan.
+
+            Minted by the server rather than taken from the request because it is
+            the platform's join key — a caller-supplied value can be omitted or
+            reused, leaving a response with nothing to hand back. To carry your
+            own id as well, declare it in `queryMetadata` under your own property
+            name (`query_id` is reserved). Null when no metadata was attached
+            (see `PUBLISHER_QUERY_METADATA`).
         renderLogs:
           type: array
           description:
@@ -4109,14 +4114,12 @@ components:
         # Pass result as an opaque JSON string that is malloyVersion dependent.
         data:
           type: string
-        appliedQueryMetadata:
-          oneOf:
-            - $ref: "#/components/schemas/QueryMetadata"
-            - type: "null"
+        queryCorrelationId:
+          type: ["string", "null"]
           description: >-
-            The metadata actually attached to this statement, after resolution
-            and clamping. Same contract and correlation use as
-            `QueryResult.appliedQueryMetadata`.
+            Id the server minted for this statement and attached as the
+            `query_id` property. Same contract and correlation use as
+            `QueryResult.queryCorrelationId`.
 
     Error:
       type: object

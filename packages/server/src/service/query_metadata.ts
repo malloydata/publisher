@@ -156,12 +156,16 @@ export function queryMetadataPortabilityWarnings(
  * The server's own description of the query, injected on every statement so
  * attribution needs no modeling work from the author.
  *
- * Deliberately neutral and deliberately STABLE: every field is a property of
- * the unit of work, not of the individual call, so repeating the same query
- * produces a byte-identical bag and the comment-carrying dialects keep whatever
- * result caching they do. A platform that wants its own dimensions (tenant,
- * deployment, request id) supplies them as a connection default or per-request
- * override; the publisher does not invent them.
+ * Neutral by design: a platform that wants its own dimensions (tenant,
+ * deployment, cost centre) supplies them as a connection default or a
+ * per-request override, and the publisher does not invent them.
+ *
+ * Every field except the correlation id is a property of the unit of work rather
+ * than of the individual call, so a repeated query produces the same values. The
+ * correlation id is per call by definition — it is the join key a response hands
+ * back — which on a backend with no native tag mechanism makes the statement text
+ * unique and so bypasses an exact-text result cache. That is the deliberate cost
+ * of being able to find one query again.
  */
 export interface QueryContext {
    /** What issued the query. Absent only where the class is genuinely unknown. */
@@ -176,8 +180,29 @@ export interface QueryContext {
    source?: string;
    /** What started a build: `publish`, `on_demand`, `scheduler`. */
    trigger?: string;
-   /** The caller's id for a build run, echoed so a build's statements group. */
+   /**
+    * Groups every statement of one build. The publisher mints it (the
+    * materialization id) unless the caller supplies its own.
+    */
    runId?: string;
+   /**
+    * Identifies this single query, minted by the request boundary that returns
+    * it to the caller (see {@link mintCorrelationId}). Set only where there is a
+    * response field to carry it: an id nobody can read would cost the result
+    * cache and buy nothing.
+    */
+   correlationId?: string;
+}
+
+/**
+ * A fresh correlation id for one query. Minted by the publisher rather than
+ * accepted from the caller because it is the platform's join key: a caller-owned
+ * value can be omitted, reused across calls, or collide with another caller's,
+ * and then a response has nothing meaningful to hand back. A caller that wants
+ * its own request id in the bag declares it under its own property name.
+ */
+export function mintCorrelationId(): string {
+   return crypto.randomUUID();
 }
 
 /** The context as bag properties, dropping every absent field. */
@@ -194,6 +219,7 @@ export function queryContextProperties(context: QueryContext): QueryMetadata {
    put("source", context.source);
    put("trigger", context.trigger);
    put("run_id", context.runId);
+   put("query_id", context.correlationId);
    return out;
 }
 

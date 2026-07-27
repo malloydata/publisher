@@ -23,6 +23,7 @@ import {
 } from "../service/db_utils";
 import {
    mergeQueryMetadata,
+   mintCorrelationId,
    parseQueryClass,
    parseSuppliedQueryMetadata,
    type QueryClass,
@@ -576,10 +577,11 @@ export class ConnectionController {
             queryClass: queryClass ?? "ops",
             environment: environmentName,
             package: packageName,
+            correlationId: mintCorrelationId(),
          },
       });
       runSQLOptions.queryMetadata = resolvedMetadata.metadata;
-      const appliedQueryMetadata = resolvedMetadata.metadata ?? null;
+      const queryCorrelationId = resolvedMetadata.metadata?.query_id ?? null;
 
       // Bound the response with two layered caps:
       //
@@ -641,7 +643,7 @@ export class ConnectionController {
                throw new ConnectionError((error as Error).message);
             }
          }, getQueryTimeoutMs());
-         return { data: JSON.stringify(streamed), appliedQueryMetadata };
+         return { data: JSON.stringify(streamed), queryCorrelationId };
       }
 
       const result = await runWithQueryTimeout(async (signal) => {
@@ -670,7 +672,7 @@ export class ConnectionController {
          );
       }
 
-      return { data: JSON.stringify(result), appliedQueryMetadata };
+      return { data: JSON.stringify(result), queryCorrelationId };
    }
 
    public async getConnectionTemporaryTable(

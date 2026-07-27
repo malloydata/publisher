@@ -5,6 +5,7 @@ import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
 import { bigIntReplacer } from "../json_utils";
 import {
+   mintCorrelationId,
    parseQueryClass,
    parseSuppliedQueryMetadata,
    type QueryClass,
@@ -76,7 +77,7 @@ export class QueryController {
             compactResult,
             rowLimit,
             rowLimitSource,
-            appliedQueryMetadata,
+            queryCorrelationId,
          } = await runWithQueryTimeout(
             (abortSignal) =>
                model.getQueryResults(
@@ -92,6 +93,9 @@ export class QueryController {
                      queryClass,
                      environment: environmentName,
                      version: metadata?.versionId,
+                     // Minted here because this is the boundary that returns
+                     // it; a path with nowhere to put it does not mint one.
+                     correlationId: mintCorrelationId(),
                      // The environment owns the connection configs, so the
                      // default layer is read here rather than from the model.
                      connectionDefault: (connectionName) => {
@@ -126,7 +130,7 @@ export class QueryController {
             // deliberate `limit:`/`top:` from the silently-applied default, and
             // so cannot reproduce the MCP envelope's _limit_hit.
             queryRowLimitSource: rowLimitSource,
-            appliedQueryMetadata,
+            queryCorrelationId,
          } as ApiQuery;
       }
    }
