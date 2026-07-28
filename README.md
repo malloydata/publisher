@@ -80,6 +80,10 @@ A package is just Malloy, so it is not limited to a local file: point its model 
 connection your config defines and the same workspace serves a warehouse. The directory it creates is
 ordinary, so you can commit it, move it, or hand it to someone else.
 
+Started from here, the server serves your package instead of the bundled examples: it picks up the
+`publisher.config.json` the scaffolder wrote alongside it. The walkthrough in the next section is
+written against those examples, so run that one from a directory without this config.
+
 To run the scaffolder without `npm create`, call the package by its full name:
 `npx @malloy-publisher/create-malloy-package sales --data ./orders.csv`. Note that the name is
 `create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, and that npx
