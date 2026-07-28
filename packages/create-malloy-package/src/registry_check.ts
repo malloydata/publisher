@@ -16,8 +16,16 @@
  *
  *   - Fail open. Every failure path resolves undefined and prints nothing. No
  *     network, DNS blocked, proxy, 500, junk body, timeout: silence.
- *   - Bounded, and bounded on the process rather than only on the promise. See
- *     the note on node:https below; this is not a detail.
+ *   - Bounded on the promise always, and on process exit too once the hostname
+ *     resolves. See the note on node:https below; this is not a detail. The one
+ *     case it does not cover is a DNS server that accepts the query and never
+ *     answers: `req.destroy()` releases a socket, and no socket exists yet, so
+ *     the pending `getaddrinfo` holds the loop until the system resolver gives up
+ *     (measured ~1s here, longer on a resolver with retries). `fetch` behaves
+ *     identically there, since it uses the same lookup, so this is not a reason
+ *     to go back; it is a limit worth stating rather than a claim to make.
+ *   - Cancellable, so a run that fails before the output is written does not sit
+ *     waiting on a check nobody will read.
  *   - Opt out with CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK, for CI and for anyone
  *     who does not want the call made at all. Documented in both READMEs.
  *
@@ -39,6 +47,7 @@
  */
 import * as http from "node:http";
 import * as https from "node:https";
+import { preview } from "./names";
 
 /** Public registry endpoint for the dist-tag `latest` manifest. */
 const LATEST_URL =
@@ -85,7 +94,11 @@ export function isOlder(a: string, b: string): boolean | undefined {
  * a total deadline armed when the request is made, which is what actually makes
  * "never hangs" true.
  */
-function getBody(url: string, timeoutMs: number): Promise<string | undefined> {
+function getBody(
+   url: string,
+   timeoutMs: number,
+   onCancel: (cancel: () => void) => void,
+): Promise<string | undefined> {
    return new Promise((resolve) => {
       let settled = false;
       let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -130,6 +143,10 @@ function getBody(url: string, timeoutMs: number): Promise<string | undefined> {
             finish(undefined);
          });
          req.on("error", () => finish(undefined));
+         onCancel(() => {
+            req.destroy();
+            finish(undefined);
+         });
       } catch {
          finish(undefined);
       }
@@ -149,9 +166,10 @@ function getBody(url: string, timeoutMs: number): Promise<string | undefined> {
 export async function fetchLatestVersion(
    url: string = LATEST_URL,
    timeoutMs: number = TIMEOUT_MS,
+   onCancel: (cancel: () => void) => void = () => {},
 ): Promise<string | undefined> {
    if (process.env.CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK) return undefined;
-   const body = await getBody(url, timeoutMs);
+   const body = await getBody(url, timeoutMs, onCancel);
    if (body === undefined) return undefined;
    try {
       const parsed: unknown = JSON.parse(body);
@@ -161,6 +179,31 @@ export async function fetchLatestVersion(
    } catch {
       return undefined;
    }
+}
+
+/** A check in flight, and the means to give up on it. */
+export interface PendingVersionCheck {
+   result: Promise<string | undefined>;
+   /** Stop waiting. Safe to call at any time, including after it has settled. */
+   cancel: () => void;
+}
+
+/**
+ * Start the check. The caller holds the cancel, because the request is fired
+ * before the scaffold and a run that fails has no use for the answer: without
+ * this, the error is printed and the process then sits until the deadline
+ * expires, which is the "reads as a hang" symptom this module exists to avoid,
+ * reached by the other path.
+ */
+export function startVersionCheck(
+   url: string = LATEST_URL,
+   timeoutMs: number = TIMEOUT_MS,
+): PendingVersionCheck {
+   let cancel = (): void => {};
+   const result = fetchLatestVersion(url, timeoutMs, (fn) => {
+      cancel = fn;
+   });
+   return { result, cancel: () => cancel() };
 }
 
 /**
@@ -179,8 +222,15 @@ export function staleScaffolderWarning(
 ): string | undefined {
    if (!latest) return undefined;
    if (isOlder(running, latest) !== true) return undefined;
+   // preview(), like every other externally-sourced string this package prints.
+   // The regex is anchored and ASCII-only so control characters cannot get here,
+   // but it puts no ceiling on length: a 200,000-digit major version parses
+   // (Number() gives Infinity, which compares as older) and would otherwise be
+   // echoed whole. Only npm or a MITM with a valid cert could send it, and both
+   // already control the tarball we are about to run, so this is consistency
+   // rather than defence.
    return [
-      `This is create-malloy-package ${running}, and npm has ${latest}.`,
+      `This is create-malloy-package ${running}, and npm has ${preview(latest)}.`,
       "",
       "The workspace above was written by the older one, so the server version it",
       "pins is whatever that release pinned. If you did not choose this version on",

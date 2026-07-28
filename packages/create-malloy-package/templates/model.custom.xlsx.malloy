@@ -32,9 +32,16 @@
 //
 // `peek` prints the first 25 rows exactly as they sit in the sheet, banner rows
 // and all, so you can count down to the real header row and see which column
-// carries an id. If the workbook has more than one sheet, add `sheet = '...'`;
-// guessing is safe, because a name that does not exist fails loudly and DuckDB
-// names the closest real one back at you.
+// carries an id.
+//
+// It does NOT tell you which sheet you are looking at. With no `sheet =`,
+// read_xlsx reads the first one, and a workbook whose first sheet is a cover
+// page or a notes tab will hand you a plausible-looking answer about the wrong
+// sheet. To see the real names, ask for one you know is wrong: DuckDB refuses
+// and names the closest real sheet back at you, which is the quickest way to
+// learn them.
+//
+//   sheet = 'zzz'   ->   Sheet "zzz" not found ... Did you mean: "Sales Data"
 //
 // STEP 2: read it properly. Name the sheet and the range so the header is found,
 // AND filter the decoration back out, because an explicit range reads every row
@@ -63,7 +70,11 @@
 //     view: overview is { aggregate: record_count }
 //   }
 //
-// Then run `overview` again. It should now match the file.
+// Then reload the package, check the reload itself came back OK, and only then
+// run `overview` again. A reload that fails to compile leaves the previously
+// compiled model serving, so `overview` answers 200 with the OLD number and it
+// looks as though your edit did nothing. The reason is in the reload response,
+// not in the query.
 //
 // If no column is unique to real rows, exclude the labels instead of matching
 // them, and check the count both ways rather than trusting either:

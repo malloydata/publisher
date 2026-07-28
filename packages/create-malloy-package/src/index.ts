@@ -7,7 +7,7 @@ import { Command, Option } from "commander";
 import { ScaffoldError } from "./errors";
 import * as log from "./log";
 import { preview, printable } from "./names";
-import { fetchLatestVersion, staleScaffolderWarning } from "./registry_check";
+import { startVersionCheck, staleScaffolderWarning } from "./registry_check";
 import {
    isSpreadsheet,
    scaffold,
@@ -71,10 +71,11 @@ async function run(
 ): Promise<void> {
    const cwd = process.cwd();
    // Fired before the scaffold rather than after it, so the round trip overlaps
-   // the work instead of being added to it. Nothing awaits it until the output
-   // is otherwise complete, and it never rejects, so the worst case is that we
-   // wait out the remainder of its own timeout on a machine with no network.
-   const latestVersion = fetchLatestVersion();
+   // the work instead of being added to it, and awaited only once the output is
+   // otherwise complete. It never rejects. On the failure path below it is
+   // cancelled rather than awaited, because a run that has already printed an
+   // error should not then sit waiting for an answer nobody will read.
+   const versionCheck = startVersionCheck();
    // Taken before anything is written, so a failure part-way through can name
    // both what this run put on disk and what it rewrote, rather than leaving the
    // user to guess or, worse, telling them nothing was rewritten.
@@ -91,11 +92,18 @@ async function run(
       // Last, so it is the line still on screen, and after the success output so
       // a registry that is slow or unreachable never delays the thing the user
       // actually asked for.
-      const warning = staleScaffolderWarning(version(), await latestVersion);
+      const warning = staleScaffolderWarning(
+         version(),
+         await versionCheck.result,
+      );
       if (warning) {
          process.stdout.write(`\n${log.yellow(warning)}\n`);
       }
    } catch (err) {
+      // Nothing will read the answer now, and the request would otherwise hold
+      // the process open until its deadline, printing the error and then going
+      // quiet for a second and a half.
+      versionCheck.cancel();
       process.stderr.write(
          formatFailure(
             err,

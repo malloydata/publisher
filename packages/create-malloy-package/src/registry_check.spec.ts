@@ -4,6 +4,7 @@ import {
    fetchLatestVersion,
    isOlder,
    staleScaffolderWarning,
+   startVersionCheck,
 } from "./registry_check";
 
 /**
@@ -163,6 +164,28 @@ describe("fetchLatestVersion", () => {
          res.end(JSON.stringify({ version: "\n\n\n\n9.9.9\r" }));
       });
       expect(await fetchLatestVersion(url)).toBe("9.9.9");
+   });
+
+   test("cancel settles it immediately, for a run that failed before the output", async () => {
+      // Without this the scaffolder prints its error and then sits until the
+      // deadline expires, waiting on an answer nobody is going to read, which is
+      // the same "reads as a hang" symptom on the other code path.
+      let timer: ReturnType<typeof setInterval> | undefined;
+      const url = await serve((_req, res) => {
+         res.writeHead(200, { "content-type": "application/json" });
+         timer = setInterval(() => {
+            if (!res.writableEnded) res.write("x");
+         }, 50);
+      });
+      const check = startVersionCheck(url, 5000);
+      const started = Date.now();
+      check.cancel();
+      expect(await check.result).toBeUndefined();
+      // Nowhere near the 5s deadline it would otherwise have waited out.
+      expect(Date.now() - started).toBeLessThan(1000);
+      // Calling it again after it has settled is safe.
+      expect(() => check.cancel()).not.toThrow();
+      if (timer) clearInterval(timer);
    });
 
    test("makes no request at all when the opt-out is set", async () => {
