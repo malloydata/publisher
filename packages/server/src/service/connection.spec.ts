@@ -1,5 +1,12 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -1382,7 +1389,10 @@ describe("connection integration tests", () => {
                // specs in this file, and enough of them makes a sibling test's
                // schema enumeration miss `public`.
                afterAll(async () => {
-                  if (!hasPostgresCredentials() || createdSchemas.length === 0) {
+                  if (
+                     !hasPostgresCredentials() ||
+                     createdSchemas.length === 0
+                  ) {
                      return;
                   }
                   const workDir = await fs.mkdtemp(
@@ -1415,7 +1425,10 @@ describe("connection integration tests", () => {
                   name: string,
                   metadataSchema?: string,
                ) => {
-                  const dataDir = path.join(testEnvironmentPath, `${name}_data`);
+                  const dataDir = path.join(
+                     testEnvironmentPath,
+                     `${name}_data`,
+                  );
                   await fs.mkdir(dataDir, { recursive: true });
                   return {
                      catalog: {
@@ -1478,7 +1491,9 @@ describe("connection integration tests", () => {
                      const schema = uniqueSchema("lands");
                      const cfg = await duckLakeConfig("dl_lands", schema);
                      const c = await bootstrapCatalog("dl_lands", cfg);
-                     await c.runSQL(`CREATE OR REPLACE TABLE dl_lands.t AS SELECT 1 AS x`);
+                     await c.runSQL(
+                        `CREATE OR REPLACE TABLE dl_lands.t AS SELECT 1 AS x`,
+                     );
 
                      // Read the catalog database directly: the ducklake_*
                      // bookkeeping tables must be in `schema`, which DuckLake
@@ -1510,8 +1525,12 @@ describe("connection integration tests", () => {
                         await duckLakeConfig("dl_b", uniqueSchema("b")),
                      );
 
-                     await a.runSQL(`CREATE OR REPLACE TABLE dl_a.only_in_a AS SELECT 1`);
-                     await b.runSQL(`CREATE OR REPLACE TABLE dl_b.only_in_b AS SELECT 2`);
+                     await a.runSQL(
+                        `CREATE OR REPLACE TABLE dl_a.only_in_a AS SELECT 1`,
+                     );
+                     await b.runSQL(
+                        `CREATE OR REPLACE TABLE dl_b.only_in_b AS SELECT 2`,
+                     );
 
                      const tablesOf = async (
                         conn: DuckDBConnection,
@@ -1627,9 +1646,13 @@ describe("connection integration tests", () => {
                      const schema = uniqueSchema("idle");
                      const cfg = await duckLakeConfig("dl_idle", schema);
                      const c = await bootstrapCatalog("dl_idle", cfg);
-                     await c.runSQL(`CREATE OR REPLACE TABLE dl_idle.t AS SELECT 5 AS x`);
+                     await c.runSQL(
+                        `CREATE OR REPLACE TABLE dl_idle.t AS SELECT 5 AS x`,
+                     );
                      expect(
-                        firstValue((await c.runSQL(`SELECT x FROM dl_idle.t;`)).rows),
+                        firstValue(
+                           (await c.runSQL(`SELECT x FROM dl_idle.t;`)).rows,
+                        ),
                      ).toBe(5);
 
                      // idle() drops the instance and defers re-attach.
@@ -1638,7 +1661,9 @@ describe("connection integration tests", () => {
                      // Reading again must transparently re-attach and return the
                      // same data — no error, no stale/empty answer.
                      expect(
-                        firstValue((await c.runSQL(`SELECT x FROM dl_idle.t;`)).rows),
+                        firstValue(
+                           (await c.runSQL(`SELECT x FROM dl_idle.t;`)).rows,
+                        ),
                      ).toBe(5);
                   },
                   { timeout: 60000 },

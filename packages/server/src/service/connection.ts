@@ -31,10 +31,7 @@ import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import { components } from "../api";
-import {
-   getDuckLakeIdleTimeoutMs,
-   getExtensionFetchPolicy,
-} from "../config";
+import { getDuckLakeIdleTimeoutMs, getExtensionFetchPolicy } from "../config";
 import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
