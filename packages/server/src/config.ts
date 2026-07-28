@@ -596,42 +596,6 @@ export const getPersistStorageMode = (): PersistStorageMode => {
 };
 
 /**
- * How long a DuckLake connection may sit unused before its catalog attach is
- * released, from `DUCKLAKE_IDLE_TIMEOUT_MS`. `0` (or unset) disables idling and
- * keeps every attach for the process lifetime — the pre-existing behavior.
- *
- * Each attached DuckLake holds ONE catalog-database backend open for as long as
- * the attach lives, and that cost scales with the number of DuckLake connections
- * configured across a server's environments rather than with query volume. On a
- * long-lived server that lazily touches many environments the count converges on
- * "every DuckLake ever used" and never comes back down.
- *
- * Releasing is safe because re-attach is lazy and guarded: the resolve path
- * re-attaches whenever the catalog is not currently attached, so an idled
- * connection heals on its next use.
- *
- * It is not free, though, so prefer a generous window. Publisher does not use
- * malloy's `shareable` connections, so idling takes the non-shareable path:
- * the DuckDB instance is dropped rather than just detaching a file, and the next
- * use rebuilds it — a new instance, the DuckLake/postgres/aws/httpfs extension
- * loads, any cloud-storage secret, the catalog-format preflight, and the ATTACH
- * itself. Correctness is unaffected either way; the cost of idling too eagerly is
- * latency on the next query, not an error.
- */
-export const getDuckLakeIdleTimeoutMs = (): number => {
-   const raw = process.env.DUCKLAKE_IDLE_TIMEOUT_MS;
-   if (raw === undefined || raw.trim() === "") return 0;
-   const value = Number(raw.trim());
-   if (!Number.isFinite(value) || value < 0) {
-      throw new Error(
-         `DUCKLAKE_IDLE_TIMEOUT_MS must be a non-negative number of ` +
-            `milliseconds (got ${JSON.stringify(raw)})`,
-      );
-   }
-   return value;
-};
-
-/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
  * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).
