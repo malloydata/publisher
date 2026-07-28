@@ -57,27 +57,34 @@ The command above serves the bundled examples. To build a package around your ow
 scaffold one:
 
 ```bash
+mkdir my-data && cd my-data
 npm create @malloy-publisher/malloy-package sales
 ```
 
-That writes the package (a manifest and a starter model), registers it so the server actually serves
-it, and sets up the workspace around it: start and reset scripts, an MCP config, agent instructions,
-and the Malloy agent skills as files your agent can read.
+Make the directory first. The package lands in `./sales`, but the workspace around it is written to
+the current directory, so running this somewhere you did not mean to scatters config files through
+it. That workspace is start and reset scripts, an MCP config, agent instructions, and the Malloy
+agent skills as files your agent can read. The package itself is a manifest and a starter model,
+registered so the server serves it.
 
-Seed the starter model from a local file with `--data` (CSV, Parquet, or Excel). The two entry points
-differ in one way that matters, so both forms are shown:
+Seed the starter model from a local file with `--data` (CSV, Parquet, or Excel):
 
 ```bash
-npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv   # npm create needs the --
-npx @malloy-publisher/create-malloy-package sales --data ./orders.csv      # npx does not, and rejects it
+npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
 ```
 
-`npm create` reads anything before the `--` as one of its own options, so the separator is required
-there. `npx` passes flags through untouched, and a `--` would reach the tool as an extra argument.
+The `--` is required. Without it, `npm create` reads `--data` as one of its own options and only the
+filename reaches the scaffolder, as a stray argument, so it stops.
 
 A package is just Malloy, so it is not limited to a local file: point its model at a database
 connection your config defines and the same workspace serves a warehouse. The directory it creates is
 ordinary, so you can commit it, move it, or hand it to someone else.
+
+To run the scaffolder without `npm create`, call the package by its full name:
+`npx @malloy-publisher/create-malloy-package sales --data ./orders.csv`. Note that the name is
+`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, and that npx
+needs no separator: it forwards flags as they are, so a `--` there leaves the flags after it to
+arrive as stray arguments.
 
 ## Point your agent at it
 
