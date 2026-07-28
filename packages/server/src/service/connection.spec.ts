@@ -1612,6 +1612,39 @@ describe("connection integration tests", () => {
                );
 
                it(
+                  "releases an idle catalog attach and re-attaches on next use",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     // An attached DuckLake pins one catalog-database backend for
+                     // the life of the attach, so a long-lived server that has
+                     // touched many environments only ever climbs. Idling gives
+                     // the backend back; the value of the test is that the
+                     // connection still WORKS afterwards, since re-attach is what
+                     // makes releasing safe.
+                     const schema = uniqueSchema("idle");
+                     const cfg = await duckLakeConfig("dl_idle", schema);
+                     const c = await bootstrapCatalog("dl_idle", cfg);
+                     await c.runSQL(`CREATE OR REPLACE TABLE dl_idle.t AS SELECT 5 AS x`);
+                     expect(
+                        firstValue((await c.runSQL(`SELECT x FROM dl_idle.t;`)).rows),
+                     ).toBe(5);
+
+                     // idle() drops the instance and defers re-attach.
+                     await c.idle();
+
+                     // Reading again must transparently re-attach and return the
+                     // same data — no error, no stale/empty answer.
+                     expect(
+                        firstValue((await c.runSQL(`SELECT x FROM dl_idle.t;`)).rows),
+                     ).toBe(5);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
                   "attaches without a metadataSchema exactly as before",
                   async () => {
                      if (!hasPostgresCredentials()) {

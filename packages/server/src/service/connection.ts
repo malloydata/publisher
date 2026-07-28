@@ -31,7 +31,10 @@ import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import { components } from "../api";
-import { getExtensionFetchPolicy } from "../config";
+import {
+   getDuckLakeIdleTimeoutMs,
+   getExtensionFetchPolicy,
+} from "../config";
 import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
@@ -1664,6 +1667,62 @@ export function buildEnvironmentMalloyConfig(
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
 
+   // Last time each DuckLake connection was resolved, driving the idle sweep
+   // below. An attached DuckLake pins one catalog-database backend for as long
+   // as the attach lives, and that cost scales with the number of DuckLake
+   // connections a server has touched rather than with query volume — so on a
+   // long-lived server it only ever climbs.
+   const duckLakeLastUsedMs = new Map<string, number>();
+   const duckLakeIdleTimeoutMs = getDuckLakeIdleTimeoutMs();
+
+   /**
+    * Release the catalog attach of every DuckLake connection idle longer than
+    * the configured timeout. Safe by construction: the resolve path re-attaches
+    * whenever the catalog is not currently attached, so an idled connection
+    * heals on its next use and the worst case is one extra ATTACH.
+    *
+    * Best-effort per connection — one failure must not stop the sweep, and a
+    * connection that cannot be idled simply keeps its attach until next time.
+    */
+   const sweepIdleDuckLakes = async (): Promise<void> => {
+      const now = Date.now();
+      for (const [name, promise] of duckLakeCache) {
+         const lastUsed = duckLakeLastUsedMs.get(name);
+         if (lastUsed === undefined || now - lastUsed < duckLakeIdleTimeoutMs) {
+            continue;
+         }
+         try {
+            const connection = await promise;
+            await connection.idle();
+            // Drop the stamp so a connection that is never used again is not
+            // re-swept every tick.
+            duckLakeLastUsedMs.delete(name);
+            logger.info("Released idle DuckLake catalog attach", {
+               connectionName: name,
+               idleMs: now - lastUsed,
+            });
+         } catch (error) {
+            logger.warn("Failed to release idle DuckLake catalog attach", {
+               connectionName: name,
+               error: error instanceof Error ? error.message : String(error),
+            });
+         }
+      }
+   };
+
+   // Sweep at a fraction of the timeout so the observed idle age overshoots the
+   // configured value by at most that fraction. `unref` keeps the timer from
+   // holding the process open. Cleared in releaseConnections, so a retired
+   // config generation stops sweeping.
+   const idleSweepTimer =
+      duckLakeIdleTimeoutMs > 0
+         ? setInterval(
+              () => void sweepIdleDuckLakes(),
+              Math.max(1000, Math.floor(duckLakeIdleTimeoutMs / 4)),
+           )
+         : undefined;
+   idleSweepTimer?.unref?.();
+
    const malloyConfig = new MalloyConfig(assembled.pojo, {
       config: contextOverlay({ rootDirectory: environmentPath }),
    });
@@ -1698,6 +1757,9 @@ export function buildEnvironmentMalloyConfig(
             metadata: EnvironmentConnectionMetadata | undefined,
          ): Promise<Connection> => {
             if (metadata?.isDuckLake) {
+               // Stamped before resolution, not after, so a slow ATTACH cannot
+               // let the sweeper judge this connection idle mid-resolve.
+               duckLakeLastUsedMs.set(name!, Date.now());
                let connectionPromise = duckLakeCache.get(name!);
                if (!connectionPromise) {
                   const entry = assembled.pojo.connections[name!];
@@ -1837,6 +1899,11 @@ export function buildEnvironmentMalloyConfig(
       malloyConfig,
       apiConnections: assembled.apiConnections,
       releaseConnections: async () => {
+         // Stop sweeping before tearing the generation down: a sweep racing the
+         // release would idle connections that are already closing.
+         if (idleSweepTimer) {
+            clearInterval(idleSweepTimer);
+         }
          const wrapperPromises: Promise<Connection>[] = [
             ...duckLakeCache.values(),
             ...snowflakeJwtCache.values(),
