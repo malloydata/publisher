@@ -14,20 +14,27 @@
 //
 // STEP 1: look at the sheet, because the fix needs three things this file cannot
 // tell you: which sheet, which row the header is on, and which column marks a
-// real row. Read the top-left corner raw, as text, with header detection off:
+// real row. Add this to the bottom of THIS FILE, reload the package, then run
+// `{{sourceName}}_probe -> peek`. Delete it once you have what you need.
 //
-//   run: duckdb.sql("""
+//   source: {{sourceName}}_probe is duckdb.sql("""
 //     SELECT * FROM read_xlsx(
 //       '{{dataPath}}',
 //       header = false, range = 'A1:Z25', all_varchar = true
 //     )
-//   """) -> { select: *; limit: 25 }
+//   """) extend {
+//     view: peek is { select: *; limit: 25 }
+//   }
 //
-// That prints the first 25 rows exactly as they sit in the sheet, so you can
-// count down to the real header row and see which column carries an id. If the
-// workbook has more than one sheet, add `sheet = '...'`; a name that does not
-// exist fails loudly and the error lists the sheets that do, which is the quickest
-// way to learn them.
+// It has to go in the file rather than being sent as a one-off query: Publisher
+// refuses raw SQL in an ad-hoc query ("`duckdb.sql(...)` cannot be used in a
+// restricted query"), and only allows it where it is part of a model.
+//
+// `peek` prints the first 25 rows exactly as they sit in the sheet, banner rows
+// and all, so you can count down to the real header row and see which column
+// carries an id. If the workbook has more than one sheet, add `sheet = '...'`;
+// guessing is safe, because a name that does not exist fails loudly and DuckDB
+// names the closest real one back at you.
 //
 // STEP 2: read it properly. Name the sheet and the range so the header is found,
 // AND filter the decoration back out, because an explicit range reads every row
@@ -81,11 +88,26 @@
 // serial numbers; and every number is a double. `skill:malloy-gotchas-modeling`
 // has the full list.
 //
-// Note that `all_varchar = true` hands you every column as a string, so measures
-// over it need a cast: `total_amount is amount::number.sum()`, not
-// `amount.sum()`. Cast at the point of definition and the rest of the model does
-// not have to think about it. (`ignore_errors = true` is the other way: it keeps
-// real types and nulls the cells that do not fit.)
+// Note that `all_varchar = true` hands you every column as a string, so a measure
+// cannot just sum it. Do the conversion in the SQL above, where you already are,
+// rather than in the measure:
+//
+//   SELECT
+//     *,
+//     try_cast(regexp_replace("Units Sold", '[^0-9.]', '', 'g') AS DOUBLE) AS units_sold_num
+//   FROM read_xlsx(...)
+//
+// then `measure: total_units is units_sold_num.sum()` in Malloy. `try_cast` is
+// what makes it survive: a real export has cells reading `N/A` or `12 (est)`, and
+// a plain cast throws on the first one at query time. Note the regex keeps the
+// digits out of `12 (est)`, so those rows count as 12; strip the whole cell
+// instead if an estimate should not count.
+//
+// The Malloy-side form is `sum(amount::number)`, not `amount::number.sum()`,
+// which does not parse. It is fine on a clean column and throws on a dirty one,
+// which is why the SQL layer is the better place.
+// (`ignore_errors = true` on read_xlsx is the other way: it keeps real types and
+// nulls the cells that do not fit.)
 //
 // Beyond that this is the same starting point as any seeded package: the
 // scaffolder does not read your columns, so it begins with a row count. Build it

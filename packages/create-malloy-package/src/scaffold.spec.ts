@@ -368,6 +368,22 @@ describe("scaffold: --data", () => {
       // And stop_at_empty must stay named as the wrong answer: it truncates at
       // the first blank spacer, which on a real sheet is mid-data (220 rows).
       expect(model).toContain("stop_at_empty");
+      // The discovery step, without which the remedy names three values (sheet,
+      // header row, id column) the reader has no way to find. It has to be a
+      // model source: Publisher rejects raw SQL in an ad-hoc query with
+      // "`duckdb.sql(...)` cannot be used in a restricted query", verified live,
+      // so an example phrased as a one-off query would not run.
+      expect(model).toContain("_probe");
+      expect(model).toContain("header = false");
+      // Cleaning belongs in the SQL layer. Verified live: `sum(x::number)` is the
+      // right Malloy syntax but throws at query time on a real sheet's 'N/A',
+      // and `x::number.sum()` does not parse at all.
+      expect(model).toContain("try_cast");
+      // Assert the form that WORKS is present. A naive
+      // `.not.toContain("::number.sum()")` was tried and is wrong: the template
+      // names the broken form on purpose, in order to warn about it, so the
+      // negative assertion failed on the very sentence doing the warning.
+      expect(model).toContain("sum(amount::number)");
       // Rendered, not left as a placeholder.
       expect(model).not.toContain("{{");
       expect(model).toContain("'data/budget.xlsx'");
