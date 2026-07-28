@@ -288,17 +288,20 @@ function buildDuckdbEntry(
  * strict where a human is waiting, lenient where a config is being loaded.
  */
 function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
-   const metadata = connection.queryMetadata;
-   if (!metadata) return;
-   const problems = [
-      ...queryMetadataViolations(metadata),
-      ...queryMetadataAdvisoryWarnings(metadata),
-   ];
-   for (const problem of problems) {
-      logger.warn("Connection query metadata will not apply as declared", {
-         connectionName: connection.name,
-         problem,
-      });
+   for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
+      const metadata = connection[field];
+      if (!metadata) continue;
+      const problems = [
+         ...queryMetadataViolations(metadata),
+         ...queryMetadataAdvisoryWarnings(metadata),
+      ];
+      for (const problem of problems) {
+         logger.warn("Connection query metadata will not apply as declared", {
+            connectionName: connection.name,
+            field,
+            problem,
+         });
+      }
    }
 }
 

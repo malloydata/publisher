@@ -129,11 +129,13 @@ function validateAdminAuthoredConnection(
    // every statement on the connection missing the property its operator
    // believes they configured. Config LOAD warns instead of throwing (see
    // assembleEnvironmentConnections): a tag must never fail an environment.
-   const violations = queryMetadataViolations(connectionConfig.queryMetadata);
-   if (violations.length > 0) {
-      throw new BadRequestError(
-         `Connection "${connectionName}" queryMetadata is invalid: ${violations.join("; ")}`,
-      );
+   for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
+      const violations = queryMetadataViolations(connectionConfig[field]);
+      if (violations.length > 0) {
+         throw new BadRequestError(
+            `Connection "${connectionName}" ${field} is invalid: ${violations.join("; ")}`,
+         );
+      }
    }
 }
 
@@ -172,18 +174,25 @@ export class ConnectionController {
    private async connectionQueryMetadata(
       environmentName: string,
       connectionName: string,
-   ): Promise<QueryMetadata | null> {
+   ): Promise<{
+      default: QueryMetadata | null;
+      enforced: QueryMetadata | null;
+   }> {
       try {
          const environment = await this.environmentStore.getEnvironment(
             environmentName,
             false,
          );
-         return (
-            this.getApiConnectionForLookup(environment, connectionName)
-               .queryMetadata ?? null
+         const connection = this.getApiConnectionForLookup(
+            environment,
+            connectionName,
          );
+         return {
+            default: connection.queryMetadata ?? null,
+            enforced: connection.queryMetadataEnforced ?? null,
+         };
       } catch {
-         return null;
+         return { default: null, enforced: null };
       }
    }
 
@@ -580,11 +589,13 @@ export class ConnectionController {
       } catch (error) {
          throw new BadRequestError((error as Error).message);
       }
+      const connectionLayers = await this.connectionQueryMetadata(
+         environmentName,
+         connectionName,
+      );
       const resolvedMetadata = mergeQueryMetadata({
-         connection: await this.connectionQueryMetadata(
-            environmentName,
-            connectionName,
-         ),
+         connection: connectionLayers.default,
+         enforced: connectionLayers.enforced,
          request: requestMetadata,
          context: {
             // Raw SQL against a connection is platform maintenance unless the

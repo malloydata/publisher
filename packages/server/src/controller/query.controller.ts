@@ -97,13 +97,16 @@ export class QueryController {
                      // it; a path with nowhere to put it does not mint one.
                      correlationId: mintCorrelationId(),
                      // The environment owns the connection configs, so the
-                     // default layer is read here rather than from the model.
-                     connectionDefault: (connectionName) => {
+                     // default and enforced layers are read here rather than
+                     // from the model.
+                     connectionMetadata: (connectionName) => {
                         try {
-                           return (
-                              environment.getApiConnection(connectionName)
-                                 .queryMetadata ?? null
-                           );
+                           const connection =
+                              environment.getApiConnection(connectionName);
+                           return {
+                              default: connection.queryMetadata,
+                              enforced: connection.queryMetadataEnforced,
+                           };
                         } catch {
                            return null;
                         }

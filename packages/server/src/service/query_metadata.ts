@@ -271,7 +271,20 @@ export interface QueryMetadataLayers {
    model?: QueryMetadata | null;
    /** The caller's per-request override. */
    request?: QueryMetadata | null;
-   /** The server's own context, which wins over every author layer. */
+   /**
+    * Properties the connection declares as the deployment's own, which no
+    * declaration can overwrite and which outlive every author property when the
+    * bag has to shrink.
+    *
+    * The connection API is admin-authored; a package annotation and a request are
+    * not. A host that runs one Publisher for several tenants needs the admin
+    * layer to win for the properties it is billed by — otherwise the tenant label
+    * is both forgeable (a `#@ persist queryMetadata.tenant=…` outranks a
+    * connection default) and the first thing shed under budget, which is a poor
+    * showing for the property finance reads.
+    */
+   enforced?: QueryMetadata | null;
+   /** The server's own context, which wins over every other layer. */
    context?: QueryContext;
 }
 
@@ -307,12 +320,15 @@ function sanitizeValue(value: string): string {
  * Merge the layers into one bag Malloy will accept, and report what was lost.
  * Never throws: metadata must not be the reason a query or a build fails.
  *
- * Precedence is most-specific-wins per property (connection < model < request),
- * with server context applied last so a caller cannot overwrite the server's
- * own attribution. When the bag has to shrink — the 20-property cap, or
- * Snowflake's 2000-char serialized tag — author properties go before context
- * properties: losing a caller's `team` label degrades attribution, losing
- * `class` or `package` breaks it.
+ * Precedence is most-specific-wins per property across the author layers
+ * (connection < model < request), then the connection's ENFORCED properties,
+ * then the server's context — so neither a declaration nor a caller can
+ * overwrite what the deployment or the server says about the query.
+ *
+ * Shedding runs in the same order, from the bottom: the 20-property cap and
+ * Snowflake's 2000-char serialized tag take author properties first (losing a
+ * caller's `team` label degrades attribution), then enforced properties, and
+ * only then context (losing `class` or `query_id` breaks it).
  *
  * Returns no metadata at all when `PUBLISHER_QUERY_METADATA=off`, which is the
  * escape hatch for a deployment that does not want the publisher touching the
@@ -326,14 +342,19 @@ export function mergeQueryMetadata(
    const drops: { name: string; reason: QueryMetadataDropReason }[] = [];
    const contextProperties = queryContextProperties(layers.context ?? {});
 
-   // Author layers first, least specific to most, then context on top. Each
+   // Layers in precedence order, least specific first, then context on top. Each
    // property remembers the layer whose value SURVIVED, not the first layer that
    // mentioned it, so the shed order below matches the precedence that produced
    // the bag.
    const merged: QueryMetadata = {};
    const winningLayer = new Map<string, number>();
-   const authorLayers = [layers.connection, layers.model, layers.request];
-   authorLayers.forEach((layer, index) => {
+   const orderedLayers = [
+      layers.connection,
+      layers.model,
+      layers.request,
+      layers.enforced,
+   ];
+   orderedLayers.forEach((layer, index) => {
       for (const [name, value] of Object.entries(layer ?? {})) {
          if (
             !PROPERTY_NAME_RE.test(name) ||
@@ -355,9 +376,10 @@ export function mergeQueryMetadata(
    }
 
    // Shedding runs least-specific-first, the same order that decides which value
-   // wins: a connection-wide default is the cheapest thing to lose, and the
-   // caller's own per-request property — most likely its join key into whatever
-   // it is correlating — is the last author property standing.
+   // wins: a connection-wide default is the cheapest thing to lose, the caller's
+   // own per-request property — most likely its join key into whatever it is
+   // correlating — outlives it, and an enforced property outlives them all,
+   // because the deployment is billed by it.
    const shedOrder = [...winningLayer.entries()]
       .filter(([name]) => !(name in contextProperties))
       .sort((a, b) => a[1] - b[1])

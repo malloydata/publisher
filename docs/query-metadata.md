@@ -69,6 +69,21 @@ Layers 2–4 describe how a source is **built**. A live query against the model 
 
 Under pressure — the 20-property cap, or Snowflake's tag limit — properties are given up least-specific-first, so a per-request property outlives a connection-wide one and the server's context outlives both.
 
+### Properties the deployment owns
+
+`queryMetadataEnforced` on the connection is the same kind of map, with two differences: **no declaration can overwrite it**, and it is given up only after every declared property when a bag has to shrink. Use it for what a host is billed or audited by.
+
+The reason it exists: the connection API is administered, while a package annotation and a query request are not. Without it, a host running one Publisher for several tenants would label a connection `tenant=acme` and any package author in that environment could relabel their queries `tenant=someone_else` — or push the label out of the bag entirely by declaring twenty properties of their own. The server's own context still wins over enforced properties, because it describes what the server is actually doing rather than who is paying for it.
+
+```jsonc
+// connection config
+{
+   "name": "warehouse",
+   "queryMetadata": { "team": "finance" },          // a default; anyone can override
+   "queryMetadataEnforced": { "tenant": "acme" }    // the deployment's; nobody can
+}
+```
+
 ## Correlating an API call with a backend query
 
 A query response carries `queryCorrelationId` — the id Publisher minted for that query and attached as its `query_id` property. Look the same value up on the other side:

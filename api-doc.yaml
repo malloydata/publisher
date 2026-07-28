@@ -3569,6 +3569,27 @@ components:
             properties that are true of the whole connection (which deployment,
             which team owns it). Not a secret: it round-trips like any plain
             field and is never redacted.
+        queryMetadataEnforced:
+          $ref: "#/components/schemas/QueryMetadata"
+          description: >-
+            Per-query metadata this deployment owns: applied to every statement
+            the connection issues, NOT overridable by a package, model-file,
+            source or per-request declaration, and given up only after every
+            declared property when a bag has to shrink.
+
+            For the properties a host is billed or audited by. The connection API
+            is administered; a package annotation and a query request are not — so
+            a host running one Publisher for several tenants can label a
+            connection's traffic without a tenant relabelling it as someone
+            else's, or pushing the label out of the bag by declaring twenty
+            properties of its own. The server's own context (`class`,
+            `environment`, `query_id`, …) still wins over these, because it
+            describes what the server is actually doing.
+
+            Same contract as `queryMetadata`, counted against the same
+            20-property budget. Rejected with 400 on a connection write when it
+            violates the contract, and reported as a warning when a stored config
+            loads.
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         proxy:

@@ -108,6 +108,29 @@ interface BuildQueryMetadata {
 }
 
 /**
+ * A connection's two metadata layers: the overridable default and the properties
+ * the deployment enforces.
+ *
+ * Fails open — a build must not fail because a connection's config could not be
+ * read for its tags — so an unreadable connection costs the layers, never the
+ * statement.
+ */
+function connectionMetadataLayers(
+   environment: BuildEnvironment,
+   connectionName: string,
+): { default: QueryMetadata | null; enforced: QueryMetadata | null } {
+   try {
+      const connection = environment.getApiConnection(connectionName);
+      return {
+         default: connection?.queryMetadata ?? null,
+         enforced: connection?.queryMetadataEnforced ?? null,
+      };
+   } catch {
+      return { default: null, enforced: null };
+   }
+}
+
+/**
  * Length of the sourceEntityId prefix used when synthesizing staging table
  * names. 12 hex chars is 48 bits of entropy, well inside every dialect's
  * identifier limit (Postgres is the tightest at 63).
@@ -1396,17 +1419,13 @@ export class MaterializationService {
       buildMetadata: BuildQueryMetadata | undefined,
    ): { queryMetadata?: QueryMetadata } {
       if (!buildMetadata) return {};
-      let connectionDefault: QueryMetadata | null = null;
-      try {
-         connectionDefault =
-            environment.getApiConnection(persistSource.connectionName)
-               ?.queryMetadata ?? null;
-      } catch {
-         // The connection resolves for the build itself; if its config can't be
-         // read here, the default layer is simply absent.
-      }
+      const connectionLayers = connectionMetadataLayers(
+         environment,
+         persistSource.connectionName,
+      );
       const resolved = mergeQueryMetadata({
-         connection: connectionDefault,
+         connection: connectionLayers.default,
+         enforced: connectionLayers.enforced,
          model: resolveQueryMetadata(
             persistSource,
             buildMetadata.packageMaterialization,
@@ -1434,16 +1453,13 @@ export class MaterializationService {
       packageName: string,
       materializationId: string,
    ): { queryMetadata?: QueryMetadata } {
-      let connectionDefault: QueryMetadata | null = null;
-      try {
-         connectionDefault =
-            environment.getApiConnection(connectionName)?.queryMetadata ?? null;
-      } catch {
-         // See buildRunSQLOptions: an unreadable connection config costs the
-         // default layer, never the statement.
-      }
+      const connectionLayers = connectionMetadataLayers(
+         environment,
+         connectionName,
+      );
       const resolved = mergeQueryMetadata({
-         connection: connectionDefault,
+         connection: connectionLayers.default,
+         enforced: connectionLayers.enforced,
          context: {
             queryClass: "ops",
             environment: environmentName,

@@ -194,6 +194,44 @@ describe("mergeQueryMetadata", () => {
       expect(resolved.metadata?.query_id).toBe("server-minted");
    });
 
+   it("lets an enforced property beat every declaration", () => {
+      // The connection API is administered; a package annotation and a request
+      // are not. A tenant must not be able to relabel the traffic its host is
+      // billed for.
+      const resolved = mergeQueryMetadata({
+         connection: { org: "acme" },
+         model: { org: "not_acme" },
+         request: { org: "definitely_not_acme" },
+         enforced: { org: "acme" },
+      });
+      expect(resolved.metadata?.org).toBe("acme");
+   });
+
+   it("still lets the server's own context beat an enforced property", () => {
+      // Context describes what the server is actually doing; an admin cannot
+      // declare a query into a different class.
+      const resolved = mergeQueryMetadata({
+         enforced: { class: "interactive", org: "acme" },
+         context: { queryClass: "materialize" },
+      });
+      expect(resolved.metadata).toEqual({ class: "materialize", org: "acme" });
+   });
+
+   it("sheds enforced properties after every declared one", () => {
+      // The point of enforcing a property is that it is still there at the end:
+      // twenty declared properties must not be able to push it out of the bag.
+      const request: Record<string, string> = {};
+      for (let i = 0; i < MAX_PROPERTIES; i++) request[`p${i}`] = "v";
+      const resolved = mergeQueryMetadata({
+         request,
+         enforced: { org: "acme" },
+         context: { queryClass: "interactive" },
+      });
+      expect(resolved.metadata?.org).toBe("acme");
+      expect(resolved.metadata?.class).toBe("interactive");
+      expect(resolved.drops.every((d) => d.name.startsWith("p"))).toBe(true);
+   });
+
    it("drops a property whose name violates the contract", () => {
       // Never throws: it would fail the customer's query at dispatch.
       const resolved = mergeQueryMetadata({

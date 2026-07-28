@@ -78,6 +78,17 @@ describe("ConnectionController connection queryMetadata", () => {
       ).rejects.toThrow(/queryMetadata is invalid/);
    });
 
+   it("rejects an enforced bag the contract cannot render", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      await expect(
+         controller.addConnection("env", "warehouse", {
+            name: "warehouse",
+            type: "postgres",
+            queryMetadataEnforced: { "org.id": "acme" },
+         }),
+      ).rejects.toThrow(/queryMetadataEnforced is invalid/);
+   });
+
    it("accepts a conforming connection default", async () => {
       const { controller } = buildController(sinon.stub().resolves());
       const addConnection = sinon.stub().resolves();

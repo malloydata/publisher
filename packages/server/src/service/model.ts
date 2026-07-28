@@ -124,7 +124,15 @@ export interface ModelQueryMetadataInput {
     * carry it, which is why it is not minted here.
     */
    correlationId?: string;
-   connectionDefault?: (connectionName: string) => QueryMetadata | null;
+   /**
+    * The executing connection's two metadata layers: its overridable default and
+    * the properties the deployment enforces. Supplied by the controller, which
+    * owns the environment; the model only knows the connection by name.
+    */
+   connectionMetadata?: (connectionName: string) => {
+      default?: QueryMetadata | null;
+      enforced?: QueryMetadata | null;
+   } | null;
 }
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -2628,16 +2636,20 @@ export class Model {
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,
    ): QueryMetadata | undefined {
-      let connectionDefault: QueryMetadata | null = null;
-      if (connectionName && input?.connectionDefault) {
+      let connectionLayers: {
+         default?: QueryMetadata | null;
+         enforced?: QueryMetadata | null;
+      } | null = null;
+      if (connectionName && input?.connectionMetadata) {
          try {
-            connectionDefault = input.connectionDefault(connectionName);
+            connectionLayers = input.connectionMetadata(connectionName);
          } catch {
-            connectionDefault = null;
+            connectionLayers = null;
          }
       }
       const resolved = mergeQueryMetadata({
-         connection: connectionDefault,
+         connection: connectionLayers?.default,
+         enforced: connectionLayers?.enforced,
          request: input?.request,
          context: {
             queryClass: input?.queryClass ?? "interactive",
