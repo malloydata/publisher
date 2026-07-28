@@ -936,6 +936,27 @@ describe("deleteMaterialization telemetry", () => {
       ).toBe(0);
    });
 
+   it("tags the retiring drops as ops work", async () => {
+      // A drop is warehouse work someone accounts for later, and it is the one
+      // statement an operator goes looking for after a table disappears.
+      const runSQL = sinon.stub().resolves();
+      dropTablesFixture(runSQL);
+
+      await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
+         dropTables: true,
+      });
+
+      expect(runSQL.callCount).toBeGreaterThan(0);
+      for (const call of runSQL.getCalls()) {
+         expect(call.args[1]?.queryMetadata).toMatchObject({
+            class: "ops",
+            environment: "my-env",
+            package: "pkg",
+            run_id: "mat-1",
+         });
+      }
+   });
+
    it("meters a failed drop as outcome=failure and still deletes the record", async () => {
       dropTablesFixture(sinon.stub().rejects(new Error("drop boom")));
 

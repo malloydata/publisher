@@ -26,7 +26,7 @@ Publisher attaches its own context to every statement, so attribution needs no m
 | `environment`, `package`, `version` | where the query came from |
 | `model` | the model a query ran against |
 | `source` | the persist source a build was materializing |
-| `trigger`, `run_id` | what started a build, and which run it belongs to |
+| `trigger`, `run_id` | what started a build, and which run it belongs to (also the run whose tables a drop is retiring) |
 | `query_id` | identifies this one query; the response hands it back (see below) |
 
 Context wins over a declared property of the same name: a caller cannot label its own query as a build, and cannot supply its own `query_id`.

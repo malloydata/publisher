@@ -1423,6 +1423,38 @@ export class MaterializationService {
    }
 
    /**
+    * The `RunSQLOptions` for the drops that retire a materialization's tables.
+    * No model layer: the source's declaration described how to BUILD it, and the
+    * source may no longer exist by the time its table is retired.
+    */
+   private dropRunSQLOptions(
+      environment: BuildEnvironment,
+      connectionName: string,
+      environmentName: string,
+      packageName: string,
+      materializationId: string,
+   ): { queryMetadata?: QueryMetadata } {
+      let connectionDefault: QueryMetadata | null = null;
+      try {
+         connectionDefault =
+            environment.getApiConnection(connectionName)?.queryMetadata ?? null;
+      } catch {
+         // See buildRunSQLOptions: an unreadable connection config costs the
+         // default layer, never the statement.
+      }
+      const resolved = mergeQueryMetadata({
+         connection: connectionDefault,
+         context: {
+            queryClass: "ops",
+            environment: environmentName,
+            package: packageName,
+            runId: materializationId,
+         },
+      });
+      return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
+   }
+
+   /**
     * Build a single instructed source into its assigned physical table.
     * COPY uses a staging table + atomic rename for crash-safety; the staging
     * name derives from the sourceEntityId. Records and returns the manifest entry.
@@ -2161,11 +2193,23 @@ export class MaterializationService {
             // successfully also drops successfully (container paths, hyphenated
             // BigQuery project ids, etc.).
             const dialect = connection.dialectName;
+            // Dropping a materialized table is warehouse work someone will have
+            // to account for later, so it is tagged like the build that created
+            // it — `ops` rather than `materialize`, because this is the
+            // lifecycle operation, not a build.
+            const dropOptions = this.dropRunSQLOptions(
+               environment,
+               connectionName,
+               environmentName,
+               packageName,
+               m.id,
+            );
             await connection.runSQL(
                `DROP TABLE IF EXISTS ${quoteTablePath(
                   physicalTableName,
                   dialect,
                )}`,
+               dropOptions,
             );
             // A crash between staging-create and rename can leave the staging
             // table behind; clean it up too while we hold the connection.
@@ -2174,6 +2218,7 @@ export class MaterializationService {
                   `${physicalTableName}${stagingSuffix(entry.sourceEntityId)}`,
                   dialect,
                )}`,
+               dropOptions,
             );
             recordDropTables("success", "in_warehouse");
             logger.info("Dropped materialized table on delete", {
