@@ -67,6 +67,8 @@ source: order_rollup is orders -> { aggregate: revenue is sum(amount) }
 
 Layers 2–4 describe how a source is **built**. A live query against the model is a different unit of work and does not inherit them — otherwise interactive traffic would be attributed to the build that happens to share the source.
 
+Under pressure — the 20-property cap, or Snowflake's tag limit — properties are given up least-specific-first, so a per-request property outlives a connection-wide one and the server's context outlives both.
+
 ## Correlating an API call with a backend query
 
 A query response carries `queryCorrelationId` — the id Publisher minted for that query and attached as its `query_id` property. Look the same value up on the other side:
@@ -105,6 +107,14 @@ Malloy validates the bag when it issues the statement and **refuses a statement 
 Two things worth knowing:
 
 - **Start a name with a letter.** BigQuery drops a label name it cannot fit to its own grammar (a leading digit or underscore) while every other backend keeps it. Publisher reports that as a package warning rather than letting the property quietly go missing on one backend.
+- **BigQuery rewrites values too.** Its label grammar is lowercase `[a-z0-9_-]`, at most 63 characters, so `model="orders/Rollup.malloy"` arrives as `orders_rollup_malloy` and `Team`/`team` collapse into one label. Values already in that grammar — `queryCorrelationId` among them — travel intact; anything else is matched on its transformed form in `INFORMATION_SCHEMA.JOBS`.
+- **Leave room for the server.** The 20-property cap covers the whole bag, and the server's context is added on top of what you declare, so a declaration over ~11 properties loses its least specific ones at query time. Publisher warns at publish rather than at the warehouse.
 - **Nothing is silently dropped.** A declaration that violates the contract shows up as a warning on the package; at query time the bag is clamped rather than throwing, and every dropped property is counted in `publisher_query_metadata_properties_dropped_total`. A per-request bag is rejected outright with a 400, since there is a caller to tell. Under a budget the server's own context is shed last, so `queryCorrelationId` stays usable.
+
+## What is not tagged
+
+- **Schema fetches.** The bag is attached per query and Malloy's schema fetch takes no query options, so package-load introspection carries no attribution.
+- **`POST …/sqlTemporaryTable`.** It issues a real `CREATE TEMPORARY TABLE AS`, through a driver call that takes no query options.
+- **A `storage=` build's destination statements.** The DuckDB/DuckLake session path issues its own SQL; the warehouse-side read that the build's cost lives in is tagged.
 
 Put no secrets or personal data in a tag — it is visible to anyone who can read the backend's query history, and on the comment-carrying backends it is visible in the query text itself.

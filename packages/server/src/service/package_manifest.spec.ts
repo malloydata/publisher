@@ -32,10 +32,13 @@ describe("service/package_manifest", () => {
          expect(resolved.warnings[0]).toMatch(/deprecated/i);
       });
 
-      it("warns but does not fail when both homes agree", () => {
-         const resolved = resolvePackageScope("version", { scope: "version" });
-         expect(resolved.scope).toBe("version");
-         expect(resolved.warnings).toHaveLength(1);
+      it("accepts both homes agreeing without a warning", () => {
+         // The transition state the server writes: envelope for this build, root
+         // for an older publisher. Warning would blame the operator for it.
+         expect(resolvePackageScope("version", { scope: "version" })).toEqual({
+            scope: "version",
+            warnings: [],
+         });
       });
 
       it("throws when the two homes disagree rather than guessing", () => {

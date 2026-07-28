@@ -71,6 +71,19 @@ describe("queryMetadataViolations", () => {
 });
 
 describe("queryMetadataPortabilityWarnings", () => {
+   it("warns when a declaration leaves no room for the server context", () => {
+      // 20 is the size of the whole bag, and the server adds its own on top, so
+      // a declaration that fills the contract quietly loses properties later.
+      const full: Record<string, string> = {};
+      for (let i = 0; i < MAX_PROPERTIES; i++) full[`p${i}`] = "v";
+      expect(
+         queryMetadataPortabilityWarnings(full).some((w) =>
+            w.includes("the server adds up to"),
+         ),
+      ).toBe(true);
+      expect(queryMetadataPortabilityWarnings({ team: "finance" })).toEqual([]);
+   });
+
    it("flags a name BigQuery will silently drop", () => {
       // Legal per the contract, kept by every other backend, gone on BigQuery.
       expect(
@@ -183,6 +196,36 @@ describe("mergeQueryMetadata", () => {
          request: { note: "x".repeat(MAX_PROPERTY_VALUE_LENGTH + 50) },
       });
       expect(resolved.metadata?.note).toHaveLength(MAX_PROPERTY_VALUE_LENGTH);
+   });
+
+   it("sheds the least specific author property first", () => {
+      // The caller's own per-request property is the last one standing: it is
+      // most likely its join key, and precedence says the connection-wide
+      // default is the cheapest thing to lose.
+      const connection: Record<string, string> = {};
+      for (let i = 0; i < MAX_PROPERTIES - 2; i++) connection[`c${i}`] = "v";
+      const resolved = mergeQueryMetadata({
+         connection,
+         model: { modelProp: "m" },
+         request: { request_id: "7f3a" },
+         context: { queryClass: "interactive", package: "sales" },
+      });
+      expect(resolved.metadata?.request_id).toBe("7f3a");
+      expect(resolved.metadata?.modelProp).toBe("m");
+      expect(resolved.drops.every((d) => d.name.startsWith("c"))).toBe(true);
+   });
+
+   it("sheds by the layer whose value won, not the first that mentioned it", () => {
+      // `tier` is declared on the connection but the request's value is what
+      // survives, so it must be shed as a request property, i.e. last.
+      const connection: Record<string, string> = { tier: "bronze" };
+      for (let i = 0; i < MAX_PROPERTIES; i++) connection[`c${i}`] = "v";
+      const resolved = mergeQueryMetadata({
+         connection,
+         request: { tier: "gold" },
+         context: { queryClass: "interactive" },
+      });
+      expect(resolved.metadata?.tier).toBe("gold");
    });
 
    it("enforces the property cap by dropping author properties, keeping context", () => {

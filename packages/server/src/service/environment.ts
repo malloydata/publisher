@@ -1639,6 +1639,45 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
+         const onDiskMaterialization =
+            existingManifest.materialization !== null &&
+            typeof existingManifest.materialization === "object" &&
+            !Array.isArray(existingManifest.materialization)
+               ? (existingManifest.materialization as Record<string, unknown>)
+               : undefined;
+
+         // Scope has two homes: `materialization.scope` (canonical) and the
+         // manifest root (deprecated). The server writes BOTH, in sync, for as
+         // long as the root form is supported:
+         //
+         //  - writing only the root would author a manifest this build's loader
+         //    refuses, since a root that disagrees with an existing envelope is a
+         //    conflict (see resolvePackageScope);
+         //  - writing only the envelope would silently downgrade a package read
+         //    by an older publisher, which knows only the root and would default
+         //    to `package` — cross-version table reuse for a package declared
+         //    `version`.
+         //
+         // A caller can only express scope through the top-level `scope` field
+         // (the wire materialization block has no `scope`), so an envelope value
+         // already on disk is preserved rather than dropped by a materialization
+         // PATCH that says nothing about it.
+         const resolvedScope =
+            metadata.scope ??
+            (onDiskMaterialization?.scope as ApiPackage["scope"] | undefined) ??
+            (existingManifest.scope as ApiPackage["scope"] | undefined);
+
+         const materializationBase =
+            metadata.materialization !== undefined
+               ? { ...metadata.materialization }
+               : onDiskMaterialization !== undefined
+                 ? { ...onDiskMaterialization }
+                 : undefined;
+         const materializationBlock =
+            resolvedScope !== undefined
+               ? { ...(materializationBase ?? {}), scope: resolvedScope }
+               : materializationBase;
+
          // Update with new metadata. `explores`/`queryableSources` are only
          // overwritten when the caller explicitly provides them; otherwise the
          // existing on-disk value is preserved via the spread (an undefined here
@@ -1656,9 +1695,9 @@ export class Environment {
             ...(metadata.manifestLocation !== undefined
                ? { manifestLocation: metadata.manifestLocation }
                : {}),
-            ...(metadata.scope !== undefined ? { scope: metadata.scope } : {}),
-            ...(metadata.materialization !== undefined
-               ? { materialization: metadata.materialization }
+            ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
+            ...(materializationBlock !== undefined
+               ? { materialization: materializationBlock }
                : {}),
          };
 

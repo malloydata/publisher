@@ -41,12 +41,17 @@ export function parsePackageScope(raw: unknown): PackageScope {
  * (canonical — every other build-behavioral knob lives in that block) and the
  * manifest root (the original home, deprecated).
  *
- * The root form keeps working, with a warning, because scope rides the published
- * artifact: a package published before the move must keep parsing until it is
- * republished. Both homes declaring the SAME value is just the deprecation
- * warning; declaring DIFFERENT values throws, because scope decides whether an
- * artifact is version-owned and guessing which one the author meant could reuse
- * a table across versions that was never supposed to be shared.
+ * The root form keeps working because scope rides the published artifact: a
+ * package published before the move must keep parsing until it is republished.
+ * Declaring DIFFERENT values in the two homes throws, because scope decides
+ * whether an artifact is version-owned and guessing which one the author meant
+ * could reuse a table across versions that was never supposed to be shared.
+ *
+ * Only a root-ONLY declaration is deprecated. Both homes agreeing is the
+ * transition state the server itself writes (see `writePackageManifest`): the
+ * envelope for this build, the root for an older publisher that would otherwise
+ * silently default to `package`. Warning about that would be warning an operator
+ * about something the server did on their behalf and they cannot fix.
  */
 export function resolvePackageScope(
    rootRaw: unknown,
@@ -72,10 +77,7 @@ export function resolvePackageScope(
                `"materialization".`,
          );
       }
-      return {
-         scope: envelopeScope,
-         warnings: [SCOPE_ROOT_DEPRECATION],
-      };
+      return { scope: envelopeScope, warnings: [] };
    }
    if (rootDeclared) {
       return { scope: rootScope, warnings: [SCOPE_ROOT_DEPRECATION] };
@@ -86,7 +88,9 @@ export function resolvePackageScope(
 const SCOPE_ROOT_DEPRECATION =
    `"scope" at the manifest root is deprecated: declare it as ` +
    `"materialization": { "scope": ... } alongside the other build knobs. The ` +
-   `root form still works and will be removed in a future release.`;
+   `root form still works and will be removed in a future release; until then ` +
+   `the server keeps both homes in sync when it writes the manifest, so an ` +
+   `older publisher still reads the right value.`;
 
 /**
  * The manifest's `materialization.freshness` block, surfaced verbatim for the

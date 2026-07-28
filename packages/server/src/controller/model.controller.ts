@@ -133,6 +133,21 @@ export class ModelController {
                bypassFilters,
                givens,
                abortSignal,
+               {
+                  environment: environmentName,
+                  // The environment owns the connection configs, so the default
+                  // layer is read here rather than from the model.
+                  connectionDefault: (connectionName) => {
+                     try {
+                        return (
+                           environment.getApiConnection(connectionName)
+                              .queryMetadata ?? null
+                        );
+                     } catch {
+                        return null;
+                     }
+                  },
+               },
             ),
          getQueryTimeoutMs(),
       );

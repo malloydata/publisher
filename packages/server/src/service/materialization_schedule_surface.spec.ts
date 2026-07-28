@@ -133,4 +133,68 @@ describe("materialization schedule surfacing", () => {
       },
       { timeout: 20000 },
    );
+
+   async function readManifest(): Promise<Record<string, unknown>> {
+      return JSON.parse(
+         await fs.readFile(path.join(envPath, "pkg", "publisher.json"), "utf8"),
+      );
+   }
+
+   it(
+      "writes scope to both homes so the manifest it authors still loads",
+      async () => {
+         // A scope PATCH used to write only the manifest root. With scope also
+         // living in the materialization block, that authored a manifest whose
+         // two homes disagreed — which the loader refuses, so the package
+         // survived the PATCH and then failed on the next restart.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            materialization: {
+               scope: "package",
+               queryMetadata: { team: "fin" },
+            },
+         });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", { name: "pkg", scope: "version" });
+
+         const manifest = await readManifest();
+         expect(manifest.scope).toBe("version");
+         expect(manifest.materialization).toMatchObject({
+            scope: "version",
+            queryMetadata: { team: "fin" },
+         });
+
+         // The real assertion: it loads again.
+         const reloaded = await Environment.create("testEnv", envPath, []);
+         await reloaded.addPackage("pkg");
+         const pkg = await reloaded.getPackage("pkg", false);
+         expect(pkg.getPackageMetadata().scope).toBe("version");
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "keeps the envelope scope a materialization PATCH cannot express",
+      async () => {
+         // The wire materialization block has no `scope`, so a PATCH that sends
+         // one must not be read as "the author dropped it".
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({ materialization: { scope: "version" } });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "0 6 * * *" },
+         });
+
+         const manifest = await readManifest();
+         expect(manifest.materialization).toMatchObject({
+            scope: "version",
+            schedule: "0 6 * * *",
+         });
+         expect(manifest.scope).toBe("version");
+      },
+      { timeout: 20000 },
+   );
 });

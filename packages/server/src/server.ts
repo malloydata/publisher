@@ -41,6 +41,7 @@ import {
    getMemoryGovernorConfig,
    getPersistCollisionEnforce,
    getPersistStorageMode,
+   getQueryMetadataMode,
 } from "./config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
@@ -176,6 +177,12 @@ getPersistStorageMode();
 // path — so a typo would otherwise surface as a failed publish request rather
 // than a failed boot.
 getPersistCollisionEnforce();
+
+// Same hazard, wider blast radius: getQueryMetadataMode() throws on an invalid
+// value and is read while resolving EVERY statement, so a typo'd off switch
+// ("false", "0", "disabled") would boot clean and then fail every query and
+// every build — the one thing the metadata path promises never to do.
+getQueryMetadataMode();
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";

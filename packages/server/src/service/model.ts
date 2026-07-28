@@ -2083,8 +2083,9 @@ export class Model {
       abortSignal?: AbortSignal,
       /**
        * Per-query metadata inputs from the request boundary (see
-       * {@link ModelQueryMetadataInput}). Omitted by callers with no request layer
-       * (notebook cells, MCP, tests), which still get the server context.
+       * {@link ModelQueryMetadataInput}). Omitting it still tags the query with
+       * the server context; what is lost is the caller's own properties, the
+       * connection default, and the correlation id.
        */
       queryMetadataInput?: ModelQueryMetadataInput,
    ): Promise<{
@@ -2750,6 +2751,11 @@ export class Model {
       // See `getQueryResults`: forwarded into `runnable.run` so the
       // publisher's wall-clock timeout actually cancels the query.
       abortSignal?: AbortSignal,
+      // A notebook cell issues real backend SQL on an interactive path, so it is
+      // tagged like any other query. No correlation id: the cell response has no
+      // field to hand one back on, and an id nobody can read costs the result
+      // cache for nothing.
+      queryMetadataInput?: ModelQueryMetadataInput,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -2829,13 +2835,12 @@ export class Model {
             // See getQueryResults / filterGivensToModelSurface: the gate
             // above already saw the full unfiltered givens.
             const cellSurfaceGivens = this.filterGivensToModelSurface(givens);
+            const preparedCell = await runnableToExecute.getPreparedResult({
+               givens: cellSurfaceGivens,
+               buildManifest,
+            });
             const rowLimit = resolveModelQueryRowLimit(
-               (
-                  await runnableToExecute.getPreparedResult({
-                     givens: cellSurfaceGivens,
-                     buildManifest,
-                  })
-               ).resultExplore.limit,
+               preparedCell.resultExplore.limit,
                {
                   defaultLimit: getDefaultQueryRowLimit(),
                   maxRows: cellMaxRows,
@@ -2846,6 +2851,10 @@ export class Model {
                givens: cellSurfaceGivens,
                abortSignal,
                buildManifest,
+               queryMetadata: this.resolveQueryMetadata(
+                  queryMetadataInput,
+                  preparedCell.connectionName,
+               ),
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;

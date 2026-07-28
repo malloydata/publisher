@@ -149,6 +149,19 @@ export function queryMetadataPortabilityWarnings(
          );
       }
    }
+   // The contract's 20 is the size of the WHOLE bag, and the server's own
+   // context is added on top of whatever is declared here. A declaration that
+   // fills the contract therefore publishes clean and then loses properties on
+   // every statement, which is only visible as a drop metric.
+   const authorBudget = MAX_PROPERTIES - RESERVED_CONTEXT_PROPERTIES;
+   const declared = Object.keys(meta).length;
+   if (declared > authorBudget) {
+      warnings.push(
+         `queryMetadata declares ${declared} properties; the server adds up to ` +
+            `${RESERVED_CONTEXT_PROPERTIES} of its own to every statement, so a bag over ` +
+            `${authorBudget} loses its least specific properties at query time`,
+      );
+   }
    return warnings;
 }
 
@@ -204,6 +217,30 @@ export interface QueryContext {
 export function mintCorrelationId(): string {
    return crypto.randomUUID();
 }
+
+/**
+ * The order context properties are given up in when even the context alone will
+ * not fit: least load-bearing first. `class` and `query_id` are last because
+ * they are the two that make the rest worth reading — the workload split, and
+ * the id a response handed a caller as its join key.
+ */
+const CONTEXT_SHED_ORDER = [
+   "version",
+   "model",
+   "source",
+   "trigger",
+   "environment",
+   "package",
+   "run_id",
+   "query_id",
+   "class",
+];
+
+/**
+ * How many properties the context can occupy, so a declaration boundary can warn
+ * about an author budget that will not survive the merge.
+ */
+export const RESERVED_CONTEXT_PROPERTIES = CONTEXT_SHED_ORDER.length;
 
 /** The context as bag properties, dropping every absent field. */
 export function queryContextProperties(context: QueryContext): QueryMetadata {
@@ -286,10 +323,14 @@ export function mergeQueryMetadata(
    const drops: { name: string; reason: QueryMetadataDropReason }[] = [];
    const contextProperties = queryContextProperties(layers.context ?? {});
 
-   // Author layers first, least specific to most, then context on top.
+   // Author layers first, least specific to most, then context on top. Each
+   // property remembers the layer whose value SURVIVED, not the first layer that
+   // mentioned it, so the shed order below matches the precedence that produced
+   // the bag.
    const merged: QueryMetadata = {};
-   const authorNames: string[] = [];
-   for (const layer of [layers.connection, layers.model, layers.request]) {
+   const winningLayer = new Map<string, number>();
+   const authorLayers = [layers.connection, layers.model, layers.request];
+   authorLayers.forEach((layer, index) => {
       for (const [name, value] of Object.entries(layer ?? {})) {
          if (
             !PROPERTY_NAME_RE.test(name) ||
@@ -302,47 +343,54 @@ export function mergeQueryMetadata(
             drops.push({ name, reason: "invalid_value" });
             continue;
          }
-         if (!(name in merged)) authorNames.push(name);
+         winningLayer.set(name, index);
          merged[name] = sanitizeValue(value);
       }
-   }
+   });
    for (const [name, value] of Object.entries(contextProperties)) {
       merged[name] = sanitizeValue(value);
    }
 
-   // Author properties are dropped newest-declared-last so the shrink is
-   // deterministic, and only ever down to the context set.
-   const dropOrder = authorNames.filter((name) => !(name in contextProperties));
-   while (Object.keys(merged).length > MAX_PROPERTIES && dropOrder.length > 0) {
-      const name = dropOrder.pop() as string;
+   // Shedding runs least-specific-first, the same order that decides which value
+   // wins: a connection-wide default is the cheapest thing to lose, and the
+   // caller's own per-request property — most likely its join key into whatever
+   // it is correlating — is the last author property standing.
+   const shedOrder = [...winningLayer.entries()]
+      .filter(([name]) => !(name in contextProperties))
+      .sort((a, b) => a[1] - b[1])
+      .map(([name]) => name);
+   const shed = (reason: QueryMetadataDropReason) => {
+      const name = shedOrder.shift() as string;
       delete merged[name];
-      drops.push({ name, reason: "property_cap" });
+      drops.push({ name, reason });
+   };
+   while (Object.keys(merged).length > MAX_PROPERTIES && shedOrder.length > 0) {
+      shed("property_cap");
    }
    while (
       JSON.stringify(merged).length > MAX_SERIALIZED_LENGTH &&
-      dropOrder.length > 0
+      shedOrder.length > 0
    ) {
-      const name = dropOrder.pop() as string;
-      delete merged[name];
-      drops.push({ name, reason: "serialized_cap" });
+      shed("serialized_cap");
    }
    // Context alone over either budget is a server bug, not a caller's — but a
-   // thrown query would be worse than a partial tag, so shed context too.
-   const contextOrder = Object.keys(contextProperties).reverse();
+   // thrown query would be worse than a partial tag, so shed context too. Least
+   // load-bearing first, ending at the two that make the bag worth reading: the
+   // workload class, and the id a response handed back as a join key.
+   const contextShedOrder = CONTEXT_SHED_ORDER.filter(
+      (name) => name in contextProperties,
+   );
    while (
       (Object.keys(merged).length > MAX_PROPERTIES ||
          JSON.stringify(merged).length > MAX_SERIALIZED_LENGTH) &&
-      contextOrder.length > 0
+      contextShedOrder.length > 0
    ) {
-      const name = contextOrder.pop() as string;
-      if (!(name in merged)) continue;
+      const name = contextShedOrder.shift() as string;
+      const overCount = Object.keys(merged).length > MAX_PROPERTIES;
       delete merged[name];
       drops.push({
          name,
-         reason:
-            Object.keys(merged).length >= MAX_PROPERTIES
-               ? "property_cap"
-               : "serialized_cap",
+         reason: overCount ? "property_cap" : "serialized_cap",
       });
    }
 
