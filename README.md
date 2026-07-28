@@ -51,6 +51,58 @@ server binds every interface (the default); a configured `--host` shows as itsel
 fails, a `PUBLISHER_INIT_FAILED` line is printed in its place; a startup failure outside
 initialization, like a port already in use, crashes without either token.
 
+## Start from your own data
+
+The command above serves the bundled examples. To build a package around your own data instead,
+scaffold one:
+
+```bash
+mkdir my-data && cd my-data
+npm create @malloy-publisher/malloy-package sales
+npm start
+```
+
+Make the directory first. The package lands in `./sales`, but the workspace around it is written to
+the current directory, so running this somewhere you did not mean to scatters config files through
+it. That workspace is start and reset scripts, an MCP config, agent instructions, and the Malloy
+agent skills as files your agent can read. `npm start` runs the server version the scaffolder pinned,
+against your package, in watch mode, so edits to the model take effect as you save them.
+
+Run bare like that, the package comes with a small sample dataset, so there is something to query
+before you have wired up anything of your own. To start from one of your own files instead, pass
+`--data` (CSV, Parquet, or Excel `.xlsx`):
+
+```bash
+npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
+```
+
+That path is relative to the directory you run the command in, so either move your file there first
+or point at wherever it already lives. Either way the scaffolder copies it into the package, so the
+original stays where it is.
+
+The `--` is required. Without it, `npm create` reads `--data` as one of its own options and only the
+filename reaches the scaffolder, as a stray argument, so it stops.
+
+A seeded package starts smaller than the sample one, which is worth knowing before you go looking
+for what is missing: the scaffolder does not read your columns, so you get a row count and an
+overview over your file, and the modelling starts there. That is the point at which pointing an agent
+at the workspace pays off.
+
+A package is just Malloy, so it is not limited to a local file: point its model at a database
+connection your config defines and the same workspace serves a warehouse. The directory it creates is
+ordinary, so you can commit it, move it, or hand it to someone else.
+
+Either way the server serves your package rather than the bundled examples: `npm start` points it at
+the `publisher.config.json` the scaffolder wrote, and a bare `npx @malloy-publisher/server` run from
+this directory picks up the same file. The walkthrough in the next section is written against the
+examples, so run that one from a directory without this config.
+
+To run the scaffolder without `npm create`, call the package by its full name:
+`npx @malloy-publisher/create-malloy-package sales --data ./orders.csv`. Note that the name is
+`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, and that npx
+needs no separator: it forwards flags as they are, so a `--` there leaves the flags after it to
+arrive as stray arguments.
+
 ## Point your agent at it
 
 This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the
