@@ -127,6 +127,228 @@ jobs:
       current_version: ${{ needs.prepare.outputs.new_version }}
       ref: ${{ needs.prepare.outputs.branch_name }}
 
+  # skills and create-malloy-package version on their own lines, so this job
+  # triggers them rather than versioning them.
+  #
+  # This delivers half of what PR #926's review asked for and deliberately not
+  # the other half, so be clear about which. The ask was to call the new npm
+  # workflow from here "so versioning stays aligned, the same pattern used in
+  # the malloydata repository". The trigger half is here: one release publishes
+  # every package. The versioning half is not, and cannot be: malloydata/malloy
+  # aligns versions with Lerna fixed mode, one number for every package, and
+  # these two were already published on their own lines before this landed. npm
+  # versions are immutable, so there is no path back to a shared number.
+  # For the same reason this job publishes each package at the version its own
+  # package.json declares, and skips it when that version is already on npm.
+  #
+  # They are DISPATCHED through the Actions API rather than called with
+  # workflow_call, deliberately. npm allows one trusted publisher per package
+  # and matches it against the TOP-LEVEL workflow filename, so a workflow_call
+  # would make npm see release.yml and every entry would have to be re-pointed
+  # here. Standalone dispatch of either child would then stop being able to
+  # publish, which is the capability skills-npm.yml exists to provide. A
+  # dispatched run is its own top-level run, so each child keeps its own npm
+  # entry, and no npm setting has to change for this job to work.
+  #
+  # Deliberately NOT in gh-release's needs. These packages are independent of
+  # the sdk/app/server artifacts, and prepare walks the patch version forward on
+  # a re-run rather than resuming, so gating the tag on them would turn a failed
+  # package publish into a partial release that cannot be re-run at the same
+  # version. A failure here still reddens the run.
+  publish-packages:
+    name: Publish independently-versioned packages
+    # Ordering and abort-on-failure only: a failed version bump should not
+    # publish anything. This job reads prepare's version solely for the
+    # prerelease check below, and deliberately checks out main rather than the
+    # release branch (see the checkout below).
+    needs: prepare
+    runs-on: ubuntu-latest
+    # Two full poll budgets (25m each, below) plus checkout and setup, with
+    # margin. Keep this above 2 x POLL_BUDGET_SECONDS or a second package timing
+    # out is killed by the job cap before it can print which package failed.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # For the workflow-dispatch API. Not id-token: this job never publishes,
+      # it only asks the registry and triggers the children.
+      #
+      # actions: write cannot be narrowed to "dispatch these two workflows"; it
+      # also covers cancelling runs and deleting run logs repo-wide. Keep this
+      # job dependency-free for that reason: checkout and setup-node only, no
+      # bun install and no third-party actions, so there is nothing here for a
+      # compromised dependency to execute with that scope.
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # main, never needs.prepare.outputs.branch_name. prepare bumps only
+          # sdk/app/server, so the release branch's copies of these two packages
+          # are identical to main, and both children guard on
+          # github.ref == 'refs/heads/main'. Dispatched on a release branch their
+          # publish jobs SKIP, and a skipped job reports success, so the release
+          # would go green having published nothing.
+          ref: main
+          # Nothing here authenticates to git: the only local git call is
+          # rev-parse, and the live sha comes over the API. Without this,
+          # checkout leaves a token carrying this job's actions: write scope in
+          # .git/config for the life of the job.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Publish skills, then create-malloy-package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Through env, not interpolated into the script body.
+          NEW_VERSION: ${{ needs.prepare.outputs.new_version }}
+        run: |
+          set -euo pipefail
+
+          echo "## Independently-versioned packages" >> "$GITHUB_STEP_SUMMARY"
+
+          # Skip on a prerelease. These packages carry their own versions, which
+          # have no hyphen, so their publish workflows would tag them `latest`
+          # even though the release cutting them is a prerelease. gh-release
+          # skips prereleases for the same reason.
+          #
+          # Checked here rather than as a job-level `if:` so that it announces
+          # itself. A skipped job writes no summary and no annotation, and a
+          # skipped job still reports success, so gating it that way would make
+          # a green release that published nothing completely invisible.
+          if [[ "$NEW_VERSION" == *-* ]]; then
+            echo "::notice title=Independently-versioned packages::Skipped for prerelease version ${NEW_VERSION}. Publish these from an ordinary release, or dispatch skills-npm.yml and then create-malloy-package-npm.yml on main."
+            echo "Skipped for prerelease version \`${NEW_VERSION}\`. Publish these from an ordinary release, or dispatch their workflows on main." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Wait for the version to land on npm rather than watching the child
+          # run: a child whose publish job was skipped reports success, so the
+          # run's conclusion would not catch it, and asking the registry has no
+          # correlation race with a concurrent manual dispatch.
+          #
+          # Size the budget against the whole child run, not one job of it. Its
+          # publish job needs check_pack first (a full frozen-lockfile install of
+          # the monorepo, a build, and the package's tests, which has taken over
+          # six minutes on its own), and then repeats the install in the publish
+          # job itself, with no cache in either. Add dispatch queue time and npm
+          # CDN visibility lag. Timing out early is expensive in the wrong way:
+          # the release goes red for a publish that in fact succeeded, and
+          # because the failure stops the sequence the second package is never
+          # dispatched at all.
+          #
+          # A wall-clock deadline rather than an attempt count, so npm latency
+          # cannot stretch the budget past the job's timeout-minutes and cost us
+          # the diagnostic below.
+          POLL_BUDGET_SECONDS=1500
+          POLL_SLEEP=15
+          # How many consecutive unexpected registry answers end the wait. One
+          # is not enough: a single 5xx or DNS blip says almost nothing about
+          # whether the child published, and giving up on it would reintroduce
+          # exactly the failure the budget comment above is about, with the
+          # second package never dispatched.
+          POLL_MAX_REGISTRY_ERRORS=3
+
+          # These packages are read from main, and the dispatch resolves main
+          # when it creates the child run. If main moves in between we would
+          # poll for a version nobody is publishing, time out after the full
+          # budget, and (because the failure stops the sequence) never dispatch
+          # the second package. Fail immediately and accurately instead.
+          EXPECTED_SHA="$(git rev-parse HEAD)"
+
+          # Registry output can contain anything, including a line starting with
+          # "::" that the runner would parse as a workflow command. Prefix every
+          # line with a non-whitespace marker: the runner trims leading
+          # whitespace before it looks for "::", so indenting would not help.
+          echo_registry_output() {
+            printf '%s\n' "$1" | sed 's/^/[npm] /'
+          }
+
+          publish_pkg() {
+            local dir="$1" wf="$2" name version spec out deadline live_sha errors
+            name="$(node -p "require('./packages/${dir}/package.json').name")"
+            version="$(node -p "require('./packages/${dir}/package.json').version")"
+            spec="${name}@${version}"
+
+            # Three outcomes, matching create-malloy-package-npm.yml: published
+            # means there is nothing to do; E404 means the version is free;
+            # anything else means the registry did not answer, which is not the
+            # same as a green light.
+            if out="$(npm view "$spec" version --prefer-online 2>&1)"; then
+              echo "::notice title=${name}::${spec} is already published; nothing to do"
+              echo "- \`${spec}\` was already on npm, skipped" >> "$GITHUB_STEP_SUMMARY"
+              return 0
+            elif [[ "$out" != *E404* ]]; then
+              echo_registry_output "$out"
+              echo "::error title=${name}::could not ask npm whether ${spec} is taken"
+              return 1
+            fi
+
+            # Fail closed on ANY movement, not just a version change: skills
+            # publishes content from the repo-root skills/ tree, so a commit that
+            # leaves the version untouched can still change what gets published
+            # under it, and npm versions are immutable.
+            live_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+            if [[ ! "$live_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error title=${name}::could not read main's current sha (got '${live_sha}'); ${wf} was not dispatched"
+              return 1
+            fi
+            if [ "$live_sha" != "$EXPECTED_SHA" ]; then
+              # Deliberately does not claim nothing was published: on the second
+              # package, the first may already have been dispatched and confirmed.
+              # The job summary above records what actually shipped.
+              echo "::error title=${name}::main moved from ${EXPECTED_SHA} to ${live_sha} during this release, so ${spec} may not be the version ${wf} would publish. ${wf} was NOT dispatched; see the job summary for what already shipped. Re-run THIS JOB (Re-run failed jobs), or dispatch ${wf} on main directly. Do not re-run the whole release: that bumps and republishes sdk/app/server."
+              return 1
+            fi
+
+            # The dispatch API returns no run id, and picking one out of
+            # gh run list right afterwards can select an older or concurrent
+            # run, so link the filtered workflow view rather than a wrong run.
+            local runs_url="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/${wf}?query=branch%3Amain"
+
+            echo "::notice title=${name}::dispatching ${wf} on main to publish ${spec} (${runs_url})"
+            gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref main
+
+            deadline=$((SECONDS + POLL_BUDGET_SECONDS))
+            errors=0
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              sleep "$POLL_SLEEP"
+              # Keep the same three-way distinction the check above makes. A
+              # registry that cannot answer is not the same as a child that did
+              # not publish, and reporting it as the latter would send the
+              # operator to a child run they will find green. Require the
+              # condition to persist, though: a single blip is not evidence, and
+              # giving up on one would strand the second package undispatched.
+              if out="$(npm view "$spec" version --prefer-online 2>&1)"; then
+                echo "::notice title=${name}::${spec} published"
+                echo "- \`${spec}\` published" >> "$GITHUB_STEP_SUMMARY"
+                return 0
+              elif [[ "$out" != *E404* ]]; then
+                errors=$((errors + 1))
+                echo_registry_output "$out"
+                if [ "$errors" -ge "$POLL_MAX_REGISTRY_ERRORS" ]; then
+                  echo "::error title=${name}::npm stopped answering while waiting for ${spec} (${errors} consecutive errors); the ${wf} run may have published it. Check ${runs_url} and npm before re-dispatching."
+                  return 1
+                fi
+              else
+                errors=0
+              fi
+            done
+
+            echo "::error title=${name}::${spec} did not appear on npm within $((POLL_BUDGET_SECONDS / 60))m. Check ${runs_url}. If that run failed, fix it and dispatch ${wf} on main; do not re-run the whole release, which bumps and republishes sdk/app/server."
+            echo "- \`${spec}\` dispatched but did not appear on npm, see ${runs_url}" >> "$GITHUB_STEP_SUMMARY"
+            return 1
+          }
+
+          # Order is not optional. create-malloy-package pins its skills
+          # dependency from the monorepo and then asks the registry whether that
+          # range resolves, so skills has to be ON NPM before the scaffolder is
+          # dispatched. Dispatching both at once races and fails the scaffolder.
+          publish_pkg skills skills-npm.yml
+          publish_pkg create-malloy-package create-malloy-package-npm.yml
+
   gh-release:
     needs: [ prepare, publish-npm, publish-docker ]
     runs-on: ubuntu-latest

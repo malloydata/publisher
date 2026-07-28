@@ -1,8 +1,18 @@
 name: skills
 
 # The skills package versions on its own line. release.yml bumps sdk, app, and
-# server in lockstep and is deliberately not used here: a skill edit should not
-# need a server release, which is the whole point of splitting the package out.
+# server in lockstep and deliberately does not version this package: a skill
+# edit should not need a server release, which is the whole point of splitting
+# the package out.
+#
+# release.yml DOES trigger this workflow, so one release publishes every
+# package. It dispatches this file through the Actions API rather than calling
+# it with workflow_call, which is what keeps both entry points working: npm
+# matches a trusted publisher on the TOP-LEVEL workflow filename, and a
+# dispatched run is its own top-level run, so this package's npm entry still
+# names this file and a manual dispatch still publishes. release.yml also asks
+# the registry first and does not dispatch a version that is already published,
+# so an unchanged skills package is skipped rather than reddening the release.
 
 on:
   push:
@@ -50,7 +60,23 @@ jobs:
 
   publish:
     name: Publish to NPM
-    if: github.event_name == 'workflow_dispatch'
+    # workflow_dispatch offers every branch in the ref dropdown, and the
+    # definition that runs is the one on the ref you pick. npm's trusted
+    # publisher matches on this file's name, so the filename is effectively the
+    # credential and `needs: check_pack` is no protection: that job would verify
+    # the same branch's tarball. Without this check, dispatching from a stale or
+    # half-finished branch publishes that branch's code under the real name.
+    #
+    # A guardrail, not a boundary: anyone who can dispatch can push a branch
+    # whose copy of this file drops the line, because npm matches repo plus
+    # filename and never a ref. The control that survives that is binding the
+    # trusted-publisher entry to a GitHub Environment whose deployment branches
+    # are restricted to main. Land `environment:` here before setting the name
+    # on npm, never after, or every publish fails on a mismatch.
+    #
+    # release.yml dispatches this workflow on main, so this holds on that path
+    # too. The sibling create-malloy-package-npm.yml carries the same guard.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: check_pack
     runs-on: ubuntu-latest
     permissions:
@@ -65,14 +91,10 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
+      # Read the version and ask the registry BEFORE installing anything. Both
+      # steps need only node, and putting them ahead of the install is the
+      # difference between failing a forgotten version bump in seconds and
+      # failing it after a full frozen-lockfile install.
       - name: Read version
         id: version_step
         run: |
@@ -88,6 +110,53 @@ jobs:
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "npm_tag=$NPM_TAG" >> $GITHUB_OUTPUT
           echo "::notice title=Current Version::Publishing skills version $CURRENT_VERSION under npm dist-tag '$NPM_TAG'"
+
+      # "Read version" takes the version straight from package.json and never
+      # asks the registry, so a dispatch that forgot the bump would otherwise get
+      # through check_pack and only die at the last step, on npm publish, with
+      # EPUBLISHCONFLICT. Ask up front, the same way create-malloy-package-npm.yml
+      # does.
+      #
+      # This is for the human path. release.yml asks the same question before it
+      # dispatches and simply does not dispatch a version that is already
+      # published, so an unchanged skills package is skipped there rather than
+      # reaching this step.
+      - name: Verify this version is not already published
+        env:
+          # Through env rather than interpolated into the script body: a ${{ }}
+          # expression is substituted before bash parses the line, so a crafted
+          # version string in package.json would become code in a job that holds
+          # id-token: write.
+          CURRENT_VERSION: ${{ steps.version_step.outputs.current_version }}
+        run: |
+          # Read the name rather than hardcoding it, so a rename cannot leave
+          # this quietly checking a package nobody is publishing.
+          NAME="$(node -p "require('./packages/skills/package.json').name")"
+          SPEC="$NAME@$CURRENT_VERSION"
+          # npm view exits non-zero with an E404 both for a version that does not
+          # exist and for a package that does not exist at all, and either one
+          # means this version is free. Any other failure means the registry did
+          # not answer, which is not the same as a green light.
+          if PUBLISHED="$(npm view "$SPEC" version 2>&1)"; then
+            echo "::error title=Version::$SPEC is already published; bump the version in packages/skills/package.json"
+            exit 1
+          elif [[ "$PUBLISHED" != *E404* ]]; then
+            # Registry output is untrusted text, and a line starting with "::"
+            # would otherwise be parsed as a workflow command. Prefix rather than
+            # indent: the runner trims leading whitespace before matching.
+            printf '%s\n' "$PUBLISHED" | sed 's/^/[npm] /'
+            echo "::error title=Version::could not ask npm whether $SPEC is taken"
+            exit 1
+          fi
+          echo "::notice title=Version::$SPEC is not on npm yet"
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       # Trusted publishing (OIDC); there is no NPM_TOKEN fallback in this repo.
       #
