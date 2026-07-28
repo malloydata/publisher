@@ -353,11 +353,21 @@ describe("scaffold: --data", () => {
       const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
       expect(model).toContain("overview");
       expect(model).toContain("read_xlsx");
-      // The three options that actually repair a report export, so the fix is
-      // present rather than merely alluded to.
+      // The options that actually repair a report export, so the fix is present
+      // rather than merely alluded to.
       expect(model).toContain("sheet =");
       expect(model).toContain("header =");
       expect(model).toContain("range =");
+      // The filter is not optional and this assertion exists because the first
+      // version of this template left it out. Verified live against a real
+      // messy workbook: sheet+header+range alone returns 99,995 rows for a
+      // 1,500 row sheet, because an explicit range reads every row in it
+      // including the blank spacers. With the filter it returns exactly 1,500.
+      // A future edit that drops the WHERE would put that back.
+      expect(model).toContain("WHERE");
+      // And stop_at_empty must stay named as the wrong answer: it truncates at
+      // the first blank spacer, which on a real sheet is mid-data (220 rows).
+      expect(model).toContain("stop_at_empty");
       // Rendered, not left as a placeholder.
       expect(model).not.toContain("{{");
       expect(model).toContain("'data/budget.xlsx'");
