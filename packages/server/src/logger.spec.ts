@@ -1,8 +1,25 @@
 import { describe, expect, it } from "bun:test";
 import type { AxiosError } from "axios";
-import { buildAxiosErrorLog, redactSensitive } from "./logger";
+import {
+   SENSITIVE_KEY_NAMES,
+   buildAxiosErrorLog,
+   redactSensitive,
+} from "./logger";
 
 describe("redactSensitive", () => {
+   it("redacts every name in SENSITIVE_KEY_NAMES (reflective lock)", () => {
+      // Iterates the list itself so a newly-added credential field cannot
+      // be introduced without redaction, and pins apiKey/api_key.
+      const input: Record<string, string> = {};
+      for (const name of SENSITIVE_KEY_NAMES) input[name] = "leak-me";
+      const out = redactSensitive(input) as Record<string, unknown>;
+      for (const name of SENSITIVE_KEY_NAMES) {
+         expect(out[name]).toBe("[REDACTED]");
+      }
+      expect(SENSITIVE_KEY_NAMES).toContain("apiKey");
+      expect(SENSITIVE_KEY_NAMES).toContain("api_key");
+   });
+
    it("masks every known credential field at the top level", () => {
       const input = {
          password: "hunter2",

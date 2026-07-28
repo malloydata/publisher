@@ -35,6 +35,7 @@ import {
 import { logger, loggerMiddleware } from "./logger";
 
 import {
+   getEmbeddingConfig,
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
@@ -218,6 +219,17 @@ const modelController = new ModelController(environmentStore);
 // an operator relying on `local-only` for a no-network guarantee. Logging the
 // resolved policy also records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
+// Resolve the embedding config at boot so a malformed EMBEDDING_API_BASE /
+// EMBEDDING_DIMENSIONS fails loudly at startup (getEmbeddingConfig throws),
+// matching the sibling getters above, rather than surfacing as a warn on the
+// first getContext call that reaches tier 4 — or never. Logs the posture the
+// server booted with; the host only, never the key.
+const embeddingConfig = getEmbeddingConfig();
+if (embeddingConfig) {
+   logger.info(
+      `Semantic get_context enabled: model ${embeddingConfig.model} at ${new URL(embeddingConfig.baseUrl).host}`,
+   );
+}
 const memoryGovernorConfig = getMemoryGovernorConfig();
 const memoryGovernor = memoryGovernorConfig
    ? new PackageMemoryGovernor(memoryGovernorConfig)
