@@ -3,8 +3,14 @@ import { z } from "zod";
 import lunr from "lunr";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
+import {
+   EmbeddingProvider,
+   embeddingConfigured,
+   getEmbeddingProvider,
+} from "../../service/embedding_provider";
 import { buildMalloyUri } from "../handler_utils";
 import { logger } from "../../logger";
+import { entityRowKey, trySemanticSearch } from "./embedding_index";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -18,7 +24,23 @@ interface Entity {
    name: string;
    source: string | undefined;
    modelPath: string;
+   // Human-facing doc for the response (may fall back to raw annotations).
    doc: string;
+   // #(doc)-only text used as embedding input; never carries predicate
+   // annotations (#(authorize) etc.) that must not leave the machine.
+   embedDoc: string;
+}
+
+/** One tier-4 result. `score` (cosine) rides only on semantic results. */
+interface ResultEntity {
+   kind: string;
+   name: string;
+   source: string | undefined;
+   environmentName: string;
+   packageName: string;
+   modelPath: string;
+   doc: string;
+   score?: number;
 }
 
 const getContextShape = {
@@ -62,16 +84,38 @@ type GetContextParams = z.infer<z.ZodObject<typeof getContextShape>>;
  * SourceInfo sources/fields carry Annotation objects ({ value }); named queries
  * carry raw strings, so accept both.
  */
-export function docText(
+/**
+ * Extract ONLY `#(doc)` annotation text, empty when there is none. This is
+ * the safe input for embedding: unlike docText it never falls back to the
+ * raw annotation lines, so predicate-bearing annotations (`#(authorize)`
+ * row-level-security rules, tenant lists, `#(malloy)` internals) are never
+ * sent to an external embedding provider.
+ */
+export function docOnlyText(
    annotations?: Array<string | { value: string }>,
 ): string {
    if (!annotations || annotations.length === 0) return "";
-   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
-   const docs = lines
+   const docs = annotations
+      .map((a) => (typeof a === "string" ? a : a.value))
       .map((a) => a.match(/#\(doc\)\s*(.*)/)?.[1]?.trim() ?? "")
       .filter(Boolean);
-   const chosen = docs.length > 0 ? docs : lines;
-   return chosen.join(" ").replace(/\s+/g, " ").trim();
+   return docs.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Human-facing doc text for the response `doc` field. Prefers `#(doc)`
+ * text and falls back to the raw annotation lines when there is none.
+ * Pre-existing lexical behaviour; NOT used as embedding input (see
+ * docOnlyText and Entity.embedDoc).
+ */
+export function docText(
+   annotations?: Array<string | { value: string }>,
+): string {
+   const doc = docOnlyText(annotations);
+   if (doc) return doc;
+   if (!annotations || annotations.length === 0) return "";
+   const lines = annotations.map((a) => (typeof a === "string" ? a : a.value));
+   return lines.join(" ").replace(/\s+/g, " ").trim();
 }
 
 export function sanitize(query: string): string {
@@ -109,6 +153,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
             source: sourceName,
             modelPath,
             doc: docText(sourceInfo.annotations),
+            embedDoc: docOnlyText(sourceInfo.annotations),
          });
          for (const field of sourceInfo.schema.fields ?? []) {
             // v1 indexes the queryable surface: views and dimension/measure
@@ -127,6 +172,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
                source: sourceName,
                modelPath,
                doc: docText(field.annotations),
+               embedDoc: docOnlyText(field.annotations),
             });
          }
       }
@@ -140,6 +186,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
             source: query.sourceName,
             modelPath,
             doc: docText(query.annotations),
+            embedDoc: docOnlyText(query.annotations),
          });
       }
    }
@@ -149,7 +196,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
    // first occurrence per (kind, source, name).
    const seen = new Set<string>();
    return entities.filter((e) => {
-      const key = `${e.kind}|${e.source ?? ""}|${e.name}`;
+      const key = entityRowKey(e.kind, e.source ?? "", e.name);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -157,6 +204,7 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
 }
 
 interface PackageIndex {
+   pkg: Package;
    byId: Map<string, Entity>;
    index: lunr.Index;
    entityCount: number;
@@ -197,7 +245,12 @@ async function getPackageIndex(
          });
       }
    });
-   const built: PackageIndex = { byId, index, entityCount: entities.length };
+   const built: PackageIndex = {
+      pkg,
+      byId,
+      index,
+      entityCount: entities.length,
+   };
    indexCache.set(pkg, built);
    logger.debug("[MCP Tool getContext] Built and cached entity index", {
       packageName,
@@ -223,7 +276,7 @@ Call it with as much as you know and omit the rest; it answers at the appropriat
 - limit (optional): cap the number of results (max 50). Retrieval defaults to 10; the listing tiers return all unless set.
 
 ## Response
-A JSON object with a results array whose items carry a kind field. For retrieval, each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName.
+A JSON object with a results array whose items carry a kind field. For retrieval, each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName. When the server is configured with an embedding provider, retrieval is ranked by semantic similarity: the payload then carries a retrieval field ("semantic", or "lexical" when the provider is unavailable) and each semantic entity a score.
 
 ## Contract rules
 - Use the names verbatim; do not invent environments, packages, or entities not in the results.
@@ -404,7 +457,100 @@ export function registerGetContextTool(
             return jsonResource(uri, { results });
          }
 
-         // Tier 4: retrieval over the package's entities.
+         // Tier 4: retrieval over the package's entities. With an
+         // embedding provider configured, ranking is semantic (DuckDB
+         // cosine over cached entity embeddings); otherwise, or whenever
+         // the semantic path is unavailable (index still building,
+         // provider down, oversized package), it is lexical lunr. The
+         // `retrieval` marker and per-entity `score` appear ONLY when a
+         // provider is configured, so the unconfigured payload stays
+         // byte-identical to the lexical-only releases.
+         const configured = embeddingConfigured();
+         let semanticResults: ResultEntity[] | undefined;
+         if (configured) {
+            let provider: EmbeddingProvider | null = null;
+            try {
+               provider = getEmbeddingProvider();
+            } catch (error) {
+               logger.warn(
+                  "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
+                  {
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  },
+               );
+            }
+            if (provider) {
+               try {
+                  // The raw query embeds better than the lunr-sanitized
+                  // one; sanitize() only exists to strip lunr operators.
+                  const semantic = await trySemanticSearch({
+                     db: environmentStore.storageManager.getDuckDbConnection(),
+                     provider,
+                     pkg: pkgIndex.pkg,
+                     environmentName,
+                     packageName,
+                     entities: Array.from(byId.values()),
+                     query: query ?? sanitized,
+                     limit: max,
+                     // "" means no drill-down, matching the lexical
+                     // path's truthiness filter.
+                     sourceName: sourceName || undefined,
+                  });
+                  if ("hits" in semantic) {
+                     const byKey = new Map(
+                        Array.from(byId.values()).map((e) => [
+                           entityRowKey(e.kind, e.source ?? "", e.name),
+                           e,
+                        ]),
+                     );
+                     // Rows are only a vector cache: modelPath and doc
+                     // come from the live entity, and a hit with no live
+                     // entity (deleted since the last sync) is dropped.
+                     semanticResults = semantic.hits.flatMap((hit) => {
+                        const e = byKey.get(
+                           entityRowKey(hit.kind, hit.source ?? "", hit.name),
+                        );
+                        if (!e) return [];
+                        return [
+                           {
+                              kind: e.kind,
+                              name: e.name,
+                              source: e.source,
+                              environmentName,
+                              packageName,
+                              modelPath: e.modelPath,
+                              doc: e.doc,
+                              score: Math.round(hit.score * 10_000) / 10_000,
+                           },
+                        ];
+                     });
+                  }
+               } catch (error) {
+                  // Defensive: trySemanticSearch does not throw, but the
+                  // storage handle lookup can (e.g. before initialization
+                  // or under a partial test double). Semantic retrieval
+                  // must never take tier 4 down with it.
+                  logger.warn(
+                     "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
+                     {
+                        error:
+                           error instanceof Error
+                              ? error.message
+                              : String(error),
+                     },
+                  );
+               }
+            }
+         }
+
+         if (semanticResults !== undefined) {
+            return jsonResource(uri, {
+               retrieval: "semantic",
+               results: semanticResults,
+            });
+         }
+
          let hits: lunr.Index.Result[] = [];
          try {
             hits = index.search(sanitized);
@@ -433,7 +579,10 @@ export function registerGetContextTool(
                doc: e.doc,
             }));
 
-         return jsonResource(uri, { results });
+         return jsonResource(
+            uri,
+            configured ? { retrieval: "lexical", results } : { results },
+         );
       },
    );
 }

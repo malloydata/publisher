@@ -91,7 +91,7 @@ export function formatDuration(durationMs: number): string {
 // headers (Authorization, Cookie). Those values are masked by key name before
 // they reach a log transport. Matching is case-insensitive so header casing
 // (Authorization vs authorization) does not slip through.
-const SENSITIVE_KEY_NAMES = [
+export const SENSITIVE_KEY_NAMES = [
    // connection config credentials
    "password",
    "connectionString",
@@ -107,6 +107,8 @@ const SENSITIVE_KEY_NAMES = [
    "peakaKey",
    "token",
    "accessToken",
+   "apiKey",
+   "api_key",
    // credential-bearing HTTP headers
    "authorization",
    "proxy-authorization",
