@@ -581,7 +581,9 @@ test.describe("package-dashboards", () => {
          .click({ timeout: 60_000 });
       // The surface names itself: a notebook filtering itself is not "this
       // dashboard", though the tag it came from is the same one.
-      await page.getByRole("menuitem", { name: "Filter this notebook" }).click();
+      await page
+         .getByRole("menuitem", { name: "Filter this notebook" })
+         .click();
 
       // Filtering in place is a URL change, not a navigation: still the
       // notebook, now with the given set.

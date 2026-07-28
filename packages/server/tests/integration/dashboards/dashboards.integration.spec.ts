@@ -266,10 +266,7 @@ describe("Dashboard discovery (E2E)", () => {
          { query: "orders -> totals", givenNames: [] },
       ]);
       // The control row is the union across tiles.
-      expect(manifest.givens?.map((s) => s.name)).toEqual([
-         "BRAND",
-         "REGION",
-      ]);
+      expect(manifest.givens?.map((s) => s.name)).toEqual(["BRAND", "REGION"]);
    });
 
    it("404s an unknown slug, and a dashboards/ file that is only an include", async () => {

@@ -192,8 +192,9 @@ test.describe("package-data-app", () => {
       // top of the strip the labels are drawn in, which is outside the plot
       // area — the reason the page hit-tests this itself.
       const label = await canvas.evaluate((el: HTMLCanvasElement) => {
-         const chart = (window as unknown as { Chart: ChartGlobal }).Chart
-            .getChart(el);
+         const chart = (
+            window as unknown as { Chart: ChartGlobal }
+         ).Chart.getChart(el);
          const scale = chart.scales.x;
          return {
             x: scale.getPixelForValue(0),

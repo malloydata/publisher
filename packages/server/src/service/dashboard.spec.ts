@@ -390,10 +390,7 @@ describe("service/dashboard manifest (composite form)", () => {
          { query: "orders -> plain", givenNames: [] },
       ]);
       // The control row is the union — every given any tile can filter by.
-      expect(manifest?.givens.map((s) => s.name)).toEqual([
-         "BRAND",
-         "REGION",
-      ]);
+      expect(manifest?.givens.map((s) => s.name)).toEqual(["BRAND", "REGION"]);
    });
 
    it("resolves a tile naming a model-level query, and leaves an unresolvable one absent", () => {

@@ -122,7 +122,7 @@ describe("ownModelNotes", () => {
    it("returns the model's own `##`, block notes first", () => {
       const def = makeModelDef("local", {
          local: {
-            ownNotes: { notes: ["## title=\"Sales\""], blockNotes: ["##! x"] },
+            ownNotes: { notes: ['## title="Sales"'], blockNotes: ["##! x"] },
             inheritsFrom: [],
          },
       });

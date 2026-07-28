@@ -142,9 +142,14 @@ export function humanizeSlug(slug) {
  * dashboard seed the same value.
  *
  * A comma separates alternatives in filter syntax, so a value containing one has
- * to be quoted or "Ben & Jerry, Inc" would filter for two brands. An apostrophe
- * needs nothing. Returns undefined for anything that cannot be a filter, which
- * is the signal not to offer a drill at all.
+ * to be quoted or "Ben & Jerry, Inc" would filter for two brands. A double quote
+ * or a backslash has to be quoted *and* escaped, since either one otherwise ends
+ * the quoting early and turns the rest of the value into more filter syntax. An
+ * apostrophe needs nothing. Returns undefined for anything that cannot be a
+ * filter, which is the signal not to offer a drill at all.
+ *
+ * Kept in step with the SDK's `encodeFilterList`, deliberately down to the
+ * escaping order: backslashes first, so the ones this adds are not escaped again.
  */
 export function encodeFilterValue(value) {
    if (value === null || value === undefined) return undefined;
@@ -156,8 +161,8 @@ export function encodeFilterValue(value) {
          ? undefined
          : value.toISOString().slice(0, 10);
    if (typeof value !== "string") return undefined;
-   return /[,"]/.test(value) || value.trim() !== value
-      ? `"${value.replace(/"/g, '\\"')}"`
+   return /[,"\\]/.test(value) || value.trim() !== value || value === ""
+      ? `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
       : value;
 }
 
@@ -170,12 +175,18 @@ export function readAtLeast(filter) {
    return match ? Number(match[1]) : 0;
 }
 
-/** The inverse of encodeFilterValue for one value: drop the quoting. */
+/**
+ * The inverse of encodeFilterValue for one value: drop the quoting.
+ *
+ * Escapes come off in one left-to-right pass rather than one replace per
+ * character, so a `\\` becomes a single backslash instead of being read as the
+ * start of an escape for whatever followed it.
+ */
 export const decodeFilterValue = (value) =>
    String(value ?? "")
       .trim()
       .replace(/^"(.*)"$/s, "$1")
-      .replace(/\\"/g, '"');
+      .replace(/\\(.)/g, "$1");
 
 /**
  * Split a filter list on its commas, leaving commas that are inside quotes
