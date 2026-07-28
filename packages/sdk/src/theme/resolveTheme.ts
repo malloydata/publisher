@@ -95,6 +95,9 @@ export function resolveTheme(
       // panel stays neutral so a bold accent on the chart canvas
       // doesn't bleed into the surrounding chrome.
       dashboardRoot: isDark ? "#1e293b" : "#ffffff",
+      // Drill link hover. Light is Malloyyo's own blue, so the same drill reads
+      // the same in both; dark lightens it for contrast on the slate panel.
+      drillLink: isDark ? "#60a5fa" : "#2563eb",
    };
 }
 

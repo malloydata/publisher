@@ -56,5 +56,9 @@ export function buildTableCssVars(
       // The numeric value rendered under each tile title. Not editable
       // in v1; computed from the active mode for readable contrast.
       "--malloy-render--value-color": theme.valueColor,
+      // Custom var. Drives the hover colour of a `# drill` cell via the
+      // .publisher-drill rule in injectRendererOverrides — the renderer
+      // has no notion of drill, so the affordance is entirely ours.
+      "--publisher-drill-link": theme.drillLink,
    };
 }

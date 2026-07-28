@@ -22,28 +22,27 @@ import React, { useState } from "react";
 import { Database } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { RetrievalFunction } from "../filter/DimensionFilter";
 import { Loading } from "../Loading";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
-import { serverBaseUrl } from "../../utils/pageEmbed";
-import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
-import ContentTypeIcon from "./ContentTypeIcon";
+import { serverBaseUrl } from "../../utils/dataAppEmbed";
+import { MONO_FONT_FAMILY } from "../styles";
+import ContentTypeIcon, {
+   CONTENT_TINT,
+   type ContentType,
+} from "./ContentTypeIcon";
 
 const README_NOTEBOOK = "README.malloynb";
 
 interface PackageProps {
    onClickPackageFile?: (to: string, event?: React.MouseEvent) => void;
    resourceUri: string;
-   /** Optional retrieval function for semantic search filters */
-   retrievalFn?: RetrievalFunction;
 }
 
 export default function Package({
    onClickPackageFile,
    resourceUri,
-   retrievalFn,
 }: PackageProps) {
    const { apiClients, server } = useServer();
    const onClick =
@@ -93,46 +92,86 @@ export default function Package({
          ),
    });
 
-   // List of HTML pages bundled inside the package (in-package data apps).
-   // Goes through the configured API client so consumers using a non-default
-   // baseURL or Bearer auth (via <ServerProvider>) get the same plumbing as
-   // every other endpoint.
-   // No versionId in the key: /pages serves static files, which aren't
-   // versioned (listPages takes only env + package), so keying on
-   // versionId would fragment the cache and prevent PageViewer's identical
-   // query from deduping.
-   const pagesQuery = useQueryWithApiError({
-      queryKey: ["pages", environmentName, packageName],
+   // List of in-package HTML data apps bundled inside the package. Goes through
+   // the configured API client so consumers using a non-default baseURL or
+   // Bearer auth (via <ServerProvider>) get the same plumbing as every other
+   // endpoint.
+   // No versionId in the key: /data-apps serves static files, which aren't
+   // versioned (listDataApps takes only env + package), so keying on versionId
+   // would fragment the cache and prevent DataAppViewer's identical query from
+   // deduping.
+   // No versionId, for the same reason as data apps: the dashboards endpoint
+   // takes only env + package.
+   const dashboardsQuery = useQueryWithApiError({
+      queryKey: ["dashboards", environmentName, packageName],
       queryFn: async () => {
          try {
-            return await apiClients.pages.listPages(
+            return await apiClients.dashboards.listDashboards(
                environmentName,
                packageName,
             );
          } catch (e) {
-            // A 404 or transport-level failure (older Publisher without the
-            // /pages route, network blip) is non-fatal: render the package
-            // page without a Pages section. A genuinely missing package
-            // surfaces its own error via the package query above, so an empty
-            // list here can't hide it.
+            // Non-fatal for the same reasons as the data-apps list below: an
+            // older Publisher without the route should render a package page
+            // without a Dashboards section, not an error.
             const status = (e as { response?: { status?: number } })?.response
                ?.status;
             if (status === 404 || status === undefined) {
                return { data: [] } as Awaited<
-                  ReturnType<typeof apiClients.pages.listPages>
+                  ReturnType<typeof apiClients.dashboards.listDashboards>
                >;
             }
             throw e;
          }
       },
    });
-   const pages = pagesQuery.data?.data ?? [];
+   const dashboards = (dashboardsQuery.data?.data ?? [])
+      .slice()
+      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+
+   const dataAppsQuery = useQueryWithApiError({
+      queryKey: ["data-apps", environmentName, packageName],
+      queryFn: async () => {
+         try {
+            return await apiClients.dataApps.listDataApps(
+               environmentName,
+               packageName,
+            );
+         } catch (e) {
+            // A 404 or transport-level failure (older Publisher without the
+            // /data-apps route, network blip) is non-fatal: render the package
+            // page without a Data apps section. A genuinely missing package
+            // surfaces its own error via the package query above, so an empty
+            // list here can't hide it.
+            const status = (e as { response?: { status?: number } })?.response
+               ?.status;
+            if (status === 404 || status === undefined) {
+               return { data: [] } as Awaited<
+                  ReturnType<typeof apiClients.dataApps.listDataApps>
+               >;
+            }
+            throw e;
+         }
+      },
+   });
+   const dataApps = dataAppsQuery.data?.data ?? [];
 
    const notebooks = (notebooksQuery.data?.data ?? [])
       .slice()
       .sort((a, b) => a.path.localeCompare(b.path));
+   // A dashboard is listed once, under Dashboards. Its file is a model like any
+   // other, so it would otherwise appear a second time under Semantic Models
+   // where clicking it opens the Explorer rather than the dashboard. Untagged
+   // shared includes in `dashboards/` are not dashboards and stay in the model
+   // list, which is where they belong.
+   const dashboardPaths = new Set(
+      dashboards
+         .map((dashboard) => dashboard.path)
+         .filter((path): path is string => path !== undefined),
+   );
    const models = (modelsQuery.data?.data ?? [])
       .slice()
+      .filter((model) => !dashboardPaths.has(model.path))
       .sort((a, b) => a.path.localeCompare(b.path));
    const databases = (databasesQuery.data?.data ?? [])
       .slice()
@@ -205,55 +244,85 @@ export default function Package({
 
          {!isLoading && (
             <>
-               <PackageSection
-                  title="Governed Reports"
-                  count={notebooks.length}
-               >
-                  {notebooks.map((notebook) => (
-                     <PackageItemRow
-                        key={notebook.path}
-                        icon={<ContentTypeIcon type="report" />}
-                        tint={MALLOY_BRAND.teal}
-                        label={notebook.path}
-                        onClick={(event) =>
-                           onClick(
-                              `/${environmentName}/${packageName}/${notebook.path}`,
-                              event,
-                           )
-                        }
-                     />
-                  ))}
+               {/* First: the at-a-glance artifact a visitor most likely
+                   wants, ahead of the notebooks and models it is built on.
+                   Hidden when empty, like Data Apps. */}
+               {dashboards.length > 0 && (
+                  <PackageSection title="Dashboards" count={dashboards.length}>
+                     {dashboards.map((dashboard) => {
+                        const hasTitle =
+                           !!dashboard.title &&
+                           dashboard.title !== dashboard.name;
+                        return (
+                           <PackageItemRow
+                              key={dashboard.name}
+                              type="dashboard"
+                              label={
+                                 hasTitle ? dashboard.title! : dashboard.name!
+                              }
+                              rightLabel={hasTitle ? dashboard.name : undefined}
+                              onClick={(event) =>
+                                 onClick(
+                                    `/${environmentName}/${packageName}/dashboards/${dashboard.name}`,
+                                    event,
+                                 )
+                              }
+                           />
+                        );
+                     })}
+                  </PackageSection>
+               )}
+
+               <PackageSection title="Notebooks" count={notebooks.length}>
+                  {notebooks.map((notebook) => {
+                     const hasTitle =
+                        !!notebook.title && notebook.title !== notebook.path;
+                     return (
+                        <PackageItemRow
+                           key={notebook.path}
+                           type="report"
+                           label={hasTitle ? notebook.title! : notebook.path}
+                           rightLabel={hasTitle ? notebook.path : undefined}
+                           onClick={(event) =>
+                              onClick(
+                                 `/${environmentName}/${packageName}/${notebook.path}`,
+                                 event,
+                              )
+                           }
+                        />
+                     );
+                  })}
                   {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
                </PackageSection>
 
-               {pages.length > 0 && (
-                  <PackageSection title="Pages" count={pages.length}>
-                     {pages.map((page) => {
+               {dataApps.length > 0 && (
+                  <PackageSection title="Data Apps" count={dataApps.length}>
+                     {dataApps.map((dataApp) => {
                         const hasTitle =
-                           !!page.title && page.title !== page.path;
+                           !!dataApp.title && dataApp.title !== dataApp.path;
                         // Standalone (raw) URL: the Publisher static-file route.
-                        // page.resource is the root-relative path; we join it
+                        // dataApp.resource is the root-relative path; we join it
                         // with the data origin (the API base minus /api/v0),
                         // which may differ from the SPA origin when the SDK is
                         // embedded in a host app on another domain.
                         const standaloneUrl = `${serverBaseUrl(server)}${
-                           page.resource
+                           dataApp.resource
                         }`;
                         return (
                            <PackageItemRow
-                              key={page.path}
-                              icon={<ContentTypeIcon type="page" />}
-                              tint={MALLOY_BRAND.teal}
-                              label={hasTitle ? page.title : page.path}
-                              rightLabel={hasTitle ? page.path : undefined}
+                              key={dataApp.path}
+                              type="dataApp"
+                              label={hasTitle ? dataApp.title : dataApp.path}
+                              rightLabel={hasTitle ? dataApp.path : undefined}
                               onClick={(event) => {
                                  if (onClickPackageFile) {
                                     // Host app routes within SPA to an embedded
-                                    // <PageViewer> that iframes the standalone URL.
-                                    // The `pages/` prefix lets the router branch
-                                    // off the existing model-path catch-all.
+                                    // <DataAppViewer> that iframes the standalone
+                                    // URL. The `data-apps/` prefix lets the router
+                                    // branch off the existing model-path
+                                    // catch-all.
                                     onClickPackageFile(
-                                       `/${environmentName}/${packageName}/pages/${page.path}`,
+                                       `/${environmentName}/${packageName}/data-apps/${dataApp.path}`,
                                        event,
                                     );
                                  } else {
@@ -295,8 +364,7 @@ export default function Package({
                   {models.map((model) => (
                      <PackageItemRow
                         key={model.path}
-                        icon={<ContentTypeIcon type="model" />}
-                        tint={MALLOY_BRAND.orange}
+                        type="model"
                         label={model.path}
                         onClick={(event) =>
                            onClick(
@@ -313,8 +381,7 @@ export default function Package({
                   {databases.map((database) => (
                      <PackageItemRow
                         key={database.path}
-                        icon={<ContentTypeIcon type="data" />}
-                        tint={MALLOY_BRAND.darkBlue}
+                        type="data"
                         label={database.path}
                         rightLabel={
                            // A file the server could not probe is listed with
@@ -332,8 +399,7 @@ export default function Package({
 
                <PackageSection title="Materializations">
                   <PackageItemRow
-                     icon={<ContentTypeIcon type="materialization" />}
-                     tint={MALLOY_BRAND.teal}
+                     type="materialization"
                      label="Materializations"
                      onClick={(event) =>
                         onClick(
@@ -348,7 +414,6 @@ export default function Package({
                   <Box sx={{ mt: 6 }}>
                      <Notebook
                         resourceUri={readmeResourceUri}
-                        retrievalFn={retrievalFn}
                         onNavigate={onClick}
                      />
                   </Box>
@@ -438,16 +503,19 @@ function PackageSection({
    );
 }
 
+/**
+ * A row names its content type once. The glyph and the color behind it are
+ * two halves of the same signal, so the row derives both rather than letting a
+ * caller pair a dashboard icon with a model's color.
+ */
 function PackageItemRow({
-   icon,
-   tint,
+   type,
    label,
    rightLabel,
    onClick,
    trailingAction,
 }: {
-   icon: React.ReactNode;
-   tint: string;
+   type: ContentType;
    label: string;
    rightLabel?: string;
    onClick?: (event: React.MouseEvent) => void;
@@ -502,7 +570,7 @@ function PackageItemRow({
                width: 32,
                height: 32,
                borderRadius: 1,
-               bgcolor: tint,
+               bgcolor: CONTENT_TINT[type],
                color: "#FFFFFF",
                display: "flex",
                alignItems: "center",
@@ -510,7 +578,7 @@ function PackageItemRow({
                flexShrink: 0,
             }}
          >
-            {icon}
+            <ContentTypeIcon type={type} />
          </Box>
          <Typography
             variant="body2"

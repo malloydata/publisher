@@ -1,63 +1,154 @@
 >>>markdown
 # Storefront — a guided tour
 
-A small but complete ecommerce model: an `order_items` fact joined to
-`customers` and `products`, plus a `regions` lookup DuckDB reads straight from
-CSV, over ~25,000 order lines across three years. Every
-number below is composed from the model's reusable measures, so the metrics stay
-correct across joins (Malloy's symmetric aggregates). Open
-[`storefront.malloy`](storefront.malloy) to see how they're defined.
+A small but complete ecommerce model: an `order_items` fact joined to `customers`
+and `products`, plus a `regions` lookup DuckDB reads straight from CSV — 25,356
+order lines across 11,000 orders and three years. Every number below is composed
+from the model's reusable measures, so the metrics stay correct across joins
+(Malloy's symmetric aggregates). Open [`storefront.malloy`](storefront.malloy) to
+see how they're defined.
+
+The dashboard below is the summary; each section after it takes one question a
+level deeper. Almost every cell is a named view from the model, run on its own.
+
+The **Parameters** panel above comes from the four givens the next cell imports:
+the same declarations in [`givens.malloy`](givens.malloy) that make up the filter
+row on the [dashboards](dashboards/overview), rendered here as a panel. Change one
+and every cell re-runs, with the values in the page URL — so a filtered read of
+this notebook is a link you can send. `REGION` is declared in that file too and
+deliberately left out: a notebook gets a control for every given it imports, so
+importing one that nothing here filters by would leave a control that moves
+nothing. See [`docs/givens.md`][g].
+
+[g]: https://github.com/malloydata/publisher/blob/main/docs/givens.md
 >>>malloy
+##! experimental.givens
 import "storefront.malloy"
+import { CATEGORY, BRAND, SINCE, MIN_SALE } from "givens.malloy"
+
+// One `where:` for the whole document: every query below runs against this
+// source, so four controls scope all of it. A dashboard makes the same choice
+// inside each query (dashboards/overview.malloy) — what a given filters is
+// always the document's decision, never the declaration's.
+source: orders_in_scope is order_items extend {
+  where:
+    category ~ $CATEGORY
+    and brand ~ $BRAND
+    and created_at >= $SINCE
+    and sale_price ~ $MIN_SALE
+}
 >>>markdown
 ## Business overview
 
-One `# dashboard` view, one query: KPI tiles plus a monthly trend, a
-sales-by-state map, a category breakdown, and the top products.
+One `# dashboard` view, one query: four KPI cards, a monthly trend, revenue by
+state as a `# shape_map` choropleth, the category split, and the ten products
+that earn the most. $2.1M of revenue at a 47% gross margin, over 11,000 orders
+averaging $191.
 >>>malloy
-run: order_items -> business_overview
+run: orders_in_scope -> business_overview
 >>>markdown
 ## Growth, year over year
 
-Revenue by calendar year — the business is growing.
+Revenue grew by about a third in each of the last two years: $503K in 2023, $682K
+in 2024, $913K in 2025.
 >>>malloy
-run: order_items -> sales_by_year
+run: orders_in_scope -> sales_by_year
 >>>markdown
 ## Seasonality
 
-The same months, one line per year. The holiday quarter lifts every year, and
-each year sits above the last.
+The same twelve months, one line per year. Two things hold across all three years:
+November and December are the peak — 2025 took $237K of its $913K in those two
+months — and every month outsells the same month a year earlier. The growth above
+is not one good quarter.
 >>>malloy
-run: order_items -> seasonality
+run: orders_in_scope -> seasonality
 >>>markdown
 ## Where the revenue is
 
-Sales by customer state. Malloy's `# shape_map` renders a US choropleth from a
-state name and a measure.
->>>malloy
-run: order_items -> sales_by_state
->>>markdown
-Rolled up to sales regions. The state-to-region mapping is a CSV sitting next to
-the Parquet in `data/`, and `duckdb.table()` reads both formats in place, so the
-lookup joins to the order data with no conversion step and no connection to set up.
->>>malloy
-run: order_items -> sales_by_region
->>>markdown
-## Category mix — revenue and margin
+The dashboard's map breaks revenue out by state. This rolls those states up into
+sales regions, where the South alone is 37% of revenue, nearly twice the
+Northeast's 19%.
 
-Revenue and gross margin tell different stories: the biggest sellers aren't
-always the most profitable.
+The state-to-region mapping is a CSV sitting next to the Parquet in `data/`, and
+`duckdb.table()` reads both formats in place, so the lookup joins to the order
+data with no conversion step and no connection to set up.
 >>>malloy
-run: order_items -> by_category
->>>malloy
-run: order_items -> margin_by_category
+run: orders_in_scope -> sales_by_region
 >>>markdown
-## Top brands
+## Category mix
+
+The dashboard ranks categories by revenue. The table below adds what that ranking
+hides: Outerwear leads on 22% of revenue but earns one of the thinnest rates in
+the catalog, 45.7%, while Shorts sells less than half as much at the best rate,
+49.8%. Dresses trails Footwear by $10K of revenue and passes it on margin dollars,
+by $339.
+
+The category names in the table are clickable: they take a pointer cursor and read
+as links under the pointer, the same way they do on a dashboard. `# drill` is
+declared on the model's `category` dimension, not on any one document, so any cell
+that groups by it is clickable with no notebook-specific wiring.
+
+Clicking one offers the same two destinations a dashboard tile offers, because
+this notebook imports the given the tag names: **Category** opens
+[Category Detail](dashboards/category) with that category filled in, and **Filter
+this notebook** writes it into the Category control above instead of leaving the
+page. The second entry is the one that needs the import — a document with no
+control for `CATEGORY` has nowhere to put the value, so the drill is not offered
+there rather than dead-ending. See [`docs/dashboards.md`][d].
+
+[d]: https://github.com/malloydata/publisher/blob/main/docs/dashboards.md
 >>>malloy
-run: order_items -> top_brands
+run: orders_in_scope -> category_performance
 >>>markdown
-## Top products and customers
+## Brands
+
+A near dead heat at the top: the four biggest brands are within $2,800 of one
+another on about $220K each, so their order in the ranking is noise rather than a
+finding. The rate column is where they separate, and it runs the other way — the
+best of it belongs to Harbor, tenth by revenue and keeping 50.2 cents of every
+dollar, against 43.6 for Willow.
+
+Brand is drillable too, and shows the other shape a drill takes: its tag names one
+destination (`# drill { to=self }`), so clicking a brand filters this notebook in
+place, with no menu to choose from.
 >>>malloy
-run: order_items -> top_products
+run: orders_in_scope -> brand_performance
+>>>markdown
+## What sells, and what sells a lot
+
+The dashboard's top-products tile ranks by revenue, and it is all outerwear: nine
+of those ten are jackets, parkas, or coats north of $200 a line. Ask the same
+question by units and almost none of them come back — the volume is in shorts,
+four of the top ten, and everyday basics mostly under $60 a line. One product
+makes both lists: the Meridian Court Boot, 258 sold at $109.
+
+This is the only cell that isn't a named view. Views are for the questions worth
+asking again; a question you're asking once is a query written where you stand,
+against the same source and the same measures.
 >>>malloy
-run: order_items -> top_customers
+run: orders_in_scope -> {
+  top: 10
+  group_by:
+    # label="Product"
+    products.name
+  aggregate:
+    order_item_count
+    # currency
+    # label="Avg line price"
+    avg_line_price is sale_price.avg()
+    total_sales
+  order_by: order_item_count desc
+}
+>>>markdown
+## Top customers
+
+974 customers placed those 11,000 orders, eleven apiece over three years. The
+best of them, Delilah Okafor, spent $8,818 across 43 of them.
+>>>malloy
+run: orders_in_scope -> top_customers
+>>>markdown
+Same model, other surfaces: the [dashboards](dashboards/overview) lay these views
+out as pages with the filter row across the top, and the package's data app serves
+a hand-written HTML page from `public/` that queries the same source. None of the
+three redefines anything: the measures, the labels, and the drill tags are written
+once, in [`storefront.malloy`](storefront.malloy).

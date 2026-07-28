@@ -11,10 +11,6 @@
         {
           "name": "governed-analytics",
           "location": "https://github.com/malloydata/publisher/tree/main/examples/governed-analytics"
-        },
-        {
-          "name": "html-data-app",
-          "location": "https://github.com/malloydata/publisher/tree/main/examples/html-data-app"
         }
       ],
       "connections": []

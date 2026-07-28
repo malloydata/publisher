@@ -1,0 +1,31 @@
+// The source the HTML data app (public/index.html) queries.
+//
+// The page could interpolate a `where:` into every query string instead, and an
+// earlier version did. Givens are better for the same reason they are better on
+// a dashboard: the value is bound by the server as a typed parameter rather than
+// pasted into query text, and the page ends up filtering by *the same* five
+// givens the dashboards and the notebook filter by. That is what lets a drill
+// click seed a value the dashboards would also accept, so a link out of the data
+// app and a link out of a dashboard mean the same thing.
+//
+// It exists as its own file because Malloy's given namespace is per-file: a
+// query can only reference a given the file it runs against imports. The
+// notebook does the same thing in its first cell (`orders_in_scope`), and
+// dashboards/_shared.malloy does it for the composite dashboard's tiles. This is
+// the data app's copy of that idea, with all five givens rather than a subset,
+// because the page renders one control row that every tab shares.
+//
+// No `# artifact` tag, so this is not a dashboard: just a model the page reads.
+##! experimental.givens
+import "storefront.malloy"
+import { CATEGORY, BRAND, REGION, SINCE, MIN_SALE } from "givens.malloy"
+
+#(doc) Order lines narrowed by the data app's control row. Every tile queries this.
+source: scoped_orders is order_items extend {
+  where:
+    category ~ $CATEGORY
+    and brand ~ $BRAND
+    and region ~ $REGION
+    and created_at >= $SINCE
+    and sale_price ~ $MIN_SALE
+}

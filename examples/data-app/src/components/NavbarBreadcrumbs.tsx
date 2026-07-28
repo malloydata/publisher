@@ -3,6 +3,7 @@ import { styled } from "@mui/material/styles";
 import Typography from "@mui/material/Typography";
 import Breadcrumbs, { breadcrumbsClasses } from "@mui/material/Breadcrumbs";
 import NavigateNextRoundedIcon from "@mui/icons-material/NavigateNextRounded";
+import type { AppView } from "../types/view";
 
 const StyledBreadcrumbs = styled(Breadcrumbs)(({ theme }) => ({
   margin: theme.spacing(1, 0),
@@ -18,11 +19,12 @@ const StyledBreadcrumbs = styled(Breadcrumbs)(({ theme }) => ({
 export default function NavbarBreadcrumbs({
   selectedView,
 }: {
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
+  selectedView: AppView;
 }) {
   // Map key to display name
   const viewLabels: Record<typeof selectedView, string> = {
     storefront: "Storefront dashboard",
+    packageDashboard: "Package dashboard",
     singleEmbed: "Single Embed",
     dynamicDashboard: "Dynamic Dashboard",
     interactive: "Interactive",

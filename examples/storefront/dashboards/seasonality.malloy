@@ -1,0 +1,27 @@
+// A composite dashboard: no query of its own, just a list of views that already
+// exist, each run separately and combined into one grid.
+//
+// The tag is model-level (`##`) rather than query-level, because there is no
+// query here for a `#` tag to sit on. Reach for this shape when the views are
+// already modelled and the dashboard is a matter of choosing which to show
+// together — and for the single-query shape (overview.malloy) when the page
+// wants one filtered result with nested parts.
+//
+// Each tile runs on its own, so a control change only re-runs the tiles that
+// reference it. The control row is the union across the tiles.
+##! experimental.givens
+## artifact { title="Seasonality" tiles=["scoped_sales -> sales_by_month", "scoped_sales -> sales_by_year", "scoped_sales -> seasonality"] dashboard_columns=3 }
+import { scoped_sales } from './_shared.malloy'
+import { products } from '../storefront.malloy'
+import { CATEGORY, SINCE } from '../givens.malloy'
+
+// The givens are imported even though no line in this file mentions them: the
+// `where:` that references them is over in _shared.malloy, and Malloy's given
+// namespace is per-file. Without these two imports the file would surface no
+// givens, the control row would be empty, and sending one at run time would
+// fail with "unknown given".
+//
+// `products` is imported for the same reason one step further out: CATEGORY's
+// control fills its dropdown from that source, and a suggest query runs against
+// *this* file's model. Leaving it out is a package warning at load, not a
+// surprise at click time.

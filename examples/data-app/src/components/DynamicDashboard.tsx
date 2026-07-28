@@ -1,14 +1,11 @@
 import Dashboard from "./Dashboard";
+import type { AppView } from "../types/view";
 
 export default function DynamicDashboard({
   selectedView,
   resourceUri,
 }: {
-  selectedView:
-    | "storefront"
-    | "singleEmbed"
-    | "dynamicDashboard"
-    | "interactive";
+  selectedView: AppView;
   resourceUri: string;
 }) {
   return (

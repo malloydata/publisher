@@ -17,7 +17,7 @@ const SHOTS = [
     url: `${BASE}/environments/examples/packages/storefront/index.html`,
     viewport: { width: 1200, height: 900 },
     waitUntil: "domcontentloaded",   // page holds an SSE live-reload stream, so networkidle never fires
-    waitFor: "#byCategory",
+    waitFor: "td.publisher-drill",
     settle: 5000,
     fullPage: true,
   },
@@ -27,27 +27,20 @@ const SHOTS = [
     viewport: { width: 1440, height: 1400 },
     waitFor: "svg, canvas",
     settle: 6000,
+    anchor: "h2:has-text('Business overview')",
     fullPage: false,
   },
   {
-    // README hero — the storefront Business overview dashboard, with the
-    // dashboard cell expanded past its internal scroll so every chart shows.
+    // README hero — the storefront Business overview dashboard. No
+    // `expandDashboard`: the dashboard fits this viewport on its own now, and
+    // lifting the height caps reflows the category tile until its axis labels
+    // clip.
     file: "../malloy-publisher-demo.png",
     url: `${BASE}/examples/storefront/storefront.malloynb`,
     viewport: { width: 1600, height: 1440 },
     waitFor: "svg, canvas",
     settle: 6000,
-    expandDashboard: true,
-    scrollY: 292,
-    fullPage: false,
-  },
-  {
-    file: "html-data-app-dashboard.png",
-    url: `${BASE}/environments/examples/packages/html-data-app/index.html`,
-    viewport: { width: 1200, height: 900 },
-    waitUntil: "domcontentloaded", // SSE live-reload stream, so networkidle never fires
-    waitFor: "#mrrByMonth",
-    settle: 5000,
+    anchor: "h2:has-text('Business overview')",
     fullPage: false,
   },
   {
@@ -59,9 +52,13 @@ const SHOTS = [
     fullPage: false,
   },
   {
-    file: "publisher-app.png",
+    // Tall enough to reach Materializations, the last of the six content
+    // sections: the shot is what docs/console.md points at when it says every
+    // kind of content has its own icon and color, and four of six does not
+    // show that.
+    file: "console.png",
     url: `${BASE}/examples/storefront`,
-    viewport: { width: 1440, height: 900 },
+    viewport: { width: 1440, height: 1440 },
     waitFor: "body",
     settle: 3000,
     fullPage: false,
@@ -78,10 +75,15 @@ const SHOTS = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Name one or more files to capture just those, leaving the other PNGs (and
+// their binary diffs) alone: `node scripts/capture-screenshots.mjs console.png`.
+const only = process.argv.slice(2);
+const shots = only.length ? SHOTS.filter((s) => only.includes(s.file)) : SHOTS;
+
 const browser = await chromium.launch();
 await mkdir(OUT, { recursive: true });
 let ok = 0;
-for (const s of SHOTS) {
+for (const s of shots) {
   const page = await browser.newPage({ viewport: s.viewport, deviceScaleFactor: 2 });
   try {
     await page.goto(s.url, { waitUntil: s.waitUntil || "networkidle", timeout: 30000 });
@@ -103,11 +105,21 @@ for (const s of SHOTS) {
       });
       await sleep(1500);
     }
-    if (s.scrollY) {
+    // Scrolling to an element rather than a pixel offset, so editing the prose
+    // above a shot does not silently reframe it.
+    const scrollBy = s.anchor
+      ? await page
+          .locator(s.anchor)
+          .first()
+          .boundingBox()
+          .then((box) => (box ? box.y - (s.anchorOffset ?? 24) : 0))
+          .catch(() => 0)
+      : (s.scrollY ?? 0);
+    if (scrollBy) {
       // Some pages scroll an inner container, so scroll via the mouse wheel
       // over the page center rather than window.scrollTo.
       await page.mouse.move(s.viewport.width / 2, s.viewport.height / 2);
-      await page.mouse.wheel(0, s.scrollY);
+      await page.mouse.wheel(0, scrollBy);
       await sleep(1000);
     }
     await page.screenshot({ path: `${OUT}/${s.file}`, fullPage: s.fullPage });
@@ -120,4 +132,4 @@ for (const s of SHOTS) {
   }
 }
 await browser.close();
-console.log(`\n${ok}/${SHOTS.length} captured into ${OUT}/`);
+console.log(`\n${ok}/${shots.length} captured into ${OUT}/`);

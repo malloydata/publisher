@@ -1,0 +1,43 @@
+// Where a drill lands.
+//
+// `# drill { to=["category", "self"] given=CATEGORY }` on the model's `category`
+// dimension (storefront.malloy) names this file by its slug. Clicking a category
+// bar anywhere — a tile on the Business Overview dashboard, a cell in
+// storefront.malloynb — offers "Category Detail", and choosing it opens this
+// page with CATEGORY already set to the value that was clicked. That works
+// because the destination declares a control for CATEGORY: a drill seeds a
+// given, and a dashboard that does not import one has nowhere to put the value.
+##! experimental.givens
+import { order_items, products, brand_suggest } from '../storefront.malloy'
+import { CATEGORY, BRAND } from '../givens.malloy'
+
+// Same 12-column grid as every other dashboard here, and the same two rules
+// that keep one from coming out lopsided: cards carry a colspan that divides
+// the row (three at 4), and the first tile takes a `# break` so the tiles get
+// a row of their own instead of flowing in beside the cards.
+#" What sells inside one category, and which brands drive it.
+# artifact { title="Category Detail" } dashboard { columns=12 }
+query: category is order_items -> {
+  where: category ~ $CATEGORY and brand ~ $BRAND
+
+  aggregate:
+    # label="Revenue"
+    # currency
+    # colspan=4
+    total_sales
+    # label="Margin rate"
+    # colspan=4
+    margin_rate
+    # label="Return rate"
+    # colspan=4
+    return_rate
+
+  nest:
+    # break
+    # colspan=6
+    # label="Top products"
+    top_products
+    # colspan=6
+    # label="Top brands"
+    top_brands
+}

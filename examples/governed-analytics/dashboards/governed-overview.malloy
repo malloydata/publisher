@@ -1,0 +1,71 @@
+// A dashboard over a governed source.
+//
+// Nothing about the dashboard surface opts out of the model's governance. This
+// file adds no scoping of its own beyond the given bindings: the row filtering
+// lives on `sales` in orders.malloy, so every tile below inherits it, and the
+// control row is generated from the givens the query references.
+//
+// The same holds for the hard boundary. Pointing this query at
+// `orders_secured` instead (secured.malloy) would render the same grid for an
+// admin or an allow-listed tenant, and return 403 for everyone else, because
+// `#(authorize)` is evaluated when the query compiles and runs, not by the
+// surface asking for it. A dashboard is not a way around an authorize rule.
+##! experimental.givens
+import { sales, region_suggest, status_suggest } from '../orders.malloy'
+import { REGION, STATUS, MIN_AMOUNT } from '../orders.malloy'
+
+// `sales` is imported to query, and the two suggest queries because a control's
+// option list runs as a query against this dashboard's own model, so it has to
+// resolve here. Importing the givens is what makes them bindable at all:
+// Malloy's given namespace is per-file, so a control this file does not import
+// cannot be sent to it.
+
+#" Order volume and value, scoped by the controls above and by whatever the
+#" model already allows this caller to see.
+// `columns=12` and colspans that sum to 12 per row, the same grid the other
+// example package uses, so the cards and the tiles end at the same place. The
+// `# break` is what keeps the first tile from flowing in beside the cards.
+# artifact { title="Governed Overview" } dashboard { columns=12 }
+query: governed_overview is sales -> {
+  // These three `where:` clauses are the control row. `sales` already applies
+  // the same givens, so this adds no scoping; it is what tells the dashboard
+  // which controls to render.
+  where: region ~ $REGION and status ~ $STATUS and amount >= $MIN_AMOUNT
+
+  // Three cards at 4 of 12. The labels come from the measures themselves
+  // (orders.malloy), so they read the same here, in the notebook, and on any
+  // axis they land on.
+  aggregate:
+    # colspan=4
+    order_count
+    # colspan=4
+    total_amount
+    # colspan=4
+    avg_amount
+
+  nest:
+    # break
+    # colspan=6
+    # label="Order value by month"
+    amount_by_month
+    # colspan=6
+    # label="Order value by region"
+    by_region
+  nest:
+    # colspan=6
+    # label="Orders by status"
+    by_status
+    # colspan=6
+    # label="Order value by tenant"
+    by_tenant
+}
+
+// This line is what this package needs and storefront does not. Curation is on
+// here (`explores` plus `queryableSources: "declared"` in publisher.json), and
+// under curation a model's queryable surface is what it exports: an import
+// resolves at compile time but is not runnable. So the two option-list queries
+// have to be re-exported, and once the list is explicit it replaces the default
+// "everything top-level", which means the dashboard's own query belongs on it
+// too. Leave `governed_overview` off and the grid stops loading; leave the
+// suggests off and only the dropdowns come up empty.
+export { governed_overview, region_suggest, status_suggest }

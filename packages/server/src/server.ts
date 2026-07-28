@@ -11,6 +11,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
+import { DashboardController } from "./controller/dashboard.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -208,6 +209,7 @@ export const environmentStore = new EnvironmentStore(SERVER_ROOT);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
+const dashboardController = new DashboardController(environmentStore);
 // PackageMemoryGovernor is opt-in via PUBLISHER_MAX_MEMORY_BYTES.
 // When set, it polls process RSS and flips an `isBackpressured` flag
 // that Environment.getPackage / addPackage consult before allocating
@@ -372,7 +374,7 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
 //   - `/api/v0/.../events`    → live-reload SSE (registered in API routes
 //                                below; this comment is the cross-reference)
 
-// Serve the runtime helper that in-package HTML pages load via
+// Serve the runtime helper that in-package HTML data apps load via
 // <script src="/sdk/publisher.js">. Path resolved once at module load.
 const PUBLISHER_RUNTIME_PATH = path.join(
    path.dirname(__filename_esm),
@@ -540,18 +542,18 @@ app.get(
    serveFromPackage,
 );
 
-// List the static HTML pages bundled inside a package. Used by the SPA's
-// package-detail view to surface a clickable list, and by anyone who wants
-// to discover pages programmatically without scraping the directory.
+// List the in-package HTML data apps bundled inside a package. Used by the
+// SPA's package-detail view to surface a clickable list, and by anyone who
+// wants to discover them programmatically without scraping the directory.
 //
-// Returns a `Page[]` (see api-doc.yaml) — each item carries the relative
-// `path`, the `packageName`, the page `title` (from its <title> tag), and a
+// Returns a `DataApp[]` (see api-doc.yaml) — each item carries the relative
+// `path`, the `packageName`, the `title` (from its <title> tag), and a
 // `resource` URL. `resource` is the root-relative static-serve URL (NOT under
-// `${API_PREFIX}`) because pages are static assets served off the server root,
-// unlike API resources such as `Package.resource`.
+// `${API_PREFIX}`) because a data app is a static asset served off the server
+// root, unlike API resources such as `Package.resource`.
 // Recursive depth is capped to keep this cheap for huge package directories.
-const PAGES_DEPTH_CAP = 3;
-type PageItem = {
+const DATA_APPS_DEPTH_CAP = 3;
+type DataAppItem = {
    resource: string;
    packageName: string;
    path: string;
@@ -582,13 +584,13 @@ function stripNonTagText(input: string): string {
    return current;
 }
 
-async function listPackagePages(
+async function listPackageDataApps(
    environmentName: string,
    packageName: string,
    publicRoot: string,
-): Promise<PageItem[]> {
+): Promise<DataAppItem[]> {
    const fs = await import("fs/promises");
-   const out: PageItem[] = [];
+   const out: DataAppItem[] = [];
 
    // Resolve the public/ root once and reject any entry whose realpath escapes
    // it. Same containment defense as serveFromPackage: catches symlinks inside
@@ -603,7 +605,7 @@ async function listPackagePages(
    }
 
    async function walk(dir: string, depth: number) {
-      if (depth > PAGES_DEPTH_CAP) return;
+      if (depth > DATA_APPS_DEPTH_CAP) return;
       let entries: import("fs").Dirent[];
       try {
          entries = await fs.readdir(dir, { withFileTypes: true });
@@ -694,7 +696,7 @@ async function listPackagePages(
    return out;
 }
 
-// NOTE: route registration for /pages moved below the CORS middleware so
+// NOTE: route registration for /data-apps moved below the CORS middleware so
 // cross-origin SDK consumers (e.g. a customer's React app pointing at
 // `<ServerProvider baseURL="https://publisher.example.com/api/v0">`) get
 // the proper CORS headers. See the registration after `app.use(cors(...))`.
@@ -756,10 +758,10 @@ try {
 // Register draining guard middleware - must be after health endpoints but before other routes
 app.use(drainingGuard);
 
-// /pages — registered here (post-CORS, post-body-parser, post-draining) so
+// /data-apps — registered here (post-CORS, post-body-parser, post-draining) so
 // cross-origin SDK consumers and authenticated requests both work.
 app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/pages`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/data-apps`,
    async (req, res) => {
       try {
          const environment = await environmentStore.getEnvironment(
@@ -770,14 +772,14 @@ app.get(
             req.params.packageName,
             false,
          );
-         const pages = await listPackagePages(
+         const dataApps = await listPackageDataApps(
             req.params.environmentName,
             req.params.packageName,
             path.join(pkg.getPackagePath(), "public"),
          );
-         res.json(pages);
+         res.json(dataApps);
       } catch (error) {
-         logger.error("Failed to list package pages", { error });
+         logger.error("Failed to list package data apps", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -1508,6 +1510,53 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                modelPath,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.listDashboards(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.getDashboard(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.dashboardName,
             ),
          );
       } catch (error) {

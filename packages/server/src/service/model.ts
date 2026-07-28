@@ -75,13 +75,14 @@ import type {
 } from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
-import { modelAnnotations } from "./annotations";
+import { modelAnnotations, ownModelNotes } from "./annotations";
 import {
    collectAuthorizeExprs,
    evaluateAuthorize,
    referencedGivenNames,
    validateAuthorizeProbes,
 } from "./authorize";
+import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
    buildFilterClause,
    FilterValidationError,
@@ -90,6 +91,12 @@ import {
    type FilterParams,
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   docCommentText,
+   motlyTag,
+   readAutorun,
+   readStartingGivens,
+} from "./motly";
 import {
    assertWithinModelResponseLimits,
    resolveModelQueryRowLimit,
@@ -168,11 +175,12 @@ function quoteMalloyIdentifier(name: string | undefined): string {
 /**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an
  * error-severity issue that affects only how a field renders, never whether the
- * model compiles or a query runs. `target` is the query or view it sits on
- * (e.g. `by_carrier` or `flights -> by_carrier`).
+ * model compiles or a query runs. `subject` is the query or view it sits on
+ * (e.g. `by_carrier` or `flights -> by_carrier`), matching the field name the
+ * package-warnings surface serves it under.
  */
 export interface RenderTagWarning {
-   target: string;
+   subject: string;
    message: string;
    severity: "error" | "warn";
 }
@@ -1438,6 +1446,29 @@ export class Model {
    }
 
    /**
+    * The facts dashboard discovery reads off this model, or undefined when the
+    * model failed to compile.
+    *
+    * Deliberately uncurated: `explores` curation shapes the *discovery* surface
+    * agents see, while a dashboard is a separate human artifact addressed by its
+    * own slug. A package that curates its model surface still serves its
+    * dashboards. See `service/dashboard.ts`.
+    */
+   public getDashboardModelFacts(): DashboardModelFacts | undefined {
+      if (!this.modelDef) return undefined;
+      // `this.givens` is the model's surfaced given list — the same surface
+      // `filterGivensToModelSurface` enforces at query time, so a control the
+      // manifest advertises is one a query will accept.
+      return readDashboardModelFacts(
+         this.modelPath,
+         this.modelDef,
+         (this.givens ?? [])
+            .map((given) => given.name)
+            .filter((name): name is string => name !== undefined),
+      );
+   }
+
+   /**
     * True when this is an import-only model: it imports other files but
     * declares and re-exports nothing of its own, so `modelDef.exports` is
     * empty and its discovery surface lists no sources or queries. Legitimate
@@ -1722,7 +1753,7 @@ export class Model {
             );
             for (const e of errors) {
                findings.push({
-                  target: target.label,
+                  subject: target.label,
                   message: e.message,
                   severity: "error",
                });
@@ -1746,8 +1777,71 @@ export class Model {
       }
    }
 
-   public getNotebookError(): MalloyError | Error | undefined {
+   /**
+    * The error this model failed to compile with, if any. A failed model is kept
+    * in the package (as a placeholder) so listings can show it as broken rather
+    * than omit it.
+    */
+   public getCompilationError(): MalloyError | Error | undefined {
       return this.compilationError;
+   }
+
+   public getNotebookError(): MalloyError | Error | undefined {
+      return this.getCompilationError();
+   }
+
+   /**
+    * The parts of a notebook a package listing shows: its human title and
+    * description, resolved the way a dashboard's are plus one step a notebook
+    * can afford.
+    *
+    * `## title="…"` then the `#"` doc comment are the dashboard's chain
+    * verbatim, so an author who learned one convention has learned both. The
+    * third step is the notebook's own: the first markdown heading. A notebook
+    * is prose by definition and almost always opens with its title already
+    * written, so reading it makes existing notebooks stop surfacing as
+    * filenames without anyone editing anything — the same bargain a `Page`
+    * makes by reading its `<title>`. A dashboard has no prose to read, which is
+    * why the step is here rather than in the shared chain.
+    *
+    * Returns no title when nothing resolves, leaving the filename to the
+    * caller; a title equal to the path would just be noise on the wire.
+    */
+   public getNotebookListing(): { title?: string; description?: string } {
+      if (this.modelType !== "notebook") return {};
+      // This notebook's own `##` only: a title belongs to one document, so an
+      // imported model's `## title=` or `#"` doc comment must not become it.
+      const annotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
+      const description = docCommentText(annotations);
+      return {
+         title:
+            motlyTag(annotations)?.text("title") ??
+            description ??
+            this.firstMarkdownHeading(),
+         description,
+      };
+   }
+
+   /**
+    * The text of the first markdown heading in the notebook, at any level.
+    *
+    * Any level, because a notebook that opens with `## Overview` means that as
+    * its title just as much as one that writes `# Overview`; heading depth is a
+    * typographic choice here, not a statement about what the document is
+    * called. Only the first heading is considered, and only if no prose
+    * precedes it — a notebook that opens with a paragraph is not naming itself.
+    */
+   private firstMarkdownHeading(): string | undefined {
+      for (const cell of this.runnableNotebookCells ?? []) {
+         if (cell.type !== "markdown") continue;
+         for (const line of cell.text.split("\n")) {
+            const trimmed = line.trim();
+            if (trimmed.length === 0) continue;
+            const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
+            return heading ? heading[1] : undefined;
+         }
+      }
+      return undefined;
    }
 
    public async getNotebook(): Promise<ApiRawNotebook> {
@@ -2607,6 +2701,24 @@ export class Model {
       const allAnnotations = this.modelDef
          ? new Annotations(modelAnnotations(this.modelDef)).texts()
          : [];
+      // The tag comes from this notebook's own `##`, not from `allAnnotations`,
+      // which folds in everything it imports. `title`, `autorun`, and the
+      // starting `givens` describe one document; reading them off the lineage
+      // lets an imported model set them for every notebook importing it.
+      // `allAnnotations` stays whole because it is reported, not interpreted.
+      const notebookTag = motlyTag(
+         this.modelDef ? ownModelNotes(this.modelDef) : [],
+      );
+
+      // Keyed off the schema rather than written inline, because the literal
+      // below needs an `as` cast: it also carries `type`, `modelPath`,
+      // `modelInfo`, and `queries`, which `RawNotebook` does not declare. That
+      // cast would swallow a stale spelling after a rename in `api-doc.yaml`
+      // and typecheck clean while the client read undefined, so the two fields
+      // the control row depends on are bound to the schema's names here.
+      const autorun: ApiRawNotebook["autorun"] = readAutorun(notebookTag);
+      const startingGivens: ApiRawNotebook["startingGivens"] =
+         readStartingGivens(notebookTag);
 
       return {
          type: "notebook",
@@ -2621,6 +2733,12 @@ export class Model {
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,
+         // Derived here rather than left to the client, so `## autorun=false`
+         // on a notebook and `# artifact { autorun=false }` on a dashboard
+         // arrive as the same field with the same default. Same for
+         // `## givens { … }` and the artifact tag's `givens { … }`.
+         autorun,
+         startingGivens,
          notebookCells,
       } as ApiRawNotebook;
    }

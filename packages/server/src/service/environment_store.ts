@@ -464,7 +464,7 @@ export class EnvironmentStore {
     *
     * In-place mode powers the `npm run dev`-style live-reload story: edits
     * to your source repo are visible to Publisher and trigger watch events
-    * that fan out via SSE to embedded HTML pages. Production mode (the
+    * that fan out via SSE to embedded HTML data apps. Production mode (the
     * default) keeps the safe copy semantics so the source repo and the
     * served package are decoupled.
     *

@@ -63,7 +63,7 @@ jobs:
       # default config ships only DuckDB sandboxes for first-run UX, so
       # inject a stub BigQuery connection into the existing default before
       # the suite runs. We deliberately don't swap in the full
-      # publisher.config.example.bigquery.json fixture — that adds a fourth
+      # publisher.config.example.bigquery.json fixture — that adds a third
       # sample package (bigquery-hackernews) whose extra clone + failed
       # compile (no GCP credentials) pushes cold-init past the 5-min
       # global-setup timeout in CI. The connection-row tests only need the

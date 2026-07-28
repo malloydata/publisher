@@ -9,9 +9,20 @@ import HomeRoundedIcon from "@mui/icons-material/HomeRounded";
 import AnalyticsRoundedIcon from "@mui/icons-material/AnalyticsRounded";
 import AssignmentRoundedIcon from "@mui/icons-material/AssignmentRounded";
 import TuneIcon from "@mui/icons-material/Tune";
+import DashboardRoundedIcon from "@mui/icons-material/DashboardRounded";
+import type { AppView } from "../types/view";
 
 const mainListItems = [
-  { key: "storefront", text: "Storefront dashboard", icon: <HomeRoundedIcon /> },
+  {
+    key: "storefront",
+    text: "Storefront dashboard",
+    icon: <HomeRoundedIcon />,
+  },
+  {
+    key: "packageDashboard",
+    text: "Package dashboard",
+    icon: <DashboardRoundedIcon />,
+  },
   { key: "singleEmbed", text: "Single Embed", icon: <AnalyticsRoundedIcon /> },
   {
     key: "dynamicDashboard",
@@ -29,10 +40,8 @@ export default function MenuContent({
   selectedView,
   setSelectedView,
 }: {
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
-  setSelectedView: (
-    view: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive"
-  ) => void;
+  selectedView: AppView;
+  setSelectedView: (view: AppView) => void;
 }) {
   return (
     <Stack sx={{ flexGrow: 1, p: 1, justifyContent: "space-between" }}>

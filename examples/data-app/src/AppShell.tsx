@@ -13,16 +13,16 @@ import StorefrontDashboard from "./components/StorefrontDashboard";
 import SingleEmbedDashboard from "./components/SingleEmbedDashboard";
 import DynamicDashboard from "./components/DynamicDashboard";
 import InteractiveDashboard from "./components/InteractiveDashboard";
+import PackageDashboard from "./components/PackageDashboard";
+import type { AppView } from "./types/view";
 
 export default function AppShell() {
   const [mode, setMode] = useState<PaletteMode>("light");
   const defaultTheme = useMemo(
     () => createTheme({ palette: { mode } }),
-    [mode]
+    [mode],
   );
-  const [selectedView, setSelectedView] = useState<
-    "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive"
-  >("storefront");
+  const [selectedView, setSelectedView] = useState<AppView>("storefront");
 
   return (
     <ThemeProvider theme={defaultTheme}>
@@ -51,6 +51,9 @@ export default function AppShell() {
             <>
               {selectedView === "storefront" && (
                 <StorefrontDashboard selectedView={selectedView} />
+              )}
+              {selectedView === "packageDashboard" && (
+                <PackageDashboard selectedView={selectedView} />
               )}
               {selectedView === "singleEmbed" && (
                 <SingleEmbedDashboard selectedView={selectedView} />

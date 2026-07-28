@@ -13,10 +13,6 @@
           "location": "https://github.com/malloydata/publisher/tree/main/examples/governed-analytics"
         },
         {
-          "name": "html-data-app",
-          "location": "https://github.com/malloydata/publisher/tree/main/examples/html-data-app"
-        },
-        {
           "name": "bigquery-hackernews",
           "location": "https://github.com/credibledata/malloy-samples/tree/main/bigquery-hackernews"
         }

@@ -14,6 +14,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(404, error.message);
    } else if (error instanceof ModelNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof DashboardNotFoundError) {
+      return httpError(404, error.message);
    } else if (error instanceof NotQueryableError) {
       return httpError(404, error.message);
    } else if (error instanceof MalloyError) {
@@ -42,6 +44,12 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(413, error.message);
    } else if (error instanceof QueryTimeoutError) {
       return httpError(504, error.message);
+   } else if (error instanceof NotImplementedError) {
+      // 501, not the 500 default. Asking for a feature the server does not have
+      // (today: a `versionId`, which every route declaring it rejects) is not an
+      // internal failure, and the OpenAPI spec has documented 501 on those
+      // routes all along.
+      return httpError(501, error.message);
    } else {
       return httpError(500, error.message);
    }
@@ -82,6 +90,18 @@ export class PackageNotFoundError extends Error {
 }
 
 export class ModelNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * No dashboard with that slug in the package. Distinct from
+ * {@link ModelNotFoundError}: a `dashboards/*.malloy` with no `# artifact` tag
+ * is a shared include, so the file can exist as a model and still not be a
+ * dashboard.
+ */
+export class DashboardNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }

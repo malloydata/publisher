@@ -1,6 +1,31 @@
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
+import { MALLOY_ACCENT, MALLOY_BRAND } from "../styles";
 
-type ContentType = "report" | "model" | "data" | "materialization" | "page";
+export type ContentType =
+   | "report"
+   | "model"
+   | "data"
+   | "materialization"
+   | "dataApp"
+   | "dashboard";
+
+/**
+ * The backplate color behind each icon. One per content type and no repeats:
+ * on a page that lists all six, a shared color reads as a shared kind, and the
+ * glyphs are small enough that color does most of the telling apart.
+ *
+ * The logo's three go to the three things a package has always held — its
+ * models, and the notebooks and dashboards built on them — and the accents to
+ * the rest, so the brand still leads.
+ */
+export const CONTENT_TINT: Record<ContentType, string> = {
+   dashboard: MALLOY_BRAND.orange,
+   report: MALLOY_BRAND.teal,
+   model: MALLOY_BRAND.darkBlue,
+   dataApp: MALLOY_ACCENT.violet,
+   data: MALLOY_ACCENT.moss,
+   materialization: MALLOY_ACCENT.magenta,
+};
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
    type: ContentType;
@@ -39,8 +64,21 @@ export default function ContentTypeIcon({
          {type === "model" && <BoxTopPath />}
          {type === "data" && <TablePath />}
          {type === "materialization" && <StackPath />}
-         {type === "page" && <BrowserWindowPath />}
+         {type === "dataApp" && <BrowserWindowPath />}
+         {type === "dashboard" && <GridPath />}
       </SvgIcon>
+   );
+}
+
+/** Four-pane grid, for the tiled layout a dashboard renders. */
+function GridPath() {
+   return (
+      <>
+         <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
+         <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
+         <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
+         <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
+      </>
    );
 }
 

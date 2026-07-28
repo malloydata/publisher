@@ -1,16 +1,27 @@
 import { Warning } from "@mui/icons-material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { Box, Button, IconButton, Tooltip, Typography } from "@mui/material";
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useRef, useState } from "react";
 import { LogMessage } from "../../client";
+import type { DrillBinding } from "../drill/useDrill";
 import { Loading } from "../Loading";
 import { summarizeRenderLogs } from "./renderLogs";
+import type { RenderedResultKind } from "./RenderedResult";
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 
 interface ResultContainerProps {
    result: string | undefined;
    maxHeight: number;
+   /**
+    * Height for a result that sizes itself to its container — a chart, which
+    * the renderer draws at whatever box it is handed. Left unset, a chart gets
+    * `maxHeight`, which is right where the result *is* the page (a dashboard's
+    * single query) and wrong where it is one cell among many: a three-bar chart
+    * 700px tall is a mural. A `# dashboard` result ignores both and renders at
+    * its natural height.
+    */
+   chartHeight?: number;
    // if Results are larger than this size, show a warning and a button to proceed
    // this is to prevent performance issues with large results.
    // the default is 0, which means no warning will be shown.
@@ -18,6 +29,10 @@ interface ResultContainerProps {
    // Render tag findings from the query response. Callers whose result did not
    // come from a query response have none to pass.
    renderLogs?: LogMessage[];
+   // `# drill` click handling and its affordance. Passed straight through: this
+   // is the one render path dashboards and notebooks share, which is what lets
+   // drill be implemented once for both.
+   drill?: DrillBinding;
 }
 
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
@@ -27,11 +42,24 @@ interface ResultContainerProps {
 export default function ResultContainer({
    result,
    maxHeight,
+   chartHeight,
    maxResultSize = 0,
    renderLogs,
+   drill,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
    const [measuredHeight, setMeasuredHeight] = useState(maxHeight);
+   const [kind, setKind] = useState<RenderedResultKind>("other");
+   // Stable, because RenderedResult rebuilds its viz when this identity
+   // changes: an inline callback here would tear down and re-render the chart
+   // on every measurement it reports.
+   const onMeasured = useCallback(
+      (height: number, next: RenderedResultKind) => {
+         setMeasuredHeight(height);
+         setKind(next);
+      },
+      [],
+   );
    const [userAcknowledged, setUserAcknowledged] = useState(false);
    const renderLogSummary = summarizeRenderLogs(renderLogs);
 
@@ -75,8 +103,16 @@ export default function ResultContainer({
    }
 
    const loading = <Loading text="Loading..." centered={true} size={32} />;
-   // Fixed height for content - no resizing
-   const renderedHeight = Math.min(maxHeight, measuredHeight);
+   // What each kind does with the height it is given, per RenderedResultKind:
+   // a dashboard lays itself out and gets to keep the height it reported, a
+   // chart is drawn at the height it is handed, and everything else (a table)
+   // renders naturally up to the cap.
+   const renderedHeight =
+      kind === "dashboard"
+         ? measuredHeight
+         : kind === "chart"
+           ? Math.min(maxHeight, chartHeight ?? maxHeight)
+           : Math.min(maxHeight, measuredHeight);
 
    return (
       <Box
@@ -94,7 +130,8 @@ export default function ResultContainer({
                <RenderedResult
                   result={result}
                   height={renderedHeight}
-                  onSizeChange={setMeasuredHeight}
+                  onSizeChange={onMeasured}
+                  drill={drill}
                />
             </Suspense>
          )}

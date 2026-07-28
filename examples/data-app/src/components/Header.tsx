@@ -6,11 +6,12 @@ import NavbarBreadcrumbs from "./NavbarBreadcrumbs";
 import MenuButton from "./MenuButton";
 
 import Search from "./Search";
+import type { AppView } from "../types/view";
 
 export default function Header({
   selectedView,
 }: {
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
+  selectedView: AppView;
 }) {
   return (
     <Stack

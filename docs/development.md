@@ -18,7 +18,7 @@ once.
 
 Sample packages are read from [`publisher.config.json`](../packages/server/publisher.config.json), so
 no submodule checkout is needed. From a clone, that config points at the local [`examples/`](../examples)
-directories, which are DuckDB-backed (`storefront`, `governed-analytics`, `html-data-app`) and need no
+directories, which are DuckDB-backed (`storefront` and `governed-analytics`) and need no
 cloud credentials. Nothing is fetched on first boot. (The published `npx` build has no repo to read, so
 its bundled default fetches the same packages from GitHub instead.) To enable the BigQuery-required
 samples, see [configuration.md](configuration.md#bring-your-own-config).
@@ -34,8 +34,8 @@ samples, see [configuration.md](configuration.md#bring-your-own-config).
 > when the environment is first loaded: on a fresh server root, or on any boot with `--init`. If you
 > already started the env without `--watch-env`, its packages were copied into `publisher_data/` and
 > edits to `examples/` will not show up, so run once with both flags together, `--watch-env examples
-> --init`, to re-mount them. The `governed-analytics` and `html-data-app` READMEs also have a
-> self-contained "Run it standalone" recipe that mounts just that package from a `/tmp` workspace. After
+> --init`, to re-mount them. The `governed-analytics` README also has a self-contained
+> "Run it standalone" recipe that mounts just that package from a `/tmp` workspace. After
 > changing an example's data generator, re-run `bun run generate:example-data` to refresh the Parquet
 > and CSV files.
 

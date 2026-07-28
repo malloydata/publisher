@@ -21,11 +21,29 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
+import type { NavigationClick } from "../click_helper";
+import { useDrill } from "../drill";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard, CleanNotebookCell } from "../styles";
 import { EnhancedNotebookCell } from "./types";
+
+/**
+ * Cap for a cell result that lays itself out — a table, mostly. Tall enough for
+ * a screenful of rows, after which the cell scrolls rather than the page
+ * turning into one long table.
+ */
+const CELL_MAX_HEIGHT = 700;
+
+/**
+ * Height for a cell result that sizes itself to its box, which is every chart.
+ * A cell is the full width of the page, so the height is what sets the shape:
+ * at the 700 cap a three-bar chart came out nearly square and a page and a half
+ * tall. This is roughly a 3:1 chart at the usual page width, which is the shape
+ * a time series wants and a bar chart tolerates.
+ */
+const CELL_CHART_HEIGHT = 380;
 
 interface NotebookCellProps {
    cell: EnhancedNotebookCell;
@@ -37,7 +55,16 @@ interface NotebookCellProps {
    index: number;
    maxResultSize?: number;
    isExecuting?: boolean;
-   onNavigate?: (to: string, event?: React.MouseEvent) => void;
+   // Takes the modifier subset rather than a synthetic event, so a drill click
+   // (which the Malloy renderer reports as a DOM event) can navigate without
+   // being converted into a React one first.
+   onNavigate?: (to: string, event?: NavigationClick) => void;
+   /**
+    * Applies a `# drill { to=self }` in place, by setting the named parameter
+    * on the notebook that owns this cell. Omitted when the notebook declares no
+    * givens, which makes a self-drill inert rather than an error.
+    */
+   onDrillSelf?: (given: string, value: string) => void;
 }
 
 interface NotebookMarkdownLinkProps {
@@ -47,7 +74,7 @@ interface NotebookMarkdownLinkProps {
    envName: string;
    pkgName: string;
    sourceDir: string;
-   onNavigate?: (to: string, event?: React.MouseEvent) => void;
+   onNavigate?: (to: string, event?: NavigationClick) => void;
 }
 
 // Links inside a rendered notebook/README are authored relative to the source
@@ -125,6 +152,7 @@ export function NotebookCell({
    maxResultSize,
    isExecuting,
    onNavigate,
+   onDrillSelf,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -142,6 +170,26 @@ export function NotebookCell({
 
    const { environmentName, packageName, modelPath } =
       parseResourceUri(resourceUri);
+
+   // `# drill` is declared on a model dimension, so a notebook cell that groups
+   // by that dimension is clickable for free — the same resolution, and the
+   // same hook, the dashboard viewer uses.
+   const { drill, drillMenu } = useDrill({
+      onNavigate: onNavigate
+         ? (target, event) => {
+              const query = new URLSearchParams(target.givens).toString();
+              onNavigate(
+                 `/${environmentName}/${packageName}/dashboards/${target.dashboard}` +
+                    (query ? `?${query}` : ""),
+                 event,
+              );
+           }
+         : undefined,
+      onSelf: onDrillSelf,
+      // The reader is in a notebook, so `to=self` says so — the drill tag is on
+      // a shared model dimension and cannot know which document it fired in.
+      selfLabel: "Filter this notebook",
+   });
    // Directory of the source file within the package (empty for a package-root
    // README), used to resolve relative links the author wrote against it.
    const sourceDir =
@@ -555,10 +603,13 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        maxHeight={700}
+                        maxHeight={CELL_MAX_HEIGHT}
+                        chartHeight={CELL_CHART_HEIGHT}
                         maxResultSize={maxResultSize}
+                        drill={drill}
                      />
                   </Box>
+                  {drillMenu}
 
                   {/* Top right corner controls.
                       `top: -12px` lifts the buttons above the

@@ -355,6 +355,9 @@ describe("service/package", () => {
                               message: "This is the error",
                            };
                         },
+                        // A notebook that failed to compile has no cells and no
+                        // annotations, so there is nothing to title it with.
+                        getNotebookListing: () => ({}),
                         setQueryBoundary: () => {},
                      } as unknown as Model,
                   ],

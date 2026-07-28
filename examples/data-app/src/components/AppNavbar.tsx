@@ -10,6 +10,7 @@ import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded';
 import SideMenuMobile from './SideMenuMobile';
 import MenuButton from './MenuButton';
+import type { AppView } from "../types/view";
 
 const Toolbar = styled(MuiToolbar)({
   width: '100%',
@@ -28,8 +29,8 @@ const Toolbar = styled(MuiToolbar)({
 });
 
 interface AppNavbarProps {
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
-  setSelectedView: (view: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive") => void;
+  selectedView: AppView;
+  setSelectedView: (view: AppView) => void;
 }
 
 export default function AppNavbar({ selectedView, setSelectedView }: AppNavbarProps) {

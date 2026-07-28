@@ -8,6 +8,7 @@ import Typography from "@mui/material/Typography";
 import MenuContent from "./MenuContent";
 import { Tooltip } from "@mui/material";
 import OptionsMenu from "./OptionsMenu";
+import type { AppView } from "../types/view";
 
 const drawerWidth = 240;
 
@@ -26,13 +27,9 @@ export default function SideMenu({
   selectedView,
   setSelectedView,
 }: {
-  selectedView:
-    | "storefront"
-    | "singleEmbed"
-    | "dynamicDashboard"
-    | "interactive";
+  selectedView: AppView;
   setSelectedView: (
-    view: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive"
+    view: AppView
   ) => void;
 }) {
   const { user } = {

@@ -1,0 +1,28 @@
+##! experimental.givens
+import { REGION } from './givens.malloy'
+
+source: orders is duckdb.table('data/orders.csv') extend {
+   // Drill is declared on the dimension, so these targets are a package-wide
+   // concern: one points at a dashboard that exists, one at nothing.
+   # drill { to=["overview"] }
+   dimension: brand_name is brand
+
+   # drill { to=["no_such_dashboard"] }
+   dimension: region_name is region
+
+   measure: order_count is count()
+   measure: total_amount is sum(amount)
+
+   view: by_brand is {
+      group_by: brand_name
+      aggregate: total_amount
+   }
+
+   // Filters by a given, so a dashboard that runs it without importing REGION
+   // shows no control for it.
+   view: by_region is {
+      where: region_name ~ $REGION
+      group_by: region_name
+      aggregate: order_count
+   }
+}
