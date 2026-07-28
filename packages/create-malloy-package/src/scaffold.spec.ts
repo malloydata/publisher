@@ -342,6 +342,39 @@ describe("scaffold: --data", () => {
       expect(model).toContain("duckdb.table('data/events.ndjson')");
    });
 
+   test("the xlsx model warns that the read can be silently wrong, and shows the fix", () => {
+      // A spreadsheet whose header is not on row one loads clean and reports the
+      // wrong row count: no error at scaffold, compile, load or query. The
+      // scaffolder never opens the file so it cannot detect that, which makes
+      // the generated model the only place the user is told to check.
+      const src = path.join(tmp, "budget.xlsx");
+      fs.writeFileSync(src, "PK not a real spreadsheet");
+      run({ name: "shop", dataFile: src });
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("overview");
+      expect(model).toContain("read_xlsx");
+      // The three options that actually repair a report export, so the fix is
+      // present rather than merely alluded to.
+      expect(model).toContain("sheet =");
+      expect(model).toContain("header =");
+      expect(model).toContain("range =");
+      // Rendered, not left as a placeholder.
+      expect(model).not.toContain("{{");
+      expect(model).toContain("'data/budget.xlsx'");
+   });
+
+   test("a csv model carries no spreadsheet warning", () => {
+      // Targeted on purpose: a .csv either parses or fails loudly, so the same
+      // warning there would be noise, and noise is how a real warning stops
+      // being read.
+      const src = path.join(tmp, "orders.csv");
+      fs.writeFileSync(src, "a,b\n1,2\n");
+      run({ name: "shop", dataFile: src });
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).not.toContain("read_xlsx");
+      expect(model).toContain("duckdb.table('data/orders.csv')");
+   });
+
    test("rejects an unsupported file type with nothing created", () => {
       const src = path.join(tmp, "notes.txt");
       fs.writeFileSync(src, "hello");

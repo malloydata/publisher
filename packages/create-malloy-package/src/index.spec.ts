@@ -79,6 +79,37 @@ function offeredCommands(output: string): string[] {
       );
 }
 
+describe("formatSuccess: the spreadsheet check", () => {
+   test("tells an xlsx user to check the row count, and where the fix is", () => {
+      // The failure this guards is silent: a header that is not on row one makes
+      // the read wrong while everything reports success, so the only signal the
+      // user gets is a row count that looks too small. Nothing else in the
+      // output would prompt them to look at it.
+      const output = formatSuccess(
+         resultFor({ dataPath: "data/budget.xlsx", modelFile: "sales.malloy" }),
+      );
+      expect(output).toContain("Spreadsheets need one check first");
+      expect(output).toContain("overview");
+      expect(output).toContain("data/budget.xlsx");
+      expect(output).toContain("sales.malloy");
+   });
+
+   test("says nothing for a csv or parquet", () => {
+      // One real scaffold, then vary the field: resultFor() scaffolds for real,
+      // so calling it twice in a test fails on the directory already existing.
+      const base = resultFor();
+      for (const dataPath of ["data/orders.csv", "data/orders.parquet"]) {
+         const output = formatSuccess({ ...base, dataPath });
+         expect(output).not.toContain("Spreadsheets need one check first");
+      }
+   });
+
+   test("says nothing for a bare scaffold with no --data", () => {
+      const output = formatSuccess(resultFor({ dataPath: undefined }));
+      expect(output).not.toContain("Spreadsheets need one check first");
+   });
+});
+
 describe("formatSuccess: the readiness check", () => {
    test("offers the package list, not just the status", () => {
       const output = formatSuccess(resultFor());

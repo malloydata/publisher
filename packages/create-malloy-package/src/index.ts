@@ -7,7 +7,9 @@ import { Command, Option } from "commander";
 import { ScaffoldError } from "./errors";
 import * as log from "./log";
 import { preview, printable } from "./names";
+import { fetchLatestVersion, staleScaffolderWarning } from "./registry_check";
 import {
+   isSpreadsheet,
    scaffold,
    type DeclinedScript,
    type Host,
@@ -63,8 +65,16 @@ function resolveDataFile(cwd: string, data?: string): string | undefined {
    return path.resolve(cwd, data);
 }
 
-function run(name: string | undefined, options: CliOptions): void {
+async function run(
+   name: string | undefined,
+   options: CliOptions,
+): Promise<void> {
    const cwd = process.cwd();
+   // Fired before the scaffold rather than after it, so the round trip overlaps
+   // the work instead of being added to it. Nothing awaits it until the output
+   // is otherwise complete, and it never rejects, so the worst case is that we
+   // wait out the remainder of its own timeout on a machine with no network.
+   const latestVersion = fetchLatestVersion();
    // Taken before anything is written, so a failure part-way through can name
    // both what this run put on disk and what it rewrote, rather than leaving the
    // user to guess or, worse, telling them nothing was rewritten.
@@ -78,6 +88,13 @@ function run(name: string | undefined, options: CliOptions): void {
          force: Boolean(options.force),
       });
       process.stdout.write(formatSuccess(result));
+      // Last, so it is the line still on screen, and after the success output so
+      // a registry that is slow or unreachable never delays the thing the user
+      // actually asked for.
+      const warning = staleScaffolderWarning(version(), await latestVersion);
+      if (warning) {
+         process.stdout.write(`\n${log.yellow(warning)}\n`);
+      }
    } catch (err) {
       process.stderr.write(
          formatFailure(
@@ -770,6 +787,31 @@ export function formatSuccess(result: ScaffoldResult): string {
       }
    }
 
+   // A spreadsheet is only a table when its header is the first row, and a
+   // report export usually has a title or a banner above it. The read then
+   // succeeds, takes the wrong row as the column names, stops at the first blank
+   // line, and serves a handful of rows for a file with thousands. Nothing
+   // errors: the package loads, load_errors is 0, and the query returns 200. The
+   // scaffolder cannot tell (it never opens the file, and giving it a
+   // spreadsheet parser to find out is a bigger change than this), so the honest
+   // thing is to say what to check and where the fix already is.
+   if (result.dataPath !== undefined && isSpreadsheet(result.dataPath)) {
+      lines.push("");
+      lines.push(log.yellow("Spreadsheets need one check first:"));
+      lines.push(
+         `  Run the ${log.cyan("overview")} view and compare its row count against what you`,
+      );
+      lines.push(
+         `  know is in ${printable(result.dataPath)}. If it comes back far too small, the header`,
+      );
+      lines.push(
+         "  is not on the first row and the model is reading a title or a banner",
+      );
+      lines.push(
+         `  instead of your data. ${printable(result.modelFile ?? "the model file")} carries the fix inline.`,
+      );
+   }
+
    const url = `http://localhost:${result.publisherPort}`;
    // Counted by scaffold() out of the config it wrote, not inferred from what
    // this run did: whether the server has anything to serve and whether this run
@@ -785,7 +827,7 @@ export function formatSuccess(result: ScaffoldResult): string {
       // /api/v0/environments/<env>/packages answers 404. Saying so here is the
       // difference between "empty" and "broken" for whoever runs it next.
       lines.push(
-         `  ${log.cyan("npx @malloy-publisher/create-malloy-package <name>")}   ${log.dim(
+         `  ${log.cyan("npx @malloy-publisher/create-malloy-package@latest <name>")}   ${log.dim(
             "add a package; the server has nothing to serve without one",
          )}`,
       );
@@ -1034,7 +1076,7 @@ function startNote(
  */
 function excessArgumentsHint(): string {
    const npmCreateFix = `  ${log.cyan(
-      "npm create @malloy-publisher/malloy-package sales -- --data mydata.csv",
+      "npm create @malloy-publisher/malloy-package@latest sales -- --data mydata.csv",
    )}`;
    if (process.env.npm_command === "init") {
       return [
@@ -1054,7 +1096,7 @@ function excessArgumentsHint(): string {
       "",
       "With npx there is no separator: it forwards the flags as they are, and a",
       "-- would be passed through and counted as another argument.",
-      `  ${log.cyan("npx @malloy-publisher/create-malloy-package sales --data mydata.csv")}`,
+      `  ${log.cyan("npx @malloy-publisher/create-malloy-package@latest sales --data mydata.csv")}`,
       "",
    ].join("\n");
 }
@@ -1108,8 +1150,8 @@ program
       }
       process.exit(err.exitCode);
    })
-   .action((name: string | undefined, options: CliOptions) => {
-      run(name, options);
+   .action(async (name: string | undefined, options: CliOptions) => {
+      await run(name, options);
    });
 
 /**
@@ -1139,5 +1181,18 @@ function startedAsProgram(): boolean {
 }
 
 if (startedAsProgram()) {
-   program.parse();
+   // parseAsync, not parse: the action is async now (it awaits the registry
+   // check), and parse() would return before that promise settled, so the
+   // process could exit with the scaffold done and the warning unprinted.
+   // The action itself never rejects, and commander's own errors go through the
+   // exitOverride above, which exits; the catch is a backstop so an unexpected
+   // rejection surfaces as a failure rather than an unhandled-rejection warning.
+   program.parseAsync().catch((err: unknown) => {
+      // No workspace changes to report: run() owns its own try/catch and reports
+      // what it wrote, so anything reaching here failed outside a scaffold.
+      process.stderr.write(
+         formatFailure(err, { created: [], changed: [] }, false),
+      );
+      process.exitCode = 1;
+   });
 }

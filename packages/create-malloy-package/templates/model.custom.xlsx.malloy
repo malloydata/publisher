@@ -1,0 +1,43 @@
+// {{sourceName}}: a starter Malloy model over {{dataPath}}, served by Publisher.
+//
+// CHECK THE ROW COUNT BEFORE YOU TRUST THIS. A spreadsheet is only a table when
+// its first row is the header and the rows under it are data. Plenty are not:
+// a report title, a "generated on" banner, a merged group header, or a blank
+// line above the header are all normal in an export, and they are all invisible
+// here. DuckDB takes the first row it finds as the column names and stops at the
+// first blank row, so a workbook with thousands of rows can load as a handful,
+// or as one, and nothing reports an error. The server says it is serving, the
+// query returns 200, and the number is wrong.
+//
+// So run `overview` first and compare `record_count` against what you know is in
+// the file. If it is short, the read is wrong, and this is the fix: name the
+// sheet and say where the real header starts. Replace the source below with
+//
+//   source: {{sourceName}} is duckdb.sql("""
+//     SELECT * FROM read_xlsx(
+//       '{{dataPath}}',
+//       sheet = 'Sheet1',      -- only the FIRST sheet is read unless you name one
+//       header = true,
+//       range = 'A5:Z100000'   -- start at the row your real header is on
+//     )
+//   """)
+//
+// `duckdb.table()` takes a plain path and nothing else, which is why anything
+// needing an option goes through the SQL form above. Other things a real
+// spreadsheet does: a column mixing numbers and text fails at query time rather
+// than at load (add `ignore_errors = true`, or `all_varchar = true` and cast
+// where you define measures), currency and percent cells arrive as text, and
+// every number is a double. `skill:malloy-gotchas-modeling` has the full list.
+//
+// Beyond that this is the same starting point as any seeded package: the
+// scaffolder does not read your columns, so it begins with a row count. Build it
+// out by adding dimensions and measures for the columns you care about. Validate
+// edits with malloy_compile and run new views by name with malloy_reloadPackage.
+
+source: {{sourceName}} is duckdb.table('{{dataPath}}') extend {
+  measure: record_count is count()
+
+  view: overview is {
+    aggregate: record_count
+  }
+}

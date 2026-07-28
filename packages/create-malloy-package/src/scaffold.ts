@@ -463,7 +463,7 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
             `If you passed --force to \`npm create\`, npm read it as one of its ` +
             `own settings and it never reached this tool. Options need a \`--\` ` +
             `in front of them there:\n` +
-            `  npm create @malloy-publisher/malloy-package ${name} -- --force`,
+            `  npm create @malloy-publisher/malloy-package@latest ${name} -- --force`,
       );
    }
 
@@ -497,9 +497,18 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
       if (siblings.length > 0) {
          result.siblingDataFiles = siblings;
       }
+      // Spreadsheets get their own starter model. The Malloy is identical; the
+      // comment above it is not, because a .csv either parses or fails loudly
+      // while a .xlsx whose header is not on row one loads clean and reports the
+      // wrong number of rows. That model has to say so, since nothing else will.
       writeFile(
          path.join(packageDir, modelFile),
-         renderTemplate("model.custom.malloy", { sourceName, dataPath }),
+         renderTemplate(
+            isSpreadsheet(dataPath)
+               ? "model.custom.xlsx.malloy"
+               : "model.custom.malloy",
+            { sourceName, dataPath },
+         ),
          options.cwd,
       );
    } else {
@@ -2047,6 +2056,20 @@ function isLoadableDataFile(file: string): boolean {
    return (LOADABLE_DATA_EXTENSIONS as readonly string[]).includes(
       path.extname(file).toLowerCase(),
    );
+}
+
+/**
+ * Is this data file a spreadsheet?
+ *
+ * Deliberately narrower than LOADABLE_DATA_EXTENSIONS rather than derived from
+ * it: every entry on that list loads in place, but only `.xlsx` loads in place
+ * and can still be silently wrong, so only `.xlsx` earns the extra warning.
+ * Kept as a named predicate rather than an inline `endsWith` because two places
+ * have to agree on the answer, the starter model that carries the warning and
+ * the success output that repeats it, and they are in different files.
+ */
+export function isSpreadsheet(dataPath: string): boolean {
+   return path.extname(dataPath).toLowerCase() === ".xlsx";
 }
 
 function validateDataFile(dataFile: string): void {
