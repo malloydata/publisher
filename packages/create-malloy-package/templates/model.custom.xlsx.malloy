@@ -1,6 +1,6 @@
 // {{sourceName}}: a starter Malloy model over {{dataPath}}, served by Publisher.
 //
-// CHECK THE ROW COUNT BEFORE YOU TRUST THIS. A spreadsheet is only a table when
+// Check the row count before you trust this. A spreadsheet is only a table when
 // its first row is the header and every row under it is data. Plenty are not: a
 // report title, a "generated on" banner, a merged group header, or a blank line
 // above the header are all ordinary in an export, and none of them is visible
@@ -16,18 +16,25 @@
 // the range so the header is found, AND filter the decoration back out, because
 // an explicit range reads every row in it: the blank spacers, the subtotal rows,
 // the total, and the footnotes underneath. Pick a column every real row has and
-// nothing else does, usually an id, and filter on it. Replace the source below:
+// nothing else does, usually an id, and filter on it. Replace the source below,
+// keeping the `extend` block so `overview` still exists to re-run:
 //
 //   source: {{sourceName}} is duckdb.sql("""
 //     SELECT * FROM read_xlsx(
 //       '{{dataPath}}',
 //       sheet = 'Sheet1',        -- only the FIRST sheet is read unless you name one
 //       header = true,
-//       range = 'A5:Z100000',    -- start at the row the real header is on
+//       range = 'A5:Z100000',    -- A5 = where the real header is. EDIT BOTH BOUNDS:
+//                                -- Z and 100000 are a cap, not a guess at your size.
+//                                -- Columns past Z and rows past 100000 are dropped
+//                                -- silently, which is the failure above all over again.
 //       all_varchar = true       -- see the mixed-column note below
 //     )
 //     WHERE "Order ID" LIKE 'SO-%'   -- your id column, and what a real value looks like
-//   """)
+//   """) extend {
+//     measure: record_count is count()
+//     view: overview is { aggregate: record_count }
+//   }
 //
 // Both halves matter. Without the range you get the title row as your header.
 // Without the filter you get the whole range, so a 1,500 row sheet reads as
@@ -39,14 +46,17 @@
 // above needs the SQL form. Other things a real spreadsheet does: a column mixing
 // numbers and text fails at query time rather than at load, which is what
 // `all_varchar = true` avoids, at the price of casting where you define measures
-// (`ignore_errors = true` is the other way, nulling the bad cells); currency and
-// percent cells arrive as text; dates may be text or Excel serial numbers; and
-// every number is a double. `skill:malloy-gotchas-modeling` has the full list.
+// (`ignore_errors = true` is the other way, nulling the bad cells); a cell someone
+// typed as text, `$1,234` or `12%`, stays text even where the column looks
+// numeric; dates may be text or Excel serial numbers; and every number is a
+// double. `skill:malloy-gotchas-modeling` has the full list.
 //
 // Beyond that this is the same starting point as any seeded package: the
 // scaffolder does not read your columns, so it begins with a row count. Build it
-// out by adding dimensions and measures for the columns you care about. Validate
-// edits with malloy_compile and run new views by name with malloy_reloadPackage.
+// out for your columns: group_by a column to break the count down, and define
+// measures like `total_amount is amount.sum()`. Validate edits with
+// malloy_compile and run new views by name with malloy_reloadPackage. The
+// malloy-modeling skill walks through turning a raw table into a semantic model.
 
 source: {{sourceName}} is duckdb.table('{{dataPath}}') extend {
   measure: record_count is count()

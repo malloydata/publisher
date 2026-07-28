@@ -19,6 +19,18 @@ unversioned name is satisfied by any copy already in it, so on a machine that ha
 the command before npm reuses that copy instead of asking the registry. Without
 `@latest` you can scaffold from an old scaffolder, which pins an old server, silently.
 
+Because that is silent, the scaffolder also checks for itself. After it has finished
+writing, it asks the npm registry which version is `latest` and prints a note if the one
+you are running is older. That is the only network request this package makes: a plain
+unauthenticated GET of a public package document, sending nothing about you or your
+files. It is bounded at 1.5 seconds and fails open, so no network, a proxy, or a
+registry outage costs you a moment of silence and nothing else. To skip the request
+entirely, in CI or on an air-gapped machine:
+
+```bash
+CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1 npm create @malloy-publisher/malloy-package@latest sales
+```
+
 The workspace files land in the current directory and the package in `./sales`, so you
 run `npm start` from where you created it (no need to `cd` into the package). The
 scaffolder's own last lines are the ones to keep: the app URL, the MCP endpoint, and a

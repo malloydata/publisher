@@ -65,7 +65,9 @@ npm start
 Keep the `@latest`. `npm create` resolves the scaffolder through npm's npx cache, and on a machine
 that has run the command before, an unversioned name is satisfied by whatever copy is already
 cached, so npm never asks the registry. Drop it and you can quietly scaffold from a months-old
-scaffolder that pins an older server than the one you meant to run.
+scaffolder that pins an older server than the one you meant to run. The scaffolder checks its own
+version against the registry once it has finished writing and tells you when it is behind; that
+check is bounded and fails open, and `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1` turns it off.
 
 Make the directory first. The package lands in `./sales`, but the workspace around it is written to
 the current directory, so running this somewhere you did not mean to scatters config files through

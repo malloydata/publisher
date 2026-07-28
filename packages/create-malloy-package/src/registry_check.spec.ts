@@ -133,6 +133,19 @@ describe("fetchLatestVersion", () => {
       expect(Date.now() - started).toBeLessThan(2000);
    });
 
+   test("trims the version, so a hostile registry cannot scroll the screen", async () => {
+      // parseVersion trims before matching, so an untrimmed return would let a
+      // padded string pass the check and then be printed verbatim: eight leading
+      // newlines scroll the advice above it away, and a trailing CR puts the
+      // cursor back to column zero so the next character overwrites the line.
+      // names.ts:printable() records that exact trick being used on this output.
+      const url = await serve((_req, res) => {
+         res.writeHead(200, { "content-type": "application/json" });
+         res.end(JSON.stringify({ version: "\n\n\n\n9.9.9\r" }));
+      });
+      expect(await fetchLatestVersion(url)).toBe("9.9.9");
+   });
+
    test("makes no request at all when the opt-out is set", async () => {
       let hits = 0;
       const url = await serve((_req, res) => {
