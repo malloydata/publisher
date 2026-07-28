@@ -886,6 +886,213 @@ describe("service/model", () => {
       });
    });
 
+   // A binding that declares `freshnessFallback=live` says the tier is an
+   // optimisation, not a dependency: a store that fails under a routed query
+   // degrades to serving live. The failure modes here are all silent-by-nature —
+   // a wrong row cap returns an EMPTY success, a mislabelled metric inflates the
+   // tier's headline KPI while it is broken — so they need assertions rather than
+   // an end-to-end observation.
+   describe("runtime storage failure → freshnessFallback=live", () => {
+      const originalMode = process.env.PERSIST_STORAGE_MODE;
+      const originalDefaultRows = process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
+
+      afterEach(() => {
+         sinon.restore();
+         for (const [name, original] of [
+            ["PERSIST_STORAGE_MODE", originalMode],
+            ["PUBLISHER_DEFAULT_QUERY_ROW_LIMIT", originalDefaultRows],
+         ] as const) {
+            if (original === undefined) delete process.env[name];
+            else process.env[name] = original;
+         }
+      });
+
+      const binding = (sourceName: string, freshnessFallback?: string) =>
+         ({
+            sourceName,
+            connectionName: "lake",
+            virtualHandle: `eid-${sourceName}`,
+            tablePath: `lake.t_${sourceName}`,
+            schema: [{ name: "region", type: "string" }],
+            freshnessFallback,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         }) as any;
+
+      /**
+       * A Model routed to storage, where the storage runnable fails and the live
+       * one succeeds. `loadServeShapeQuery` is stubbed because the real one
+       * compiles a transient model — the logic under test is the catch, and the
+       * SHAPE'S bindings (not the package's) are what it must consult.
+       */
+      function routedModel(opts: {
+         shapeBindings: unknown[];
+         packageBindings?: unknown[];
+         storageFailsAt: "prepare" | "run";
+         liveRunFails?: boolean;
+         livePreparedLimit?: number;
+      }) {
+         const storageErr = new Error("store table missing");
+         const storageRunnable = {
+            getPreparedResult:
+               opts.storageFailsAt === "prepare"
+                  ? sinon.stub().rejects(storageErr)
+                  : sinon.stub().resolves({ resultExplore: { limit: 0 } }),
+            run:
+               opts.storageFailsAt === "run"
+                  ? sinon.stub().rejects(storageErr)
+                  : sinon.stub().resolves({}),
+         };
+         const fakeResult = {
+            _queryResult: { data: { rawData: [] } },
+            totalRows: 1,
+            data: { value: [] },
+            connectionName: "live_pg",
+         };
+         const liveRun = opts.liveRunFails
+            ? sinon.stub().rejects(new Error("warehouse down"))
+            : sinon.stub().resolves(fakeResult);
+         const liveRunnable = {
+            getPreparedResult: sinon.stub().resolves({
+               resultExplore: { limit: opts.livePreparedLimit ?? 0 },
+            }),
+            run: liveRun,
+         };
+         sinon
+            .stub(API.util, "wrapResult")
+            .returns({ rows: [] } as unknown as ReturnType<
+               typeof API.util.wrapResult
+            >);
+         const modelMaterializer = {
+            loadQuery: sinon.stub().returns(liveRunnable),
+            loadRestrictedQuery: sinon.stub().returns(liveRunnable),
+         };
+         const model = new Model(
+            packageName,
+            mockModelPath,
+            {},
+            "model",
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            modelMaterializer as any,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            { contents: {}, exports: [], queryList: [] } as any,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+         );
+         process.env.PERSIST_STORAGE_MODE = "on";
+         model.setServeBindings(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (opts.packageBindings ?? opts.shapeBindings) as any,
+         );
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         model.setServeMalloyConfig({} as any);
+         sinon
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .stub(model as any, "loadServeShapeQuery")
+            .resolves({
+               runnable: storageRunnable,
+               virtualMap: { v: "lake.t_x" },
+               bindings: opts.shapeBindings,
+            });
+         const recordStub = sinon.stub(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (model as any).queryExecutionHistogram,
+            "record",
+         );
+         return { model, liveRun, recordStub };
+      }
+
+      it("caps the live retry by the LIVE row limit when the store fails at prepare", async () => {
+         // `rowLimit` is assigned from the storage prepare, so a prepare-time
+         // failure leaves it 0 — which the connector reads as "stop before the
+         // first row", returning a successful EMPTY answer instead of the data.
+         process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT = "250";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "prepare",
+         });
+
+         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+
+         expect(liveRun.calledOnce).toBe(true);
+         expect(liveRun.firstCall.args[0].rowLimit).toBe(250);
+      });
+
+      it("does not record a live-served answer as a storage hit", async () => {
+         // The hit rate is the tier's headline KPI; counting a fallback as a hit
+         // makes it RISE while the tier is broken.
+         const { model, recordStub } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+
+         const success = recordStub
+            .getCalls()
+            .map((c) => c.args[1] as Record<string, string>)
+            .find((a) => a["malloy.model.query.status"] === "success");
+         expect(success?.["malloy.model.query.served_from"]).toBe(
+            "live_fallback",
+         );
+      });
+
+      it("maps a failure of the live retry like any other query failure", async () => {
+         // A broad outage takes the warehouse down alongside the store, so the
+         // retry failing is ordinary — and an unmapped throw turns a clean 400
+         // into a 500 with no error metric behind it.
+         const { model, recordStub } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            liveRunFails: true,
+         });
+
+         await expect(
+            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+         ).rejects.toThrow(BadRequestError);
+
+         const errored = recordStub
+            .getCalls()
+            .map((c) => c.args[1] as Record<string, string>)
+            .find((a) => a["malloy.model.query.status"] === "error");
+         expect(errored).toBeDefined();
+      });
+
+      it("decides on the SHAPE's bindings, not the package's", async () => {
+         // Bindings are pushed package-wide and `freshnessFallback` is per entry,
+         // so a mixed set is normal. A query whose shape carries only the `live`
+         // binding must still degrade — a `stale_ok` sibling it never touched
+         // cannot veto it.
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            packageBindings: [
+               binding("daily", "live"),
+               binding("other", "stale_ok"),
+            ],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+
+         expect(liveRun.calledOnce).toBe(true);
+      });
+
+      it("keeps surfacing the error when the shape carries a non-live binding", async () => {
+         // `fail` and the `stale_ok` default are fail-closed: the caller asked to
+         // hear about it rather than be served a slower answer.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "stale_ok")],
+            storageFailsAt: "run",
+         });
+
+         await expect(
+            model.getQueryResults(undefined, undefined, "run: daily -> x"),
+         ).rejects.toThrow(BadRequestError);
+      });
+   });
+
    describe("static methods", () => {
       describe("getModelRuntime", () => {
          it("should throw ModelNotFoundError for invalid modelPath", async () => {

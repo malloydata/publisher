@@ -4,6 +4,7 @@ import {
    Connection,
    FixedConnectionMap,
    GivenValue,
+   InMemoryURLReader,
    isBasicArray,
    isJoined,
    isRepeatedRecord,
@@ -19,6 +20,7 @@ import {
    Runtime,
    type FieldDef,
    type SourceDef,
+   type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
@@ -27,9 +29,15 @@ import {
 } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
 import { publisherMeter } from "../telemetry";
+import {
+   recordServeShapeTierDrop,
+   recordStorageServeRouting,
+} from "../materialization_metrics";
 import * as fs from "fs/promises";
+import { readFileSync } from "fs";
 import { createRequire } from "module";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
    getDefaultQueryRowLimit,
@@ -46,7 +54,20 @@ import {
    NotQueryableError,
    PayloadTooLargeError,
 } from "../errors";
+import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
+import {
+   buildServeShapeModelForBindings,
+   buildVirtualMap,
+   extractJoins,
+   extractRefinements,
+   extractViews,
+   narrowSchemaToPublic,
+   sliceSourceRange,
+   type ServeBinding,
+   type SourceLocation,
+} from "./materialization_serve_transform";
+import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
 import type {
    SerializedModel,
@@ -164,6 +185,20 @@ export class Model {
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
+   /**
+    * Connection config to compile a transient serve-shape model against, when a
+    * query is routed through the `storage=` virtual-source transform. Captured
+    * at hydration (fromSerialized) so serve can build a fresh Runtime.
+    */
+   private serveMalloyConfig?: ModelConnectionInput;
+   /**
+    * The package's `storage=` serve bindings, set by the owning Package when a
+    * build/manifest binds materialized-into-storage sources. Empty ⇒ no serve
+    * routing (the common case; the serve path is unchanged).
+    */
+   private serveBindings: ServeBinding[] = [];
+   /** Memoized serve-shape materializer, keyed by the bound source set. */
+   private serveShapeCache?: { key: string; materializer: ModelMaterializer };
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -1275,7 +1310,7 @@ export class Model {
             ? hydrateNotebookCells(runtime, data.notebookCells)
             : undefined;
 
-      return new Model(
+      const model = new Model(
          packageName,
          data.modelPath,
          dataStyles,
@@ -1291,6 +1326,10 @@ export class Model {
          givens,
          modelInfo,
       );
+      // Capture the config so a storage= serve query can compile a transient
+      // serve-shape model against the same connections.
+      model.setServeMalloyConfig(malloyConfig);
+      return model;
    }
 
    /**
@@ -1724,6 +1763,282 @@ export class Model {
       }
    }
 
+   /** Capture the config used to compile a transient serve-shape model. */
+   public setServeMalloyConfig(config: ModelConnectionInput): void {
+      this.serveMalloyConfig = config;
+   }
+
+   /**
+    * Set (or clear) this model's `storage=` serve bindings. Invalidates the
+    * memoized serve-shape materializer so the next routed query recompiles
+    * against the new binding set.
+    */
+   public setServeBindings(bindings: ServeBinding[]): void {
+      this.serveBindings = bindings;
+      this.serveShapeCache = undefined;
+   }
+
+   /**
+    * Compile an untrusted query against the transient serve-shape model that
+    * rebinds this package's materialized-into-storage sources to virtual sources
+    * on their storage connection. Returns the runnable and the `virtualMap` that
+    * binds each virtual handle to its physical table.
+    *
+    * Throwing is the eligibility signal: a query that references a refinement
+    * the serve shape does not reproduce (a measure/dim/join defined on the
+    * source in the author's model, or a source with no binding) fails to compile
+    * here, and {@link getQueryResults} falls back to serving it live. The
+    * compiled materializer is memoized per binding set (the serve-variant cache).
+    */
+   /**
+    * The serve bindings that may serve from their materialized table right NOW:
+    * fresh, un-gated, or stale-under-`stale_ok`. A stale binding whose fallback is
+    * `live`/`fail` evaluates to `serve_live` and is dropped, so the serve shape
+    * omits that source and any query touching it falls through to live — the SAME
+    * freshness gate the colocated serve applies (`getFreshBuildManifest`
+    * → `evaluateManifestFreshness`). Placement (`storage=`) is orthogonal to
+    * freshness: flip a colocated build ↔ `storage=lake` and this behaves identically.
+    */
+   private freshServeBindings(now: number): ServeBinding[] {
+      const at = new Date(now);
+      return this.serveBindings.filter(
+         (b) =>
+            evaluateManifestFreshness(
+               {
+                  tableName: b.tablePath,
+                  dataAsOf: b.freshAsOf,
+                  freshnessWindowSeconds: b.freshnessWindowSeconds,
+                  freshnessFallback: b.freshnessFallback,
+               },
+               at,
+            ) === "serve_table",
+      );
+   }
+
+   private async loadServeShapeQuery(queryString: string): Promise<{
+      runnable: QueryMaterializer;
+      virtualMap: VirtualMap;
+      /**
+       * The fresh bindings the shape was built from. Returned so a caller making
+       * a per-binding decision reads the set that actually produced this shape
+       * rather than the package-wide field.
+       */
+      bindings: ServeBinding[];
+   }> {
+      // Gate by freshness first: only bindings that should serve their table now
+      // enter the shape. Keying the cache on the FRESH subset means it recompiles
+      // when a binding crosses its window (drops out) — the storage analogue of
+      // the colocated path's memoized getFreshBuildManifest.
+      const freshBindings = this.freshServeBindings(Date.now());
+      if (freshBindings.length === 0) {
+         // Every bound source is stale past its window with a live/fail fallback —
+         // nothing to serve from storage; fall through to live (caller's catch).
+         throw new Error("no fresh storage serve bindings for this query");
+      }
+      const key = freshBindings
+         .map((b) => `${b.sourceName}@${b.connectionName}/${b.virtualHandle}`)
+         .sort()
+         .join("|");
+      if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
+         this.serveShapeCache = {
+            key,
+            materializer: await this.compileServeShape(
+               this.serveBindingsWithRefinements(freshBindings),
+            ),
+         };
+      }
+      const virtualMap = buildVirtualMap(freshBindings);
+      const runnable =
+         this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
+      // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
+      // unbound source, a bad connection) surfaces HERE — Malloy compiles lazily,
+      // so without this the error would escape at prepare/run instead of at the
+      // caller's try, defeating the safe fallback. Cheap relative to the run. The
+      // serve shape is pure virtual sources, so no buildManifest is needed.
+      await runnable.getSQL({ virtualMap });
+      return { runnable, virtualMap, bindings: freshBindings };
+   }
+
+   /**
+    * Compile the serve-shape materializer for a binding set, degrading
+    * gracefully if the richest shape does not compile. A single un-carriable
+    * refinement (a join or view that reaches a non-materialized source, a
+    * non-portable expression) would otherwise fail the WHOLE shape's compile and
+    * disable storage serving for every source in the package. So the shape is
+    * validated once (per binding set — the result is cached) and, on failure,
+    * the riskiest refinement category is dropped and it retries: full → drop
+    * views → drop views + joins → base-only. Base-only is pure virtual sources
+    * and always compiles, so it is the guaranteed floor. Each surviving tier
+    * still serves everything it can; the per-query eager compile in
+    * {@link loadServeShapeQuery} remains the final net for query-specific
+    * ineligibility.
+    */
+   private async compileServeShape(
+      enriched: ServeBinding[],
+   ): Promise<ModelMaterializer> {
+      // Richest first; each predicate keeps fewer refinement kinds than the last.
+      const keepKinds: Array<ReadonlySet<string>> = [
+         new Set(["join", "dimension", "measure", "view"]),
+         new Set(["join", "dimension", "measure"]),
+         new Set(["dimension", "measure"]),
+         new Set(),
+      ];
+      // Skip escalation entirely when nothing beyond the base is carried.
+      const hasRefinements = enriched.some(
+         (b) => (b.refinements ?? []).length > 0,
+      );
+      const lastTier = keepKinds.length - 1;
+      for (let tier = 0; tier <= lastTier; tier++) {
+         const keep = keepKinds[tier];
+         const shaped =
+            tier === 0
+               ? enriched
+               : enriched.map((b) =>
+                    b.refinements
+                       ? {
+                            ...b,
+                            refinements: b.refinements.filter((r) =>
+                               keep.has(r.kind),
+                            ),
+                         }
+                       : b,
+                 );
+         const materializer = this.buildServeShapeMaterializer(shaped);
+         // Base-only (last tier) always compiles; trust it without a probe. And
+         // when there are no refinements at all, tier 0 IS the base — skip too.
+         if (tier === lastTier || (tier === 0 && !hasRefinements)) {
+            return materializer;
+         }
+         try {
+            await materializer.getModel();
+            return materializer;
+         } catch (err) {
+            recordServeShapeTierDrop(tier);
+            logger.warn(
+               "Storage serve shape failed to compile; dropping the riskiest refinement category and retrying",
+               {
+                  model: this.modelPath,
+                  tier,
+                  error: err instanceof Error ? err.message : String(err),
+               },
+            );
+         }
+      }
+      // Unreachable: the last tier returns above. Satisfy the type checker.
+      return this.buildServeShapeMaterializer(
+         enriched.map((b) => ({ ...b, refinements: [] })),
+      );
+   }
+
+   /** Build the transient serve-shape materializer for a set of bindings. */
+   private buildServeShapeMaterializer(
+      bindings: ServeBinding[],
+   ): ModelMaterializer {
+      const { modelText } = buildServeShapeModelForBindings(bindings);
+      const root = "file:///storage-serve-shape/";
+      const url = `${root}shape.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, modelText]])),
+         config: Model.toMalloyConfig(this.serveMalloyConfig!),
+      });
+      return runtime.loadModel(new URL(url), {
+         importBaseURL: new URL(root),
+      });
+   }
+
+   /**
+    * The serve bindings enriched with the refinements to re-declare on each
+    * virtual base — the source's dimensions/measures (computed from the stored
+    * columns), its joins whose target source is ALSO materialized (the join runs
+    * over the stored tables), and its views (turtles). All are read from this
+    * model's compiled definition. Analytic source-fields are not carried; a
+    * query using one falls back to live.
+    *
+    * Join and view declaration text is lifted verbatim from the author's source
+    * files by location (read once per file, best-effort — an unreadable file
+    * just drops that source's joins/views, which fall back). The join
+    * materialization gate is a `sourceID`-keyed lookup, so it never depends on
+    * parsing that text; views are emitted optimistically and pruned by the
+    * shape-compile escalation in {@link compileServeShape} if they don't hold.
+    */
+   private serveBindingsWithRefinements(
+      bindings: ServeBinding[] = this.serveBindings,
+   ): ServeBinding[] {
+      const contents = (
+         this.modelDef as
+            | {
+                 contents?: Record<
+                    string,
+                    { sourceID?: unknown; fields?: unknown[] }
+                 >;
+              }
+            | undefined
+      )?.contents;
+      // sourceID -> author source name, for the join materialization gate.
+      const sourceNameById = new Map<string, string>();
+      for (const [name, def] of Object.entries(contents ?? {})) {
+         if (typeof def?.sourceID === "string") {
+            sourceNameById.set(def.sourceID, name);
+         }
+      }
+      const materializedSourceNames = new Set(
+         bindings.map((b) => b.sourceName),
+      );
+      // Cache each source file's text (or null when unreadable) across bindings.
+      const fileCache = new Map<string, string | null>();
+      const liftText = (location: SourceLocation): string | undefined => {
+         if (!location?.url?.startsWith("file:")) return undefined;
+         if (!fileCache.has(location.url)) {
+            try {
+               fileCache.set(
+                  location.url,
+                  readFileSync(fileURLToPath(location.url), "utf8"),
+               );
+            } catch {
+               fileCache.set(location.url, null);
+            }
+         }
+         const text = fileCache.get(location.url);
+         return text ? sliceSourceRange(text, location.range) : undefined;
+      };
+      return (
+         bindings
+            .map((b) => {
+               const fields = contents?.[b.sourceName]?.fields;
+               // Narrow the declared ::Shape to the source's PUBLIC columns: the
+               // build materializes every projected column (incl. `except:`-ed /
+               // access-restricted ones), so the captured schema can be wider
+               // than the source's public surface. Declaring a hidden column
+               // would expose it over storage when live hides it — always applied
+               // (even with no refinements), so the serve surface never widens
+               // the source's.
+               const schema = narrowSchemaToPublic(b.schema, fields);
+               const refinements = [
+                  ...extractJoins(fields, {
+                     sourceNameById,
+                     materializedSourceNames,
+                     liftText,
+                  }),
+                  ...extractRefinements(fields),
+                  ...extractViews(fields, liftText),
+               ];
+               return { ...b, schema, refinements };
+            })
+            // Drop any binding whose public schema is empty. Bindings are pushed
+            // to EVERY model in the package, so a model receives bindings for
+            // sources it doesn't define (defined in a sibling model) — those have
+            // no field list here, hence an empty narrowed schema. An empty
+            // `type: X__shape is {}` is a Malloy parse error that would fail the
+            // ENTIRE serve-shape model (breaking the base-only-always-compiles
+            // fallback invariant) and silently drop storage serving for this
+            // model's own sources too. Omitting them sends queries on an
+            // undefined source to live (where this model refuses them anyway) and
+            // keeps a source from being served through a model that doesn't
+            // declare it.
+            .filter((b) => b.schema.length > 0)
+      );
+   }
+
    public async getQueryResults(
       sourceName?: string,
       queryName?: string,
@@ -1761,6 +2076,23 @@ export class Model {
       }
 
       let runnable: QueryMaterializer;
+      let liveRunnable: QueryMaterializer | undefined;
+      // Set when this query is routed through the `storage=` serve-shape
+      // transform; threaded into prepare + run so the virtual sources resolve to
+      // their physical tables. Undefined ⇒ served live (the default path).
+      let serveVirtualMap: VirtualMap | undefined;
+      // The bindings that actually PRODUCED the serve shape — the fresh subset,
+      // not the package's whole set. Per-binding decisions (freshnessFallback)
+      // must read this: `this.serveBindings` is pushed package-wide, so a
+      // sibling source's value would otherwise decide this query's behavior.
+      let serveShapeBindings: ServeBinding[] = [];
+      // How the answer was ultimately produced, for the query histogram. Absent
+      // when the query never routed (an off/live deployment's histogram is
+      // unchanged); "storage" when served from a materialized table;
+      // "live_fallback" when it routed but a run-time store failure degraded it
+      // to live — which must NOT count as a storage hit, since the hit rate is
+      // the tier's headline KPI and would otherwise rise while the tier is down.
+      let servedFrom: "storage" | "live_fallback" | undefined;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
@@ -1852,6 +2184,51 @@ export class Model {
          // `sourceName`/`queryName` pair are untrusted, so both compile here;
          // only author-curated notebook cells use the unrestricted `loadQuery`.
          runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
+         // Kept so a routed query can still be answered live if the store fails
+         // underneath it at RUN time (see the freshnessFallback retry below).
+         liveRunnable = runnable;
+
+         // storage= serve routing: when enabled and this package has sources
+         // materialized into a storage destination, try compiling the query
+         // against the transient serve-shape model (materialized sources rebound
+         // to virtual sources on their storage connection). If it compiles, we
+         // serve from the materialized tables via the virtualMap; if it does not
+         // (a refinement the shape lacks, or an unbound source), we keep the
+         // original runnable and serve live — safe fallback, no behavior change
+         // for anything the transform can't yet reproduce. Off / write-only and
+         // packages with no storage bindings skip this entirely.
+         if (
+            getPersistStorageMode() === "on" &&
+            this.serveBindings.length > 0 &&
+            this.serveMalloyConfig
+         ) {
+            try {
+               const shaped = await this.loadServeShapeQuery(queryString);
+               runnable = shaped.runnable;
+               serveVirtualMap = shaped.virtualMap;
+               serveShapeBindings = shaped.bindings;
+               servedFrom = "storage";
+               recordStorageServeRouting("storage");
+               logger.info("Serving query from storage tier (virtual-source)", {
+                  modelPath: this.modelPath,
+                  // The sources in the SHAPE, not the package's whole binding set:
+                  // a stale binding is dropped before the shape is built.
+                  storageSources: shaped.bindings.map((b) => b.sourceName),
+               });
+            } catch (shapeErr) {
+               recordStorageServeRouting("live_fallback");
+               logger.debug(
+                  "storage serve-shape ineligible for this query; serving live",
+                  {
+                     modelPath: this.modelPath,
+                     error:
+                        shapeErr instanceof Error
+                           ? shapeErr.message
+                           : String(shapeErr),
+                  },
+               );
+            }
+         }
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
@@ -1926,6 +2303,14 @@ export class Model {
       // (for the row limit) and the run so a stale persist source falls back per
       // its declared policy — and prep/run agree on the same substitution.
       const buildManifest = this.resolveFreshBuildManifest();
+      // The serve-shape runnable resolves its tables through `virtualMap`, not
+      // the same-connection build manifest, and its transient model carries no
+      // `##! experimental.persistence` — so passing a non-empty buildManifest to
+      // it errors. When routing through the shape, suppress the manifest; the
+      // original (live) runnable still gets it.
+      const effectiveBuildManifest = serveVirtualMap
+         ? undefined
+         : buildManifest;
 
       // Prepare INSIDE the run try/catch: a bad-given / value-type throw at
       // prepare time (getPreparedResult binds the givens) gets the same
@@ -1940,12 +2325,19 @@ export class Model {
       // the real query if this model doesn't itself surface them — see
       // filterGivensToModelSurface.
       const querySurfaceGivens = this.filterGivensToModelSurface(givens);
+      // Same reason as effectiveBuildManifest: the serve shape is built from
+      // given-FREE sources, so it surfaces no `given:` and Malloy rejects any
+      // supplied name with "unknown given" — a spurious 400, past the routing
+      // fallback, on a query that should just serve from storage. Nothing in the
+      // shape can read them; the authorize gate above already saw the full set.
+      const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
          rowLimit = resolveModelQueryRowLimit(
             (
                await runnable.getPreparedResult({
-                  givens: querySurfaceGivens,
-                  buildManifest,
+                  givens: effectiveGivens,
+                  buildManifest: effectiveBuildManifest,
+                  virtualMap: serveVirtualMap,
                })
             ).resultExplore.limit,
             { defaultLimit: getDefaultQueryRowLimit(), maxRows },
@@ -1954,65 +2346,155 @@ export class Model {
 
          queryResults = await runnable.run({
             rowLimit,
-            givens: querySurfaceGivens,
+            givens: effectiveGivens,
             abortSignal,
-            buildManifest,
+            buildManifest: effectiveBuildManifest,
+            virtualMap: serveVirtualMap,
          });
       } catch (error) {
-         // Record error metrics
-         const errorEndTime = performance.now();
-         const errorExecutionTime = errorEndTime - startTime;
-         this.queryExecutionHistogram.record(errorExecutionTime, {
-            "malloy.model.path": this.modelPath,
-            "malloy.model.query.name": queryName,
-            "malloy.model.query.source": sourceName,
-            "malloy.model.query.query": query,
-            "malloy.model.query.status": "error",
-         });
+         // A binding that declares `freshnessFallback=live` is saying the tier is
+         // a performance optimisation, not a dependency — so a store that fails
+         // UNDER a routed query should degrade to serving live, the same answer
+         // the compile-time ladder already gives when the shape can't be built.
+         // Without this the store is a hard dependency the moment a query routes:
+         // a not-yet-converged rebind or an over-eager GC turns into a user-facing
+         // error for a source explicitly marked as safe to serve live.
+         //
+         // Deliberately narrow:
+         //  - only when the query actually routed to storage (`serveVirtualMap`);
+         //  - only when every binding THAT PRODUCED THIS SHAPE says `live` —
+         //    `fail` (and the `stale_ok` default) keep surfacing, so one
+         //    fail-closed source is not degraded by a permissive neighbour.
+         //    Read off the shape's own bindings, not the package's: bindings are
+         //    pushed package-wide and `freshnessFallback` is per entry, so a
+         //    mixed set is normal and a sibling must not decide this query;
+         //  - never for a client error (a bad given) or an abort, where a retry
+         //    would just reproduce it or defy the caller;
+         //  - the retry re-supplies the REAL givens. The storage path suppresses
+         //    them because the shape is built from given-free sources; the live
+         //    source may filter on them, and running it without them would serve
+         //    unfiltered rows.
+         const canDegradeToLive =
+            !!serveVirtualMap &&
+            !!liveRunnable &&
+            !abortSignal?.aborted &&
+            !String((error as { code?: string })?.code ?? "").startsWith(
+               "runtime-given-",
+            ) &&
+            serveShapeBindings.length > 0 &&
+            serveShapeBindings.every((b) => b.freshnessFallback === "live");
+         // Both the original failure and a failure OF THE RETRY end here: record
+         // the error metric, then map the error. A broad outage takes the source
+         // warehouse down alongside the store, so the retry failing is ordinary —
+         // and without this it would escape the given-mapping, the MalloyError
+         // rethrow and the error metric, turning a clean 400 into an untracked 500.
+         // Annotated on the CONST, not just the arrow: control-flow analysis only
+         // treats a call as never-returning when the callee has an explicit type
+         // annotation, and the fall-through below depends on that narrowing.
+         const failQuery: (err: unknown) => never = (err) => {
+            // Record error metrics
+            const errorEndTime = performance.now();
+            const errorExecutionTime = errorEndTime - startTime;
+            this.queryExecutionHistogram.record(errorExecutionTime, {
+               "malloy.model.path": this.modelPath,
+               "malloy.model.query.name": queryName,
+               "malloy.model.query.source": sourceName,
+               "malloy.model.query.query": query,
+               "malloy.model.query.status": "error",
+               // Ships dark: only tag queries that routed. A live/off query gets
+               // no new attribute, so an off deployment's histogram is unchanged.
+               ...(servedFrom
+                  ? { "malloy.model.query.served_from": servedFrom }
+                  : {}),
+            });
 
-         // Bad client-supplied givens (unknown name, wrong-typed value, an
-         // operator-finalized override, ...) all surface as a Malloy
-         // `runtime-given-*` error. Malloy is the single validator; the publisher
-         // just maps its rejection to a clean 400. Duck-type on `.code`
-         // (MalloyCompileError extends Error, not MalloyError, and isn't
-         // root-exported). The `runtime-given-` prefix is a pinned coupling to
-         // Malloy's error codes (@malloydata/malloy given_binding.ts / runtime.ts);
-         // if they're renamed upstream, update it here (and in environment.ts) —
-         // otherwise these fall through to the generic 400 below with a worse
-         // message, and the /compile path silently omits `sql`.
-         const givenCode = (error as { code?: string })?.code;
-         if (
-            typeof givenCode === "string" &&
-            givenCode.startsWith("runtime-given-")
-         ) {
-            logger.debug("Rejected client-supplied given", {
+            // Bad client-supplied givens (unknown name, wrong-typed value, an
+            // operator-finalized override, ...) all surface as a Malloy
+            // `runtime-given-*` error. Malloy is the single validator; the publisher
+            // just maps its rejection to a clean 400. Duck-type on `.code`
+            // (MalloyCompileError extends Error, not MalloyError, and isn't
+            // root-exported). The `runtime-given-` prefix is a pinned coupling to
+            // Malloy's error codes (@malloydata/malloy given_binding.ts / runtime.ts);
+            // if they're renamed upstream, update it here (and in environment.ts) —
+            // otherwise these fall through to the generic 400 below with a worse
+            // message, and the /compile path silently omits `sql`.
+            const givenCode = (err as { code?: string })?.code;
+            if (
+               typeof givenCode === "string" &&
+               givenCode.startsWith("runtime-given-")
+            ) {
+               logger.debug("Rejected client-supplied given", {
+                  environmentName: this.packageName,
+                  modelPath: this.modelPath,
+                  error: err instanceof Error ? err.message : String(err),
+               });
+               throw new BadRequestError(
+                  err instanceof Error ? err.message : String(err),
+               );
+            }
+
+            // Re-throw Malloy errors as-is (they will be handled by error handler)
+            if (err instanceof MalloyError) {
+               throw err;
+            }
+
+            // For other runtime errors (like divide by zero), throw as BadRequestError
+            const errorMessage =
+               err instanceof Error ? err.message : String(err);
+            logger.error("Query execution error", {
+               error: err,
+               errorMessage,
                environmentName: this.packageName,
                modelPath: this.modelPath,
-               error: error instanceof Error ? error.message : String(error),
+               query,
+               queryName,
+               sourceName,
             });
             throw new BadRequestError(
-               error instanceof Error ? error.message : String(error),
+               `Query execution failed: ${errorMessage}`,
             );
+         };
+         if (!canDegradeToLive) failQuery(error);
+         logger.warn(
+            "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
+            {
+               modelPath: this.modelPath,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         recordStorageServeRouting("runtime_live_fallback");
+         try {
+            // Re-derive the row cap from the LIVE shape. `rowLimit` is assigned
+            // inside the try above, from the storage prepare — so a store failure
+            // that surfaces AT PREPARE (a manifest naming a table that is missing
+            // or malformed resolves through `virtualMap` there) leaves it 0, which
+            // the connector reads as a hard cap and stops before the first row: a
+            // successful, EMPTY answer. Asking the live shape is also the honest
+            // limit, since the live shape is what runs.
+            rowLimit = resolveModelQueryRowLimit(
+               (
+                  await liveRunnable!.getPreparedResult({
+                     givens: querySurfaceGivens,
+                     buildManifest,
+                  })
+               ).resultExplore.limit,
+               { defaultLimit: getDefaultQueryRowLimit(), maxRows },
+            );
+            queryResults = await liveRunnable!.run({
+               rowLimit,
+               givens: querySurfaceGivens,
+               abortSignal,
+               buildManifest,
+            });
+         } catch (retryError) {
+            failQuery(retryError);
          }
-
-         // Re-throw Malloy errors as-is (they will be handled by error handler)
-         if (error instanceof MalloyError) {
-            throw error;
-         }
-
-         // For other runtime errors (like divide by zero), throw as BadRequestError
-         const errorMessage =
-            error instanceof Error ? error.message : String(error);
-         logger.error("Query execution error", {
-            error,
-            errorMessage,
-            environmentName: this.packageName,
-            modelPath: this.modelPath,
-            query,
-            queryName,
-            sourceName,
-         });
-         throw new BadRequestError(`Query execution failed: ${errorMessage}`);
+         // The answer came from the live warehouse, so it is NOT a storage hit —
+         // `runtime_live_fallback` above is the signal that the tier is degraded.
+         servedFrom = "live_fallback";
+         executionTime = performance.now() - startTime;
+         // Fall through: `queryResults` is set, so the normal post-run path
+         // wraps and returns it exactly as a live query would.
       }
 
       const wrappedResult = API.util.wrapResult(queryResults);
@@ -2042,6 +2524,12 @@ export class Model {
          "malloy.model.query.rows_total": queryResults.totalRows,
          "malloy.model.query.connection": queryResults.connectionName,
          "malloy.model.query.status": "success",
+         // Ships dark: only tag queries that routed (see the error path).
+         // "live_fallback" here is a SUCCESS answered by the live warehouse, so
+         // it must not inflate the storage hit rate.
+         ...(servedFrom
+            ? { "malloy.model.query.served_from": servedFrom }
+            : {}),
       });
       return {
          result: wrappedResult,

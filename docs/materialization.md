@@ -24,6 +24,28 @@ source: order_summary is raw_orders -> {
 
 `name=` is the physical table Publisher writes. Persist the sources that are expensive to compute and reused by many queries; leave cheap or rarely-read sources unpersisted. The [`malloy-materialization-tuning`](../skills/malloy-materialization-tuning/SKILL.md) skill helps decide.
 
+### Opting a reader out: `#@ -persist`
+
+A source that `extend`s a persisted source reads the persisted table too — the extension adds computed fields on top of the stored rows rather than recomputing them. Annotate the extension with `#@ -persist` when you want it recomputed live instead:
+
+```malloy
+#@ persist name="order_summary"
+source: order_summary is raw_orders -> { … }
+
+// Reads the stored order_summary table, adds a field on top.
+source: summary_with_margin is order_summary extend {
+  dimension: margin is total_revenue / total_orders
+}
+
+// Recomputed from raw on every query — never reads the stored table.
+#@ -persist
+source: summary_fresh is order_summary extend {
+  dimension: margin is total_revenue / total_orders
+}
+```
+
+Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:

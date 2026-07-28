@@ -48,14 +48,15 @@ there for the primitive, then follow the application you need.
 
 ## Deploy & operate
 
-| Doc                                      | Read it when you want to…                                                                                                                           |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [deployment.md](deployment.md)           | Run a built server via npx, Docker, or Docker Compose.                                                                                              |
-| [connections.md](connections.md)         | Connect BigQuery, Snowflake, Postgres, DuckDB, and more.                                                                                            |
-| [materialization.md](materialization.md) | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior. |
-| [ducklake.md](ducklake.md)               | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped.                                       |
-| [theming.md](theming.md)                 | Customize colors, fonts, and light/dark mode.                                                                                                       |
-| [configuration.md](configuration.md)     | Look up an env var / CLI flag, or tune the OOM guards.                                                                                              |
+| Doc                                                        | Read it when you want to…                                                                                                                           |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [deployment.md](deployment.md)                             | Run a built server via npx, Docker, or Docker Compose.                                                                                              |
+| [connections.md](connections.md)                           | Connect BigQuery, Snowflake, Postgres, DuckDB, and more.                                                                                            |
+| [materialization.md](materialization.md)                   | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior. |
+| [ducklake.md](ducklake.md)                                 | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped.                                       |
+| [persist-storage-tutorial.md](persist-storage-tutorial.md) | Materialize a `#@ persist` source into a DuckDB/DuckLake store and serve queries from it (the `storage=` tier + the `PERSIST_STORAGE_MODE` switch). |
+| [theming.md](theming.md)                                   | Customize colors, fonts, and light/dark mode.                                                                                                       |
+| [configuration.md](configuration.md)                       | Look up an env var / CLI flag, or tune the OOM guards.                                                                                              |
 
 ## Develop & contribute
 

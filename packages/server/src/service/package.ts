@@ -44,9 +44,12 @@ import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
+   ManifestEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
-import { computePackageBuildPlan } from "./build_plan";
+import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
+import { deriveServeBindings } from "./materialization_serve_transform";
+import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
@@ -124,6 +127,13 @@ export class Package {
    // freshness fields so the serve path can re-evaluate `age vs window` per
    // query. Undefined when the package is serving live (unbound).
    private freshnessEntries: FreshnessManifest | undefined;
+   // `storage=` serve bindings (materialized-into-storage sources), derived from
+   // a build's full manifest entries and pushed onto each Model so a query can
+   // route through the virtual-source serve transform. Distinct from the
+   // same-connection freshnessEntries above (which the manifest substitution
+   // uses); a storage source serves cross-connection via bindings, not the
+   // manifest. Empty ⇒ no storage serve routing.
+   private storageServeBindings: ReturnType<typeof deriveServeBindings> = [];
    // Memoized freshness-filtered manifest for the serve path. Almost all queries
    // in a window share the same included set, so this is recomputed only when a
    // retained entry actually crosses its window (`validUntil`, the next
@@ -144,6 +154,21 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
+   // Sources annotated `#@ persist` that Malloy's getBuildPlan() did not
+   // recognize as a materializable build root, so they produced no plan entry
+   // and would be a silent no-op (served live). Surfaced as an operator warning
+   // and hard-refused at build. See build_plan.detectDroppedPersistSources.
+   private droppedPersistSources: { name: string; modelPath: string }[] = [];
+   // Which sources may be served from a materialized table, decided at compile
+   // (build_plan.collectSourceEligibility) because that is where the compiled
+   // sources exist. Consulted when binding serve bindings, which deliberately
+   // does not recompile.
+   //
+   // `undefined` means NOT KNOWN — the plan compute failed (it does live schema
+   // RPCs, so a warehouse blip is the ordinary way) and the package loaded
+   // anyway. Distinct from "nothing is eligible", and refused the same way: an
+   // unknown answer must not read as consent. See bindStorageServeBindings.
+   private sourceEligibility: SourceEligibility | undefined = undefined;
    // Non-fatal render-tag findings aggregated across the package's models (each
    // tagged with its model path), surfaced read-only on
    // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
@@ -536,9 +561,18 @@ export class Package {
       // failure is logged, not fatal — the package still serves; the plan is
       // just absent. Recompiles the models (duplicate schema RPCs vs the worker
       // compile); accepted for now.
+      //
+      // A failure also leaves `sourceEligibility` unknown, which refuses every
+      // storage serve binding until a load succeeds (see
+      // bindStorageServeBindings). Serving live is a slower answer, not a wrong
+      // one; admitting an unexamined binding would be a wrong one.
       try {
          const buildPlanStart = Date.now();
-         pkg.buildPlan = await computePackageBuildPlan(pkg);
+         const { plan, droppedPersistSources, sourceEligibility } =
+            await computePackageBuildPlan(pkg);
+         pkg.buildPlan = plan;
+         pkg.droppedPersistSources = droppedPersistSources;
+         pkg.sourceEligibility = sourceEligibility;
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
          logger.warn(
@@ -574,6 +608,17 @@ export class Package {
                detail: invalidPolicy,
             },
          );
+      }
+      // Persist-target collisions are ALWAYS warn-only at load (never fail an
+      // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
+      // the flag only governs whether they REJECT a publish (see
+      // package.controller). Surface them so an operator can remediate.
+      const collisions = pkg.persistenceCollisionWarnings();
+      if (collisions.length > 0) {
+         logger.warn(`Package ${packageName} has persist-target collisions`, {
+            packageName,
+            detail: collisions.join("\n"),
+         });
       }
       pkg.logEmptyDiscoveryWarnings();
 
@@ -632,8 +677,29 @@ export class Package {
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
       }
-      if (this.renderTagWarnings.length > 0) {
-         metadata.warnings = [...this.renderTagWarnings];
+      // Render-tag findings and storage= warnings share the one operator-facing
+      // warnings array (the {model, target, message} shape carries both).
+      const allWarnings = [
+         ...this.renderTagWarnings,
+         ...this.storageWarnings(),
+         ...this.droppedPersistWarnings(),
+         // A within-package persist-target collision spans two or more sources, so
+         // there is no single target field; the message names them. Surfaced here
+         // (alongside the load-path log) so an operator can see it on the status
+         // API like the other persist warnings — see persistenceCollisionWarnings.
+         ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+      ];
+      if (allWarnings.length > 0) {
+         metadata.warnings = allWarnings;
+      }
+      // Surface what's bound for the cross-connection storage serve so a caller
+      // can confirm a materialized source is routed (vs. inferring from logs).
+      if (this.storageServeBindings.length > 0) {
+         metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
+            sourceName: b.sourceName,
+            storageConnectionName: b.connectionName,
+            tablePath: b.tablePath,
+         }));
       }
       return metadata;
    }
@@ -646,6 +712,33 @@ export class Package {
     */
    public getBuildManifestEntries(): BuildManifest["entries"] | undefined {
       return this.buildManifestEntries;
+   }
+
+   /**
+    * Whether the package currently has a bound (non-empty) same-connection
+    * `tableName` manifest — i.e. a prior bind substituted colocated physical tables
+    * at compile time. Used by the manifest-rebind tier split to decide whether a
+    * pure-storage refresh can skip the {@link reloadAllModels} recompile: it can
+    * only skip when there is nothing to substitute now AND nothing was
+    * substituted before (otherwise dropping the last colocated entry must recompile
+    * to revert it).
+    */
+   public hasBoundTableNameManifest(): boolean {
+      return (
+         this.buildManifestEntries !== undefined &&
+         Object.keys(this.buildManifestEntries).length > 0
+      );
+   }
+
+   /**
+    * Whether the package currently has (non-empty) `storage=` serve bindings.
+    * Used by the manifest-rebind tier split so a refresh whose storage entries
+    * vanished still clears the old bindings (rather than leaving them routing at
+    * a table the host no longer vouches for) — the storage mirror of
+    * {@link hasBoundTableNameManifest}.
+    */
+   public hasStorageServeBindings(): boolean {
+      return this.storageServeBindings.length > 0;
    }
 
    /**
@@ -733,6 +826,96 @@ export class Package {
    }
 
    /**
+    * Bind (or clear) the package's `storage=` serve bindings from a build's full
+    * manifest entries, and push them onto every loaded model so a query can be
+    * routed through the virtual-source serve transform. Called by the build's
+    * post-run distribution with the full {@link ManifestEntry} map (which
+    * carries `storageConnectionName` + captured `schema`); only entries that
+    * were materialized into a storage destination produce a binding. Re-applied
+    * on model reload via {@link pushStorageServeBindingsToModels}.
+    */
+   /**
+    * Re-establish the colocated (same-connection) serve routing from a
+    * FreshnessManifest WITHOUT recompiling — the analogue of
+    * {@link bindStorageServeBindings} for the in-warehouse tier, used to
+    * restore serving on load from the package's own latest persisted
+    * materialization. Colocated routing is applied at query time as a per-query
+    * `buildManifest` override (see {@link getFreshBuildManifest} and
+    * Model.getQueryResults), so setting the in-memory entries is sufficient; the
+    * freshness resolver is already wired on every model from
+    * {@link Package.create}. Distinct from {@link reloadAllModels}, which also
+    * recompiles — the recompile is not what routes the query, so a pure
+    * restore-on-load skips it (no double compile after the load-time compile).
+    * An empty map clears the binding (reverts to serving live).
+    */
+   public bindColocatedServeManifest(entries: FreshnessManifest): void {
+      this.recordManifestBinding(entries);
+   }
+
+   /**
+    * Bind the storage serve bindings a host vouches for — minus any whose source
+    * this package's own eligibility gate refuses.
+    *
+    * The host is authoritative about WHICH TABLE backs a source; it owns
+    * generations and rollout. It cannot be authoritative about WHETHER a source
+    * may be served from a frozen table at all, because that is decided by
+    * compiling the model, which the host does not do. A `given`-referencing
+    * source is the case that matters: a given binds per query for row-level
+    * access control, so one table built once and served to everyone hands every
+    * caller the rows filtered for whoever built it.
+    *
+    * A manifest can name such a source without anyone being careless — a source
+    * that was given-free when it was built acquires a `given` on the next model
+    * edit, and the old manifest still points at a real table until convergence
+    * catches up.
+    *
+    * Eligibility must be established POSITIVELY: a binding is honored only if its
+    * source is in the eligible set. Two states would otherwise pass as consent,
+    * and both are reachable without anyone forging anything —
+    *  - the plan compute failed, so nothing was examined at all;
+    *  - the source never reached the plan, because Malloy admits only
+    *    query-shaped sources as build roots and a `#@ persist` on a filtered
+    *    pass-through is dropped (see `droppedPersistSources`) — the same
+    *    row-level-access shape this gate exists for.
+    *
+    * Refused bindings are DROPPED, not fatal: that source serves live, which is
+    * always correct because the tier is a performance tier. The rest bind.
+    */
+   public bindStorageServeBindings(
+      entries: Record<string, ManifestEntry>,
+   ): void {
+      const derived = deriveServeBindings(entries);
+      const eligibility = this.sourceEligibility;
+      const eligible = new Set(eligibility?.eligible ?? []);
+      const allowed = derived.filter((binding) => {
+         if (eligible.has(binding.sourceName)) return true;
+         const reason =
+            eligibility === undefined
+               ? "the package build plan could not be computed, so no source was examined for eligibility"
+               : (eligibility.refused[binding.sourceName] ??
+                 "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)");
+         logger.warn(
+            "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
+            {
+               packageName: this.packageName,
+               sourceName: binding.sourceName,
+               reason,
+            },
+         );
+         return false;
+      });
+      this.storageServeBindings = allowed;
+      this.pushStorageServeBindingsToModels();
+   }
+
+   /** Push the current storage serve bindings onto every loaded model. */
+   private pushStorageServeBindingsToModels(): void {
+      for (const model of this.models.values()) {
+         model.setServeBindings(this.storageServeBindings);
+      }
+   }
+
+   /**
     * Declared `explores` (publisher.json) that don't resolve to a real
     * `.malloy` model in this package, each with an actionable reason. Empty
     * when explores is absent/empty or every entry resolves.
@@ -815,6 +998,66 @@ export class Package {
     * Strict at publish (package.controller), warn-only at load/reload
     * (loadViaWorker) — same split as explores.
     */
+   /**
+    * Operator-facing warnings for `#@ persist storage=<conn>` sources whose
+    * storage annotation is NOT being honored on the serve path, so a degraded
+    * source is visible on `/status` rather than silently serving live. Emitted
+    * per {@link getPersistStorageMode}:
+    *  - `off`: the annotation is ignored entirely (serving live from the source
+    *    warehouse) — the kill-switch resting state.
+    *  - `write-only`: the source materializes into storage but the serve path is
+    *    not routed to the materialized table (served live).
+    *  - `on`: no warning — the source is (or falls back to being) served per the
+    *    transform; per-query fallback is a query-time event, not a load warning.
+    * Read straight off the compiled build plan's `annotationFields.storage`
+    * (undefined when the package declares no persist sources).
+    */
+   /**
+    * Operator-facing warnings for `#@ persist` sources that Malloy's
+    * getBuildPlan() did not recognize as a materializable build root (observed
+    * for a filtered pass-through `X is <table> extend { where … }`). Without a
+    * signal the annotation is a silent no-op — no build, no error, served live —
+    * so surface it on `/status`. The build path additionally hard-refuses (see
+    * MaterializationService). Independent of {@link buildPlan} being null, since
+    * a package whose ONLY persist source is dropped has no plan at all.
+    */
+   private droppedPersistWarnings(): ApiPackageWarning[] {
+      return this.droppedPersistSources.map((d) => ({
+         model: d.modelPath,
+         target: d.name,
+         message:
+            `is annotated '#@ persist' but was not recognized as a ` +
+            `materializable source, so nothing is materialized and it is served ` +
+            `live. Only query/aggregate sources build; a filtered pass-through ` +
+            `does not. Persist a query source, or invoke a parameterized source ` +
+            `with a bound argument.`,
+      }));
+   }
+
+   private storageWarnings(): ApiPackageWarning[] {
+      const mode = getPersistStorageMode();
+      if (mode === "on" || !this.buildPlan?.sources) return [];
+      const warnings: ApiPackageWarning[] = [];
+      for (const source of Object.values(this.buildPlan.sources)) {
+         const storage = source.annotationFields?.storage?.trim();
+         if (!storage) continue;
+         const message =
+            mode === "off"
+               ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+                 `the annotation is ignored and the source is served live from ` +
+                 `its own warehouse.`
+               : `is materialized into storage "${storage}" but ` +
+                 `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+                 `routed to the materialized table (served live).`;
+         warnings.push({
+            model: source.modelPath ?? "",
+            target: source.name,
+            message,
+         });
+      }
+      return warnings;
+   }
+
    public persistencePolicyWarnings(): string[] {
       const warnings: string[] = [];
       const sources = this.buildPlan?.sources
@@ -895,6 +1138,95 @@ export class Package {
     */
    public formatInvalidPersistencePolicy(): string {
       return this.persistencePolicyWarnings().join("\n");
+   }
+
+   /**
+    * Within-package persist-target COLLISION warnings: two DISTINCT persist
+    * sources (different `sourceEntityId`) that resolve to the same physical
+    * table — the same resolved `name=` (or source-name fallback) in the same
+    * destination connection. The publisher self-assigns a materialized table's
+    * physical name from `name=` verbatim, so two such sources would clobber each
+    * other: the second build's `CREATE OR REPLACE` overwrites the first, two
+    * manifest entries point at one table, and a GC drop of one takes out the
+    * other. Two IMPORTS of the SAME source (identical `sourceEntityId`) are
+    * intentional dedup and NOT flagged.
+    *
+    * The destination is resolved from the DECLARED annotation, independent of
+    * {@link getPersistStorageMode}, so the kill switch never changes whether a
+    * package has a latent collision.
+    *
+    * Deliberately SEPARATE from {@link persistencePolicyWarnings} because the
+    * rollout is staged: these are surfaced warn-only at load AND publish, and
+    * only block a publish once `PERSIST_COLLISION_ENFORCE` is set (see
+    * {@link getPersistCollisionEnforce}) — a package published before this check
+    * existed may carry a latent collision, so an un-gated reject would break a
+    * routine re-publish. This is a WITHIN-package/version check only: a `name=`
+    * change ACROSS versions, or a cross-package collision, needs the
+    * cross-version/global view the host has and the publisher
+    * does not.
+    */
+   public persistenceCollisionWarnings(): string[] {
+      const sources = this.buildPlan?.sources
+         ? Object.values(this.buildPlan.sources)
+         : [];
+      const targets = new Map<
+         string,
+         { name: string; destination: string; sources: Map<string, string> }
+      >();
+      for (const source of sources) {
+         const fields = source.annotationFields ?? {};
+         const physicalName = (fields.name || source.name).trim();
+         const storage = fields.storage?.trim();
+         // storage= into a real destination lands there; absent, the source is
+         // built colocated (into its own warehouse).
+         const destination = storage ? storage : source.connectionName;
+         // Verbatim key. Limitation: names that differ only by case or quoting
+         // (`Foo` vs `foo`, `"foo"` vs `foo`) key distinctly here but may fold to
+         // the same physical table on a case-folding destination — such variants
+         // evade this within-package check. Normalizing correctly is
+         // destination-dialect-dependent, so it's left verbatim; the host's
+         // ownership-scoped production naming and the destination's own identifier
+         // rules are the backstop.
+         const key = `${destination} ${physicalName}`;
+         const bucket = targets.get(key) ?? {
+            name: physicalName,
+            destination,
+            sources: new Map<string, string>(),
+         };
+         // Keyed by sourceEntityId so identical-content imports collapse to one.
+         bucket.sources.set(source.sourceEntityId, source.name);
+         targets.set(key, bucket);
+      }
+      const warnings: string[] = [];
+      for (const {
+         name,
+         destination,
+         sources: colliding,
+      } of targets.values()) {
+         if (colliding.size < 2) continue;
+         const names = [...colliding.values()].sort();
+         warnings.push(
+            `#@ persist sources ${names
+               .map((n) => `"${n}"`)
+               .join(", ")} all resolve to the same materialized table ` +
+               `"${name}" in destination "${destination}". Distinct sources ` +
+               `must not share a physical target — the second build would ` +
+               `overwrite the first, and a serve binding or GC drop for one ` +
+               `would affect the other. Give each a distinct #@ persist name=.`,
+         );
+      }
+      return warnings;
+   }
+
+   /**
+    * Collision warnings joined for the publish gate: the string is non-empty
+    * (and thus a publish rejection) only when `PERSIST_COLLISION_ENFORCE` is set;
+    * otherwise collisions are surfaced warn-only (at load and publish) without
+    * blocking. See {@link persistenceCollisionWarnings}.
+    */
+   public formatPersistenceCollisionRejections(): string {
+      if (!getPersistCollisionEnforce()) return "";
+      return this.persistenceCollisionWarnings().join("\n");
    }
 
    /**
@@ -1144,6 +1476,9 @@ export class Package {
          }
       }
       this.models = nextModels;
+      // The freshly-compiled models start with no serve bindings; re-apply the
+      // package's current storage= bindings so a reload preserves serve routing.
+      this.pushStorageServeBindingsToModels();
       this.renderTagWarnings = renderTagWarnings;
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate

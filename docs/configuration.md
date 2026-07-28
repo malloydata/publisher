@@ -2,7 +2,7 @@
 
 > What this is: the complete runtime configuration reference — the config file, every environment
 > variable and CLI flag, the OOM/operational-tuning knobs, and the metrics that observe them. For how
-> to *run* the server, see [deployment.md](deployment.md).
+> to _run_ the server, see [deployment.md](deployment.md).
 
 Publisher reads its runtime configuration from `publisher.config.json` and a handful of environment
 variables. Every CLI flag below has an env-var equivalent; pass either.
@@ -33,12 +33,12 @@ my-data/
 
 ```json
 {
-   "environments": [
-      {
-         "name": "local",
-         "packages": [{ "name": "sales", "location": "./sales" }]
-      }
-   ]
+  "environments": [
+    {
+      "name": "local",
+      "packages": [{ "name": "sales", "location": "./sales" }]
+    }
+  ]
 }
 ```
 
@@ -94,6 +94,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` | — | `false` | Opt-in: enable the standalone materialization scheduler, which fires each loaded package's `materialization.schedule` cron so a self-hosted Publisher rebuilds on a cadence with no control plane. **Never set this on a control-plane-driven (orchestrated) worker** — it is the primary guard against double-driving refresh. See [materialization.md](materialization.md). |
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS` | — | `60000` (1 min) | How often the scheduler sweeps for due schedules, in ms. Minimum `1000`. Only read when the scheduler is enabled. |
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | — | `10` | Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer. |
+| `PERSIST_STORAGE_MODE` | — | `off` | Controls the `#@ persist storage=<conn>` materialization tier (materialize a source into a registered DuckDB/DuckLake connection and serve it from there). `off`: the `storage=` annotation is inert — sources build and serve from their own warehouse exactly as without it. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package — a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md). |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
 PostgreSQL and other database-specific connections may also honor their respective driver env vars
@@ -104,18 +105,18 @@ PostgreSQL and other database-specific connections may also honor their respecti
 The publisher exports OpenTelemetry metrics (under the `publisher` meter) so the OOM guardrails above
 can be observed and tuned in production. The most useful series for this work:
 
-| Metric | Type | Use |
-| --- | --- | --- |
-| `publisher_query_cap_exceeded_total{cap_type,source}` | Counter | Per-cap 413 firings. Pivot by `cap_type` (`rows`/`bytes`) to know which knob to raise; by `source` for surface. |
-| `publisher_max_query_rows`, `publisher_max_response_bytes` | Gauges | Live values of the corresponding env vars (and `-1` on misconfig). |
-| `publisher_query_admission_rejections_total{environment}` | Counter | 503s from the memory governor at the query layer. Hot environments stand out via the label. |
-| `publisher_package_admission_rejections_total{environment,reason}` | Counter | 503s from the memory governor at the package-load layer. |
-| `publisher_query_timeout_total{timeout_ms}`, `publisher_query_timeout_ms` | Counter, gauge | 504 firings and the live `PUBLISHER_QUERY_TIMEOUT_MS` value. |
-| `publisher_query_concurrency_rejections_total{http.route,limit}` | Counter | 503s from the per-pod query concurrency cap, labeled by hot route (HTTP) or `mcp:executeQuery`. |
-| `publisher_query_active_slots`, `publisher_query_max_slots` | Gauges | Live in-flight slot count and cap — render utilization as `active / max`. |
-| `publisher_process_rss_bytes`, `publisher_heap_size_limit_bytes`, `publisher_heap_used_bytes` | Gauges | Process RSS, V8 heap ceiling (`--max-old-space-size`), V8 used heap. |
-| `publisher_memory_backpressure_active`, `_activations_total` | Gauge, counter | Current governor state and historical activations. |
-| `http_server_requests_total{http.status_code}` | Counter | Coarse 413/503/504 totals — pair with the dedicated counters above for per-cause breakdown. |
+| Metric                                                                                        | Type           | Use                                                                                                             |
+| --------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------- |
+| `publisher_query_cap_exceeded_total{cap_type,source}`                                         | Counter        | Per-cap 413 firings. Pivot by `cap_type` (`rows`/`bytes`) to know which knob to raise; by `source` for surface. |
+| `publisher_max_query_rows`, `publisher_max_response_bytes`                                    | Gauges         | Live values of the corresponding env vars (and `-1` on misconfig).                                              |
+| `publisher_query_admission_rejections_total{environment}`                                     | Counter        | 503s from the memory governor at the query layer. Hot environments stand out via the label.                     |
+| `publisher_package_admission_rejections_total{environment,reason}`                            | Counter        | 503s from the memory governor at the package-load layer.                                                        |
+| `publisher_query_timeout_total{timeout_ms}`, `publisher_query_timeout_ms`                     | Counter, gauge | 504 firings and the live `PUBLISHER_QUERY_TIMEOUT_MS` value.                                                    |
+| `publisher_query_concurrency_rejections_total{http.route,limit}`                              | Counter        | 503s from the per-pod query concurrency cap, labeled by hot route (HTTP) or `mcp:executeQuery`.                 |
+| `publisher_query_active_slots`, `publisher_query_max_slots`                                   | Gauges         | Live in-flight slot count and cap — render utilization as `active / max`.                                       |
+| `publisher_process_rss_bytes`, `publisher_heap_size_limit_bytes`, `publisher_heap_used_bytes` | Gauges         | Process RSS, V8 heap ceiling (`--max-old-space-size`), V8 used heap.                                            |
+| `publisher_memory_backpressure_active`, `_activations_total`                                  | Gauge, counter | Current governor state and historical activations.                                                              |
+| `http_server_requests_total{http.status_code}`                                                | Counter        | Coarse 413/503/504 totals — pair with the dedicated counters above for per-cause breakdown.                     |
 
 ## Theming
 

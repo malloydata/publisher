@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import {
+   getPersistCollisionEnforce,
    getPublisherConfig,
    getPublisherConfigDir,
    type PublisherConfig,
@@ -1492,5 +1493,43 @@ describe("getPublisherConfigDir", () => {
       // server root, which is what this did before the anchor moved.
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
       expect(getPublisherConfigDir(testRoot)).toBeNull();
+   });
+});
+
+describe("PERSIST_COLLISION_ENFORCE", () => {
+   // The flag decides whether a persist-target collision blocks a publish, so
+   // mis-parsing it leaves the check warn-only — failing open in exactly the
+   // direction it exists to prevent. An ad-hoc `=== "true"` did that for `1`,
+   // `yes` and `on`.
+   const prev = process.env.PERSIST_COLLISION_ENFORCE;
+   afterEach(() => {
+      if (prev === undefined) delete process.env.PERSIST_COLLISION_ENFORCE;
+      else process.env.PERSIST_COLLISION_ENFORCE = prev;
+   });
+
+   it("defaults to warn-only when unset or empty", () => {
+      delete process.env.PERSIST_COLLISION_ENFORCE;
+      expect(getPersistCollisionEnforce()).toBe(false);
+      process.env.PERSIST_COLLISION_ENFORCE = "   ";
+      expect(getPersistCollisionEnforce()).toBe(false);
+   });
+
+   it("enforces for every spelling of true an operator might use", () => {
+      for (const raw of ["true", "TRUE", " True ", "1", "yes", "on"]) {
+         process.env.PERSIST_COLLISION_ENFORCE = raw;
+         expect(getPersistCollisionEnforce()).toBe(true);
+      }
+   });
+
+   it("stays warn-only for every spelling of false", () => {
+      for (const raw of ["false", "FALSE", "0", "no", "off"]) {
+         process.env.PERSIST_COLLISION_ENFORCE = raw;
+         expect(getPersistCollisionEnforce()).toBe(false);
+      }
+   });
+
+   it("throws on a value that is neither, rather than guessing", () => {
+      process.env.PERSIST_COLLISION_ENFORCE = "enabled";
+      expect(() => getPersistCollisionEnforce()).toThrow(/expected a boolean/i);
    });
 });

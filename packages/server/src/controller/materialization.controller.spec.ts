@@ -128,6 +128,68 @@ describe("MaterializationController.createMaterialization validation", () => {
       });
    });
 
+   it("preserves the storage `destination` on a build instruction", async () => {
+      // Regression: `destination` is the orchestrated `storage=` axis. Dropping it
+      // here silently downgrades an orchestrated build to a colocated
+      // build, so it never materializes into the storage destination.
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+                  realization: "COPY",
+                  destination: "lake",
+               },
+            ],
+         },
+      });
+      expect(parsed.buildInstructions).toEqual([
+         {
+            sourceEntityId: "b2",
+            sourceID: undefined,
+            materializedTableId: "mt-2",
+            physicalTableName: "downstream_v1",
+            realization: "COPY",
+            destination: "lake",
+         },
+      ]);
+   });
+
+   it("preserves the optional `connectionName` on a manifest reference", async () => {
+      // Regression: `connectionName` (added by #904) lets the seed loop dialect-
+      // quote the referenced upstream for a case-folding engine. Dropping it here
+      // silently reverts to an unquoted seed — the same manual-copy drift that
+      // dropped BuildInstruction.destination.
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+                  realization: "COPY",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: "b1",
+                  physicalTableName: "upstream_table",
+                  connectionName: "sf",
+               },
+            ],
+         },
+      });
+      expect(parsed.referenceManifest).toEqual([
+         {
+            sourceEntityId: "b1",
+            physicalTableName: "upstream_table",
+            connectionName: "sf",
+         },
+      ]);
+   });
+
    it("rejects a referenceManifest entry missing a required field", async () => {
       const { controller } = build();
       await expect(

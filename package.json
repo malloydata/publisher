@@ -28,7 +28,8 @@
     "test:server": "cd packages/server && NODE_ENV=test bun run test",
     "test:skills": "cd packages/skills && bun run test",
     "test:create-malloy-package": "cd packages/create-malloy-package && bun run test",
-    "test": "NODE_ENV=test bun run test:server && bun run test:skills && bun run test:create-malloy-package",
+    "test:hammer": "bun test hammer/lib",
+    "test": "NODE_ENV=test bun run test:server && bun run test:skills && bun run test:create-malloy-package && bun run test:hammer",
     "generate-api-types:sdk": "cd packages/sdk && bun run generate-api-types",
     "generate-api-types:server": "cd packages/server && bun run generate-api-types",
     "generate-api-types": "bun run generate-api-types:sdk && bun run generate-api-types:server",
@@ -89,10 +90,10 @@
   "resolutions": {
     "pg": "8.7.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.423",
+    "@malloydata/malloy-interfaces": "^0.0.426",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.423",
-    "@malloydata/malloy-filter": "^0.0.423",
-    "@malloydata/malloy-tag": "^0.0.423"
+    "@malloydata/malloy-query-builder": "^0.0.426",
+    "@malloydata/malloy-filter": "^0.0.426",
+    "@malloydata/malloy-tag": "^0.0.426"
   }
 }

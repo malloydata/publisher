@@ -679,6 +679,28 @@ export class EnvironmentStore {
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
                         );
+                        // Re-establish serve routing when a package loads, from
+                        // its latest successful materialization — so serving
+                        // survives a restart, not only a fresh build. The full
+                        // entry map is returned; the environment splits it by
+                        // tier (colocated + storage=) in
+                        // rebindServeBindingsFromLocalStore.
+                        const envId = dbEnvironment.id;
+                        environmentInstance.setStorageBindingResolver(
+                           async (packageName) => {
+                              const runs =
+                                 await repository.listMaterializations(
+                                    envId,
+                                    packageName,
+                                 );
+                              const latest = runs.find(
+                                 (m) =>
+                                    m.status === "MANIFEST_FILE_READY" &&
+                                    m.manifest?.entries,
+                              );
+                              return latest?.manifest?.entries ?? {};
+                           },
+                        );
 
                         // Get packages from database
                         const packages = await repository.listPackages(
