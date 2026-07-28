@@ -24,7 +24,7 @@
 
 import type { components } from "../api";
 import {
-   queryMetadataPortabilityWarnings,
+   queryMetadataAdvisoryWarnings,
    queryMetadataViolations,
    type QueryMetadata,
 } from "./query_metadata";
@@ -60,7 +60,7 @@ function metadataWarnings(
    if (!metadata) return [];
    return [
       ...queryMetadataViolations(metadata),
-      ...queryMetadataPortabilityWarnings(metadata),
+      ...queryMetadataAdvisoryWarnings(metadata),
    ].map((message) => ({
       // The level is in the message because a reader needs to know WHICH
       // declaration to edit, and an inherited property has more than one.

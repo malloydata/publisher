@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+   CONTEXT_SHED_ORDER,
    MAX_PROPERTIES,
    MAX_PROPERTY_VALUE_LENGTH,
    mergeQueryMetadata,
@@ -7,7 +8,8 @@ import {
    parseQueryClass,
    parseSuppliedQueryMetadata,
    queryContextProperties,
-   queryMetadataPortabilityWarnings,
+   RESERVED_CONTEXT_PROPERTIES,
+   queryMetadataAdvisoryWarnings,
    queryMetadataViolations,
 } from "./query_metadata";
 
@@ -70,31 +72,29 @@ describe("queryMetadataViolations", () => {
    });
 });
 
-describe("queryMetadataPortabilityWarnings", () => {
+describe("queryMetadataAdvisoryWarnings", () => {
    it("warns when a declaration leaves no room for the server context", () => {
       // 20 is the size of the whole bag, and the server adds its own on top, so
       // a declaration that fills the contract quietly loses properties later.
       const full: Record<string, string> = {};
       for (let i = 0; i < MAX_PROPERTIES; i++) full[`p${i}`] = "v";
       expect(
-         queryMetadataPortabilityWarnings(full).some((w) =>
+         queryMetadataAdvisoryWarnings(full).some((w) =>
             w.includes("the server adds up to"),
          ),
       ).toBe(true);
-      expect(queryMetadataPortabilityWarnings({ team: "finance" })).toEqual([]);
+      expect(queryMetadataAdvisoryWarnings({ team: "finance" })).toEqual([]);
    });
 
    it("flags a name BigQuery will silently drop", () => {
       // Legal per the contract, kept by every other backend, gone on BigQuery.
-      expect(
-         queryMetadataPortabilityWarnings({ _team: "finance" }),
-      ).toHaveLength(1);
-      expect(
-         queryMetadataPortabilityWarnings({ "2team": "finance" }),
-      ).toHaveLength(1);
-      expect(queryMetadataPortabilityWarnings({ team2: "finance" })).toEqual(
-         [],
+      expect(queryMetadataAdvisoryWarnings({ _team: "finance" })).toHaveLength(
+         1,
       );
+      expect(
+         queryMetadataAdvisoryWarnings({ "2team": "finance" }),
+      ).toHaveLength(1);
+      expect(queryMetadataAdvisoryWarnings({ team2: "finance" })).toEqual([]);
    });
 });
 
@@ -120,6 +120,27 @@ describe("queryContextProperties", () => {
          query_id: "q-1",
       });
       expect(queryContextProperties({})).toEqual({});
+   });
+});
+
+describe("CONTEXT_SHED_ORDER", () => {
+   it("covers every context property exactly once", () => {
+      // The shed order also sizes the author budget the declaration warning
+      // uses, so a context property added to one list and not the other would
+      // quietly move that threshold.
+      const every = queryContextProperties({
+         queryClass: "interactive",
+         environment: "e",
+         package: "p",
+         version: "v",
+         model: "m.malloy",
+         source: "s",
+         trigger: "publish",
+         runId: "r",
+         correlationId: "q",
+      });
+      expect([...CONTEXT_SHED_ORDER].sort()).toEqual(Object.keys(every).sort());
+      expect(RESERVED_CONTEXT_PROPERTIES).toBe(Object.keys(every).length);
    });
 });
 

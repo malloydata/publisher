@@ -18,8 +18,11 @@
  *     that violates its contract, so an assembled bag that is one character too
  *     long would fail a customer query. {@link mergeQueryMetadata} therefore
  *     never throws: it sanitizes, truncates and drops, metering every drop.
- *     Declaration boundaries (publish, connection update, API request) use
- *     {@link queryMetadataViolations} instead and fail fast with a message.
+ *     Declaration boundaries — a publish, a connection update, an API request —
+ *     use {@link queryMetadataViolations} instead and fail fast with a message.
+ *     Config LOAD is the exception: a connection default that violates the
+ *     contract warns, because a tag must never be the reason an environment
+ *     refuses to come up.
  */
 
 import type { QueryMetadata } from "@malloydata/malloy";
@@ -129,18 +132,18 @@ export function queryMetadataViolations(raw: unknown): string[] {
 }
 
 /**
- * Advisory notes about a conforming bag: things no backend rejects but one
- * quietly discards, so a declaration that will not do what it says is reported
- * rather than left to be discovered in a warehouse console.
+ * Advisory notes about a bag that satisfies the contract but still will not do
+ * what it says, so it is reported at declaration rather than discovered in a
+ * warehouse console. Two kinds today:
  *
- * BigQuery's label grammar needs a key that starts with a lowercase letter after
- * transformation; db-bigquery drops a key it cannot make valid (a leading digit
- * or underscore) while every other connector keeps it. Same declaration, present
- * on Snowflake, absent on BigQuery.
+ *  - **A backend quietly discards it.** BigQuery's label grammar needs a name
+ *    that starts with a lowercase letter after transformation; db-bigquery drops
+ *    one it cannot make valid while every other connector keeps it. Same
+ *    declaration, present on Snowflake, absent on BigQuery.
+ *  - **The server will not have room for it.** The contract's cap covers the
+ *    whole bag, and the server's context is added on top of what was declared.
  */
-export function queryMetadataPortabilityWarnings(
-   meta: QueryMetadata,
-): string[] {
+export function queryMetadataAdvisoryWarnings(meta: QueryMetadata): string[] {
    const warnings: string[] = [];
    for (const name of Object.keys(meta)) {
       if (!/^[A-Za-z]/.test(name)) {
@@ -224,7 +227,7 @@ export function mintCorrelationId(): string {
  * they are the two that make the rest worth reading — the workload split, and
  * the id a response handed a caller as its join key.
  */
-const CONTEXT_SHED_ORDER = [
+export const CONTEXT_SHED_ORDER = [
    "version",
    "model",
    "source",

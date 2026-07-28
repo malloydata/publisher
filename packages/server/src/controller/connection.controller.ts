@@ -26,6 +26,7 @@ import {
    mintCorrelationId,
    parseQueryClass,
    parseSuppliedQueryMetadata,
+   queryMetadataViolations,
    type QueryClass,
    type QueryMetadata,
 } from "../service/query_metadata";
@@ -119,6 +120,20 @@ function validateAdminAuthoredConnection(
       validateDuckdbApiSurface(connectionConfig);
    } catch (error) {
       throw new BadRequestError((error as Error).message);
+   }
+
+   // The connection is the one metadata layer whose author is right here, so it
+   // is the one that can be told. A property the contract rejects (a hyphen in
+   // `cost-centre` is the natural spelling and the first thing anyone tries)
+   // would otherwise be dropped at dispatch and only ever surface as a metric —
+   // every statement on the connection missing the property its operator
+   // believes they configured. Config LOAD warns instead of throwing (see
+   // assembleEnvironmentConnections): a tag must never fail an environment.
+   const violations = queryMetadataViolations(connectionConfig.queryMetadata);
+   if (violations.length > 0) {
+      throw new BadRequestError(
+         `Connection "${connectionName}" queryMetadata is invalid: ${violations.join("; ")}`,
+      );
    }
 }
 

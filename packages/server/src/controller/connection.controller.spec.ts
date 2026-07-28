@@ -60,6 +60,41 @@ function buildController(
    return { controller, runSQL, assertCanAdmitQuery };
 }
 
+describe("ConnectionController connection queryMetadata", () => {
+   afterEach(() => sinon.restore());
+
+   it("rejects a connection default the contract cannot render", async () => {
+      // The connection is the one metadata layer whose author is right here, so
+      // it is the one that can be told. `cost-centre` is the natural spelling
+      // and would otherwise be dropped at dispatch, leaving every statement on
+      // the connection missing the property its operator configured.
+      const { controller } = buildController(sinon.stub().resolves());
+      await expect(
+         controller.addConnection("env", "warehouse", {
+            name: "warehouse",
+            type: "postgres",
+            queryMetadata: { "cost-centre": "eng" },
+         }),
+      ).rejects.toThrow(/queryMetadata is invalid/);
+   });
+
+   it("accepts a conforming connection default", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      const addConnection = sinon.stub().resolves();
+      (
+         controller as unknown as {
+            connectionService: { addConnection: sinon.SinonStub };
+         }
+      ).connectionService = { addConnection } as never;
+      await controller.addConnection("env", "warehouse", {
+         name: "warehouse",
+         type: "postgres",
+         queryMetadata: { cost_centre: "eng" },
+      });
+      expect(addConnection.calledOnce).toBe(true);
+   });
+});
+
 describe("ConnectionController.getConnectionQueryData row cap", () => {
    const originalEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
 
