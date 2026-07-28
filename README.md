@@ -76,6 +76,10 @@ before you have wired up anything of your own. To start from one of your own fil
 npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
 ```
 
+That path is relative to the directory you run the command in, so either move your file there first
+or point at wherever it already lives. Either way the scaffolder copies it into the package, so the
+original stays where it is.
+
 The `--` is required. Without it, `npm create` reads `--data` as one of its own options and only the
 filename reaches the scaffolder, as a stray argument, so it stops.
 
