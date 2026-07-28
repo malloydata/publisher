@@ -35,13 +35,15 @@
 // carries an id.
 //
 // It does NOT tell you which sheet you are looking at. With no `sheet =`,
-// read_xlsx reads the first one, and a workbook whose first sheet is a cover
-// page or a notes tab will hand you a plausible-looking answer about the wrong
-// sheet. To see the real names, ask for one you know is wrong: DuckDB refuses
-// and names the closest real sheet back at you, which is the quickest way to
-// learn them.
+// read_xlsx reads the first one and says nothing about it, so a workbook whose
+// first sheet is a cover page or a notes tab hands you a plausible-looking
+// answer about the wrong sheet. There is no function that lists the sheets, so
+// if the workbook has more than one tab, take the name from the tabs along the
+// bottom in Excel and pass `sheet = '...'`.
 //
-//   sheet = 'zzz'   ->   Sheet "zzz" not found ... Did you mean: "Sales Data"
+// A name that does not exist fails loudly, which is safe, but do not use it to
+// go fishing: the error suggests at most one sheet and it picks by spelling, so
+// it can name the tab nearest your typo rather than the one holding your data.
 //
 // STEP 2: read it properly. Name the sheet and the range so the header is found,
 // AND filter the decoration back out, because an explicit range reads every row
