@@ -444,6 +444,21 @@ function validateConnectionShape(connection: ApiConnection): void {
                `Storage bucketUrl is required for DuckLake: ${connection.name}`,
             );
          }
+         // metadataSchema is optional, but when present it reaches the ATTACH as a
+         // quoted string literal AND the catalog-format preflight as a bare
+         // identifier. Rather than escape one value for two grammars, restrict it
+         // to a plain identifier here — a deterministic config error, caught at
+         // load instead of at the connection's first attach.
+         if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
+            const schema = connection.ducklakeConnection.catalog.metadataSchema;
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+               throw new Error(
+                  `DuckLake catalog metadataSchema must be a plain identifier ` +
+                     `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
+                     `${connection.name}`,
+               );
+            }
+         }
          break;
       case "trino":
          if (!connection.trinoConnection) {

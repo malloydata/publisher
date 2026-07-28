@@ -671,4 +671,50 @@ describe("ducklake shape validation", () => {
          /Storage bucketUrl is required for DuckLake/i,
       );
    });
+
+   // metadataSchema reaches TWO grammars: a quoted string literal in the ATTACH,
+   // and a bare identifier in the catalog-format preflight's table reference.
+   // Restricting it to a plain identifier at load is what makes both safe, so
+   // these pin the accept/reject boundary rather than trusting escaping.
+   const withSchema = (metadataSchema: unknown): ApiConnection =>
+      ({
+         ...valid,
+         ducklakeConnection: {
+            ...valid.ducklakeConnection,
+            catalog: {
+               ...valid.ducklakeConnection!.catalog,
+               metadataSchema,
+            },
+         },
+      }) as ApiConnection;
+
+   it("accepts an absent metadataSchema", () => {
+      // Optional: absence keeps DuckLake's default schema, the prior behavior.
+      expect(() =>
+         assembleEnvironmentConnections([valid], "/tmp/env"),
+      ).not.toThrow();
+   });
+
+   it("accepts a plain identifier metadataSchema", () => {
+      for (const ok of ["org_a", "_private", "Lake1", "a"]) {
+         expect(() =>
+            assembleEnvironmentConnections([withSchema(ok)], "/tmp/env"),
+         ).not.toThrow();
+      }
+   });
+
+   it("rejects a metadataSchema that is not a plain identifier", () => {
+      for (const bad of [
+         "foo'; DROP TABLE x; --",
+         "has space",
+         "dotted.name",
+         "1leading_digit",
+         "",
+         '"quoted"',
+      ]) {
+         expect(() =>
+            assembleEnvironmentConnections([withSchema(bad)], "/tmp/env"),
+         ).toThrow(/metadataSchema must be a plain identifier/i);
+      }
+   });
 });

@@ -477,21 +477,33 @@ function runSQLRows(result: unknown): Record<string, unknown>[] {
  * the fixed name (which would make every later preflight for this connection
  * fail its ATTACH with "already exists" and silently skip), and so two
  * concurrent first-touch lookups can't cross-DETACH each other.
+ *
+ * {@link metadataSchema} must be the catalog's configured
+ * `catalog.metadataSchema`, because `ducklake_metadata` lives in that schema
+ * rather than the catalog connection's default one. Getting this wrong is not
+ * loud: the read would simply miss, the catch below would log and return, and the
+ * range check would stop protecting precisely the catalogs that set the option.
  */
 let ducklakePreflightSeq = 0;
 async function preflightDuckLakeCatalogFormat(
    connection: DuckDBConnection,
    dbName: string,
    pgConnString: string,
+   metadataSchema?: string,
 ): Promise<void> {
    const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
+   // Identifier position, not a string literal — so this relies on the
+   // config-load validation restricting the schema to a plain identifier.
+   const metadataRef = metadataSchema
+      ? `${tempDb}.${metadataSchema}.ducklake_metadata`
+      : `${tempDb}.ducklake_metadata`;
    let catalogFormat: string | undefined;
    try {
       await connection.runSQL(
          `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDb} (TYPE postgres, READ_ONLY);`,
       );
       const result = await connection.runSQL(
-         `SELECT value FROM ${tempDb}.ducklake_metadata WHERE key = 'version' LIMIT 1;`,
+         `SELECT value FROM ${metadataRef} WHERE key = 'version' LIMIT 1;`,
       );
       const value = runSQLRows(result)[0]?.value;
       catalogFormat = typeof value === "string" ? value : undefined;
@@ -640,13 +652,31 @@ async function attachDuckLakeWithMode(
    );
    const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
    logger.info(`escapedBucketUrl: ${escapedBucketUrl}`);
+   // Optional metadata schema: which schema in the catalog database holds this
+   // DuckLake's `ducklake_*` tables. Absent keeps DuckLake's default (the catalog
+   // connection's default schema), so the emitted command is unchanged for every
+   // existing config. Validated to a plain identifier at config load, because it
+   // reaches a quoted literal here and an identifier position in the preflight.
+   const metadataSchema = ducklakeConfig.catalog.metadataSchema;
    // Range-preflight the catalog's recorded format version so an unsupported
-   // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500.
-   await preflightDuckLakeCatalogFormat(connection, dbName, pgConnString);
+   // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500. The
+   // schema must be threaded through: the preflight reads `ducklake_metadata`, so
+   // when the metadata does not live in the catalog's default schema an unqualified
+   // read misses it — and the preflight fails SOFT (logs and returns), so the range
+   // check would silently stop protecting exactly the catalogs using this option.
+   await preflightDuckLakeCatalogFormat(
+      connection,
+      dbName,
+      pgConnString,
+      metadataSchema,
+   );
    // READ_ONLY is stated explicitly; read-write omits the flag (DuckLake's
    // default is writable). AUTOMATIC_MIGRATION is never set in either mode.
    const readOnlyClause = options.readOnly ? ", READ_ONLY true" : "";
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause});`;
+   const metadataSchemaClause = metadataSchema
+      ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
+      : "";
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
    logger.info(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
