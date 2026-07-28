@@ -4,16 +4,11 @@ name: create-malloy-package
 # release.yml bumps sdk, app, and server in lockstep and is deliberately not used
 # here: a scaffolder change should not need a server release.
 
+# Run on demand only. The package's tests run in build.yml on every PR, so this
+# workflow exists solely to publish, which should never happen automatically on
+# a push or a PR. A follow-up wires it into the Create Release workflow so a
+# single release triggers all packages (Sagar review, PR #926).
 on:
-  push:
-    branches: [main]
-    paths:
-      - "packages/create-malloy-package/**"
-      - ".github/workflows/create-malloy-package-npm.yml"
-  pull_request:
-    paths:
-      - "packages/create-malloy-package/**"
-      - ".github/workflows/create-malloy-package-npm.yml"
   workflow_dispatch:
 
 env:
@@ -169,6 +164,31 @@ jobs:
           fi
           echo "::notice title=Skills dep::$SKILLS_RANGE resolves to $(echo "$RESOLVED" | tail -n 1) on npm"
 
+      # "Read version" takes the version straight from package.json and never
+      # asks the registry, so a dispatch that forgot the bump gets all the way
+      # to `npm publish` before dying with EPUBLISHCONFLICT. Ask up front, for
+      # the same reason the step above does.
+      - name: Verify this version is not already published
+        run: |
+          # Read the name rather than hardcoding it: publish uses whatever
+          # package.json says, so a hardcoded name would survive a rename and
+          # quietly check a package nobody is publishing.
+          NAME="$(node -p "require('./packages/create-malloy-package/package.json').name")"
+          SPEC="$NAME@${{ steps.version_step.outputs.current_version }}"
+          # npm view exits non-zero with an E404 both for a version that does not
+          # exist and for a package that does not exist at all, and either one
+          # means this version is free. Any other failure means the registry did
+          # not answer, which is not the same as a green light.
+          if PUBLISHED="$(npm view "$SPEC" version 2>&1)"; then
+            echo "::error title=Version::$SPEC is already published; bump the version in packages/create-malloy-package/package.json"
+            exit 1
+          elif [[ "$PUBLISHED" != *E404* ]]; then
+            echo "$PUBLISHED"
+            echo "::error title=Version::could not ask npm whether $SPEC is taken"
+            exit 1
+          fi
+          echo "::notice title=Version::$SPEC is not on npm yet"
+
       # Read the dependency ranges back out of a real tarball rather than trusting
       # the two steps above, since an npm version cannot be republished. With
       # --publish-ready this re-asks the registry as well, using the ranges the
@@ -178,13 +198,21 @@ jobs:
 
       # Trusted publishing (OIDC); there is no NPM_TOKEN fallback in this repo.
       #
-      # Both prerequisites are already met, so no manual publish is needed:
-      # `create-malloy-package` exists on npm (0.0.0, a placeholder that
-      # scaffolds nothing, published 2026-07-23 to claim the name), and
-      # @malloy-publisher/skills is published (0.1.0), so the sed above resolves
-      # to a real range. This job publishes 0.0.1 on dispatch, and because 0.0.1
-      # sorts above the placeholder and carries no hyphen, it takes over `latest`
-      # and becomes what `npm create malloy-package` resolves.
+      # The scoped name's FIRST publish was manual, by an @malloy-publisher
+      # owner, because npm will not accept a trusted-publisher entry until the
+      # package exists: 0.0.1 went up on 2026-07-24 with the workspace:* rewrite
+      # applied by hand and scripts enabled. Every release after that one is a
+      # dispatch of this workflow, which needs the trusted-publisher entry to
+      # exist on npm; confirm it does before the first dispatch.
+      # @malloy-publisher/skills is published, so the sed above resolves to a
+      # real range for the automated path. Any 0.0.x with no hyphen takes over
+      # `latest`, which is what `npm create @malloy-publisher/malloy-package`
+      # resolves.
+      #
+      # The old unscoped `create-malloy-package` was unpublished 38 seconds after
+      # that publish, not deprecated. An unpublished name cannot carry a
+      # deprecation message, so `npm create malloy-package` returns a bare E404
+      # that points nowhere, and the name is free for anyone to claim.
       #
       # The trusted-publisher entry must name THIS file,
       # create-malloy-package-npm.yml. npm allows one entry per package and

@@ -266,7 +266,7 @@ const BIND_HOST = "127.0.0.1";
  * and confirm the new version still honours --host. A generated workspace can
  * move itself off it by editing the scripts in its own package.json.
  */
-export const SERVER_VERSION = "0.0.231";
+export const SERVER_VERSION = "0.0.232";
 
 function startCommandFor(envName: string): string {
    return (
@@ -458,7 +458,7 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
             `If you passed --force to \`npm create\`, npm read it as one of its ` +
             `own settings and it never reached this tool. Options need a \`--\` ` +
             `in front of them there:\n` +
-            `  npm create malloy-package ${name} -- --force`,
+            `  npm create @malloy-publisher/malloy-package ${name} -- --force`,
       );
    }
 
