@@ -10,6 +10,7 @@ import {
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    createIsolatedBuildSession,
+   createTableAndDescribe,
    dropStorageTable,
    dropStorageTableSql,
    passthroughSourceType,
@@ -73,6 +74,65 @@ describe("assertStorageServeShapeCompiles (build-time servability gate)", () => 
             ],
          }),
       ).resolves.toBeUndefined();
+   });
+});
+
+describe("serve-shape gate shares one session across builds", () => {
+   // The gate compiles against ONE process-wide session rather than a fresh
+   // DuckDB instance per build (~5.9MB/build of unreclaimed RSS on the
+   // production image). Sharing is safe on paper — the gate does no ATTACH and
+   // establishes no credentials — but a shared session means a shared CATALOG,
+   // and every compile declares a virtual source into it.
+   //
+   // The failure that would matter is a false PASS: a later shape satisfied by
+   // declarations an earlier compile left behind. No end-to-end scenario reaches
+   // it, because each hammer scenario gets a fresh publisher and so never
+   // compiles many shapes through one session.
+   const valid = (i: number) => ({
+      destinationName: "lake",
+      sourceName: `daily_${i}`,
+      virtualHandle: `se_${i}`,
+      physicalTableName: `daily_${i}__mabc`,
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "total_amount", type: "DOUBLE" },
+      ],
+   });
+
+   it("still refuses an unservable shape after many successful compiles", async () => {
+      for (let i = 0; i < 25; i++) {
+         await assertStorageServeShapeCompiles(valid(i));
+      }
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(99), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+      await expect(
+         assertStorageServeShapeCompiles({
+            ...valid(98),
+            schema: [{ name: "a", type: "NOT_A_REAL_TYPE" }],
+         }),
+      ).rejects.toThrow(/cannot be served/i);
+   });
+
+   it("a refusal does not poison the session for later valid shapes", async () => {
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(31), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
+      await expect(
+         assertStorageServeShapeCompiles(valid(32)),
+      ).resolves.toBeUndefined();
+   });
+
+   it("reusing one handle with a DIFFERENT schema sees the new schema", async () => {
+      // The sharpest false-pass shape: if the first declaration lingered, the
+      // second would compile against stale columns and wrongly pass.
+      await assertStorageServeShapeCompiles({
+         ...valid(41),
+         schema: [{ name: "kept", type: "BIGINT" }],
+      });
+      await expect(
+         assertStorageServeShapeCompiles({ ...valid(41), schema: [] }),
+      ).rejects.toThrow(/cannot be served/i);
    });
 });
 
@@ -306,3 +366,70 @@ describe.skipIf(process.platform === "win32")(
       });
    },
 );
+
+describe("createTableAndDescribe (schema read-back window)", () => {
+   /** A session that CTASs fine and fails the read-back, recording every stmt. */
+   const sessionThatFailsDescribe = (opts: { dropFails?: boolean } = {}) => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql);
+            if (/^DESCRIBE/i.test(sql.trim())) throw new Error("describe boom");
+            if (/^DROP TABLE/i.test(sql.trim()) && opts.dropFails) {
+               throw new Error("drop boom");
+            }
+            return { rows: [] };
+         },
+      } as unknown as DuckDBConnection;
+      return { session, issued };
+   };
+
+   it("drops the just-created table when the schema read-back fails", async () => {
+      // The CTAS has committed by now and the caller records nothing until this
+      // returns — so without the drop the table is reachable by neither the
+      // failed-run reclaim nor manifest GC, which only drop names they recorded.
+      const { session, issued } = sessionThatFailsDescribe();
+
+      await expect(
+         createTableAndDescribe(session, `"lake"."t"`, "SELECT 1"),
+      ).rejects.toThrow(/describe boom/);
+
+      expect(issued.some((s) => /^CREATE OR REPLACE TABLE/i.test(s))).toBe(
+         true,
+      );
+      expect(
+         issued.some((s) => /^DROP TABLE IF EXISTS "lake"\."t"/i.test(s)),
+      ).toBe(true);
+   });
+
+   it("surfaces the read-back failure, not a failure of the cleanup drop", async () => {
+      // The DESCRIBE error is the diagnosis; a drop that also fails must not
+      // replace it (the leak is then logged and still surfaced by the warning).
+      const { session } = sessionThatFailsDescribe({ dropFails: true });
+
+      await expect(
+         createTableAndDescribe(session, `"lake"."t"`, "SELECT 1"),
+      ).rejects.toThrow(/describe boom/);
+   });
+
+   it("issues no drop on the happy path", async () => {
+      const issued: string[] = [];
+      const session = {
+         runSQL: async (sql: string) => {
+            issued.push(sql);
+            return {
+               rows: [{ column_name: "a", column_type: "VARCHAR" }],
+            };
+         },
+      } as unknown as DuckDBConnection;
+
+      const schema = await createTableAndDescribe(
+         session,
+         `"lake"."t"`,
+         "SELECT 1",
+      );
+
+      expect(schema).toEqual([{ name: "a", type: "VARCHAR" }]);
+      expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
+   });
+});

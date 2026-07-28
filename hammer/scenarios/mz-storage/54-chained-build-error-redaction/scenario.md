@@ -27,7 +27,9 @@ chained-failure error does not leak.
 catalog breaks reference resolution first, and a creds-only break would hit the
 shared test-container role, so the two can't be isolated black-box. That branch is
 pinned by a seam-level unit test instead (`materialization_service.spec.ts`,
-"redacts connection secrets in the chained build refusal").
+"redacts an INFRA chained-build failure, and does not call it a refusal"), which
+also pins that an attach failure is reported as infrastructure rather than as the
+strict-upstreams refusal — those are different situations and the message says so.
 
 ## Connection cbelake (type=ducklake)
 
@@ -97,3 +99,6 @@ excludes: password=${pg.password}
 > reference-miss) failure is clean. Reaching the RW-attach failure needs a
 > per-scenario Postgres role the harness doesn't have yet — if it gains one,
 > revisit and assert the attach failure end-to-end here instead of at the unit seam.
+> The seam now carries more than redaction: it also pins that an attach failure is
+> an infra failure, not the strict refusal, so an end-to-end version should assert
+> both.

@@ -4,7 +4,7 @@ tags: serve-correctness
 package: dt
 ---
 
-# Data-type & NULL round-trip through DuckLake
+# A materialized source serves back exactly what it captured, types and NULLs included
 
 A materialized source must serve back exactly what it captured — across column
 types and NULLs, not just aggregated numbers. This projects a row set with an

@@ -4,7 +4,7 @@ tags: orchestration, chained
 package: rmr
 ---
 
-# Reference-manifest reuse: a downstream reads a prior-run upstream table
+# A downstream builds against a prior run's upstream table instead of rebuilding the chain
 
 The orchestrator can build a downstream persist source WITHOUT rebuilding its
 upstream, by supplying the upstream's already-built table as a `referenceManifest`

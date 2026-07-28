@@ -49,7 +49,7 @@ import {
 import { errMessage, ignoreDotfiles } from "../utils";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
-import { computePackageBuildPlan } from "./build_plan";
+import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
@@ -159,6 +159,16 @@ export class Package {
    // and would be a silent no-op (served live). Surfaced as an operator warning
    // and hard-refused at build. See build_plan.detectDroppedPersistSources.
    private droppedPersistSources: { name: string; modelPath: string }[] = [];
+   // Which sources may be served from a materialized table, decided at compile
+   // (build_plan.collectSourceEligibility) because that is where the compiled
+   // sources exist. Consulted when binding serve bindings, which deliberately
+   // does not recompile.
+   //
+   // `undefined` means NOT KNOWN — the plan compute failed (it does live schema
+   // RPCs, so a warehouse blip is the ordinary way) and the package loaded
+   // anyway. Distinct from "nothing is eligible", and refused the same way: an
+   // unknown answer must not read as consent. See bindStorageServeBindings.
+   private sourceEligibility: SourceEligibility | undefined = undefined;
    // Non-fatal render-tag findings aggregated across the package's models (each
    // tagged with its model path), surfaced read-only on
    // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
@@ -551,12 +561,18 @@ export class Package {
       // failure is logged, not fatal — the package still serves; the plan is
       // just absent. Recompiles the models (duplicate schema RPCs vs the worker
       // compile); accepted for now.
+      //
+      // A failure also leaves `sourceEligibility` unknown, which refuses every
+      // storage serve binding until a load succeeds (see
+      // bindStorageServeBindings). Serving live is a slower answer, not a wrong
+      // one; admitting an unexamined binding would be a wrong one.
       try {
          const buildPlanStart = Date.now();
-         const { plan, droppedPersistSources } =
+         const { plan, droppedPersistSources, sourceEligibility } =
             await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
+         pkg.sourceEligibility = sourceEligibility;
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
          logger.warn(
@@ -836,10 +852,59 @@ export class Package {
       this.recordManifestBinding(entries);
    }
 
+   /**
+    * Bind the storage serve bindings a host vouches for — minus any whose source
+    * this package's own eligibility gate refuses.
+    *
+    * The host is authoritative about WHICH TABLE backs a source; it owns
+    * generations and rollout. It cannot be authoritative about WHETHER a source
+    * may be served from a frozen table at all, because that is decided by
+    * compiling the model, which the host does not do. A `given`-referencing
+    * source is the case that matters: a given binds per query for row-level
+    * access control, so one table built once and served to everyone hands every
+    * caller the rows filtered for whoever built it.
+    *
+    * A manifest can name such a source without anyone being careless — a source
+    * that was given-free when it was built acquires a `given` on the next model
+    * edit, and the old manifest still points at a real table until convergence
+    * catches up.
+    *
+    * Eligibility must be established POSITIVELY: a binding is honored only if its
+    * source is in the eligible set. Two states would otherwise pass as consent,
+    * and both are reachable without anyone forging anything —
+    *  - the plan compute failed, so nothing was examined at all;
+    *  - the source never reached the plan, because Malloy admits only
+    *    query-shaped sources as build roots and a `#@ persist` on a filtered
+    *    pass-through is dropped (see `droppedPersistSources`) — the same
+    *    row-level-access shape this gate exists for.
+    *
+    * Refused bindings are DROPPED, not fatal: that source serves live, which is
+    * always correct because the tier is a performance tier. The rest bind.
+    */
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
-      this.storageServeBindings = deriveServeBindings(entries);
+      const derived = deriveServeBindings(entries);
+      const eligibility = this.sourceEligibility;
+      const eligible = new Set(eligibility?.eligible ?? []);
+      const allowed = derived.filter((binding) => {
+         if (eligible.has(binding.sourceName)) return true;
+         const reason =
+            eligibility === undefined
+               ? "the package build plan could not be computed, so no source was examined for eligibility"
+               : (eligibility.refused[binding.sourceName] ??
+                 "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)");
+         logger.warn(
+            "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
+            {
+               packageName: this.packageName,
+               sourceName: binding.sourceName,
+               reason,
+            },
+         );
+         return false;
+      });
+      this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
    }
 

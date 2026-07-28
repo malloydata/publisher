@@ -541,10 +541,12 @@ export const getPersistStorageMode = (): PersistStorageMode => {
  * re-publishes of existing packages. Load is ALWAYS warn-only regardless — the
  * flag only governs whether publish rejects.
  */
-export const getPersistCollisionEnforce = (): boolean => {
-   const raw = process.env.PERSIST_COLLISION_ENFORCE;
-   return raw !== undefined && raw.trim().toLowerCase() === "true";
-};
+export const getPersistCollisionEnforce = (): boolean =>
+   // parseBoolEnv, not an ad-hoc === "true": an operator who writes `1` or `yes`
+   // has asked for the check to block, and an ad-hoc compare would silently leave
+   // it warn-only — the flag failing open in exactly the direction it exists to
+   // prevent. A typo throws at startup, like every other flag here.
+   parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;

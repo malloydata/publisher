@@ -47,7 +47,12 @@ export type EligibilityRefusalReason =
 export type ChainedStorageBuildOutcome =
    | "parent_reuse"
    | "inline_fallback"
-   | "strict_refused";
+   | "strict_refused"
+   // The parent-reuse attempt failed on infrastructure (attach, CTAS, the
+   // destination being unreachable) rather than on shape. Distinct from
+   // `inline_fallback` because it is an outage, not a modelling limit: the build
+   // fails rather than recomputing from raw against the same destination.
+   | "infra_failure";
 
 const resetHooks: (() => void)[] = [];
 
@@ -130,7 +135,7 @@ const scheduledFireCounter = lazyCounter(
 );
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
-   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback').",
+   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|'runtime_live_fallback').",
 );
 const storageBuildFailureCounter = lazyCounter(
    "publisher_storage_build_failures_total",
@@ -309,12 +314,16 @@ export function recordServeShapeTypeFallback(
  * Record a `storage=` serve-routing decision: `storage` = the query was served
  * from the materialized table via the virtual-source transform; `live_fallback`
  * = the transform was ineligible for this query (a refinement it can't
- * reproduce, an unbound source, mode not `on`) so it was served live. This hit
- * rate is the headline KPI of the storage tier — otherwise the fallback side is
- * only a DEBUG log.
+ * reproduce, an unbound source, mode not `on`) so it was served live;
+ * `runtime_live_fallback` = the query DID route to storage and the store then
+ * failed underneath it, and every binding's `freshnessFallback=live` allowed it
+ * to degrade. That last one is the operationally interesting label: it means the
+ * tier is broken while queries still succeed, which is invisible in the hit rate
+ * alone. This hit rate is the headline KPI of the storage tier — otherwise the
+ * fallback side is only a DEBUG log.
  */
 export function recordStorageServeRouting(
-   outcome: "storage" | "live_fallback",
+   outcome: "storage" | "live_fallback" | "runtime_live_fallback",
 ): void {
    storageServeRoutingCounter().add(1, { outcome });
 }

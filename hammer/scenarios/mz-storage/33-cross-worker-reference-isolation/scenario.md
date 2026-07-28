@@ -4,7 +4,7 @@ tags: orchestration, cluster
 package: xw
 ---
 
-# The negative case: a thin reference with NO resolution source fails loudly
+# A reference with nothing to resolve it fails loudly, never silently recomputing
 
 Cross-worker reuse DOES work when the orchestrator refreshes the manifest first
 (see `cross-worker-refreshed-manifest`). This scenario pins the complementary

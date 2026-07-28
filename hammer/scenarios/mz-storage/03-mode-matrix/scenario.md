@@ -4,7 +4,7 @@ tags: config, kill-switch
 package: b1
 ---
 
-# Mode matrix (the kill switch)
+# `PERSIST_STORAGE_MODE` governs building and serving independently
 
 One `storage=lake` package, three modes. `PERSIST_STORAGE_MODE` is a server-level
 setting fixed at startup, so each mode is a **separate publisher process** — the

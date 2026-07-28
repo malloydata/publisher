@@ -231,6 +231,14 @@ function walkForGiven(
  * still found — a join must not launder an authorize-gated source, matching the
  * transitive enforcement on the live serve path (#906). Any introspection or
  * parse failure is treated as "carries a gate" (fail closed).
+ *
+ * Deliberately separate from `Model.collectAllReachableGates`, which answers a
+ * different question: that walk collects gates to EVALUATE per request, and needs
+ * their expressions and the givens they reference. This one only needs to know
+ * whether any gate exists at all, at build time, with no request to evaluate
+ * against — so it is a generic fail-closed scan rather than a typed collection.
+ * They will not inherit each other's fixes; that is the trade accepted for
+ * keeping the build-time refusal independent of the serve-time evaluator.
  */
 function referencesAuthorize(persistSource: PersistSource): boolean {
    try {

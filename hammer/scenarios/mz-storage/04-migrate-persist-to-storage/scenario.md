@@ -4,7 +4,7 @@ tags: migration, serve-correctness
 package: emig
 ---
 
-# Migrate a persist source from in-warehouse to storage= (DuckLake)
+# Adding `storage=` migrates a built source to the new destination without a model rewrite
 
 Start with a plain `#@ persist` source (no `storage=`), served the in-warehouse
 way: materialized into the source warehouse and substituted by table name at

@@ -56,7 +56,7 @@
 import path from "path";
 import type { PersistStorageMode } from "./server";
 import { Rest } from "./rest";
-import { sleep } from "./util";
+import { log, sleep } from "./util";
 
 /** The default environment every scenario runs in unless a step says `(env=…)`. */
 const PRIMARY_ENV = "default";
@@ -76,6 +76,18 @@ interface Col {
 interface Table {
    cols: Col[];
    rows: string[][];
+}
+
+/** One `## Manifest` line: an entry a host would send, with its per-entry stamps. */
+interface ManifestEntrySpec {
+   src: string;
+   table: string;
+   dest: string;
+   /** The build plan has no id for this source; use the name as the handle. */
+   unplanned: boolean;
+   fallback?: string;
+   asof?: string;
+   fresh?: number;
 }
 
 // Server-facing steps carry an optional `env` (from `(env=…)`), selecting which
@@ -198,6 +210,14 @@ type Step =
         cites?: string;
      }
    | {
+        kind: "manifest";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        entries: ManifestEntrySpec[];
+     }
+   | {
         kind: "bind";
         pub?: string;
         env: string;
@@ -286,6 +306,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    bind: {
       attrs: ["bad", "empty", "clear", "from", "fresh", "asof", "fallback"],
    },
+   manifest: { attrs: ["pkg"] },
    restart: { attrs: ["init"] },
    hook: {},
 };
@@ -321,6 +342,7 @@ const SIDE_EFFECT_ONLY_STEPS = new Set([
    "publisher",
    "restart",
    "bind",
+   "manifest",
    "hook",
    "publish",
 ]);
@@ -804,6 +826,28 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             });
             break;
          }
+         case "manifest": {
+            // A host authoring a manifest BY HAND, rather than `## Bind` replaying
+            // one the publisher produced. That is a real consumer's flow — the
+            // orchestrator writes these — and the interesting cases are the ones
+            // the publisher would never generate itself: an entry for a source it
+            // refused to build, a stale generation, a table it does not own.
+            const entries = parseManifestBody(sec.body);
+            if (entries.length === 0) {
+               throw new Error(
+                  `${sec.header}: no entries — expected \`- <source> -> <table> @ <destination>\` lines`,
+               );
+            }
+            steps.push({
+               kind: "manifest",
+               pub,
+               env,
+               pkg: (attrs.pkg as string) ?? (arg.trim() || defaultPackage),
+               mode,
+               entries,
+            });
+            break;
+         }
          case "bind": {
             // Simulate the orchestrator binding a manifest: full = re-serve the
             // last build's manifest via manifestLocation; empty = a present-but-
@@ -1065,6 +1109,62 @@ function parseOrchestratedBody(body: string[]): {
       if (r) references.push({ src: r[1], from: r[2]?.trim() || undefined });
    }
    return { sources, references };
+}
+
+/**
+ * `- <source> -> <table> @ <destination> [(attr, …)]` lines for a hand-authored
+ * manifest. Per-entry attributes, because a host stamps a manifest entry by
+ * entry and the interesting forgeries are per entry:
+ *
+ * - `unplanned` — the package build plan does not know this source, so the step
+ *   cannot look up its `sourceEntityId` and uses the source name as the handle.
+ *   Say it out loud in the markdown: without the attribute an unknown source is
+ *   a typo and still throws.
+ * - `fallback=<live|stale_ok|fail>`, `asof=<iso>`, `fresh=<seconds>` — stamp the
+ *   freshness fields on THIS entry. `## Bind` stamps every entry with one value,
+ *   so a MIXED set is only expressible here — and mixed is the normal case for a
+ *   host, since it stamps per generation.
+ */
+function parseManifestBody(body: string[]): ManifestEntrySpec[] {
+   const out: ManifestEntrySpec[] = [];
+   for (const raw of body) {
+      // Split a trailing (…) off first so the destination match stays simple.
+      const line = raw.trim();
+      const withAttrs = line.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+      const head = withAttrs ? withAttrs[1] : line;
+      const attrs = withAttrs
+         ? withAttrs[2]
+              .split(",")
+              .map((a) => a.trim())
+              .filter(Boolean)
+         : [];
+      const m = head.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      if (!m) continue;
+      const entry: ManifestEntrySpec = {
+         src: m[1],
+         table: m[2],
+         dest: m[3],
+         unplanned: false,
+      };
+      for (const a of attrs) {
+         const [key, value] = a.includes("=")
+            ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]
+            : [a, undefined];
+         if (key === "unplanned" && value === undefined) entry.unplanned = true;
+         else if (key === "fallback" && value) entry.fallback = value;
+         else if (key === "asof" && value) entry.asof = value;
+         else if (key === "fresh" && value) entry.fresh = Number(value);
+         else
+            throw new Error(
+               `## Manifest: unknown attribute "${a}" on "${line}"`,
+            );
+      }
+      if (entry.fresh !== undefined && Number.isNaN(entry.fresh)) {
+         throw new Error(`## Manifest: fresh= must be a number on "${line}"`);
+      }
+      out.push(entry);
+   }
+   return out;
 }
 
 function parseBindings(body: string[]): { source: string; conn: string }[] {
@@ -1559,9 +1659,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       // bound to the step's environment. One server process serves every
       // configured environment, so an env-targeted step just rebinds the REST
       // client to that env against the same base URL.
+      // `env` here is the scenario-authored (logical) name; ctx maps it to the
+      // physical environment this scenario owns.
       const serverFor = async (pub?: string, env?: string): Promise<Rest> => {
          const base = pub ? ctx.restOf(pub) : await active();
-         const target = env ?? PRIMARY_ENV;
+         const target = ctx.envFor(env ?? PRIMARY_ENV);
          return target === base.env ? base : new Rest(base.baseUrl, target);
       };
       const modelPath = (pkg?: string, env?: string): string =>
@@ -1569,8 +1671,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             pkgKey(env ?? PRIMARY_ENV, pkg ?? parsed.defaultPackage),
          ) ?? `${parsed.defaultPackage}.malloy`;
 
+      // HAMMER_STEP_TIMING=1 reports every step slower than 500ms, so a scenario
+      // that is slow only inside a full run localizes itself without bisecting.
+      const stepTiming = process.env.HAMMER_STEP_TIMING === "1";
       for (const step of parsed.steps) {
          const checksBefore = assert.checks.length;
+         const stepStart = stepTiming ? performance.now() : 0;
          switch (step.kind) {
             case "model":
                await ctx.editPackageModel(
@@ -2029,6 +2135,65 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                }
                break;
             }
+            case "manifest": {
+               // Author the manifest a host would send, and bind it. The schema is
+               // copied from whichever CAPTURED entry already describes that
+               // physical table — a real build has to have produced it, which is
+               // what keeps the forged entry honest about the table's shape while
+               // being dishonest about which source may be served from it.
+               const rest = await serverFor(step.pub, step.env);
+               const captured = await rest.latestManifestEntries(step.pkg);
+               const ids = await rest.sourceEntityIds(step.pkg);
+               const entries: Record<string, unknown> = {};
+               for (const e of step.entries) {
+                  // `unplanned`: the plan has no id for this source, which is the
+                  // point — a host naming a source the publisher's plan dropped.
+                  // The handle only has to be stable, so the source name serves.
+                  const eid = e.unplanned ? e.src : ids[e.src];
+                  if (!eid) {
+                     throw new Error(
+                        `## Manifest: source "${e.src}" is not in ${step.pkg}'s build plan ` +
+                           `(planned: ${Object.keys(ids).join(", ") || "none"}). ` +
+                           `Add \`(unplanned)\` if that is the point of the scenario.`,
+                     );
+                  }
+                  if (e.unplanned && ids[e.src]) {
+                     throw new Error(
+                        `## Manifest: source "${e.src}" is marked \`(unplanned)\` but IS in ` +
+                           `${step.pkg}'s build plan — the scenario's premise no longer holds`,
+                     );
+                  }
+                  const schemaOf = Object.values(captured).find(
+                     (c) =>
+                        (c as { physicalTableName?: string })
+                           .physicalTableName === e.table,
+                  ) as { schema?: unknown } | undefined;
+                  if (!schemaOf?.schema) {
+                     throw new Error(
+                        `## Manifest: no captured schema for table "${e.table}" — ` +
+                           `a real build must have produced it before a manifest can name it`,
+                     );
+                  }
+                  entries[eid] = {
+                     sourceEntityId: eid,
+                     sourceName: e.src,
+                     physicalTableName: e.table,
+                     storageConnectionName: e.dest,
+                     schema: schemaOf.schema,
+                     ...(e.fallback ? { freshnessFallback: e.fallback } : {}),
+                     ...(e.asof ? { dataAsOf: e.asof } : {}),
+                     ...(e.fresh !== undefined
+                        ? { freshnessWindowSeconds: e.fresh }
+                        : {}),
+                  };
+               }
+               const uri = await ctx.writeManifest(
+                  `${step.pkg}-authored`,
+                  entries,
+               );
+               await rest.patchPackage(step.pkg, { manifestLocation: uri });
+               break;
+            }
             case "bind": {
                const rest = await serverFor(step.pub, step.env);
                if (step.variant === "clear") {
@@ -2183,6 +2348,14 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   `a cites:/excludes: key, or (rows=N), or it is not verifying anything`,
             );
          }
+         if (stepTiming) {
+            const took = performance.now() - stepStart;
+            if (took >= 500) {
+               log.info(
+                  `[${parsed.id}] step "${step.kind}" took ${(took / 1000).toFixed(1)}s`,
+               );
+            }
+         }
       }
 
       // Drain any async publishes the scenario didn't explicitly `## Await`, so a
@@ -2200,6 +2373,13 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       title: parsed.title,
       packages,
       sourceTables,
+      // Every mode this scenario will boot at, in order (see Scenario.modes).
+      modes: parsed.steps
+         .filter(
+            (s): s is Extract<Step, { kind: "publisher" }> =>
+               s.kind === "publisher",
+         )
+         .map((s) => s.mode),
       connections: parsed.connectionDecls,
       run,
    };

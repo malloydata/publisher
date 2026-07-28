@@ -283,4 +283,34 @@ run: daily -> { select: total }
       );
       expect(parsed.dataSeeds[0].data.rows).toEqual([["1"]]);
    });
+
+   it("reads per-entry ## Manifest attributes", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Manifest\n\n- a -> t_a @ lake (unplanned)\n- b -> t_b @ lake (fallback=live)\n- c -> t_c @ lake\n`,
+         "t",
+      );
+      const step = parsed.steps[0] as {
+         entries: { src: string; unplanned: boolean; fallback?: string }[];
+      };
+      expect(step.entries).toEqual([
+         { src: "a", table: "t_a", dest: "lake", unplanned: true },
+         {
+            src: "b",
+            table: "t_b",
+            dest: "lake",
+            unplanned: false,
+            fallback: "live",
+         },
+         { src: "c", table: "t_c", dest: "lake", unplanned: false },
+      ]);
+   });
+
+   it("rejects a misspelled ## Manifest attribute", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Manifest\n\n- a -> t_a @ lake (unplaned)\n`,
+            "t",
+         ),
+      ).toThrow(/unknown attribute "unplaned"/);
+   });
 });
