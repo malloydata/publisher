@@ -35,24 +35,46 @@ that holds the Parquet data. Publisher reaches it through DuckDB's `ducklake` ex
 ```
 
 - `catalog.postgresConnection` (**required**) — the Postgres catalog database.
+- `catalog.metadataSchema` — schema holding this catalog's `ducklake_*` metadata tables, passed to
+  `ATTACH` as `METADATA_SCHEMA`. Absent uses DuckLake's default (the catalog connection's default
+  schema, typically `public`). See [Several catalogs in one database](#several-catalogs-in-one-database).
 - `storage.bucketUrl` (**required**) — the object-storage data path.
 - `storage.s3Connection` **or** `storage.gcsConnection` — credentials for the data path.
+
+## Several catalogs in one database
+
+By default a DuckLake catalog keeps its `ducklake_*` metadata tables in the catalog connection's
+default schema, so two catalogs pointed at one database would share — and see — each other's
+metadata. Give each its own `catalog.metadataSchema` and they stay separate; DuckLake creates the
+schema on first attach if it does not exist.
+
+**This is an organizational boundary, not an access-control one.** What separates two catalogs is
+which schema each configuration names. A configuration whose catalog role can reach a sibling schema
+could name it and read that catalog's metadata, and therefore its data-file paths. Where catalogs
+must be isolated from one another rather than merely kept tidy, give each its own role with `USAGE`
+limited to its own schema; a database per catalog remains the strongest separation.
+
+**It does not migrate an existing catalog.** Adding `metadataSchema` to a catalog whose metadata
+already lives elsewhere does not move it. A read-write attach creates a _new, empty_ catalog in the
+named schema and materializes into that, while a read-only attach fails because nothing is there
+yet — so a typo surfaces as a confusingly empty catalog on the write path, and an attach failure on
+the read path.
 
 ## How Publisher attaches a DuckLake catalog
 
 **Read-only.** Publisher attaches the catalog `READ_ONLY`: it reads tables and never writes catalog
 metadata or migrates the catalog format. The lakehouse's own client owns writes.
 
-**Lazy, and never on the startup path.** The catalog is attached on the *first query* that uses the
+**Lazy, and never on the startup path.** The catalog is attached on the _first query_ that uses the
 connection — not when the server boots and not when the environment config is built. This is a
 deliberate isolation boundary: **a slow or unreachable catalog degrades only that connection's
 serving, never worker startup or any other connection.** Building the environment configuration
 issues no catalog SQL at all.
 
 **Preflight is non-load-bearing.** Before the real attach, Publisher runs a lightweight
-compatibility preflight (below). Any failure of the preflight *itself* — missing metadata, a
+compatibility preflight (below). Any failure of the preflight _itself_ — missing metadata, a
 timeout, an unreachable catalog — is logged and falls through to the normal attach, which remains
-the source of truth for unrelated errors. The preflight only ever *adds* a clearer error; it never
+the source of truth for unrelated errors. The preflight only ever _adds_ a clearer error; it never
 introduces a new failure of its own.
 
 ## Catalog-format compatibility
@@ -64,7 +86,7 @@ that range fails deep inside DuckDB with an opaque error.
 This compatibility is a property of the **catalog format**, not the client that wrote it. Publisher
 checks the format recorded at `ducklake_metadata.version` (e.g. `1.0`); the writing client is
 recorded separately (`created_by`) and is never checked. A catalog written at a supported format by
-a *newer* DuckLake client still attaches — a client advances the catalog format only when it
+a _newer_ DuckLake client still attaches — a client advances the catalog format only when it
 genuinely breaks read-compatibility, not for a routine release.
 
 Publisher derives the supported range from the **pinned DuckDB engine version**:
@@ -97,7 +119,7 @@ Publisher installs the extensions it needs **explicitly**, and controls whether 
 them from the network with the `EXTENSION_FETCH_POLICY` environment variable:
 
 - **`on-demand` (default)** — a missing extension is installed on first use. This is the right mode
-  for local/standalone use, where a runtime `INSTALL` *is* how you provision extensions. Behaviour is
+  for local/standalone use, where a runtime `INSTALL` _is_ how you provision extensions. Behaviour is
   unchanged from earlier releases. (Publisher uses a plain `INSTALL`, which is local-first: it no-ops
   when the extension is already present, so a pre-provisioned/baked extension is never silently
   re-downloaded.)
@@ -108,14 +130,14 @@ them from the network with the `EXTENSION_FETCH_POLICY` environment variable:
   fetch attempt. This is the mode for **air-gapped / pinned-image deployments**.
 
 **`local-only` needs a pre-populated cache — pick your install route.** The bake runs during `build`
-and writes to the DuckDB extension cache under `~/.duckdb/extensions/v<version>/<platform>/`, *not*
+and writes to the DuckDB extension cache under `~/.duckdb/extensions/v<version>/<platform>/`, _not_
 into the npm package. So an `npx` / `npm install` consumer starts with an **empty** cache and
 genuinely needs a first-use `INSTALL` (i.e. `on-demand`) — raw `npx` cannot be made offline-safe.
 `local-only` is offline-safe only where a platform-matched bake has already populated that cache: the
 **published Docker image** (which copies the builder's cache into the final image) or a **from-source
 `bun run build` on the target platform**. Air-gapped deployments should use one of those two routes.
 
-Regardless of the policy, the DuckLake attach session disables DuckDB's *implicit* auto-install for
+Regardless of the policy, the DuckLake attach session disables DuckDB's _implicit_ auto-install for
 itself — it only ever needs the curated set of extensions Publisher installs explicitly.
 
 ### Bundled extensions (what's available under `local-only`)
@@ -125,15 +147,15 @@ downloaded into the image's DuckDB extension cache during the build and copied i
 so `local-only` works out of the box on that image with no network at runtime. The baked set is
 exactly the extensions the server installs at runtime:
 
-| Extension | Kind | Provides |
-| --- | --- | --- |
-| `httpfs` | core | HTTP(S) and S3/GCS/Azure object-storage access (also used by the per-package sandbox) |
-| `aws` | core | AWS credential-chain resolution for S3 |
-| `azure` | core | Azure Blob Storage access |
-| `postgres` | core | Postgres connections, and the DuckLake Postgres catalog |
-| `ducklake` | core | DuckLake catalog attach |
-| `bigquery` | community | BigQuery connections |
-| `snowflake` | community | Snowflake connections |
+| Extension   | Kind      | Provides                                                                              |
+| ----------- | --------- | ------------------------------------------------------------------------------------- |
+| `httpfs`    | core      | HTTP(S) and S3/GCS/Azure object-storage access (also used by the per-package sandbox) |
+| `aws`       | core      | AWS credential-chain resolution for S3                                                |
+| `azure`     | core      | Azure Blob Storage access                                                             |
+| `postgres`  | core      | Postgres connections, and the DuckLake Postgres catalog                               |
+| `ducklake`  | core      | DuckLake catalog attach                                                               |
+| `bigquery`  | community | BigQuery connections                                                                  |
+| `snowflake` | community | Snowflake connections                                                                 |
 
 In addition, DuckDB's **statically-linked built-ins** — `parquet`, `json`, `icu`, `core_functions`,
 and `autocomplete` — are compiled into the engine, so they need no install and are always available
