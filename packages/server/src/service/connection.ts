@@ -672,7 +672,6 @@ async function attachDuckLakeWithMode(
       `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
    );
    const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
-   logger.info(`escapedBucketUrl: ${escapedBucketUrl}`);
    // Optional metadata schema: which schema in the catalog database holds this
    // DuckLake's `ducklake_*` tables. Absent keeps DuckLake's default (the catalog
    // connection's default schema), so the emitted command is unchanged for every
