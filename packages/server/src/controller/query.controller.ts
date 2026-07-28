@@ -4,6 +4,7 @@ import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
 import { runWithQueryTimeout } from "../query_timeout";
+import { filterPublisherOwnedRenderLogs } from "../service/dashboard";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
@@ -66,7 +67,9 @@ export class QueryController {
                ),
             getQueryTimeoutMs(),
          );
-         const renderLogs = validateRenderTags(result);
+         const renderLogs = filterPublisherOwnedRenderLogs(
+            validateRenderTags(result),
+         );
          return {
             result: compactJson
                ? JSON.stringify(compactResult, bigIntReplacer)

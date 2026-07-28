@@ -10,8 +10,8 @@
 npx @malloy-publisher/server --port 4000
 ```
 
-Open http://localhost:4000 to explore the bundled example packages. `storefront`,
-`governed-analytics`, and `html-data-app` are cloned from GitHub on first launch — expect a short wait
+Open http://localhost:4000 to explore the bundled example packages. `storefront`
+and `governed-analytics` are cloned from GitHub on first launch — expect a short wait
 before `operationalState` reports `serving`. No credentials required.
 
 Run one first launch at a time: two `npx` first runs installing concurrently can race in the shared

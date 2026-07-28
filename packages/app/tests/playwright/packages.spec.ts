@@ -15,11 +15,7 @@ test.describe("packages — read", () => {
    test("fixture packages are listed", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
-      for (const pkg of [
-         PACKAGES.storefront,
-         PACKAGES.governed,
-         PACKAGES.dataApp,
-      ]) {
+      for (const pkg of [PACKAGES.storefront, PACKAGES.governed]) {
          // Scope to the package tile heading: the environment page also lists
          // materializations, whose Package column can render the same name as a
          // link, so a bare getByText(pkg) is ambiguous under strict mode.

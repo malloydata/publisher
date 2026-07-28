@@ -78,6 +78,54 @@ export function modelAnnotations(modelDef: ModelDef): AnnotationsDef {
 }
 
 /**
+ * The `##` tags a model file declares **itself**, ignoring everything it
+ * imports.
+ *
+ * This is the counterpart to {@link modelAnnotations}, and the difference is
+ * not a detail. That function folds the import lineage on purpose, because
+ * file-level `##(authorize)` has to flow into an importing file — a gate an
+ * import could shed would be no gate at all. Every *other* model-level tag
+ * wants the opposite: `## artifact`, `## title=`, `## autorun=`, and
+ * `## givens {…}` describe one document, so inheriting them means a shared
+ * include carrying an `## artifact` silently turns every file that imports it
+ * into a copy of that dashboard, and a notebook picks up an imported model's
+ * title. Read through here unless the tag is a policy gate.
+ */
+export function ownModelNotes(modelDef: ModelDef): string[] {
+   const registry = modelDef.modelAnnotations ?? {};
+
+   // One document can span several compilation nodes. A `.malloynb` is compiled
+   // a cell at a time, so its `##` tags land on an `internal://loadModel` node
+   // that an `internal://extendModel` node — the one `modelID` names — inherits
+   // from, with empty notes of its own. Reading only `modelID` would therefore
+   // find nothing on every notebook. An imported file, by contrast, is always a
+   // `file://` node: that scheme is the line between "more of this document"
+   // and "a different document".
+   const isSameDocument = (id: string) =>
+      id === modelDef.modelID || !id.startsWith("file:");
+
+   const seen = new Set<string>();
+   const texts: string[] = [];
+   const visit = (id: string): void => {
+      if (seen.has(id) || !isSameDocument(id)) return;
+      seen.add(id);
+      const entry = registry[id];
+      if (!entry) return;
+      // Ancestral-first, matching `Annotations.texts()`, so a later cell's tag
+      // wins over an earlier one the way a later line does within a file.
+      for (const dep of entry.inheritsFrom) visit(dep);
+      for (const note of [
+         ...(entry.ownNotes.blockNotes ?? []),
+         ...(entry.ownNotes.notes ?? []),
+      ]) {
+         texts.push(note.text);
+      }
+   };
+   visit(modelDef.modelID);
+   return texts;
+}
+
+/**
  * Every annotation text on an entity — its own `notes` and `blockNotes`
  * plus everything inherited from its ancestors. All of an entity's
  * annotations apply; none are dropped by source location. Returns

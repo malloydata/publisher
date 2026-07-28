@@ -31,6 +31,7 @@ import {
   Cell,
 } from "recharts";
 import Header from "./Header";
+import type { AppView } from "../types/view";
 
 const usd = (value: number) =>
   value.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -147,7 +148,7 @@ const STATUS_COLORS: { [key: string]: string } = {
 export default function InteractiveDashboard({
   selectedView,
 }: {
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
+  selectedView: AppView;
 }) {
   const [tabValue, setTabValue] = useState(0);
   const [stateFilter, setStateFilter] = useState('');

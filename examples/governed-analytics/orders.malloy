@@ -1,39 +1,64 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Interactive filter controls, built on givens.
 //
-// Givens are typed runtime parameters. Declared here, REGION and MIN_AMOUNT
-// become controls in the notebook Parameters panel (see orders.malloynb), and
-// scope the `sales` source's rows. See docs/givens.md.
+// Givens are typed runtime parameters. Declared here, REGION, STATUS, and
+// MIN_AMOUNT scope the `sales` source's rows and render as controls wherever
+// `sales` is queried: the notebook Parameters panel (orders.malloynb) and the
+// dashboard's control row (dashboards/governed-overview.malloy). The tags on
+// each declaration are its control contract — which widget stands in for
+// typing the value by hand. See docs/givens.md.
 // ─────────────────────────────────────────────────────────────────────────
 ##! experimental.givens
 
 import { orders_base } from "internal.malloy"
 
+// A `select` picker gets its choices from a `suggest`. Note it names a *query*
+// rather than `source=orders_base`: this package curates its surface, so
+// `orders_base` is not queryable by name (see internal.malloy). A named query
+// is compiled into the model and runs regardless, which makes it the form to
+// reach for whenever the source behind a control is deliberately hidden.
 #(description="Region to focus on — leave empty for all regions")
+# label="Region" control=select suggest { query=region_suggest dimension=region }
 given: REGION :: filter<string> is f''
 
+// `multiselect` lets a reader pick several at once.
+#(description="One or more fulfillment statuses — leave empty for all")
+# label="Status" control=multiselect suggest { query=status_suggest dimension=status }
+given: STATUS :: filter<string> is f''
+
+// Numeric bounds render a slider instead of a text box. Order amounts in this
+// dataset run $50–$999, so the range covers the whole spread.
 #(description="Only include orders at or above this amount (USD)")
+# label="Minimum amount" range_min=0 range_max=1000
 given: MIN_AMOUNT :: number is 0
 
 source: sales is orders_base extend {
-  // The givens scope every query against `sales`. An empty REGION filter (f'')
-  // is the natural "all regions" state.
-  where: region ~ $REGION and amount >= $MIN_AMOUNT
+  // The givens scope every query against `sales`. An empty filter (f'') is the
+  // natural "all" state, so an untouched control constrains nothing.
+  where: region ~ $REGION and status ~ $STATUS and amount >= $MIN_AMOUNT
 
+  // A `# label` on the field, rather than on each view that uses it: the
+  // renderer heads a column, an axis, and a KPI card with it, so labelling once
+  // here is what keeps `total_amount` off the y axis of every chart below.
   measure:
     #(doc) Number of orders in scope
+    # label="Orders"
     order_count is count()
     #(doc) Total order amount
     # currency
+    # label="Total value"
     total_amount is amount.sum()
     #(doc) Average order amount
     # currency
+    # label="Avg order"
     avg_amount is amount.avg()
 
   #(doc) Order value by region
   # bar_chart
   view: by_region is {
-    group_by: region
+    group_by:
+      # label="Region"
+      region
     aggregate: total_amount
     order_by: total_amount desc
   }
@@ -41,7 +66,9 @@ source: sales is orders_base extend {
   #(doc) Orders by fulfillment status
   # bar_chart
   view: by_status is {
-    group_by: status
+    group_by:
+      # label="Status"
+      status
     aggregate: order_count
     order_by: order_count desc
   }
@@ -49,30 +76,63 @@ source: sales is orders_base extend {
   #(doc) Monthly order-value trend
   # line_chart
   view: amount_by_month is {
-    group_by: order_month is order_date.month
+    group_by:
+      # label="Month"
+      order_month is order_date.month
     aggregate: total_amount
     order_by: order_month
   }
 
+  #(doc) Order value by tenant
+  view: by_tenant is {
+    group_by:
+      # label="Tenant"
+      tenant
+    aggregate: order_count, total_amount
+    order_by: total_amount desc
+  }
+
+  // Laid out like dashboards/governed-overview.malloy, and for the reason
+  // docs/dashboards.md gives: `columns=12` with colspans that sum to it per row,
+  // and a `# break` so the cards and the tiles do not share a row. The cards are
+  // top-level measures rather than a nested `# big_value`, which renders
+  // embedded inside one tile and stacks the numbers full width.
   #(doc) KPIs + trend and breakdowns, all scoped by the current givens
-  # dashboard
+  # dashboard { columns=12 }
   view: overview is {
+    aggregate:
+      # colspan=4
+      order_count
+      # colspan=4
+      total_amount
+      # colspan=4
+      avg_amount
     nest:
-      # big_value
-      kpis is {
-        aggregate:
-          # label="Orders"
-          order_count
-          # label="Total value"
-          # currency
-          total_amount
-          # label="Avg order"
-          # currency
-          avg_amount
-      }
-    nest:
+      # break
+      # colspan=6
+      # label="Order value by month"
       amount_by_month
+      # colspan=6
+      # label="Order value by region"
       by_region
+    nest:
+      # colspan=12
+      # label="Orders by status"
       by_status
   }
+}
+
+// The option lists behind the two pickers above. Both read `orders_base`, not
+// `sales`, so the choices stay the full set rather than collapsing to whatever
+// the current filters already allow.
+#(doc) Distinct regions, for the Region control's option list
+query: region_suggest is orders_base -> {
+  group_by: region
+  order_by: region
+}
+
+#(doc) Distinct fulfillment statuses, for the Status control's option list
+query: status_suggest is orders_base -> {
+  group_by: status
+  order_by: status
 }

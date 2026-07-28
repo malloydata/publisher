@@ -9,12 +9,11 @@
 Three runnable packages ship in the default `examples` environment, plus one standalone React app —
 every doc below points back to one of them, and each example's README points back to the docs.
 
-| Example                                              | What it shows                                                                                                                     |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| [storefront](../examples/storefront)                 | A complete ecommerce model — joins, measures, `# dashboard` views, and a no-build HTML app. The flagship first-open package.      |
-| [governed-analytics](../examples/governed-analytics) | Givens, `#(authorize)`, row-level access, and discovery curation in one small package.                                            |
-| [html-data-app](../examples/html-data-app)           | A no-build SaaS-subscriptions dashboard served from a package's `public/` directory.                                              |
-| [data-app](../examples/data-app)                     | _Advanced/internal:_ a standalone React app built on the SDK, reading from `storefront`. Not a served package — run it with Vite. |
+| Example                                              | What it shows                                                                                                                |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| [storefront](../examples/storefront)                 | A complete ecommerce model — joins, measures, a notebook, four dashboards, and a no-build HTML data app. The flagship first-open package. |
+| [governed-analytics](../examples/governed-analytics) | Givens, `#(authorize)`, row-level access, and discovery curation in one small package.                                                    |
+| [data-app](../examples/data-app)                     | A standalone React data app built on the SDK, reading from `storefront`. Not a served package — run it with Vite.            |
 
 ## Concepts
 
@@ -26,13 +25,15 @@ every doc below points back to one of them, and each example's README points bac
 
 ## Use it
 
-| Doc                                            | Read it when you want to…                                                              |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| [publisher-app.md](publisher-app.md)           | Navigate the built-in web app and see how the constructs surface.                      |
-| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                   |
-| [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models. |
-| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.              |
-| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the App is built from.                              |
+| Doc                                            | Read it when you want to…                                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [console.md](console.md)                       | Navigate the Publisher Console — the built-in web UI — and see how the constructs surface.        |
+| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                              |
+| [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models.            |
+| [choosing-a-surface.md](choosing-a-surface.md) | Decide between a notebook, a dashboard, and an HTML data app — pros, cons, and decision rules.    |
+| [dashboards.md](dashboards.md)                 | Write a `dashboards/*.malloy` — filter controls, grid layout, composites, and `# drill`.          |
+| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.                         |
+| [react-data-apps.md](react-data-apps.md)       | Build a React data app with the SDK — Malloy's renderer, notebooks, and dashboards as components. |
 
 ## Model & govern
 
@@ -45,6 +46,7 @@ there for the primitive, then follow the application you need.
 | [row-level-access.md](row-level-access.md)         | Restrict _which rows_ a caller sees (given-scoped `where:` + `#(authorize)`).                          |
 | [authorize.md](authorize.md)                       | Gate _who_ can query a whole source with `#(authorize)`.                                               |
 | [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`explores` / `queryableSources`) — the visibility axis.  |
+| [security-posture.md](security-posture.md)         | Understand what Publisher does and does not defend against, before deploying it or adding a feature.   |
 
 ## Deploy & operate
 
@@ -60,10 +62,11 @@ there for the primitive, then follow the application you need.
 
 ## Develop & contribute
 
-| Doc                              | Read it when you want to…                      |
-| -------------------------------- | ---------------------------------------------- |
-| [development.md](development.md) | Build and hack on Publisher from a clone.      |
-| [agent-skills/](agent-skills/)   | Author or contribute the bundled agent skills. |
+| Doc                                                            | Read it when you want to…                                                               |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                               |
+| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                          |
+| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support. |
 
 ## Full public docs
 

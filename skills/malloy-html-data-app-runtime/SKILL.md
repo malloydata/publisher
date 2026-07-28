@@ -43,7 +43,7 @@ Declare each tile's source and view names once, in `tiles.js`, and have everythi
 
 ## Patterns that work
 
-These run against the example `html-data-app` package (source `subscriptions`; views `plan_mix`, `mrr_by_industry`, `kpis`). Swap in your own model and view names.
+These assume a `subscriptions.malloy` model whose `subscriptions` source defines the views `plan_mix`, `mrr_by_industry`, and `kpis`. The names are illustrative; swap in your own model and view names.
 
 Run a named view:
 
@@ -107,6 +107,11 @@ Get the numbers right. The fastest way to ship a wrong-but-convincing dashboard 
 - **"Current" means latest non-null.** For a KPI scorecard, scan back to the last month that actually has data rather than reading the final row, which may be an incomplete current month.
 - **Guard division in Malloy, not after.** `avg(paid / nullif(active, 0))`. A `nullif` in the query beats catching `Infinity`/`NaN` in JS.
 - **Convert units explicitly.** If the model stores a 0 to 1 fraction and you show a percent, multiply once in `build()` and comment it. Mismatched units are a silent off-by-100.
+
+Keep the axis labels legible. A dense axis (three years of months across a half-width tile) is where a chart quietly stops being readable:
+
+- **Let the chart library measure; don't cap the count.** Chart.js's `ticks.maxTicksLimit` *replaces* auto-skip's own measurement rather than capping it, so it forces that many labels through whether they fit or not, and they overprint. Drop it, leave `autoSkip` on, and use `autoSkipPadding` to ask for breathing room.
+- **Thin a scale, never a set.** Dropping every other month is fine; the axis is a continuum. Dropping every other bar label is not: it leaves a bar standing over nothing. Turn auto-skip off on a categorical axis and let the labels rotate instead if they have to.
 
 Loading, empty, and error states. Handle all three; a bare `.then()` that assumes rows leaves the page blank when the query is slow or fails:
 

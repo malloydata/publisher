@@ -1,0 +1,62 @@
+// Two things this one shows that overview.malloy does not.
+//
+// `autorun=false` puts an Apply button on the control row and batches changes
+// behind it, so moving a date and picking a region re-runs the page once
+// instead of twice. Worth it as soon as a page is slow enough that a reader
+// notices, and the same flag a notebook sets with a file-level `## autorun`.
+//
+// `givens { … }` sets this dashboard's *starting* values. It is a per-dashboard
+// opening position, not a redeclaration: REGION is still the one control
+// declared in givens.malloy, and a URL parameter still wins over this.
+//
+// There is also no `title=` here, so the title falls back to the `#"` doc
+// comment below — which is why that line reads like a title rather than a
+// sentence.
+##! experimental.givens
+import { order_items, regions } from '../storefront.malloy'
+import { REGION, SINCE } from '../givens.malloy'
+
+// The query's name is not the dashboard's name — the *filename* is. This one
+// has to be called something other than `regions` because the imported source
+// already owns that name in this file, and the dashboard is still `regions`:
+// that is the slug in its URL and what `# drill { to=regions }` points at.
+// `# dashboard` is on its own line rather than trailing the artifact tag the way
+// overview.malloy writes it. Both spellings are fine, but a nested block —
+// `givens { … }` here — has to be the last thing on its line, so a second tag
+// after it is read as part of it and the grid quietly never applies.
+#" Sales by region
+# artifact { autorun=false givens { REGION=f'West' } }
+# dashboard { columns=12 }
+query: regional_sales is order_items -> {
+  where: region ~ $REGION and created_at >= $SINCE
+
+  // Three cards at 4 of 12. A card's label is one line that ellipses rather
+  // than wrapping, so a narrow card silently truncates it — "Orders /
+  // customer" read as "ORDERS / CUSTOMEI" at 1 column of 6.
+  aggregate:
+    # label="Revenue"
+    # currency
+    # colspan=4
+    total_sales
+    # label="Customers"
+    # colspan=4
+    customer_count
+    # label="Orders / customer"
+    # colspan=4
+    orders_per_customer
+
+  // No `sales_by_region` tile: with one region picked it would be a single bar.
+  // What a reader wants after narrowing to a region is what is inside it.
+  nest:
+    # break
+    # colspan=6
+    # label="Revenue by state"
+    sales_by_state
+    # colspan=6
+    # label="Revenue by month"
+    sales_by_month
+  nest:
+    # colspan=12
+    # label="Top customers"
+    top_customers
+}

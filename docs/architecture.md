@@ -38,20 +38,21 @@ network and provides a professional UI for data exploration.
 - **App:** Web interface for browsing Malloy content, exploring models with a no-code query builder,
   and viewing results.
 
-## Publisher SDK (internal)
+## Publisher SDK
 
 A React component library — API communication, query execution, Malloy Render integration, and
-pre-built pages for browsing environments, packages, models, and notebooks. The **App is built
-entirely from it**, so it's best understood as the App's internal toolkit rather than a supported
-external integration path. See [embedded-data-apps.md](embedded-data-apps.md) for the advanced/internal
-notes. To surface analytics, prefer the [Publisher App](publisher-app.md), an
-[HTML data app](html-data-apps.md), or the [REST/MCP APIs](api-overview.md).
+pre-built pages for browsing environments, packages, models, and notebooks. The **Console is built
+entirely from it**, and it's equally the way to bring Malloy's built-in renderer, notebook, and
+dashboard types into your own React data app — see [react-data-apps.md](react-data-apps.md)
+and the [`examples/data-app`](../examples/data-app) reference. For non-React surfaces, use the
+[Publisher Console](console.md), an [HTML data app](html-data-apps.md), or the
+[REST/MCP APIs](api-overview.md).
 
 ## Packages in this repo
 
 | Package | Description |
 | --- | --- |
 | **[packages/server](../packages/server/)** | Express.js backend providing REST API (port 4000) and MCP API (port 4040). Loads Malloy packages, compiles queries, executes against databases. |
-| **[packages/sdk](../packages/sdk/)** | React component library the App is built from (internal — see above). |
+| **[packages/sdk](../packages/sdk/)** | React component library the Console is built from, and the React path for your own data apps. |
 | **[packages/app](../packages/app/)** | Reference implementation and production-ready data exploration tool built with the SDK. |
 | **[packages/python-client](../packages/python-client/)** | Auto-generated Python SDK for the REST API. |

@@ -23,6 +23,7 @@ Say "model my data" and the agent will orchestrate the full modeling workflow au
 | `skill:malloy-analyze` | Exploratory data analysis: profiling, building views and dashboards |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
 | `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
+| `skill:malloy-dashboards` | Building a Publisher dashboard: `dashboards/*.malloy`, filter controls, grid layout, `# drill` |
 | `skill:malloy-debug` | Fixing compile errors and interpreting diagnostics |
 | `skill:malloy-patterns` | Finding syntax/pattern docs: YoY, cohorts, percent-of-total, window functions |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |

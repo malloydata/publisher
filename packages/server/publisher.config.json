@@ -11,10 +11,6 @@
         {
           "name": "governed-analytics",
           "location": "../../examples/governed-analytics"
-        },
-        {
-          "name": "html-data-app",
-          "location": "../../examples/html-data-app"
         }
       ],
       "connections": []

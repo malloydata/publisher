@@ -355,7 +355,12 @@ export default function AddConnectionDialog({
 
    return (
       <React.Fragment>
-         <Button variant="outlined" onClick={handleClickOpen}>
+         <Button
+            variant="contained"
+            color="primary"
+            startIcon={<AddIcon />}
+            onClick={handleClickOpen}
+         >
             Add Connection
          </Button>
          <Dialog open={open} onClose={handleClose}>

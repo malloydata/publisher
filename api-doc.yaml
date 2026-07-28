@@ -2,32 +2,45 @@ openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
   description: |
-    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources.
-    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases
-    (.parquet, .csv, and .xlsx files) with a malloy-publisher.json manifest at the package's root directory.
+    The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
+    A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
+    notebooks (`.malloynb` files), dashboards (`dashboards/*.malloy` files carrying an `# artifact` annotation),
+    embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app under `public/`.
 
     ## Key Features
 
-    - **Environment Management**: Create and manage environments with their associated packages and connections
-    - **Package Lifecycle**: Full CRUD operations for Malloy packages and their versions
-    - **Model & Notebook Access**: Retrieve and execute Malloy models and notebooks
-    - **Connection Management**: Secure database connection configuration and testing
-    - **Query Execution**: Execute queries against models and retrieve results
-    - **Watch Mode**: Real-time file watching for development workflows
+    - **Discovery**: List environments, packages, and the models, notebooks, dashboards, data apps, and data a package contains
+    - **Query Execution**: Run queries against models, execute notebooks cell by cell, and compile-check Malloy without running it
+    - **Dashboards**: Manifests for `# artifact` dashboards — layout, tiles, and the given specs behind their controls
+    - **Data Apps**: In-package HTML pages served from a package's `public/` directory
+    - **Materializations**: Persist Malloy sources as tables, on a schedule or on demand
+    - **Connection Management**: Configure and test warehouse connections, and browse their schemas and tables
+    - **Watch Mode**: File watching, and a change-event stream for development workflows
 
     ## Resource Hierarchy
 
     The API follows a hierarchical resource structure:
     ```
-    Environments
-    ├── Connections
-    └── Packages
-        ├── Models
-        ├── Notebooks
-        └── Databases
+    Server
+    ├── /status, /theme               server state, and the UI theme
+    ├── /connections/test             validate a connection config
+    ├── /watch-mode/…                 development file watching
+    └── Environments
+        ├── Connections               schemas, tables, and ad-hoc SQL
+        └── Packages
+            ├── Models                query and compile
+            ├── Notebooks             execute a cell at a time
+            ├── Dashboards            discovery and manifests
+            ├── Data Apps             static pages from public/
+            ├── Databases             embedded data files
+            ├── Materializations      persisted sources
+            ├── Connections           package-scoped connection access
+            └── Events                SSE stream of file changes
     ```
 
-    For examples, see the Malloy samples packages (https://github.com/malloydata/malloy-samples) repository.
+    For worked examples, see the packages this server bundles
+    (https://github.com/malloydata/publisher/tree/main/examples); the package format is documented in
+    docs/packages.md (https://github.com/malloydata/publisher/blob/main/docs/packages.md).
   version: v0
 
 servers:
@@ -53,8 +66,14 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
-  - name: pages
-    description: Static HTML pages (in-package data apps)
+  - name: dashboards
+    description:
+      Malloy dashboards (`dashboards/*.malloy` files carrying an `# artifact`
+      annotation) — discovery and manifests
+  - name: data-apps
+    description:
+      In-package HTML data apps (static pages served from a package's public/
+      directory)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -1651,6 +1670,111 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/dashboards:
+    get:
+      tags:
+        - dashboards
+      operationId: list-dashboards
+      summary: List package dashboards
+      description: |
+        Lists the dashboards in the specified package — every `.malloy` file in
+        the package's `dashboards/` directory that carries an `# artifact` (or
+        model-level `## artifact`) annotation. A file in that directory with no
+        artifact tag is a shared include and is not listed.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: A list of dashboards in the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/dashboards/{dashboardName}:
+    get:
+      tags:
+        - dashboards
+      operationId: get-dashboard
+      summary: Get a dashboard manifest
+      description: |
+        Retrieves everything a viewer needs to render one dashboard: the artifact
+        tag's declarations plus the control contract derived from the givens its
+        query references. Running the dashboard needs no further endpoint — its
+        query, each composite tile, and each control's suggest query all run
+        through the model query endpoint with `givens`.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: dashboardName
+          in: path
+          description: The dashboard's slug (its filename basename)
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: The dashboard manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardManifest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/notebooks:
     get:
       tags:
@@ -1896,21 +2020,22 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/pages:
+  /environments/{environmentName}/packages/{packageName}/data-apps:
     get:
       tags:
-        - pages
-      operationId: list-pages
-      summary: List package pages
+        - data-apps
+      operationId: list-data-apps
+      summary: List package data apps
       description: |
-        Retrieves a list of all static HTML pages (in-package data apps) within
-        the specified package. Each page entry includes the relative path, the
-        package name, a canonical resource URL, and the page title (extracted
-        from the file's <title> tag, falling back to the path). Used by the
-        Publisher SPA to surface a clickable "Pages" section on the package
-        detail view, and by anyone who wants to discover in-package data apps
-        programmatically without scraping the directory. Recursive depth is
-        capped server-side to keep this cheap on large packages.
+        Retrieves a list of all in-package HTML data apps (static pages served
+        from the package's public/ directory) within the specified package. Each
+        entry includes the relative path, the package name, a canonical resource
+        URL, and the title (extracted from the file's <title> tag, falling back
+        to the path). Used by the Publisher SPA to surface a clickable "Data
+        apps" section on the package detail view, and by anyone who wants to
+        discover a package's data apps programmatically without scraping the
+        directory. Recursive depth is capped server-side to keep this cheap on
+        large packages.
       parameters:
         - name: environmentName
           in: path
@@ -1926,13 +2051,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
-          description: A list of pages in the package
+          description: A list of data apps in the package
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Page"
+                  $ref: "#/components/schemas/DataApp"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2704,37 +2829,51 @@ components:
           type: array
           readOnly: true
           description: >-
-            Non-fatal render-tag findings collected when the package loaded: a
-            render annotation (e.g. `# big_value` or `# currency`) misconfigured
-            for the field it sits on, so it renders as "[object Object]" or an
-            inline error at query time but does not stop the model compiling or
-            the package loading. Server-computed and read-only: ignored on
-            create/update requests and only returned in responses. Present only
-            when there are such findings.
+            Non-fatal findings collected when the package loaded, from two
+            checks. Render-tag findings: a render annotation (e.g. `# big_value`
+            or `# currency`) misconfigured for the field it sits on, so it
+            renders as "[object Object]" or an inline error at query time.
+            Dashboard lint findings: a `dashboards/` file whose `# artifact`
+            grammar is wrong in a way that degrades silently at view time — a
+            tile naming a view that does not exist, a non-integer
+            `dashboard_columns`, a `# drill` pointing at no dashboard, a
+            component file with no dashboard beside it. Neither stops the model
+            compiling or the package loading. Server-computed and read-only:
+            ignored on create/update requests and only returned in responses.
+            Present only when there are such findings.
           items:
             type: object
             properties:
               model:
                 type: string
                 description: >-
-                  Package-relative path of the model the finding is on.
-              target:
+                  Package-relative path of the file the finding is on. Absent
+                  for a package-wide finding, such as a `# drill` target, which
+                  is declared on a model dimension rather than in any one
+                  dashboard.
+              subject:
                 type: string
                 description: >-
-                  The query or view the finding sits on, e.g. `by_carrier` or
-                  `flights -> by_carrier`.
+                  What the finding is about: a query or view for a render
+                  finding (`by_carrier`, `flights -> by_carrier`), or a
+                  dashboard slug or `source.dimension` for a dashboard finding.
+                  For a `# drill` finding this is where the tag is declared,
+                  not where it points.
               message:
                 type: string
-                description: The render validator's description of the problem.
+                description: A description of the problem.
               severity:
                 type: string
                 enum:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Currently only `error`-severity render
-                  findings are surfaced here; lower-severity findings remain on
-                  the query-time `renderLogs` surface.
+                  Finding severity. Only `error`-severity render findings are
+                  surfaced here; lower-severity render findings remain on the
+                  query-time `renderLogs` surface. Dashboard findings use
+                  `error` for something that is definitely broken (a tile that
+                  resolves to nothing) and `warn` for something that degrades
+                  (a control that will not be shown).
         queryableSources:
           type: string
           enum:
@@ -2933,23 +3072,37 @@ components:
         path:
           type: string
           description: Relative path to the notebook file within its package directory
+        title:
+          type: string
+          description: |
+            Human title for a listing. Resolved from a model-level
+            `## title="…"`, then the file's `#"` doc comment, then its first
+            markdown heading — the same chain a dashboard's title follows, plus
+            the heading step, which a notebook can afford because it is prose.
+            Omitted when none of those resolve, leaving the caller to fall back
+            to the path.
+        description:
+          type: string
+          description: The notebook's `#"` doc comment, when it has one
         error:
           type: string
           description: Error message if the notebook failed to compile or load
 
-    Page:
+    DataApp:
       type: object
-      description: Static HTML page (in-package data app) within a Malloy package
+      description:
+        An in-package HTML data app within a Malloy package - a static page
+        served from the package's public/ directory
       properties:
         resource:
           type: string
           description:
-            Canonical URL to the served page. Root-relative and does NOT
-            carry the /api/v0 prefix, because pages are static assets served off
-            the server root rather than API resources.
+            Canonical URL to the served data app. Root-relative and does
+            NOT carry the /api/v0 prefix, because a data app is a static asset
+            served off the server root rather than an API resource.
         packageName:
           type: string
-          description: Name of the package containing this page
+          description: Name of the package containing this data app
         path:
           type: string
           description: Relative path to the HTML file within its package directory
@@ -2964,10 +3117,142 @@ components:
             - viewport
           description:
             Layout hint read from a <meta name="publisher:fit"> tag in the
-            page <head>. "viewport" tells the embedded page viewer to fill the
-            available height instead of auto-sizing to the page's content
-            height, for full-screen apps like slide decks. Omitted for ordinary
-            content pages, which keep content-height auto-sizing.
+            page <head>. "viewport" tells the embedded viewer to fill the
+            available height instead of auto-sizing to the content height, for
+            full-screen apps like slide decks. Omitted for an ordinary
+            content-driven app, which keeps content-height auto-sizing.
+
+    Dashboard:
+      type: object
+      description: |
+        A dashboard within a Malloy package: a self-contained `.malloy` file in
+        the package's `dashboards/` directory carrying an `# artifact` (or
+        model-level `## artifact`) annotation. The list entry; see
+        DashboardManifest for the detail a viewer needs to render one.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the dashboard
+        packageName:
+          type: string
+          description: Name of the package containing this dashboard
+        name:
+          type: string
+          description:
+            The dashboard's slug — its filename basename. Addresses it in a URL
+            and as a `# drill` target.
+        path:
+          type: string
+          description:
+            Relative path to the dashboard file within its package directory
+            (`dashboards/<name>.malloy`)
+        title:
+          type: string
+          description:
+            Human title from the artifact tag, falling back to the file's `#"`
+            doc comment and then to the slug
+        description:
+          type: string
+          description: The file's `#"` doc comment, when it has one
+        error:
+          type: string
+          description: Error message if the dashboard file failed to compile
+
+    DashboardManifest:
+      type: object
+      description: |
+        Everything a viewer needs to render one dashboard: the artifact tag's
+        declarations plus the control contract derived from the givens its query
+        references. Running needs no dashboard-specific endpoint — the query,
+        each composite tile, and each control's suggest query all run through
+        the ordinary model query endpoint with `givens`.
+      properties:
+        resource:
+          type: string
+        packageName:
+          type: string
+        name:
+          type: string
+        path:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        error:
+          type: string
+        query:
+          type: string
+          description:
+            Name of the tagged query to run. Present for the single-query form
+            only; a composite dashboard carries `tiles` instead.
+        tiles:
+          type: array
+          description:
+            Tiles of a composite dashboard, run separately and combined into one
+            grid. Present for the composite form only.
+          items:
+            $ref: "#/components/schemas/DashboardTile"
+        dashboardColumns:
+          type: integer
+          description:
+            Grid width — from the `# dashboard {columns=N}` render tag, or
+            `dashboard_columns=N` on a composite artifact tag
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Per-dashboard starting values for controls, from the artifact tag.
+            URL parameters override these, which is why the two share a shape.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true.
+        givens:
+          type: array
+          description: |
+            The control row — one entry per given the dashboard's query
+            references. Plain `Given`s, because the presentation a control takes
+            is declared on the given itself, so a dashboard and a notebook
+            render the same control for the same given.
+          items:
+            $ref: "#/components/schemas/Given"
+
+    DashboardTile:
+      type: object
+      description: One tile of a composite dashboard
+      properties:
+        query:
+          type: string
+          description:
+            The run expression exactly as written in `tiles=[…]`, e.g.
+            "orders -> by_month"
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            Names of the givens this tile references. This is a scoping hint,
+            not a binding constraint: it tells a caller which tiles a changed
+            control actually needs to re-run. Running a tile with the
+            dashboard's whole control row also works, because an unreferenced
+            given is ignored. Absent when the tile expression is not one
+            discovery can resolve, in which case send the whole control row.
+
+    GivenSuggest:
+      type: object
+      description:
+        Where a select/multiselect control gets its options. Either a named
+        `query`, or a `source` + `dimension` pair; both run through the ordinary
+        query endpoint.
+      properties:
+        query:
+          type: string
+        source:
+          type: string
+        dimension:
+          type: string
 
     RawNotebook:
       type: object
@@ -2995,6 +3280,21 @@ components:
           description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
+        autorun:
+          type: boolean
+          description: |
+            Whether a parameter change re-runs the notebook's cells immediately.
+            False, from a file-level `## autorun=false`, batches changes behind
+            an Apply button instead — which matters more here than on a
+            dashboard, since one parameter change re-runs every cell. Defaults
+            to true, and is the same flag `DashboardManifest.autorun` carries.
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Starting values for the notebook's controls, from a file-level
+            `## givens { … }`. URL parameters override these. The notebook
+            spelling of `DashboardManifest.startingGivens`.
         sources:
           type: array
           description: Sources defined in the notebook's model
@@ -3112,10 +3412,21 @@ components:
 
     Given:
       type: object
-      description:
+      description: |
         A given (runtime parameter) declared on a Malloy model via the
-        `given:` keyword. Surfaced on `CompiledModel.givens` and `Source.givens`
-        so callers can introspect what runtime values a model accepts.
+        `given:` keyword. Surfaced on `CompiledModel.givens`, `Source.givens`,
+        and `DashboardManifest.givens` so callers can introspect what
+        runtime values a model accepts.
+
+        `givens` always names a collection of these declarations. Values keyed
+        by given name are `GivenValues` (or `EncodedGivenValues`), and a bare
+        list of names is spelled `givenNames`.
+
+        It also carries how the given should be presented as an input control
+        (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`), derived from
+        the declaration's own tags. That contract belongs to the given rather
+        than to any one surface, which is what lets a dashboard, a notebook, and
+        an SDK host render the same control without restating it.
       properties:
         name:
           type: string
@@ -3126,7 +3437,10 @@ components:
             boolean, date, timestamp, filter<string>)
         annotations:
           type: array
-          description: Annotations attached to the given declaration
+          description: Annotations attached to the given declaration. Carries
+            the caller-facing app routes only (e.g. `#(doc)`); the plain `#`
+            control tags are parsed server-side into the presentation fields
+            below rather than left for each client to re-parse.
           items:
             type: string
         default:
@@ -3136,14 +3450,51 @@ components:
             the model. Omitted when the given declares no default. Consumers
             render or prefill it per the given's `type` (e.g. unquote a string
             literal for a text input).
+        label:
+          type: string
+          description: Display label from the declaration's `# label=` tag
+        control:
+          type: string
+          enum:
+            - select
+            - multiselect
+          description:
+            How the control renders. Omitted means infer from the given's type.
+        rangeMin:
+          type: number
+          description: Slider lower bound from `# range_min=`
+        rangeMax:
+          type: number
+          description: Slider upper bound from `# range_max=`
+        suggest:
+          $ref: "#/components/schemas/GivenSuggest"
 
-    Givens:
+    GivenValues:
       type: object
-      description: Per-query given values that override model defaults. Keys are
-        given names declared in the model's `given:` block. Values must match
-        the declared type (string, number, boolean, date, etc.). See Malloy
-        givens documentation for accepted value shapes.
+      description: |
+        Given *values* keyed by given name — what a caller sends, as distinct
+        from `Given`, which describes what the model *accepts*. A collection of
+        declarations is a plain array of `Given`, never this.
+
+        Values are decoded and must match the declared type: a `number` given
+        takes a JSON number, a `date` takes a bare `YYYY-MM-DD` string, a
+        `timestamp` an ISO string with no zone, a `timestamptz` a full ISO
+        string. `EncodedGivenValues` is the string-encoded counterpart.
       additionalProperties: true
+
+    EncodedGivenValues:
+      type: object
+      description: |
+        The same values as `GivenValues`, string-encoded — the form that
+        survives a URL. Every value is a string regardless of the given's
+        declared type, and a `filter<…>` value is the filter body rather than
+        the `f'…'` literal.
+
+        This is what a dashboard's URL parameters carry and what its manifest
+        declares as starting values, so the two merge before being decoded once
+        against the declarations and sent as `GivenValues`.
+      additionalProperties:
+        type: string
 
     Source:
       type: object
@@ -3242,7 +3593,7 @@ components:
 
             When true, skip server-side `#(filter)` injection entirely.
         givens:
-          $ref: "#/components/schemas/Givens"
+          $ref: "#/components/schemas/GivenValues"
 
     NotebookCell:
       type: object
@@ -4034,7 +4385,7 @@ components:
             (only available when compilation succeeds and the source contains a
             runnable query).
         givens:
-          $ref: "#/components/schemas/Givens"
+          $ref: "#/components/schemas/GivenValues"
       required:
         - source
 

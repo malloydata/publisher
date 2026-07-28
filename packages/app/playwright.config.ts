@@ -21,6 +21,12 @@ export default defineConfig({
    timeout: 60_000,
    expect: { timeout: 15_000 },
    fullyParallel: false,
+   // One worker, because every spec drives the same server and some of them
+   // change it: registering and deleting an environment, adding and removing a
+   // package. `fullyParallel: false` only serializes within a file — separate
+   // files still run concurrently — so without this a spec reading the packages
+   // list can catch it mid-write and find a package missing.
+   workers: 1,
    retries: IS_CI ? 1 : 0,
    reporter: IS_CI
       ? [

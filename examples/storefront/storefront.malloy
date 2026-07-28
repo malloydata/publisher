@@ -11,8 +11,11 @@
 // map, and category charts all have something real to say. Regenerate it with
 // `bun run generate:example-data`.
 
-// A shared chart palette so every view in this model renders on-brand.
-## theme.palette.series = ["#4f46e5", "#7c3aed", "#ec4899", "#10b981", "#f59e0b", "#06b6d4"]
+// No `## theme.palette.series` here on purpose: charts inherit the server's
+// configured palette, so this model looks like whatever deployment renders it.
+// A model-level palette is for a model whose colors carry meaning of their own,
+// and it wins over the server's — which reads as a theming bug when the rest of
+// the page, the choropleth included, keeps the configured one.
 
 #(doc) People who have placed orders — one row per customer, keyed by `customer_id`
 source: customers is duckdb.table('data/customers.parquet') extend {
@@ -47,58 +50,111 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
     #(doc) Sales region for the customer's home state
     regions with customers.state
 
+  // Every field a view groups by or aggregates carries a `# label`, because the
+  // renderer titles a column, an axis and a KPI card with `# label` when there
+  // is one and the field's name when there is not — so an unlabelled model
+  // shows `total_sales` on the y axis of every chart and `percent_of_sales`
+  // over a column of percentages. One label per field is the cheapest polish
+  // in a Malloy model, and it applies everywhere the field is rendered.
   dimension:
     #(doc) Gross margin on this line (sale price minus product cost)
     # currency=usd
+    # label="Gross margin"
     gross_margin is sale_price - products.cost
+
+    // Drill tags are declared here, on the dimension, rather than on any
+    // dashboard — so every result that groups by one of these is clickable,
+    // in a dashboard tile and in a notebook cell alike. `given=` names the
+    // given the clicked value is written into; `self` filters wherever you
+    // clicked, and a slug navigates to that dashboard with the value seeded.
+    // Two destinations pop a menu. See dashboards/ and docs/dashboards.md.
+    #(doc) Product category of the item sold
+    # drill { to=["category", "self"] given=CATEGORY }
+    # label="Category"
+    category is products.category
+    #(doc) Brand of the item sold
+    # drill { to=self given=BRAND }
+    # label="Brand"
+    brand is products.brand
+    #(doc) Sales region for the customer's home state
+    # drill { to=regions given=REGION }
+    # label="Region"
+    region is regions.region
 
   measure:
     #(doc) Distinct orders
+    # label="Orders"
     order_count is count(order_id)
     #(doc) Line items sold
+    # label="Line items"
     order_item_count is count()
     #(doc) Total revenue
     # currency
+    # label="Revenue"
     total_sales is sale_price.sum()
     #(doc) Total gross margin (revenue minus cost of goods sold), summed per line
     # currency
+    # label="Gross margin"
     total_margin is gross_margin.sum()
     #(doc) Gross margin as a share of revenue
     # percent
+    # label="Margin rate"
     margin_rate is total_margin / nullif(total_sales, 0)
     #(doc) Average order value
     # currency
+    # label="Avg order value"
     avg_order_value is total_sales / nullif(order_count, 0)
     #(doc) Distinct customers
+    # label="Customers"
     customer_count is customers.count()
     #(doc) Average orders placed per customer
-    # number=auto
+    // A ratio of two counts is a long decimal by default (10.695), which reads
+    // as noise on a KPI card. One decimal place is the precision the number
+    // actually carries.
+    # number="#,##0.0"
+    # label="Orders / customer"
     orders_per_customer is order_count / nullif(customer_count, 0)
     #(doc) Share of line items that were returned
     # percent
+    # label="Return rate"
     return_rate is order_item_count { where: status = 'Returned' } / nullif(order_item_count, 0)
     #(doc) Share of total sales
     # percent
+    # label="Share of sales"
     percent_of_sales is total_sales / nullif(all(total_sales), 0)
 
   // ── Reusable views (one idea each; chart tag lives on the view) ──────
   #(doc) Top products by revenue
   view: top_products is {
     top: 10
-    group_by: products.name
+    group_by:
+      # label="Product"
+      products.name
     aggregate: total_sales, total_margin, order_item_count
   }
+  // These group by the drill-tagged dimensions above rather than by the joined
+  // columns directly. Same output field names, same numbers — but the cells
+  // carry the drill tag, so they are clickable wherever the view is rendered.
   #(doc) Revenue by product category
   # bar_chart
   view: by_category is {
-    group_by: products.category
+    group_by: category
     aggregate: total_sales
+    order_by: total_sales desc
+  }
+  // No chart tag, so this renders as a table — and a table's cells are the
+  // easiest place to meet `# drill`: clicking a category here offers to open
+  // the Category Detail dashboard or filter in place.
+  #(doc) Category performance: revenue, margin, and share of the total
+  view: category_performance is {
+    group_by: category
+    aggregate: total_sales, total_margin, margin_rate, percent_of_sales
     order_by: total_sales desc
   }
   #(doc) Gross margin by product category
   # bar_chart
   view: margin_by_category is {
-    group_by: products.category
+    group_by: category
     aggregate: total_margin
     order_by: total_margin desc
   }
@@ -106,33 +162,59 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   # bar_chart
   view: top_brands is {
     top: 8
-    group_by: products.brand
+    group_by: brand
     aggregate: total_sales
+    order_by: total_sales desc
+  }
+  // The brand equivalent of `category_performance`: a table because the ranking
+  // is the least of it — margin rate and share are what separate brands that sit
+  // within a few thousand dollars of each other. `top_brands` above answers the
+  // ranking, and both are clickable, since `brand` carries the `# drill`
+  // wherever it is grouped.
+  #(doc) Brand performance: revenue, margin, and share of the total
+  view: brand_performance is {
+    group_by: brand
+    aggregate: total_sales, total_margin, margin_rate, percent_of_sales
     order_by: total_sales desc
   }
   #(doc) Top customers by spend
   view: top_customers is {
     top: 10
-    group_by: customers.full_name, customer_id
+    group_by:
+      # label="Customer"
+      customers.full_name
+      # number=id
+      # label="Customer ID"
+      customer_id
     aggregate: total_sales, order_count
   }
   #(doc) Revenue by customer state (US choropleth)
   # shape_map
   view: sales_by_state is {
-    group_by: customers.state
-    aggregate: total_sales
+    group_by:
+      # label="State"
+      customers.state
+    // Renamed, not labelled: a shape_map titles its color legend with the
+    // measure's *name*, so `# label` alone leaves `total_sales` over the
+    // scale. The label still titles it everywhere else.
+    aggregate:
+      # currency
+      # label="Revenue"
+      revenue is total_sales
   }
   #(doc) Revenue by sales region (states rolled up via the regions lookup)
   # bar_chart
   view: sales_by_region is {
-    group_by: regions.region
+    group_by: region
     aggregate: total_sales
     order_by: total_sales desc
   }
   #(doc) Monthly revenue trend
   # line_chart
   view: sales_by_month is {
-    group_by: order_month is created_at.month
+    group_by:
+      # label="Month"
+      order_month is created_at.month
     aggregate: total_sales
     order_by: order_month
   }
@@ -141,6 +223,7 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   view: sales_by_year is {
     group_by:
       # number=id
+      # label="Year"
       order_year is year(created_at)
     aggregate: total_sales
     order_by: order_year
@@ -148,9 +231,15 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   #(doc) Seasonality: monthly revenue with one line per year (holiday spikes)
   # line_chart
   view: seasonality is {
-    group_by: month_of_year is month(created_at)
+    group_by:
+      # label="Month of year"
+      month_of_year is month(created_at)
+    // "Order year", not "Year": the legend reserves room from the longer of
+    // the series label and its widest value, so a 4-character label and
+    // 4-digit years leave a column too narrow for either and both clip.
     group_by:
       # number=id
+      # label="Order year"
       order_year is year(created_at)
     aggregate: total_sales
     order_by: month_of_year
@@ -158,37 +247,70 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   #(doc) Order counts by fulfillment status
   # bar_chart
   view: by_status is {
-    group_by: status
+    group_by:
+      # label="Status"
+      status
     aggregate: order_count
     order_by: order_count desc
   }
 
-  // ── Dashboard (KPI tiles + nested charts, one query) ────────────────
+  // ── Dashboard (KPI cards + nested charts, one query) ────────────────
+  //
+  // Laid out the way dashboards/ lays its pages out, and for the same reason:
+  // `columns=12` and colspans that sum to 12 per row, so the cards and the
+  // tiles end at the same place. Without `columns=` the grid is flex-wrap,
+  // every `# colspan` is ignored with a warning, and tiles pack by their own
+  // widths — which is how a page ends up looking accidental.
+  //
+  // The cards are top-level `aggregate:` measures, not a nested `# big_value`.
+  // A big_value nested in a dashboard renders *embedded* — the tile supplies
+  // the chrome and each card goes full width — so five measures become five
+  // stacked full-width bars inside one tile. Top-level measures are what the
+  // dashboard renderer turns into a row of cards.
   #(doc) Business overview: KPIs, monthly trend, geography, and top sellers
-  # dashboard
+  # dashboard { columns=12 }
   view: business_overview is {
+    aggregate:
+      # label="Revenue"
+      # currency
+      # colspan=3
+      total_sales
+      # label="Gross margin"
+      # currency
+      # colspan=3
+      total_margin
+      # label="Orders"
+      # colspan=3
+      order_count
+      # label="Avg order value"
+      # currency
+      # colspan=3
+      avg_order_value
+    // `# label` on the nest titles the tile; without one the heading is the
+    // view's name, which reads like a column rather than a title.
     nest:
-      # big_value
-      kpis is {
-        aggregate:
-          # label="Revenue"
-          # currency
-          total_sales
-          # label="Gross margin"
-          # currency
-          total_margin
-          # label="Orders"
-          order_count
-          # label="Customers"
-          customer_count
-          # label="Avg order value"
-          # currency
-          avg_order_value
-      }
-    nest:
+      # break
+      # colspan=6
+      # label="Revenue by month"
       sales_by_month
+      # colspan=6
+      # label="Revenue by state"
       sales_by_state
+    nest:
+      # colspan=6
+      # label="Revenue by category"
       by_category
+      # colspan=6
+      # label="Top products"
       top_products
   }
+}
+
+// A control that offers a list of choices gets them from a query like this one.
+// `BRAND`'s declaration in givens.malloy names it, and a dashboard whose control
+// row includes BRAND imports it so the suggest resolves in that file.
+#(doc) Distinct brands, for the Brand filter control's option list
+query: brand_suggest is order_items -> {
+  group_by: brand
+  order_by: brand
 }

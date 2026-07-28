@@ -1,10 +1,11 @@
 import Dashboard from "./Dashboard";
 import defaultWidgets from "../constants/defaultStorefrontDashboardWidgets.json";
+import type { AppView } from "../types/view";
 
 export default function StorefrontDashboard({
   selectedView,
 }: {
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard";
+  selectedView: AppView;
 }) {
   const customizeWidgetsEffect = (widgets: any[]) => {
     const baseUrl = import.meta.env.VITE_DEFAULT_MS2_URL || "";

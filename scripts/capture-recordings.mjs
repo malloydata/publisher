@@ -81,37 +81,57 @@ async function record(
   }
 }
 
+// Name one or more recordings to re-record just those, leaving the other GIFs
+// (and their binary diffs) alone: `node scripts/capture-recordings.mjs givens-live`.
+const only = process.argv.slice(2);
+const wanted = (name) => only.length === 0 || only.includes(name);
+
 const browser = await chromium.launch();
 await mkdir(OUT, { recursive: true });
 let ok = 0;
+let attempted = 0;
 
-// 1) SaaS HTML data app — live filtering updates KPIs, charts, and the table.
-ok += await record(browser, {
-  name: "saas-app-filtering",
-  url: `${BASE}/environments/examples/packages/html-data-app/index.html`,
+const maybeRecord = async (options) => {
+  if (!wanted(options.name)) return;
+  attempted++;
+  ok += await record(browser, options);
+};
+
+// 1) HTML data app — filtering re-queries every tile, and a cell drills.
+await maybeRecord({
+  name: "data-app-filtering",
+  url: `${BASE}/environments/examples/packages/storefront/index.html`,
   viewport: { width: 1100, height: 760 },
-  gif: "html-data-app-filtering.gif",
+  gif: "data-app-filtering.gif",
   width: 820,
   trimStart: 1.0,
   ready: async (page) => {
-    await page.waitForSelector("#mrrByMonth", { timeout: 20000 });
+    await page.waitForSelector("td.publisher-drill", { timeout: 20000 });
     await page.waitForFunction(
-      () => /^\$[\d,]/.test(document.getElementById("kpi-mrr")?.textContent || ""),
+      () =>
+        /^\$[\d,]/.test(
+          document.querySelector(".panel:not([hidden]) [data-kpi='total_sales'] .kpi-value")
+            ?.textContent || "",
+        ),
       { timeout: 20000 },
     );
   },
   steps: async (page) => {
-    await page.selectOption("#f-plan", { label: "Enterprise" });
-    await sleep(1700);
-    await page.selectOption("#f-industry", { label: "Healthcare" });
-    await sleep(1700);
+    await page.selectOption("#given-REGION", { label: "West" });
+    await sleep(1800);
+    // Then a drill: a category cell offers its destinations, and choosing one
+    // switches tab with the value seeded.
+    await page.locator('[data-tile="categories"] td.publisher-drill').first().click();
+    await sleep(1200);
+    await page.locator(".drill-menu-item", { hasText: "Category" }).click();
+    await sleep(2000);
     await page.click("#reset");
     await sleep(1400);
   },
 });
 
 // 2) Givens Parameters panel — change a control, every notebook cell re-runs.
-ok += await record(browser, {
+await maybeRecord({
   name: "givens-live",
   url: `${BASE}/examples/governed-analytics/orders.malloynb`,
   viewport: { width: 1280, height: 820 },
@@ -119,23 +139,31 @@ ok += await record(browser, {
   width: 900,
   trimStart: 1.6,
   ready: async (page) => {
-    await page.waitForSelector("input", { timeout: 20000 });
+    await page.waitForSelector('[role="combobox"]', { timeout: 20000 });
     await page.waitForSelector("svg, canvas", { timeout: 25000 }); // dashboard rendered
   },
   steps: async (page) => {
-    const inputs = page.locator("input");
-    const region = inputs.nth(0);
-    const minAmount = inputs.nth(1);
-    await minAmount.click();
-    await minAmount.fill("5000");
-    await minAmount.press("Enter");
-    await sleep(3000);
+    // The controls are what the declarations asked for: a Region dropdown, a
+    // Status multi-select, and a Minimum-amount slider.
+    const region = page.locator('[role="combobox"]').first();
     await region.click();
-    await region.fill("us-east");
-    await region.press("Enter");
+    await sleep(900);
+    await page.locator('[role="option"]', { hasText: "us-east" }).first().click();
+    await sleep(3200);
+
+    const status = page.locator('[role="combobox"]').nth(1);
+    await status.click();
+    await sleep(900);
+    await page.locator('[role="option"]', { hasText: "Complete" }).first().click();
+    await page.keyboard.press("Escape");
+    await sleep(3200);
+
+    const slider = page.locator('.MuiSlider-root input[type="range"]').first();
+    await slider.focus();
+    for (let i = 0; i < 12; i++) await page.keyboard.press("ArrowRight");
     await sleep(3200);
   },
 });
 
 await browser.close();
-console.log(`\n${ok}/2 recordings written into ${OUT}/`);
+console.log(`\n${ok}/${attempted} recordings written into ${OUT}/`);

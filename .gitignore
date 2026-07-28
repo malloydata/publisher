@@ -33,6 +33,11 @@ publisher.db
 publisher.db.wal
 publisher_data/
 
+# Ad-hoc DuckDB databases. Example and fixture data is committed as .parquet or
+# .csv and read in place, so a .duckdb in the tree is always local scratch.
+*.duckdb
+*.duckdb.wal
+
 # Credible-platform-specific artifacts must never be committed to this open-source
 # repo. `credible-*` skills live only in the Credible source-of-truth repo; the copy
 # into Publisher is by design limited to the neutral shared set (see skills/README.md).

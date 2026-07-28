@@ -22,6 +22,7 @@ import { getNextWidgetPosition } from "../utils/getNextWidgetPosition";
 import { v4 as uuidv4 } from "uuid";
 import { EmbeddedQueryResult } from "@malloy-publisher/sdk";
 import AddChartDialog from "./AddChartDialog";
+import type { AppView } from "../types/view";
 
 export default function Dashboard({
   selectedView,
@@ -30,11 +31,7 @@ export default function Dashboard({
   customizeWidgetsEffect,
   resourceUri,
 }: {
-  selectedView:
-    | "storefront"
-    | "singleEmbed"
-    | "dynamicDashboard"
-    | "interactive";
+  selectedView: AppView;
   storageKey: string;
   defaultWidgets?: Widget[];
   customizeWidgetsEffect?: (widgets: Widget[]) => void;

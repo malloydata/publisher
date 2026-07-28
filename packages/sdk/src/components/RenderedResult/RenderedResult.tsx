@@ -1,5 +1,11 @@
 import { Box } from "@mui/material";
-import React, { Suspense, useEffect, useLayoutEffect, useRef } from "react";
+import React, {
+   Suspense,
+   useCallback,
+   useEffect,
+   useLayoutEffect,
+   useRef,
+} from "react";
 import { buildMalloyExplicitTheme } from "../../theme/buildMalloyExplicitTheme";
 import { buildTableCssVars } from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
@@ -7,6 +13,14 @@ import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
+import {
+   DRILL_CELL_CLASS,
+   drillableFieldNames,
+   markDrillableCells,
+   type DrillMetadataSource,
+} from "../drill/markDrillableCells";
+import type { DrillClickPayload } from "../drill/resolveDrill";
+import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
 
@@ -16,7 +30,7 @@ type MalloyRenderElement = HTMLElement & Record<string, unknown>;
  * declared on the renderer's public type. Keep in sync with
  * `@malloydata/render` if more methods are needed.
  */
-interface MalloyVizHandle {
+interface MalloyVizHandle extends DrillMetadataSource {
    setResult: (result: unknown) => void;
    render: (element: HTMLElement) => void;
    remove: () => void;
@@ -38,17 +52,40 @@ declare global {
    }
 }
 
+/**
+ * What the renderer made of the result, as far as its container needs to care.
+ *
+ * The three differ in how height works, which is the whole reason to tell them
+ * apart. A `chart` sizes itself to the box it is given (the renderer's "fill"
+ * strategy), so its container's height is a *decision*, not a cap. A
+ * `dashboard` and a table lay themselves out and report what they need, so
+ * their container's height is a cap — and a dashboard's natural height is one
+ * worth granting, since capping it puts a scrollbar inside a page that already
+ * scrolls.
+ */
+export type RenderedResultKind = "dashboard" | "chart" | "other";
+
+/** How long a table's height has to hold still before it is believed. */
+const TABLE_SETTLE_MS = 120;
+/** Ceiling on the corrections a table's height is allowed to report. */
+const TABLE_HEIGHT_REPORTS = 5;
+
 interface RenderedResultProps {
    result: string;
    height?: number;
    isFillElement?: (boolean) => void;
-   onSizeChange?: (height: number) => void;
-   onDrill?: (element: unknown) => void;
+   onSizeChange?: (height: number, kind: RenderedResultKind) => void;
+   /**
+    * Makes `# drill` cells clickable, and makes them look it. From
+    * `useDrill` on the host surface, which decides where a click may go;
+    * omitted where nothing can act on one, and then the result renders inert.
+    */
+   drill?: DrillBinding;
 }
 
 const createRenderer = async (
    theme: ResolvedTheme,
-   onDrill?: (element: unknown) => void,
+   onClick?: DrillBinding["onClick"],
 ): Promise<MalloyVizHandle> => {
    if (typeof window === "undefined") {
       throw new Error("MalloyRenderer can only be used in browser environment");
@@ -56,7 +93,7 @@ const createRenderer = async (
 
    const { MalloyRenderer } = await import("@malloydata/render");
    const renderer = new MalloyRenderer({
-      onClick: onDrill,
+      onClick,
       vegaConfigOverride: buildVegaThemeOverride(theme),
       // Pass the explicit theme so table chrome and dashboard tiles
       // pick up the operator's colours directly. Without this the
@@ -223,6 +260,54 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
 .malloy-render .cell-content.header {
    color: var(--malloy-render--table-header-color) !important;
 }
+/* Two tiles side by side should end at the same place, and the thing
+   inside each should reach its edges. The renderer gets that right for a
+   line or bar chart, whose wrapper it stretches to the tile
+   (.dashboard-item-value > [data-plugin] > .malloy-chart), and leaves the
+   gaps below. The map and centring rules are tile-scoped; the table rule is
+   not, since a notebook cell has the same slack to close. */
+.malloy-render .dashboard-item-value > [data-render-mode="dom"] > svg {
+   /* shape_map, segment_map and scatter_chart render into the DOM rather
+      than through the chart wrapper, at a hardcoded 250x175 when nested,
+      so a wide tile got a small map hugging its left edge. Their Vega SVG
+      carries a viewBox, so scaling it by CSS is exact rather than
+      approximate, and the tile's colspan becomes the map's size. */
+   width: 100%;
+   height: auto;
+}
+.malloy-render .dashboard-item-value:has(> [data-plugin]) {
+   /* Tiles in a grid row are as tall as the tallest, and a chart draws at its
+      own height, so a short chart sat against the top of a tall tile with the
+      slack below it. Centre it instead. Charts only — a table can be taller
+      than its tile and centring one would put its first row out of reach. */
+   display: grid;
+   align-content: center;
+}
+.malloy-render .malloy-table.root {
+   /* A root table is laid out at the width it was given, but its column
+      tracks are minmax(auto, max-content), so a five-column table filled
+      450px of a 1050px tile (or notebook cell) and the rest read as a
+      rendering bug. Give each column a share of the slack, with its content
+      width as the floor — the behaviour of a plain table at width 100%.
+      Roots only: a nested table is a cell's contents and sizes to it. */
+   grid-template-columns: repeat(
+      var(--total-header-size),
+      minmax(max-content, 1fr)
+   ) !important;
+}
+/* A cell whose column declares a "# drill" this surface can honor, marked
+   by markDrillableCells. Ordinary text with a pointer cursor until hovered,
+   then it reads as a link — the same affordance Malloyyo gives the same tag,
+   and the only thing that tells a reader a cell navigates. Kept off the
+   resting state deliberately: a column painted blue competes with the data.
+   (No backticks in here: this is inside a template literal.) */
+.malloy-render .${DRILL_CELL_CLASS} {
+   cursor: pointer;
+}
+.malloy-render .${DRILL_CELL_CLASS}:hover > .cell-content {
+   color: var(--publisher-drill-link) !important;
+   text-decoration: underline;
+}
 `;
 
 /**
@@ -249,7 +334,7 @@ function injectRendererOverrides(): void {
 function RenderedResultInner({
    result,
    height: inputHeight,
-   onDrill,
+   drill,
    onSizeChange,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
@@ -266,6 +351,21 @@ function RenderedResultInner({
    // bails, so overlapping renders can't leave two charts or leak a viz.
    const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
+
+   // The renderer binds its click handler at construction, so a changing
+   // `drill` identity would otherwise re-run the render effect and rebuild the
+   // chart — undoing the no-flicker swap above every time the parent re-renders.
+   // Read the latest binding through a ref instead, and keep `drill` out of the
+   // effect's dependencies, so callers can pass an inline one safely.
+   const drillRef = useRef(drill);
+   drillRef.current = drill;
+   const handleDrillClick = useCallback((payload: DrillClickPayload) => {
+      drillRef.current?.onClick(payload);
+   }, []);
+   // Whether any drill is wired at all, which is what the effect has to react
+   // to: a surface that gains or loses the capability has to (re)mark its cells,
+   // but a new inline binding with the same capability must not rebuild anything.
+   const drillable = drill !== undefined;
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
    // render effect's cleanup: a re-run must keep the old chart until the new
@@ -292,6 +392,9 @@ function RenderedResultInner({
       let stage: HTMLDivElement | undefined;
       let viz: MalloyVizHandle | undefined;
       let observer: MutationObserver | null = null;
+      let drillObserver: MutationObserver | null = null;
+      let settleObserver: ResizeObserver | null = null;
+      let drillFrame = 0;
       let measureTimeout: NodeJS.Timeout | null = null;
       // Safety net so a render that never signals ready (an async renderer
       // error that only reaches onError) can't leave a previous chart showing
@@ -300,36 +403,82 @@ function RenderedResultInner({
 
       hasMeasuredRef.current = false;
 
-      // Measure the rendered chart's natural height off `root` (the stage that
-      // wraps the renderer output) and report it up. Same grandchild/dashboard
-      // HACK as before, just anchored on the stage wrapper.
-      const measureRenderedSize = (root: HTMLElement) => {
-         if (hasMeasuredRef.current || cancelled || !root.firstElementChild)
-            return;
-         const child = root.firstElementChild as HTMLElement;
-         const grandchild = child.firstElementChild as HTMLElement;
-         if (!grandchild) return;
-         const greatgrandchild = grandchild.firstElementChild as HTMLElement;
-         let renderedHeight =
-            grandchild.scrollHeight || grandchild.offsetHeight || 0;
+      // Read the rendered result's natural height and what kind of thing it is
+      // off `root` (the stage that wraps the renderer output).
+      const readRenderedSize = (
+         root: HTMLElement,
+      ): {
+         height: number;
+         kind: RenderedResultKind;
+         /** The element the height was read off, for a watcher to observe. */
+         element: HTMLElement;
+      } | null => {
+         const child = root.firstElementChild as HTMLElement | null;
+         const grandchild = child?.firstElementChild as HTMLElement | null;
+         if (!grandchild) return null;
+         const greatgrandchild =
+            grandchild.firstElementChild as HTMLElement | null;
+         const isDashboard = grandchild.classList.contains("malloy-dashboard");
 
          // HACK - malloy dashboards height are determined by the greatgrandchild.
-         if (
-            greatgrandchild &&
-            grandchild.classList.contains("malloy-dashboard")
-         ) {
-            renderedHeight =
-               greatgrandchild.scrollHeight ||
-               greatgrandchild.offsetHeight ||
-               0;
-         }
+         const measured =
+            isDashboard && greatgrandchild
+               ? greatgrandchild.scrollHeight ||
+                 greatgrandchild.offsetHeight ||
+                 0
+               : grandchild.scrollHeight || grandchild.offsetHeight || 0;
+         if (measured <= 0) return null;
 
-         if (renderedHeight > 0) {
-            hasMeasuredRef.current = true;
-            if (onSizeChange) {
-               onSizeChange(renderedHeight);
-            }
-         }
+         return {
+            height: measured,
+            kind: isDashboard
+               ? "dashboard"
+               : grandchild.hasAttribute("data-plugin") &&
+                   grandchild.querySelector(":scope > .malloy-chart")
+                 ? "chart"
+                 : "other",
+            element:
+               isDashboard && greatgrandchild ? greatgrandchild : grandchild,
+         };
+      };
+
+      // A dashboard is measured once, deliberately: its grid divides the height
+      // it is handed among its rows, so re-measuring and re-applying does not
+      // converge — given its own content height back, the renderer reflows the
+      // tiles and asks for more than it just reported.
+      //
+      // A table's height is its rows: intrinsic, and unrelated to the box it was
+      // handed, so re-reporting it converges (unlike a dashboard's, above). It
+      // is also not final when the renderer says ready — the column tracks are
+      // still being sized, and a table measured mid-build reads thousands of
+      // pixels tall. So keep reading until it holds still, bounded.
+      const watchTableHeight = (root: HTMLElement, table: HTMLElement) => {
+         if (typeof ResizeObserver === "undefined") return;
+         let reports = 0;
+         let settle: ReturnType<typeof setTimeout> | null = null;
+         settleObserver = new ResizeObserver(() => {
+            if (settle) clearTimeout(settle);
+            settle = setTimeout(() => {
+               if (cancelled) return;
+               const next = readRenderedSize(root);
+               if (!next || next.kind !== "other") return;
+               reports += 1;
+               if (reports >= TABLE_HEIGHT_REPORTS)
+                  settleObserver?.disconnect();
+               onSizeChange?.(next.height, "other");
+            }, TABLE_SETTLE_MS);
+         });
+         settleObserver.observe(table);
+      };
+
+      const measureRenderedSize = (root: HTMLElement) => {
+         if (hasMeasuredRef.current || cancelled) return;
+         const size = readRenderedSize(root);
+         if (!size) return;
+         hasMeasuredRef.current = true;
+         onSizeChange?.(size.height, size.kind);
+         if (size.kind === "other" && size.element)
+            watchTableHeight(root, size.element);
       };
 
       (async () => {
@@ -349,7 +498,7 @@ function RenderedResultInner({
          if (!isCurrent()) return;
 
          try {
-            viz = await createRenderer(effectiveTheme, onDrill);
+            viz = await createRenderer(effectiveTheme, handleDrillClick);
          } catch (error) {
             console.error("Failed to create renderer:", error);
             return;
@@ -428,6 +577,32 @@ function RenderedResultInner({
             // in the SDK to avoid pinning to the malloy core types here.
             viz.setResult(parsed);
             viz.render(stage);
+
+            // Mark the cells a `# drill` makes clickable, so they read as links.
+            // The names come from the result's field metadata, which is complete
+            // as soon as it is set — but the DOM is not: a `# dashboard` result
+            // builds its cards over later frames, so a one-shot pass right after
+            // render() would miss every table that appears after it. Hence the
+            // observer, which re-marks (batched to a frame) as cards arrive.
+            const binding = drillRef.current;
+            if (binding) {
+               const names = drillableFieldNames(activeViz, binding.canDrill);
+               const mark = () => markDrillableCells(stageNode, names);
+               mark();
+               if (names.size > 0 && typeof MutationObserver !== "undefined") {
+                  drillObserver = new MutationObserver(() => {
+                     cancelAnimationFrame(drillFrame);
+                     drillFrame = requestAnimationFrame(mark);
+                  });
+                  // childList only: marking writes classes, and observing
+                  // attributes would have it retrigger itself every frame.
+                  drillObserver.observe(stageNode, {
+                     childList: true,
+                     subtree: true,
+                  });
+               }
+            }
+
             viz.onReady(promote);
             // If onReady never fires (an async render error that only reaches
             // the renderer's onError), force the swap after a bounded wait so
@@ -437,6 +612,7 @@ function RenderedResultInner({
          } catch (error) {
             console.error("Error rendering visualization:", error);
             observer?.disconnect();
+            drillObserver?.disconnect();
             viz.remove();
             viz = undefined;
             if (stageNode.parentNode === element) {
@@ -448,6 +624,9 @@ function RenderedResultInner({
       return () => {
          cancelled = true;
          observer?.disconnect();
+         drillObserver?.disconnect();
+         settleObserver?.disconnect();
+         cancelAnimationFrame(drillFrame);
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
          // If this render built a stage but never swapped it into `liveRef`
@@ -464,7 +643,15 @@ function RenderedResultInner({
             element.style.position = "";
          }
       };
-   }, [result, onDrill, onSizeChange, baseTheme, layers, mode]);
+   }, [
+      result,
+      handleDrillClick,
+      drillable,
+      onSizeChange,
+      baseTheme,
+      layers,
+      mode,
+   ]);
 
    // Malloy renderer requires explicit pixel height to render visualizations
    return (

@@ -7,6 +7,7 @@ Publisher is the open-source semantic model server for [Malloy](https://malloyda
 - Discover what data exists: environments, packages, models, sources, and fields, without knowing any names in advance.
 - Answer plain-English questions by running Malloy queries, which Publisher compiles to SQL and runs against the connected database.
 - Build and change Malloy models: validate an edit with `malloy_compile`, save it, then `malloy_reloadPackage` to run it by name. The `malloy-modeling` skill covers the workflow.
+- Build a dashboard: a tagged `.malloy` file in a package's `dashboards/` directory, with filter controls, a grid layout, and click-through drill, all declared in tags. The `malloy-dashboards` skill covers it.
 - Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `malloy-html-data-apps` skill covers it.
 - Review Malloy for correctness with the `malloy-review` skill.
 
@@ -94,13 +95,13 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 Ask "what can I explore here?" A good sequence is:
 
 1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `examples`).
-2. `malloy_getContext` with that environment, then pick a package (the bundled packages are `storefront`, `governed-analytics`, and `html-data-app`).
+2. `malloy_getContext` with that environment, then pick a package (the bundled packages are `storefront` and `governed-analytics`).
 3. `malloy_getContext` with the package and your question, to get the source, view, and field names.
 4. `malloy_executeQuery` with those names, to get the answer. Charts and dashboards defined in the model render in the UI at http://localhost:4000.
 
 ## 5. Skills
 
-The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `malloy-getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness. Most of these are shared, open-source Malloy skills kept in sync with an upstream repo; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills map to this server's `malloy_*` tools.
+The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `malloy-getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, `malloy-dashboards` to build a dashboard, and `malloy-review` to check Malloy for correctness. Most of these are shared, open-source Malloy skills kept in sync with an upstream repo; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills map to this server's `malloy_*` tools.
 
 ## 6. Iterating on a model (watch mode)
 
@@ -136,4 +137,4 @@ Reading this file without a clone? Every doc referenced here resolves at `https:
 ## 8. Going deeper
 
 - [`docs/`](docs/) is the reference hub, see its [index](docs/README.md). Start with [docs/ai-agents.md](docs/ai-agents.md) for per-client MCP config and the MCP tool reference.
-- [`examples/`](examples/) holds the three served packages: [`storefront`](examples/storefront) (ecommerce model + dashboards), [`governed-analytics`](examples/governed-analytics) (givens, authorize, row-level access), and [`html-data-app`](examples/html-data-app) (a no-build HTML dashboard). [`data-app`](examples/data-app) is a standalone React SDK app, not a served package.
+- [`examples/`](examples/) holds the two served packages: [`storefront`](examples/storefront) (ecommerce model, a notebook, four [`dashboards/`](examples/storefront/dashboards), and an HTML data app — every surface on one dataset) and [`governed-analytics`](examples/governed-analytics) (givens, authorize, row-level access). [`data-app`](examples/data-app) is a standalone React SDK app, not a served package.

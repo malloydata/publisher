@@ -2,11 +2,12 @@ import { Stack, Typography, Box, Alert } from "@mui/material";
 import Header from "./Header";
 import { EmbeddedQueryResult } from "@malloy-publisher/sdk";
 import { useState, useEffect } from "react";
+import type { AppView } from "../types/view";
 
 export default function SingleEmbedDashboard({
   selectedView,
 }: {
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
+  selectedView: AppView;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);

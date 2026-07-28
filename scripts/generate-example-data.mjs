@@ -12,7 +12,6 @@
 //   examples/storefront/data/{customers,products,order_items}.parquet
 //   examples/storefront/data/regions.csv
 //   examples/governed-analytics/orders.parquet
-//   examples/html-data-app/subscriptions.parquet
 import { DuckDBInstance } from "@duckdb/node-api";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -251,70 +250,6 @@ function buildGoverned() {
   return rows;
 }
 
-// ── SaaS subscriptions (html-data-app) ───────────────────────────────────────
-function buildSubscriptions() {
-  const PLANS = [
-    ["Starter", [39, 99], [1, 5], 30],
-    ["Pro", [199, 399], [5, 25], 34],
-    ["Business", [599, 1200], [20, 80], 24],
-    ["Enterprise", [1800, 6000], [75, 400], 12],
-  ];
-  const INDUSTRIES = [
-    "Software", "Financial Services", "Healthcare", "Retail", "Education",
-    "Media", "Manufacturing", "Nonprofit",
-  ];
-  const COUNTRIES = [
-    ["United States", 44], ["Canada", 10], ["United Kingdom", 10],
-    ["Germany", 8], ["France", 6], ["Australia", 6], ["India", 6],
-    ["Brazil", 5], ["Netherlands", 5],
-  ];
-  const PREFIX = [
-    "North", "Blue", "Bright", "Data", "Cloud", "Peak", "Nova", "Iron",
-    "Green", "Swift", "Prime", "Vela", "Echo", "Lumen", "Atlas", "Orbit",
-    "Cedar", "Delta", "Onyx", "Quill",
-  ];
-  const SUFFIX = [
-    "Labs", "Systems", "Group", "Works", "Analytics", "Digital", "Partners",
-    "Technologies", "Health", "Retail", "Studio", "Networks", "Dynamics",
-    "Collective", "Industries",
-  ];
-
-  const rows = [];
-  const N = 800;
-  const startWindow = new Date("2023-01-01");
-  for (let i = 1; i <= N; i++) {
-    const [plan, [mrrLo, mrrHi], [seatLo, seatHi]] = weighted(
-      PLANS.map((p) => [p, p[3]]),
-    );
-    const started = addDays(startWindow, randInt(0, 365 * 3 - 1));
-    // Churn probability decays for higher tiers; trials are recent-only.
-    const churnP = { Starter: 0.28, Pro: 0.18, Business: 0.11, Enterprise: 0.05 }[plan];
-    const daysSince = Math.floor((new Date("2025-12-31") - started) / 86400000);
-    let status, churned_at = null;
-    if (daysSince < 45 && rand() < 0.5) {
-      status = "Trial";
-    } else if (rand() < churnP) {
-      status = "Churned";
-      churned_at = iso(addDays(started, randInt(60, Math.max(90, daysSince))));
-    } else {
-      status = "Active";
-    }
-    rows.push({
-      subscription_id: i,
-      account_name: `${pick(PREFIX)} ${pick(SUFFIX)}`,
-      plan,
-      industry: pick(INDUSTRIES),
-      country: weighted(COUNTRIES),
-      seats: randInt(seatLo, seatHi),
-      mrr: round2(mrrLo + rand() * (mrrHi - mrrLo)),
-      status,
-      started_at: iso(started),
-      churned_at,
-    });
-  }
-  return rows;
-}
-
 // ── Write helpers ────────────────────────────────────────────────────────────
 async function writeTable(con, tmp, outPath, rows, columns, format) {
   const base = outPath.replace(/[\/]/g, "_");
@@ -370,17 +305,9 @@ async function main() {
       status: "VARCHAR", amount: "DOUBLE", order_date: "DATE",
     });
 
-    const subs = buildSubscriptions();
-    await writeParquet(con, tmp, "examples/html-data-app/subscriptions.parquet", subs, {
-      subscription_id: "BIGINT", account_name: "VARCHAR", plan: "VARCHAR",
-      industry: "VARCHAR", country: "VARCHAR", seats: "BIGINT",
-      mrr: "DOUBLE", status: "VARCHAR", started_at: "DATE", churned_at: "DATE",
-    });
-
     console.log("Wrote:");
     console.log(`  storefront   customers=${sf.customers.length} products=${sf.products.length} order_items=${sf.order_items.length} regions=${regions.length} (csv)`);
     console.log(`  governed     orders=${gov.length}`);
-    console.log(`  subscriptions rows=${subs.length}`);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

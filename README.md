@@ -28,10 +28,10 @@ npx @malloy-publisher/server --port 4000
 ```
 
 Open **http://localhost:4000** and explore the bundled example packages —
-[`storefront`](examples/storefront) (a complete ecommerce model),
-[`governed-analytics`](examples/governed-analytics) (access control), and
-[`html-data-app`](examples/html-data-app) (a no-build dashboard) —
-all DuckDB-backed, no credentials required. Give the server a moment to report `serving`:
+[`storefront`](examples/storefront) (a complete ecommerce model, a notebook, four
+[dashboards](examples/storefront/dashboards), and a no-build HTML data app) and
+[`governed-analytics`](examples/governed-analytics) (access control) —
+both DuckDB-backed, no credentials required. Give the server a moment to report `serving`:
 
 ```bash
 curl -s http://localhost:4000/api/v0/status | jq .operationalState   # → "serving"
@@ -99,8 +99,14 @@ covers agents in both modes, MCP and REST.
 - **Answer questions with AI.** Connect an agent over MCP and ask in plain English — see above and
   [docs/ai-agents.md](docs/ai-agents.md).
 - **Surface analytics your way.** Explore and share with zero code in the
-  [Publisher App](docs/publisher-app.md), or ship a no-build
-  [HTML data app](docs/html-data-apps.md) that Publisher hosts inside a package.
+  [Publisher Console](docs/console.md), ship a [dashboard](docs/dashboards.md) that is just a tagged
+  `.malloy` file, or hand-author a no-build [HTML data app](docs/html-data-apps.md) that Publisher
+  hosts inside a package. [docs/choosing-a-surface.md](docs/choosing-a-surface.md) picks between them.
+- **Ship dashboards from the model.** A `dashboards/*.malloy` file _is_ a dashboard: filter controls
+  are rendered from the [givens](docs/givens.md) its query references, the grid comes from a renderer
+  tag, and `# drill` on a dimension makes cells click through — in a dashboard tile and a notebook
+  cell alike. No code, no build step. See [docs/dashboards.md](docs/dashboards.md) and the four in
+  [`examples/storefront/dashboards`](examples/storefront/dashboards).
 - **Build & validate models.** Author Malloy models guided by the bundled [skills](skills/), then
   publish them for serving. Agents get the same loop over MCP: `malloy_compile` checks an edit and
   returns diagnostics without running it, and `malloy_reloadPackage` recompiles a package from disk
@@ -120,13 +126,14 @@ The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README
 
 | Topic                                               | Doc                                                                                                                                                                                      |
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runnable example packages                           | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
+| Runnable example packages                           | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [data-app](examples/data-app))                                            |
 | Architecture & how it fits together                 | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
 | REST & MCP API overview                             | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
 | The package format (`publisher.json`, models, data) | [docs/packages.md](docs/packages.md)                                                                                                                                                     |
-| The Publisher App (navigation & features)           | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
+| The Publisher Console (navigation & features)       | [docs/console.md](docs/console.md)                                                                                                                                                       |
 | No-code visual query builder                        | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
 | Connect an AI agent (MCP, or REST when unattended)  | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
+| Dashboards declared in Malloy tags                  | [docs/dashboards.md](docs/dashboards.md) · [choosing a surface](docs/choosing-a-surface.md)                                                                                               |
 | Build a custom UI (no build step)                   | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
 | Runtime parameters & access control                 | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md)                                     |
 | Deploy (npx / Docker / Compose)                     | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |

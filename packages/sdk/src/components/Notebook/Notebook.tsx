@@ -1,35 +1,17 @@
 import "@malloydata/malloy-explorer/styles.css";
-import * as Malloy from "@malloydata/malloy-interfaces";
-import { Box, Paper, Stack, Typography } from "@mui/material";
-import {
-   MouseEvent,
-   useCallback,
-   useEffect,
-   useMemo,
-   useRef,
-   useState,
-} from "react";
-import { RawNotebook, Source } from "../../client";
-import {
-   getDimensionKey,
-   useDimensionalFilterRangeData,
-} from "../../hooks/useDimensionalFilterRangeData";
-import {
-   FilterSelection,
-   useDimensionFilters,
-} from "../../hooks/useDimensionFilters";
-import { GivenValue, useGivensForm } from "../../hooks/useGivensForm";
+import { Stack, Typography } from "@mui/material";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RawNotebook } from "../../client";
+import { GivenValue } from "../../hooks/givenValue";
+import { useGivensState } from "../../hooks/useGivensState";
 import { useModelGivens } from "../../hooks/useModelGivens";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { DimensionFilter, RetrievalFunction } from "../filter/DimensionFilter";
-import {
-   extractDimensionSpecs,
-   parseAllSourceInfos,
-   parseNotebookFilterAnnotation,
-} from "../filter/utils";
+import type { NavigationClick } from "../click_helper";
 import { GivensPanel } from "../given";
+import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
@@ -42,19 +24,30 @@ const MAX_CONCURRENT = 4;
 interface NotebookProps {
    resourceUri: string;
    maxResultSize?: number;
-   /** Optional retrieval function for semantic search filters */
-   retrievalFn?: RetrievalFunction;
-   /** Optional SPA navigation handler for links inside the notebook. When
-    * omitted, in-notebook links fall back to plain absolute anchors, so no
-    * react-router context is required to render a notebook. */
-   onNavigate?: (to: string, event?: MouseEvent) => void;
+   /**
+    * Parameter values from the host, typically its URL query parameters — the
+    * same contract `Dashboard` takes, so a link into a filtered notebook works
+    * the way a link into a filtered dashboard does.
+    */
+   givens?: Record<string, string>;
+   /**
+    * Applied parameter values, for a host that wants them in its URL. Fires
+    * with what the cells reflect, not with every keystroke.
+    */
+   onGivensChange?: (givens: Record<string, string>) => void;
+   /** Optional SPA navigation handler for links inside the notebook, and for a
+    * `# drill` click leaving a cell for a dashboard. When omitted, in-notebook
+    * links fall back to plain absolute anchors, so no react-router context is
+    * required to render a notebook, and drill is inert. */
+   onNavigate?: (to: string, event?: NavigationClick) => void;
 }
 
 // Requires PackageProvider
 export default function Notebook({
    resourceUri,
    maxResultSize = 0,
-   retrievalFn,
+   givens,
+   onGivensChange,
    onNavigate,
 }: NotebookProps) {
    const { apiClients } = useServer();
@@ -91,245 +84,97 @@ export default function Notebook({
    const [isExecuting, setIsExecuting] = useState(false);
    const [executionError, setExecutionError] = useState<Error | null>(null);
 
-   // Parse filter configuration from notebook annotations (legacy ##(filters) approach)
-   const filterConfig = useMemo(() => {
-      if (!notebook) return null;
-      return parseNotebookFilterAnnotation(notebook.annotations);
-   }, [notebook]);
-
-   // Parse all SourceInfos from notebook cells and create a map
-   const sourceData = useMemo(() => {
-      if (!notebook?.notebookCells) return null;
-      return parseAllSourceInfos(notebook.notebookCells);
-   }, [notebook]);
-
-   const sourceInfoMap = useMemo(
-      () => sourceData?.sourceInfoMap ?? new Map<string, Malloy.SourceInfo>(),
-      [sourceData],
-   );
-   const modelPath = sourceData?.modelPath ?? null;
-
-   // Extract server-side filter definitions from notebook sources
-   // These come from #(filter) annotations parsed by the server
-   const serverFilters = useMemo(() => {
-      const result = new Map<string, Source["filters"]>();
-      if (!notebook?.sources) return result;
-      for (const source of notebook.sources as Source[]) {
-         if (source.name && source.filters && source.filters.length > 0) {
-            // Exclude implicit filters from the UI
-            const visibleFilters = source.filters.filter((f) => !f.implicit);
-            if (visibleFilters.length > 0) {
-               result.set(source.name, visibleFilters);
-            }
-         }
-      }
-      return result;
-   }, [notebook]);
-
-   // Determine if we're using server-driven filters (#(filter)) or legacy (##(filters))
-   const useServerFilters = serverFilters.size > 0;
-
-   // Build dimension specs from filter config and source info map
-   // Each spec includes source and model for proper query routing
-   const dimensionSpecs = useMemo(() => {
-      if (useServerFilters && modelPath) {
-         // Server-driven: build specs from #(filter) metadata
-         const specs: import("../../hooks/useDimensionalFilterRangeData").DimensionSpec[] =
-            [];
-         for (const [sourceName, filters] of serverFilters) {
-            for (const filter of filters ?? []) {
-               if (!filter.dimension || !filter.type) continue;
-
-               // Choose widget type based on the dimension's data type first,
-               // then fall back to the annotation's comparator type
-               type FT =
-                  import("../../hooks/useDimensionalFilterRangeData").FilterType;
-               let filterType: FT;
-               const dimType = filter.dimensionType;
-               if (dimType === "boolean") {
-                  filterType = "Boolean";
-               } else if (
-                  dimType === "date" ||
-                  dimType === "timestamp" ||
-                  dimType === "timestamptz"
-               ) {
-                  filterType = "DateMinMax";
-               } else if (dimType === "number") {
-                  filterType =
-                     filter.type === "equal" || filter.type === "in"
-                        ? "Star"
-                        : "MinMax";
-               } else {
-                  const filterTypeMap: Record<string, FT> = {
-                     equal: "Star",
-                     in: "Star",
-                     like: "Star",
-                     greater_than: "MinMax",
-                     less_than: "MinMax",
-                  };
-                  filterType = filterTypeMap[filter.type] ?? "Star";
-               }
-
-               // Derive the match type from the #(filter) annotation type so
-               // the UI never needs to show a match-type dropdown.
-               type MT = import("../../hooks/useDimensionFilters").MatchType;
-               const matchTypeMap: Record<string, MT> = {
-                  equal: "Equals",
-                  in: "Equals",
-                  like: "Contains",
-                  greater_than:
-                     filterType === "DateMinMax" ? "After" : "Greater Than",
-                  less_than:
-                     filterType === "DateMinMax" ? "Before" : "Less Than",
-               };
-               const defaultMatchType: MT | undefined =
-                  matchTypeMap[filter.type!];
-
-               const filterLabel =
-                  filter.name !== filter.dimension ? filter.name : undefined;
-               specs.push({
-                  source: sourceName,
-                  model: modelPath,
-                  dimensionName: filter.dimension!,
-                  filterType,
-                  label: filterLabel,
-                  filterName: filter.name ?? filter.dimension!,
-                  defaultMatchType,
-                  required: filter.required ?? false,
-               });
-            }
-         }
-         return specs;
-      }
-      // Legacy: use ##(filters) + #(filter) annotation approach
-      if (!filterConfig || sourceInfoMap.size === 0 || !modelPath) return [];
-      return extractDimensionSpecs(
-         sourceInfoMap,
-         filterConfig.filters,
-         modelPath,
-      );
-   }, [
-      useServerFilters,
-      serverFilters,
-      filterConfig,
-      sourceInfoMap,
-      modelPath,
-   ]);
-
-   // Initialize dimension filters hook
-   const { filterStates, updateFilter, getActiveFilters } = useDimensionFilters(
-      {
-         dimensionSpecs,
-      },
-   );
-
-   // Get active filters - include filterStates in deps to ensure updates when individual items change
-   const activeFilters = useMemo(
-      () => getActiveFilters(),
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [filterStates, getActiveFilters],
-   );
-
-   // Extract model-level givens declared via `given:` and manage user overrides
+   // Model-level `given:` declarations, and the state behind their controls.
+   // The same hook the dashboard viewer uses, so both surfaces get URL-
+   // addressable parameters, Apply batching, and `to=self` drill from one
+   // implementation rather than two that drift.
    const declaredGivens = useModelGivens(notebook);
-   const {
-      givenValues,
-      updateGiven,
-      clearAll: clearAllGivens,
-   } = useGivensForm(declaredGivens);
+   const declaredTypes = useMemo(
+      () =>
+         new Map(
+            declaredGivens
+               .filter((given) => given.name !== undefined)
+               .map((given) => [given.name as string, given.type]),
+         ),
+      [declaredGivens],
+   );
 
-   // Create a map of dimension key -> source name for quick lookup (used by filter UI)
-   const _dimensionToSourceMap = useMemo(() => {
-      const map = new Map<string, string>();
-      for (const spec of dimensionSpecs) {
-         const key = getDimensionKey(spec);
-         map.set(key, spec.source);
-      }
-      return map;
-   }, [dimensionSpecs]);
+   // Batching matters more here than on a dashboard: one control change re-runs
+   // every cell in the document, so an author with expensive cells can ask for
+   // an Apply button with a file-level `## autorun=false`.
+   const autorun = notebook?.autorun !== false;
+   const { draft, applied, setGiven, clearAll, apply, pending } =
+      useGivensState({
+         declaredTypes,
+         // Where the controls start, from a file-level `## givens { … }`. A URL
+         // beats them, so a shared link still shows what the sender saw.
+         startingValues: notebook?.startingGivens,
+         params: givens,
+         onParamsChange: onGivensChange,
+         autorun,
+      });
 
-   // Fetch filter range data when we have dimension specs.
-   // Do NOT pass activeFilters here — the index query should return all
-   // possible values for each dimension, not just those matching the
-   // current selection. Otherwise selecting "FORD" would hide every other
-   // manufacturer from the dropdown.
-   const { data: filterValuesData } = useDimensionalFilterRangeData({
-      environment: environmentName,
-      package: packageName,
-      dimensionSpecs,
-      versionId,
-      enabled: dimensionSpecs.length > 0,
-   });
+   // A notebook's model path is the notebook itself: `suggest` queries run
+   // against the same model the cells do.
+   const { options: givenOptions, isLoading: givenOptionsLoading } =
+      useSuggestOptions(
+         environmentName,
+         packageName,
+         notebookPath,
+         declaredGivens,
+      );
 
-   /**
-    * Convert active FilterSelections into a flat { filterName: value } map
-    * suitable for the server's filter_params parameter.
-    * Uses filterName from the selection (propagated from the spec) as the
-    * API param key, falling back to dimensionName.
-    */
-   const buildFilterParams = useCallback(
-      (filtersToApply: FilterSelection[]): string | undefined => {
-         if (filtersToApply.length === 0) return undefined;
-
-         const toParamString = (v: unknown): string => {
-            if (v instanceof Date) {
-               return v.toISOString().slice(0, 10);
-            }
-            return String(v);
-         };
-
-         const params: { [key: string]: string | string[] } = {};
-         for (const f of filtersToApply) {
-            const paramName = f.filterName ?? f.dimensionName;
-            const val = f.value;
-            if (Array.isArray(val)) {
-               params[paramName] = val.map(toParamString);
-            } else if (val !== undefined && val !== null) {
-               params[paramName] = toParamString(val);
-            }
+   // `to=self` filters in place, which only works for a given this notebook
+   // actually declares: sending one it cannot bind would fail every cell. The
+   // mismatch is reported to the author rather than issued — same rule, same
+   // wording, as the dashboard viewer.
+   const onDrillSelf = useCallback(
+      (given: string, value: string) => {
+         if (!declaredTypes.has(given)) {
+            console.warn(
+               `# drill { to=self } tried to set '${given}', which ` +
+                  `'${notebookPath}' does not declare as a given. Name the ` +
+                  `given with 'given=' on the drill tag.`,
+            );
+            return;
          }
-         return Object.keys(params).length > 0
-            ? JSON.stringify(params)
-            : undefined;
+         setGiven(given, value);
       },
-      [],
+      [declaredTypes, notebookPath, setGiven],
    );
 
    /**
-    * Serialize given-value overrides into the JSON-encoded string the server
-    * expects on the notebook-cell GET endpoint's `givens` query param.
-    * Date values are rendered as YYYY-MM-DD; everything else passes through
-    * the standard JSON encoder.
+    * The `givens` query param for the notebook-cell GET: the same map the
+    * dashboard's POST body carries, JSON-encoded because this endpoint takes it
+    * in the URL. Built by the shared codec so a given is encoded identically
+    * whichever surface runs it.
     */
    const buildGivens = useCallback(
       (values: Map<string, GivenValue>): string | undefined => {
-         if (values.size === 0) return undefined;
-         const encode = (v: GivenValue): unknown => {
-            if (v instanceof Date) return v.toISOString().slice(0, 10);
-            if (Array.isArray(v)) return v.map((item) => encode(item));
-            return v;
-         };
-         const params: Record<string, unknown> = {};
-         values.forEach((value, name) => {
-            if (value === null || value === undefined) return;
-            params[name] = encode(value);
-         });
-         return Object.keys(params).length > 0
-            ? JSON.stringify(params)
+         const request = givensToRequest(values, declaredTypes);
+         return Object.keys(request).length > 0
+            ? JSON.stringify(request)
             : undefined;
       },
-      [],
+      [declaredTypes],
    );
 
-   // Unified cell execution function
-   // Executes all notebook cells, passing server-side filter params and givens
-   // Runs up to 4 requests in parallel for better performance
+   /**
+    * Run every code cell with one set of given values, up to
+    * {@link MAX_CONCURRENT} at a time.
+    *
+    * Each run takes a number from `runIdRef`, and a run that is no longer the
+    * current one drops its results on the floor. Cells resolve independently
+    * and out of order, so without that a slow cell from the previous values
+    * would land after the new run's and leave a stale number on screen under a
+    * control row claiming otherwise.
+    */
+   const runIdRef = useRef(0);
    const executeCells = useCallback(
-      async (
-         filtersToApply: FilterSelection[] = [],
-         givensToApply: Map<string, GivenValue> = new Map(),
-      ) => {
+      async (givensToApply: Map<string, GivenValue> = new Map()) => {
          if (!isSuccess || !notebook?.notebookCells) return;
+
+         const runId = ++runIdRef.current;
 
          // Initialize or reset cells
          setEnhancedCells((prev) => {
@@ -345,9 +190,6 @@ export default function Notebook({
          setIsExecuting(true);
          setExecutionError(null);
 
-         const filterParams = useServerFilters
-            ? buildFilterParams(filtersToApply)
-            : undefined;
          const givensParam = buildGivens(givensToApply);
 
          try {
@@ -373,10 +215,12 @@ export default function Notebook({
                            notebookPath,
                            cellIndex,
                            versionId,
-                           filterParams,
+                           undefined,
                            undefined,
                            givensParam,
                         );
+
+                     if (runIdRef.current !== runId) return;
 
                      const executedCell = response.data;
                      const result = executedCell.result;
@@ -424,17 +268,16 @@ export default function Notebook({
             // Wait for remaining tasks to complete
             await Promise.all(executing);
          } catch (error) {
+            if (runIdRef.current !== runId) return;
             console.error("Error executing notebook cells:", error);
             setExecutionError(error as Error);
          } finally {
-            setIsExecuting(false);
+            if (runIdRef.current === runId) setIsExecuting(false);
          }
       },
       [
          isSuccess,
          notebook,
-         useServerFilters,
-         buildFilterParams,
          buildGivens,
          environmentName,
          packageName,
@@ -444,148 +287,38 @@ export default function Notebook({
       ],
    );
 
-   // Execute cells when notebook is loaded (no filters or givens initially)
+   // Run the cells on load, and again whenever the applied parameters change.
+   // Applied, not draft: under `## autorun=false` the cells wait for Apply.
+   //
+   // One effect covers both, keyed on exactly what would go over the wire plus
+   // which notebook it is. Keying on the encoded givens means a change that
+   // encodes identically does not re-run, and a link carrying parameters runs
+   // once with them rather than running bare and running again when they land.
+   // A run already in flight is superseded rather than waited on, which the
+   // generation guard in `executeCells` makes safe.
+   const lastRunRef = useRef<string | null>(null);
    useEffect(() => {
       if (!isSuccess || !notebook?.notebookCells) return;
-      executeCells([], new Map());
-   }, [isSuccess, notebook, executeCells]);
-
-   // Re-execute when filters or givens change
-   // Track previous input shape to detect actual value changes (not just reference changes)
-   const prevInputsRef = useRef<string>("");
-
-   useEffect(() => {
-      // Serialize activeFilters + givenValues to detect actual value changes.
-      // Encode dates to the same YYYY-MM-DD granularity buildGivens sends on the
-      // wire — otherwise JSON.stringify renders Date as a full ISO timestamp, so
-      // two times on the same day would look like a change and trigger a
-      // redundant re-run even though the sent value is identical.
-      const serialized = JSON.stringify({
-         filters: activeFilters.map((f) => ({
-            dim: f.dimensionName,
-            type: f.matchType,
-            val: f.value,
-            val2: f.value2,
-         })),
-         givens: Array.from(givenValues.entries())
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([name, v]) => [
-               name,
-               v instanceof Date ? v.toISOString().slice(0, 10) : v,
-            ]),
-      });
-
-      // Skip if no actual change
-      if (serialized === prevInputsRef.current) {
-         return;
-      }
-
-      // Skip the initial render when both inputs are empty
-      if (
-         prevInputsRef.current === "" &&
-         activeFilters.length === 0 &&
-         givenValues.size === 0
-      ) {
-         prevInputsRef.current = serialized;
-         return;
-      }
-
-      // Don't consume the change until we can act on it. If a run is already in
-      // flight, leave prevInputsRef stale and bail: this effect re-runs when
-      // isExecuting flips back to false (it's a dependency), and will then pick
-      // up the latest inputs. Updating prevInputsRef here instead would mark the
-      // change "seen" and drop it — a given/filter edited mid-run would never
-      // re-execute.
-      if (isExecuting) {
-         return;
-      }
-
-      prevInputsRef.current = serialized;
-      executeCells(activeFilters, givenValues);
-   }, [activeFilters, givenValues, isExecuting, executeCells]);
-
-   // Handle filter change using composite key
-   const handleFilterChange = useCallback(
-      (key: string) => (selection: FilterSelection | null) => {
-         updateFilter(key, selection);
-      },
-      [updateFilter],
-   );
-
-   // Check if retrieval is supported
-   const hasRetrievalFilters = dimensionSpecs.some(
-      (spec) => spec.filterType === "Retrieval",
-   );
-   const _retrievalSupported = !hasRetrievalFilters || !!retrievalFn;
+      const runKey = `${resourceUri}|${buildGivens(applied) ?? ""}`;
+      if (lastRunRef.current === runKey) return;
+      lastRunRef.current = runKey;
+      void executeCells(applied);
+   }, [isSuccess, notebook, resourceUri, applied, buildGivens, executeCells]);
 
    return (
       <CleanNotebookContainer>
          <CleanNotebookSection>
             <Stack spacing={3} component="section">
-               {/* Givens Panel — runtime parameters declared via `given:` */}
+               {/* Parameters panel — the controls for `given:` declarations */}
                <GivensPanel
                   givens={declaredGivens}
-                  values={givenValues}
-                  onChange={updateGiven}
-                  onClearAll={clearAllGivens}
+                  values={draft}
+                  onChange={setGiven}
+                  onClearAll={clearAll}
+                  options={givenOptions}
+                  optionsLoading={givenOptionsLoading}
+                  apply={autorun ? undefined : { onApply: apply, pending }}
                />
-
-               {/* Filter Panel */}
-               {dimensionSpecs.length > 0 && filterValuesData && (
-                  <Paper
-                     elevation={0}
-                     sx={{
-                        p: 3,
-                        backgroundColor: "transparent",
-                        border: "none",
-                        boxShadow: "none",
-                     }}
-                  >
-                     <Typography
-                        variant="subtitle2"
-                        sx={{
-                           fontWeight: 600,
-                           mb: 2,
-                           color: "#333",
-                        }}
-                     >
-                        Filters
-                     </Typography>
-                     <Box
-                        sx={{
-                           display: "grid",
-                           gridTemplateColumns:
-                              "repeat(auto-fill, minmax(250px, 1fr))",
-                           gap: 3,
-                        }}
-                     >
-                        {dimensionSpecs.map((spec) => {
-                           const key = getDimensionKey(spec);
-                           const values = filterValuesData.get(key) || [];
-                           const filterState = filterStates.get(key);
-                           // Skip Retrieval filters if no retrievalFn provided
-                           if (
-                              spec.filterType === "Retrieval" &&
-                              !retrievalFn
-                           ) {
-                              return null;
-                           }
-
-                           return (
-                              <Box key={key}>
-                                 <DimensionFilter
-                                    spec={spec}
-                                    values={values}
-                                    selection={filterState?.selection}
-                                    onChange={handleFilterChange(key)}
-                                    retrievalFn={retrievalFn}
-                                 />
-                              </Box>
-                           );
-                        })}
-                     </Box>
-                  </Paper>
-               )}
 
                {/* Loading State */}
                {!isSuccess && !isError && (
@@ -606,6 +339,9 @@ export default function Notebook({
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}
                         onNavigate={onNavigate}
+                        onDrillSelf={
+                           declaredGivens.length > 0 ? onDrillSelf : undefined
+                        }
                      />
                   ))}
 

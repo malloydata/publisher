@@ -11,12 +11,13 @@ import NotificationsRoundedIcon from "@mui/icons-material/NotificationsRounded";
 import MenuButton from "./MenuButton";
 import MenuContent from "./MenuContent";
 import CardAlert from "./CardAlert";
+import type { AppView } from "../types/view";
 
 interface SideMenuMobileProps {
   open: boolean | undefined;
   toggleDrawer: (newOpen: boolean) => () => void;
-  selectedView: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive";
-  setSelectedView: (view: "storefront" | "singleEmbed" | "dynamicDashboard" | "interactive") => void;
+  selectedView: AppView;
+  setSelectedView: (view: AppView) => void;
 }
 
 export default function SideMenuMobile({

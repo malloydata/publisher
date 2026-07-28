@@ -2,15 +2,14 @@ export const DEFAULT_ENV = "examples";
 
 export const PACKAGES = {
    /**
-    * Ecommerce model, notebook, and parquet data. The general-purpose package:
-    * the model, notebook, and database screens read it, and the notebook specs
-    * write their own throwaway fixtures into it.
+    * Ecommerce model, notebook, dashboards, a no-build HTML data app, and
+    * parquet data. The general-purpose package: the model, notebook, dashboard,
+    * data-app, and database screens all read it, and the notebook specs write
+    * their own throwaway fixtures into it.
     */
    storefront: "storefront",
    /** Givens, `#(authorize)` gates, and row-level access. */
    governed: "governed-analytics",
-   /** A no-build HTML dashboard served from the package's `public/`. */
-   dataApp: "html-data-app",
 } as const;
 
 /**

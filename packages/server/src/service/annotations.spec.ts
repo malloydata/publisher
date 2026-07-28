@@ -4,6 +4,7 @@ import {
    annotationTexts,
    isReservedRoute,
    modelAnnotations,
+   ownModelNotes,
 } from "./annotations";
 
 // Minimal `ModelDef` carrying only what `modelAnnotations` reads: `modelID`
@@ -114,5 +115,88 @@ describe("modelAnnotations", () => {
       });
       expect(modelAnnotations(def)).toEqual({});
       expect(noteTexts(def)).toEqual([]);
+   });
+});
+
+describe("ownModelNotes", () => {
+   it("returns the model's own `##`, block notes first", () => {
+      const def = makeModelDef("local", {
+         local: {
+            ownNotes: { notes: ["## title=\"Sales\""], blockNotes: ["##! x"] },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual(["##! x", '## title="Sales"']);
+   });
+
+   it("does not inherit an imported model's `##`", () => {
+      // The point of the function. `modelAnnotations` folds the lineage on
+      // purpose, so that an imported `##(authorize)` still gates the importer;
+      // every other model-level tag describes one document. A shared include
+      // carrying `## artifact` must not turn its importers into dashboards,
+      // and an imported `## title=` must not retitle every notebook.
+      const def = makeModelDef("file:///pkg/local.malloy", {
+         "file:///pkg/local.malloy": {
+            ownNotes: {},
+            inheritsFrom: ["file:///pkg/shared.malloy"],
+         },
+         "file:///pkg/shared.malloy": {
+            ownNotes: {
+               notes: ['## artifact { title="Shared" }', '## title="Shared"'],
+            },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual([]);
+      // The inheriting reader still sees it, which is what authorize needs.
+      expect(noteTexts(def)).toEqual([
+         '## artifact { title="Shared" }',
+         '## title="Shared"',
+      ]);
+   });
+
+   it("returns the local notes only when both the model and its import have `##`", () => {
+      const def = makeModelDef("file:///pkg/local.malloy", {
+         "file:///pkg/local.malloy": {
+            ownNotes: { notes: ["## local"] },
+            inheritsFrom: ["file:///pkg/base.malloy"],
+         },
+         "file:///pkg/base.malloy": {
+            ownNotes: { notes: ["## base"] },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual(["## local"]);
+   });
+
+   it("collects a notebook's cells, which are internal nodes rather than files", () => {
+      // A `.malloynb` compiles a cell at a time: its `##` lands on an
+      // `internal://loadModel` node, and the `internal://extendModel` node that
+      // `modelID` names inherits it with no notes of its own. Reading only
+      // `modelID` would find nothing on every notebook.
+      const def = makeModelDef("internal://extendModel/2", {
+         "internal://extendModel/2": {
+            ownNotes: {},
+            inheritsFrom: ["internal://loadModel/1"],
+         },
+         "internal://loadModel/1": {
+            ownNotes: { notes: ["## autorun=false", '## title="Orders"'] },
+            inheritsFrom: ["file:///pkg/orders.malloy"],
+         },
+         "file:///pkg/orders.malloy": {
+            ownNotes: { notes: ['## title="Not this one"'] },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual([
+         "## autorun=false",
+         '## title="Orders"',
+      ]);
+   });
+
+   it("returns an empty list for a model with no annotation registry", () => {
+      expect(ownModelNotes({ modelID: "x" } as unknown as ModelDef)).toEqual(
+         [],
+      );
    });
 });

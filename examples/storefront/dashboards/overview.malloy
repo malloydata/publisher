@@ -1,0 +1,79 @@
+// The common shape: one query, tagged, laid out as a grid.
+//
+// A dashboard is a self-contained .malloy file in dashboards/. It imports the
+// model parts it needs, declares its query with the filtering it applies, and
+// tags it. The filename is the dashboard's name — its URL slug
+// (/examples/storefront/dashboards/overview) and what a `# drill { to=… }`
+// elsewhere in the model points at.
+##! experimental.givens
+import { order_items, products } from '../storefront.malloy'
+import { CATEGORY, MIN_SALE } from '../givens.malloy'
+
+// `products` is imported for CATEGORY's suggest: a control's option list runs
+// as a query against this dashboard's own model, so the source it reads has to
+// resolve here. Importing a given is also what makes it bindable — Malloy's
+// given namespace is per-file, so a control this file does not import cannot
+// be sent to it, and the dashboard would show no control for it.
+
+// `columns=12` for the same reason a print grid uses it: 12 divides by 2, 3, 4
+// and 6, so a row of KPI cards comes out even whether the page has three of
+// them or four. Every dashboard here uses 12, which is what makes them look
+// like the same page with different content.
+#" Revenue and margin at a glance, and where they come from.
+# artifact { title="Business Overview" } dashboard { columns=12 }
+query: overview is order_items -> {
+  // The controls are these two `where:` clauses. Each given a dashboard's query
+  // references becomes one input in the row above the grid; the rest of the
+  // declarations in givens.malloy do not appear here.
+  where: category ~ $CATEGORY and sale_price ~ $MIN_SALE
+
+  // In a `# dashboard` view, fields render by role. A top-level measure becomes
+  // a KPI card, so these four need no nest and no chart tag — just a label
+  // apiece, since a card headed `total_sales` reads like a column name rather
+  // than a number a reader came for, and a colspan, because a card is a grid
+  // item like any other: four at 3 of 12 fill the row edge to edge.
+  aggregate:
+    # label="Revenue"
+    # currency
+    # colspan=3
+    total_sales
+    # label="Gross margin"
+    # currency
+    # colspan=3
+    total_margin
+    # label="Orders"
+    # colspan=3
+    order_count
+    # label="Avg order value"
+    # currency
+    # colspan=3
+    avg_order_value
+
+  // Each nest is a tile, and `# break` starts a fresh row for it. Without the
+  // break the cards and the tiles share one grid: the first tile flows into
+  // whatever columns are left beside the cards, and the next one wraps, which
+  // is what a lopsided dashboard usually is. Two tiles at 6 make a row that
+  // ends where the cards' row ends — colspans that sum to `columns` are the
+  // whole trick to a page that lines up.
+  // `# label` on the nest is the tile's heading. Without one the heading is the
+  // view's name — `sales_by_month` over a chart, which reads like a column in a
+  // database rather than a title on a page. Labelled here rather than on the
+  // view, because the same view can want different words on different pages.
+  nest:
+    # break
+    # colspan=6
+    # label="Revenue by month"
+    sales_by_month
+    # colspan=6
+    # label="Revenue by state"
+    sales_by_state
+  // A table tile, and the one to click: `category` carries a `# drill` tag, so
+  // each category name here offers Category Detail or "filter this dashboard".
+  // No `# break` here: 6 + 6 already fills the row, so this flows onto the next
+  // one with the same 16px gap as everything else. A break is for interrupting
+  // a row that would otherwise be shared, not for every new row.
+  nest:
+    # colspan=12
+    # label="Category performance"
+    category_performance
+}

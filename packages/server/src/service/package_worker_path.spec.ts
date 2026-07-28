@@ -323,7 +323,7 @@ source: gated is duckdb.sql("select 1 as id")`,
             responseWarnings.some(
                (w) =>
                   w.model === "bad_render.malloy" &&
-                  w.target === "nums -> card" &&
+                  w.subject === "nums -> card" &&
                   w.severity === "error",
             ),
          ).toBe(true);

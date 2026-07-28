@@ -6,9 +6,28 @@ import { Card, CardContent, CardMedia, styled } from "@mui/material";
  * the hex values inline so the brand can be retuned in one place.
  */
 export const MALLOY_BRAND = {
-   teal: "#14b3cb", // light wing of the M (governed reports)
-   orange: "#e47404", // right wing of the M (semantic models)
-   darkBlue: "#1474a4", // deep shadow of the M (package data)
+   teal: "#14b3cb", // light wing of the M
+   orange: "#e47404", // right wing of the M
+   darkBlue: "#1474a4", // deep shadow of the M
+} as const;
+
+/**
+ * Accents that extend the logo's three, for the places that need more colors
+ * than the brand supplies — the package page gives every kind of content its
+ * own, and three kinds became six.
+ *
+ * These are their own family rather than borrowings from the chart series
+ * (`theme/defaults.ts`), because the two have opposite constraints. A series
+ * color fills a large area and can be light; these sit behind a white icon as
+ * a small solid backplate, so each one clears 3:1 against white — WCAG's
+ * minimum for a graphical object. The lighter series hues they echo (`#b87ced`
+ * violet, `#ec72b8` pink, `#aacd85` sage) all land nearer 1.7:1 and would make
+ * the icon disappear.
+ */
+export const MALLOY_ACCENT = {
+   violet: "#7c4dcc",
+   magenta: "#c2478f",
+   moss: "#5c8f3f",
 } as const;
 
 /**

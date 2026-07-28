@@ -1,0 +1,16 @@
+// A .malloy in dashboards/ with no `# artifact` tag is a shared include, not a
+// dashboard: discovery skips it, and it never appears in a listing or at a URL.
+//
+// It is the place to put whatever more than one dashboard needs. Here that is a
+// given-scoped source: a composite dashboard has no query of its own — it
+// composes views that already exist — so the filtering a composite applies has
+// to live in what it composes. `scoped_sales` is `order_items` with the
+// controls already wired in, which is what gives seasonality.malloy a control
+// row without repeating a `where:` on every view.
+##! experimental.givens
+import { order_items } from '../storefront.malloy'
+import { CATEGORY, SINCE } from '../givens.malloy'
+
+source: scoped_sales is order_items extend {
+  where: category ~ $CATEGORY and created_at >= $SINCE
+}

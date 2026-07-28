@@ -1,0 +1,49 @@
+// ─────────────────────────────────────────────────────────────────────────
+// Filter controls for the dashboards in dashboards/, declared once here.
+//
+// A given is a typed runtime parameter (docs/givens.md). The tags on each
+// declaration are its *control contract*: what the input is labelled, which
+// widget renders it, and where a picker gets its choices. That contract is a
+// property of the declaration, not of any one dashboard — so the same given
+// renders identically in every dashboard that filters by it, and in a
+// notebook's Parameters panel.
+//
+// Nothing here says *what* gets filtered. Each dashboard decides that, with a
+// `where:` naming the given (see dashboards/overview.malloy). That split is
+// why one CATEGORY control can scope revenue on one dashboard and margin on
+// another without either dashboard redeclaring it.
+//
+// Declaration order below is control order for anything that reads the model's
+// given list: a notebook's Parameters panel and the data app's control row. A
+// dashboard's filter row follows the order its own `where:` names them instead,
+// so reordering here does not move one.
+// ─────────────────────────────────────────────────────────────────────────
+##! experimental.givens
+
+// `control=select` with a `suggest` renders a picker whose options come from
+// the data. A `source=`/`dimension=` pair reads distinct values off a source.
+#(description="Narrow to one product category — leave empty for all")
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
+
+// `multiselect` lets a reader pick several at once. Here the options come from
+// a named query rather than a source, which is the form to reach for when the
+// list needs its own ordering or filtering.
+#(description="One or more brands — leave empty for all")
+# label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }
+given: BRAND :: filter<string> is f''
+
+#(description="Narrow to one US sales region — leave empty for all")
+# label="Region" control=select suggest { source=regions dimension=region }
+given: REGION :: filter<string> is f''
+
+// A plain (non-filter) `date` renders as a date picker. The storefront data
+// runs 2023-01-01 through 2025-12-31, so this default takes in all of it.
+#(description="Only count orders placed on or after this date")
+# label="Ordered since"
+given: SINCE :: date is @2023-01-01
+
+// Numeric bounds turn a `filter<number>` into a slider instead of a text box.
+#(description="Ignore line items below this sale price")
+# label="Minimum line total" range_min=0 range_max=250
+given: MIN_SALE :: filter<number> is f''
