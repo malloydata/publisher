@@ -10,6 +10,7 @@ import {
    queryContextProperties,
    RESERVED_CONTEXT_PROPERTIES,
    queryMetadataAdvisoryWarnings,
+   queryMetadataBudgetWarning,
    queryMetadataViolations,
 } from "./query_metadata";
 
@@ -73,19 +74,6 @@ describe("queryMetadataViolations", () => {
 });
 
 describe("queryMetadataAdvisoryWarnings", () => {
-   it("warns when a declaration leaves no room for the server context", () => {
-      // 20 is the size of the whole bag, and the server adds its own on top, so
-      // a declaration that fills the contract quietly loses properties later.
-      const full: Record<string, string> = {};
-      for (let i = 0; i < MAX_PROPERTIES; i++) full[`p${i}`] = "v";
-      expect(
-         queryMetadataAdvisoryWarnings(full).some((w) =>
-            w.includes("the server adds up to"),
-         ),
-      ).toBe(true);
-      expect(queryMetadataAdvisoryWarnings({ team: "finance" })).toEqual([]);
-   });
-
    it("flags a name BigQuery will silently drop", () => {
       // Legal per the contract, kept by every other backend, gone on BigQuery.
       expect(queryMetadataAdvisoryWarnings({ _team: "finance" })).toHaveLength(
@@ -120,6 +108,25 @@ describe("queryContextProperties", () => {
          query_id: "q-1",
       });
       expect(queryContextProperties({})).toEqual({});
+   });
+});
+
+describe("queryMetadataBudgetWarning", () => {
+   it("warns when a declaration leaves no room for the server context", () => {
+      // 20 is the size of the whole bag, and the server adds its own on top, so
+      // a declaration that fills the contract quietly loses properties later.
+      expect(queryMetadataBudgetWarning(MAX_PROPERTIES)).toContain(
+         "the server adds up to",
+      );
+      expect(queryMetadataBudgetWarning(1)).toBeUndefined();
+   });
+
+   it("is a count, not a bag, so a caller can sum the maps that share the budget", () => {
+      // A connection declares a default AND an enforced map; 6 + 6 is over
+      // budget while neither map is.
+      const authorBudget = MAX_PROPERTIES - RESERVED_CONTEXT_PROPERTIES;
+      expect(queryMetadataBudgetWarning(authorBudget)).toBeUndefined();
+      expect(queryMetadataBudgetWarning(authorBudget + 1)).toBeDefined();
    });
 });
 

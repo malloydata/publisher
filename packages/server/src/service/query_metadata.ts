@@ -152,20 +152,30 @@ export function queryMetadataAdvisoryWarnings(meta: QueryMetadata): string[] {
          );
       }
    }
-   // The contract's 20 is the size of the WHOLE bag, and the server's own
-   // context is added on top of whatever is declared here. A declaration that
-   // fills the contract therefore publishes clean and then loses properties on
-   // every statement, which is only visible as a drop metric.
-   const authorBudget = MAX_PROPERTIES - RESERVED_CONTEXT_PROPERTIES;
-   const declared = Object.keys(meta).length;
-   if (declared > authorBudget) {
-      warnings.push(
-         `queryMetadata declares ${declared} properties; the server adds up to ` +
-            `${RESERVED_CONTEXT_PROPERTIES} of its own to every statement, so a bag over ` +
-            `${authorBudget} loses its least specific properties at query time`,
-      );
-   }
    return warnings;
+}
+
+/**
+ * The budget warning for a declaration of `declared` properties, or undefined
+ * when it fits.
+ *
+ * Separate from {@link queryMetadataAdvisoryWarnings} because the count that
+ * matters is not always one bag's: a connection declares a default AND an
+ * enforced map, and they share the budget, so summing them is the caller's job.
+ * The contract's 20 covers the whole bag, and the server's own context lands on
+ * top of everything declared — so a declaration that fills the contract publishes
+ * clean and then loses properties on every statement, visible only as a metric.
+ */
+export function queryMetadataBudgetWarning(
+   declared: number,
+): string | undefined {
+   const authorBudget = MAX_PROPERTIES - RESERVED_CONTEXT_PROPERTIES;
+   if (declared <= authorBudget) return undefined;
+   return (
+      `queryMetadata declares ${declared} properties; the server adds up to ` +
+      `${RESERVED_CONTEXT_PROPERTIES} of its own to every statement, so a bag over ` +
+      `${authorBudget} loses its least specific properties at query time`
+   );
 }
 
 /**

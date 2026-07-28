@@ -25,6 +25,7 @@
 import type { components } from "../api";
 import {
    queryMetadataAdvisoryWarnings,
+   queryMetadataBudgetWarning,
    queryMetadataViolations,
    type QueryMetadata,
 } from "./query_metadata";
@@ -58,9 +59,11 @@ function metadataWarnings(
    target?: string,
 ): MaterializationConfigWarning[] {
    if (!metadata) return [];
+   const budget = queryMetadataBudgetWarning(Object.keys(metadata).length);
    return [
       ...queryMetadataViolations(metadata),
       ...queryMetadataAdvisoryWarnings(metadata),
+      ...(budget ? [budget] : []),
    ].map((message) => ({
       // The level is in the message because a reader needs to know WHICH
       // declaration to edit, and an inherited property has more than one.

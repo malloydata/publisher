@@ -6,6 +6,7 @@ import { logger } from "../logger";
 import { parseHostKeys } from "./proxy";
 import {
    queryMetadataAdvisoryWarnings,
+   queryMetadataBudgetWarning,
    queryMetadataViolations,
 } from "./query_metadata";
 
@@ -288,9 +289,11 @@ function buildDuckdbEntry(
  * strict where a human is waiting, lenient where a config is being loaded.
  */
 function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
+   let declared = 0;
    for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
       const metadata = connection[field];
       if (!metadata) continue;
+      declared += Object.keys(metadata).length;
       const problems = [
          ...queryMetadataViolations(metadata),
          ...queryMetadataAdvisoryWarnings(metadata),
@@ -302,6 +305,17 @@ function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
             problem,
          });
       }
+   }
+   // The budget is checked over BOTH maps, not each one: they merge into the
+   // same bag, so a connection declaring 6 defaults and 6 enforced is over it
+   // while neither map is. This is the boundary where the admin who created the
+   // squeeze is the one reading the warning.
+   const overBudget = queryMetadataBudgetWarning(declared);
+   if (overBudget) {
+      logger.warn("Connection query metadata will not apply as declared", {
+         connectionName: connection.name,
+         problem: overBudget,
+      });
    }
 }
 
