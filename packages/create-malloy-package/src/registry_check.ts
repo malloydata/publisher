@@ -33,8 +33,9 @@
  * left to do until undici's own connect timeout: measured on node 24, promise
  * settled at 1503ms, process exited at 10511ms. Nine silent seconds after the
  * scaffold has already printed, which reads as a hang. node:https lets us destroy
- * the request on timeout and release the handle: same measurement, 1505ms and
- * 1507ms. Do not "simplify" this back to fetch.
+ * the request and release the handle: re-measured on this module, 1503ms to
+ * settle and 1504ms to exit. Do not "simplify" this back to fetch, and see the
+ * two-timer note on getBody before touching the timeouts.
  */
 import * as http from "node:http";
 import * as https from "node:https";
@@ -72,15 +73,27 @@ export function isOlder(a: string, b: string): boolean | undefined {
    return false;
 }
 
-/** GET a URL, resolving the body or undefined. Never rejects, never hangs. */
+/**
+ * GET a URL, resolving the body or undefined. Never rejects, never hangs.
+ *
+ * Two timers, and both are needed. `{ timeout }` on the request is
+ * `socket.setTimeout`, an INACTIVITY timer: every byte read resets it. A server
+ * that completes the handshake, sends 200 and headers, then writes one byte every
+ * few hundred milliseconds never trips it, so on its own it bounds nothing and
+ * the promise never settles (measured: still unsettled at 8s on both bun and
+ * node). A captive portal or a wedged mirror does exactly that. So there is also
+ * a total deadline armed when the request is made, which is what actually makes
+ * "never hangs" true.
+ */
 function getBody(url: string, timeoutMs: number): Promise<string | undefined> {
    return new Promise((resolve) => {
       let settled = false;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
       const finish = (value: string | undefined): void => {
-         if (!settled) {
-            settled = true;
-            resolve(value);
-         }
+         if (settled) return;
+         settled = true;
+         if (deadline !== undefined) clearTimeout(deadline);
+         resolve(value);
       };
       try {
          const mod = url.startsWith("http:") ? http : https;
@@ -104,8 +117,14 @@ function getBody(url: string, timeoutMs: number): Promise<string | undefined> {
                res.on("error", () => finish(undefined));
             },
          );
-         // destroy(), not just resolve: this is what releases the handle so the
-         // process can exit immediately instead of waiting out the OS connect.
+         // The total deadline. destroy(), not just resolve: this is what releases
+         // the handle so the process can exit immediately rather than waiting out
+         // the OS connect. It also backstops every other path, including a
+         // destroy() mid-body that does not happen to emit 'error'.
+         deadline = setTimeout(() => {
+            req.destroy();
+            finish(undefined);
+         }, timeoutMs);
          req.on("timeout", () => {
             req.destroy();
             finish(undefined);

@@ -19,9 +19,9 @@ packages in watch mode so model edits recompile. Those two ports are Publisher's
 defaults, and the command above does not name them: `--port` and `--mcp_port` exist
 but are only in play if someone has added them. Watch mode is the one of the three
 that IS in the command, as `--watch-env`, alongside `--server_root` and `--config`.
-Read the command itself, and
-where it is an `npm` script the script `package.json` runs for it, before you trust
-anything below: a `--port` or `--mcp_port` added later moves every URL in this file, a
+Read the command itself, and where it is an `npm` script the script `package.json`
+runs for it, before you trust anything below: a `--port` or `--mcp_port` added
+later moves every URL in this file, a
 `--server_root` or `--config` pointing outside this directory serves a different
 workspace entirely, and no `--watch-env` means an edit on disk is not picked up at all
 until you reload the package. The server settles all of it on boot, printing

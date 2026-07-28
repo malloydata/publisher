@@ -133,6 +133,25 @@ describe("fetchLatestVersion", () => {
       expect(Date.now() - started).toBeLessThan(2000);
    });
 
+   test("gives up on a server that answers and then trickles bytes forever", async () => {
+      // The case a socket-inactivity timeout does NOT catch: every byte resets
+      // it, so on its own the promise never settles and the process never exits,
+      // after the scaffold has already printed. That is why getBody arms a total
+      // deadline as well. Without it this test hangs rather than fails.
+      let timer: ReturnType<typeof setInterval> | undefined;
+      const url = await serve((_req, res) => {
+         res.writeHead(200, { "content-type": "application/json" });
+         res.write('{"vers');
+         timer = setInterval(() => {
+            if (!res.writableEnded) res.write("i");
+         }, 50);
+      });
+      const started = Date.now();
+      expect(await fetchLatestVersion(url, 200)).toBeUndefined();
+      expect(Date.now() - started).toBeLessThan(3000);
+      if (timer) clearInterval(timer);
+   });
+
    test("trims the version, so a hostile registry cannot scroll the screen", async () => {
       // parseVersion trims before matching, so an untrimmed return would let a
       // padded string pass the check and then be printed verbatim: eight leading

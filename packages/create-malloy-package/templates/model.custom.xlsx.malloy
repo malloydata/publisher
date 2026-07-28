@@ -10,53 +10,89 @@
 // the server says it is serving, and the query returns 200 with the wrong number.
 //
 // So run `overview` first and compare `record_count` against what you know is in
-// the file. If it is short, the read is wrong, and the fix is below.
+// the file. If it is short, the read is wrong. Fixing it takes two steps.
 //
-// Reading a report export properly takes two things, not one. Name the sheet and
-// the range so the header is found, AND filter the decoration back out, because
-// an explicit range reads every row in it: the blank spacers, the subtotal rows,
-// the total, and the footnotes underneath. Pick a column every real row has and
-// nothing else does, usually an id, and filter on it. Replace the source below,
-// keeping the `extend` block so `overview` still exists to re-run:
+// STEP 1: look at the sheet, because the fix needs three things this file cannot
+// tell you: which sheet, which row the header is on, and which column marks a
+// real row. Read the top-left corner raw, as text, with header detection off:
+//
+//   run: duckdb.sql("""
+//     SELECT * FROM read_xlsx(
+//       '{{dataPath}}',
+//       header = false, range = 'A1:Z25', all_varchar = true
+//     )
+//   """) -> { select: *; limit: 25 }
+//
+// That prints the first 25 rows exactly as they sit in the sheet, so you can
+// count down to the real header row and see which column carries an id. If the
+// workbook has more than one sheet, add `sheet = '...'`; a name that does not
+// exist fails loudly and the error lists the sheets that do, which is the quickest
+// way to learn them.
+//
+// STEP 2: read it properly. Name the sheet and the range so the header is found,
+// AND filter the decoration back out, because an explicit range reads every row
+// in it: the blank spacers, the subtotal rows, the total, and the footnotes
+// underneath. Replace the source below, keeping the `extend` block so `overview`
+// still exists to re-run:
 //
 //   source: {{sourceName}} is duckdb.sql("""
 //     SELECT * FROM read_xlsx(
 //       '{{dataPath}}',
-//       sheet = 'Sheet1',        -- only the FIRST sheet is read unless you name one
+//       sheet = 'Sheet1',        -- EDIT: the sheet from step 1 (or drop this line
+//                                -- entirely if the workbook has only one)
 //       header = true,
-//       range = 'A5:Z100000',    -- A5 = where the real header is. EDIT BOTH BOUNDS:
-//                                -- Z and 100000 are a cap, not a guess at your size.
-//                                -- Columns past Z and rows past 100000 are dropped
-//                                -- silently, which is the failure above all over again.
+//       range = 'A5:Z100000',    -- EDIT BOTH BOUNDS: A5 is where the real header
+//                                -- is; Z and 100000 are a cap, not a guess at your
+//                                -- size. Columns past Z and rows past 100000 are
+//                                -- dropped silently, which is the failure above
+//                                -- all over again.
 //       all_varchar = true       -- see the mixed-column note below
 //     )
-//     WHERE "Order ID" LIKE 'SO-%'   -- your id column, and what a real value looks like
+//     WHERE "Order ID" LIKE 'SO-%'   -- EDIT: a column every real row has and the
+//                                    -- decoration does not, and what a real value
+//                                    -- looks like. An id is the usual choice.
 //   """) extend {
 //     measure: record_count is count()
 //     view: overview is { aggregate: record_count }
 //   }
 //
+// Then run `overview` again. It should now match the file.
+//
+// If no column is unique to real rows, exclude the labels instead of matching
+// them, and check the count both ways rather than trusting either:
+//
+//   WHERE "Region" IS NOT NULL AND "Region" NOT IN ('Subtotal', 'Total')
+//
+// Getting this wrong is quiet: a filter that also admits the subtotal rows raises
+// `record_count` to something plausible and double-counts every measure built on
+// it. That is the same failure this whole comment is about, so re-run `overview`
+// and check the number, do not assume.
+//
 // Both halves matter. Without the range you get the title row as your header.
-// Without the filter you get the whole range, so a 1,500 row sheet reads as
-// however many rows you asked for, padded with empties. Do not reach for
-// `stop_at_empty`: it stops at the first blank spacer, which is usually somewhere
-// in the middle of the data.
+// Without the filter you get the whole range, padded with empty rows.
+// Do not reach for `stop_at_empty`: it stops at the first blank spacer, which is
+// usually somewhere in the middle of the data.
 //
 // `duckdb.table()` takes a plain path and nothing else, which is why every option
 // above needs the SQL form. Other things a real spreadsheet does: a column mixing
 // numbers and text fails at query time rather than at load, which is what
-// `all_varchar = true` avoids, at the price of casting where you define measures
-// (`ignore_errors = true` is the other way, nulling the bad cells); a cell someone
-// typed as text, `$1,234` or `12%`, stays text even where the column looks
-// numeric; dates may be text or Excel serial numbers; and every number is a
-// double. `skill:malloy-gotchas-modeling` has the full list.
+// `all_varchar = true` avoids; a cell someone typed as text, `$1,234` or `12%`,
+// stays text even where the column looks numeric; dates may be text or Excel
+// serial numbers; and every number is a double. `skill:malloy-gotchas-modeling`
+// has the full list.
+//
+// Note that `all_varchar = true` hands you every column as a string, so measures
+// over it need a cast: `total_amount is amount::number.sum()`, not
+// `amount.sum()`. Cast at the point of definition and the rest of the model does
+// not have to think about it. (`ignore_errors = true` is the other way: it keeps
+// real types and nulls the cells that do not fit.)
 //
 // Beyond that this is the same starting point as any seeded package: the
 // scaffolder does not read your columns, so it begins with a row count. Build it
 // out for your columns: group_by a column to break the count down, and define
-// measures like `total_amount is amount.sum()`. Validate edits with
-// malloy_compile and run new views by name with malloy_reloadPackage. The
-// malloy-modeling skill walks through turning a raw table into a semantic model.
+// measures over the numeric ones. Validate edits with malloy_compile and run new
+// views by name with malloy_reloadPackage. The malloy-modeling skill walks
+// through turning a raw table into a semantic model.
 
 source: {{sourceName}} is duckdb.table('{{dataPath}}') extend {
   measure: record_count is count()
