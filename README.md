@@ -58,9 +58,14 @@ scaffold one:
 
 ```bash
 mkdir my-data && cd my-data
-npm create @malloy-publisher/malloy-package sales
+npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
+
+Keep the `@latest`. `npm create` resolves the scaffolder through npm's npx cache, and on a machine
+that has run the command before, an unversioned name is satisfied by whatever copy is already
+cached, so npm never asks the registry. Drop it and you can quietly scaffold from a months-old
+scaffolder that pins an older server than the one you meant to run.
 
 Make the directory first. The package lands in `./sales`, but the workspace around it is written to
 the current directory, so running this somewhere you did not mean to scatters config files through
@@ -74,7 +79,7 @@ before you have wired up anything of your own. To start from one of your own fil
 in place, so nothing needs converting first):
 
 ```bash
-npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
+npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
 ```
 
 That path is relative to the directory you run the command in, so either move your file there first
@@ -99,10 +104,10 @@ this directory picks up the same file. The walkthrough in the next section is wr
 examples, so run that one from a directory without this config.
 
 To run the scaffolder without `npm create`, call the package by its full name:
-`npx @malloy-publisher/create-malloy-package sales --data ./orders.csv`. Note that the name is
-`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, and that npx
-needs no separator: it forwards flags as they are, so a `--` there leaves the flags after it to
-arrive as stray arguments.
+`npx @malloy-publisher/create-malloy-package@latest sales --data ./orders.csv`. Note that the name is
+`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, that the same
+caching applies so `@latest` is worth keeping, and that npx needs no separator: it forwards flags as
+they are, so a `--` there leaves the flags after it to arrive as stray arguments.
 
 ## Point your agent at it
 

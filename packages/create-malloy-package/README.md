@@ -10,9 +10,14 @@ instructions, and the Malloy agent skills copied in), so you can go from nothing
 
 ```bash
 mkdir my-data && cd my-data
-npm create @malloy-publisher/malloy-package sales
+npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
+
+Keep the `@latest`. `npm create` and `npx` both resolve through npm's npx cache, and an
+unversioned name is satisfied by any copy already in it, so on a machine that has run
+the command before npm reuses that copy instead of asking the registry. Without
+`@latest` you can scaffold from an old scaffolder, which pins an old server, silently.
 
 The workspace files land in the current directory and the package in `./sales`, so you
 run `npm start` from where you created it (no need to `cd` into the package). The
@@ -91,7 +96,7 @@ briefing lists those tools.
 
 ## What it creates
 
-Running `npm create @malloy-publisher/malloy-package sales` in an empty directory produces:
+Running `npm create @malloy-publisher/malloy-package@latest sales` in an empty directory produces:
 
 ```
 publisher.config.json    the server config, with your package registered
@@ -282,7 +287,7 @@ and binds `0.0.0.0`. Write the flag and the address with a space between them.
 ## Options
 
 ```bash
-npm create @malloy-publisher/malloy-package [name] -- [options]
+npm create @malloy-publisher/malloy-package@latest [name] -- [options]
 ```
 
 `npm create` parses the command line with npm's own config parser before handing
@@ -291,15 +296,15 @@ it npm swallows `--force` as one of its own settings and turns `--data mydata.cs
 into two stray positional arguments:
 
 ```bash
-npm create @malloy-publisher/malloy-package sales -- --data mydata.csv
-npm create @malloy-publisher/malloy-package sales -- --client cursor
-npm create @malloy-publisher/malloy-package sales -- --force
+npm create @malloy-publisher/malloy-package@latest sales -- --data mydata.csv
+npm create @malloy-publisher/malloy-package@latest sales -- --client cursor
+npm create @malloy-publisher/malloy-package@latest sales -- --force
 ```
 
 Running the published bin directly takes the flags as-is, with no separator:
 
 ```bash
-npx @malloy-publisher/create-malloy-package sales --data mydata.csv
+npx @malloy-publisher/create-malloy-package@latest sales --data mydata.csv
 ```
 
 - `name` (positional): the package name. Omit it to only set up the agent workspace in

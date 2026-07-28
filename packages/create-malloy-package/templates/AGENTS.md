@@ -15,13 +15,15 @@ Everything below talks to a running server, so start it before anything else:
 
 That is meant to run Publisher on http://localhost:{{port}} (web UI and REST) with the
 MCP endpoint on http://localhost:{{mcpPort}}/mcp, and to mount this workspace's
-packages in watch mode so model edits recompile. All three of those come from flags in
-the command above (`--port`, `--mcp_port`, `--watch-env`), and where that command is an
-`npm` script, from the script `package.json` runs for it. Read them there before you
-trust anything below: different ports move every URL in this file, a `--server_root` or
-`--config` pointing outside this directory serves a different workspace entirely, and
-no `--watch-env` means an edit on disk is not picked up at all until you reload the
-package. The server settles all of it on boot, printing
+packages in watch mode so model edits recompile. Those two ports are Publisher's own
+defaults, and the command above does not name them: what it does carry is
+`--watch-env`, which is what puts the package in watch mode. `--port` and `--mcp_port`
+exist but are only in play if someone has added them. Read the command itself, and
+where it is an `npm` script the script `package.json` runs for it, before you trust
+anything below: a `--port` or `--mcp_port` added later moves every URL in this file, a
+`--server_root` or `--config` pointing outside this directory serves a different
+workspace entirely, and no `--watch-env` means an edit on disk is not picked up at all
+until you reload the package. The server settles all of it on boot, printing
 `Publisher server listening at http://<address>:<port>` and a
 `MCP server listening at ...` line beside it, so read those two lines rather than
 taking this paragraph's word for it.
