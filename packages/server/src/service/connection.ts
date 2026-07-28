@@ -492,10 +492,18 @@ async function preflightDuckLakeCatalogFormat(
    metadataSchema?: string,
 ): Promise<void> {
    const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
-   // Identifier position, not a string literal — so this relies on the
-   // config-load validation restricting the schema to a plain identifier.
+   // Identifier position, not a string literal, so the schema is double-quoted.
+   // Measured: with today's validator this is belt-and-braces rather than a fix —
+   // every name the regex admits resolves correctly unquoted, including reserved
+   // words (DuckDB parses them fine here) and mixed case (matching is
+   // case-insensitive). It is quoted anyway because this preflight fails SOFT: a
+   // read that misses logs and returns, silently disabling format range-checking
+   // for that connection, so the cost of ever getting this wrong is invisible.
+   // Quoting makes correctness local to this line instead of contingent on the
+   // validator's accept-set, so widening that regex later cannot break it. Safe
+   // by construction: the regex admits no quote character to break out with.
    const metadataRef = metadataSchema
-      ? `${tempDb}.${metadataSchema}.ducklake_metadata`
+      ? `${tempDb}."${metadataSchema}".ducklake_metadata`
       : `${tempDb}.ducklake_metadata`;
    let catalogFormat: string | undefined;
    try {
@@ -508,14 +516,27 @@ async function preflightDuckLakeCatalogFormat(
       const value = runSQLRows(result)[0]?.value;
       catalogFormat = typeof value === "string" ? value : undefined;
    } catch (error) {
+      const message = redactPgSecrets(
+         error instanceof Error ? error.message : String(error),
+      );
+      // A named metadata schema holding no catalog is the signature of a typo, or
+      // of adding `metadataSchema` to a catalog whose metadata lives elsewhere.
+      // Neither is loud on its own: a read-write attach will CREATE an empty
+      // catalog there and materialize into it, and a read-only attach fails with
+      // an error that says nothing about the schema. Name the schema explicitly so
+      // the log points at the likely cause rather than at the missing table.
+      if (metadataSchema !== undefined && /does not exist/i.test(message)) {
+         logger.warn(
+            "No DuckLake catalog found in the configured metadata schema; a " +
+               "read-write attach will create a new empty catalog there, and a " +
+               "read-only attach will fail. Check the schema name if unexpected.",
+            { dbName, metadataSchema, error: message },
+         );
+         return;
+      }
       logger.warn(
          "DuckLake catalog-format preflight read failed; falling back to ATTACH",
-         {
-            dbName,
-            error: redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
-            ),
-         },
+         { dbName, error: message },
       );
       return;
    } finally {

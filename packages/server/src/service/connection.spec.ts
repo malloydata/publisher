@@ -1631,6 +1631,44 @@ describe("connection integration tests", () => {
                );
 
                it(
+                  "round-trips a mixed-case metadataSchema through the preflight",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     // The validator accepts mixed case but nothing exercised it, so
+                     // this covers the create -> preflight -> attach round-trip for
+                     // such a name. Honest scope: it does NOT discriminate on the
+                     // preflight's identifier quoting — measured, unquoted resolves
+                     // too, because DuckDB matches identifiers case-insensitively.
+                     // Poisoning the version is what proves the preflight read THIS
+                     // catalog's metadata rather than missing silently.
+                     const schema = `DlMixedCase_${runId}`;
+                     createdSchemas.push(schema);
+                     const cfg = await duckLakeConfig("dl_mixed", schema);
+                     const boot = await bootstrapCatalog("dl_mixed", cfg);
+                     await boot.runSQL(
+                        `ATTACH '${pgConnString()}' AS poison_mixed (TYPE postgres);`,
+                     );
+                     await boot.runSQL(
+                        `UPDATE poison_mixed."${schema}".ducklake_metadata ` +
+                           `SET value = '9999.0' WHERE key = 'version';`,
+                     );
+
+                     let err: unknown;
+                     try {
+                        await bootstrapCatalog("dl_mixed_again", cfg);
+                     } catch (e) {
+                        err = e;
+                     }
+                     expect(err).toBeInstanceOf(UnsupportedCatalogFormatError);
+                     expect((err as Error).message).toContain("9999.0");
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
                   "attaches without a metadataSchema exactly as before",
                   async () => {
                      if (!hasPostgresCredentials()) {
