@@ -83,7 +83,7 @@
     },
     "packages/create-malloy-package": {
       "name": "@malloy-publisher/create-malloy-package",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "bin": {
         "create-malloy-package": "./dist/index.js",
       },
