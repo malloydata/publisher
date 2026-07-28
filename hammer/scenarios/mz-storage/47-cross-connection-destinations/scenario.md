@@ -4,7 +4,7 @@ tags: serve-correctness, build-control
 package: xc
 ---
 
-# Cross-connection: two persist sources materialize into two distinct destinations
+# Each source routes to its own destination when a package targets several
 
 A package can materialize different sources into different storage destinations;
 each serve binding carries its own `storageConnectionName`, so the serve path

@@ -9,8 +9,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
-import { BadRequestError } from "../errors";
+import { BadRequestError, MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
 import {
@@ -25,6 +26,14 @@ import {
 } from "./materialization_serve_transform";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+/**
+ * The process-wide session the build-time servability gate compiles against.
+ * Created on first use and deliberately never disposed: it holds no attach and
+ * no credentials, and recreating it per build was the single largest source of
+ * per-build memory growth.
+ */
+let sharedGateSession: DuckDBConnection | undefined;
 type WireColumn = components["schemas"]["Column"];
 
 /** Source warehouse types the native query-passthrough build supports. */
@@ -121,12 +130,47 @@ export function createIsolatedBuildSession(sessionName: string): {
    dispose: () => Promise<void>;
 } {
    const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
-   const session = new DuckDBConnection(sessionName, ":memory:", workDir);
+   // The disposer that owns removing workDir does not exist until this function
+   // returns, so a throw from the constructor would strand the directory with
+   // nothing left holding a reference to it.
+   let session: DuckDBConnection;
+   try {
+      session = new DuckDBConnection(sessionName, ":memory:", workDir);
+   } catch (err) {
+      rmSync(workDir, { recursive: true, force: true });
+      throw err;
+   }
    const dispose = async () => {
+      // `close()` alone does not end the session. It refcount-decrements the
+      // DuckDBInstance, but the node-api Connection holds a C++ ClientContext that
+      // keeps the refcount above zero — so the in-memory database survives, and with
+      // it the destination's ATTACH and the source's federated credentials. Measured:
+      // 2 idle Postgres backends stranded per build, freed only at process exit,
+      // where the whole point of a per-build session is that they exist only for
+      // the build.
+      //
+      // db-duckdb cannot do this itself: 0.0.389 disconnected unconditionally and
+      // had to be reverted (PR #2793) because malloy's translate layer holds
+      // weak_ptrs to the C++ Connection and the language server segfaulted. A build
+      // session is different in the way that matters — server-owned, single-use, and
+      // nothing outside this function ever sees it — so it can release what a
+      // general-purpose connection cannot. Reached through a cast because the handle
+      // is library-internal; if db-duckdb ever grows an explicit hard-close, use it.
+      const nodeConnection = (
+         session as unknown as { connection?: { disconnectSync?: () => void } }
+      ).connection;
       try {
          await session.close();
       } catch (err) {
          logger.warn("Failed to close build session (leaked session)", {
+            sessionName,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+      try {
+         nodeConnection?.disconnectSync?.();
+      } catch (err) {
+         logger.warn("Failed to disconnect build session (leaked connection)", {
             sessionName,
             error: err instanceof Error ? err.message : String(err),
          });
@@ -247,13 +291,10 @@ export async function buildSourceIntoStorage(params: {
          buildSQL,
       );
 
-      await session.runSQL(
-         `CREATE OR REPLACE TABLE ${target} AS (${passthrough})`,
-      );
       // Capture the authoritative schema from the freshly-built table — the
       // serve transform declares exactly this, and the compiler does not
       // type-check a virtual source's declared columns.
-      const schema = await describeTable(session, target);
+      const schema = await createTableAndDescribe(session, target, passthrough);
 
       return { storageConnectionName: destinationName, schema };
    } finally {
@@ -342,9 +383,23 @@ export async function buildDownstreamIntoStorage(params: {
             destinationName,
          ),
       });
-      const model = await runtime
-         .loadModel(new URL(url), { importBaseURL: new URL(root) })
-         .getModel();
+      // Compiling the transient model is the only SHAPE step in this function:
+      // a failure means the downstream cannot be expressed over its rebound
+      // parents, which is a legitimate reason to fall back and recompute from
+      // raw. Everything around it — the attach, the CTAS, the DESCRIBE — is
+      // infrastructure, where falling back would just fail the same way against
+      // the same destination. Marking the shape failures lets the caller tell
+      // them apart.
+      let model;
+      try {
+         model = await runtime
+            .loadModel(new URL(url), { importBaseURL: new URL(root) })
+            .getModel();
+      } catch (err) {
+         throw new MaterializationEligibilityError({
+            message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
+         });
+      }
       const plan = model.getBuildPlan();
       let downstream: PersistSource | undefined;
       for (const ps of Object.values(plan.sources)) {
@@ -357,11 +412,12 @@ export async function buildDownstreamIntoStorage(params: {
          // The downstream didn't survive as a persist source — its definition
          // references something the rebind model doesn't provide (a parent
          // refinement not carried, a live leaf). The caller falls back.
-         throw new Error(
-            `Chained build model did not yield a persist source named ` +
+         throw new MaterializationEligibilityError({
+            message:
+               `Chained build model did not yield a persist source named ` +
                `'${downstreamName}' (the downstream references something the ` +
                `rebound parents don't provide).`,
-         );
+         });
       }
       // The downstream's materialization SQL, over the rebound parents — DuckDB
       // dialect, reading the attached lake tables via the virtualMap. Project to
@@ -378,8 +434,7 @@ export async function buildDownstreamIntoStorage(params: {
          `${destinationName}.${physicalTableName}`,
          "duckdb",
       );
-      await session.runSQL(`CREATE OR REPLACE TABLE ${target} AS (${sql})`);
-      const schema = await describeTable(session, target);
+      const schema = await createTableAndDescribe(session, target, sql);
 
       return { storageConnectionName: destinationName, schema };
    } finally {
@@ -420,26 +475,28 @@ export async function assertStorageServeShapeCompiles(params: {
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string })),
    };
-   // Own isolated instance, like the build/GC sessions: this gate compiles a
-   // throwaway serve shape (no attach, no credentials), so it has no cross-tenant
-   // collision surface of its own, but isolating it keeps every build-path
-   // session off the shared instance pool uniformly (see
-   // createIsolatedBuildSession).
-   const { session: conn, dispose } = createIsolatedBuildSession(
-      `gate_${destinationName}`,
+   // ONE session for the process, not one per build. The build and GC sessions
+   // need their own instance because they ATTACH a destination read-write and
+   // federate customer credentials; this gate does neither — it compiles a
+   // throwaway serve shape against a captured schema — so it has no cross-tenant
+   // collision surface to isolate. A fresh instance per build cost ~5.9MB of RSS
+   // per build on the production image, roughly three quarters of the build
+   // path's total growth, and it is never reclaimed.
+   //
+   // The risk of sharing is a shared CATALOG: every compile declares a virtual
+   // source into it, so a later shape could in principle pass on declarations
+   // left by an earlier one. Pinned in the spec — refusals still refuse after 25
+   // successful compiles, a refusal does not poison the session, and the same
+   // handle recompiled with a different schema sees the new one.
+   sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
+   await assertServesInDuckDB(
+      sourceName,
+      binding,
+      new FixedConnectionMap(
+         new Map([[destinationName, sharedGateSession]]),
+         destinationName,
+      ),
    );
-   try {
-      await assertServesInDuckDB(
-         sourceName,
-         binding,
-         new FixedConnectionMap(
-            new Map([[destinationName, conn]]),
-            destinationName,
-         ),
-      );
-   } finally {
-      await dispose();
-   }
 }
 
 /** DDL to drop a storage table by its recorded name, catalog-qualified for DuckDB. */
@@ -563,6 +620,49 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
  * mapping DuckDB's `column_name`/`column_type` rows to the wire {@link Column}
  * shape the manifest carries. This is the schema the serve transform declares.
  */
+/**
+ * CTAS the table, then read back its authoritative schema — dropping the table
+ * again if that read-back fails.
+ *
+ * The window this closes: the CTAS has committed by the time DESCRIBE runs, and
+ * the caller records nothing until this function RETURNS. So a DESCRIBE failure
+ * propagates past a committed table that no manifest entry names and that
+ * `builtThisRun` never saw — leaving it unreachable by the failed-run reclaim
+ * and by manifest-driven GC alike, which only drop names they recorded building.
+ * Same class the post-build serve-shape gate already closes with its own
+ * targeted drop (see materialization_service), and closed the same way.
+ *
+ * Best-effort: a failed drop is logged, never raised, and never replaces the
+ * DESCRIBE error that is the actual failure. The drop runs on the session that
+ * created the table, whose read-write attach is still open.
+ */
+export async function createTableAndDescribe(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+   selectSQL: string,
+): Promise<WireColumn[]> {
+   await session.runSQL(
+      `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
+   );
+   try {
+      return await describeTable(session, quotedTablePath);
+   } catch (describeErr) {
+      try {
+         await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
+      } catch (dropErr) {
+         logger.warn(
+            "Failed to drop a storage table stranded by a schema read-back " +
+               "failure (physical leak)",
+            {
+               table: quotedTablePath,
+               error: errMessage(dropErr),
+            },
+         );
+      }
+      throw describeErr;
+   }
+}
+
 async function describeTable(
    session: DuckDBConnection,
    quotedTablePath: string,

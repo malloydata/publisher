@@ -100,12 +100,32 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       stderr: opts.inheritStdio ? "inherit" : "pipe",
    });
 
+   // The server prints one PUBLISHER_READY line the moment it reaches `serving`
+   // (PUBLISHER_INIT_FAILED instead if initialization failed). Watching for it is
+   // exact, where polling /status can only resolve to its own interval — and since
+   // every mode switch costs a boot, that interval was a real share of a run.
+   let signalReady: (() => void) | undefined;
+   let signalFailed: ((why: string) => void) | undefined;
+   const readySignal = new Promise<void>((resolve, reject) => {
+      signalReady = resolve;
+      signalFailed = (why): void => reject(new Error(why));
+   });
+
    // Drain captured output to the log file so a hang/crash is diagnosable.
    if (!opts.inheritStdio && logSink) {
+      let tail = "";
       const pump = async (stream: ReadableStream): Promise<void> => {
          for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
             logSink.write(chunk);
             logSink.flush();
+            // The marker can straddle a chunk boundary, so keep a short tail.
+            tail = (tail + new TextDecoder().decode(chunk)).slice(-4096);
+            if (tail.includes("PUBLISHER_READY")) signalReady?.();
+            else if (tail.includes("PUBLISHER_INIT_FAILED")) {
+               signalFailed?.(
+                  `server reported PUBLISHER_INIT_FAILED (see ${opts.logFile ?? "stdio"})`,
+               );
+            }
          }
       };
       if (proc.stdout instanceof ReadableStream) void pump(proc.stdout);
@@ -129,25 +149,30 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       await logSink?.end();
    };
 
+   // The poll is the backstop: it covers inheritStdio (nothing to watch) and any
+   // build predating the ready line. Whichever resolves first wins.
+   const poll = waitFor(
+      "server operationalState=serving",
+      async () => {
+         if (exited)
+            throw new Error(
+               `server process exited early (see ${opts.logFile ?? "stdio"})`,
+            );
+         const res = await fetch(`${baseUrl}/api/v0/status`);
+         if (!res.ok) return false;
+         const body = (await res.json()) as { operationalState?: string };
+         return body.operationalState === "serving";
+      },
+      { timeoutMs: 180_000, intervalMs: 750 },
+   );
    try {
-      await waitFor(
-         "server operationalState=serving",
-         async () => {
-            if (exited)
-               throw new Error(
-                  `server process exited early (see ${opts.logFile ?? "stdio"})`,
-               );
-            const res = await fetch(`${baseUrl}/api/v0/status`);
-            if (!res.ok) return false;
-            const body = (await res.json()) as { operationalState?: string };
-            return body.operationalState === "serving";
-         },
-         { timeoutMs: 180_000, intervalMs: 750 },
-      );
+      await Promise.race([readySignal, poll]);
    } catch (e) {
       await stop();
       throw e;
    }
+   // Keep the loser from surfacing as an unhandled rejection after we've moved on.
+   void poll.catch(() => undefined);
 
    log.ok(`server serving (mode=${opts.mode})`);
    return { baseUrl, mcpUrl, mode: opts.mode, stop };

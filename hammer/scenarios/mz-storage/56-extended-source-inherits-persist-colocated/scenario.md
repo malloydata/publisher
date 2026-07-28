@@ -4,14 +4,16 @@ tags: serve-correctness, safety, known-red
 package: esc
 ---
 
-# Extending a persisted source publishes and serves — but inherits its `#@ persist` (COLOCATED)
+# An extension must not become a second build target — COLOCATED
 
-The colocated (in-warehouse, no `storage=`) twin of `extended-source-inherits-persist`.
-Same malloy-core bug (fix: malloydata/malloy PR 3012): a source that EXTENDS a
-persisted source inherits its `#@ persist name=`, so the extended reader becomes a
-SECOND build target writing the same table — here, colocated in the source
-warehouse. Per the docs, extending a persisted source should READ its table, not
-re-materialize.
+The colocated (in-warehouse, no `storage=`) twin of `extended-source-inherits-persist`,
+and the same defect: a source that EXTENDS a persisted source inherits its
+`#@ persist name=`, so the extended reader becomes a SECOND build target writing the
+same table — here, colocated in the source warehouse. Extending a persisted source
+should READ its table, not claim it.
+
+Inheriting the annotation through `extend` is by design in Malloy (`#@ -persist` opts
+out); inheriting the `name=` as a build target is what this pins.
 
 The user flow: author `daily` (`#@ persist`, colocated), then `daily_with_avg` extending
 it to add a derived field. Publish, materialize, and query both — that works here,
@@ -21,8 +23,9 @@ plan still lists `daily_with_avg` as a second target writing the same warehouse 
 which collides when a host materializes per-source, and the collision guard misses
 it (it dedups by `sourceEntityId`, which these share).
 
-The `## Build targets` step surfaces the root cause: exactly ONE build target for `esc_daily`. RED
-today; GREEN once malloy PR 3012 lands.
+The `## Build targets` step surfaces the root cause: exactly ONE build target for
+`esc_daily`. RED today; GREEN once an inherited `name=` stops minting a duplicate
+target.
 
 ## Publisher
 

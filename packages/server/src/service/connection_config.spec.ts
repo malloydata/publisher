@@ -624,3 +624,51 @@ describe("SSH proxy validation", () => {
       );
    });
 });
+
+describe("ducklake shape validation", () => {
+   // A DuckLake destination is only attached at its first BUILD, so without an
+   // eager check a missing catalog or bucketUrl surfaced hours after the config
+   // change that caused it. Validated at load like its duckdb-family siblings.
+   const valid: ApiConnection = {
+      name: "lake",
+      type: "ducklake",
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: {
+               host: "127.0.0.1",
+               port: 5432,
+               databaseName: "catalog",
+               userName: "u",
+               password: "p",
+            },
+         },
+         storage: { bucketUrl: "/tmp/lake" },
+      },
+   };
+
+   it("accepts a fully configured destination", () => {
+      expect(() =>
+         assembleEnvironmentConnections([valid], "/tmp/env"),
+      ).not.toThrow();
+   });
+
+   it("rejects a missing catalog connection at load", () => {
+      const c = {
+         ...valid,
+         ducklakeConnection: { storage: { bucketUrl: "/tmp/lake" } },
+      } as ApiConnection;
+      expect(() => assembleEnvironmentConnections([c], "/tmp/env")).toThrow(
+         /PostgreSQL connection configuration is required for DuckLake catalog/i,
+      );
+   });
+
+   it("rejects a missing bucketUrl at load", () => {
+      const c = {
+         ...valid,
+         ducklakeConnection: { catalog: valid.ducklakeConnection!.catalog },
+      } as ApiConnection;
+      expect(() => assembleEnvironmentConnections([c], "/tmp/env")).toThrow(
+         /Storage bucketUrl is required for DuckLake/i,
+      );
+   });
+});

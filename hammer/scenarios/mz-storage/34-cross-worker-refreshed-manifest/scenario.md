@@ -4,7 +4,7 @@ tags: orchestration, cluster, needs-attention
 package: xwr
 ---
 
-# Cross-worker build via a refreshed manifest (the realistic orchestrator flow)
+# A refreshed manifest lets one worker build against another's table
 
 The flow we actually expect to work (James):
 

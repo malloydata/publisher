@@ -3,6 +3,7 @@ import { Manifest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
+   MaterializationEligibilityError,
    BadRequestError,
    EnvironmentNotFoundError,
    InvalidStateTransitionError,
@@ -29,6 +30,7 @@ import {
    redactConnectionSecrets,
    stagingSuffix,
 } from "./materialization_service";
+import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import {
    startMetricsHarness,
@@ -87,7 +89,7 @@ describe("redactConnectionSecrets", () => {
    // Stubbed at the seam because the leak needs an ATTACH (not CTAS) failure:
    // bad catalog creds fast-fail at connection validation, so no black-box test
    // can reach this branch.
-   it("redacts connection secrets in the chained build refusal", async () => {
+   it("redacts an INFRA chained-build failure, and does not call it a refusal", async () => {
       const sandbox = sinon.createSandbox();
       try {
          const destinationConnection = {
@@ -151,7 +153,14 @@ describe("redactConnectionSecrets", () => {
             true, // dependsOnStorageUpstream — take the chained path
          );
 
-         await expect(call).rejects.toThrow(/strict upstreams forbid/);
+         // A failed ATTACH is infrastructure, not a shape limit: it must NOT
+         // present as the strict-upstreams refusal (that message means "we could
+         // have recomputed from raw but you forbade it", which is not what
+         // happened here).
+         await expect(call).rejects.toThrow(
+            /Failed to materialize chained source/i,
+         );
+         await expect(call).rejects.not.toThrow(/strict upstreams forbid/i);
          const message = await call.then(
             () => "",
             (e: unknown) => (e instanceof Error ? e.message : String(e)),
@@ -1690,7 +1699,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
 
    function callInto(opts: {
       strict: boolean;
-      stackOnParent: "ok" | "throw";
+      stackOnParent: "ok" | "throw" | "infra";
    }): Promise<{
       physicalTableName: string;
       storageConnectionName?: string;
@@ -1741,7 +1750,17 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                     { name: "monthly_total", type: "DOUBLE" },
                  ],
               })
-            : sinon.stub().rejects(new Error("uncarried parent"));
+            : opts.stackOnParent === "infra"
+              ? // An outage, not a modelling limit: a plain Error, as a failed
+                // ATTACH or CTAS would throw.
+                sinon.stub().rejects(new Error("IO Error: destination is down"))
+              : // A shape limit: the downstream cannot be expressed over its
+                // rebound parents.
+                sinon.stub().rejects(
+                   new MaterializationEligibilityError({
+                      message: "uncarried parent",
+                   }),
+                );
       return svc.buildOneSourceIntoStorage(
          source,
          instruction,
@@ -1771,6 +1790,27 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       await expect(
          callInto({ strict: true, stackOnParent: "throw" }),
       ).rejects.toThrow(/strict upstreams forbid/i);
+   });
+
+   it("non-strict + an INFRA failure fails rather than recomputing from raw", async () => {
+      // Recompute-from-raw writes to the same destination, so retrying an outage
+      // there just fails again — and metering it as a fallback files the outage
+      // under the same label as a legitimate shape miss. Only a shape failure is
+      // a reason to try the other path.
+      await expect(
+         callInto({ strict: false, stackOnParent: "infra" }),
+      ).rejects.toThrow(/Failed to materialize chained source/i);
+   });
+
+   it("non-strict + a SHAPE failure falls through to recompute-from-raw", async () => {
+      // Only the parent-reuse seam is stubbed, so the recompute runs for real and
+      // fails for its own reason (no destination file). That is the proof it was
+      // reached: the two paths report differently — the chained path says
+      // "chained source", the single-source recompute says "source". A shape
+      // failure must reach the second; an infra failure must not.
+      await expect(
+         callInto({ strict: false, stackOnParent: "throw" }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
    });
 });
 
@@ -2091,5 +2131,124 @@ describe("transition (state machine)", () => {
             status: "MANIFEST_ROWS_READY",
          }),
       ).toBe(true);
+   });
+});
+
+// The only path here that issues a DROP against a customer's warehouse, so its
+// guards get assertions rather than a trace. Scenario 64 covers it end to end,
+// but hammer does not run in CI — and the failure mode is silent data loss, not
+// a broken build.
+describe("reclaimStorageTablesFromFailedRun", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   let infoLog: sinon.SinonStub;
+   let warnLog: sinon.SinonStub;
+
+   beforeEach(() => {
+      ctx = createMocks();
+      infoLog = ctx.sandbox.stub(logger, "info");
+      warnLog = ctx.sandbox.stub(logger, "warn");
+   });
+   afterEach(() => ctx.sandbox.restore());
+
+   const entry = (table: string) =>
+      ({
+         sourceEntityId: `eid-${table}`,
+         sourceName: "daily",
+         physicalTableName: table,
+         storageConnectionName: "lake",
+      }) as unknown as Parameters<
+         MaterializationService["reclaimStorageTablesFromFailedRun"]
+      >[0][number];
+
+   /** A destination whose drop would fail loudly if one were ever attempted. */
+   const environment = {
+      getApiConnection: () => ({ name: "lake", type: "duckdb" }),
+      getEnvironmentPath: () => "/test",
+   } as unknown as Parameters<
+      MaterializationService["reclaimStorageTablesFromFailedRun"]
+   >[1];
+
+   const reclaim = (
+      built: ReturnType<typeof entry>[],
+      others: unknown[],
+   ): Promise<void> => {
+      (ctx.repository.listMaterializations as sinon.SinonStub).resolves(others);
+      return (
+         ctx.service as unknown as {
+            reclaimStorageTablesFromFailedRun: (
+               b: unknown,
+               e: unknown,
+               o: unknown,
+            ) => Promise<void>;
+         }
+      ).reclaimStorageTablesFromFailedRun(built, environment, {
+         environmentId: "env-1",
+         packageName: "pkg",
+      });
+   };
+
+   const said = (stub: sinon.SinonStub, needle: RegExp) =>
+      stub.getCalls().some((c) => needle.test(String(c.args[0])));
+
+   it("never drops a table a live manifest still serves", async () => {
+      // The carried-forward case: a previous successful run's manifest names the
+      // same destination + table. Dropping it would delete a table that is being
+      // served right now.
+      await reclaim(
+         [entry("daily_v1")],
+         [
+            {
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  entries: {
+                     other: {
+                        storageConnectionName: "lake",
+                        physicalTableName: "daily_v1",
+                     },
+                  },
+               },
+            },
+         ],
+      );
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(true);
+      expect(said(infoLog, /Reclaimed a table/)).toBe(false);
+      expect(said(warnLog, /Failed to reclaim/)).toBe(false);
+   });
+
+   it("does attempt the drop when nothing references the table", async () => {
+      // The inverse, so the test above is known to be the still-referenced check
+      // doing the work rather than the reclaim being inert. No real destination
+      // exists here, so the attempt surfaces as the drop-failure warning.
+      await reclaim([entry("daily_v2")], []);
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(false);
+      expect(
+         said(warnLog, /Failed to reclaim/) ||
+            said(infoLog, /Reclaimed a table/),
+      ).toBe(true);
+   });
+
+   it("ignores a superseded run's entries when deciding", async () => {
+      // Only MANIFEST_FILE_READY runs count as live. A superseded run naming the
+      // same table must not pin it forever.
+      await reclaim(
+         [entry("daily_v3")],
+         [
+            {
+               status: "SUPERSEDED",
+               manifest: {
+                  entries: {
+                     old: {
+                        storageConnectionName: "lake",
+                        physicalTableName: "daily_v3",
+                     },
+                  },
+               },
+            },
+         ],
+      );
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(false);
    });
 });

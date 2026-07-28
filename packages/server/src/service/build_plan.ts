@@ -16,6 +16,7 @@ import {
    recordEligibilityRefused,
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
+import { assertMaterializationEligible } from "./materialization_eligibility";
 import { Model } from "./model";
 import { quoteIdentifier } from "./quoting";
 
@@ -633,6 +634,7 @@ export async function computePackageBuildPlan(
 ): Promise<{
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
+   sourceEligibility: SourceEligibility;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
@@ -647,5 +649,48 @@ export async function computePackageBuildPlan(
               compiled.sourceModelPaths,
               pkg.getMaterializationConfig?.() ?? null,
            );
-   return { plan, droppedPersistSources };
+   return {
+      plan,
+      droppedPersistSources,
+      sourceEligibility: collectSourceEligibility(compiled.sources),
+   };
+}
+
+/**
+ * Which sources may be served from a materialized table, decided HERE because
+ * this is where the compiled sources exist. The serve side needs the answer
+ * without them: binding a host's manifest deliberately skips the recompile, so it
+ * cannot re-derive eligibility and would otherwise have to take the host's word
+ * for it.
+ *
+ * Carries the ELIGIBLE names, not just the refusals, so the serve side can
+ * require a positive result. Absence is not eligibility: Malloy admits only
+ * query-shaped sources as build roots, so a `#@ persist` on a filtered
+ * pass-through (`X is <table> extend { where … }`, which stays type `table`)
+ * never reaches this record at all — and that is the row-level-access shape. A
+ * refusal-only view would read that silence as consent.
+ *
+ * Keyed by source NAME because that is what a serve binding carries.
+ */
+export type SourceEligibility = {
+   /** Sources compiled, examined, and found eligible. */
+   eligible: string[];
+   /** Source name -> why it was refused; for the operator-facing log. */
+   refused: Record<string, string>;
+};
+
+function collectSourceEligibility(
+   sources: Record<string, PersistSource>,
+): SourceEligibility {
+   const eligible: string[] = [];
+   const refused: Record<string, string> = {};
+   for (const source of Object.values(sources)) {
+      try {
+         assertMaterializationEligible(source);
+         eligible.push(source.name);
+      } catch (err) {
+         refused[source.name] = errMessage(err);
+      }
+   }
+   return { eligible, refused };
 }

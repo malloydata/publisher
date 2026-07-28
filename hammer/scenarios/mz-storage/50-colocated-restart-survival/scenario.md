@@ -4,7 +4,7 @@ tags: lifecycle, durability
 package: cs
 ---
 
-# Restart survival: a COLOCATED materialization is re-established from the store
+# Serving is re-established after a restart on the COLOCATED tier too
 
 The storage-tier analogue is `restart-survival` (12); this pins the same property
 for the **colocated** (v0, in-warehouse) tier. A plain `#@ persist` source (no

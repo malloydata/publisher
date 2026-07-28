@@ -73,9 +73,23 @@ export interface ServerControl {
 
 export interface ScenarioContext extends ServerControl {
    pg: PostgresHandle;
+   /** This scenario's PHYSICAL primary environment (see {@link envFor}). */
    env: string;
-   /** The shared Postgres source database name. */
+   /**
+    * Map a scenario-authored (logical) environment name to the physical one this
+    * scenario runs under. Every scenario gets its own environment so it cannot
+    * share publisher-side state with another, while its markdown keeps saying
+    * `default` / `prod`.
+    */
+   envFor(logical: string): string;
+   /** This scenario's OWN Postgres source database. */
    sourceDb: string;
+   /**
+    * The Postgres database backing a DuckLake connection's catalog. Per-scenario,
+    * so a hook that needs to interfere with a catalog out-of-band (dropping it to
+    * induce a build failure) can name it without hardcoding the layout.
+    */
+   catalogDbFor(connectionName: string): string;
    /**
     * Overwrite a model file in the generated SOURCE package dir. Takes effect on
     * the next `--init` boot (which re-copies the package). Used by the migration
@@ -127,6 +141,12 @@ export interface Scenario {
     */
    note?: { since?: string; text: string };
    sourceTables?: SourceTable[];
+   /**
+    * The `PERSIST_STORAGE_MODE` values this scenario asks for, in order. A mode is
+    * fixed at publisher start, so changing it restarts the server — the runner uses
+    * this to run same-mode scenarios consecutively and stop paying for churn.
+    */
+   modes?: string[];
    packages: PackageSpec[];
    /** Connections to wire into the config beyond the defaults (see {@link ConnectionDecl}). */
    connections?: ConnectionDecl[];
@@ -135,6 +155,13 @@ export interface Scenario {
 
 /** The single tag that marks a scenario as carrying an open question / follow-up. */
 export const ATTENTION_TAG = "needs-attention";
+
+/**
+ * A scenario asserting a rule the Publisher does not meet yet. It is EXPECTED to
+ * fail, so it does not fail the run — but a known-red that PASSES does, because
+ * that means the rule now holds and the tag is a lie. See hammer/README.md.
+ */
+export const KNOWN_RED_TAG = "known-red";
 
 export interface Check {
    name: string;

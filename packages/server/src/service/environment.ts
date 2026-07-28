@@ -1349,6 +1349,19 @@ export class Environment {
     * holding the per-package mutex for the duration of the disk reads.
     * Replaces direct `Package.reloadAllModels` calls from outside
     * `Environment`.
+    *
+    * Skips the recompile when there is nothing to substitute now AND nothing was
+    * substituted before — the same condition {@link bindManifest} applies to a
+    * pure-storage manifest flip, and for the same reason: a same-connection
+    * `tableName` manifest is resolved at COMPILE time, so an empty one over an
+    * already-empty one changes nothing a recompile could express. The previous
+    * state has to be checked too, because a package that just dropped its last
+    * colocated entry still has to recompile to revert the substitution.
+    *
+    * This matters because every materialization run lands here. Without the
+    * guard a `storage=`-only package — or one with no persist sources at all —
+    * paid a full package recompile per run: measured at ~1.1MB of RSS per run on
+    * the production image, never reclaimed, against a `main` build that reclaims.
     */
    public async reloadAllModelsForPackage(
       packageName: string,
@@ -1362,6 +1375,9 @@ export class Environment {
                `Package ${packageName} is not loaded`,
             );
          }
+         const has = Object.keys(manifest).length > 0;
+         const had = pkg.hasBoundTableNameManifest();
+         if (!has && !had) return;
          await pkg.reloadAllModels(manifest);
       });
    }

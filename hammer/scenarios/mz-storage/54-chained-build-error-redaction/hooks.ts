@@ -7,7 +7,8 @@ import type { HookApi } from "../../../lib/scenario_md";
 import type { Assert } from "../../framework";
 
 export async function dropCatalog(api: HookApi, assert: Assert): Promise<void> {
-   // A declared `## Connection cbelake` gets catalog DB `ducklake_catalog_cbelake`.
-   await api.pg.dropDb("ducklake_catalog_cbelake");
+   // Catalog databases are per-scenario, so ask for this one's rather than
+   // hardcoding the layout.
+   await api.pg.dropDb(api.catalogDbFor("cbelake"));
    assert.ok("isolated catalog DB dropped out-of-band", true);
 }

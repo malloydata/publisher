@@ -4,7 +4,7 @@ tags: orchestration, isolation
 package: mzv1
 ---
 
-# Two versions, two schemas: isolated snapshots of the same source
+# Two deployments of one source keep isolated snapshots in their own schemas
 
 Two deployments of the SAME logical source (identical Malloy, identical SQL)
 persist into two different DuckLake schemas — `v1.daily` and `v2.daily` — like a
