@@ -538,6 +538,15 @@ export class EnvironmentStore {
                name: environment.name,
                resource: `${API_PREFIX}/environments/${environment.name}`,
                connections: environment.connections,
+               // Only asserted when the config declares destinations: an empty
+               // list is an instruction to clear, and this call reaches
+               // `Environment.update` for an environment that is already loaded.
+               ...(environment.materializationDestinations.length
+                  ? {
+                       materializationDestinations:
+                          environment.materializationDestinations,
+                    }
+                  : {}),
                packages: environment.packages,
             },
             true,
@@ -628,13 +637,13 @@ export class EnvironmentStore {
                            .then(() => true)
                            .catch(() => false);
 
+                        const environmentConfig =
+                           environmentManifest.environments.find(
+                              (p) => p.name === dbEnvironment.name,
+                           );
+
                         if (!environmentExists) {
                            // Try to find in config and reload
-                           const environmentConfig =
-                              environmentManifest.environments.find(
-                                 (p) => p.name === dbEnvironment.name,
-                              );
-
                            if (environmentConfig) {
                               const environmentInstance =
                                  await this.addEnvironment(
@@ -643,6 +652,8 @@ export class EnvironmentStore {
                                        resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
                                        connections:
                                           environmentConfig.connections,
+                                       materializationDestinations:
+                                          environmentConfig.materializationDestinations,
                                        packages: environmentConfig.packages,
                                     },
                                     true,
@@ -679,6 +690,14 @@ export class EnvironmentStore {
                               resource: `${API_PREFIX}/connections/${conn.name}`,
                               ...conn.config,
                            })),
+                           // Read from the config file, not the database: a
+                           // destination is never persisted as a connection row,
+                           // so this restore path is the only thing that can put
+                           // the configured ones back. Destinations registered
+                           // over the API do not survive a restart, and the
+                           // materialized queries that named them fall back to
+                           // running live until they are re-registered.
+                           environmentConfig?.materializationDestinations,
                         );
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
@@ -1389,6 +1408,15 @@ export class EnvironmentStore {
             name: environmentName,
             resource: `${API_PREFIX}/environments/${environmentName}`,
             connections: environmentConfig?.connections || [],
+            // Only asserted when the config declares destinations. A `reload=true`
+            // on an environment whose destinations were registered over the API
+            // would otherwise carry an empty list, which reads as "clear them".
+            ...(environmentConfig?.materializationDestinations?.length
+               ? {
+                    materializationDestinations:
+                       environmentConfig.materializationDestinations,
+                 }
+               : {}),
          });
       });
    }
@@ -1448,6 +1476,7 @@ export class EnvironmentStore {
          environmentName,
          absoluteEnvironmentPath,
          environment.connections || [],
+         environment.materializationDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
 

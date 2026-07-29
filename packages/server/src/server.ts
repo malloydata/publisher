@@ -32,7 +32,7 @@ import {
    getPrometheusMetricsHandler,
    httpMetricsMiddleware,
 } from "./instrumentation";
-import { logger, loggerMiddleware } from "./logger";
+import { logger, loggerMiddleware, redactSensitive } from "./logger";
 
 import {
    getEmbeddingConfig,
@@ -970,7 +970,10 @@ app.get(`${API_PREFIX}/environments`, async (_req, res) => {
 
 app.post(`${API_PREFIX}/environments`, async (req, res) => {
    try {
-      logger.info("Adding environment", { body: req.body });
+      // Redacted like every other body-bearing log line (loggerMiddleware): the
+      // body carries connection and materialization-destination configs, and a
+      // destination's catalog password would otherwise land in the log verbatim.
+      logger.info("Adding environment", { body: redactSensitive(req.body) });
       const environment = await environmentStore.addEnvironment(req.body);
       res.status(200).json(await environment.serialize());
    } catch (error) {

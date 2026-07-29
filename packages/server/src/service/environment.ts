@@ -16,6 +16,7 @@ import {
 import {
    BadRequestError,
    ConnectionNotFoundError,
+   DestinationNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
    ServiceUnavailableError,
@@ -38,6 +39,7 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
+import { processMaterializationDestinations } from "./connection_config";
 import {
    fetchManifestEntries,
    splitManifestEntries,
@@ -170,6 +172,16 @@ export class Environment {
    private retiredConnectionGenerations =
       new Set<RetiredConnectionGeneration>();
    private apiConnections: ApiConnection[];
+   /**
+    * Warehouses materialization builds write to and materialized queries are
+    * served from. Disjoint from {@link apiConnections}: a destination is not a
+    * connection, so it is absent from `listApiConnections`, unresolvable by name
+    * from a user's model, and free to share a name with a connection without
+    * colliding with it. Two lists rather than one flagged list so that every
+    * existing connection consumer excludes destinations structurally, instead of
+    * each having to remember a filter.
+    */
+   private destinations: ApiConnection[];
    private environmentPath: string;
    private environmentName: string;
    // Resolves a package's latest persisted materialization manifest entries
@@ -206,6 +218,7 @@ export class Environment {
       environmentPath: string,
       malloyConfig: EnvironmentMalloyConfig,
       apiConnections: InternalConnection[],
+      materializationDestinations: ApiConnection[] = [],
    ) {
       // Sanitizer barrier: every downstream `path.join(this.environmentPath,
       // …)` site (including the static `sweepStaleInstallDirs` sweep) gets a
@@ -215,6 +228,9 @@ export class Environment {
       this.environmentPath = environmentPath;
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
+      this.destinations = processMaterializationDestinations(
+         materializationDestinations,
+      );
       this.metadata = {
          resource: `${API_PREFIX}/environments/${this.environmentName}`,
          name: this.environmentName,
@@ -243,6 +259,14 @@ export class Environment {
       if (payload.readme !== undefined) {
          this.metadata.readme = payload.readme;
          await this.writeEnvironmentReadme(payload.readme);
+      }
+
+      // Absent means "leave alone", so a caller updating only the readme or the
+      // connections cannot blank the destination list by omission.
+      if (payload.materializationDestinations) {
+         this.setMaterializationDestinations(
+            payload.materializationDestinations,
+         );
       }
 
       // Handle connections update
@@ -279,6 +303,7 @@ export class Environment {
       environmentName: string,
       environmentPath: string,
       connections: ApiConnection[],
+      materializationDestinations: ApiConnection[] = [],
    ): Promise<Environment> {
       assertSafeEnvironmentPath(environmentPath);
       if (!(await fs.promises.stat(environmentPath))?.isDirectory()) {
@@ -308,6 +333,7 @@ export class Environment {
          environmentPath,
          malloyConfig,
          malloyConfig.apiConnections,
+         materializationDestinations,
       );
 
       // Best-effort: a previous run may have crashed mid-install or
@@ -573,6 +599,58 @@ export class Environment {
          );
       }
       return connection;
+   }
+
+   /**
+    * Replaces the destination list. Every entry is re-validated here, so this is
+    * also the barrier that keeps an unvalidated destination off the environment
+    * however it arrived — config file or request body.
+    */
+   public setMaterializationDestinations(
+      materializationDestinations: ApiConnection[],
+   ): void {
+      this.destinations = processMaterializationDestinations(
+         materializationDestinations,
+      );
+      logger.info(
+         `Environment ${this.environmentName} has ${this.destinations.length} materialization destination(s)`,
+         { destinations: this.destinations.map((d) => d.name) },
+      );
+   }
+
+   /**
+    * The destinations configured for this environment. Deliberately not exposed
+    * by any controller: a destination config carries warehouse credentials and
+    * has no endpoint of its own, so nothing can list, fetch, or probe one.
+    */
+   public listMaterializationDestinations(): ApiConnection[] {
+      return this.destinations;
+   }
+
+   public hasMaterializationDestination(destinationName: string): boolean {
+      return this.destinations.some(
+         (destination) => destination.name === destinationName,
+      );
+   }
+
+   /**
+    * Resolves a materialization destination by name. Never falls back to the
+    * connection list: a `storage=` build naming a destination that is not
+    * configured must fail rather than write into a same-named connection, which
+    * would be the tenant's own warehouse.
+    */
+   public getMaterializationDestination(
+      destinationName: string,
+   ): ApiConnection {
+      const destination = this.destinations.find(
+         (destination) => destination.name === destinationName,
+      );
+      if (!destination) {
+         throw new DestinationNotFoundError(
+            `Materialization destination ${destinationName} not found`,
+         );
+      }
+      return destination;
    }
 
    public async getMalloyConnection(connectionName: string) {

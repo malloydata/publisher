@@ -115,6 +115,7 @@ export type Environment = {
    theme?: Theme;
    packages: Package[];
    connections?: Connection[];
+   materializationDestinations?: Connection[];
 };
 
 export type PublisherConfig = {
@@ -128,6 +129,13 @@ export type ProcessedEnvironment = {
    theme?: Theme;
    packages: Package[];
    connections: ApiConnection[];
+   /**
+    * Carried through unfiltered: destinations are validated in one place,
+    * `processMaterializationDestinations`, which every path onto an Environment
+    * goes through. Filtering here too would mean two lists to keep in step, and
+    * the config file is not the only source — a request body is the other.
+    */
+   materializationDestinations: ApiConnection[];
 };
 
 export type ProcessedPublisherConfig = {
@@ -1113,6 +1121,11 @@ export const getProcessedPublisherConfig = (
          connections: convertConnectionsToApiConnections(
             environment.connections || [],
          ),
+         materializationDestinations: Array.isArray(
+            environment.materializationDestinations,
+         )
+            ? (environment.materializationDestinations as ApiConnection[])
+            : [],
          ...(resolvedTheme ? { theme: resolvedTheme } : {}),
       });
    }

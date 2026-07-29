@@ -39,7 +39,7 @@ import {
    internalErrorToHttpError,
    NotImplementedError,
 } from "./errors";
-import { logger } from "./logger";
+import { logger, redactSensitive } from "./logger";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
 import { EnvironmentStore } from "./service/environment_store";
@@ -115,7 +115,9 @@ export function registerLegacyRoutes(
 
    app.post(`${LEGACY_API_PREFIX}/projects`, async (req, res) => {
       try {
-         logger.info("Adding project", { body: req.body });
+         // Redacted for the same reason as the `POST /environments` twin: the
+         // body can carry connection and materialization-destination configs.
+         logger.info("Adding project", { body: redactSensitive(req.body) });
          const environment = await environmentStore.addEnvironment(req.body);
          res.status(200).json(await environment.serialize());
       } catch (error) {

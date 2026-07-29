@@ -2667,6 +2667,20 @@ components:
           description: List of database connections configured for this environment
           items:
             $ref: "#/components/schemas/Connection"
+        materializationDestinations:
+          type: array
+          writeOnly: true
+          description:
+            Warehouses that materialization builds may write to and that
+            materialized queries are served from. A disjoint set from
+            `connections` - a destination is never resolvable by name from a
+            model, never listed or fetchable through the connection endpoints,
+            and never returned by this schema. Names are independent of
+            `connections`, so the same name may appear in both lists and mean
+            two different warehouses. Accepted on create and update; omitting
+            the field leaves the current list untouched.
+          items:
+            $ref: "#/components/schemas/Connection"
         packages:
           type: array
           description: List of Malloy packages in this environment

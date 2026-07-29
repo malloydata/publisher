@@ -627,6 +627,102 @@ function validateConnectionShape(connection: ApiConnection): void {
    }
 }
 
+/**
+ * Warehouse types a materialization destination may be. Deliberately narrower
+ * than the connection types: a destination is attached read-write by the build
+ * path, and every type admitted here is another way to define a warehouse that
+ * no connection endpoint audits.
+ */
+export const MATERIALIZATION_DESTINATION_TYPES: ReadonlySet<string> = new Set([
+   "ducklake",
+]);
+
+/**
+ * Validates a `materializationDestinations` list and returns the entries that
+ * may be built into and served from. The one place destinations are checked, so
+ * no caller can seat an unvalidated destination on an Environment.
+ *
+ * Names are unique within the list and are NOT checked against the
+ * environment's connections. The two lists are separate namespaces: one
+ * environment may hold a connection and a destination that share a name and
+ * mean different warehouses, and both must keep working.
+ *
+ * An unusable entry is dropped with a warning instead of failing the whole
+ * environment, so one malformed destination does not take a tenant's packages
+ * offline. Dropping is safe because it is not a substitution: build and serve
+ * resolve destinations only through this list, so a `storage=` build naming a
+ * dropped destination fails rather than falling through to a same-named
+ * connection.
+ */
+export function processMaterializationDestinations(
+   destinations: ApiConnection[] = [],
+): ApiConnection[] {
+   if (!Array.isArray(destinations)) {
+      return [];
+   }
+
+   const accepted: ApiConnection[] = [];
+   const seen = new Set<string>();
+
+   for (const destination of destinations) {
+      if (!destination || typeof destination !== "object") {
+         logger.warn(
+            "Invalid materialization destination: entry must be an object. Skipping.",
+         );
+         continue;
+      }
+
+      const { name, type } = destination;
+      if (!name || typeof name !== "string") {
+         logger.warn(
+            `Invalid materialization destination: missing or invalid "name" field. Skipping.`,
+         );
+         continue;
+      }
+      if (!type || !MATERIALIZATION_DESTINATION_TYPES.has(type)) {
+         logger.warn(
+            `Materialization destination "${name}" has unsupported type "${type}". ` +
+               `Supported types: ${[...MATERIALIZATION_DESTINATION_TYPES].join(", ")}. Skipping.`,
+         );
+         continue;
+      }
+      // A destination named `duckdb` could never be reached: the package
+      // connection lookup answers that name with the per-package :memory:
+      // sandbox before any environment list is consulted, so a serve compile
+      // would read an empty sandbox instead of the destination.
+      if (name === "duckdb") {
+         logger.warn(
+            `Materialization destination name "duckdb" is reserved for per-package sandboxes. Skipping.`,
+         );
+         continue;
+      }
+      if (seen.has(name)) {
+         logger.warn(
+            `Duplicate materialization destination "${name}". Keeping the first entry and skipping this one.`,
+         );
+         continue;
+      }
+
+      try {
+         validateConnectionShape(destination);
+      } catch (error) {
+         logger.warn(
+            `Invalid materialization destination "${name}": ${(error as Error).message} Skipping.`,
+         );
+         continue;
+      }
+
+      seen.add(name);
+      // `resource` addresses a connection endpoint. A destination has none, and
+      // carrying the field would make it look addressable to anything that
+      // reads one.
+      const { resource: _resource, ...body } = destination;
+      accepted.push(body);
+   }
+
+   return accepted;
+}
+
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
