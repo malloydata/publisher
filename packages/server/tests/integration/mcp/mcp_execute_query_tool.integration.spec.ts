@@ -71,7 +71,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             for (const block of content) {
                expect(block.type).toBe("resource");
                expect(block.resource).toBeDefined();
-               expect(block.resource.type).toBe("application/json");
+               expect(block.resource.mimeType).toBe("application/json");
                expect(block.resource.text).toBeDefined();
                expect(typeof block.resource.text).toBe("string");
             }
@@ -80,12 +80,24 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
 
             const queryResultBlock = content[0].resource;
             expect(queryResultBlock.uri).toContain("#result");
-            const queryResultData = JSON.parse(queryResultBlock.text);
-            expect(queryResultData).toBeDefined();
-            // Check properties directly on the parsed Result object
-            expect(queryResultData.data).toBeDefined();
-            expect(Array.isArray(queryResultData.data.array_value)).toBe(true);
-            // Could add more specific checks on data if needed
+            const envelope = JSON.parse(queryResultBlock.text);
+
+            // Flat rows keyed by column name: the same shape an in-package data
+            // app receives, not the type-tagged Malloy cell envelope.
+            expect(Array.isArray(envelope.rows)).toBe(true);
+            expect(envelope.rows.length).toBeGreaterThan(0);
+            expect(typeof envelope.rows[0]).toBe("object");
+            expect(envelope.rows[0].data).toBeUndefined();
+
+            // Credible's field names, so an agent sees one shape whether the
+            // app is authored locally against Publisher or served in production.
+            expect(typeof envelope._query_row_limit).toBe("number");
+            expect(typeof envelope._limit_hit).toBe("boolean");
+            // Absent rather than false when nothing was dropped.
+            expect("_rows_truncated" in envelope).toBe(false);
+            // The metadata flat rows drop.
+            expect(envelope._meta.schema).toBeDefined();
+            expect(typeof envelope._meta.connection_name).toBe("string");
          },
          { timeout: 30000 },
       );
@@ -120,7 +132,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             const queryResultBlock = result.content![0];
             expect(queryResultBlock.type).toBe("resource");
             expect(queryResultBlock.resource).toBeDefined();
-            expect(queryResultBlock.resource.type).toBe("application/json");
+            expect(queryResultBlock.resource.mimeType).toBe("application/json");
             expect(queryResultBlock.resource.uri).toMatch(/result/); // Check URI contains queryResult
             expect(queryResultBlock.resource.text).toBeDefined();
 
@@ -159,7 +171,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             const errorBlockSyntax = result.content![0];
             expect(errorBlockSyntax.type).toBe("resource");
             expect(errorBlockSyntax.resource).toBeDefined();
-            expect(errorBlockSyntax.resource.type).toBe("application/json");
+            expect(errorBlockSyntax.resource.mimeType).toBe("application/json");
 
             // Check for Malloy compilation error message from getMalloyErrorDetails
             const errorJsonTextSyntax = errorBlockSyntax.resource
@@ -169,6 +181,17 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
                /syntax error|no viable alternative/i,
             );
             expect(Array.isArray(errorPayloadSyntax.suggestions)).toBe(true);
+
+            // The resource block is invisible to a client that renders only
+            // text on an isError result, which is how a real diagnostic gets
+            // reported as a bare "Unknown error". Pinned here, over the real
+            // HTTP transport, because the unit spec calls the handler directly
+            // and so cannot catch the block being dropped in serialization.
+            const textBlockSyntax = result.content!.find(
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               (b: any) => b.type === "text",
+            );
+            expect(textBlockSyntax?.text).toContain(errorPayloadSyntax.error);
          },
          { timeout: 30000 },
       );
@@ -277,7 +300,9 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorBlockPkgNotFound = result.content![0];
          expect(errorBlockPkgNotFound.type).toBe("resource");
          expect(errorBlockPkgNotFound.resource).toBeDefined();
-         expect(errorBlockPkgNotFound.resource.type).toBe("application/json");
+         expect(errorBlockPkgNotFound.resource.mimeType).toBe(
+            "application/json",
+         );
 
          // Parse the JSON string from the resource text content
          const errorJsonTextPkgNotFound = errorBlockPkgNotFound.resource
@@ -321,7 +346,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorBlockModel = result.content![0];
          expect(errorBlockModel.type).toBe("resource");
          expect(errorBlockModel.resource).toBeDefined();
-         expect(errorBlockModel.resource.type).toBe("application/json");
+         expect(errorBlockModel.resource.mimeType).toBe("application/json");
 
          // Parse the JSON string from the resource text content
          const errorJsonTextModel = errorBlockModel.resource.text as string;
@@ -398,7 +423,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorBlock = result.content![0];
          expect(errorBlock.type).toBe("resource");
          expect(errorBlock.resource).toBeDefined();
-         expect(errorBlock.resource.type).toBe("application/json");
+         expect(errorBlock.resource.mimeType).toBe("application/json");
 
          // Check for Malloy error indicating the query/view wasn't found at the top level
          const errorJsonText = errorBlock.resource.text as string;
