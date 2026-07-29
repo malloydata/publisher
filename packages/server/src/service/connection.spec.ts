@@ -1410,9 +1410,19 @@ describe("connection integration tests", () => {
                         `ATTACH '${pgConnString()}' AS cleanup (TYPE postgres);`,
                      );
                      for (const schema of createdSchemas) {
+                        // Quoted, because at least one test registers a mixed-case
+                        // schema and an unquoted identifier would not match it. And
+                        // reported rather than swallowed: a silently failing drop
+                        // leaks one schema per run into the shared catalog database,
+                        // which is the accumulation this hook exists to prevent.
                         await conn
-                           .runSQL(`DROP SCHEMA cleanup.${schema} CASCADE;`)
-                           .catch(() => undefined);
+                           .runSQL(`DROP SCHEMA cleanup."${schema}" CASCADE;`)
+                           .catch((error: unknown) =>
+                              console.warn(
+                                 `Failed to drop test schema "${schema}":`,
+                                 error,
+                              ),
+                           );
                      }
                   } catch (error) {
                      console.warn("DuckLake schema cleanup failed:", error);

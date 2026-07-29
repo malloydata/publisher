@@ -445,15 +445,24 @@ function validateConnectionShape(connection: ApiConnection): void {
             );
          }
          // metadataSchema is optional, but when present it reaches the ATTACH as a
-         // quoted string literal AND the catalog-format preflight as a bare
+         // quoted string literal AND the catalog-format preflight as a quoted
          // identifier. Rather than escape one value for two grammars, restrict it
          // to a plain identifier here — a deterministic config error, caught at
          // load instead of at the connection's first attach.
+         //
+         // The typeof check is load-bearing, not defensive: the value arrives from
+         // untyped JSON, and RegExp.test() coerces its argument, so `true` and `null`
+         // both satisfy the pattern as "true"/"null" and would reach escapeSQL's
+         // String.replace as a non-string — a TypeError at the first attach, which is
+         // exactly the failure this check exists to turn into a config error.
          if (
             connection.ducklakeConnection.catalog.metadataSchema !== undefined
          ) {
             const schema = connection.ducklakeConnection.catalog.metadataSchema;
-            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+            if (
+               typeof schema !== "string" ||
+               !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
+            ) {
                throw new Error(
                   `DuckLake catalog metadataSchema must be a plain identifier ` +
                      `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +

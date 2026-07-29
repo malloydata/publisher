@@ -519,17 +519,23 @@ async function preflightDuckLakeCatalogFormat(
       const message = redactPgSecrets(
          error instanceof Error ? error.message : String(error),
       );
-      // A named metadata schema holding no catalog is the signature of a typo, or
-      // of adding `metadataSchema` to a catalog whose metadata lives elsewhere.
-      // Neither is loud on its own: a read-write attach will CREATE an empty
-      // catalog there and materialize into it, and a read-only attach fails with
-      // an error that says nothing about the schema. Name the schema explicitly so
-      // the log points at the likely cause rather than at the missing table.
+      // A named metadata schema holding no catalog has two very different causes,
+      // and the preflight cannot tell them apart: it is the NORMAL state before the
+      // first read-write attach creates the catalog, and it is also what a typo (or
+      // adding `metadataSchema` to a catalog whose metadata lives elsewhere) looks
+      // like. Neither is loud on its own — a read-write attach CREATES an empty
+      // catalog there and materializes into it, and a read-only attach fails with an
+      // error that says nothing about the schema — so name the schema and say both,
+      // rather than implying a mistake on a path that is expected to hit this once
+      // per catalog. The message also has to hedge on the cause: `does not exist`
+      // matches a missing database or role too, not only a missing table.
       if (metadataSchema !== undefined && /does not exist/i.test(message)) {
          logger.warn(
-            "No DuckLake catalog found in the configured metadata schema; a " +
-               "read-write attach will create a new empty catalog there, and a " +
-               "read-only attach will fail. Check the schema name if unexpected.",
+            "No DuckLake catalog found in the configured metadata schema. This is " +
+               "expected the first time a catalog is created there: a read-write " +
+               "attach will create it, and a read-only attach will fail until it " +
+               "exists. Otherwise check the schema name, and the catalog database " +
+               "and role, against the error.",
             { dbName, metadataSchema, error: message },
          );
          return;
@@ -666,9 +672,16 @@ async function attachDuckLakeWithMode(
    const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
    // READ_ONLY: the client manages metadata, we only read the catalog.
    // READ_WRITE (build only): a build-scoped session materializes into it.
-   logger.info(`pgConnString: ${redactPgSecrets(pgConnString)}`);
+   // Debug, not info. These three lines — this one, the escaped form below, and the
+   // assembled ATTACH — are per-attach diagnostics that between them print the catalog
+   // host and database twice and the storage path once. `redactPgSecrets` removes the
+   // password and any URI userinfo, but a DATA_PATH is not a secret it knows about, so
+   // logging the assembled command at info discloses the bucket and whatever the prefix
+   // encodes to every reader of the logs. What an operator watching a healthy fleet
+   // needs is the mode and the outcome, which stay at info below.
+   logger.debug(`pgConnString: ${redactPgSecrets(pgConnString)}`);
    const escapedPgConnString = escapeSQL(pgConnString);
-   logger.info(
+   logger.debug(
       `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
    );
    const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
@@ -697,7 +710,7 @@ async function attachDuckLakeWithMode(
       ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
       : "";
    const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
-   logger.info(
+   logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
    try {
