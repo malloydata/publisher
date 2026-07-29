@@ -68,6 +68,55 @@ describe("buildQueryEnvelope", () => {
          expect(e.warning).toBeUndefined();
       });
 
+      /**
+       * The false positive this guards. resolveModelQueryRowLimit folds the
+       * query's own limit:/top: into the same cap, so equality holds every time
+       * an author limited the query deliberately. Three of the eight views in
+       * the bundled storefront example use `top:`, so a modelled top-N would
+       * otherwise report its complete answer as cut off, and the Contract rule
+       * would tell an agent that a top-N is "not the answer".
+       */
+      it("is false when the author's own limit: produced the cap", () => {
+         const e = buildQueryEnvelope(
+            rows(10),
+            10,
+            result(),
+            [],
+            undefined,
+            "query",
+         );
+         expect(e._limit_hit).toBe(false);
+         expect(e._limit_source).toBe("query");
+         expect(e.warning).toBeUndefined();
+      });
+
+      it("still fires when the silent server default produced the cap", () => {
+         const e = buildQueryEnvelope(
+            rows(1000),
+            1000,
+            result(),
+            [],
+            undefined,
+            "server_default",
+         );
+         expect(e._limit_hit).toBe(true);
+         expect(e._limit_source).toBe("server_default");
+         expect(e.warning).toContain("not a complete result");
+      });
+
+      it("reports the source even when the cap was not reached", () => {
+         const e = buildQueryEnvelope(
+            rows(3),
+            10,
+            result(),
+            [],
+            undefined,
+            "query",
+         );
+         expect(e._limit_hit).toBe(false);
+         expect(e._limit_source).toBe("query");
+      });
+
       it("is false when no cap was applied", () => {
          // rowLimit 0 means uncapped; equality against 0 would otherwise call
          // an empty result "limited".

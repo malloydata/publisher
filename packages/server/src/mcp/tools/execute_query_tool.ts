@@ -67,8 +67,9 @@ const executeQueryShape = {
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
 
 ## Contract rules
-- Check _limit_hit before reporting any total, count, or "top N". True means the row cap cut the result off and more rows exist, so the numbers in front of you are a partial set, not the answer.
+- Check _limit_hit before reporting any total, count, or "top N". True means the server's default row cap cut the result off and more rows exist, so the numbers in front of you are a partial set, not the answer. A query that set its own limit: or top: does not set it, and returning exactly that many rows is a complete answer to what was asked.
 - Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
+- _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.
 - Use source, view, and field names exactly as malloy_getContext returned them.
 
 ## Response
@@ -76,11 +77,12 @@ A JSON object, the same shape Credible's execute_query returns, so a data app be
 - rows: flat objects keyed by column name, the shape an in-package data app receives.
 - _meta: the Malloy metadata flat rows drop (schema with field types and render tags, annotations, connection_name, query_timezone).
 - _query_row_limit: the cap pushed into the SQL, from the query's own limit: or the server default.
-- _limit_hit: the row count equals that cap.
+- _limit_source: "query" when the cap came from the query's own limit:/top:, "server_default" otherwise.
+- _limit_hit: the row count equals that cap AND the cap was the server default.
 - _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
 - warning, renderLogErrors: present only when they apply.
 
-A query with no limit: of its own gets the server default, so a result landing exactly on _query_row_limit is almost never the whole table.`;
+A query with no limit: of its own gets the server default, so a result landing exactly on _query_row_limit is almost never the whole table. Values above 2^53 are returned as JSON strings so their digits survive.`;
 
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
 
@@ -165,7 +167,7 @@ export function registerExecuteQueryTool(
             // The two call modes differ only in which arguments carry the
             // query; everything after the run is identical, so they share one
             // path rather than two copies that can drift.
-            const { result, compactResult, rowLimit } =
+            const { result, compactResult, rowLimit, rowLimitSource } =
                await runWithQueryTimeout(
                   (abortSignal) =>
                      query
@@ -213,6 +215,8 @@ export function registerExecuteQueryTool(
                rowLimit,
                result,
                renderLogs.map((log) => log.message),
+               undefined,
+               rowLimitSource,
             );
 
             // A capped or truncated result, and a broken render tag, are the

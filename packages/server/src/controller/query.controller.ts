@@ -46,19 +46,20 @@ export class QueryController {
       if (!model) {
          throw new ModelNotFoundError(`${modelPath} does not exist`);
       } else {
-         const { result, compactResult, rowLimit } = await runWithQueryTimeout(
-            (abortSignal) =>
-               model.getQueryResults(
-                  sourceName,
-                  queryName,
-                  query,
-                  filterParams,
-                  bypassFilters,
-                  givens,
-                  abortSignal,
-               ),
-            getQueryTimeoutMs(),
-         );
+         const { result, compactResult, rowLimit, rowLimitSource } =
+            await runWithQueryTimeout(
+               (abortSignal) =>
+                  model.getQueryResults(
+                     sourceName,
+                     queryName,
+                     query,
+                     filterParams,
+                     bypassFilters,
+                     givens,
+                     abortSignal,
+                  ),
+               getQueryTimeoutMs(),
+            );
          const renderLogs = validateRenderTags(result);
          return {
             result: compactJson
@@ -73,6 +74,10 @@ export class QueryController {
             // raises. Deriving it client-side is not possible, since it depends
             // on server config and on the query's own LIMIT.
             queryRowLimit: rowLimit,
+            // Which of the two that cap was. Without it a caller cannot tell a
+            // deliberate `limit:`/`top:` from the silently-applied default, and
+            // so cannot reproduce the MCP envelope's _limit_hit.
+            queryRowLimitSource: rowLimitSource,
          } as ApiQuery;
       }
    }

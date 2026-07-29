@@ -1,5 +1,6 @@
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { bigIntReplacer } from "../json_utils";
+import type { QueryRowLimitSource } from "../service/model_limits";
 
 /**
  * The agent-facing shape for a query result, matched to what Credible's
@@ -31,6 +32,13 @@ import { bigIntReplacer } from "../json_utils";
  * `_limit_hit` is a bound, not a total. The server cannot know the true row
  * count, because the database applied the cap. Landing exactly on the limit is
  * the only evidence available that rows were left behind.
+ *
+ * It is reported only when the cap was the server default, which `_limit_source`
+ * names. `resolveModelQueryRowLimit` folds the query's own `limit:`/`top:` into
+ * the same number, so equality also holds every time an author limited the query
+ * on purpose: three of the eight views in the bundled storefront example use
+ * `top:`, and each would otherwise report its complete answer as cut off. The
+ * silent sample this exists to catch only ever happens under the default.
  */
 export interface QueryEnvelope {
    rows: unknown;
@@ -45,7 +53,13 @@ export interface QueryEnvelope {
    };
    /** The cap pushed into the SQL: the query's own LIMIT, else the server default. */
    _query_row_limit: number;
-   /** Row count equals the cap, so rows were almost certainly left behind. */
+   /** Which of those two the cap came from. */
+   _limit_source: QueryRowLimitSource;
+   /**
+    * Row count equals the cap AND the cap was the server default, so rows were
+    * almost certainly left behind. A deliberate `limit:`/`top:` that returns
+    * exactly what it asked for is a complete answer and does not set this.
+    */
    _limit_hit: boolean;
    /** Present only when the payload cap dropped rows. */
    _rows_truncated?: boolean;
@@ -82,11 +96,22 @@ export function buildQueryEnvelope(
    result: Malloy.Result,
    renderLogErrors: string[] = [],
    limit = MAX_RESULT_CHARS,
+   rowLimitSource: QueryRowLimitSource = "server_default",
 ): QueryEnvelope {
    const rowCount = Array.isArray(rows) ? rows.length : 0;
    // Equality, not >=: the cap is pushed into the SQL, so the database cannot
    // return more than it. Landing exactly on it is the signal.
-   const limitHit = rowLimit > 0 && rowCount === rowLimit;
+   //
+   // Restricted to the server default on purpose. resolveModelQueryRowLimit
+   // folds the query's own limit:/top: into the same cap, so equality also holds
+   // every time an author deliberately limited the query: a modelled `top: 10`
+   // view returning its 10 rows would otherwise be reported as cut off, and the
+   // Contract rule would tell an agent that a top-N is "not the answer". Only
+   // the silently-applied default is evidence that rows were left behind.
+   const limitHit =
+      rowLimitSource === "server_default" &&
+      rowLimit > 0 &&
+      rowCount === rowLimit;
 
    const envelope: QueryEnvelope = {
       rows,
@@ -105,6 +130,7 @@ export function buildQueryEnvelope(
          }),
       },
       _query_row_limit: rowLimit,
+      _limit_source: rowLimitSource,
       _limit_hit: limitHit,
       ...(renderLogErrors.length > 0 && { renderLogErrors }),
    };
@@ -189,7 +215,10 @@ function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
       ...truncating,
       rows: rows.slice(0, best),
       _returned_rows: best,
-      warning: [envelope.warning, best === 0 ? noneFitWarning : sizeWarning(best)]
+      warning: [
+         envelope.warning,
+         best === 0 ? noneFitWarning : sizeWarning(best),
+      ]
          .filter(Boolean)
          .join(" "),
    };
