@@ -72,7 +72,7 @@ dimension: rounded is round(price, 2)
 
 Two separate rules produce those errors:
 
-- **Nothing chains onto the result of a function call.** `avg(price).round(2)` and `price.avg().round(2)` are both parse errors. The message names `round` without saying it is unsupported in that position, so it reads like a typo somewhere else. `.floor()` and `.ceil()` fail identically.
+- **No method call chains onto the result of a function call.** `avg(price).round(2)` and `price.avg().round(2)` are both parse errors. The message names `round` without saying it is unsupported in that position, so it reads like a typo somewhere else. `.floor()` and `.ceil()` fail identically.
 - **Scalar functions have no method form.** `round`, `floor`, and `ceil` are always `round(x, 2)`, never `x.round(2)`, whether `x` is a named measure or a plain column.
 
 `price.avg()` and `inventory_items.item_cost.sum()` are correct because `avg` and `sum` are aggregate functions over a field path, which is exactly what method syntax is for.
