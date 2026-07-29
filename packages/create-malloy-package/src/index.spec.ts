@@ -142,12 +142,12 @@ describe("formatSuccess: the readiness check", () => {
       expect(formatSuccess(resultFor())).toContain("print nothing at all");
    });
 
-   test("warns that the MCP config and skills need the session started here", () => {
-      // The failure with no signal at all: both are discovered from the
-      // directory a session STARTED in. Launched from a parent, an agent sees
-      // neither and nothing reports it.
+   test("warns that the MCP config needs the session started here", () => {
+      // The failure with no signal at all: .mcp.json is discovered from the
+      // directory a session STARTED in. Launched from a parent, an agent never
+      // sees the server and nothing reports it.
       const output = formatSuccess(resultFor());
-      expect(output).toContain(".claude/skills");
+      expect(output).toContain(".mcp.json");
       expect(output).toContain("STARTED in this directory");
    });
 
@@ -161,11 +161,13 @@ describe("formatSuccess: the readiness check", () => {
    });
 
    test("does not claim the registration also fixes skills", () => {
-      // One cause, two symptoms, two different fixes. Saying -s user solves
-      // both is what made this take three rounds to diagnose.
-      expect(formatSuccess(resultFor())).toContain(
-         "skills still need the session rooted here",
-      );
+      // One cause, two symptoms, two different mechanisms. Saying -s user solves
+      // both is what made this take three rounds to diagnose. The registration
+      // is for MCP; skills are rescanned and need nothing, and asserting the
+      // opposite would pin a false claim in place.
+      const output = formatSuccess(resultFor());
+      expect(output).toContain("rescanned as the working directory changes");
+      expect(output).not.toContain("skills still need the session rooted here");
    });
 
    test("a setup-only run says the package list 404s instead of offering it", () => {

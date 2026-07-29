@@ -999,14 +999,16 @@ export function formatSuccess(result: ScaffoldResult): string {
    // else, the agent sees neither, and nothing anywhere says so. The two
    // symptoms look alike and do not share a fix, which is what makes this
    // expensive to diagnose: the MCP list is fixed at session boot, so it needs a
-   // registration that does not depend on the directory, while skills are
-   // rescanned and just need the session rooted here.
+   // registration that does not depend on the directory. Skills are not the same
+   // shape and saying so matters, because the two symptoms are identical from the
+   // outside: .claude/skills is rescanned as the working directory changes, so a
+   // session started further up picks them up on its own.
    lines.push(
       log.dim(
-         `  Both ${result.mcpConfigPath} and .claude/skills are only picked up by an\n` +
-            "  agent session that STARTED in this directory. Launch your agent from\n" +
-            "  here. If you cannot, register the server so the directory stops\n" +
-            "  mattering (skills still need the session rooted here):",
+         `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
+            "  STARTED in this directory. Launch your agent from here. If you cannot,\n" +
+            "  register the server so the directory stops mattering (.claude/skills\n" +
+            "  needs nothing: it is rescanned as the working directory changes):",
       ),
    );
    lines.push(
