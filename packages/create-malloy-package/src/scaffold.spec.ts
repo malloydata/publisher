@@ -376,7 +376,9 @@ describe("scaffold: --data", () => {
       fs.mkdirSync(dir);
       const src = path.join(dir, "orders.csv");
       fs.writeFileSync(src, "id\n1\n");
-      expect(run({ name: "shop", dataFile: src }).siblingDataFiles).toBeUndefined();
+      expect(
+         run({ name: "shop", dataFile: src }).siblingDataFiles,
+      ).toBeUndefined();
    });
 
    test("rejects a missing --data file", () => {
