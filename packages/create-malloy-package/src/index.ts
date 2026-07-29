@@ -886,6 +886,17 @@ export function formatSuccess(result: ScaffoldResult): string {
    lines.push(`  ${log.cyan(url)}   ${log.dim("explore in the browser")}`);
    lines.push("");
    lines.push(log.bold("Check it is ready:"));
+   // Read as a flat list, these look like the next two commands to run, and the
+   // boot line above looks like a step you move past. It is not: it holds the
+   // terminal. Both checks then answer nothing, and `curl -s` is silent on a
+   // refused connection, so the failure has no text to read at all.
+   lines.push(
+      log.dim(
+         "  In a second terminal: the boot command above keeps running until you\n" +
+            "  stop it. Until the server is up these print nothing at all, not an\n" +
+            "  error, because -s silences curl's connection failure.",
+      ),
+   );
    lines.push(`  curl -s ${url}/api/v0/status`);
    const packagesUrl = `${url}/api/v0/environments/${result.envName}/packages`;
    if (environmentIsEmpty) {
@@ -981,6 +992,29 @@ export function formatSuccess(result: ScaffoldResult): string {
          "  An agent that starts the server itself can't reconnect MCP in that\n" +
             `  session; ask the user to reconnect it. See ${result.agentsFile}.`,
       ),
+   );
+   // The other way this fails, and the one with no signal at all: both the MCP
+   // config above and .claude/skills are discovered from the directory an agent
+   // session STARTED in, not the one it is working in. Launched from anywhere
+   // else, the agent sees neither, and nothing anywhere says so. The two
+   // symptoms look alike and do not share a fix, which is what makes this
+   // expensive to diagnose: the MCP list is fixed at session boot, so it needs a
+   // registration that does not depend on the directory. Skills are not the same
+   // shape and saying so matters, because the two symptoms are identical from the
+   // outside: .claude/skills is rescanned as the working directory changes, so a
+   // session started further up picks them up on its own.
+   lines.push(
+      log.dim(
+         `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
+            "  STARTED in this directory. Launch your agent from here. If you cannot,\n" +
+            "  register the server so the directory stops mattering (.claude/skills\n" +
+            "  needs nothing: it is rescanned as the working directory changes):",
+      ),
+   );
+   lines.push(
+      `    ${log.cyan(
+         `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
+      )}`,
    );
    lines.push("");
 
