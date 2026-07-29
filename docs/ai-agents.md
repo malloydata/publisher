@@ -26,6 +26,20 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 ### Authoring tools
 
 - `malloy_compile`: compile Malloy source against a model and return structured diagnostics (`severity`, `message`, `line`, `character`) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query. Positions are 0-based and relative to the model file with the submitted source appended to it.
+
+  Because the source is *appended*, it has to stand on its own as top-level Malloy, and the two most natural ways to check an edit both fail for reasons that have nothing to do with the edit. A bare `view:` / `dimension:` / `measure:` is not a top-level statement (`no viable alternative at input 'view:'`), and resubmitting the source you are editing collides with the model's own copy (`Cannot redefine '<name>'`). To check part of a source, either send the view body as a top-level query:
+
+  ```malloy
+  query: check is orders -> { group_by: status, aggregate: revenue }
+  ```
+
+  or wrap the fragment in a throwaway extension, which puts it in the namespace the real edit will live in:
+
+  ```malloy
+  source: check is orders extend { measure: aov is revenue / nullif(order_count, 0) }
+  ```
+
+  Both compile against the real source, so inherited measures resolve and `private:` fields stay hidden exactly as they would in place. An extension *adds* to a source's namespace rather than overriding it, so a fragment reusing an existing view name reports `Cannot redefine` too; rename it for the check.
 - `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after boot becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. A reload that fails to compile leaves the package's files alone and keeps serving the previously compiled model, returning the compile errors.
 
 ### Skills as MCP prompts
