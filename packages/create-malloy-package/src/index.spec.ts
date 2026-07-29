@@ -122,6 +122,52 @@ describe("formatSuccess: the readiness check", () => {
       expect(formatSuccess(resultFor())).not.toContain("Not included:");
    });
 
+   test("says the boot command holds the terminal, before the checks below it", () => {
+      // Read as a flat list, the boot line looks like a step you move past and
+      // these look like the next two commands. Running only the curls is the
+      // exact confusion that opened a reported session.
+      const output = formatSuccess(resultFor());
+      expect(output).toContain("second terminal");
+      expect(output).toContain("keeps running");
+      // The warning has to precede the commands it is about, or it is not a
+      // warning.
+      expect(output.indexOf("second terminal")).toBeLessThan(
+         output.indexOf("curl -s http://localhost:4000/api/v0/status"),
+      );
+   });
+
+   test("explains that a failed check prints nothing rather than an error", () => {
+      // `curl -s` is silent on a refused connection, so the failure mode has no
+      // text at all to read.
+      expect(formatSuccess(resultFor())).toContain("print nothing at all");
+   });
+
+   test("warns that the MCP config and skills need the session started here", () => {
+      // The failure with no signal at all: both are discovered from the
+      // directory a session STARTED in. Launched from a parent, an agent sees
+      // neither and nothing reports it.
+      const output = formatSuccess(resultFor());
+      expect(output).toContain(".claude/skills");
+      expect(output).toContain("STARTED in this directory");
+   });
+
+   test("hands over the registration that makes the directory stop mattering", () => {
+      // The exact command that resolved the reported session, at user scope.
+      // Project scope is what fails here, so the flag is the whole point.
+      const output = formatSuccess(resultFor({ mcpPort: 4444 }));
+      expect(output).toContain(
+         "claude mcp add --transport http malloy http://localhost:4444/mcp -s user",
+      );
+   });
+
+   test("does not claim the registration also fixes skills", () => {
+      // One cause, two symptoms, two different fixes. Saying -s user solves
+      // both is what made this take three rounds to diagnose.
+      expect(formatSuccess(resultFor())).toContain(
+         "skills still need the session rooted here",
+      );
+   });
+
    test("a setup-only run says the package list 404s instead of offering it", () => {
       const result = scaffold({
          name: undefined,

@@ -159,6 +159,22 @@ it gives up the grounded discovery, compile checks, and reload the tools exist t
 provide. If the user would rather keep going without reconnecting, the REST endpoint
 above runs the same models.
 
+There is a second reason the tools can be missing, and it looks identical from here:
+this workspace's MCP config and `.claude/skills` are only discovered by an agent
+session that **started in this directory**. A session rooted anywhere else, a parent
+directory included, sees neither, and no message anywhere reports it. The two causes
+need different fixes, so tell them apart before acting. If the server is running and
+the tools were never offered at all, ask the user to relaunch the agent from this
+directory, or to register the server so the directory stops deciding:
+
+```bash
+claude mcp add --transport http malloy http://localhost:{{mcpPort}}/mcp -s user
+```
+
+That registration is stored per user rather than per project, so the tools follow the
+agent everywhere. Skills have no such escape hatch: they are rescanned as the working
+directory changes, so they need the session actually rooted here.
+
 ## Skills ({{skillsCount}} installed)
 
 {{skillsNote}}
