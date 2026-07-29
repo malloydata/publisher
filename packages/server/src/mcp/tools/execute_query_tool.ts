@@ -73,12 +73,20 @@ const executeQueryShape = {
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
 
 ## Contract rules
-- Check limit_hit before reporting any total, count, or "top N". True means the row cap cut the result off and more rows exist, so the numbers in front of you are a partial set, not the answer.
-- Never sum or count the returned rows to state a total when limit_hit or truncated_for_size is true. Aggregate in the query instead.
+- Check _limit_hit before reporting any total, count, or "top N". True means the row cap cut the result off and more rows exist, so the numbers in front of you are a partial set, not the answer.
+- Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
 - Use source, view, and field names exactly as malloy_getContext returned them.
 
 ## Response
-A JSON object: rows (flat objects keyed by column name, the same shape an in-package data app receives), row_count, query_row_limit (the cap pushed into the SQL, from the query's own limit or the server default), limit_hit, truncated_for_size, and warning / renderLogErrors when they apply. A query with no limit: of its own gets the server default, so a result landing exactly on query_row_limit is almost never the whole table.`;
+A JSON object, the same shape Credible's execute_query returns, so a data app behaves the same authored locally and served in production:
+- rows: flat objects keyed by column name, the shape an in-package data app receives.
+- _meta: the Malloy metadata flat rows drop (schema with field types and render tags, annotations, connection_name, query_timezone).
+- _query_row_limit: the cap pushed into the SQL, from the query's own limit: or the server default.
+- _limit_hit: the row count equals that cap.
+- _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
+- warning, renderLogErrors: present only when they apply.
+
+A query with no limit: of its own gets the server default, so a result landing exactly on _query_row_limit is almost never the whole table.`;
 
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
 
@@ -220,6 +228,7 @@ export function registerExecuteQueryTool(
             const envelope = buildQueryEnvelope(
                compactResult,
                rowLimit,
+               result,
                renderLogs.map((log) => log.message),
             );
             return jsonResource(resultUri, envelope, {

@@ -1,51 +1,67 @@
+import type * as Malloy from "@malloydata/malloy-interfaces";
 import { bigIntReplacer } from "../json_utils";
 
 /**
- * The agent-facing shape for a query result.
+ * The agent-facing shape for a query result, matched to what Credible's
+ * `execute_query` returns.
  *
- * Three separate things can shorten a result, and before this envelope a caller
- * could distinguish none of them:
+ * Matching matters for a specific workflow: a data app is authored locally
+ * against Publisher and then served through Credible. An agent that sees one
+ * response shape while developing and a different one in production has to
+ * learn both, and a shared skill cannot describe either without forking. So the
+ * field names here are Credible's, deliberately, including the leading
+ * underscores and the mixed casing of `renderLogErrors`.
  *
- *   1. The query row cap, pushed into the SQL. A query carrying no LIMIT of its
- *      own gets DEFAULT_QUERY_ROW_LIMIT (1000) rows. That is well under
- *      PUBLISHER_MAX_QUERY_ROWS, so assertWithinModelResponseLimits raises
- *      nothing and the caller sees 1000 rows with no indication that the table
- *      held 150,000. This is the one that silently corrupts an answer, and it is
- *      why `query_row_limit` and `limit_hit` exist.
- *   2. The hard ceiling (maxRows / maxBytes), which throws 413 and is therefore
- *      already loud.
- *   3. This payload cap, applied here so a large result degrades to a truncated
- *      one with a warning instead of overflowing the client's per-result limit.
+ * Also following Credible: the truncation fields appear only when truncation
+ * happened, rather than always carrying `false`.
  *
- * `limit_hit` costs nothing to compute: no second query, no COUNT(*). It is the
- * honest bound rather than a true total, which the server cannot know because
- * the cap was applied by the database. If you got exactly the limit, you cannot
- * conclude the result is complete.
+ * The two `_limit_...` fields are new to both products. Three separate things
+ * can shorten a result and only one of them was ever reported:
  *
- * `rows` is the same flat row shape REST returns for `compactJson: true` and
- * that `Publisher.query()` hands an in-package data app, so an agent previewing
- * a query sees the shape its render code will actually receive.
+ *   1. The query row cap, pushed into the SQL. A query with no `limit:` of its
+ *      own gets DEFAULT_QUERY_ROW_LIMIT (1000) rows, which is far under
+ *      PUBLISHER_MAX_QUERY_ROWS, so nothing raises and nothing warns. An agent
+ *      reports statistics on a silent sample. This is why `_limit_hit` exists,
+ *      and unlike the others it is not derivable by a client: the cap depends on
+ *      server config and on the query's own LIMIT.
+ *   2. The hard ceiling (maxRows / maxBytes), which throws 413 and is loud.
+ *   3. The payload cap below, which degrades to a truncated result plus a
+ *      warning instead of overflowing the client's per-result limit.
+ *
+ * `_limit_hit` is a bound, not a total. The server cannot know the true row
+ * count, because the database applied the cap. Landing exactly on the limit is
+ * the only evidence available that rows were left behind.
  */
 export interface QueryEnvelope {
    rows: unknown;
-   row_count: number;
-   query_row_limit: number;
-   limit_hit: boolean;
-   truncated_for_size: boolean;
+   /** Malloy metadata the flat rows drop: field types, render tags, timezone. */
+   _meta: {
+      schema: Malloy.Schema;
+      annotations: Malloy.Annotation[];
+      connection_name: string;
+      model_annotations?: Malloy.Annotation[];
+      query_timezone?: string;
+      source_annotations?: Malloy.Annotation[];
+   };
+   /** The cap pushed into the SQL: the query's own LIMIT, else the server default. */
+   _query_row_limit: number;
+   /** Row count equals the cap, so rows were almost certainly left behind. */
+   _limit_hit: boolean;
+   /** Present only when the payload cap dropped rows. */
+   _rows_truncated?: boolean;
+   _total_rows?: number;
+   _returned_rows?: number;
    warning?: string;
    renderLogErrors?: string[];
 }
 
 /**
- * Cap on the serialized envelope, in characters.
+ * Cap on the serialized envelope, in characters. Same value Credible uses.
  *
  * Host-loop MCP clients enforce a per-tool-result ceiling of roughly 25k tokens;
- * past it the result is spilled to disk or rejected outright, and a model then
- * struggles to recover it. Chars stand in for tokens at about 4:1, and this sits
- * under that with headroom for the envelope itself.
- *
- * This belongs in the MCP layer rather than the REST controller: it is tuned to
- * a client's context budget, which is not a property of the query.
+ * past it the result is spilled to disk or rejected outright, and the model then
+ * struggles to recover it. Chars stand in for tokens at about 4:1, with headroom
+ * for the envelope itself.
  */
 export const MAX_RESULT_CHARS = 90_000;
 
@@ -54,87 +70,106 @@ function serialize(envelope: QueryEnvelope): string {
 }
 
 /**
- * Drop rows until the serialized envelope fits, by binary search on the row
- * count. Rows are uniform enough that halving is a good estimator, and this
- * avoids re-serializing once per dropped row on a wide result.
- */
-function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
-   if (!Array.isArray(envelope.rows) || serialize(envelope).length <= limit) {
-      return envelope;
-   }
-   const all = envelope.rows;
-   let low = 0;
-   let high = all.length;
-   while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
-      const candidate = { ...envelope, rows: all.slice(0, mid) };
-      if (serialize(candidate).length <= limit) {
-         low = mid;
-      } else {
-         high = mid - 1;
-      }
-   }
-   return { ...envelope, rows: all.slice(0, low), truncated_for_size: true };
-}
-
-/**
- * Build the envelope, applying the payload cap and attaching the warnings that
- * make each kind of shortening actionable.
+ * Build the envelope, applying the payload cap.
  *
- * @param rows        compactResult: flat row objects, straight from the driver.
- * @param rowLimit    the cap pushed into the SQL (query's own LIMIT, or default).
- * @param renderLogErrors error/warn render-tag messages, if any.
+ * @param rows      compactResult: flat row objects, straight from the driver.
+ * @param rowLimit  the cap pushed into the SQL.
+ * @param result    the full Malloy result, read only for its metadata.
  */
 export function buildQueryEnvelope(
    rows: unknown,
    rowLimit: number,
+   result: Malloy.Result,
    renderLogErrors: string[] = [],
    limit = MAX_RESULT_CHARS,
 ): QueryEnvelope {
    const rowCount = Array.isArray(rows) ? rows.length : 0;
-   // Equality, not >=: the row cap is pushed into the SQL, so the database
-   // cannot return more than it. Landing exactly on it is the signal.
+   // Equality, not >=: the cap is pushed into the SQL, so the database cannot
+   // return more than it. Landing exactly on it is the signal.
    const limitHit = rowLimit > 0 && rowCount === rowLimit;
 
-   const limitWarning = limitHit
-      ? `Returned exactly ${rowLimit} rows, the row limit applied to this query, so there are probably more. This is not a complete result: add an explicit limit, aggregate, or filter rather than reporting these rows as the whole set.`
-      : "";
-   const sizeWarning = (kept: number) =>
-      `Showing ${kept} of ${rowCount} rows; the rest were dropped to fit the result size limit. Narrow the query rather than paging through it.`;
+   const envelope: QueryEnvelope = {
+      rows,
+      _meta: {
+         schema: result.schema,
+         annotations: result.annotations ?? [],
+         connection_name: result.connection_name,
+         ...(result.model_annotations !== undefined && {
+            model_annotations: result.model_annotations,
+         }),
+         ...(result.query_timezone !== undefined && {
+            query_timezone: result.query_timezone,
+         }),
+         ...(result.source_annotations !== undefined && {
+            source_annotations: result.source_annotations,
+         }),
+      },
+      _query_row_limit: rowLimit,
+      _limit_hit: limitHit,
+      ...(renderLogErrors.length > 0 && { renderLogErrors }),
+   };
 
-   // Fit against a budget reduced by the longest warning text this call could
-   // produce. The warning is added AFTER the rows are trimmed, so fitting
-   // against the full budget first would push the finished envelope back over
-   // it: the truncation meant to keep the result under the cap would leave it
-   // above. `rowCount` is the widest the kept-count can render as.
-   const worstCaseWarning = [limitWarning, sizeWarning(rowCount)]
+   if (limitHit) {
+      envelope.warning =
+         `Returned exactly ${rowLimit} rows, the row limit applied to this query, so there are probably more. ` +
+         `This is not a complete result: add an explicit limit, aggregate, or filter rather than reporting these rows as the whole set.`;
+   }
+
+   return fitToBudget(envelope, limit);
+}
+
+/**
+ * Drop rows until the serialized envelope fits, by binary search on the row
+ * count.
+ *
+ * The marker fields are set BEFORE the search, so their serialized size counts
+ * against the limit. Adding them afterwards pushes the payload back over the cap
+ * the truncation existed to respect. `_returned_rows` is measured at `total`
+ * first, whose digit width is at least that of any value it ends up holding, so
+ * the finished payload stays under the limit. Credible's `_truncate_rows` does
+ * the same thing for the same reason.
+ */
+function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
+   if (serialize(envelope).length <= limit) return envelope;
+
+   const rows = envelope.rows;
+   if (!Array.isArray(rows) || rows.length === 0) return envelope;
+   const total = rows.length;
+
+   const truncating: QueryEnvelope = {
+      ...envelope,
+      _rows_truncated: true,
+      _total_rows: total,
+      _returned_rows: total,
+   };
+   // The size warning joins any limit warning already present, and is included
+   // in the measurement for the same reason as the counts.
+   const sizeWarning = (kept: number) =>
+      `Showing ${kept} of ${total} rows; the rest were dropped to fit the result size limit. Narrow the query rather than paging through it.`;
+   truncating.warning = [envelope.warning, sizeWarning(total)]
       .filter(Boolean)
       .join(" ");
-   const reserve = worstCaseWarning.length + `,\n  "warning": ""`.length;
 
-   const fitted = fitToBudget(
-      {
-         rows,
-         row_count: rowCount,
-         query_row_limit: rowLimit,
-         limit_hit: limitHit,
-         truncated_for_size: false,
-         ...(renderLogErrors.length > 0 && { renderLogErrors }),
-      },
-      Math.max(limit - reserve, 0),
-   );
-
-   // Recount after fitting so row_count always describes the rows present.
-   const returned = Array.isArray(fitted.rows) ? fitted.rows.length : 0;
-   const warnings = [
-      limitWarning,
-      fitted.truncated_for_size ? sizeWarning(returned) : "",
-   ].filter(Boolean);
+   let low = 0;
+   let high = total;
+   let best = 0;
+   while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (
+         serialize({ ...truncating, rows: rows.slice(0, mid) }).length <= limit
+      ) {
+         best = mid;
+         low = mid + 1;
+      } else {
+         high = mid - 1;
+      }
+   }
 
    return {
-      ...fitted,
-      row_count: returned,
-      ...(warnings.length > 0 && { warning: warnings.join(" ") }),
+      ...truncating,
+      rows: rows.slice(0, best),
+      _returned_rows: best,
+      warning: [envelope.warning, sizeWarning(best)].filter(Boolean).join(" "),
    };
 }
 

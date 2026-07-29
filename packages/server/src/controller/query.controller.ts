@@ -46,7 +46,7 @@ export class QueryController {
       if (!model) {
          throw new ModelNotFoundError(`${modelPath} does not exist`);
       } else {
-         const { result, compactResult } = await runWithQueryTimeout(
+         const { result, compactResult, rowLimit } = await runWithQueryTimeout(
             (abortSignal) =>
                model.getQueryResults(
                   sourceName,
@@ -66,6 +66,13 @@ export class QueryController {
                : JSON.stringify(result),
             resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
+            // The cap the database applied. A caller counting the rows it got
+            // back cannot otherwise tell a complete result from one the limit
+            // cut off: a query with no LIMIT of its own silently gets the
+            // server default, which is well under the hard ceiling, so nothing
+            // raises. Deriving it client-side is not possible, since it depends
+            // on server config and on the query's own LIMIT.
+            queryRowLimit: rowLimit,
          } as ApiQuery;
       }
    }

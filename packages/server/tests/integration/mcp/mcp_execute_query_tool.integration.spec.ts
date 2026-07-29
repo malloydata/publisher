@@ -89,12 +89,15 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             expect(typeof envelope.rows[0]).toBe("object");
             expect(envelope.rows[0].data).toBeUndefined();
 
-            // The signals that let a caller tell a complete result from a
-            // truncated one.
-            expect(envelope.row_count).toBe(envelope.rows.length);
-            expect(typeof envelope.query_row_limit).toBe("number");
-            expect(typeof envelope.limit_hit).toBe("boolean");
-            expect(envelope.truncated_for_size).toBe(false);
+            // Credible's field names, so an agent sees one shape whether the
+            // app is authored locally against Publisher or served in production.
+            expect(typeof envelope._query_row_limit).toBe("number");
+            expect(typeof envelope._limit_hit).toBe("boolean");
+            // Absent rather than false when nothing was dropped.
+            expect("_rows_truncated" in envelope).toBe(false);
+            // The metadata flat rows drop.
+            expect(envelope._meta.schema).toBeDefined();
+            expect(typeof envelope._meta.connection_name).toBe("string");
          },
          { timeout: 30000 },
       );
