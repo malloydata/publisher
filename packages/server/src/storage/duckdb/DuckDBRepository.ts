@@ -2,6 +2,7 @@ import {
    Connection,
    Environment,
    Materialization,
+   MaterializationDestination,
    MaterializationStatus,
    MaterializationUpdate,
    Package,
@@ -10,6 +11,7 @@ import {
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { EnvironmentRepository } from "./EnvironmentRepository";
+import { MaterializationDestinationRepository } from "./MaterializationDestinationRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
 
@@ -17,12 +19,14 @@ export class DuckDBRepository implements ResourceRepository {
    private environmentRepo: EnvironmentRepository;
    private packageRepo: PackageRepository;
    private connectionRepo: ConnectionRepository;
+   private destinationRepo: MaterializationDestinationRepository;
    private materializationRepo: MaterializationRepository;
 
    constructor(public db: DuckDBConnection) {
       this.environmentRepo = new EnvironmentRepository(db);
       this.packageRepo = new PackageRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
+      this.destinationRepo = new MaterializationDestinationRepository(db);
       this.materializationRepo = new MaterializationRepository(db);
    }
 
@@ -56,6 +60,7 @@ export class DuckDBRepository implements ResourceRepository {
    async deleteEnvironment(id: string): Promise<void> {
       await this.materializationRepo.deleteByEnvironmentId(id);
       await this.connectionRepo.deleteConnectionsByEnvironmentId(id);
+      await this.destinationRepo.deleteByEnvironmentId(id);
       await this.packageRepo.deletePackagesByEnvironmentId(id);
       await this.environmentRepo.deleteEnvironment(id);
    }
@@ -141,6 +146,40 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deleteConnectionsByEnvironmentId(id: string): Promise<void> {
       return this.connectionRepo.deleteConnectionsByEnvironmentId(id);
+   }
+
+   // ============ MATERIALIZATION DESTINATIONS ============
+
+   async listMaterializationDestinations(
+      environmentId: string,
+   ): Promise<MaterializationDestination[]> {
+      return this.destinationRepo.list(environmentId);
+   }
+
+   async getMaterializationDestinationByName(
+      environmentId: string,
+      name: string,
+   ): Promise<MaterializationDestination | null> {
+      return this.destinationRepo.getByName(environmentId, name);
+   }
+
+   async upsertMaterializationDestination(
+      destination: Omit<
+         MaterializationDestination,
+         "id" | "createdAt" | "updatedAt"
+      >,
+   ): Promise<MaterializationDestination> {
+      return this.destinationRepo.upsert(destination);
+   }
+
+   async deleteMaterializationDestination(id: string): Promise<void> {
+      return this.destinationRepo.deleteById(id);
+   }
+
+   async deleteMaterializationDestinationsByEnvironmentId(
+      id: string,
+   ): Promise<void> {
+      return this.destinationRepo.deleteByEnvironmentId(id);
    }
 
    // ==================== MATERIALIZATIONS ====================

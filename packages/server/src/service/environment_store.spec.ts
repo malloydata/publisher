@@ -37,6 +37,37 @@ type MockData = Record<string, unknown>;
 // so a test can assign it before constructing the store.
 let mockDbEnvironments: unknown[] = [];
 
+// Materialization destination rows the mock database holds, keyed by
+// environment id. Reset between tests like `mockDbEnvironments`, and written by
+// the store's own sync, so a test can assert what a restart would read back.
+type MockDestinationRow = {
+   id: string;
+   environmentId: string;
+   name: string;
+   type: string;
+   config: Record<string, unknown>;
+};
+let mockDbDestinations: MockDestinationRow[] = [];
+
+/** A well-formed DuckLake destination, as publisher.config.json declares one. */
+function managedDestination(name = "managed") {
+   return {
+      name,
+      type: "ducklake",
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: {
+               host: "catalog.internal",
+               databaseName: "ducklake",
+               userName: "publisher",
+               password: "catalog-secret",
+            },
+         },
+         storage: { bucketUrl: "gs://managed-tier/org_a" },
+      },
+   };
+}
+
 // Recorder for the embeddings-cleanup wiring tests: every SQL statement
 // the store's cleanup path issues lands here. When `blocks` is true the
 // statements never resolve, which pins that the delete APIs do not await
@@ -215,6 +246,64 @@ mock.module("../storage/StorageManager", () => {
                }),
 
                deleteConnection: async (_id: string): Promise<void> => {},
+
+               // ===== MATERIALIZATION DESTINATION METHODS =====
+               // Backed by `mockDbDestinations` rather than stubbed out, so a
+               // test can drive both directions the store uses: what a restart
+               // reads back, and what the sync writes and prunes.
+               listMaterializationDestinations: async (
+                  environmentId: string,
+               ): Promise<unknown[]> =>
+                  mockDbDestinations.filter(
+                     (row) => row.environmentId === environmentId,
+                  ),
+
+               getMaterializationDestinationByName: async (
+                  environmentId: string,
+                  name: string,
+               ): Promise<MockData | null> =>
+                  mockDbDestinations.find(
+                     (row) =>
+                        row.environmentId === environmentId &&
+                        row.name === name,
+                  ) ?? null,
+
+               upsertMaterializationDestination: async (
+                  data: MockData,
+               ): Promise<MockData> => {
+                  const row = {
+                     id: `${data.environmentId}-${data.name}`,
+                     environmentId: data.environmentId as string,
+                     name: data.name as string,
+                     type: data.type as string,
+                     config: data.config as Record<string, unknown>,
+                  };
+                  const index = mockDbDestinations.findIndex(
+                     (existing) => existing.id === row.id,
+                  );
+                  if (index === -1) {
+                     mockDbDestinations.push(row);
+                  } else {
+                     mockDbDestinations[index] = row;
+                  }
+                  return row;
+               },
+
+               deleteMaterializationDestination: async (
+                  id: string,
+               ): Promise<void> => {
+                  mockDbDestinations = mockDbDestinations.filter(
+                     (row) => row.id !== id,
+                  );
+               },
+
+               deleteMaterializationDestinationsByEnvironmentId: async (
+                  environmentId: string,
+               ): Promise<void> => {
+                  mockDbDestinations = mockDbDestinations.filter(
+                     (row) => row.environmentId !== environmentId,
+                  );
+               },
             };
          }
       },
@@ -245,6 +334,7 @@ describe("EnvironmentStore Service", () => {
       // in one process, so a leaked value would silently switch later tests onto
       // the database-restore branch.
       mockDbEnvironments = [];
+      mockDbDestinations = [];
       sandbox = sinon.createSandbox();
 
       // Mock the configuration to prevent initialization errors
@@ -264,6 +354,7 @@ describe("EnvironmentStore Service", () => {
       }
       mkdirSync(serverRootPath);
       mockDbEnvironments = [];
+      mockDbDestinations = [];
       sandbox.restore();
    });
 
@@ -818,6 +909,151 @@ describe("EnvironmentStore Service", () => {
       // Absent from the connection list in the same payload: that disjointness is
       // the whole point of the second list.
       expect(environment?.connections?.map((c) => c.name)).toEqual([]);
+   });
+
+   it("should persist a destination so a restart restores it from the database", async () => {
+      // A destination is not a connection row, but it has to outlive a restart
+      // the same way a connection does: without this, every materialized query
+      // naming it falls back to running live until something re-registers it.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  materializationDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const firstBoot = new EnvironmentStore(serverRootPath);
+      await firstBoot.finishedInitialization;
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+      expect(mockDbDestinations[0].type).toBe("ducklake");
+
+      // Restart: the database now holds the environment, so initialize() takes
+      // the restore branch, and the config file no longer declares anything.
+      mockDbEnvironments = [
+         {
+            id: mockDbDestinations[0].environmentId,
+            name: projectName,
+            path: envPath,
+            metadata: {},
+         },
+      ];
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const afterRestart = new EnvironmentStore(serverRootPath);
+      await afterRestart.finishedInitialization;
+
+      const environment = await afterRestart.getEnvironment(projectName);
+      expect(
+         environment.getMaterializationDestination("managed").ducklakeConnection
+            ?.storage?.bucketUrl,
+      ).toBe("gs://managed-tier/org_a");
+   });
+
+   it("should prune a stored destination the environment no longer holds", async () => {
+      // The list has replace semantics, so a row left behind for a removed
+      // destination would resurrect it at the next restart.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  materializationDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+
+      await newEnvironmentStore.updateEnvironment({
+         name: projectName,
+         materializationDestinations: [managedDestination("replacement")],
+      });
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual([
+         "replacement",
+      ]);
+   });
+
+   it("should seed destinations from the config file when the database holds none", async () => {
+      // The restore branch reads the database first, but an operator adding a
+      // destination to publisher.config.json on an existing server has no rows to
+      // read; the file has to still take effect.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  materializationDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+      mockDbEnvironments = [
+         {
+            id: "restored-env-id",
+            name: projectName,
+            path: envPath,
+            metadata: {},
+         },
+      ];
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      expect(
+         environment.listMaterializationDestinations().map((d) => d.name),
+      ).toEqual(["managed"]);
    });
 
    it("should report a package that failed to load while its siblings serve", async () => {
@@ -2285,6 +2521,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       }
       mkdirSync(serverRootPath, { recursive: true });
       mockDbEnvironments = [];
+      mockDbDestinations = [];
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
       _resetEmbeddingIndexStateForTests();

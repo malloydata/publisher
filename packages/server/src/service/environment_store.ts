@@ -44,6 +44,7 @@ import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 type ApiEnvironment = components["schemas"]["Environment"];
+type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
@@ -681,6 +682,38 @@ export class EnvironmentStore {
                            dbEnvironment.id,
                         );
 
+                        // Destinations the same way, so one registered over the
+                        // API outlives the restart that would otherwise leave
+                        // every materialized query for it falling back to live.
+                        // The config file seeds only an environment the database
+                        // holds none for, which is how a destination added to
+                        // publisher.config.json after first boot still loads.
+                        //
+                        // Not fatal to the environment: a build naming a
+                        // destination that did not load fails loudly and its
+                        // materialized queries serve live, which is a better
+                        // outcome than dropping every package in the environment.
+                        let destinations =
+                           environmentConfig?.materializationDestinations;
+                        try {
+                           const stored =
+                              await repository.listMaterializationDestinations(
+                                 dbEnvironment.id,
+                              );
+                           if (stored.length) {
+                              destinations = stored.map((row) => ({
+                                 name: row.name,
+                                 type: row.type as ApiConnection["type"],
+                                 ...row.config,
+                              }));
+                           }
+                        } catch (error) {
+                           logger.error(
+                              `Error reading materialization destinations for "${dbEnvironment.name}"; continuing without the stored ones`,
+                              { error },
+                           );
+                        }
+
                         const environmentInstance = await Environment.create(
                            dbEnvironment.name,
                            dbEnvironment.path,
@@ -690,14 +723,7 @@ export class EnvironmentStore {
                               resource: `${API_PREFIX}/connections/${conn.name}`,
                               ...conn.config,
                            })),
-                           // Read from the config file, not the database: a
-                           // destination is never persisted as a connection row,
-                           // so this restore path is the only thing that can put
-                           // the configured ones back. Destinations registered
-                           // over the API do not survive a restart, and the
-                           // materialized queries that named them fall back to
-                           // running live until they are re-registered.
-                           environmentConfig?.materializationDestinations,
+                           destinations,
                         );
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
@@ -841,6 +867,13 @@ export class EnvironmentStore {
 
       // Sync connections
       await this.addConnections(environment, dbEnvironment.id, repository);
+
+      // Sync materialization destinations
+      await this.syncMaterializationDestinations(
+         environment,
+         dbEnvironment.id,
+         repository,
+      );
 
       // Sync packages
       await this.addPackages(environment, dbEnvironment.id, repository);
@@ -1018,6 +1051,57 @@ export class EnvironmentStore {
          const environmentName = environment.metadata?.name;
          logger.error(
             `Error syncing connections for "${environmentName}":`,
+            error,
+         );
+      }
+   }
+
+   /**
+    * Mirrors an environment's destination list into the database so it survives a
+    * restart, the same way its connections do.
+    *
+    * Unlike {@link addConnections} this also deletes the rows for destinations
+    * the environment no longer holds. The list has replace semantics — an update
+    * hands over the whole set, there is no per-destination delete endpoint — so a
+    * left-behind row would silently resurrect a destination that had been removed
+    * the next time the environment loaded from the database.
+    */
+   private async syncMaterializationDestinations(
+      environment: Environment,
+      environmentId: string,
+      repository: ReturnType<typeof this.storageManager.getRepository>,
+   ): Promise<void> {
+      try {
+         const destinations = environment.listMaterializationDestinations();
+         const kept = new Set<string>();
+
+         for (const destination of destinations) {
+            if (!destination.name || !destination.type) {
+               continue;
+            }
+            kept.add(destination.name);
+            await repository.upsertMaterializationDestination({
+               environmentId,
+               name: destination.name,
+               type: destination.type,
+               config: destination,
+            });
+         }
+
+         const stored =
+            await repository.listMaterializationDestinations(environmentId);
+         for (const row of stored) {
+            if (!kept.has(row.name)) {
+               await repository.deleteMaterializationDestination(row.id);
+               logger.info(
+                  `Removed materialization destination ${row.name} from environment ${environment.metadata?.name}`,
+               );
+            }
+         }
+      } catch (err: unknown) {
+         const error = err as Error;
+         logger.error(
+            `Error syncing materialization destinations for "${environment.metadata?.name}":`,
             error,
          );
       }
