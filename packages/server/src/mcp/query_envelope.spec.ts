@@ -108,6 +108,40 @@ describe("buildQueryEnvelope", () => {
          expect(serializeEnvelope(e).length).toBeLessThanOrEqual(3_000);
       });
 
+      /**
+       * Reachable because the hard ceiling is maxBytes (50MB), so one row with a
+       * large text column passes assertWithinModelResponseLimits and lands here.
+       * "Showing 0 of N rows" reads as an empty result set, and an agent will
+       * report "no rows matched" for a row that was merely too big to send.
+       */
+      it("says no rows fit rather than implying nothing matched", () => {
+         const big = [{ doc: "z".repeat(5_000) }, { doc: "small" }];
+         const e = buildQueryEnvelope(big, 1000, result(), [], 2_000);
+         expect((e.rows as unknown[]).length).toBe(0);
+         expect(e._returned_rows).toBe(0);
+         expect(e._total_rows).toBe(2);
+         expect(e.warning).toContain("No rows fit the result size limit");
+         expect(e.warning).toContain("NOT an empty result");
+         expect(e.warning).not.toContain("Showing 0 of");
+      });
+
+      it("keeps the zero-row payload under the cap too", () => {
+         // The longer of the two wordings is what the search measures, so
+         // swapping it in afterwards must not push the payload back over.
+         const big = [{ doc: "z".repeat(5_000) }, { doc: "small" }];
+         const e = buildQueryEnvelope(big, 1000, result(), [], 2_000);
+         expect(serializeEnvelope(e).length).toBeLessThanOrEqual(2_000);
+      });
+
+      it("still reports the row cap when no rows fit", () => {
+         // Both shortenings apply at once; neither may swallow the other.
+         const big = [{ doc: "z".repeat(5_000) }, { doc: "y".repeat(5_000) }];
+         const e = buildQueryEnvelope(big, 2, result(), [], 2_000);
+         expect(e._limit_hit).toBe(true);
+         expect(e.warning).toContain("not a complete result");
+         expect(e.warning).toContain("No rows fit the result size limit");
+      });
+
       it("omits the truncation fields entirely when nothing was dropped", () => {
          // Credible's shape: absent rather than false.
          const e = buildQueryEnvelope(rows(3), 1000, result());

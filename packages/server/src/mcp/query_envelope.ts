@@ -128,6 +128,19 @@ export function buildQueryEnvelope(
  * first, whose digit width is at least that of any value it ends up holding, so
  * the finished payload stays under the limit. Credible's `_truncate_rows` does
  * the same thing for the same reason.
+ *
+ * The search can land on zero rows, which needs its own wording rather than
+ * "Showing 0 of N rows": that reads as an empty result set, and an agent will
+ * report "no rows matched" for what is really one row too large to send. It is
+ * reachable, because the hard ceiling upstream is maxBytes (50MB by default), so
+ * a single row carrying a large text or JSON column passes
+ * assertWithinModelResponseLimits and arrives here. Both wordings are measured,
+ * and the search uses whichever is longer, so swapping one for the other after
+ * the fact cannot push the payload back over the cap.
+ *
+ * One case cannot be fixed by dropping rows: when the envelope minus its rows
+ * already exceeds the limit (a very wide schema in `_meta`). The result is then
+ * returned over-limit rather than emptied further, and the warning says so.
  */
 function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
    if (serialize(envelope).length <= limit) return envelope;
@@ -146,9 +159,16 @@ function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
    // in the measurement for the same reason as the counts.
    const sizeWarning = (kept: number) =>
       `Showing ${kept} of ${total} rows; the rest were dropped to fit the result size limit. Narrow the query rather than paging through it.`;
-   truncating.warning = [envelope.warning, sizeWarning(total)]
-      .filter(Boolean)
-      .join(" ");
+   const noneFitWarning =
+      `No rows fit the result size limit: the first of ${total} rows is too large to send on its own. ` +
+      `This is NOT an empty result and does not mean nothing matched. Select fewer columns, or truncate the oversized field, then run it again.`;
+   // Measure with whichever wording is longer, so the one actually returned is
+   // never bigger than the one the search sized the payload against.
+   const measured =
+      noneFitWarning.length > sizeWarning(total).length
+         ? noneFitWarning
+         : sizeWarning(total);
+   truncating.warning = [envelope.warning, measured].filter(Boolean).join(" ");
 
    let low = 0;
    let high = total;
@@ -169,7 +189,9 @@ function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
       ...truncating,
       rows: rows.slice(0, best),
       _returned_rows: best,
-      warning: [envelope.warning, sizeWarning(best)].filter(Boolean).join(" "),
+      warning: [envelope.warning, best === 0 ? noneFitWarning : sizeWarning(best)]
+         .filter(Boolean)
+         .join(" "),
    };
 }
 
