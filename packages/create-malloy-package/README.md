@@ -305,7 +305,7 @@ npx @malloy-publisher/create-malloy-package sales --data mydata.csv
 - `name` (positional): the package name. Omit it to only set up the agent workspace in
   the current directory (write the MCP connection, agent instructions, and skills)
   without scaffolding a package.
-- `--data <file>`: seed the package from your own CSV, Parquet, or XLSX file instead of
+- `--data <file>`: seed the package from your own CSV, Parquet, JSON, NDJSON, or XLSX file instead of
   the built-in sample. The file is copied into the package and the starter model points
   at it. DuckDB reads all three formats in place; an Excel file is read as its first
   sheet. It seeds a new package, so it requires a package name: it cannot be combined

@@ -320,13 +320,63 @@ describe("scaffold: --data", () => {
       expect(model).toContain("duckdb.table('data/budget.xlsx')");
    });
 
+   test("copies a json file and points the model at it", () => {
+      // DuckDB reads .json in place exactly like .csv, so there is no reason to
+      // refuse it: doing so taught agents that only CSV worked and sent them to
+      // python to read a .json file rather than modelling it.
+      const src = path.join(tmp, "reviews.json");
+      fs.writeFileSync(src, '[{"id":1}]');
+      const result = run({ name: "shop", dataFile: src });
+      expect(result.packageCreated).toBe(true);
+      expect(exists("shop/data/reviews.json")).toBe(true);
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("duckdb.table('data/reviews.json')");
+   });
+
+   test("copies an ndjson file and points the model at it", () => {
+      const src = path.join(tmp, "events.ndjson");
+      fs.writeFileSync(src, '{"id":1}\n{"id":2}\n');
+      run({ name: "shop", dataFile: src });
+      expect(exists("shop/data/events.ndjson")).toBe(true);
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("duckdb.table('data/events.ndjson')");
+   });
+
    test("rejects an unsupported file type with nothing created", () => {
       const src = path.join(tmp, "notes.txt");
       fs.writeFileSync(src, "hello");
       expect(() => run({ name: "shop", dataFile: src })).toThrow(
-         /\.csv, \.parquet, or \.xlsx/i,
+         /\.csv, \.parquet, \.json, \.ndjson, \.xlsx/i,
       );
       expect(exists("shop")).toBe(false);
+   });
+
+   test("names other loadable files in the same directory", () => {
+      // --data takes exactly one file. Pointing it at a folder of related
+      // exports modelled one and said nothing about the rest, so the omission
+      // read as "unsupported" rather than "you picked one of these".
+      const dir = path.join(tmp, "exports");
+      fs.mkdirSync(dir);
+      const src = path.join(dir, "wine-130k.csv");
+      fs.writeFileSync(src, "id\n1\n");
+      fs.writeFileSync(path.join(dir, "wine-150k.csv"), "id\n1\n");
+      fs.writeFileSync(path.join(dir, "wine-130k.json"), "[]");
+      fs.writeFileSync(path.join(dir, "notes.txt"), "ignored");
+
+      const result = run({ name: "shop", dataFile: src });
+      // Sorted, the chosen file excluded, and non-loadable files ignored.
+      expect(result.siblingDataFiles).toEqual([
+         "wine-130k.json",
+         "wine-150k.csv",
+      ]);
+   });
+
+   test("says nothing about siblings when the file is alone", () => {
+      const dir = path.join(tmp, "solo");
+      fs.mkdirSync(dir);
+      const src = path.join(dir, "orders.csv");
+      fs.writeFileSync(src, "id\n1\n");
+      expect(run({ name: "shop", dataFile: src }).siblingDataFiles).toBeUndefined();
    });
 
    test("rejects a missing --data file", () => {

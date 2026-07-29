@@ -70,7 +70,8 @@ against your package, in watch mode, so edits to the model take effect as you sa
 
 Run bare like that, the package comes with a small sample dataset, so there is something to query
 before you have wired up anything of your own. To start from one of your own files instead, pass
-`--data` (CSV, Parquet, or Excel `.xlsx`):
+`--data` (CSV, Parquet, JSON, newline-delimited JSON, or Excel `.xlsx` - DuckDB reads all of them
+in place, so nothing needs converting first):
 
 ```bash
 npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
