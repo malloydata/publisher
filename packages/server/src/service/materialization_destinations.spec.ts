@@ -14,7 +14,12 @@ import {
 } from "../errors";
 import { ConnectionController } from "../controller/connection.controller";
 import { buildEnvironmentMalloyConfig } from "./connection";
-import { processMaterializationDestinations } from "./connection_config";
+import {
+   assembleEnvironmentConnections,
+   MATERIALIZATION_DESTINATIONS_DIR,
+   materializationDestinationRoot,
+   processMaterializationDestinations,
+} from "./connection_config";
 import { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
 
@@ -240,6 +245,74 @@ describe("Environment: connections and materialization destinations are disjoint
       expect(
          destination.ducklakeConnection?.catalog?.postgresConnection?.host,
       ).toBe("catalog.internal");
+   });
+
+   it("derives a destination's DuckDB file apart from a same-named connection's", () => {
+      // A pooled DuckDB instance is keyed on `databasePath` + `workingDirectory`
+      // and NOT on the connection name, while both lists derive that path from
+      // `<root>/<name>`. Same root plus the same name would be one shared
+      // instance, and the attach is `ATTACH OR REPLACE … AS <name>` — so one
+      // would replace the other's, across two namespaces that are allowed to
+      // reuse a name. Different roots is what makes that unreachable.
+      const connectionSide = assembleEnvironmentConnections(
+         [ducklakeDestination("credible", "tenant_lake")],
+         envPath,
+      );
+      const destinationSide = assembleEnvironmentConnections(
+         [ducklakeDestination("credible", "org_a")],
+         materializationDestinationRoot(envPath),
+      );
+
+      const connectionMeta = connectionSide.metadata.get("credible")!;
+      const destinationMeta = destinationSide.metadata.get("credible")!;
+
+      expect(destinationMeta.databasePath).not.toBe(
+         connectionMeta.databasePath,
+      );
+      expect(destinationMeta.workingDirectory).not.toBe(
+         connectionMeta.workingDirectory,
+      );
+      expect(destinationMeta.databasePath).toContain(
+         MATERIALIZATION_DESTINATIONS_DIR,
+      );
+      expect(connectionMeta.databasePath).not.toContain(
+         MATERIALIZATION_DESTINATIONS_DIR,
+      );
+   });
+
+   it("opens two different database files for one name held by both lists", async () => {
+      // The filesystem consequence of the derivation above, through a real
+      // Environment: resolving the name on each side opens its own DuckDB file.
+      // Both lookups fail — neither catalog exists — but the local database each
+      // one opened is what the instance pool keys on, so two files is two
+      // instances.
+      const environment = makeEnvironment(
+         [ducklakeDestination("credible", "tenant_lake")],
+         [ducklakeDestination("credible", "org_a")],
+      );
+
+      for (const config of [
+         environment.getEnvironmentMalloyConfig(),
+         environment.getMaterializationDestinationMalloyConfig(),
+      ]) {
+         try {
+            await config.connections.lookupConnection("credible");
+         } catch {
+            // Expected: the catalogs behind both are unreachable.
+         }
+      }
+
+      expect(
+         fs.existsSync(path.join(envPath, "credible_ducklake.duckdb")),
+      ).toBe(true);
+      expect(
+         fs.existsSync(
+            path.join(
+               materializationDestinationRoot(envPath),
+               "credible_ducklake.duckdb",
+            ),
+         ),
+      ).toBe(true);
    });
 
    it("reports a destination as name and type, and never its config", async () => {

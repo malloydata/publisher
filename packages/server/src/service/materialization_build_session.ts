@@ -5,7 +5,7 @@ import {
    type PersistSource,
    Runtime,
 } from "@malloydata/malloy";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
@@ -20,6 +20,7 @@ import {
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "./connection";
+import { materializationDestinationRoot } from "./connection_config";
 import {
    assertServesInDuckDB,
    type ServeBinding,
@@ -575,8 +576,14 @@ async function attachDestinationReadWrite(
       return;
    }
    // Plain DuckDB destination: attach its database file read-write. The file
-   // path is derived the same way connection assembly derives it.
-   const dbPath = path.join(environmentPath, `${destinationName}.duckdb`);
+   // path is derived the same way connection assembly derives it — under the
+   // destinations root, which is where a destination's files live so they cannot
+   // collide with a connection of the same name. The directory is created here
+   // because a build can be the first thing that ever touches it: on a worker
+   // that has not served this destination, nothing else has made it yet.
+   const destinationRoot = materializationDestinationRoot(environmentPath);
+   mkdirSync(destinationRoot, { recursive: true });
+   const dbPath = path.join(destinationRoot, `${destinationName}.duckdb`);
    await session.runSQL(
       `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, "duckdb")}`,
    );

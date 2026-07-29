@@ -638,6 +638,33 @@ export const MATERIALIZATION_DESTINATION_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Subdirectory of the environment root holding the local DuckDB files of
+ * materialization destinations, keeping them out of the directory connection
+ * files derive into.
+ *
+ * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
+ * `workingDirectory`, and the share key excludes the connection name
+ * (`buildDuckDBShareKey`, `duckdb-share-key-v2`) — while both lists derive that
+ * path as `<root>/<name>…duckdb`. The two namespaces are independent and may
+ * legitimately hold the same name, which would then derive the same path and
+ * share one pooled instance; since the attach is `ATTACH OR REPLACE … AS <name>`,
+ * one would silently replace the other's, and a query could read across the two.
+ * Separate roots make that unreachable rather than relying on names never
+ * coinciding. (If malloydata/malloy#3006 changes how the share key is computed,
+ * re-check that it still excludes the name before relying on anything narrower.)
+ *
+ * Dot-prefixed so the package walkers skip it, as they do `.staging`/`.retired`.
+ */
+export const MATERIALIZATION_DESTINATIONS_DIR = ".destinations";
+
+/** Where {@link MATERIALIZATION_DESTINATIONS_DIR} sits for an environment. */
+export function materializationDestinationRoot(
+   environmentPath: string,
+): string {
+   return path.join(environmentPath, MATERIALIZATION_DESTINATIONS_DIR);
+}
+
+/**
  * Validates a `materializationDestinations` list and returns the entries that
  * may be built into and served from. The one place destinations are checked, so
  * no caller can seat an unvalidated destination on an Environment.

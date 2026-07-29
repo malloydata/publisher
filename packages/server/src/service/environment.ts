@@ -39,7 +39,10 @@ import {
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
-import { processMaterializationDestinations } from "./connection_config";
+import {
+   materializationDestinationRoot,
+   processMaterializationDestinations,
+} from "./connection_config";
 import {
    fetchManifestEntries,
    splitManifestEntries,
@@ -711,9 +714,19 @@ export class Environment {
    private rebuildDestinationMalloyConfig(): void {
       const previous = this.destinationMalloyConfig;
       try {
+         // Rooted apart from the connections' files so a destination can never
+         // share a pooled DuckDB instance with a connection of the same name —
+         // see MATERIALIZATION_DESTINATIONS_DIR. Created here because the
+         // directory has to exist before the first lookup opens a database in it.
+         const destinationRoot = materializationDestinationRoot(
+            this.environmentPath,
+         );
+         if (this.destinations.length > 0) {
+            fs.mkdirSync(destinationRoot, { recursive: true });
+         }
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             this.destinations,
-            this.environmentPath,
+            destinationRoot,
          );
       } catch (error) {
          logger.error(
@@ -722,7 +735,7 @@ export class Environment {
          );
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             [],
-            this.environmentPath,
+            materializationDestinationRoot(this.environmentPath),
          );
       }
       if (previous && previous !== this.destinationMalloyConfig) {
