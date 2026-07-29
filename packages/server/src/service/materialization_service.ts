@@ -85,13 +85,20 @@ import { redactPgSecrets } from "../pg_helpers";
 
 /**
  * The narrow environment surface the build path needs to materialize into a
- * `storage=` destination: resolve a connection's config by name (source creds to
- * federate, destination catalog to attach) and the environment root (to derive a
- * plain-DuckDB destination's file path). Kept minimal to avoid coupling the
- * materialization service to the full Environment type.
+ * `storage=` destination, and the environment root (to derive a plain-DuckDB
+ * destination's file path). Kept minimal to avoid coupling the materialization
+ * service to the full Environment type.
+ *
+ * The two lookups are separate on purpose, and which one a call site uses is the
+ * whole security property: `getApiConnection` resolves the SOURCE the data is
+ * read from, a warehouse the package's own model already names, while
+ * `getMaterializationDestination` resolves where the table is WRITTEN. They read
+ * disjoint lists, so a `storage=` build can never be steered into a connection
+ * by naming it — including one whose name matches a destination.
  */
 interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
+   getMaterializationDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
 }
 
@@ -1336,6 +1343,32 @@ export class MaterializationService {
     * overwrites in place and a failure-path DROP there would be a far larger
     * blast radius for no reclaim.
     */
+   /**
+    * The destination's config for a best-effort table drop, or undefined when it
+    * is no longer configured.
+    *
+    * The cleanup sweeps must keep going over the rest of a manifest rather than
+    * abort on the first destination that has since been un-registered: a table
+    * left behind is reclaimable later, whereas an aborted sweep leaves every
+    * table after it behind too, and — in the delete path — throws out of a
+    * sweep documented as best-effort. The build path deliberately does NOT go
+    * through here; there, an unresolvable destination must fail the run.
+    */
+   private destinationForCleanup(
+      environment: BuildEnvironment,
+      destinationName: string,
+   ): ApiConnection | undefined {
+      try {
+         return environment.getMaterializationDestination(destinationName);
+      } catch (error) {
+         logger.warn(
+            "Skipping a table drop: its materialization destination is no longer configured",
+            { destinationName, error: errMessage(error) },
+         );
+         return undefined;
+      }
+   }
+
    private async reclaimStorageTablesFromFailedRun(
       builtThisRun: ManifestEntry[],
       environment: BuildEnvironment,
@@ -1371,10 +1404,15 @@ export class MaterializationService {
                );
                continue;
             }
+            const destinationConnection = this.destinationForCleanup(
+               environment,
+               dest,
+            );
+            if (!destinationConnection) continue;
             try {
                await dropStorageTable({
                   destinationName: dest,
-                  destinationConnection: environment.getApiConnection(dest),
+                  destinationConnection,
                   physicalTableName: table,
                   environmentPath: environment.getEnvironmentPath(),
                });
@@ -1392,7 +1430,7 @@ export class MaterializationService {
                      physicalTableName: table,
                      error: redactConnectionSecrets(
                         errMessage(dropErr),
-                        environment.getApiConnection(dest),
+                        destinationConnection,
                      ),
                   },
                );
@@ -1661,8 +1699,12 @@ export class MaterializationService {
       const sourceConnection = environment.getApiConnection(
          persistSource.connectionName,
       );
+      // Resolved from the destination list, never the connection list: a build
+      // naming a destination that is not configured has to fail here rather than
+      // fall through to a same-named connection and write a tenant's own
+      // warehouse. The throw surfaces as a 422 on the run.
       const destinationConnection =
-         environment.getApiConnection(destinationName);
+         environment.getMaterializationDestination(destinationName);
 
       const startTime = performance.now();
       let result;
@@ -2171,9 +2213,11 @@ export class MaterializationService {
          // failure is logged and the sweep continues, so one unreachable
          // destination never blocks reclaiming the rest.
          if (entry.storageConnectionName) {
-            const destinationConnection = environment.getApiConnection(
+            const destinationConnection = this.destinationForCleanup(
+               environment,
                entry.storageConnectionName,
             );
+            if (!destinationConnection) continue;
             try {
                await dropStorageTable({
                   destinationName: entry.storageConnectionName,
