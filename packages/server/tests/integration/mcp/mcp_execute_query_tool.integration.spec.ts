@@ -169,6 +169,17 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
                /syntax error|no viable alternative/i,
             );
             expect(Array.isArray(errorPayloadSyntax.suggestions)).toBe(true);
+
+            // The resource block is invisible to a client that renders only
+            // text on an isError result, which is how a real diagnostic gets
+            // reported as a bare "Unknown error". Pinned here, over the real
+            // HTTP transport, because the unit spec calls the handler directly
+            // and so cannot catch the block being dropped in serialization.
+            const textBlockSyntax = result.content!.find(
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+               (b: any) => b.type === "text",
+            );
+            expect(textBlockSyntax?.text).toContain(errorPayloadSyntax.error);
          },
          { timeout: 30000 },
       );
@@ -277,7 +288,9 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorBlockPkgNotFound = result.content![0];
          expect(errorBlockPkgNotFound.type).toBe("resource");
          expect(errorBlockPkgNotFound.resource).toBeDefined();
-         expect(errorBlockPkgNotFound.resource.mimeType).toBe("application/json");
+         expect(errorBlockPkgNotFound.resource.mimeType).toBe(
+            "application/json",
+         );
 
          // Parse the JSON string from the resource text content
          const errorJsonTextPkgNotFound = errorBlockPkgNotFound.resource

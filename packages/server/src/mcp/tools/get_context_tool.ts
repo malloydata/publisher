@@ -8,8 +8,8 @@ import {
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
-import { buildMalloyUri } from "../handler_utils";
-import { jsonResource } from "../tool_response";
+import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import { entityRowKey, trySemanticSearch } from "./embedding_index";
 
@@ -290,12 +290,21 @@ A JSON object with a results array whose items carry a kind field. For retrieval
  * Every tier of this tool answers with `results`, so an error keeps that key
  * (empty) alongside `error`. Callers can read `results` unconditionally without
  * branching on success first.
+ *
+ * Routed through classifyToolError for the same reason its three sibling tools
+ * are: it homes each error class to real remediation, so an unknown package
+ * says so instead of arriving as a bare message with no suggestions. It also
+ * replaces a per-site `error instanceof Error ? error.message : "Unknown
+ * error"`, which was the one path in this file that could produce exactly the
+ * unhelpful string this tool's callers reported.
  */
-function contextError(uri: string, message: string) {
-   return jsonResource(
+function contextError(uri: string, identifier: string, error: unknown) {
+   return jsonToolError(
       uri,
-      { error: message, results: [] },
-      { isError: true, text: message },
+      classifyToolError("getContext", identifier, error),
+      {
+         results: [],
+      },
    );
 }
 
@@ -344,13 +353,18 @@ export function registerGetContextTool(
                   results,
                });
             } catch (error) {
-               const message =
-                  error instanceof Error ? error.message : "Unknown error";
                logger.warn(
                   "[MCP Tool getContext] listing environments failed",
-                  { error: message },
+                  {
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  },
                );
-               return contextError(buildMalloyUri({}, "get-context"), message);
+               return contextError(
+                  buildMalloyUri({}, "get-context"),
+                  "environments",
+                  error,
+               );
             }
          }
 
@@ -376,18 +390,17 @@ export function registerGetContextTool(
                   { results },
                );
             } catch (error) {
-               const message =
-                  error instanceof Error ? error.message : "Unknown error";
                logger.warn("[MCP Tool getContext] listing packages failed", {
                   environmentName,
-                  error: message,
+                  error: error instanceof Error ? error.message : String(error),
                });
                return contextError(
                   buildMalloyUri(
                      { environment: environmentName },
                      "get-context",
                   ),
-                  message,
+                  environmentName,
+                  error,
                );
             }
          }
@@ -401,20 +414,19 @@ export function registerGetContextTool(
                packageName,
             );
          } catch (error) {
-            const message =
-               error instanceof Error ? error.message : "Unknown error";
             logger.warn("[MCP Tool getContext] index build failed", {
                environmentName,
                packageName,
                sourceName,
-               error: message,
+               error: error instanceof Error ? error.message : String(error),
             });
             return contextError(
                buildMalloyUri(
                   { environment: environmentName, package: packageName },
                   "get-context",
                ),
-               message,
+               `${environmentName}/${packageName}`,
+               error,
             );
          }
 
