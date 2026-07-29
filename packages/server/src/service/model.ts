@@ -2059,6 +2059,8 @@ export class Model {
       compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
+      /** Row cap pushed into the SQL: the query's own LIMIT, else the default. */
+      rowLimit: number;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
@@ -2536,6 +2538,13 @@ export class Model {
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
+         // The cap actually pushed into the SQL. A caller cannot otherwise tell
+         // a complete result from one the row limit cut off: with no LIMIT of
+         // its own a query silently gets DEFAULT_QUERY_ROW_LIMIT rows, and that
+         // is under maxRows, so assertWithinModelResponseLimits raises nothing.
+         // Returning the number lets a caller compare it against the row count
+         // and say so, with no extra query.
+         rowLimit,
       };
    }
 

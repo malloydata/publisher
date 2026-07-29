@@ -3,20 +3,13 @@ import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { ModelNotFoundError } from "../errors";
+import { bigIntReplacer } from "../json_utils";
 import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
 
 type ApiQuery = components["schemas"]["QueryResult"];
-
-// Replacer function to handle BigInt serialization
-function bigIntReplacer(_key: string, value: unknown): unknown {
-   if (typeof value === "bigint") {
-      return Number(value);
-   }
-   return value;
-}
 
 export class QueryController {
    private environmentStore: EnvironmentStore;

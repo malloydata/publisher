@@ -80,12 +80,47 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
 
             const queryResultBlock = content[0].resource;
             expect(queryResultBlock.uri).toContain("#result");
-            const queryResultData = JSON.parse(queryResultBlock.text);
-            expect(queryResultData).toBeDefined();
-            // Check properties directly on the parsed Result object
-            expect(queryResultData.data).toBeDefined();
-            expect(Array.isArray(queryResultData.data.array_value)).toBe(true);
-            // Could add more specific checks on data if needed
+            const envelope = JSON.parse(queryResultBlock.text);
+
+            // Flat rows keyed by column name: the same shape an in-package data
+            // app receives, not the type-tagged Malloy cell envelope.
+            expect(Array.isArray(envelope.rows)).toBe(true);
+            expect(envelope.rows.length).toBeGreaterThan(0);
+            expect(typeof envelope.rows[0]).toBe("object");
+            expect(envelope.rows[0].data).toBeUndefined();
+
+            // The signals that let a caller tell a complete result from a
+            // truncated one.
+            expect(envelope.row_count).toBe(envelope.rows.length);
+            expect(typeof envelope.query_row_limit).toBe("number");
+            expect(typeof envelope.limit_hit).toBe("boolean");
+            expect(envelope.truncated_for_size).toBe(false);
+         },
+         { timeout: 30000 },
+      );
+
+      it(
+         "returns the full Malloy result when verbose is set",
+         async () => {
+            if (!env) throw new Error("Test environment not initialized");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const result: any = await mcpClient.callTool({
+               name: "malloy_executeQuery",
+               arguments: {
+                  environmentName: ENVIRONMENT_NAME,
+                  packageName: PACKAGE_NAME,
+                  modelPath: "storefront.malloy",
+                  query: "run: order_items->{ aggregate: c is count() }",
+                  verbose: true,
+               },
+            });
+
+            const parsed = JSON.parse(result.content[0].resource.text);
+            // The escape hatch still yields the type-tagged cell envelope, for
+            // callers inspecting render annotations or cell types.
+            expect(parsed.data).toBeDefined();
+            expect(Array.isArray(parsed.data.array_value)).toBe(true);
+            expect(parsed.rows).toBeUndefined();
          },
          { timeout: 30000 },
       );

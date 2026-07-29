@@ -50,13 +50,14 @@ function resourceBlock(
    uri: string,
    payload: unknown,
    space?: number,
+   replacer?: (key: string, value: unknown) => unknown,
 ): ResourceBlock {
    return {
       type: "resource" as const,
       resource: {
          uri,
          mimeType: JSON_MIME_TYPE,
-         text: JSON.stringify(payload, null, space),
+         text: JSON.stringify(payload, replacer, space),
       },
    };
 }
@@ -95,9 +96,17 @@ export function formatErrorText(details: ErrorDetails): string {
 export function jsonResource(
    uri: string,
    payload: unknown,
-   options?: { isError?: boolean; text?: string; space?: number },
+   options?: {
+      isError?: boolean;
+      text?: string;
+      space?: number;
+      /** Needed when the payload can carry BigInt: see json_utils.bigIntReplacer. */
+      replacer?: (key: string, value: unknown) => unknown;
+   },
 ): ToolResult {
-   const content: ToolContent[] = [resourceBlock(uri, payload, options?.space)];
+   const content: ToolContent[] = [
+      resourceBlock(uri, payload, options?.space, options?.replacer),
+   ];
    if (options?.text !== undefined) {
       content.push({ type: "text" as const, text: options.text });
    }
