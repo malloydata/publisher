@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { PayloadTooLargeError } from "../errors";
 import {
    assertWithinModelResponseLimits,
+   queryRowLimitSource,
    resolveModelQueryRowLimit,
 } from "./model_limits";
 
@@ -177,5 +178,32 @@ describe("assertWithinModelResponseLimits", () => {
             "model_query",
          ),
       ).not.toThrow();
+   });
+});
+
+describe("queryRowLimitSource", () => {
+   /**
+    * Must mirror resolveModelQueryRowLimit's own `requested` condition: if the
+    * two ever disagree, the reported source describes a different limit than
+    * the one actually pushed into the SQL.
+    */
+   it("reports the query when it carried its own positive limit", () => {
+      expect(queryRowLimitSource(10)).toBe("query");
+      expect(queryRowLimitSource(1)).toBe("query");
+   });
+
+   it("reports the server default when the query carried none", () => {
+      expect(queryRowLimitSource(undefined)).toBe("server_default");
+      expect(queryRowLimitSource(0)).toBe("server_default");
+      expect(queryRowLimitSource(-1)).toBe("server_default");
+   });
+
+   it("agrees with which limit resolveModelQueryRowLimit actually used", () => {
+      const config = { defaultLimit: 1000, maxRows: 0 };
+      for (const userLimit of [undefined, 0, -1, 1, 10, 5000]) {
+         const used = resolveModelQueryRowLimit(userLimit, config);
+         const cameFromQuery = queryRowLimitSource(userLimit) === "query";
+         expect(cameFromQuery).toBe(used !== config.defaultLimit);
+      }
    });
 });

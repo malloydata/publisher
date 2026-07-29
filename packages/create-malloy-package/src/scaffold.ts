@@ -113,7 +113,7 @@ export interface ScaffoldOptions {
    name?: string;
    /** Directory the workspace files are written to; also the server root. */
    cwd: string;
-   /** A CSV, Parquet, or XLSX file to seed the package from instead of the sample. */
+   /** A CSV, Parquet, JSON, NDJSON, or XLSX file to seed the package from instead of the sample. */
    dataFile?: string;
    host: Host;
    /** Overwrite existing workspace files instead of leaving them in place. */
@@ -129,6 +129,11 @@ export interface ScaffoldResult {
    dataPath?: string;
    /** The --data file's own name, set only when copying it in had to rename it. */
    dataFileRenamedFrom?: string;
+   /**
+    * Other loadable data files alongside the --data file, which this run did
+    * NOT include. Set only when there is at least one.
+    */
+   siblingDataFiles?: string[];
    /** The environment the package is registered in, which may not be "default". */
    envName: string;
    /**
@@ -487,6 +492,10 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
          // The copy is what the model reads, so the name in the package is the
          // one the user has to look for. Silently renaming it hid their file.
          result.dataFileRenamedFrom = sourceBase;
+      }
+      const siblings = findSiblingDataFiles(options.dataFile);
+      if (siblings.length > 0) {
+         result.siblingDataFiles = siblings;
       }
       writeFile(
          path.join(packageDir, modelFile),
@@ -2018,20 +2027,64 @@ function claudeFile(agentsFile: string): string {
    );
 }
 
+/**
+ * Extensions the generated `duckdb.table('<path>')` reads with no extra setup.
+ *
+ * One list, used both to validate --data and to spot loadable files sitting
+ * next to it. DuckDB reads all of these in place, so a package never needs a
+ * file converted first; keeping JSON off this list is what taught agents that
+ * only CSV worked and sent them to python to read a .json.
+ */
+const LOADABLE_DATA_EXTENSIONS = [
+   ".csv",
+   ".parquet",
+   ".json",
+   ".ndjson",
+   ".xlsx",
+] as const;
+
+function isLoadableDataFile(file: string): boolean {
+   return (LOADABLE_DATA_EXTENSIONS as readonly string[]).includes(
+      path.extname(file).toLowerCase(),
+   );
+}
+
 function validateDataFile(dataFile: string): void {
    if (!fs.existsSync(dataFile) || !fs.statSync(dataFile).isFile()) {
       // printable(), because the path is echoed to a terminal and a filename can
       // hold ESC or CR: see printable() in names.ts.
       throw new ScaffoldError(`--data file not found: ${printable(dataFile)}`);
    }
-   const ext = path.extname(dataFile).toLowerCase();
-   if (ext !== ".csv" && ext !== ".parquet" && ext !== ".xlsx") {
+   if (!isLoadableDataFile(dataFile)) {
       throw new ScaffoldError(
-         `--data must be a .csv, .parquet, or .xlsx file (got "${printable(
+         `--data must be one of ${LOADABLE_DATA_EXTENSIONS.join(", ")} (got "${printable(
             path.basename(dataFile),
          )}").`,
       );
    }
+}
+
+/**
+ * Other loadable files in the --data file's own directory.
+ *
+ * --data takes exactly one file and said nothing about the rest, so pointing it
+ * at a folder of related exports silently modelled one of them. Naming the
+ * others does not change what gets scaffolded; it just stops the omission from
+ * being invisible.
+ */
+function findSiblingDataFiles(dataFile: string): string[] {
+   let entries: string[];
+   try {
+      entries = fs.readdirSync(path.dirname(dataFile));
+   } catch {
+      // An unreadable directory is not worth failing a successful scaffold over.
+      return [];
+   }
+   const chosen = path.basename(dataFile);
+   return entries
+      .filter((e) => e !== chosen && isLoadableDataFile(e))
+      .sort()
+      .map(printable);
 }
 
 /** npm names are lowercase and url-safe; fall back if nothing survives. */

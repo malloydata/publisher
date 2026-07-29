@@ -49,6 +49,26 @@ Connect the client after the server is up. An MCP client discovers a server's to
 
 If you are the agent and you started the server during this session, your `malloy_*` tools will not show up however long you wait: your tool list was fixed when you connected. You cannot reconnect yourself. When a user is present, say so and ask them to run `/mcp`, select `malloy`, and choose Reconnect (the panel offers `Authenticate` first, which is not it), or to restart Claude. Do not quietly fall back to calling the REST API with curl instead: it hides a fixable problem the user can clear in seconds, and it gives up the grounded discovery, compile checks, and reload that the tools exist to provide. Running unattended, with nobody to reconnect you, is the other case: there the REST API is the supported interface, not a workaround. See section 7.
 
+There is a third case, and it is the one that costs the most time because it looks exactly like the first: **a project's `.mcp.json` is only discovered from the directory the agent session *started* in.** A session launched from a parent directory, or from anywhere else, never sees the server, however long it waits and however many times it reconnects. Reconnecting cannot fix it, because the server was never in the client's list to reconnect to.
+
+Skills are the near miss here, and they behave differently: `.claude/skills/` is rescanned as the working directory changes, so a session started further up picks them up on its own once work moves into this directory. That asymmetry is worth knowing precisely because the two symptoms look identical from the outside: same "the agent has nothing", different cause, different fix.
+
+Tell the three apart by what is missing:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `malloy` is listed in `/mcp` but disconnected | client connected before the server existed | Reconnect (or relaunch the agent) |
+| `malloy` is not listed in `/mcp` at all | session started outside this directory | relaunch the agent from here, or register at user scope (below) |
+| tools present, no skills auto-invoked | same as above | relaunch the agent from here; skills are rescanned as the working directory changes |
+
+The registration that stops the directory mattering, because it is stored per user rather than per project:
+
+```bash
+claude mcp add --transport http malloy http://localhost:4040/mcp -s user
+```
+
+Note the two symptoms of that one cause do **not** share a fix: the MCP server list is fixed at session boot, so it needs either a relaunch or the user-scoped registration above, while skills need the session actually rooted in the directory. There is no user-scope equivalent for project skills short of symlinking them into `~/.claude/skills/`.
+
 Claude Code: this repo ships a project `.mcp.json`, so from a clone Claude Code offers to connect on first run. Approve it once. To add it elsewhere:
 
 ```bash

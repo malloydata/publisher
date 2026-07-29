@@ -3,6 +3,7 @@ import { z } from "zod";
 import lunr from "lunr";
 import { EnvironmentStore } from "../../service/environment_store";
 import { buildMalloyUri } from "../handler_utils";
+import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
 import rawIndex from "./docs_search/malloy_docs_index.json";
 
@@ -121,18 +122,7 @@ export function registerDocsSearchTool(
 
          const results = searchDocsIndex(query, max);
 
-         return {
-            content: [
-               {
-                  type: "resource" as const,
-                  resource: {
-                     type: "application/json",
-                     uri: buildMalloyUri({}, "docs-search"),
-                     text: JSON.stringify(results),
-                  },
-               },
-            ],
-         };
+         return jsonResource(buildMalloyUri({}, "docs-search"), results);
       },
    );
 }

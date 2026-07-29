@@ -55,7 +55,7 @@ function resolveDataFile(cwd: string, data?: string): string | undefined {
    }
    if (data.trim() === "") {
       throw new ScaffoldError(
-         `--data was given an empty filename. Pass the CSV, Parquet, or XLSX ` +
+         `--data was given an empty filename. Pass the CSV, Parquet, JSON, NDJSON, or XLSX ` +
             `file to seed the package from, or leave --data off to use the ` +
             `sample data.`,
       );
@@ -684,6 +684,21 @@ export function formatSuccess(result: ScaffoldResult): string {
          ),
       );
    }
+   if (result.siblingDataFiles) {
+      // --data takes exactly one file. Pointing it at a folder of related
+      // exports modelled one and said nothing about the rest, so the omission
+      // read as "those formats are not supported" rather than "you picked one".
+      const shown = result.siblingDataFiles.slice(0, 5);
+      const rest = result.siblingDataFiles.length - shown.length;
+      lines.push(
+         log.dim(
+            `  Not included: ${shown.join(", ")}${
+               rest > 0 ? ` and ${rest} more` : ""
+            }. --data takes one file; copy any others into ` +
+               `${result.packageName}/data/ and add a source for each.`,
+         ),
+      );
+   }
    if (result.configExtended) {
       lines.push(
          `${log.green("✓")} Registered ${log.bold(
@@ -871,6 +886,17 @@ export function formatSuccess(result: ScaffoldResult): string {
    lines.push(`  ${log.cyan(url)}   ${log.dim("explore in the browser")}`);
    lines.push("");
    lines.push(log.bold("Check it is ready:"));
+   // Read as a flat list, these look like the next two commands to run, and the
+   // boot line above looks like a step you move past. It is not: it holds the
+   // terminal. Both checks then answer nothing, and `curl -s` is silent on a
+   // refused connection, so the failure has no text to read at all.
+   lines.push(
+      log.dim(
+         "  In a second terminal: the boot command above keeps running until you\n" +
+            "  stop it. Until the server is up these print nothing at all, not an\n" +
+            "  error, because -s silences curl's connection failure.",
+      ),
+   );
    lines.push(`  curl -s ${url}/api/v0/status`);
    const packagesUrl = `${url}/api/v0/environments/${result.envName}/packages`;
    if (environmentIsEmpty) {
@@ -967,6 +993,29 @@ export function formatSuccess(result: ScaffoldResult): string {
             `  session; ask the user to reconnect it. See ${result.agentsFile}.`,
       ),
    );
+   // The other way this fails, and the one with no signal at all: both the MCP
+   // config above and .claude/skills are discovered from the directory an agent
+   // session STARTED in, not the one it is working in. Launched from anywhere
+   // else, the agent sees neither, and nothing anywhere says so. The two
+   // symptoms look alike and do not share a fix, which is what makes this
+   // expensive to diagnose: the MCP list is fixed at session boot, so it needs a
+   // registration that does not depend on the directory. Skills are not the same
+   // shape and saying so matters, because the two symptoms are identical from the
+   // outside: .claude/skills is rescanned as the working directory changes, so a
+   // session started further up picks them up on its own.
+   lines.push(
+      log.dim(
+         `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
+            "  STARTED in this directory. Launch your agent from here. If you cannot,\n" +
+            "  register the server so the directory stops mattering (.claude/skills\n" +
+            "  needs nothing: it is rescanned as the working directory changes):",
+      ),
+   );
+   lines.push(
+      `    ${log.cyan(
+         `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
+      )}`,
+   );
    lines.push("");
 
    return lines.join("\n") + "\n";
@@ -1057,7 +1106,7 @@ program
    )
    .option(
       "--data <file>",
-      "seed the package from a CSV, Parquet, or XLSX file",
+      "seed the package from a CSV, Parquet, JSON, NDJSON, or XLSX file",
    )
    // Not --host: Publisher's own server takes `--host <address>` for the
    // interface it binds to, and the start command this tool writes now passes
