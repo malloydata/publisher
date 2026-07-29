@@ -206,6 +206,17 @@ source: facts is conn.table('t') -> { group_by: user_id, aggregate: total is sum
 
 To add `#(doc)` tags to existing query columns, use `include {}` between the query and extend.
 
+## Extending a Source Cannot Reuse a Name It Already Defines
+
+```malloy
+// WRONG: "Cannot redefine 'overview'" when sales already declares view: overview
+source: wines is sales extend { view: overview is { aggregate: record_count } }
+// RIGHT: give the extension its own name
+source: wines is sales extend { view: summary is { aggregate: record_count } }
+```
+
+An extension adds to the parent's namespace, it does not override it. This bites when you extend a source to "replace" one of its views: rename the new definition, or edit the view on the parent source instead of extending it. Malloy reports the same `Cannot redefine 'X'` for dimensions and measures that collide with an inherited name, per the sections above and below.
+
 ## Never Use `conn.sql()` When Malloy Has a Native Pattern
 
 ```malloy
@@ -237,6 +248,28 @@ source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total i
 **Never use `conn.sql()` for:** simple column selection or renaming, `WHERE` filters, two-table joins, column type casts, latest-snapshot patterns, conditional aggregation, or window functions of any kind.
 
 If a project's standards file specifies a stricter policy (e.g., a `search_malloy_docs` rationale comment requirement above every `conn.sql()` block), defer to that.
+
+## JSON Files: Read Them In Place Like CSV
+
+```malloy
+// RIGHT: .json works like .csv/.parquet
+source: reviews is duckdb.table('data/reviews.json')
+// RIGHT: newline-delimited JSON is read the same way
+source: events is duckdb.table('data/events.ndjson')
+// RIGHT: read options need read_json_auto in a SQL source
+source: nested is duckdb.sql("""SELECT * FROM read_json_auto('data/reviews.json')""")
+// WRONG: shelling out to python, or converting to CSV first
+```
+
+DuckDB reads JSON directly, so never preprocess a `.json` file before modeling it and never reach for a scripting language to inspect one. Both a top-level array of objects and newline-delimited JSON work through `duckdb.table()`.
+
+Quirk: JSON carries no schema, so a value written as `"90"` arrives as a string where the same data in CSV would be inferred as a number. Cast it in the source, under a new name (reusing the column's own name is a redefinition error):
+
+```malloy
+source: reviews is duckdb.table('data/reviews.json') extend {
+  dimension: points_num is points::number
+}
+```
 
 ## Excel Files: Read `.xlsx` In Place, Never Convert
 
