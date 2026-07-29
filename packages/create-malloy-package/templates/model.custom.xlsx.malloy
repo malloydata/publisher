@@ -107,7 +107,7 @@
 //
 //   SELECT
 //     *,
-//     try_cast(regexp_replace("Units Sold", '[^0-9.]', '', 'g') AS DOUBLE) AS units_sold_num
+//     try_cast(regexp_replace("Units Sold", '[^0-9.-]', '', 'g') AS DOUBLE) AS units_sold_num
 //   FROM read_xlsx(...)
 //
 // then `measure: total_units is units_sold_num.sum()` in Malloy. `try_cast` is
@@ -115,6 +115,15 @@
 // a plain cast throws on the first one at query time. Note the regex keeps the
 // digits out of `12 (est)`, so those rows count as 12; strip the whole cell
 // instead if an estimate should not count.
+//
+// Keep the `-` in that character class. Without it every negative comes back
+// POSITIVE: a refund of `-500` sums as `500`, and a revenue total that quietly
+// adds its credits back is the same class of silent wrongness as the bad read
+// above. Accounting parentheses need a step of their own, because stripping them
+// also leaves a positive:
+//
+//   (CASE WHEN "Amount" LIKE '(%)' THEN -1 ELSE 1 END)
+//     * try_cast(regexp_replace("Amount", '[^0-9.]', '', 'g') AS DOUBLE) AS amount_num
 //
 // The Malloy-side form is `sum(amount::number)`, not `amount::number.sum()`,
 // which does not parse. It is fine on a clean column and throws on a dirty one,
