@@ -242,19 +242,67 @@ describe("Environment: connections and materialization destinations are disjoint
       ).toBe("catalog.internal");
    });
 
-   it("never serializes destinations onto the environment resource", async () => {
+   it("reports a destination as name and type, and never its config", async () => {
       const environment = makeEnvironment(
          [tenantPostgresConnection("warehouse")],
          [ducklakeDestination("managed", "org_a")],
       );
 
-      const serialized = (await environment.serialize()) as Record<
-         string,
-         unknown
-      >;
+      const serialized = await environment.serialize();
 
-      expect(serialized.materializationDestinations).toBeUndefined();
-      expect(JSON.stringify(serialized)).not.toContain("catalog-secret");
+      expect(serialized.materializationDestinations).toEqual([
+         { name: "managed", type: "ducklake" },
+      ]);
+      const payload = JSON.stringify(serialized);
+      expect(payload).not.toContain("catalog-secret");
+      expect(payload).not.toContain("catalog.internal");
+      expect(payload).not.toContain("managed-tier");
+   });
+
+   it("reports an empty list when no destination is configured", async () => {
+      const environment = makeEnvironment([], []);
+
+      expect(
+         (await environment.serialize()).materializationDestinations,
+      ).toEqual([]);
+   });
+
+   it("keeps stored configs when an update echoes back what a read reported", async () => {
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a")],
+      );
+      const reported = (await environment.serialize())
+         .materializationDestinations;
+
+      await environment.update({
+         name: "test-env",
+         materializationDestinations: reported,
+      });
+
+      expect(
+         environment.getMaterializationDestination("managed").ducklakeConnection
+            ?.storage?.bucketUrl,
+      ).toBe("gs://managed-tier/org_a");
+   });
+
+   it("does not admit a config-less destination for a name it does not hold", async () => {
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a")],
+      );
+
+      await environment.update({
+         name: "test-env",
+         materializationDestinations: [
+            { name: "managed", type: "ducklake" },
+            { name: "invented", type: "ducklake" },
+         ],
+      });
+
+      expect(
+         environment.listMaterializationDestinations().map((d) => d.name),
+      ).toEqual(["managed"]);
    });
 
    it("leaves destinations alone when an update carries only connections", async () => {

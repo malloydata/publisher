@@ -93,6 +93,19 @@ type RetiredConnectionGeneration = {
 const RETIRED_CONNECTION_DRAIN_MS = 30_000;
 
 /**
+ * The only fields of a materialization destination any read reports, so an
+ * operator or orchestrator can see which destinations a worker holds without
+ * being handed their warehouse credentials. Also the test for a write entry that
+ * is a reference to a stored destination rather than a new config for it — see
+ * {@link Environment.setMaterializationDestinations}.
+ */
+const DESTINATION_READ_FIELDS: ReadonlySet<string> = new Set([
+   "name",
+   "type",
+   "resource",
+]);
+
+/**
  * Module-scoped admission-rejection counters. Lazy-initialized so
  * the OTel JS `ProxyMeter` cannot strand them on a NoOp instrument
  * created before the SDK MeterProvider was registered (a real risk
@@ -228,9 +241,8 @@ export class Environment {
       this.environmentPath = environmentPath;
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
-      this.destinations = processMaterializationDestinations(
-         materializationDestinations,
-      );
+      this.destinations = [];
+      this.setMaterializationDestinations(materializationDestinations);
       this.metadata = {
          resource: `${API_PREFIX}/environments/${this.environmentName}`,
          name: this.environmentName,
@@ -605,23 +617,63 @@ export class Environment {
     * Replaces the destination list. Every entry is re-validated here, so this is
     * also the barrier that keeps an unvalidated destination off the environment
     * however it arrived — config file or request body.
+    *
+    * An entry that carries nothing but the fields a read reports is resolved
+    * against the stored list first, so a read-modify-write of the environment
+    * keeps the configs it was never shown.
     */
    public setMaterializationDestinations(
       materializationDestinations: ApiConnection[],
    ): void {
+      const previousCount = this.destinations.length;
       this.destinations = processMaterializationDestinations(
-         materializationDestinations,
+         Array.isArray(materializationDestinations)
+            ? materializationDestinations.map((destination) =>
+                 this.resolveDestinationReference(destination),
+              )
+            : materializationDestinations,
       );
-      logger.info(
-         `Environment ${this.environmentName} has ${this.destinations.length} materialization destination(s)`,
-         { destinations: this.destinations.map((d) => d.name) },
+      // Quiet for the overwhelmingly common case of an environment with no
+      // destinations at all, loud for every transition that matters, including
+      // one that empties the list.
+      if (previousCount > 0 || this.destinations.length > 0) {
+         logger.info(
+            `Environment ${this.environmentName} has ${this.destinations.length} materialization destination(s)`,
+            { destinations: this.destinations.map((d) => d.name) },
+         );
+      }
+   }
+
+   /**
+    * Substitutes the stored destination for an entry that names one and carries
+    * no config of its own. Anything carrying a config is returned untouched and
+    * replaces what is stored; a reference to a name that is not stored is
+    * returned untouched too, and then fails validation like any config-less
+    * entry.
+    */
+   private resolveDestinationReference(
+      destination: ApiConnection,
+   ): ApiConnection {
+      if (!destination || typeof destination !== "object") {
+         return destination;
+      }
+      const carriesOnlyReportedFields = Object.keys(destination).every(
+         (field) => DESTINATION_READ_FIELDS.has(field),
+      );
+      if (!carriesOnlyReportedFields) {
+         return destination;
+      }
+      return (
+         this.destinations.find((stored) => stored.name === destination.name) ??
+         destination
       );
    }
 
    /**
-    * The destinations configured for this environment. Deliberately not exposed
-    * by any controller: a destination config carries warehouse credentials and
-    * has no endpoint of its own, so nothing can list, fetch, or probe one.
+    * The destinations configured for this environment, with their configs.
+    * Deliberately not exposed by any controller: a destination config carries
+    * warehouse credentials and the destination has no endpoint of its own, so
+    * nothing can fetch or probe one.
     */
    public listMaterializationDestinations(): ApiConnection[] {
       return this.destinations;
@@ -2196,6 +2248,12 @@ export class Environment {
       return {
          ...this.metadata,
          connections: this.listApiConnections(),
+         // Name and type only. This is what the status endpoint reports, so it
+         // is how an operator or orchestrator confirms which destinations a
+         // worker picked up; the configs behind them stay server-side.
+         materializationDestinations: this.destinations.map(
+            ({ name, type }) => ({ name, type }),
+         ),
          packages: await this.listPackages(),
       };
    }

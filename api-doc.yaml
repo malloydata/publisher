@@ -2669,16 +2669,22 @@ components:
             $ref: "#/components/schemas/Connection"
         materializationDestinations:
           type: array
-          writeOnly: true
           description:
-            Warehouses that materialization builds may write to and that
+            Warehouses that materialization builds write to and that
             materialized queries are served from. A disjoint set from
             `connections` - a destination is never resolvable by name from a
-            model, never listed or fetchable through the connection endpoints,
-            and never returned by this schema. Names are independent of
-            `connections`, so the same name may appear in both lists and mean
-            two different warehouses. Accepted on create and update; omitting
-            the field leaves the current list untouched.
+            model, and never listed or fetchable through the connection
+            endpoints. Names are independent of `connections`, so the same name
+            may appear in both lists and mean two different warehouses.
+
+
+            Reads (including the status endpoint) report only `name` and `type`,
+            never the config: a destination's warehouse credentials are the
+            operator's, not any caller's. Writes carry the full config and
+            replace the stored list; omitting the field leaves it untouched. An
+            entry that names a stored destination and carries no config is read
+            as "keep this one", so echoing back what a read returned does not
+            strip the stored configs.
           items:
             $ref: "#/components/schemas/Connection"
         packages:

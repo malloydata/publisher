@@ -762,6 +762,64 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors?.[0]?.message).toBeTruthy();
    });
 
+   it("should report configured materialization destinations on the status endpoint", async () => {
+      // The status endpoint is how an operator or orchestrator confirms a worker
+      // picked up the destination it was configured with. It reports the name and
+      // type; the catalog credentials behind them must not leave the server.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  materializationDestinations: [
+                     {
+                        name: "managed",
+                        type: "ducklake",
+                        ducklakeConnection: {
+                           catalog: {
+                              postgresConnection: {
+                                 host: "catalog.internal",
+                                 databaseName: "ducklake",
+                                 userName: "publisher",
+                                 password: "catalog-secret",
+                              },
+                           },
+                           storage: { bucketUrl: "gs://managed-tier/org_a" },
+                        },
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const status = await newEnvironmentStore.getStatus();
+      const environment = status.environments.find(
+         (e) => e.name === projectName,
+      );
+      expect(environment?.materializationDestinations).toEqual([
+         { name: "managed", type: "ducklake" },
+      ]);
+      expect(JSON.stringify(status)).not.toContain("catalog-secret");
+      // Absent from the connection list in the same payload: that disjointness is
+      // the whole point of the second list.
+      expect(environment?.connections?.map((c) => c.name)).toEqual([]);
+   });
+
    it("should report a package that failed to load while its siblings serve", async () => {
       const goodPackageName = "good-package";
       const badPackageName = "bad-package";
