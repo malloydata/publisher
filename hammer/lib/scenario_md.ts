@@ -1995,8 +1995,10 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "connection": {
                // Runs THROUGH the publisher's connection sqlQuery endpoint (what a
-               // caller can reach). For a storage destination this attach is
-               // read-only, so `refused` asserts DDL is rejected.
+               // caller can reach). A materialization destination is not in that
+               // namespace at all, and a user connection onto a lake is attached
+               // read-only, so `refused` covers both: unreachable, or reachable
+               // but not writable.
                const rest = await serverFor(step.pub, step.env);
                if (step.refused) {
                   let threw = false;

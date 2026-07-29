@@ -139,10 +139,20 @@ export function duckdbConn(
    };
 }
 
-/** One environment in the generated config: its own connections + packages. */
+/**
+ * One environment in the generated config: its own connections + packages, and
+ * its materialization destinations.
+ *
+ * The two lists are disjoint, as the server keeps them: `storage=<name>` resolves
+ * only through `materializationDestinations`, and a destination is not reachable
+ * by name from a model, a notebook cell, or the connection endpoints. So a lake a
+ * scenario wants to *inspect* needs a connection of its own pointing at the same
+ * catalog — see the `_probe` connections in run.ts.
+ */
 export interface EnvSpec {
    name: string;
    connections: ConnectionConfig[];
+   materializationDestinations: ConnectionConfig[];
    packages: PackageRef[];
 }
 
@@ -159,6 +169,7 @@ export async function writeConfig(opts: {
             location: path.resolve(p.location),
          })),
          connections: e.connections,
+         materializationDestinations: e.materializationDestinations,
       })),
    };
    await Bun.write(opts.configPath, JSON.stringify(config, null, 2));

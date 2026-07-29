@@ -9,9 +9,10 @@ package: sec3
 If a user could persist a source whose SQL runs against the destination, the
 read-WRITE build session would execute arbitrary user SQL on the lake. It must
 not. Sourcing from the DuckLake destination is never buildable — either the model
-fails to load, or the build is refused (DuckLake is not a supported query-
-passthrough source). Either way no user SQL ever runs on the read-write build
-session. (Which of the two fires depends on catalog state; `## Build refused`
+fails to load (the destination is not a name a model can resolve at all, since it
+is not in the environment's connections), or the build is refused (DuckLake is not
+a supported query-passthrough source). Either way no user SQL ever runs on the
+read-write build session. (Which of the two fires depends on catalog state; `## Build refused`
 accepts both — a build that reaches FAILED, or a package that won't even load so
 the build can't start — the invariant is simply: it never builds.)
 

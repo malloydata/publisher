@@ -4,18 +4,25 @@ tags: security
 package: sec1
 ---
 
-# Security: user Malloy/SQL cannot mutate the DuckLake destination
+# Security: user Malloy/SQL cannot reach the DuckLake destination
 
 A user authors Malloy (models and ad-hoc queries) and can embed raw SQL via
-`connection.sql(...)`. That raw SQL must NOT be able to run DDL against the
-storage destination — no `DROP`, no `CREATE SCHEMA`, no writes. The guard is the
-publisher's **read-only** attach of the destination on the serve path.
+`connection.sql(...)`. None of it may touch the storage destination — no `DROP`,
+no `CREATE SCHEMA`, no writes, and no reads either. The guard is that a
+destination is not a connection: it lives in `materializationDestinations`, which
+nothing a user authors resolves against, so `lake` is not a name in scope and the
+query never compiles. (A read-only attach still backs the serve path, but it is
+no longer what has to hold — an unnameable destination cannot be addressed at
+all.)
 
 Rigorous survival proof: if an attack actually dropped the materialized table,
 the serve path would silently fall back to live (and still return the right
 numbers). So after the attacks we mutate the source and re-query — a **stale**
 value proves the storage table survived the attack *and* is still routed. A live
 (fresh) value would mean the table was dropped.
+
+The same step therefore proves both halves of the split at once: the destination
+is unreachable from the user's namespace, and reachable from the serve path.
 
 ## Publisher
 
@@ -64,7 +71,7 @@ Expect:
 ## Query attack: DROP the materialized table (refused)
 
 A user query embedding raw SQL that tries to drop the materialized table must be
-refused (read-only attach), never executed.
+refused, never executed — `lake` does not resolve in a user's namespace.
 
 ```malloy
 run: lake.sql('DROP TABLE IF EXISTS main.sec1_daily') -> { select: x is 1 }

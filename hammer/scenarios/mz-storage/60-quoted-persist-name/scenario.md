@@ -49,7 +49,7 @@ source: daily is orders -> {
 
 expect binding: daily -> lake
 
-## Connection lake
+## Connection lake_probe
 
 The created table is named `Quoted Tbl` — the author's quotes delimit the
 identifier, they are not part of it. A table named `"Quoted Tbl"` (quotes included)

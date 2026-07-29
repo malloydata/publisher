@@ -490,10 +490,13 @@ async function main(): Promise<void> {
       // Scenario-declared connections (`## Connection <name> (type=…)`), collected
       // per environment. A declared `postgres` reuses the run's source warehouse;
       // a declared `ducklake` gets its OWN catalog db + storage dir so it is a
-      // genuinely separate destination. Deduped by (env, name); each declared
-      // ducklake catalog is reset like the default one. Names become available
-      // capability tokens so a `requires: connection:<name>` scenario doesn't skip.
+      // genuinely separate destination — and lands in the DESTINATION list, not
+      // the connection list, because that is the only list `storage=` resolves
+      // through. Deduped by (env, name); each declared ducklake catalog is reset
+      // like the default one. Names become available capability tokens so a
+      // `requires: connection:<name>` scenario doesn't skip.
       const declaredByEnv = new Map<string, ConnectionConfig[]>();
+      const declaredDestinationsByEnv = new Map<string, ConnectionConfig[]>();
       const declaredSeen = new Set<string>();
       for (const s of scenarios) {
          const r = resources.get(s.id)!;
@@ -503,22 +506,25 @@ async function main(): Promise<void> {
             const key = `${cEnv} ${c.name}`;
             if (declaredSeen.has(key)) continue;
             declaredSeen.add(key);
-            let conn: ConnectionConfig;
             if (c.kind === "ducklake") {
                // Catalog + storage already provisioned above.
-               conn = ducklakeDest(
+               const dest = ducklakeDest(
                   c.name,
                   pg,
                   r.catalogDbFor(c.name),
                   r.storageDirFor(c.name),
                );
-            } else if (c.kind === "duckdb") {
-               conn = duckdbConn(c.name, pg, r.sourceDb);
+               if (!declaredDestinationsByEnv.has(cEnv))
+                  declaredDestinationsByEnv.set(cEnv, []);
+               declaredDestinationsByEnv.get(cEnv)!.push(dest);
             } else {
-               conn = postgresSource(c.name, pg, r.sourceDb);
+               const conn =
+                  c.kind === "duckdb"
+                     ? duckdbConn(c.name, pg, r.sourceDb)
+                     : postgresSource(c.name, pg, r.sourceDb);
+               if (!declaredByEnv.has(cEnv)) declaredByEnv.set(cEnv, []);
+               declaredByEnv.get(cEnv)!.push(conn);
             }
-            if (!declaredByEnv.has(cEnv)) declaredByEnv.set(cEnv, []);
-            declaredByEnv.get(cEnv)!.push(conn);
             available.add(`connection:${c.name}`);
          }
       }
@@ -538,17 +544,39 @@ async function main(): Promise<void> {
             if (e.startsWith(`${r.slug}__`)) ownerOf.set(e, r);
          }
       }
-      const connectionsFor = (envName: string): ConnectionConfig[] => {
+      const destinationsFor = (envName: string): ConnectionConfig[] => {
          const r = ownerOf.get(envName);
          if (!r) throw new Error(`no scenario owns environment "${envName}"`);
          return [
-            postgresSource("orders_pg", pg, r.sourceDb),
             ducklakeDest(
                "lake",
                pg,
                r.catalogDbFor("lake"),
                r.storageDirFor("lake"),
             ),
+            ...(declaredDestinationsByEnv.get(envName) ?? []),
+         ];
+      };
+
+      /**
+       * A destination is not reachable by name from a model or the connection
+       * endpoints, so a scenario that needs to LOOK at a lake — count its tables,
+       * check a name was not re-quoted — gets a connection of its own pointing at
+       * the same catalog and storage, named `<dest>_probe`. It is an ordinary user
+       * connection: proof, incidentally, that the two lists address the same
+       * warehouse independently.
+       */
+      const probeFor = (dest: ConnectionConfig): ConnectionConfig => ({
+         ...dest,
+         name: `${dest.name}_probe`,
+      });
+
+      const connectionsFor = (envName: string): ConnectionConfig[] => {
+         const r = ownerOf.get(envName);
+         if (!r) throw new Error(`no scenario owns environment "${envName}"`);
+         return [
+            postgresSource("orders_pg", pg, r.sourceDb),
+            ...destinationsFor(envName).map(probeFor),
             ...(declaredByEnv.get(envName) ?? []),
          ];
       };
@@ -556,6 +584,7 @@ async function main(): Promise<void> {
       const environments: EnvSpec[] = [...envs].map((name) => ({
          name,
          connections: connectionsFor(name),
+         materializationDestinations: destinationsFor(name),
          packages: pkgsByEnv.get(name) ?? [],
       }));
 
