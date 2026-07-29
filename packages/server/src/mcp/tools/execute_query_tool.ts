@@ -62,12 +62,6 @@ const executeQueryShape = {
       .describe(
          "Per-query given values that override model defaults. Keys are given names declared in the model's given: block.",
       ),
-   verbose: z
-      .boolean()
-      .optional()
-      .describe(
-         "Return the raw Malloy result instead of rows plus _meta. Two things live only here: the generated SQL, useful for confirming a query compiled the way you meant, and per-cell type subtypes (integer vs number). The schema, render annotations, and timezone are already in _meta, so do NOT set this to read those. Reading values is what the default rows are for.",
-      ),
 };
 
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
@@ -113,7 +107,6 @@ export function registerExecuteQueryTool(
             queryName,
             filterParams,
             givens,
-            verbose,
          } = params;
 
          logger.info("[MCP Tool executeQuery] Received params:", { params });
@@ -215,31 +208,28 @@ export function registerExecuteQueryTool(
                "result",
             );
 
-            if (verbose) {
-               return jsonResource(resultUri, result, {
-                  space: 2,
-                  text:
-                     renderLogs.length > 0
-                        ? `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`
-                        : undefined,
-               });
-            }
-
             const envelope = buildQueryEnvelope(
                compactResult,
                rowLimit,
                result,
                renderLogs.map((log) => log.message),
             );
+
+            // A capped or truncated result, and a broken render tag, are the
+            // things an agent most needs to notice, so they are stated in text
+            // rather than left for a client that parses the payload.
+            const notes = [
+               envelope.warning,
+               envelope.renderLogErrors &&
+                  `Render tag problems: ${envelope.renderLogErrors.join("; ")}`,
+            ].filter(Boolean);
+
             return jsonResource(resultUri, envelope, {
                space: 2,
                // BigInt reaches here: compactResult is raw driver output and
                // DuckDB returns count() as one.
                replacer: bigIntReplacer,
-               // A truncated or capped result is the case an agent most needs
-               // to notice, so it is stated in text rather than left for a
-               // client that parses the payload.
-               text: envelope.warning,
+               text: notes.length > 0 ? notes.join("\n\n") : undefined,
             });
          } catch (queryError) {
             // Handle query execution errors (syntax errors, invalid queries, etc.)

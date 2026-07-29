@@ -103,32 +103,6 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
       );
 
       it(
-         "returns the full Malloy result when verbose is set",
-         async () => {
-            if (!env) throw new Error("Test environment not initialized");
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const result: any = await mcpClient.callTool({
-               name: "malloy_executeQuery",
-               arguments: {
-                  environmentName: ENVIRONMENT_NAME,
-                  packageName: PACKAGE_NAME,
-                  modelPath: "storefront.malloy",
-                  query: "run: order_items->{ aggregate: c is count() }",
-                  verbose: true,
-               },
-            });
-
-            const parsed = JSON.parse(result.content[0].resource.text);
-            // The escape hatch still yields the type-tagged cell envelope, for
-            // callers inspecting render annotations or cell types.
-            expect(parsed.data).toBeDefined();
-            expect(Array.isArray(parsed.data.array_value)).toBe(true);
-            expect(parsed.rows).toBeUndefined();
-         },
-         { timeout: 30000 },
-      );
-
-      it(
          "should successfully execute a nested view using sourceName and queryName",
          async () => {
             if (!env) throw new Error("Test environment not initialized");
