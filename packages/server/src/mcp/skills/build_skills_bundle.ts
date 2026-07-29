@@ -51,14 +51,102 @@ export function isCredible(dirName: string): boolean {
    return dirName.toLowerCase().startsWith("credible-");
 }
 
-/** Read every skill under a skills directory, in the bundle's own order. */
+/** The subdirectory a skill keeps its on-demand detail in. */
+const REFERENCE_DIR = "reference";
+
+/** Prompt name for one reference file: `<skill>/<file stem>`. */
+export function referenceName(skillName: string, file: string): string {
+   return `${skillName}/${path.basename(file, ".md")}`;
+}
+
+/**
+ * Turn a reference file into an entry. These carry no frontmatter, so the
+ * description comes from the first H1, which every reference file in the tree
+ * has ("# Rubric: Correctness", "# Severity, Confidence, Categorization").
+ */
+export function parseReference(
+   md: string,
+   skillName: string,
+   file: string,
+): SkillEntry {
+   const body = md.replace(/\r\n/g, "\n").trim();
+   const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
+   return {
+      name: referenceName(skillName, file),
+      description: heading
+         ? `${heading}. Reference detail for the ${skillName} skill.`
+         : `Reference detail for the ${skillName} skill.`,
+      body,
+   };
+}
+
+/**
+ * Tell an agent that reached this body over MCP where the reference files went.
+ *
+ * The skill text points at them by relative path ("see `reference/rubric-*.md`"),
+ * which is correct for a host reading the skill off disk and unresolvable for
+ * one that received this as a prompt: nothing in the prompt says which directory
+ * to stand in. Rewriting the paths in the source file is not an option, since
+ * that would break the filesystem channel, so the mapping is appended to the
+ * bundled copy only. One source file, one correct rendering per channel.
+ */
+export function referencePointer(skillName: string, files: string[]): string {
+   const stems = files.map((f) => path.basename(f, ".md"));
+   return [
+      `## Reference files over MCP`,
+      ``,
+      `This skill's \`${REFERENCE_DIR}/\` files are served as separate prompts, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, get the prompt named \`${skillName}/<name>\` instead.`,
+      ``,
+      `Available: ${stems.join(", ")}.`,
+   ].join("\n");
+}
+
+/** Reference files for one skill, sorted, or [] when it has none. */
+function referenceFiles(skillDir: string): string[] {
+   const dir = path.join(skillDir, REFERENCE_DIR);
+   if (!fs.existsSync(dir)) return [];
+   return fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".md"))
+      .sort();
+}
+
+/**
+ * Read every skill under a skills directory, in the bundle's own order.
+ *
+ * A skill's `reference/` files become entries of their own rather than being
+ * folded into the parent body: they are the skill's on-demand detail (a review
+ * loads the rubrics its scope needs, not all ten), and one prompt per file
+ * keeps that property over MCP. Folding them in would put 83k characters of
+ * malloy-review rubrics in front of an agent that wanted the workflow.
+ */
 export function buildSkills(skillsDir: string): SkillEntry[] {
    const skills: SkillEntry[] = [];
    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || isCredible(entry.name)) continue;
-      const skillFile = path.join(skillsDir, entry.name, "SKILL.md");
+      const skillDir = path.join(skillsDir, entry.name);
+      const skillFile = path.join(skillDir, "SKILL.md");
       if (!fs.existsSync(skillFile)) continue;
-      skills.push(parseSkill(fs.readFileSync(skillFile, "utf8"), entry.name));
+
+      const skill = parseSkill(fs.readFileSync(skillFile, "utf8"), entry.name);
+      const files = referenceFiles(skillDir);
+      if (files.length > 0) {
+         skill.body = `${skill.body}\n\n${referencePointer(skill.name, files)}`;
+      }
+      skills.push(skill);
+
+      for (const file of files) {
+         skills.push(
+            parseReference(
+               fs.readFileSync(
+                  path.join(skillDir, REFERENCE_DIR, file),
+                  "utf8",
+               ),
+               skill.name,
+               file,
+            ),
+         );
+      }
    }
    return skills.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -77,7 +165,9 @@ function main(): void {
    const skills = buildSkills(skillsDir);
 
    fs.writeFileSync(outFile, JSON.stringify({ skills }));
-   console.log(`Wrote ${skills.length} skills to ${outFile}`);
+   console.log(
+      `Wrote ${skills.length} entries (${skills.filter((s) => !s.name.includes("/")).length} skills plus ${skills.filter((s) => s.name.includes("/")).length} reference files) to ${outFile}`,
+   );
 }
 
 // Only run when invoked directly (bun run ...), not when imported by a test.
