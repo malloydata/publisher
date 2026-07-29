@@ -3715,8 +3715,12 @@ components:
                 pre-existing behavior. Set it to run several independent DuckLake
                 catalogs against ONE catalog database: each keeps its metadata in
                 its own schema, so a catalog reads only the tables recorded in the
-                schema it names. DuckLake creates the schema on first attach if it
-                does not exist.
+                schema it names. DuckLake creates the schema on a read-write attach
+                if it does not exist; a read-only attach cannot, and fails until it
+                does. Separating metadata does not separate data — give each catalog
+                its own `storage.bucketUrl` prefix as well, since data-path-based
+                maintenance (e.g. `ducklake_delete_orphaned_files`) treats a
+                co-tenant catalog's files under a shared prefix as orphaned.
 
                 This is an ORGANIZATIONAL boundary, not an access-control one. The
                 separation is which schema a configuration names, so any config

@@ -46,7 +46,15 @@ that holds the Parquet data. Publisher reaches it through DuckDB's `ducklake` ex
 By default a DuckLake catalog keeps its `ducklake_*` metadata tables in the catalog connection's
 default schema, so two catalogs pointed at one database would share — and see — each other's
 metadata. Give each its own `catalog.metadataSchema` and they stay separate; DuckLake creates the
-schema on first attach if it does not exist.
+schema on a read-write attach if it does not exist.
+
+**Give each catalog its own `storage.bucketUrl` prefix too.** Separating the metadata does not
+separate the data, and some DuckLake maintenance works from the data path rather than from the
+catalog: `ducklake_delete_orphaned_files` lists `DATA_PATH` and removes whatever the attached
+catalog does not reference. Run against one of two catalogs sharing a prefix, it treats the other
+catalog's Parquet as orphaned. Publisher never deletes by prefix — its own sweeps enumerate through
+the attached catalog — but the deletion is irreversible, so a metadata-schema-separated catalog
+database is not on its own a reason to share a data path.
 
 **This is an organizational boundary, not an access-control one.** What separates two catalogs is
 which schema each configuration names. A configuration whose catalog role can reach a sibling schema
@@ -60,10 +68,25 @@ named schema and materializes into that, while a read-only attach fails because 
 yet — so a typo surfaces as a confusingly empty catalog on the write path, and an attach failure on
 the read path.
 
+**Every server reading the catalog database must understand the option.** Configuration validation
+ignores keys it does not recognize, so a Publisher predating `metadataSchema` accepts the config and
+silently attaches the catalog connection's default schema instead. Where that default holds nothing
+the attach fails loudly, which is safe; where it holds another catalog — the arrangement this option
+exists to create — the older server reads that catalog's tables and a build materializes into it,
+with no error either way. Roll the option out only once every server against the database is new
+enough to honor it.
+
 ## How Publisher attaches a DuckLake catalog
 
-**Read-only.** Publisher attaches the catalog `READ_ONLY`: it reads tables and never writes catalog
-metadata or migrates the catalog format. The lakehouse's own client owns writes.
+**Read-only to serve.** Serving a query attaches the catalog `READ_ONLY`: it reads tables and never
+writes catalog metadata. The lakehouse's own client owns writes.
+
+**Read-write only to build, and only for the build.** A `#@ persist storage=<connection>` source
+materializes into the catalog, which needs a read-write attach. That attach is confined to a
+transient build-scoped session and is dropped with it, so the serving path stays read-only.
+Neither mode ever sets `AUTOMATIC_MIGRATION`: a catalog whose recorded format is outside the
+supported range fails the attach rather than being migrated in place by whichever server happened
+to reach it first.
 
 **Lazy, and never on the startup path.** The catalog is attached on the _first query_ that uses the
 connection — not when the server boots and not when the environment config is built. This is a
@@ -96,8 +119,8 @@ Publisher derives the supported range from the **pinned DuckDB engine version**:
 ```
 
 The lower bound is fixed at `1.0` — the 1.x DuckLake line does not attach older `0.x` catalogs
-without an explicit in-place migration, which Publisher never performs (it attaches read-only). The
-upper bound moves with the engine.
+without an explicit in-place migration, which Publisher never performs in either attach mode
+(`AUTOMATIC_MIGRATION` is never set). The upper bound moves with the engine.
 
 This is derived from the engine on purpose. An enumerated "supported versions" list drifts silently
 as the engine moves and has to be remembered on every bump; deriving the range from the pin keeps it
