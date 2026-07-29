@@ -9,6 +9,24 @@ longer holds (the tool or system that justified it is replaced), update or remov
 
 ## Active exceptions
 
+### Contract rules precede Parameters and Response, against the template's section numbering
+
+Tension: the [tool description template](./tool-description-template.md) numbers its five sections
+When to use, Parameters, Response, Contract rules, Worked examples, and tools otherwise follow that
+order literally.
+
+Decision: Contract rules are placed immediately after the opening paragraph, ahead of Parameters and
+Response. The section numbering stays as the list of what a description must contain; it is not the
+emission order.
+
+Why: some MCP clients truncate a tool description, and a tail cut removes whatever was placed last.
+Under the literal numbering that is Contract rules and Worked examples, which is the worst possible
+outcome: an agent that loses the worked example still calls the tool correctly, while one that loses
+the invariants cannot, and nothing signals that anything was dropped. `malloy_getContext` was
+observed arriving cut off mid-sentence at 2271 characters, with `malloy_searchDocs` carrying the same
+inverted ordering. This applies to every tool, so it is a standing rule rather than a per-tool
+divergence, and `server.protocol.spec.ts` enforces it over the real protocol.
+
 ### Chart-annotation placement rules duplicated across malloy-queries and malloy-charts
 
 Tension: Principle 1 and the prevention-versus-reference distinction discourage duplicating the

@@ -88,16 +88,16 @@ const SEARCH_DOCS_DESCRIPTION = `Search the Malloy documentation by keyword and 
 - Before writing unfamiliar Malloy syntax (window functions, autobin, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
 - Do NOT use it to look up field or source names in a model; use malloy_getContext for that.
 
+## Contract rules
+- These are documentation pages, not model entities. Do not treat a doc title as a field or source name.
+- The excerpt is only a hint; open the url for the full detail.
+
 ## Parameters
 - query (required): keywords describing what you need.
 - limit (optional): maximum results to return; default 8.
 
 ## Response
 A JSON array of matches, each with title, url (a docs.malloydata.dev link), and a short excerpt, ordered by relevance. Empty array if nothing matches; broaden the keywords and retry.
-
-## Contract rules
-- These are documentation pages, not model entities. Do not treat a doc title as a field or source name.
-- The excerpt is only a hint; open the url for the full detail.
 
 ## Worked example
 { "query": "window functions lag" }`;

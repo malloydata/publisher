@@ -261,26 +261,21 @@ async function getPackageIndex(
 
 const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you can ground a query in what the model actually defines instead of guessing. This is the starting point when you do not yet know the environment, package, or model names.
 
-## Progressive discovery
-Call it with as much as you know and omit the rest; it answers at the appropriate level:
-- No arguments: lists the available environments, each with its package names.
-- environmentName only: lists the packages in that environment, with descriptions.
-- environmentName + packageName: lists that package's sources.
-- environmentName + packageName + query: returns the sources, views, named queries, and dimension/measure fields most relevant to the question.
+## Contract rules
+- Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
+- Start broad and narrow down: environments, then packages, then sources, then a query.
 
 ## Parameters
-- environmentName (optional): omit to list environments.
-- packageName (optional): omit, with environmentName set, to list packages.
-- query (optional): a plain-English description of what you need; omit, with environmentName and packageName set, to list the package's sources.
-- sourceName (optional): narrow retrieval to entities within one source (the drill-down phase).
-- limit (optional): cap the number of results (max 50). Retrieval defaults to 10; the listing tiers return all unless set.
+All optional. Supply what you know and omit the rest; each combination answers at its own level.
+- none: lists the environments, each with its package names.
+- environmentName: lists that environment's packages, with descriptions.
+- + packageName: lists that package's sources.
+- + query: a plain-English description of what you need, returning the sources, views, named queries, and dimension/measure fields most relevant to it.
+- sourceName: narrows retrieval to one source (the drill-down phase).
+- limit: caps results (max 50). Retrieval defaults to 10; the listing levels return all unless set.
 
 ## Response
 A JSON object with a results array whose items carry a kind field. For retrieval, each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName. When the server is configured with an embedding provider, retrieval is ranked by semantic similarity: the payload then carries a retrieval field ("semantic", or "lexical" when the provider is unavailable) and each semantic entity a score.
-
-## Contract rules
-- Use the names verbatim; do not invent environments, packages, or entities not in the results.
-- Start broad and narrow down: list environments, then packages, then sources, then query.
 
 ## Worked example
 { "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
