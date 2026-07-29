@@ -65,6 +65,43 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("malloy_reloadPackage")).toBe(true);
    });
 
+   /**
+    * Tool descriptions are truncated by some clients. `malloy_getContext`'s was
+    * observed arriving cut off mid-sentence at 2271 characters, and what a tail
+    * cut removes is whatever the description put last.
+    *
+    * Two defenses, and the ordering one matters more. No single number is
+    * portable, since the cap belongs to the client and is not published; this
+    * budget only stops silent regrowth past the one length we have watched fail.
+    * The real rule is that contract rules come BEFORE the reference material, so
+    * a cut costs an agent the worked example rather than the invariants it
+    * cannot self-correct without. See docs/agent-skills/tool-description-template.md.
+    */
+   it("keeps every tool description under the truncation budget", async () => {
+      const BUDGET = 2000;
+      const { tools } = await client.listTools();
+      const oversized = tools
+         .filter((t) => (t.description ?? "").length > BUDGET)
+         .map((t) => `${t.name} (${t.description?.length})`);
+      expect(oversized).toEqual([]);
+   });
+
+   it("puts contract rules ahead of the reference sections", async () => {
+      // The section a tail-truncating client drops must never be the invariants.
+      const { tools } = await client.listTools();
+      for (const tool of tools) {
+         const description = tool.description ?? "";
+         const contract = description.indexOf("## Contract rules");
+         if (contract === -1) continue;
+         for (const later of ["## Response", "## Worked example"]) {
+            const index = description.indexOf(later);
+            if (index !== -1) {
+               expect(contract).toBeLessThan(index);
+            }
+         }
+      }
+   });
+
    it("exposes the skill set as dual-channel prompts", async () => {
       const { prompts } = await client.listPrompts();
       expect(prompts.length).toBeGreaterThanOrEqual(24);

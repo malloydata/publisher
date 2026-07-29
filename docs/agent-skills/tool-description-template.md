@@ -34,6 +34,29 @@ tool does, when to call it, when not to call it, and what comes back.
    mode. A JSON example is the most efficient way to disambiguate parameter shape for a model.
    Keep it minimal and real.
 
+## Ordering: contract rules must survive truncation
+
+The five sections above are listed in the order an author thinks about them, **not** the order they
+should appear in. Some MCP clients truncate a tool description, and a tail cut removes whatever the
+description put last. Numbered as written, that is Contract rules and Worked examples: exactly the
+invariants an agent cannot self-correct without, and no signal that anything was dropped.
+
+`malloy_getContext` was observed arriving cut off mid-sentence at 2271 characters, and the same
+inverted ordering was present in `malloy_searchDocs`. So:
+
+- **Put Contract rules immediately after the opening paragraph**, ahead of Parameters, Response, and
+  Worked examples. Losing the worked example still leaves a callable tool; losing the invariants does
+  not, and the agent cannot tell.
+- **Keep a description short enough that truncation is unlikely at all.** No portable number exists
+  (the cap belongs to the client and is not published), so `server.protocol.spec.ts` enforces a
+  budget as a regrowth guard, not as a guarantee. When a description approaches it, move the
+  long-form narrative into a skill, which no cap applies to.
+- Prefer merging over adding. `malloy_getContext` carried a "Progressive discovery" section and a
+  "Parameters" section that stated the same call levels twice; merging them cut 16% with no loss.
+
+`server.protocol.spec.ts` pins both rules over the real protocol, so a description that regrows or
+reverts the ordering fails the build.
+
 ## Trimming the template
 
 The template is a default, not a straitjacket. A tool may drop a section when that section
