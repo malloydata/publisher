@@ -195,6 +195,17 @@ export class Environment {
     * each having to remember a filter.
     */
    private destinations: ApiConnection[];
+   /**
+    * The live Malloy connections for {@link destinations}, assembled exactly the
+    * way the user-facing ones are but from the destination list — so a
+    * materialization serve shape can reach a destination while nothing in the
+    * namespace a package compiles against can. Rebuilt whenever the list is
+    * replaced, retiring the previous generation's handles.
+    *
+    * Always assigned: the constructor sets the destination list unconditionally,
+    * and that is what builds this.
+    */
+   private destinationMalloyConfig!: EnvironmentMalloyConfig;
    private environmentPath: string;
    private environmentName: string;
    // Resolves a package's latest persisted materialization manifest entries
@@ -633,6 +644,7 @@ export class Environment {
               )
             : materializationDestinations,
       );
+      this.rebuildDestinationMalloyConfig();
       // Quiet for the overwhelmingly common case of an environment with no
       // destinations at all, loud for every transition that matters, including
       // one that empties the list.
@@ -667,6 +679,69 @@ export class Environment {
          this.destinations.find((stored) => stored.name === destination.name) ??
          destination
       );
+   }
+
+   /**
+    * Give a freshly loaded package the connections its materialization serve
+    * shapes compile against — this environment's destinations, resolved live so a
+    * destination-list swap propagates without a package reload.
+    *
+    * Deliberately a push rather than a `Package.create` argument: the package
+    * config a model compiles against must never contain a destination, so this is
+    * the only route by which one reaches a compile at all, and it feeds only the
+    * synthetic serve shape. Missing it costs serve routing (queries fall back to
+    * live), never correctness — so it runs before serve bindings are pushed,
+    * which is what routing actually requires.
+    */
+   private attachDestinationServeConfig(_package: Package): void {
+      _package.setServeDestinationConfig(() =>
+         this.getMaterializationDestinationMalloyConfig(),
+      );
+   }
+
+   /**
+    * (Re)assemble the destination connections after the list changed, draining
+    * the previous generation's handles on the same delay a connection-generation
+    * swap uses.
+    *
+    * A failure here is not fatal to the environment: destinations are an add-on,
+    * and an environment that cannot assemble them still serves its packages —
+    * builds refuse and materialized queries fall back to live.
+    */
+   private rebuildDestinationMalloyConfig(): void {
+      const previous = this.destinationMalloyConfig;
+      try {
+         this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
+            this.destinations,
+            this.environmentPath,
+         );
+      } catch (error) {
+         logger.error(
+            `Failed to assemble materialization destinations for environment ${this.environmentName}; serving without them`,
+            { error },
+         );
+         this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
+            [],
+            this.environmentPath,
+         );
+      }
+      if (previous && previous !== this.destinationMalloyConfig) {
+         this.retireConnectionGeneration(
+            `environment ${this.environmentName} destinations`,
+            () => previous.releaseConnections(),
+         );
+      }
+   }
+
+   /**
+    * The connections a materialization serve shape may compile against. Separate
+    * from {@link getEnvironmentMalloyConfig} — which is what a package's models
+    * fall through to — so the two compiles resolve disjoint name sets. Handing
+    * out the same object for both is exactly the mistake this split exists to
+    * make impossible.
+    */
+   public getMaterializationDestinationMalloyConfig() {
+      return this.destinationMalloyConfig.malloyConfig;
    }
 
    /**
@@ -1156,6 +1231,7 @@ export class Environment {
             packagePath,
             () => this.malloyConfig.malloyConfig,
          );
+         this.attachDestinationServeConfig(_package);
          await this.bindManifestIfConfigured(_package);
          await this.rebindServeBindingsFromLocalStore(_package);
          if (existingPackage !== undefined && reload) {
@@ -1234,15 +1310,14 @@ export class Environment {
 
       this.setPackageStatus(packageName, PackageStatus.LOADING);
       try {
-         this.packages.set(
+         const addedPackage = await Package.create(
+            this.environmentName,
             packageName,
-            await Package.create(
-               this.environmentName,
-               packageName,
-               packagePath,
-               () => this.malloyConfig.malloyConfig,
-            ),
+            packagePath,
+            () => this.malloyConfig.malloyConfig,
          );
+         this.attachDestinationServeConfig(addedPackage);
+         this.packages.set(packageName, addedPackage);
       } catch (error) {
          logger.error("Error adding package", { error });
          this.deletePackageStatus(packageName);
@@ -1350,6 +1425,7 @@ export class Environment {
                // remove; the rollback below restores the previous one.
                true,
             );
+            this.attachDestinationServeConfig(newPackage);
             // Strict-reject hook (publish/update only — reload passes no
             // validator and stays fail-safe). Throw INSIDE the try so the
             // catch below rolls the swap back: the just-installed tree is
@@ -2232,6 +2308,15 @@ export class Environment {
       } catch (error) {
          logger.error(
             `Error closing connections for environment ${this.environmentName}`,
+            { error },
+         );
+      }
+
+      try {
+         await this.destinationMalloyConfig.releaseConnections();
+      } catch (error) {
+         logger.error(
+            `Error closing materialization destinations for environment ${this.environmentName}`,
             { error },
          );
       }

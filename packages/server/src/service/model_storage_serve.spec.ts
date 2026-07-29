@@ -8,6 +8,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
+   MalloyConfig,
    modelDefToModelInfo,
    Runtime,
 } from "@malloydata/malloy";
@@ -74,7 +75,12 @@ async function buildModel(opts?: {
       undefined,
       modelInfo,
    );
-   model.setServeMalloyConfig(connMap);
+   // The serve shape compiles against the destination connections only, so hand
+   // it a config carrying just this one — the same disjointness the Environment
+   // enforces in production, expressed for a single-connection test.
+   const serveConfig = new MalloyConfig({ connections: {} });
+   serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
+   model.setServeDestinationConfig(() => serveConfig);
    return model;
 }
 

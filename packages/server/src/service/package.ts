@@ -114,6 +114,12 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private malloyConfig: MalloyConfig;
+   /**
+    * Resolves the environment's materialization destinations for a serve-shape
+    * compile. Set by the owning Environment; see
+    * {@link setServeDestinationConfig}.
+    */
+   private serveDestinationConfig?: () => MalloyConfig;
    // Build-manifest binding state (Malloy Persistence v0). When bound, these
    // entries (sourceEntityId -> { tableName }) are what served queries use to route
    // persist sources to their materialized physical tables; they are also reused
@@ -934,6 +940,28 @@ export class Package {
    }
 
    /**
+    * Set the connections this package's materialization serve shapes compile
+    * against: the environment's materialization destinations, and nothing a model
+    * in this package can name. Called by the owning Environment after load.
+    *
+    * Separate from {@link malloyConfig} on purpose. That one is what the author's
+    * models resolve through, and a destination must not be reachable from it;
+    * these two configs being the same object is the bug this split exists to
+    * prevent. Absent ⇒ no storage serve routing, so queries serve live.
+    */
+   public setServeDestinationConfig(provider: () => MalloyConfig): void {
+      this.serveDestinationConfig = provider;
+      this.pushServeDestinationConfigToModels();
+   }
+
+   private pushServeDestinationConfigToModels(): void {
+      if (!this.serveDestinationConfig) return;
+      for (const model of this.models.values()) {
+         model.setServeDestinationConfig(this.serveDestinationConfig);
+      }
+   }
+
+   /**
     * Declared `explores` (publisher.json) that don't resolve to a real
     * `.malloy` model in this package, each with an actionable reason. Empty
     * when explores is absent/empty or every entry resolves.
@@ -1498,9 +1526,10 @@ export class Package {
          }
       }
       this.models = nextModels;
-      // The freshly-compiled models start with no serve bindings; re-apply the
-      // package's current storage= bindings so a reload preserves serve routing.
+      // The freshly-compiled models start with no serve bindings and no serve
+      // connections; re-apply both so a reload preserves serve routing.
       this.pushStorageServeBindingsToModels();
+      this.pushServeDestinationConfigToModels();
       this.renderTagWarnings = renderTagWarnings;
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to
