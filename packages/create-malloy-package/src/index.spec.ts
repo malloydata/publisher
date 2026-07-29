@@ -98,6 +98,30 @@ describe("formatSuccess: the readiness check", () => {
       );
    });
 
+   test("names loadable files --data left behind, and how to add them", () => {
+      // Silence here read as "those files are not supported" rather than
+      // "--data takes one and you picked this one".
+      const output = formatSuccess(
+         resultFor({
+            packageName: "wine",
+            siblingDataFiles: ["wine-130k.json", "wine-150k.csv"],
+         }),
+      );
+      expect(output).toContain("Not included: wine-130k.json, wine-150k.csv");
+      expect(output).toContain("wine/data/");
+   });
+
+   test("caps the list instead of printing a whole directory", () => {
+      const many = Array.from({ length: 9 }, (_, i) => `f${i}.csv`);
+      const output = formatSuccess(resultFor({ siblingDataFiles: many }));
+      expect(output).toContain("and 4 more");
+      expect(output).not.toContain("f7.csv");
+   });
+
+   test("says nothing when there were no other files", () => {
+      expect(formatSuccess(resultFor())).not.toContain("Not included:");
+   });
+
    test("a setup-only run says the package list 404s instead of offering it", () => {
       const result = scaffold({
          name: undefined,

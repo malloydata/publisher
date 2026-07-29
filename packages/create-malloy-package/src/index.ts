@@ -55,7 +55,7 @@ function resolveDataFile(cwd: string, data?: string): string | undefined {
    }
    if (data.trim() === "") {
       throw new ScaffoldError(
-         `--data was given an empty filename. Pass the CSV, Parquet, or XLSX ` +
+         `--data was given an empty filename. Pass the CSV, Parquet, JSON, NDJSON, or XLSX ` +
             `file to seed the package from, or leave --data off to use the ` +
             `sample data.`,
       );
@@ -684,6 +684,21 @@ export function formatSuccess(result: ScaffoldResult): string {
          ),
       );
    }
+   if (result.siblingDataFiles) {
+      // --data takes exactly one file. Pointing it at a folder of related
+      // exports modelled one and said nothing about the rest, so the omission
+      // read as "those formats are not supported" rather than "you picked one".
+      const shown = result.siblingDataFiles.slice(0, 5);
+      const rest = result.siblingDataFiles.length - shown.length;
+      lines.push(
+         log.dim(
+            `  Not included: ${shown.join(", ")}${
+               rest > 0 ? ` and ${rest} more` : ""
+            }. --data takes one file; copy any others into ` +
+               `${result.packageName}/data/ and add a source for each.`,
+         ),
+      );
+   }
    if (result.configExtended) {
       lines.push(
          `${log.green("✓")} Registered ${log.bold(
@@ -1057,7 +1072,7 @@ program
    )
    .option(
       "--data <file>",
-      "seed the package from a CSV, Parquet, or XLSX file",
+      "seed the package from a CSV, Parquet, JSON, NDJSON, or XLSX file",
    )
    // Not --host: Publisher's own server takes `--host <address>` for the
    // interface it binds to, and the start command this tool writes now passes
