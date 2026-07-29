@@ -6,6 +6,7 @@ import { EnvironmentStore } from "../../service/environment_store";
 import { CompileController } from "../../controller/compile.controller";
 import { type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import { jsonResource, jsonToolError } from "../tool_response";
 
 // Zod shape for malloy_compile. environmentName/packageName mirror the other
 // tools and point the agent at malloy_getContext for name discovery.
@@ -125,19 +126,13 @@ export function registerCompileTool(
                ...(result.sql !== undefined && { sql: result.sql }),
             };
 
-            return {
+            // A compile that returns error diagnostics is still a successful
+            // tool call in the transport sense, but isError tells the agent not
+            // to treat the model as valid. The diagnostics themselves are the
+            // message, so no text block is added here.
+            return jsonResource(uri, payload, {
                isError: result.status === "error",
-               content: [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri,
-                        text: JSON.stringify(payload),
-                     },
-                  },
-               ],
-            };
+            });
          } catch (error) {
             // Unknown environment/package, a notebook (.malloynb) rejected up
             // front, an authorize denial, or a system error: surface as a clean
@@ -155,22 +150,7 @@ export function registerCompileTool(
                `${environmentName}/${packageName}/${modelPath}`,
                error,
             );
-            return {
-               isError: true,
-               content: [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri,
-                        text: JSON.stringify({
-                           error: errorDetails.message,
-                           suggestions: errorDetails.suggestions,
-                        }),
-                     },
-                  },
-               ],
-            };
+            return jsonToolError(uri, errorDetails);
          }
       },
    );

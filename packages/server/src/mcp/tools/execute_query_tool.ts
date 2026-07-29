@@ -16,6 +16,7 @@ import {
    classifyToolError,
    getModelForQuery,
 } from "../handler_utils";
+import { jsonResource, jsonToolError } from "../tool_response";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 
 /**
@@ -120,29 +121,10 @@ export function registerExecuteQueryTool(
 
          // Handle errors during package/model access (e.g., not found, initial compilation)
          if ("error" in modelResult) {
-            // Format error details as structured JSON
-            const errorJson = JSON.stringify(
-               {
-                  error: modelResult.error.message,
-                  suggestions: modelResult.error.suggestions,
-               },
-               null,
-               2,
+            return jsonToolError(
+               "error://executeQuery/modelAccess",
+               modelResult.error,
             );
-            return {
-               isError: true,
-               // Return as application/json nested inside a 'resource' type
-               content: [
-                  {
-                     type: "resource", // Use 'resource' type
-                     resource: {
-                        type: "application/json", // Actual content type
-                        uri: "error://executeQuery/modelAccess", // Placeholder URI
-                        text: errorJson,
-                     },
-                  },
-               ],
-            };
          }
 
          // --- Execute Query ---
@@ -187,33 +169,14 @@ export function registerExecuteQueryTool(
                   resourceName: modelPath,
                };
                const resultUri = buildMalloyUri(baseUriComponents, "result");
-               const resultString = JSON.stringify(result, null, 2);
 
-               const content = [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri: resultUri,
-                        text: resultString,
-                     },
-                  },
-               ];
-
-               if (renderLogs.length > 0) {
-                  return {
-                     isError: false,
-                     content: [
-                        ...content,
-                        {
-                           type: "text" as const,
-                           text: `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`,
-                        },
-                     ],
-                  };
-               }
-
-               return { isError: false, content };
+               return jsonResource(resultUri, result, {
+                  space: 2,
+                  text:
+                     renderLogs.length > 0
+                        ? `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`
+                        : undefined,
+               });
             } else if (queryName) {
                const { result } = await runWithQueryTimeout(
                   (abortSignal) =>
@@ -240,33 +203,14 @@ export function registerExecuteQueryTool(
                   resourceName: modelPath,
                };
                const resultUri = buildMalloyUri(baseUriComponents, "result");
-               const resultString = JSON.stringify(result, null, 2);
 
-               const content = [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri: resultUri,
-                        text: resultString,
-                     },
-                  },
-               ];
-
-               if (renderLogs.length > 0) {
-                  return {
-                     isError: false,
-                     content: [
-                        ...content,
-                        {
-                           type: "text" as const,
-                           text: `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`,
-                        },
-                     ],
-                  };
-               }
-
-               return { isError: false, content };
+               return jsonResource(resultUri, result, {
+                  space: 2,
+                  text:
+                     renderLogs.length > 0
+                        ? `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`
+                        : undefined,
+               });
             }
 
             // If execution reaches this point, something has gone wrong with
@@ -306,29 +250,10 @@ export function registerExecuteQueryTool(
                );
             }
 
-            // Format error details as structured JSON
-            const errorJson = JSON.stringify(
-               {
-                  error: errorDetails.message,
-                  suggestions,
-               },
-               null,
-               2,
-            );
-            return {
-               isError: true,
-               // Return as application/json nested inside a 'resource' type
-               content: [
-                  {
-                     type: "resource", // Use 'resource' type
-                     resource: {
-                        type: "application/json", // Actual content type
-                        uri: "error://executeQuery/queryExecution", // Placeholder URI
-                        text: errorJson,
-                     },
-                  },
-               ],
-            };
+            return jsonToolError("error://executeQuery/queryExecution", {
+               message: errorDetails.message,
+               suggestions,
+            });
          } finally {
             // Release on every exit path — success, error, or
             // unreachable code-path throw. `release()` is idempotent

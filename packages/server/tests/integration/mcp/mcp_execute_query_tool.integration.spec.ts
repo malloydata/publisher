@@ -71,7 +71,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             for (const block of content) {
                expect(block.type).toBe("resource");
                expect(block.resource).toBeDefined();
-               expect(block.resource.type).toBe("application/json");
+               expect(block.resource.mimeType).toBe("application/json");
                expect(block.resource.text).toBeDefined();
                expect(typeof block.resource.text).toBe("string");
             }
@@ -120,7 +120,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             const queryResultBlock = result.content![0];
             expect(queryResultBlock.type).toBe("resource");
             expect(queryResultBlock.resource).toBeDefined();
-            expect(queryResultBlock.resource.type).toBe("application/json");
+            expect(queryResultBlock.resource.mimeType).toBe("application/json");
             expect(queryResultBlock.resource.uri).toMatch(/result/); // Check URI contains queryResult
             expect(queryResultBlock.resource.text).toBeDefined();
 
@@ -159,7 +159,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             const errorBlockSyntax = result.content![0];
             expect(errorBlockSyntax.type).toBe("resource");
             expect(errorBlockSyntax.resource).toBeDefined();
-            expect(errorBlockSyntax.resource.type).toBe("application/json");
+            expect(errorBlockSyntax.resource.mimeType).toBe("application/json");
 
             // Check for Malloy compilation error message from getMalloyErrorDetails
             const errorJsonTextSyntax = errorBlockSyntax.resource
@@ -277,7 +277,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorBlockPkgNotFound = result.content![0];
          expect(errorBlockPkgNotFound.type).toBe("resource");
          expect(errorBlockPkgNotFound.resource).toBeDefined();
-         expect(errorBlockPkgNotFound.resource.type).toBe("application/json");
+         expect(errorBlockPkgNotFound.resource.mimeType).toBe("application/json");
 
          // Parse the JSON string from the resource text content
          const errorJsonTextPkgNotFound = errorBlockPkgNotFound.resource
@@ -321,7 +321,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorBlockModel = result.content![0];
          expect(errorBlockModel.type).toBe("resource");
          expect(errorBlockModel.resource).toBeDefined();
-         expect(errorBlockModel.resource.type).toBe("application/json");
+         expect(errorBlockModel.resource.mimeType).toBe("application/json");
 
          // Parse the JSON string from the resource text content
          const errorJsonTextModel = errorBlockModel.resource.text as string;
@@ -398,7 +398,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          const errorBlock = result.content![0];
          expect(errorBlock.type).toBe("resource");
          expect(errorBlock.resource).toBeDefined();
-         expect(errorBlock.resource.type).toBe("application/json");
+         expect(errorBlock.resource.mimeType).toBe("application/json");
 
          // Check for Malloy error indicating the query/view wasn't found at the top level
          const errorJsonText = errorBlock.resource.text as string;

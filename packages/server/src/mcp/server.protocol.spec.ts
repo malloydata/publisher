@@ -99,13 +99,26 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
    } {
       const res = result as {
          isError?: boolean;
-         content?: Array<{ type?: string; resource?: { text?: string } }>;
+         content?: Array<{
+            type?: string;
+            text?: string;
+            resource?: { text?: string; mimeType?: string };
+         }>;
       };
       expect(res.isError).toBe(true);
       expect(res.content?.[0]?.type).toBe("resource");
+      expect(res.content?.[0]?.resource?.mimeType).toBe("application/json");
       const payload = JSON.parse(res.content?.[0]?.resource?.text ?? "{}");
       expect(typeof payload.error).toBe("string");
       expect(Array.isArray(payload.suggestions)).toBe(true);
+
+      // The structured payload alone is invisible to a client that renders
+      // only text blocks on an error, which is how a real diagnostic ends up
+      // reported as a bare "Unknown error". Every error must also say it in
+      // plain text.
+      const textBlock = res.content?.find((b) => b.type === "text");
+      expect(textBlock?.text).toContain(payload.error);
+
       return payload;
    }
 

@@ -5,6 +5,7 @@ import { EnvironmentStore } from "../../service/environment_store";
 import { PackageController } from "../../controller/package.controller";
 import { type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import { jsonResource, jsonToolError } from "../tool_response";
 
 // Zod shape for malloy_reloadPackage. environmentName/packageName mirror the
 // other tools and point the agent at malloy_getContext for name discovery.
@@ -109,19 +110,7 @@ export function registerReloadPackageTool(
                   }),
             };
 
-            return {
-               isError: false,
-               content: [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri,
-                        text: JSON.stringify(payload),
-                     },
-                  },
-               ],
-            };
+            return jsonResource(uri, payload);
          } catch (error) {
             // Unknown environment/package, or a compile error in the reloaded
             // package: surface as a clean isError payload rather than a
@@ -136,22 +125,7 @@ export function registerReloadPackageTool(
                `${environmentName}/${packageName}`,
                error,
             );
-            return {
-               isError: true,
-               content: [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri,
-                        text: JSON.stringify({
-                           error: errorDetails.message,
-                           suggestions: errorDetails.suggestions,
-                        }),
-                     },
-                  },
-               ],
-            };
+            return jsonToolError(uri, errorDetails);
          }
       },
    );

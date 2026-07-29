@@ -9,6 +9,7 @@ import {
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
 import { buildMalloyUri } from "../handler_utils";
+import { jsonResource } from "../tool_response";
 import { logger } from "../../logger";
 import { entityRowKey, trySemanticSearch } from "./embedding_index";
 
@@ -286,21 +287,16 @@ A JSON object with a results array whose items carry a kind field. For retrieval
 { "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
 
 /**
- * Wrap a JSON payload in the MCP resource-content shape every tier of this tool
- * returns. isError marks a tool-level error (e.g. an unknown environment/package).
+ * Every tier of this tool answers with `results`, so an error keeps that key
+ * (empty) alongside `error`. Callers can read `results` unconditionally without
+ * branching on success first.
  */
-function jsonResource(uri: string, payload: unknown, isError = false) {
-   const content = [
-      {
-         type: "resource" as const,
-         resource: {
-            type: "application/json",
-            uri,
-            text: JSON.stringify(payload),
-         },
-      },
-   ];
-   return isError ? { isError: true, content } : { content };
+function contextError(uri: string, message: string) {
+   return jsonResource(
+      uri,
+      { error: message, results: [] },
+      { isError: true, text: message },
+   );
 }
 
 /**
@@ -354,11 +350,7 @@ export function registerGetContextTool(
                   "[MCP Tool getContext] listing environments failed",
                   { error: message },
                );
-               return jsonResource(
-                  buildMalloyUri({}, "get-context"),
-                  { error: message, results: [] },
-                  true,
-               );
+               return contextError(buildMalloyUri({}, "get-context"), message);
             }
          }
 
@@ -390,13 +382,12 @@ export function registerGetContextTool(
                   environmentName,
                   error: message,
                });
-               return jsonResource(
+               return contextError(
                   buildMalloyUri(
                      { environment: environmentName },
                      "get-context",
                   ),
-                  { error: message, results: [] },
-                  true,
+                  message,
                );
             }
          }
@@ -418,13 +409,12 @@ export function registerGetContextTool(
                sourceName,
                error: message,
             });
-            return jsonResource(
+            return contextError(
                buildMalloyUri(
                   { environment: environmentName, package: packageName },
                   "get-context",
                ),
-               { error: message, results: [] },
-               true,
+               message,
             );
          }
 
