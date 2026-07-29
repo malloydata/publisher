@@ -70,7 +70,8 @@ against your package, in watch mode, so edits to the model take effect as you sa
 
 Run bare like that, the package comes with a small sample dataset, so there is something to query
 before you have wired up anything of your own. To start from one of your own files instead, pass
-`--data` (CSV, Parquet, or Excel `.xlsx`):
+`--data` (CSV, Parquet, JSON, newline-delimited JSON, or Excel `.xlsx` - DuckDB reads all of them
+in place, so nothing needs converting first):
 
 ```bash
 npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
@@ -109,8 +110,14 @@ This is the fast path to the "wow." Start the server, then connect any MCP-compa
 MCP endpoint on port **4040**:
 
 ```bash
-claude mcp add --transport http malloy http://localhost:4040/mcp
+claude mcp add --transport http malloy http://localhost:4040/mcp -s user
 ```
+
+`-s user` registers the server for you rather than for one project directory, so the tools are there
+whichever directory you launch the agent from. Without it the registration is tied to the directory
+you happened to run the command in, which is the most common reason an agent reports no `malloy_*`
+tools: a project-scoped server (or a scaffolded `.mcp.json`) is only discovered by a session that
+*started* in that directory, and no message anywhere says so.
 
 Then just ask, in plain English:
 

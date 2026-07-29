@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { registerCompileTool } from "./compile_tool";
+import { formatDiagnosticsText, registerCompileTool } from "./compile_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { PackageNotFoundError, ServiceUnavailableError } from "../../errors";
 
@@ -7,9 +7,15 @@ import { PackageNotFoundError, ServiceUnavailableError } from "../../errors";
 // be exercised against a mocked EnvironmentStore. The tool builds a
 // CompileController internally, which calls environment.compileSource, so the
 // mock only needs getEnvironment -> { compileSource }.
+type Content = Array<{
+   type?: string;
+   text?: string;
+   resource?: { text: string };
+}>;
+
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
-   content: Array<{ resource: { text: string } }>;
+   content: Content;
 }>;
 
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
@@ -24,8 +30,12 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
    return handler;
 }
 
-function parse(result: { content: Array<{ resource: { text: string } }> }) {
-   return JSON.parse(result.content[0].resource.text);
+function parse(result: { content: Content }) {
+   return JSON.parse(result.content[0].resource!.text);
+}
+
+function textBlock(result: { content: Content }) {
+   return result.content.find((b) => b.type === "text")?.text;
 }
 
 function storeReturning(
@@ -87,6 +97,40 @@ describe("malloy_compile tool", () => {
             endCharacter: 7,
          },
       ]);
+   });
+
+   it("also states the diagnostics in a text block", async () => {
+      // The regression pin for the isError path that matters most: a bad Malloy
+      // snippet. A client that renders only text blocks on isError sees nothing
+      // without this, and reports a bare "Unknown error" while the diagnostics
+      // sit unread in the resource block.
+      const handler = captureHandler(
+         storeReturning([
+            {
+               severity: "error",
+               message: "'nope' is not defined",
+               code: "field-not-found",
+               at: {
+                  range: {
+                     start: { line: 2, character: 3 },
+                     end: { line: 2, character: 7 },
+                  },
+               },
+            },
+         ]),
+      );
+      const result = await handler(args);
+      expect(textBlock(result)).toBe(
+         "Compile failed with 1 error (positions are 0-based):\n\n" +
+            "- 'nope' is not defined (line 2, character 3) [field-not-found]",
+      );
+   });
+
+   it("adds no text block to a clean compile", async () => {
+      // Success stays resource-only: the payload is the answer, and duplicating
+      // it as prose would double every response for no gain.
+      const handler = captureHandler(storeReturning([]));
+      expect(textBlock(await handler(args))).toBeUndefined();
    });
 
    it("treats a warning as a clean compile (status success, isError false)", async () => {
@@ -181,6 +225,70 @@ describe("malloy_compile tool", () => {
          severity: "error",
          message: "no location",
          code: "syntax",
+      });
+   });
+
+   describe("formatDiagnosticsText", () => {
+      it("renders only the error-severity diagnostics", () => {
+         const text = formatDiagnosticsText([
+            { severity: "warn", message: "deprecated syntax", code: "dep" },
+            { severity: "error", message: "first", line: 1, character: 0 },
+            { severity: "error", message: "second", line: 4, character: 2 },
+         ]);
+         expect(text).toBe(
+            "Compile failed with 2 errors (positions are 0-based):\n\n" +
+               "- first (line 1, character 0)\n" +
+               "- second (line 4, character 2)",
+         );
+         expect(text).not.toContain("deprecated syntax");
+      });
+
+      it("omits the position when a diagnostic has no location", () => {
+         expect(
+            formatDiagnosticsText([
+               { severity: "error", message: "no location", code: "syntax" },
+            ]),
+         ).toBe(
+            "Compile failed with 1 error (positions are 0-based):\n\n" +
+               "- no location [syntax]",
+         );
+      });
+
+      it("renders line 0 / character 0 rather than dropping them", () => {
+         // 0 is a real position, not a missing one; a falsy check here would
+         // silently swallow the first line of the file.
+         expect(
+            formatDiagnosticsText([
+               {
+                  severity: "error",
+                  message: "at the top",
+                  line: 0,
+                  character: 0,
+               },
+            ]),
+         ).toContain("- at the top (line 0, character 0)");
+      });
+
+      it("defaults character to 0 when only the line is known", () => {
+         expect(
+            formatDiagnosticsText([
+               { severity: "error", message: "line only", line: 7 },
+            ]),
+         ).toContain("- line only (line 7, character 0)");
+      });
+
+      it("falls back to every diagnostic when none has error severity", () => {
+         // Defensive: status is "error" only when an error-severity diagnostic
+         // exists, so this should be unreachable. It must not render an empty
+         // list if that ever changes.
+         expect(
+            formatDiagnosticsText([
+               { severity: "warn", message: "only a warn" },
+            ]),
+         ).toBe(
+            "Compile failed with 1 error (positions are 0-based):\n\n" +
+               "- only a warn",
+         );
       });
    });
 
