@@ -67,6 +67,27 @@ export function resolveModelQueryRowLimit(
    return Math.min(requested, maxRows + 1);
 }
 
+/** Whether the cap came from the query itself or from the server default. */
+export type QueryRowLimitSource = "query" | "server_default";
+
+/**
+ * Which of the two the cap in {@link resolveModelQueryRowLimit} came from.
+ *
+ * The distinction is the whole difference between "the database cut this off
+ * and you were not told" and "you asked for exactly this many". A `limit:` or
+ * `top:` the author wrote is deliberate and complete for what it asked; only the
+ * silently-applied default means rows were probably left behind.
+ *
+ * The condition deliberately mirrors `requested` above and must stay in step
+ * with it, so a change to which limit wins cannot leave the reported source
+ * describing the other one.
+ */
+export function queryRowLimitSource(
+   userLimit: number | undefined,
+): QueryRowLimitSource {
+   return userLimit && userLimit > 0 ? "query" : "server_default";
+}
+
 export interface ModelResponseLimitsConfig {
    /** Result of {@link getMaxQueryRows}. `0` disables the row cap. */
    maxRows: number;

@@ -16,10 +16,33 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
    let client: Client;
 
    beforeAll(async () => {
-      // searchDocs does not touch the store; getContext's error path only needs
-      // getEnvironment to reject, so a throwing stub is sufficient here.
+      // searchDocs does not touch the store, and the tools' error paths only
+      // need getEnvironment to reject. The one exception is `compiles-badly`,
+      // which resolves to a compileSource returning an error diagnostic: that
+      // is malloy_compile's own isError path (a bad Malloy snippet rather than
+      // a thrown error), and it is only reachable with an environment that
+      // exists.
       const stubStore = {
-         getEnvironment: async (name: string): Promise<never> => {
+         getEnvironment: async (name: string) => {
+            if (name === "compiles-badly") {
+               return {
+                  compileSource: async () => ({
+                     problems: [
+                        {
+                           severity: "error",
+                           message: "'nope' is not defined",
+                           code: "field-not-found",
+                           at: {
+                              range: {
+                                 start: { line: 2, character: 3 },
+                                 end: { line: 2, character: 7 },
+                              },
+                           },
+                        },
+                     ],
+                  }),
+               };
+            }
             throw new Error(`Environment not found: ${name}`);
          },
       } as unknown as EnvironmentStore;
@@ -74,18 +97,6 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(results[0].url.length).toBeGreaterThan(0);
    });
 
-   it("malloy_getContext fails gracefully (isError) for an unknown environment", async () => {
-      const res = await client.callTool({
-         name: "malloy_getContext",
-         arguments: {
-            environmentName: "nope",
-            packageName: "nope",
-            query: "x",
-         },
-      });
-      expect(res.isError).toBe(true);
-   });
-
    /**
     * Assert the tool's OWN error payload, not just isError. The SDK sets
     * isError for any uncaught throw, so `expect(res.isError).toBe(true)` passes
@@ -99,15 +110,47 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
    } {
       const res = result as {
          isError?: boolean;
-         content?: Array<{ type?: string; resource?: { text?: string } }>;
+         content?: Array<{
+            type?: string;
+            text?: string;
+            resource?: { text?: string; mimeType?: string };
+         }>;
       };
       expect(res.isError).toBe(true);
       expect(res.content?.[0]?.type).toBe("resource");
+      expect(res.content?.[0]?.resource?.mimeType).toBe("application/json");
       const payload = JSON.parse(res.content?.[0]?.resource?.text ?? "{}");
       expect(typeof payload.error).toBe("string");
       expect(Array.isArray(payload.suggestions)).toBe(true);
+
+      // The structured payload alone is invisible to a client that renders
+      // only text blocks on an error, which is how a real diagnostic ends up
+      // reported as a bare "Unknown error". Every error must also say it in
+      // plain text.
+      const textBlock = res.content?.find((b) => b.type === "text");
+      expect(textBlock?.text).toContain(payload.error);
+
       return payload;
    }
+
+   it("malloy_getContext returns its own error payload over the protocol", async () => {
+      const res = await client.callTool({
+         name: "malloy_getContext",
+         arguments: {
+            environmentName: "nope",
+            packageName: "nope",
+            query: "x",
+         },
+      });
+      expect(expectToolErrorPayload(res).error).toContain("nope");
+      // getContext answers with `results` at every tier, so an error keeps the
+      // key rather than making callers branch on success first.
+      const payload = JSON.parse(
+         (res.content as Array<{ resource?: { text?: string } }>)[0]?.resource
+            ?.text ?? "{}",
+      );
+      expect(payload.results).toEqual([]);
+   });
 
    it("malloy_compile returns its own error payload over the protocol", async () => {
       const res = await client.callTool({
@@ -120,6 +163,38 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          },
       });
       expect(expectToolErrorPayload(res).error).toContain("nope");
+   });
+
+   it("malloy_compile states a compile diagnostic in text over the protocol", async () => {
+      // The diagnostics path keeps its {status, diagnostics} payload rather
+      // than the {error, suggestions} of the thrown-error path, so it cannot go
+      // through expectToolErrorPayload. What it shares is the invariant that
+      // matters: an isError result is never resource-only. Asserted over the
+      // real transport because a client that renders only text is exactly the
+      // one this was invisible to.
+      const res = await client.callTool({
+         name: "malloy_compile",
+         arguments: {
+            environmentName: "compiles-badly",
+            packageName: "p",
+            modelPath: "m.malloy",
+            source: "run: nope -> { aggregate: c is count() }",
+         },
+      });
+      const content = res.content as Array<{
+         type?: string;
+         text?: string;
+         resource?: { text?: string; mimeType?: string };
+      }>;
+      expect(res.isError).toBe(true);
+      expect(content[0]?.type).toBe("resource");
+      expect(content[0]?.resource?.mimeType).toBe("application/json");
+      expect(JSON.parse(content[0]?.resource?.text ?? "{}").status).toBe(
+         "error",
+      );
+      const textBlock = content.find((b) => b.type === "text");
+      expect(textBlock?.text).toContain("'nope' is not defined");
+      expect(textBlock?.text).toContain("field-not-found");
    });
 
    it("malloy_reloadPackage returns its own error payload over the protocol", async () => {
