@@ -66,7 +66,7 @@ const executeQueryShape = {
       .boolean()
       .optional()
       .describe(
-         "Return the full Malloy result envelope (schema.fields plus type-tagged data cells) instead of flat rows. Only needed to inspect render annotations or cell types; the default rows are what a data app receives and what you want for reading values.",
+         "Return the raw Malloy result instead of rows plus _meta. Two things live only here: the generated SQL, useful for confirming a query compiled the way you meant, and per-cell type subtypes (integer vs number). The schema, render annotations, and timezone are already in _meta, so do NOT set this to read those. Reading values is what the default rows are for.",
       ),
 };
 
