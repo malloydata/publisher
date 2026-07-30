@@ -342,6 +342,65 @@ describe("scaffold: --data", () => {
       expect(model).toContain("duckdb.table('data/events.ndjson')");
    });
 
+   test("the xlsx model warns that the read can be silently wrong, and shows the fix", () => {
+      // A spreadsheet whose header is not on row one loads clean and reports the
+      // wrong row count: no error at scaffold, compile, load or query. The
+      // scaffolder never opens the file so it cannot detect that, which makes
+      // the generated model the only place the user is told to check.
+      const src = path.join(tmp, "budget.xlsx");
+      fs.writeFileSync(src, "PK not a real spreadsheet");
+      run({ name: "shop", dataFile: src });
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("overview");
+      expect(model).toContain("read_xlsx");
+      // The options that actually repair a report export, so the fix is present
+      // rather than merely alluded to.
+      expect(model).toContain("sheet =");
+      expect(model).toContain("header =");
+      expect(model).toContain("range =");
+      // The filter is not optional and this assertion exists because the first
+      // version of this template left it out. Verified live against a real
+      // messy workbook: sheet+header+range alone returns 99,995 rows for a
+      // 1,500 row sheet, because an explicit range reads every row in it
+      // including the blank spacers. With the filter it returns exactly 1,500.
+      // A future edit that drops the WHERE would put that back.
+      expect(model).toContain("WHERE");
+      // And stop_at_empty must stay named as the wrong answer: it truncates at
+      // the first blank spacer, which on a real sheet is mid-data (220 rows).
+      expect(model).toContain("stop_at_empty");
+      // The discovery step, without which the remedy names three values (sheet,
+      // header row, id column) the reader has no way to find. It has to be a
+      // model source: Publisher rejects raw SQL in an ad-hoc query with
+      // "`duckdb.sql(...)` cannot be used in a restricted query", verified live,
+      // so an example phrased as a one-off query would not run.
+      expect(model).toContain("_probe");
+      expect(model).toContain("header = false");
+      // Cleaning belongs in the SQL layer. Verified live: `sum(x::number)` is the
+      // right Malloy syntax but throws at query time on a real sheet's 'N/A',
+      // and `x::number.sum()` does not parse at all.
+      expect(model).toContain("try_cast");
+      // Assert the form that WORKS is present. A naive
+      // `.not.toContain("::number.sum()")` was tried and is wrong: the template
+      // names the broken form on purpose, in order to warn about it, so the
+      // negative assertion failed on the very sentence doing the warning.
+      expect(model).toContain("sum(amount::number)");
+      // Rendered, not left as a placeholder.
+      expect(model).not.toContain("{{");
+      expect(model).toContain("'data/budget.xlsx'");
+   });
+
+   test("a csv model carries no spreadsheet warning", () => {
+      // Targeted on purpose: a .csv either parses or fails loudly, so the same
+      // warning there would be noise, and noise is how a real warning stops
+      // being read.
+      const src = path.join(tmp, "orders.csv");
+      fs.writeFileSync(src, "a,b\n1,2\n");
+      run({ name: "shop", dataFile: src });
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).not.toContain("read_xlsx");
+      expect(model).toContain("duckdb.table('data/orders.csv')");
+   });
+
    test("rejects an unsupported file type with nothing created", () => {
       const src = path.join(tmp, "notes.txt");
       fs.writeFileSync(src, "hello");
@@ -457,6 +516,37 @@ describe("scaffold: setup-only (no name)", () => {
    });
 });
 
+/**
+ * Lines carrying a marker only a Claude Code reader can act on. A cursor
+ * workspace must contain none of them, whatever the wording of the day is.
+ *
+ * Two exclusions are deliberate. `.claude/skills/` is legitimate for both hosts,
+ * because the scaffolder really does install skills there, so the pattern matches
+ * `.claude/settings` and not `.claude/`. And the MCP endpoint URL ends in `/mcp`
+ * in both briefings, so `\/mcp` only counts when what precedes it is neither a
+ * word character nor a dot, which is true of the `/mcp` slash command and false
+ * of `localhost:4040/mcp` and `.cursor/mcp.json`.
+ *
+ * index.spec.ts has the same filter over the printed output, where it strips ANSI
+ * first. Keep the two patterns identical.
+ *
+ * If this fires on a line you did not write, host-gate the whole paragraph that
+ * line belongs to, rather than loosening the pattern or gating the one line it
+ * named. The pattern only recognises commands and product names, so a paragraph
+ * that hands a Cursor reader a Claude Code remedy typically has one matchable
+ * line and two or three unmatchable sentences of prose around it that are just
+ * as wrong for that reader.
+ */
+function claudeOnlyLines(text: string): string[] {
+   return text
+      .split("\n")
+      .filter((line) =>
+         /claude mcp add|(^|[^.\w])\/mcp\b|Claude Code|\.claude\/settings/.test(
+            line,
+         ),
+      );
+}
+
 describe("scaffold: cursor host", () => {
    test("writes .cursor/mcp.json instead of .mcp.json and CLAUDE.md", () => {
       run({ host: "cursor" });
@@ -471,6 +561,56 @@ describe("scaffold: cursor host", () => {
       const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
       expect(agents).toContain(".cursor/mcp.json");
       expect(agents).not.toContain("Claude Code offers to connect");
+   });
+
+   test("AGENTS.md does not claim a trust gate Cursor does not have", () => {
+      // A cursor run writes no .claude/settings.json and Cursor shows no trust
+      // dialog, so naming either would have the agent report a blocker that does
+      // not exist, and demote the Refresh that is the real fix for it.
+      //
+      // Asserted as the INVARIANT (no Claude-Code-only marker survives into a
+      // cursor briefing) rather than as the literal phrases any one change
+      // happens to add, because a phrase test only guards the wording it was
+      // written against: text arriving later from another direction reintroduces
+      // the same defect with the suite green. `.claude/skills/` is the one
+      // legitimate exception, since skillsNote prints that path for both hosts
+      // because the scaffolder really does install skills there. The MCP
+      // endpoint URL is the other: `…:4040/mcp` is in both briefings, which is
+      // what the leading character class excludes.
+      run({ host: "cursor" });
+      const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      expect(claudeOnlyLines(agents)).toEqual([]);
+      expect(agents).not.toContain("{{");
+
+      // The claude-code run is the one that carries it, asserted positively so
+      // the facts cannot be deleted from the product text with a green suite.
+      run({ host: "claude-code", force: true });
+      const claudeAgents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      // Whitespace-collapsed, because the note is hard wrapped in the source and
+      // a reword moves the breaks; an assertion anchored on today's line breaks
+      // stops testing the fact and starts testing the wrap.
+      const flat = claudeAgents.replace(/\s+/g, " ");
+      expect(flat).toContain("One gate can void");
+      expect(flat).toContain("settings.json");
+      // Without a way to tell the gate cleared, and a second cause to try when it
+      // did not, the note is a dead end for the agent that relays it.
+      expect(flat).toContain("You will know the prompt was answered");
+      expect(flat).toContain("approval was never given");
+      // The filter self-checks here: if it matched nothing even on the briefing
+      // that is full of Claude Code text, the assertion above would be vacuous.
+      expect(claudeOnlyLines(claudeAgents).length).toBeGreaterThan(0);
+   });
+
+   test("AGENTS.md keeps the two facts that make the REST fallback usable", () => {
+      // The reload form is offered as the check for an unattended run, and it is
+      // only usable with its failure channel: a failed recompile is a 424, and a
+      // non-2xx is a failed check. Untested, a later trim can drop either and
+      // leave the route documented without the facts that make it safe.
+      run({ host: "claude-code" });
+      const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      expect(agents).toContain("?reload=true");
+      expect(agents).toContain("424");
+      expect(agents).toContain("non-2xx");
    });
 });
 

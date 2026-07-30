@@ -58,9 +58,17 @@ scaffold one:
 
 ```bash
 mkdir my-data && cd my-data
-npm create @malloy-publisher/malloy-package sales
+npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
+
+Keep the `@latest`. `npm create` resolves the scaffolder through npm's npx cache, and on a machine
+that has run the command before, an unversioned name is satisfied by whatever copy is already
+cached, so npm never asks the registry. Drop it and you can quietly scaffold from a months-old
+scaffolder that pins an older server than the one you meant to run. The scaffolder checks its own
+version against the registry once it has finished writing and tells you when it is behind; that
+check is bounded and fails open, it is skipped where `CI` or `NO_UPDATE_NOTIFIER` is set,
+and `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1` turns it off anywhere else.
 
 Make the directory first. The package lands in `./sales`, but the workspace around it is written to
 the current directory, so running this somewhere you did not mean to scatters config files through
@@ -74,7 +82,7 @@ before you have wired up anything of your own. To start from one of your own fil
 in place, so nothing needs converting first):
 
 ```bash
-npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
+npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
 ```
 
 That path is relative to the directory you run the command in, so either move your file there first
@@ -99,10 +107,10 @@ this directory picks up the same file. The walkthrough in the next section is wr
 examples, so run that one from a directory without this config.
 
 To run the scaffolder without `npm create`, call the package by its full name:
-`npx @malloy-publisher/create-malloy-package sales --data ./orders.csv`. Note that the name is
-`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, and that npx
-needs no separator: it forwards flags as they are, so a `--` there leaves the flags after it to
-arrive as stray arguments.
+`npx @malloy-publisher/create-malloy-package@latest sales --data ./orders.csv`. Note that the name is
+`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, that the same
+caching applies so `@latest` is worth keeping, and that npx needs no separator: it forwards flags as
+they are, so a `--` there leaves the flags after it to arrive as stray arguments.
 
 ## Point your agent at it
 
@@ -127,6 +135,11 @@ The agent discovers what data exists (`malloy_getContext`), grounds itself in th
 and field names, runs the query (`malloy_executeQuery`), and returns an answer backed by your
 semantic model. No schema spelunking, no hallucinated column names.
 
+- **Trust the directory first.** This is a second gate, separate from connecting the server: in a
+  workspace nobody has trusted yet, Claude Code lists the `malloy_*` tools and then refuses every
+  call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
+  interactively there once and answer the trust prompt, asked once per directory. A headless run is
+  never asked, so it cannot clear the gate either. You will know it cleared when a query returns data.
 - **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
   ([`skills/`](skills/)) that most AI coding hosts auto-discover. Start there.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
