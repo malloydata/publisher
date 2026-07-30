@@ -761,6 +761,67 @@ export function processStorageDestinations(
    return accepted;
 }
 
+/**
+ * Whether two validated destination lists describe the same set of
+ * destinations, so a caller re-pushing its desired state can be recognized as a
+ * no-op instead of swapping every destination and dropping the serve shapes
+ * compiled against them.
+ *
+ * Neither the order a caller listed the destinations in nor the key order inside
+ * a config carries meaning: the list is a set keyed by name, and a config is
+ * plain JSON that may have been assembled or parsed in any order. Both are
+ * normalized away, so equality is decided by content alone.
+ *
+ * Compares every field rather than a chosen subset. A destination's config is
+ * what the build attaches — a different bucket, a different catalog host, a
+ * rotated credential — so anything less would let a real change go unapplied.
+ */
+export function storageDestinationsEqual(
+   left: ApiConnection[],
+   right: ApiConnection[],
+): boolean {
+   if (left.length !== right.length) {
+      return false;
+   }
+   return canonicalDestinationList(left) === canonicalDestinationList(right);
+}
+
+/**
+ * Content-determined, order-independent serialization of a destination list.
+ * Sorted by code unit rather than by collation, which is a strict total order on
+ * the distinct names a validated list holds and does not vary with the locale the
+ * process happens to run under.
+ */
+function canonicalDestinationList(destinations: ApiConnection[]): string {
+   return JSON.stringify(
+      [...destinations]
+         .sort((left, right) =>
+            (left.name ?? "") < (right.name ?? "") ? -1 : 1,
+         )
+         .map(canonicalizeJsonValue),
+   );
+}
+
+/**
+ * Rewrites a JSON value with every object's keys in sorted order, so
+ * `JSON.stringify` of the result depends only on content. Arrays keep their
+ * order: within a connection config an array's order is part of its meaning.
+ */
+function canonicalizeJsonValue(value: unknown): unknown {
+   if (Array.isArray(value)) {
+      return value.map(canonicalizeJsonValue);
+   }
+   if (value === null || typeof value !== "object") {
+      return value;
+   }
+   const entries = value as Record<string, unknown>;
+   const sorted: Record<string, unknown> = {};
+   for (const key of Object.keys(entries).sort()) {
+      sorted[key] = canonicalizeJsonValue(entries[key]);
+   }
+   return sorted;
+}
+
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",

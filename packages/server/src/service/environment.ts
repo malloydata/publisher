@@ -42,6 +42,7 @@ import {
 import {
    storageDestinationRoot,
    processStorageDestinations,
+   storageDestinationsEqual,
 } from "./connection_config";
 import {
    fetchManifestEntries,
@@ -650,8 +651,7 @@ export class Environment {
     * keeps the configs it was never shown.
     */
    public setStorageDestinations(storageDestinations: ApiConnection[]): void {
-      const previousCount = this.destinations.length;
-      const previous = JSON.stringify(this.destinations);
+      const previous = this.destinations;
       this.destinations = processStorageDestinations(
          Array.isArray(storageDestinations)
             ? storageDestinations.map((destination) =>
@@ -663,14 +663,13 @@ export class Environment {
       // read before, this is now the set the store should be reconciled to.
       this.destinationsAuthoritative = true;
 
-      // Nothing to swap when the resolved list is identical. A caller that
-      // reconciles by re-pushing its whole desired state — which is what a
-      // control plane does, on a loop — would otherwise re-attach every
-      // destination on every cycle and drop the serve shapes compiled against
-      // them. Comparing serialized entries errs toward rebuilding (two
-      // structurally equal configs with different key order read as changed),
-      // which is the harmless direction.
-      if (previous === JSON.stringify(this.destinations)) {
+      // Nothing to swap when the resolved list describes the same destinations.
+      // An orchestrator that reconciles by re-pushing its whole desired state on
+      // a loop would otherwise re-attach every destination on every cycle and
+      // drop the serve shapes compiled against them, so the comparison ignores
+      // list order and config key order, neither of which changes what a
+      // destination is.
+      if (storageDestinationsEqual(previous, this.destinations)) {
          return;
       }
 
@@ -678,7 +677,7 @@ export class Environment {
       // Quiet for the overwhelmingly common case of an environment with no
       // destinations at all, loud for every transition that matters, including
       // one that empties the list.
-      if (previousCount > 0 || this.destinations.length > 0) {
+      if (previous.length > 0 || this.destinations.length > 0) {
          logger.info(
             `Environment ${this.environmentName} has ${this.destinations.length} storage destination(s)`,
             { destinations: this.destinations.map((d) => d.name) },

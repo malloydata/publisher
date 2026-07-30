@@ -20,6 +20,7 @@ import {
    STORAGE_DESTINATIONS_DIR,
    storageDestinationRoot,
    processStorageDestinations,
+   storageDestinationsEqual,
 } from "./connection_config";
 import { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
@@ -53,6 +54,22 @@ function ducklakeDestination(
          },
          storage: { bucketUrl: `gs://managed-tier/${bucketPath}` },
       },
+   };
+}
+
+/**
+ * The same destination with its keys emitted in a different order, which is what
+ * an equivalent config assembled or parsed somewhere else looks like.
+ */
+function withReorderedKeys(destination: ApiConnection): ApiConnection {
+   const ducklake = destination.ducklakeConnection!;
+   return {
+      ducklakeConnection: {
+         storage: ducklake.storage,
+         catalog: ducklake.catalog,
+      },
+      type: destination.type,
+      name: destination.name,
    };
 }
 
@@ -130,6 +147,71 @@ describe("processStorageDestinations", () => {
             "managed",
          ] as unknown as ApiConnection[]),
       ).toEqual([]);
+   });
+});
+
+describe("storageDestinationsEqual", () => {
+   const managed = ducklakeDestination("managed", "org_a");
+   const archive = ducklakeDestination("archive", "org_b");
+
+   it("ignores the order the destinations are listed in", () => {
+      expect(
+         storageDestinationsEqual([managed, archive], [archive, managed]),
+      ).toBe(true);
+   });
+
+   it("ignores the key order within a config", () => {
+      expect(
+         storageDestinationsEqual([managed], [withReorderedKeys(managed)]),
+      ).toBe(true);
+   });
+
+   it("reports a changed bucket, a changed catalog and a rotated password", () => {
+      expect(
+         storageDestinationsEqual(
+            [managed],
+            [ducklakeDestination("managed", "org_b")],
+         ),
+      ).toBe(false);
+
+      const rehosted = ducklakeDestination("managed", "org_a");
+      rehosted.ducklakeConnection!.catalog!.postgresConnection!.host =
+         "other.internal";
+      expect(storageDestinationsEqual([managed], [rehosted])).toBe(false);
+
+      expect(
+         storageDestinationsEqual(
+            [managed],
+            [ducklakeDestination("managed", "org_a", "rotated-secret")],
+         ),
+      ).toBe(false);
+   });
+
+   it("reports a destination added, removed or renamed", () => {
+      expect(storageDestinationsEqual([managed], [managed, archive])).toBe(
+         false,
+      );
+      expect(storageDestinationsEqual([managed], [])).toBe(false);
+      expect(
+         storageDestinationsEqual(
+            [managed],
+            [ducklakeDestination("renamed", "org_a")],
+         ),
+      ).toBe(false);
+   });
+
+   it("does not distinguish a field set to undefined from one left out", () => {
+      // Not a correctness requirement either way — recorded because it is the one
+      // place the comparison is coarser than a deep equality: `JSON.stringify`
+      // omits an undefined value, so the two read as equal. That is the harmless
+      // direction (an attach reads both as absent), and it is not the direction a
+      // config change arrives from.
+      expect(
+         storageDestinationsEqual(
+            [managed],
+            [{ ...managed, fingerprint: undefined }],
+         ),
+      ).toBe(true);
    });
 });
 
@@ -315,6 +397,30 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          ducklakeDestination("managed", "org_b"),
       ]);
       expect(environment.getStorageDestinationMalloyConfig()).not.toBe(first);
+   });
+
+   it("treats a re-push in a different order as unchanged", () => {
+      // Two callers can describe the same destinations differently: the list is a
+      // set keyed by name, and a config is JSON whose key order depends on how it
+      // was assembled or parsed. Reading either as a change would re-attach and
+      // retire on a reconcile loop exactly as an unchanged re-push would.
+      const environment = makeEnvironment(
+         [],
+         [
+            ducklakeDestination("managed", "org_a"),
+            ducklakeDestination("archive", "org_b"),
+         ],
+      );
+      const first = environment.getStorageDestinationMalloyConfig();
+
+      // The same two destinations, listed the other way round and with one
+      // config's own keys in a different order.
+      environment.setStorageDestinations([
+         withReorderedKeys(ducklakeDestination("archive", "org_b")),
+         ducklakeDestination("managed", "org_a"),
+      ]);
+
+      expect(environment.getStorageDestinationMalloyConfig()).toBe(first);
    });
 
    it("clears the destination list when the environment is torn down", async () => {
