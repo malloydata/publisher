@@ -477,33 +477,72 @@ function runSQLRows(result: unknown): Record<string, unknown>[] {
  * the fixed name (which would make every later preflight for this connection
  * fail its ATTACH with "already exists" and silently skip), and so two
  * concurrent first-touch lookups can't cross-DETACH each other.
+ *
+ * {@link metadataSchema} must be the catalog's configured
+ * `catalog.metadataSchema`, because `ducklake_metadata` lives in that schema
+ * rather than the catalog connection's default one. Getting this wrong is not
+ * loud: the read would simply miss, the catch below would log and return, and the
+ * range check would stop protecting precisely the catalogs that set the option.
  */
 let ducklakePreflightSeq = 0;
 async function preflightDuckLakeCatalogFormat(
    connection: DuckDBConnection,
    dbName: string,
    pgConnString: string,
+   metadataSchema?: string,
 ): Promise<void> {
    const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
+   // Identifier position, not a string literal, so the schema is double-quoted.
+   // Measured: with today's validator this is belt-and-braces rather than a fix —
+   // every name the regex admits resolves correctly unquoted, including reserved
+   // words (DuckDB parses them fine here) and mixed case (matching is
+   // case-insensitive). It is quoted anyway because this preflight fails SOFT: a
+   // read that misses logs and returns, silently disabling format range-checking
+   // for that connection, so the cost of ever getting this wrong is invisible.
+   // Quoting makes correctness local to this line instead of contingent on the
+   // validator's accept-set, so widening that regex later cannot break it. Safe
+   // by construction: the regex admits no quote character to break out with.
+   const metadataRef = metadataSchema
+      ? `${tempDb}."${metadataSchema}".ducklake_metadata`
+      : `${tempDb}.ducklake_metadata`;
    let catalogFormat: string | undefined;
    try {
       await connection.runSQL(
          `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDb} (TYPE postgres, READ_ONLY);`,
       );
       const result = await connection.runSQL(
-         `SELECT value FROM ${tempDb}.ducklake_metadata WHERE key = 'version' LIMIT 1;`,
+         `SELECT value FROM ${metadataRef} WHERE key = 'version' LIMIT 1;`,
       );
       const value = runSQLRows(result)[0]?.value;
       catalogFormat = typeof value === "string" ? value : undefined;
    } catch (error) {
+      const message = redactPgSecrets(
+         error instanceof Error ? error.message : String(error),
+      );
+      // A named metadata schema holding no catalog has two very different causes,
+      // and the preflight cannot tell them apart: it is the NORMAL state before the
+      // first read-write attach creates the catalog, and it is also what a typo (or
+      // adding `metadataSchema` to a catalog whose metadata lives elsewhere) looks
+      // like. Neither is loud on its own — a read-write attach CREATES an empty
+      // catalog there and materializes into it, and a read-only attach fails with an
+      // error that says nothing about the schema — so name the schema and say both,
+      // rather than implying a mistake on a path that is expected to hit this once
+      // per catalog. The message also has to hedge on the cause: `does not exist`
+      // matches a missing database or role too, not only a missing table.
+      if (metadataSchema !== undefined && /does not exist/i.test(message)) {
+         logger.warn(
+            "No DuckLake catalog found in the configured metadata schema. This is " +
+               "expected the first time a catalog is created there: a read-write " +
+               "attach will create it, and a read-only attach will fail until it " +
+               "exists. Otherwise check the schema name, and the catalog database " +
+               "and role, against the error.",
+            { dbName, metadataSchema, error: message },
+         );
+         return;
+      }
       logger.warn(
          "DuckLake catalog-format preflight read failed; falling back to ATTACH",
-         {
-            dbName,
-            error: redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
-            ),
-         },
+         { dbName, error: message },
       );
       return;
    } finally {
@@ -633,21 +672,45 @@ async function attachDuckLakeWithMode(
    const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
    // READ_ONLY: the client manages metadata, we only read the catalog.
    // READ_WRITE (build only): a build-scoped session materializes into it.
-   logger.info(`pgConnString: ${redactPgSecrets(pgConnString)}`);
+   // Debug, not info. These three lines — this one, the escaped form below, and the
+   // assembled ATTACH — are per-attach diagnostics that between them print the catalog
+   // host and database twice and the storage path once. `redactPgSecrets` removes the
+   // password and any URI userinfo, but a DATA_PATH is not a secret it knows about, so
+   // logging the assembled command at info discloses the bucket and whatever the prefix
+   // encodes to every reader of the logs. What an operator watching a healthy fleet
+   // needs is the mode and the outcome, which stay at info below.
+   logger.debug(`pgConnString: ${redactPgSecrets(pgConnString)}`);
    const escapedPgConnString = escapeSQL(pgConnString);
-   logger.info(
+   logger.debug(
       `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
    );
    const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
-   logger.info(`escapedBucketUrl: ${escapedBucketUrl}`);
+   // Optional metadata schema: which schema in the catalog database holds this
+   // DuckLake's `ducklake_*` tables. Absent keeps DuckLake's default (the catalog
+   // connection's default schema), so the emitted command is unchanged for every
+   // existing config. Validated to a plain identifier at config load, because it
+   // reaches a quoted literal here and an identifier position in the preflight.
+   const metadataSchema = ducklakeConfig.catalog.metadataSchema;
    // Range-preflight the catalog's recorded format version so an unsupported
-   // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500.
-   await preflightDuckLakeCatalogFormat(connection, dbName, pgConnString);
+   // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500. The
+   // schema must be threaded through: the preflight reads `ducklake_metadata`, so
+   // when the metadata does not live in the catalog's default schema an unqualified
+   // read misses it — and the preflight fails SOFT (logs and returns), so the range
+   // check would silently stop protecting exactly the catalogs using this option.
+   await preflightDuckLakeCatalogFormat(
+      connection,
+      dbName,
+      pgConnString,
+      metadataSchema,
+   );
    // READ_ONLY is stated explicitly; read-write omits the flag (DuckLake's
    // default is writable). AUTOMATIC_MIGRATION is never set in either mode.
    const readOnlyClause = options.readOnly ? ", READ_ONLY true" : "";
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause});`;
-   logger.info(
+   const metadataSchemaClause = metadataSchema
+      ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
+      : "";
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
+   logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
    try {

@@ -2468,8 +2468,7 @@ components:
             properties:
               environment:
                 type: string
-                description:
-                  Name of the configured environment the failure belongs to.
+                description: Name of the configured environment the failure belongs to.
               package:
                 type: string
                 description:
@@ -2488,12 +2487,14 @@ components:
             true, all mutation operations are disabled.
         theme:
           $ref: "#/components/schemas/Theme"
-          description: Instance-wide default theme for the Malloy renderer and the
+          description:
+            Instance-wide default theme for the Malloy renderer and the
             Publisher app shell.
 
     Theme:
       type: object
-      description: Visual theme applied to Malloy renderer output (chart palette,
+      description:
+        Visual theme applied to Malloy renderer output (chart palette,
         fonts, table chrome) and to the Publisher app shell. Cascade order is
         instance → per-chart Malloy annotation, with later layers overriding
         earlier ones for the keys they set. (A per-environment layer is reserved
@@ -2501,12 +2502,13 @@ components:
       properties:
         defaultMode:
           type: string
-          enum: [ "light", "dark", "auto" ]
+          enum: ["light", "dark", "auto"]
           description: Initial color mode for new viewers. "auto" follows the
             browser's prefers-color-scheme until the viewer overrides.
         allowUserToggle:
           type: boolean
-          description: When true, the Publisher app renders a light/dark toggle and
+          description:
+            When true, the Publisher app renders a light/dark toggle and
             persists the viewer's choice to localStorage. When false, the
             defaultMode is enforced.
         palette:
@@ -2515,7 +2517,8 @@ components:
           properties:
             series:
               type: array
-              description: Ordered list of hex colors used by multi-series charts
+              description:
+                Ordered list of hex colors used by multi-series charts
                 (passed to Vega's `range.category`). Shared across light
                 and dark modes so the brand palette stays consistent
                 when viewers switch modes.
@@ -2588,7 +2591,8 @@ components:
                   type: string
         font:
           type: object
-          description: Typography overrides applied to both the app shell and the
+          description:
+            Typography overrides applied to both the app shell and the
             Malloy renderer (Vega text marks). Shared across light and
             dark modes because font choice is a brand decision, not a
             mode-specific one.
@@ -3716,6 +3720,39 @@ components:
             postgresConnection:
               $ref: "#/components/schemas/PostgresConnection"
               description: PostgreSQL connection for DuckLake metadata catalog
+            metadataSchema:
+              type: string
+              description: >-
+                Optional schema in the catalog database holding this DuckLake's
+                metadata (`ducklake_*`) tables, passed to ATTACH as
+                METADATA_SCHEMA. Absent means DuckLake's default — the catalog
+                connection's default schema, typically `public` — which is the
+                pre-existing behavior. Set it to run several independent DuckLake
+                catalogs against ONE catalog database: each keeps its metadata in
+                its own schema, so a catalog reads only the tables recorded in the
+                schema it names. DuckLake creates the schema on a read-write attach
+                if it does not exist; a read-only attach cannot, and fails until it
+                does. Separating metadata does not separate data — give each catalog
+                its own `storage.bucketUrl` prefix as well, since data-path-based
+                maintenance (e.g. `ducklake_delete_orphaned_files`) treats a
+                co-tenant catalog's files under a shared prefix as orphaned.
+
+                This is an ORGANIZATIONAL boundary, not an access-control one. The
+                separation is which schema a configuration names, so any config
+                whose catalog role can reach a sibling schema could name it and
+                read that catalog's metadata — and therefore its data-file paths.
+                Where catalogs must be isolated from one another rather than merely
+                kept tidy, grant each its own role with `USAGE` limited to its own
+                schema; a database-per-catalog remains the strongest separation.
+
+                Setting this on a catalog whose metadata already lives elsewhere
+                does not move it: a read-write attach CREATES a new empty catalog
+                in the named schema (and materializes into it), while a read-only
+                attach fails because there is nothing there yet. Must be a plain
+                identifier (`[A-Za-z_][A-Za-z0-9_]*`) — the value reaches both a
+                quoted string literal in the ATTACH and an identifier position in
+                the catalog-format preflight, so it is validated at config load
+                rather than escaped for two different contexts.
           required:
             - postgresConnection
       required:
@@ -4123,8 +4160,7 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description:
-            Build a new table even when a source's sourceEntityId is unchanged.
+          description: Build a new table even when a source's sourceEntityId is unchanged.
         sourceNames:
           type: array
           items:
