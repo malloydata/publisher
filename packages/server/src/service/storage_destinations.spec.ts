@@ -141,6 +141,31 @@ describe("processStorageDestinations", () => {
       ).toEqual([]);
    });
 
+   it("inherits every rule the connection validator applies to a DuckLake", () => {
+      // Destinations go through `validateConnectionShape`, the same function a
+      // connection goes through, so a rule added there covers both lists with no
+      // change here. Pinned because that inheritance is invisible at this call
+      // site: a rule reached only by connections would leave destinations as the
+      // one unvalidated way to define a warehouse. `metadataSchema` is the live
+      // example — it must be a plain identifier, since it reaches the ATTACH as a
+      // literal and the catalog-format preflight as an identifier.
+      const destination = ducklakeDestination("managed", "org_a");
+      destination.ducklakeConnection!.catalog.metadataSchema =
+         'lake"; drop schema public; --';
+
+      expect(processStorageDestinations([destination])).toEqual([]);
+   });
+
+   it("keeps a destination naming its own metadata schema", () => {
+      const destination = ducklakeDestination("managed", "org_a");
+      destination.ducklakeConnection!.catalog.metadataSchema = "org_a_catalog";
+
+      expect(
+         processStorageDestinations([destination])[0]?.ducklakeConnection
+            ?.catalog.metadataSchema,
+      ).toBe("org_a_catalog");
+   });
+
    it("drops entries that are not objects at all", () => {
       expect(
          processStorageDestinations([
@@ -624,6 +649,22 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
          "managed",
       ]);
+   });
+
+   it("reports the validator's own reason when it refuses an update", async () => {
+      // The refusal carries whatever `validateConnectionShape` objected to, so a
+      // rule this file never mentions still reaches the caller.
+      const environment = makeEnvironment([], []);
+      const destination = ducklakeDestination("managed", "org_a");
+      destination.ducklakeConnection!.catalog.metadataSchema =
+         "not an identifier";
+
+      await expect(
+         environment.update({
+            name: "test-env",
+            storageDestinations: [destination],
+         }),
+      ).rejects.toThrow(/metadataSchema/);
    });
 
    it("refuses an update whose destination list is not a list at all", async () => {
