@@ -1817,6 +1817,15 @@ export class Model {
       this.serveDestinationConfig = provider;
       // The reachable connection set is part of what the memoized materializer
       // was compiled against, so a change invalidates it.
+      this.invalidateServeShapeCache();
+   }
+
+   /**
+    * Forget the memoized serve-shape materializer. The memo is keyed on the
+    * binding set, so anything else it was compiled against — the destination
+    * connections above all — has to invalidate it explicitly.
+    */
+   public invalidateServeShapeCache(): void {
       this.serveShapeCache = undefined;
    }
 

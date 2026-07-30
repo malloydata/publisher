@@ -695,6 +695,7 @@ export class EnvironmentStore {
                         // outcome than dropping every package in the environment.
                         let destinations =
                            environmentConfig?.materializationDestinations;
+                        let destinationsRead = true;
                         try {
                            const stored =
                               await repository.listMaterializationDestinations(
@@ -708,6 +709,7 @@ export class EnvironmentStore {
                               }));
                            }
                         } catch (error) {
+                           destinationsRead = false;
                            logger.error(
                               `Error reading materialization destinations for "${dbEnvironment.name}"; continuing without the stored ones`,
                               { error },
@@ -725,6 +727,12 @@ export class EnvironmentStore {
                            })),
                            destinations,
                         );
+                        // Whatever we ended up with is a fallback, not the set of
+                        // record, so the sync must not reconcile the stored rows
+                        // against it — see markMaterializationDestinationsUnknown.
+                        if (!destinationsRead) {
+                           environmentInstance.markMaterializationDestinationsUnknown();
+                        }
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
                         );
@@ -1086,6 +1094,18 @@ export class EnvironmentStore {
                type: destination.type,
                config: destination,
             });
+         }
+
+         // Pruning is only safe against a list that IS the desired state. When a
+         // load could not read the stored destinations the list is unknown rather
+         // than empty, and reconciling to it would delete every registration over
+         // a transient read error — permanently, since the next restart then has
+         // nothing to restore. Upserting what we do hold stays safe either way.
+         if (!environment.hasAuthoritativeMaterializationDestinations()) {
+            logger.warn(
+               `Not reconciling stored materialization destinations for "${environment.metadata?.name}": this environment's destinations were never read, so the in-memory list is not the desired state`,
+            );
+            return;
          }
 
          const stored =

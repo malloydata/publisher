@@ -962,6 +962,17 @@ export class Package {
    }
 
    /**
+    * Drop every model's memoized materialization serve shape, so the next routed
+    * query recompiles it. Called by the owning Environment when the destinations
+    * those shapes were compiled against are replaced.
+    */
+   public invalidateServeShapes(): void {
+      for (const model of this.models.values()) {
+         model.invalidateServeShapeCache();
+      }
+   }
+
+   /**
     * Declared `explores` (publisher.json) that don't resolve to a real
     * `.malloy` model in this package, each with an actionable reason. Empty
     * when explores is absent/empty or every entry resolves.

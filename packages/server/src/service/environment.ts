@@ -209,6 +209,17 @@ export class Environment {
     * and that is what builds this.
     */
    private destinationMalloyConfig!: EnvironmentMalloyConfig;
+   /**
+    * Whether {@link destinations} is the authoritative set for this environment —
+    * i.e. safe to reconcile the stored rows against.
+    *
+    * False when a load could not READ the stored destinations. The list is then
+    * "unknown", not "empty", and the two are not interchangeable: the database
+    * sync prunes rows the list does not hold, so treating a failed read as an
+    * empty list turns a transient error into permanently deleted registrations.
+    * An explicit set (config or API) makes it authoritative again.
+    */
+   private destinationsAuthoritative = true;
    private environmentPath: string;
    private environmentName: string;
    // Resolves a package's latest persisted materialization manifest entries
@@ -640,6 +651,7 @@ export class Environment {
       materializationDestinations: ApiConnection[],
    ): void {
       const previousCount = this.destinations.length;
+      const previous = JSON.stringify(this.destinations);
       this.destinations = processMaterializationDestinations(
          Array.isArray(materializationDestinations)
             ? materializationDestinations.map((destination) =>
@@ -647,6 +659,21 @@ export class Environment {
               )
             : materializationDestinations,
       );
+      // An explicit set makes the list authoritative again: whatever could not be
+      // read before, this is now the set the store should be reconciled to.
+      this.destinationsAuthoritative = true;
+
+      // Nothing to swap when the resolved list is identical. A caller that
+      // reconciles by re-pushing its whole desired state — which is what a
+      // control plane does, on a loop — would otherwise re-attach every
+      // destination on every cycle and drop the serve shapes compiled against
+      // them. Comparing serialized entries errs toward rebuilding (two
+      // structurally equal configs with different key order read as changed),
+      // which is the harmless direction.
+      if (previous === JSON.stringify(this.destinations)) {
+         return;
+      }
+
       this.rebuildDestinationMalloyConfig();
       // Quiet for the overwhelmingly common case of an environment with no
       // destinations at all, loud for every transition that matters, including
@@ -743,6 +770,25 @@ export class Environment {
             `environment ${this.environmentName} destinations`,
             () => previous.releaseConnections(),
          );
+         // A loaded model memoizes the serve shape it compiled, and that shape
+         // holds the connections of the generation just retired — which are
+         // released once the drain elapses. The memo is keyed on the BINDING set,
+         // so a destination change does not change the key and the stale shape
+         // would be reused until the package reloaded: every routed query for it
+         // failing over to live, permanently and quietly. Dropped here, after the
+         // swap, so the next query recompiles against the config now installed.
+         this.invalidateServeShapes();
+      }
+   }
+
+   /**
+    * Drop every loaded model's memoized materialization serve shape. Cheap: the
+    * next routed query recompiles one, and a package with no `storage=` bindings
+    * has none to drop.
+    */
+   private invalidateServeShapes(): void {
+      for (const _package of this.packages.values()) {
+         _package.invalidateServeShapes();
       }
    }
 
@@ -755,6 +801,20 @@ export class Environment {
     */
    public getMaterializationDestinationMalloyConfig() {
       return this.destinationMalloyConfig.malloyConfig;
+   }
+
+   /**
+    * Records that this environment's stored destinations could not be read, so
+    * {@link listMaterializationDestinations} is a fallback rather than the
+    * authoritative set. Callers that reconcile storage must not prune against it.
+    */
+   public markMaterializationDestinationsUnknown(): void {
+      this.destinationsAuthoritative = false;
+   }
+
+   /** See {@link destinationsAuthoritative}. */
+   public hasAuthoritativeMaterializationDestinations(): boolean {
+      return this.destinationsAuthoritative;
    }
 
    /**
@@ -2333,6 +2393,12 @@ export class Environment {
             { error },
          );
       }
+
+      this.destinations = [];
+      // Torn down, so the empty list above describes nothing rather than
+      // describing an environment with no destinations — anything that reconciled
+      // storage against it from here would be pruning on no information.
+      this.destinationsAuthoritative = false;
       await this.releaseAllRetiredConnectionGenerations();
 
       this.apiConnections = [];

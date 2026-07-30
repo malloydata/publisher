@@ -49,6 +49,11 @@ type MockDestinationRow = {
 };
 let mockDbDestinations: MockDestinationRow[] = [];
 
+// Number of destination READS the mock database should fail before answering
+// normally. Drives the "the load could not read them" case, which is the only way
+// the in-memory list can be empty without the operator having emptied it.
+let failNextDestinationReads = 0;
+
 /** A well-formed DuckLake destination, as publisher.config.json declares one. */
 function managedDestination(name = "managed") {
    return {
@@ -253,10 +258,15 @@ mock.module("../storage/StorageManager", () => {
                // reads back, and what the sync writes and prunes.
                listMaterializationDestinations: async (
                   environmentId: string,
-               ): Promise<unknown[]> =>
-                  mockDbDestinations.filter(
+               ): Promise<unknown[]> => {
+                  if (failNextDestinationReads > 0) {
+                     failNextDestinationReads -= 1;
+                     throw new Error("destination read failed (simulated)");
+                  }
+                  return mockDbDestinations.filter(
                      (row) => row.environmentId === environmentId,
-                  ),
+                  );
+               },
 
                getMaterializationDestinationByName: async (
                   environmentId: string,
@@ -335,6 +345,7 @@ describe("EnvironmentStore Service", () => {
       // the database-restore branch.
       mockDbEnvironments = [];
       mockDbDestinations = [];
+      failNextDestinationReads = 0;
       sandbox = sinon.createSandbox();
 
       // Mock the configuration to prevent initialization errors
@@ -355,6 +366,7 @@ describe("EnvironmentStore Service", () => {
       mkdirSync(serverRootPath);
       mockDbEnvironments = [];
       mockDbDestinations = [];
+      failNextDestinationReads = 0;
       sandbox.restore();
    });
 
@@ -1012,6 +1024,103 @@ describe("EnvironmentStore Service", () => {
       expect(mockDbDestinations.map((row) => row.name)).toEqual([
          "replacement",
       ]);
+   });
+
+   it("should not delete stored destinations when the load could not read them", async () => {
+      // The pair that bites: a read failure leaves the in-memory list EMPTY, and
+      // the sync deletes rows the list does not hold. Reconciling to it would turn
+      // a transient error into permanent deletion — the next restart has nothing
+      // to restore, and every materialized query serves live for good.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      // Config declares nothing, so the fallback on a failed read is an empty list.
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+      // The id the sync will resolve for this environment: the mock's
+      // getEnvironmentByName answers null, so addEnvironmentMetadata creates one
+      // and gets "test-project-id" back. The seeded row has to hang off the SAME
+      // id or the prune has nothing in scope and the test proves nothing.
+      mockDbEnvironments = [
+         {
+            id: "test-project-id",
+            name: projectName,
+            path: envPath,
+            metadata: {},
+         },
+      ];
+      mockDbDestinations = [
+         {
+            id: "test-project-id-managed",
+            environmentId: "test-project-id",
+            name: "managed",
+            type: "ducklake",
+            config: managedDestination(),
+         },
+      ];
+      // The read at restore fails; every later read (the sync's own) succeeds.
+      failNextDestinationReads = 1;
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      // An ordinary environment write — a readme edit is enough to reach the sync.
+      await newEnvironmentStore.updateEnvironment({
+         name: projectName,
+         readme: "touched",
+      });
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+   });
+
+   it("should still delete a stored destination the environment deliberately cleared", async () => {
+      // The converse, so the guard above cannot be satisfied by never pruning: an
+      // explicit empty list IS the desired state and must reconcile.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  materializationDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+
+      await newEnvironmentStore.updateEnvironment({
+         name: projectName,
+         materializationDestinations: [],
+      });
+
+      expect(mockDbDestinations).toEqual([]);
    });
 
    it("should seed destinations from the config file when the database holds none", async () => {
@@ -2522,6 +2631,7 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       mkdirSync(serverRootPath, { recursive: true });
       mockDbEnvironments = [];
       mockDbDestinations = [];
+      failNextDestinationReads = 0;
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
       _resetEmbeddingIndexStateForTests();

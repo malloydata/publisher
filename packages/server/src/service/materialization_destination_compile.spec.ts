@@ -330,6 +330,30 @@ describe("a materialization destination is not in the namespace a tenant authors
          environment.getMaterializationDestinationMalloyConfig(),
       );
 
+      // A memoized serve shape holds the connections of the generation it compiled
+      // against. Replacing the destination list retires those, so the memo has to
+      // be dropped — its key is the BINDING set, which a destination change does
+      // not touch, so nothing else would invalidate it and every routed query for
+      // this package would fail over to live until the package reloaded.
+      const cacheOf = () =>
+         (model as unknown as { serveShapeCache?: unknown }).serveShapeCache;
+      try {
+         await (
+            model as unknown as {
+               loadServeShapeQuery: (query: string) => Promise<unknown>;
+            }
+         ).loadServeShapeQuery("run: nums -> { select: a }");
+      } catch {
+         // The catalog is unreachable, but the compile still memoizes a shape.
+      }
+      expect(cacheOf()).toBeDefined();
+      environment.setMaterializationDestinations([
+         ducklakeDestination(DESTINATION_NAME),
+         ducklakeDestination(SHARED_NAME),
+         ducklakeDestination("added_later"),
+      ]);
+      expect(cacheOf()).toBeUndefined();
+
       // A reload rebuilds every model, so it has to re-apply the wiring — or serve
       // routing would quietly stop at the first reload.
       await pkg.reloadAllModels({});

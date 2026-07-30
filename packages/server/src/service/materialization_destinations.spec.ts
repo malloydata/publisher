@@ -296,6 +296,48 @@ describe("Environment: connections and materialization destinations are disjoint
       ).toBe("catalog.internal");
    });
 
+   it("does not re-assemble the destinations when the list is unchanged", () => {
+      // A caller that reconciles by re-pushing its whole desired state does that
+      // on a loop. Re-assembling each time would re-attach every destination and
+      // retire the connections its serve shapes were compiled against, every
+      // cycle, for no change at all.
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a")],
+      );
+      const first = environment.getMaterializationDestinationMalloyConfig();
+
+      environment.setMaterializationDestinations([
+         ducklakeDestination("managed", "org_a"),
+      ]);
+      expect(environment.getMaterializationDestinationMalloyConfig()).toBe(
+         first,
+      );
+
+      // A real change still swaps it.
+      environment.setMaterializationDestinations([
+         ducklakeDestination("managed", "org_b"),
+      ]);
+      expect(environment.getMaterializationDestinationMalloyConfig()).not.toBe(
+         first,
+      );
+   });
+
+   it("clears the destination list when the environment is torn down", async () => {
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a")],
+      );
+
+      await environment.closeAllConnections();
+
+      expect(environment.listMaterializationDestinations()).toEqual([]);
+      // And the empty list is not mistaken for a desired state afterwards.
+      expect(environment.hasAuthoritativeMaterializationDestinations()).toBe(
+         false,
+      );
+   });
+
    it("derives a destination's DuckDB file apart from a same-named connection's", () => {
       // A pooled DuckDB instance is keyed on `databasePath` + `workingDirectory`
       // and NOT on the connection name, while both lists derive that path from
