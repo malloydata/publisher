@@ -148,8 +148,9 @@ watch-mode recompile that failed), and
 REST, for a script or a check that does not need an agent: every model is queryable at
 `POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`, and after a
 model-file edit `GET /api/v0/environments/<env>/packages/<package>?reload=true` recompiles
-the package and comes back 424 with the compile errors when it does not compile. Treat any
-non-2xx as a failed check. This lists what the server has loaded:
+the package and comes back 424 with the compile errors when it does not compile. Any other
+non-2xx means the check never ran, so fix the request rather than the model. This lists
+what the server has loaded:
 
 ```bash
 curl -s http://localhost:{{port}}/api/v0/environments/{{envName}}/packages
@@ -166,9 +167,9 @@ appear however long you wait: an MCP client fixes its tool list when it connects
 it never saw a server that did not yet exist. You cannot reconnect yourself. Say so,
 and {{reconnectNote}} Do not quietly switch to curl instead and call it done: it
 looks like it is working while hiding a problem the user can clear in seconds, and
-it gives up the grounded discovery, compile checks, and reload the tools exist to
-provide. If the user would rather keep going without reconnecting, the REST endpoint
-above runs the same models.
+it gives up the grounded discovery and compile checks the tools exist to provide. With
+nobody there to reconnect you, REST is the supported interface rather than a workaround,
+and the reload form above is the same check.
 
 There is a second reason the tools can be missing, and it looks identical from here:
 this workspace's MCP config is only discovered by an agent session that **started in

@@ -446,17 +446,42 @@ describe("formatSuccess: the MCP endpoint", () => {
       expect(output).toContain("a human has to");
    });
 
-   test("a cursor run is not told to accept a dialog Cursor does not have", () => {
-      // The trust gate, the dialog and the discarded allowlist are all Claude
-      // Code's. Printed to a Cursor user, they send them hunting for a dialog
+   test("a cursor run is not told to accept a prompt Cursor does not raise", () => {
+      // The trust gate, the prompt and the discarded allowlist are all Claude
+      // Code's. Printed to a Cursor user, they send them hunting for a prompt
       // that does not exist, past the Refresh that does work for them, which the
       // reconnect note two lines down already tells them. Every other
       // host-specific claim in this output is gated the same way.
-      const output = formatSuccess(resultFor({ host: "cursor" }));
-      expect(output).not.toContain("Trust this workspace");
+      //
+      // Asserted as the same invariant scaffold.spec.ts applies to the briefing,
+      // not only as the phrases this change adds: this output is the other
+      // surface host-specific text arrives on, so a phrase test here guards only
+      // today's wording. ANSI is stripped first because the printed lines are
+      // colored. Keep the pattern identical to the one in scaffold.spec.ts.
+      const claudeOnlyLines = (text: string): string[] =>
+         text
+            // eslint-disable-next-line no-control-regex
+            .replace(
+               new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"),
+               "",
+            )
+            .split("\n")
+            .filter((line) =>
+               /claude mcp add|(^|[^.\w])\/mcp\b|Claude Code|\.claude\/settings/.test(
+                  line,
+               ),
+            );
+
+      // One scaffold, two renders: resultFor() runs a real scaffold, so calling
+      // it twice in one test collides on the directory it just created.
+      const result = resultFor();
+      const output = formatSuccess({ ...result, host: "cursor" });
+      expect(claudeOnlyLines(output)).toEqual([]);
       expect(output).not.toContain("permissions allowlist");
       // Not passing by printing nothing: the section itself is still there.
       expect(output).toContain("Connect an agent:");
+      // And the filter is not vacuous: it matches on the claude-code output.
+      expect(claudeOnlyLines(formatSuccess(result)).length).toBeGreaterThan(0);
    });
 });
 

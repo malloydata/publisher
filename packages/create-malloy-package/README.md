@@ -71,11 +71,11 @@ whatever that file names, and the generated agent briefing spells out the URLs f
 this workspace. That briefing is `AGENTS.md`, or `AGENTS.malloy.md` in a directory
 that already had an `AGENTS.md` of its own; see "Running it again" below.
 
-One thing to expect the first time an agent runs here. A directory nobody has trusted
-yet is a separate gate from connecting the MCP server: Claude Code will list the
-`malloy_*` tools and then refuse every call, and a `.claude/settings.json` allowlist is
-discarded rather than merged. Start Claude Code in the directory once and answer the
-trust prompt, which is asked once per directory.
+A directory nobody has trusted yet is a second gate, separate from connecting the MCP
+server: Claude Code lists the `malloy_*` tools and then refuses every call, and a
+`.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
+interactively in the directory once and answer the trust prompt, which is asked once per
+directory and is never raised by a non-interactive run.
 
 ## Query it
 
@@ -115,8 +115,9 @@ no route falls through to the web app and answers `200` with an HTML page, which
 as success until you look at the body.
 
 Agents should reach the same models through MCP rather than curl, which buys them
-schema discovery, compile checks and a reload that needs no restart. The generated
-briefing lists those tools.
+schema discovery and compile checks. The generated briefing lists those tools, and
+for an agent with no user to reconnect it, the REST reload it also documents is the
+same check.
 
 ## What it creates
 

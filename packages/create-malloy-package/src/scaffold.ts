@@ -1763,11 +1763,12 @@ function renderAgentsFile(
          : [
               "",
               "One gate can void the reconnect fix below, and you cannot clear it yourself: if the",
-              "`malloy_*` tools are listed but every call is refused, this workspace has not been",
-              "trusted, and a `.claude/settings.json` allowlist is discarded until it is. A human has to",
-              "start Claude Code in this directory once and answer the trust prompt, which is asked once",
-              "per directory. Tell the user, and leave the choice to them. If the tools are not listed at",
-              "all, this is not the cause and the paragraph below is.",
+              "`malloy_*` tools are listed but every call is refused, the usual cause is that this",
+              "workspace has not been trusted, which also discards a `.claude/settings.json` allowlist.",
+              "A human has to start Claude Code interactively in this directory once and answer the",
+              "trust prompt, asked once per directory; a non-interactive run never raises it. Tell the",
+              "user and leave the choice to them. If the tools are not listed at all, this gate is not",
+              "the cause, so read on.",
               "",
            ].join("\n");
    // The count is the real one, not the shipped one. This file used to assert the

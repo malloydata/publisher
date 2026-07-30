@@ -1049,9 +1049,9 @@ export function formatSuccess(result: ScaffoldResult): string {
       // the same thing the same way.
       lines.push(
          log.yellow(
-            "  Trust this workspace: a human has to open Claude Code here once and\n" +
-               "  accept the dialog. Until then the malloy tools can report connected and\n" +
-               "  still refuse to run, and a permissions allowlist is ignored.",
+            "  Trust this workspace: a human has to open Claude Code here interactively\n" +
+               "  once and answer the trust prompt. Until then the malloy tools can report\n" +
+               "  connected and still refuse to run, and a permissions allowlist is ignored.",
          ),
       );
    }

@@ -135,11 +135,13 @@ The agent discovers what data exists (`malloy_getContext`), grounds itself in th
 and field names, runs the query (`malloy_executeQuery`), and returns an answer backed by your
 semantic model. No schema spelunking, no hallucinated column names.
 
+- **Trust the directory first.** This is a second gate, separate from connecting the server: in a
+  workspace nobody has trusted yet, Claude Code lists the `malloy_*` tools and then refuses every
+  call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
+  interactively there once and answer the trust prompt, which is asked once per directory and is
+  never raised by a non-interactive run.
 - **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
   ([`skills/`](skills/)) that most AI coding hosts auto-discover. Start there.
-- **In a workspace nobody has trusted yet**, Claude Code lists the `malloy_*` tools and then refuses
-  every call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude
-  Code in the directory once and answer the trust prompt; it is asked once per directory.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
   [docs/ai-agents.md](docs/ai-agents.md) for per-client config and the stdio bridge.
 

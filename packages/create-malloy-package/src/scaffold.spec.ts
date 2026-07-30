@@ -516,6 +516,30 @@ describe("scaffold: setup-only (no name)", () => {
    });
 });
 
+/**
+ * Lines carrying a marker only a Claude Code reader can act on. A cursor
+ * workspace must contain none of them, whatever the wording of the day is.
+ *
+ * Two exclusions are deliberate. `.claude/skills/` is legitimate for both hosts,
+ * because the scaffolder really does install skills there, so the pattern matches
+ * `.claude/settings` and not `.claude/`. And the MCP endpoint URL ends in `/mcp`
+ * in both briefings, so `\/mcp` only counts when what precedes it is neither a
+ * word character nor a dot, which is true of the `/mcp` slash command and false
+ * of `localhost:4040/mcp` and `.cursor/mcp.json`.
+ *
+ * index.spec.ts has the same filter over the printed output, where it strips ANSI
+ * first. Keep the two patterns identical.
+ */
+function claudeOnlyLines(text: string): string[] {
+   return text
+      .split("\n")
+      .filter((line) =>
+         /claude mcp add|(^|[^.\w])\/mcp\b|Claude Code|\.claude\/settings/.test(
+            line,
+         ),
+      );
+}
+
 describe("scaffold: cursor host", () => {
    test("writes .cursor/mcp.json instead of .mcp.json and CLAUDE.md", () => {
       run({ host: "cursor" });
@@ -538,22 +562,17 @@ describe("scaffold: cursor host", () => {
       // not exist, and demote the Refresh that is the real fix for it.
       //
       // Asserted as the INVARIANT (no Claude-Code-only marker survives into a
-      // cursor briefing) rather than as the two literal phrases this change
-      // happens to add. The merge this branch is behind on reintroduces the same
-      // defect from another direction, and a phrase-matching test would stay
-      // green through it. `.claude/skills/` is the one legitimate exception:
-      // skillsNote prints that path for both hosts because the scaffolder really
-      // does install skills there.
+      // cursor briefing) rather than as the literal phrases any one change
+      // happens to add, because a phrase test only guards the wording it was
+      // written against: text arriving later from another direction reintroduces
+      // the same defect with the suite green. `.claude/skills/` is the one
+      // legitimate exception, since skillsNote prints that path for both hosts
+      // because the scaffolder really does install skills there. The MCP
+      // endpoint URL is the other: `…:4040/mcp` is in both briefings, which is
+      // what the leading character class excludes.
       run({ host: "cursor" });
       const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
-      const claudeOnly = agents
-         .split("\n")
-         .filter((line) =>
-            /claude mcp add|(^|[^.\w])\/mcp\b|Claude Code|\.claude\/settings/.test(
-               line,
-            ),
-         );
-      expect(claudeOnly).toEqual([]);
+      expect(claudeOnlyLines(agents)).toEqual([]);
       expect(agents).not.toContain("{{");
 
       // The claude-code run is the one that carries it, asserted positively so
@@ -562,6 +581,9 @@ describe("scaffold: cursor host", () => {
       const claudeAgents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
       expect(claudeAgents).toContain("One gate can void");
       expect(claudeAgents).toContain("settings.json");
+      // The filter self-checks here: if it matched nothing even on the briefing
+      // that is full of Claude Code text, the assertion above would be vacuous.
+      expect(claudeOnlyLines(claudeAgents).length).toBeGreaterThan(0);
    });
 
    test("AGENTS.md keeps the two facts that make the REST fallback usable", () => {
