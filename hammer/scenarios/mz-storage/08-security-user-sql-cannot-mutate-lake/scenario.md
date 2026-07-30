@@ -11,9 +11,8 @@ A user authors Malloy (models and ad-hoc queries) and can embed raw SQL via
 no `CREATE SCHEMA`, no writes, and no reads either. The guard is that a
 destination is not a connection: it lives in `storageDestinations`, which
 nothing a user authors resolves against, so `lake` is not a name in scope and the
-query never compiles. (A read-only attach still backs the serve path, but it is
-no longer what has to hold — an unnameable destination cannot be addressed at
-all.)
+query never compiles. (A read-only attach also backs the serve path, but that is
+not what has to hold — an unnameable destination cannot be addressed at all.)
 
 Rigorous survival proof: if an attack actually dropped the materialized table,
 the serve path would silently fall back to live (and still return the right

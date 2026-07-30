@@ -186,9 +186,10 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
    }
 
    it("fails to compile a model file whose source names the destination", async () => {
-      // Hole (2)'s first authoring surface. The package connection lookup passes
-      // any name but `duckdb` to the environment config, so before the lists were
-      // split this resolved on the worker with no control-plane round-trip at all.
+      // The authoring surface that reaches furthest. A package's connection lookup
+      // passes any name but `duckdb` straight to the environment config and a model
+      // file compiles unrestricted, so `connections` being the only list it reaches
+      // is the whole of what keeps a destination out of scope.
       const environment = makeEnvironment();
       writeModel(
          "names_destination.malloy",

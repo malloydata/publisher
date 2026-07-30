@@ -12,10 +12,11 @@ package's models resolve connections through the environment's `connections`, an
 those two lists are disjoint — so a model file naming the destination has no such
 name in scope, and the package carrying it does not load at all.
 
-This is the surface that mattered most. Ad-hoc query text compiles in restricted
-mode, which rejects `connection.table(...)` on its own; a **published model file**
-does not, so before the split it resolved on the worker with no control-plane
-round-trip at all — the model simply read the destination.
+A model file is the surface that matters most. Ad-hoc query text compiles in
+restricted mode, which rejects `connection.table(...)` on its own; a published
+model file compiles unrestricted and nothing validates its connection references
+at publish, so the disjoint list is the only thing keeping the destination out of
+its scope.
 
 Both halves of the split are proven together here: `dnn` builds into `lake` and
 serves from it, while two packages that merely NAME `lake` are refused. One

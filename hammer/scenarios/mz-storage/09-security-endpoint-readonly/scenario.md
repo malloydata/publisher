@@ -15,8 +15,8 @@ is refused before it becomes SQL, and the materialized table must survive.
 (Note: the attacks qualify with `lake.` so they would truly target the destination
 if they resolved at all; an *unqualified* `CREATE SCHEMA x` here would land in the
 session's throwaway `:memory:` catalog and be harmless either way. A read-only
-attach still backs the serve path, but it is no longer the guard being tested —
-an endpoint that cannot name the destination never gets that far.)
+attach also backs the serve path, but that is not the guard being tested — an
+endpoint that cannot name the destination never gets that far.)
 
 ## Publisher
 
