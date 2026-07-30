@@ -376,6 +376,20 @@ describe("formatSuccess: the MCP endpoint", () => {
       const output = formatSuccess(resultFor({ mcpWired: false }));
       expect(output).toContain("the MCP endpoint is not wired");
    });
+
+   test("workspace trust is named before the reconnect remedy it voids", () => {
+      // A workspace nobody has trusted yet lets the tools report connected and
+      // still refuse to run, and discards a .claude/settings.json allowlist
+      // rather than merging it. It fires before the reconnect case, so a reader
+      // who acts on the reconnect note first fixes the wrong thing. The order is
+      // the claim, which is why it is asserted rather than just the presence.
+      const output = formatSuccess(resultFor());
+      expect(output).toContain("Trust this workspace first");
+      expect(output).toContain("can't reconnect MCP");
+      expect(output.indexOf("Trust this workspace first")).toBeLessThan(
+         output.indexOf("can't reconnect MCP"),
+      );
+   });
 });
 
 describe("changesSince", () => {
