@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
    CONTEXT_SHED_ORDER,
    MAX_PROPERTIES,
@@ -15,6 +15,12 @@ import {
 } from "./query_metadata";
 
 const originalMode = process.env.PUBLISHER_QUERY_METADATA;
+
+// The feature ships dark, so every test of the resolution logic has to turn it
+// on. The one test that asserts what `off` does sets it back for itself.
+beforeEach(() => {
+   process.env.PUBLISHER_QUERY_METADATA = "on";
+});
 
 afterEach(() => {
    if (originalMode === undefined) {
@@ -345,6 +351,20 @@ describe("mergeQueryMetadata", () => {
       );
       expect(resolved.drops.map((d) => d.reason)).toContain("serialized_cap");
       expect(resolved.metadata?.class).toBe("interactive");
+   });
+
+   it("attaches nothing by default: the feature ships dark", () => {
+      // The release default. Every statement leaves exactly as Malloy compiled
+      // it until a deployment opts in, because this is the one feature that
+      // touches all of them — and on the comment-carrying backends it changes
+      // the statement text.
+      delete process.env.PUBLISHER_QUERY_METADATA;
+      expect(
+         mergeQueryMetadata({
+            request: { team: "finance" },
+            context: { queryClass: "interactive", correlationId: "corr-1" },
+         }),
+      ).toEqual({ drops: [] });
    });
 
    it("attaches nothing when PUBLISHER_QUERY_METADATA=off", () => {

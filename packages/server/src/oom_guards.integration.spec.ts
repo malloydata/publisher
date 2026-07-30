@@ -113,11 +113,15 @@ describe("OOM guardrails: end-to-end chain", () => {
       max: process.env.PUBLISHER_MAX_QUERY_ROWS,
       timeout: process.env.PUBLISHER_QUERY_TIMEOUT_MS,
       concurrency: process.env.PUBLISHER_MAX_CONCURRENT_QUERIES,
+      metadata: process.env.PUBLISHER_QUERY_METADATA,
    };
 
    beforeEach(() => {
       resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
+      // Query metadata ships dark; the happy path below asserts the correlation
+      // id the response carries, which needs it on.
+      process.env.PUBLISHER_QUERY_METADATA = "on";
    });
 
    afterEach(() => {
@@ -132,6 +136,7 @@ describe("OOM guardrails: end-to-end chain", () => {
       restore("max", "PUBLISHER_MAX_QUERY_ROWS");
       restore("timeout", "PUBLISHER_QUERY_TIMEOUT_MS");
       restore("concurrency", "PUBLISHER_MAX_CONCURRENT_QUERIES");
+      restore("metadata", "PUBLISHER_QUERY_METADATA");
    });
 
    it("admission gate fires FIRST: 503 before the connector is touched", async () => {

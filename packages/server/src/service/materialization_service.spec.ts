@@ -39,6 +39,23 @@ import {
 
 type MockRepo = sinon.SinonStubbedInstance<ResourceRepository>;
 
+/**
+ * Turn per-query metadata on for one test and put the environment back after.
+ * The feature ships dark, so a test that asserts what a statement carries has
+ * to enable it — and saying so per test keeps the default honest here: a test
+ * that forgets is testing the shipped default, which is "nothing attached".
+ */
+function withQueryMetadataOn(): void {
+   const original = process.env.PUBLISHER_QUERY_METADATA;
+   beforeEach(() => {
+      process.env.PUBLISHER_QUERY_METADATA = "on";
+   });
+   afterEach(() => {
+      if (original === undefined) delete process.env.PUBLISHER_QUERY_METADATA;
+      else process.env.PUBLISHER_QUERY_METADATA = original;
+   });
+}
+
 describe("redactConnectionSecrets", () => {
    it("strips credential values but keeps the message legible", () => {
       const source = {
@@ -877,6 +894,7 @@ describe("MaterializationService", () => {
 describe("deleteMaterialization telemetry", () => {
    let ctx: ReturnType<typeof createMocks>;
    let harness: MetricsHarness;
+   withQueryMetadataOn();
 
    beforeEach(async () => {
       ctx = createMocks();
@@ -1493,6 +1511,7 @@ describe("executeInstructedBuild", () => {
 
 describe("buildOneSource", () => {
    let ctx: ReturnType<typeof createMocks>;
+   withQueryMetadataOn();
    beforeEach(() => {
       ctx = createMocks();
    });

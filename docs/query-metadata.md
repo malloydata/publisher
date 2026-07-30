@@ -4,6 +4,8 @@ Every query Publisher sends arrives at the backend looking like every other one.
 
 It is observability only. It never affects results, and it is excluded from connection fingerprints and build identity, so changing a property never re-addresses or rebuilds anything.
 
+**Off by default.** Set `PUBLISHER_QUERY_METADATA=on` to attach anything at all; until you do, statements go out exactly as Malloy compiles them and `queryCorrelationId` comes back null. This release ships the feature dark — it is the rare change that touches every statement the server sends, and on the backends that carry the bag as a comment it changes the statement text, so a deployment should turn it on having read what it does rather than discover it in a query log.
+
 ## What the backend sees
 
 Each backend gets the bag through a mechanism that attaches **per query**:
@@ -35,7 +37,7 @@ Context wins over a declared property of the same name: a caller cannot label it
 
 Everything except `query_id` is a property of the unit of work rather than of the individual call, so a repeated query produces the same values. `query_id` is per call by definition, which on a backend with no native tag mechanism makes the statement text unique and so bypasses an exact-text result cache. That is the deliberate cost of being able to find one query again.
 
-Set `PUBLISHER_QUERY_METADATA=off` to attach nothing at all, including caller-supplied properties: the escape hatch for a deployment that wants its statements left exactly as Malloy compiles them, and the way out if you would rather have the result cache than the correlation id.
+`PUBLISHER_QUERY_METADATA=off`, the default, attaches nothing at all — including caller-supplied properties. Leave it off for a deployment that wants its statements left exactly as Malloy compiles them, or if you would rather have the result cache than the correlation id.
 
 ## Declaring your own properties
 

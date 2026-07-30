@@ -3427,8 +3427,11 @@ components:
             the platform's join key — a caller-supplied value can be omitted or
             reused, leaving a response with nothing to hand back. To carry your
             own id as well, declare it in `queryMetadata` under your own property
-            name (`query_id` is reserved). Null when no metadata was attached
-            (see `PUBLISHER_QUERY_METADATA`).
+            name (`query_id` is reserved).
+
+            Null when no metadata was attached — which is every query until a
+            deployment sets `PUBLISHER_QUERY_METADATA=on`, since query metadata
+            ships off by default.
         renderLogs:
           type: array
           description:
