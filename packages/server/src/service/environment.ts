@@ -62,8 +62,12 @@ import type { PackageMemoryGovernor } from "./package_memory_governor";
  *    renamed out of the way during a swap or delete. `fs.rm`'d asynchronously
  *    after the lock is released.
  *
- * Both names start with a `.` so the package walkers (which use
- * {@link ignoreDotfiles}) skip them.
+ * Both hold PACKAGE TREES, in the same directory the canonical ones live in, so
+ * both are dot-prefixed: anything that enumerates an environment looking for
+ * packages must not find a half-downloaded or already-superseded copy. No such
+ * enumeration exists today — `listPackages` reads the registered names and this
+ * sweep removes these two paths by name — so the prefix is what keeps that true
+ * for whatever walks the directory next, rather than a guard on a live path.
  */
 const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";

@@ -657,9 +657,18 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
  * coinciding. (If malloydata/malloy#3006 changes how the share key is computed,
  * re-check that it still excludes the name before relying on anything narrower.)
  *
- * Dot-prefixed so the package walkers skip it, as they do `.staging`/`.retired`.
+ * Dot-prefixed like `.staging`/`.retired`, so a walk that enumerates an
+ * environment for package trees cannot mistake it for one.
+ *
+ * ASYMMETRY, deliberate: a CONNECTION's local DuckDB file still derives directly
+ * into the environment root, where it sits among the package trees Publisher
+ * copies in. Nothing enumerates that directory today, so nothing is exposed by
+ * it — but moving those files would change every existing deployment's pooled
+ * instance identity, re-attaching each connection against a new empty local
+ * primary and orphaning the old file. That is a change worth making on its own,
+ * not as a side effect of adding this directory.
  */
-export const STORAGE_DESTINATIONS_DIR = ".destinations";
+export const STORAGE_DESTINATIONS_DIR = ".storage-destinations";
 
 /** Where {@link STORAGE_DESTINATIONS_DIR} sits for an environment. */
 export function storageDestinationRoot(environmentPath: string): string {
