@@ -208,6 +208,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -282,6 +284,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -2687,8 +2691,9 @@ components:
 
             A write is all-or-nothing: because the list replaces what is stored,
             a value that is not a list of usable destinations is refused with
-            400 naming every defect, and none of it is applied. Sending an empty
-            list is the way to clear the destinations.
+            400 naming every defect, and none of it is applied - on create as
+            well as on update. Sending an empty list is the way to clear the
+            destinations.
           items:
             $ref: "#/components/schemas/Connection"
         packages:
