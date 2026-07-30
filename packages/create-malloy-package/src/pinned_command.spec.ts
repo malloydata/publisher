@@ -22,6 +22,16 @@ const PACKAGE_ROOT = path.resolve(import.meta.dir, "..");
 const REPO_ROOT = path.resolve(PACKAGE_ROOT, "..", "..");
 
 /**
+ * Repo-relative path with forward slashes on every platform.
+ *
+ * `path.relative` gives backslashes on Windows, so comparing its output against
+ * a written-out path matches on macOS and Linux and fails on Windows. Every
+ * comparison and every reported path goes through here.
+ */
+const repoRelative = (file: string): string =>
+   path.relative(REPO_ROOT, file).split(path.sep).join("/");
+
+/**
  * How the command can appear, and what has to follow it.
  *
  * Built fresh per use rather than shared: a global regex carries `lastIndex`
@@ -85,7 +95,7 @@ describe("the scaffolder command is pinned wherever it is written down", () => {
          // This file names the bare form throughout, in the regex and in the
          // prose above it, and asserting against itself proves nothing.
          if (file === import.meta.path) continue;
-         const rel = path.relative(REPO_ROOT, file);
+         const rel = repoRelative(file);
          const lines = fs.readFileSync(file, "utf8").split("\n");
          for (const [i, line] of lines.entries()) {
             if (
@@ -107,7 +117,7 @@ describe("the scaffolder command is pinned wherever it is written down", () => {
    test("the scan actually reaches the files it claims to", () => {
       // Without this the test above passes just as well on an empty file list,
       // which is how a path that quietly stops resolving goes unnoticed.
-      const scanned = scannedFiles().map((f) => path.relative(REPO_ROOT, f));
+      const scanned = scannedFiles().map(repoRelative);
       for (const expected of [
          "README.md",
          "packages/create-malloy-package/README.md",
