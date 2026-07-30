@@ -1748,6 +1748,21 @@ function renderAgentsFile(
       host === "cursor"
          ? "ask the user to reload the MCP servers from Cursor's settings (the `malloy` server, then Refresh), or to restart Cursor."
          : "ask the user to run `/mcp`, select the `malloy` server, and choose Reconnect, or to restart Claude Code. That panel reports `Auth: not authenticated` and offers `Authenticate` first, which is a red herring: this endpoint has no auth, and Reconnect is the one that works.";
+   // Measured on Claude Code only, and the gate, the dialog and the discarded
+   // allowlist are all its own, so Cursor gets nothing rather than a dialog it
+   // does not have. Delegated to the user like reconnectNote above, because the
+   // reader here is the agent and only a human can answer a trust prompt.
+   const trustNote =
+      host === "cursor"
+         ? ""
+         : [
+              "",
+              "One gate can void the reconnect fix below, and you cannot clear it yourself: until a",
+              "human opens an interactive agent session in this directory once and accepts the trust",
+              "prompt, the `malloy_*` tools can report connected and still refuse to run. A",
+              "`.claude/settings.json` allowlist is no substitute for it. Ask the user to do it.",
+              "",
+           ].join("\n");
    // The count is the real one, not the shipped one. This file used to assert the
    // skills were there in the same run that installed none of them, and an agent
    // reading it went looking for skills that do not exist.
@@ -1787,6 +1802,7 @@ function renderAgentsFile(
       packageSection: packageSection(result, envPackages),
       mcpNote,
       reconnectNote,
+      trustNote,
       skillsNote,
    });
 }

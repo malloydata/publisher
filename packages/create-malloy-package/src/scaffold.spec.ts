@@ -531,6 +531,24 @@ describe("scaffold: cursor host", () => {
       expect(agents).toContain(".cursor/mcp.json");
       expect(agents).not.toContain("Claude Code offers to connect");
    });
+
+   test("AGENTS.md does not claim a trust gate Cursor does not have", () => {
+      // A cursor run writes no .claude/settings.json and Cursor shows no trust
+      // dialog, so naming either would have the agent report a blocker that does
+      // not exist, and demote the Refresh that is the real fix for it.
+      run({ host: "cursor" });
+      const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      // Both phrases sit within one wrapped line. A phrase that straddles the
+      // template's hard wrap would make these not.toContain pass over text that
+      // is in fact present.
+      expect(agents).not.toContain("settings.json");
+      expect(agents).not.toContain("One gate can void");
+      expect(agents).not.toContain("{{");
+      // The claude-code run is the one that carries it.
+      run({ host: "claude-code", force: true });
+      const claudeAgents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      expect(claudeAgents).toContain("One gate can void");
+   });
 });
 
 describe("scaffold: reserved-word names", () => {

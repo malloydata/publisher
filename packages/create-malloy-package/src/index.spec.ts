@@ -428,15 +428,28 @@ describe("formatSuccess: the MCP endpoint", () => {
    test("workspace trust is named before the reconnect remedy it voids", () => {
       // A workspace nobody has trusted yet lets the tools report connected and
       // still refuse to run, and discards a .claude/settings.json allowlist
-      // rather than merging it. It fires before the reconnect case, so a reader
-      // who acts on the reconnect note first fixes the wrong thing. The order is
-      // the claim, which is why it is asserted rather than just the presence.
+      // rather than merging it. It voids the reconnect remedy, so a reader who
+      // acts on that one first fixes the wrong thing. The order is the claim,
+      // which is why it is asserted rather than just the presence.
       const output = formatSuccess(resultFor());
-      expect(output).toContain("Trust this workspace first");
+      expect(output).toContain("Trust this workspace");
       expect(output).toContain("can't reconnect MCP");
-      expect(output.indexOf("Trust this workspace first")).toBeLessThan(
+      expect(output.indexOf("Trust this workspace")).toBeLessThan(
          output.indexOf("can't reconnect MCP"),
       );
+   });
+
+   test("a cursor run is not told to accept a dialog Cursor does not have", () => {
+      // The trust gate, the dialog and the discarded allowlist are all Claude
+      // Code's. Printed to a Cursor user, they send them hunting for a dialog
+      // that does not exist, past the Refresh that does work for them, which the
+      // reconnect note two lines down already tells them. Every other
+      // host-specific claim in this output is gated the same way.
+      const output = formatSuccess(resultFor({ host: "cursor" }));
+      expect(output).not.toContain("Trust this workspace");
+      expect(output).not.toContain("permissions allowlist");
+      // Not passing by printing nothing: the section itself is still there.
+      expect(output).toContain("Connect an agent:");
    });
 });
 

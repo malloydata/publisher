@@ -1039,15 +1039,19 @@ export function formatSuccess(result: ScaffoldResult): string {
    }
    // Measured 2026-07-29: the trust gate supersedes MCP scope, connection state,
    // and a .claude/settings.json allowlist (which is discarded, not merged), and
-   // it fires before the reconnect case below, whose remedy it voids. So it is
-   // named first.
-   lines.push(
-      log.yellow(
-         "  Trust this workspace first: run an agent here interactively once and\n" +
-            "  accept the dialog. Until then the malloy tools can report connected\n" +
-            "  and still refuse to run, and a permissions allowlist is ignored.",
-      ),
-   );
+   // it voids the remedy in the reconnect note below, so it is named above it.
+   // Claude Code only: the gate, the dialog and the allowlist are all its own, so
+   // saying this to a Cursor user would send them hunting for a dialog Cursor
+   // never shows, past the Refresh that does work for them.
+   if (result.host !== "cursor") {
+      lines.push(
+         log.yellow(
+            "  Trust this workspace: open an agent here interactively once and accept\n" +
+               "  the dialog. Until then the malloy tools can report connected and still\n" +
+               "  refuse to run, and a permissions allowlist is ignored.",
+         ),
+      );
+   }
    lines.push(
       log.dim(
          "  An agent that starts the server itself can't reconnect MCP in that\n" +
