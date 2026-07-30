@@ -810,6 +810,11 @@ export function processStorageDestinations(
  * reconcile stored rows against, so quietly dropping the part we could not read
  * would un-register destinations the caller believes it just re-affirmed. A
  * caller can be told, and can fix it.
+ *
+ * The rejection reasons reach that caller in an HTTP body, so a reason must name
+ * the defect without quoting a credential. The ones assembled here are literals,
+ * and the validator's own messages interpolate only a name, a type, or the
+ * offending identifier — keep it that way when adding one.
  */
 export function processStorageDestinationsOrThrow(
    destinations: ApiConnection[] = [],

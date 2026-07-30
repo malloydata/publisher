@@ -98,12 +98,12 @@ over the API survives a restart. `storageDestinations` in the config file
 seeds an environment that has none stored.
 
 The two sources are read with different strictness, because one of them can be
-told it is wrong. A `PATCH` carrying `storageDestinations` replaces the whole
-list, so a value that is not a list of usable destinations is refused with HTTP
-400 naming every defect, and none of it is applied — otherwise an entry the
-server could not read would be silently un-registered by an update the caller was
-told succeeded. Send an empty list to clear the destinations, and omit the field
-to leave them untouched. In the config file, or in rows restored at boot, an
+told it is wrong. A `POST` or `PATCH` carrying `storageDestinations` replaces the
+whole list, so a value that is not a list of usable destinations is refused with
+HTTP 400 naming every defect, and none of it is applied — otherwise an entry the
+server could not read would be silently un-registered by a write the caller was
+told succeeded. On a `PATCH`, send an empty list to clear the destinations, and
+omit the field to leave them untouched. In the config file, or in rows restored at boot, an
 unusable entry is instead dropped with a warning: nothing can be asked to fix it
 there, and one bad entry must not take an environment offline.
 
