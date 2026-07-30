@@ -13,18 +13,24 @@ Everything below talks to a running server, so start it before anything else:
 {{startCommand}}
 ```
 
-That is meant to run Publisher on http://localhost:{{port}} (web UI and REST) with the
-MCP endpoint on http://localhost:{{mcpPort}}/mcp, and to mount this workspace's
-packages in watch mode so model edits recompile. Those two ports are Publisher's own
-defaults, and the command above does not name them: `--port` and `--mcp_port` exist
-but are only in play if someone has added them. Watch mode is the one of the three
-that IS in the command, as `--watch-env`, alongside `--server_root` and `--config`.
-Read the command itself, and where it is an `npm` script the script `package.json`
-runs for it, before you trust anything below: a `--port` or `--mcp_port` added
-later moves every URL in this file, a
-`--server_root` or `--config` pointing outside this directory serves a different
-workspace entirely, and no `--watch-env` means an edit on disk is not picked up at all
-until you reload the package. The server settles all of it on boot, printing
+That is *meant* to run Publisher on http://localhost:{{port}} (web UI and REST) with
+the MCP endpoint on http://localhost:{{mcpPort}}/mcp, and to mount this workspace's
+packages in watch mode so model edits recompile. Meant to, because only some of that
+is written in the command, and this paragraph cannot see what yours says. Go and
+read it, and where it is an `npm` script, read the script `package.json` runs for it.
+Five flags decide whether the rest of this file is true:
+
+- `--port` and `--mcp_port` are absent from a command that uses the defaults above,
+  which is the usual case. Where either one is present, it moves every URL here.
+- `--watch-env` is not a default, so watch mode is on only if you can see it. Without
+  it, an edit on disk is not picked up at all until you reload the package.
+- `--server_root` and `--config` say which workspace is being served. Pointing either
+  one outside this directory serves a different workspace entirely, and then nothing
+  below describes what you are talking to.
+- `--host` decides whether the endpoint is reachable from off this machine. That one
+  has a section of its own further down; read it before you assume this is private.
+
+The server settles all of it on boot, printing
 `Publisher server listening at http://<address>:<port>` and a
 `MCP server listening at ...` line beside it, so read those two lines rather than
 taking this paragraph's word for it.
