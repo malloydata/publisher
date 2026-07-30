@@ -65,6 +65,14 @@ export interface QueryEnvelope {
    _rows_truncated?: boolean;
    _total_rows?: number;
    _returned_rows?: number;
+   /**
+    * The `query_id` property attached to this query's statements: the join key
+    * into the backend's own query record (`QUERY_HISTORY`, `JOBS.labels`, the
+    * statement text). Publisher-side and new to both products, like the two
+    * `_limit_...` fields. Absent when nothing was attached, which is every query
+    * on a deployment that has not enabled query metadata.
+    */
+   _query_id?: string;
    warning?: string;
    renderLogErrors?: string[];
 }
@@ -97,6 +105,7 @@ export function buildQueryEnvelope(
    renderLogErrors: string[] = [],
    limit = MAX_RESULT_CHARS,
    rowLimitSource: QueryRowLimitSource = "server_default",
+   queryCorrelationId: string | null = null,
 ): QueryEnvelope {
    const rowCount = Array.isArray(rows) ? rows.length : 0;
    // Equality, not >=: the cap is pushed into the SQL, so the database cannot
@@ -132,6 +141,7 @@ export function buildQueryEnvelope(
       _query_row_limit: rowLimit,
       _limit_source: rowLimitSource,
       _limit_hit: limitHit,
+      ...(queryCorrelationId !== null && { _query_id: queryCorrelationId }),
       ...(renderLogErrors.length > 0 && { renderLogErrors }),
    };
 

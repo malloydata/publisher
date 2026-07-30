@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { MalloyError } from "@malloydata/malloy";
 import { registerExecuteQueryTool } from "./execute_query_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
+import type { ModelQueryMetadataInput } from "../../service/model";
 import {
    NotQueryableError,
    QueryTimeoutError,
@@ -62,6 +63,64 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
             }),
          }) as never,
    };
+}
+
+/**
+ * A store whose query SUCCEEDS, capturing the per-query metadata input the tool
+ * built. `connections` becomes the environment's connection config, so a test
+ * can pin what the connection layers resolved to.
+ */
+function storeCapturingMetadata(
+   connections: Record<
+      string,
+      {
+         queryMetadata?: Record<string, string>;
+         queryMetadataEnforced?: Record<string, string>;
+      }
+   > = {},
+): {
+   store: Partial<EnvironmentStore>;
+   captured: () => ModelQueryMetadataInput | undefined;
+} {
+   let captured: ModelQueryMetadataInput | undefined;
+   const store: Partial<EnvironmentStore> = {
+      getEnvironment: async () =>
+         ({
+            assertCanAdmitQuery: () => undefined,
+            getApiConnection: (name: string) => {
+               const connection = connections[name];
+               if (!connection) throw new Error(`no connection ${name}`);
+               return connection;
+            },
+            getPackage: async () => ({
+               getModel: () => ({
+                  getModelType: () => "model",
+                  getModel: async () => ({}),
+                  getQueryResults: async (
+                     ..._args: [
+                        ...unknown[],
+                        ModelQueryMetadataInput | undefined,
+                     ]
+                  ) => {
+                     // The 8th argument: sourceName, queryName, query,
+                     // filterParams, bypassFilters, givens, abortSignal, input.
+                     captured = _args[7] as ModelQueryMetadataInput | undefined;
+                     return {
+                        result: {
+                           schema: { fields: [] },
+                           connection_name: "warehouse",
+                        },
+                        compactResult: [{ c: 1 }],
+                        rowLimit: 1000,
+                        rowLimitSource: "server_default",
+                        queryCorrelationId: "corr-1",
+                     };
+                  },
+               }),
+            }),
+         }) as never,
+   };
+   return { store, captured: () => captured };
 }
 
 const args = {
@@ -159,5 +218,77 @@ describe("malloy_executeQuery error classification", () => {
       const textBlock = result.content.find((b) => b.type === "text");
       expect(textBlock).toBeDefined();
       expect(textBlock!.text).toContain(parsed.error);
+   });
+});
+
+describe("malloy_executeQuery per-query metadata", () => {
+   it("resolves the connection's enforced layer, which an agent must not be able to shed", async () => {
+      // The reason this path matters: `queryMetadataEnforced` is the property a
+      // host is billed or audited by, and MCP is this server's primary agent
+      // interface. A tool that omits the metadata input issues every one of its
+      // statements without the tenant label, on a connection whose config says
+      // it is applied to everything the connection sends.
+      const { store, captured } = storeCapturingMetadata({
+         warehouse: {
+            queryMetadata: { team: "finance" },
+            queryMetadataEnforced: { tenant: "acme" },
+         },
+      });
+      const handler = captureHandler(store);
+      await handler(args);
+
+      const layers = captured()?.connectionMetadata?.("warehouse");
+      expect(layers).toEqual({
+         default: { team: "finance" },
+         enforced: { tenant: "acme" },
+      });
+   });
+
+   it("passes the environment and mints a correlation id", async () => {
+      // Both arrive through the input object; neither is derivable inside Model.
+      const { store, captured } = storeCapturingMetadata();
+      const handler = captureHandler(store);
+      await handler(args);
+
+      expect(captured()?.environment).toBe("env");
+      expect(captured()?.correlationId).toMatch(/^[0-9a-f-]{36}$/);
+   });
+
+   it("returns the id the statements carried, so an agent can find its query", async () => {
+      const { store } = storeCapturingMetadata();
+      const handler = captureHandler(store);
+      const parsed = parse(await handler(args));
+      expect(parsed._query_id).toBe("corr-1");
+   });
+
+   it("fails open when the connection config cannot be read", async () => {
+      // A tag must never be the reason a query fails, so an unresolvable
+      // connection costs the layers rather than the statement.
+      const { store, captured } = storeCapturingMetadata();
+      const handler = captureHandler(store);
+      await handler(args);
+      expect(captured()?.connectionMetadata?.("missing")).toBeNull();
+   });
+
+   it("builds the same input for a named view as for ad-hoc Malloy", async () => {
+      // Two call sites, one input: the enforced layer cannot depend on which
+      // shape of query the agent happened to send.
+      const { store, captured } = storeCapturingMetadata({
+         warehouse: { queryMetadataEnforced: { tenant: "acme" } },
+      });
+      const handler = captureHandler(store);
+      await handler({
+         environmentName: "env",
+         packageName: "pkg",
+         modelPath: "m.malloy",
+         sourceName: "orders",
+         queryName: "by_month",
+      });
+
+      expect(captured()?.environment).toBe("env");
+      expect(captured()?.connectionMetadata?.("warehouse")).toEqual({
+         default: undefined,
+         enforced: { tenant: "acme" },
+      });
    });
 });

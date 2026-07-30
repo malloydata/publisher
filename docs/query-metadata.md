@@ -86,7 +86,7 @@ The reason it exists: the connection API is administered, while a package annota
 
 ## Correlating an API call with a backend query
 
-A query response carries `queryCorrelationId` — the id Publisher minted for that query and attached as its `query_id` property. Look the same value up on the other side:
+A query response carries `queryCorrelationId` — the id Publisher minted for that query and attached as its `query_id` property. Over MCP the same id is `_query_id` in the `malloy_executeQuery` envelope. Look the same value up on the other side:
 
 ```sql
 -- Snowflake: the bag is the JSON QUERY_TAG
