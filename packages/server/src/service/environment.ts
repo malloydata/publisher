@@ -42,6 +42,7 @@ import {
 import {
    storageDestinationRoot,
    processStorageDestinations,
+   processStorageDestinationsOrThrow,
    storageDestinationsEqual,
 } from "./connection_config";
 import {
@@ -298,15 +299,24 @@ export class Environment {
    }
 
    public async update(payload: ApiEnvironment) {
+      // Ahead of the readme write, so a body carrying a destination list we
+      // cannot read is refused before this method has changed anything.
+      //
+      // Absent means "leave alone", so a caller updating only the readme or the
+      // connections cannot blank the destination list by omission. Anything else
+      // present is acted on, including a shape we cannot read: the list replaces
+      // what is stored, so "we did not understand this" must not resolve to "then
+      // keep none of them". An explicit empty list is a different thing and does
+      // clear it.
+      if (payload.storageDestinations !== undefined) {
+         this.setStorageDestinations(payload.storageDestinations, {
+            rejectInvalid: true,
+         });
+      }
+
       if (payload.readme !== undefined) {
          this.metadata.readme = payload.readme;
          await this.writeEnvironmentReadme(payload.readme);
-      }
-
-      // Absent means "leave alone", so a caller updating only the readme or the
-      // connections cannot blank the destination list by omission.
-      if (payload.storageDestinations) {
-         this.setStorageDestinations(payload.storageDestinations);
       }
 
       // Handle connections update
@@ -649,16 +659,30 @@ export class Environment {
     * An entry that carries nothing but the fields a read reports is resolved
     * against the stored list first, so a read-modify-write of the environment
     * keeps the configs it was never shown.
+    *
+    * `rejectInvalid` picks what an entry we cannot use means. A config file or a
+    * restored row is a source that cannot be asked to fix it, so the default
+    * drops the entry and keeps serving. A request body can be refused, and is:
+    * see {@link processStorageDestinationsOrThrow}.
     */
-   public setStorageDestinations(storageDestinations: ApiConnection[]): void {
+   public setStorageDestinations(
+      storageDestinations: ApiConnection[],
+      { rejectInvalid = false }: { rejectInvalid?: boolean } = {},
+   ): void {
       const previous = this.destinations;
-      this.destinations = processStorageDestinations(
-         Array.isArray(storageDestinations)
-            ? storageDestinations.map((destination) =>
-                 this.resolveDestinationReference(destination),
-              )
-            : storageDestinations,
-      );
+      // Resolved before validation so an entry that legitimately carries no
+      // config of its own — the "keep this one" reference — is validated as the
+      // stored destination it names, not as the bare reference.
+      const requested = Array.isArray(storageDestinations)
+         ? storageDestinations.map((destination) =>
+              this.resolveDestinationReference(destination),
+           )
+         : storageDestinations;
+      // Throws before anything is assigned, so a refused update leaves the
+      // environment exactly as it was.
+      this.destinations = rejectInvalid
+         ? processStorageDestinationsOrThrow(requested)
+         : processStorageDestinations(requested);
       // An explicit set makes the list authoritative again: whatever could not be
       // read before, this is now the set the store should be reconciled to.
       this.destinationsAuthoritative = true;

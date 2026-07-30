@@ -2,6 +2,7 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import { parseHostKeys } from "./proxy";
 import {
@@ -675,53 +676,71 @@ export function storageDestinationRoot(environmentPath: string): string {
    return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);
 }
 
+/** An entry of a `storageDestinations` list that cannot be used, and why. */
+export type RejectedStorageDestination = {
+   /** Absent when the entry carried no usable name to attribute the defect to. */
+   name?: string;
+   /** The defect, as a sentence naming what is wrong with the entry. */
+   reason: string;
+};
+
 /**
- * Validates a `storageDestinations` list and returns the entries that
- * may be built into and served from. The one place destinations are checked, so
- * no caller can seat an unvalidated destination on an Environment.
+ * Sorts a `storageDestinations` list into the entries that may be built into and
+ * served from, and the entries that cannot be used. The one place destinations
+ * are checked, so no caller can seat an unvalidated destination on an
+ * Environment.
  *
  * Names are unique within the list and are NOT checked against the
  * environment's connections. The two lists are separate namespaces: one
  * environment may hold a connection and a destination that share a name and
  * mean different warehouses, and both must keep working.
  *
- * An unusable entry is dropped with a warning instead of failing the whole
- * environment, so one malformed destination does not take a tenant's packages
- * offline. Dropping is safe because it is not a substitution: build and serve
- * resolve destinations only through this list, so a `storage=` build naming a
- * dropped destination fails rather than falling through to a same-named
- * connection.
+ * Reports what it rejected rather than deciding what that means: a list read
+ * from config or from storage drops the bad entry and keeps serving
+ * ({@link processStorageDestinations}), while a list that arrived on a request
+ * body is refused whole ({@link processStorageDestinationsOrThrow}). Dropping is
+ * safe because it is not a substitution: build and serve resolve destinations
+ * only through this list, so a `storage=` build naming a dropped destination
+ * fails rather than falling through to a same-named connection.
  */
-export function processStorageDestinations(
+export function validateStorageDestinations(
    destinations: ApiConnection[] = [],
-): ApiConnection[] {
+): {
+   accepted: ApiConnection[];
+   rejected: RejectedStorageDestination[];
+} {
+   const accepted: ApiConnection[] = [];
+   const rejected: RejectedStorageDestination[] = [];
+
    if (!Array.isArray(destinations)) {
-      return [];
+      return {
+         accepted,
+         rejected: [{ reason: "the value is not a list of destinations." }],
+      };
    }
 
-   const accepted: ApiConnection[] = [];
    const seen = new Set<string>();
 
    for (const destination of destinations) {
       if (!destination || typeof destination !== "object") {
-         logger.warn(
-            "Invalid storage destination: entry must be an object. Skipping.",
-         );
+         rejected.push({ reason: "the entry is not an object." });
          continue;
       }
 
       const { name, type } = destination;
       if (!name || typeof name !== "string") {
-         logger.warn(
-            `Invalid storage destination: missing or invalid "name" field. Skipping.`,
-         );
+         rejected.push({
+            reason: `the "name" field is missing or not a string.`,
+         });
          continue;
       }
       if (!type || !DECLARABLE_STORAGE_DESTINATION_TYPES.has(type)) {
-         logger.warn(
-            `Storage destination "${name}" has unsupported type "${type}". ` +
-               `Supported types: ${[...DECLARABLE_STORAGE_DESTINATION_TYPES].join(", ")}. Skipping.`,
-         );
+         rejected.push({
+            name,
+            reason:
+               `the type "${type}" is not a supported destination type ` +
+               `(supported: ${[...DECLARABLE_STORAGE_DESTINATION_TYPES].join(", ")}).`,
+         });
          continue;
       }
       // A destination named `duckdb` could never be reached: the package
@@ -729,24 +748,24 @@ export function processStorageDestinations(
       // sandbox before any environment list is consulted, so a serve compile
       // would read an empty sandbox instead of the destination.
       if (name === "duckdb") {
-         logger.warn(
-            `Storage destination name "duckdb" is reserved for per-package sandboxes. Skipping.`,
-         );
+         rejected.push({
+            name,
+            reason: `the name "duckdb" is reserved for per-package sandboxes.`,
+         });
          continue;
       }
       if (seen.has(name)) {
-         logger.warn(
-            `Duplicate storage destination "${name}". Keeping the first entry and skipping this one.`,
-         );
+         rejected.push({
+            name,
+            reason: "an earlier entry already uses this name.",
+         });
          continue;
       }
 
       try {
          validateConnectionShape(destination);
       } catch (error) {
-         logger.warn(
-            `Invalid storage destination "${name}": ${(error as Error).message} Skipping.`,
-         );
+         rejected.push({ name, reason: (error as Error).message });
          continue;
       }
 
@@ -758,6 +777,51 @@ export function processStorageDestinations(
       accepted.push(body);
    }
 
+   return { accepted, rejected };
+}
+
+/** One rejection, as a phrase that reads inside a longer sentence. */
+function describeRejection(rejection: RejectedStorageDestination): string {
+   return rejection.name
+      ? `storage destination "${rejection.name}": ${rejection.reason}`
+      : `storage destination: ${rejection.reason}`;
+}
+
+/**
+ * The usable entries of a list whose source cannot be asked to fix it — the
+ * config file, or the rows restored from storage. An unusable entry is dropped
+ * with a warning rather than failing the whole environment, so one malformed
+ * destination does not take a tenant's packages offline.
+ */
+export function processStorageDestinations(
+   destinations: ApiConnection[] = [],
+): ApiConnection[] {
+   const { accepted, rejected } = validateStorageDestinations(destinations);
+   for (const rejection of rejected) {
+      logger.warn(`Invalid ${describeRejection(rejection)} Skipping.`);
+   }
+   return accepted;
+}
+
+/**
+ * The entries of a list that arrived on a request body, or a `BadRequestError`
+ * naming every defect. Nothing is applied unless the whole list is understood:
+ * the list has replace semantics and the caller's set becomes the set to
+ * reconcile stored rows against, so quietly dropping the part we could not read
+ * would un-register destinations the caller believes it just re-affirmed. A
+ * caller can be told, and can fix it.
+ */
+export function processStorageDestinationsOrThrow(
+   destinations: ApiConnection[] = [],
+): ApiConnection[] {
+   const { accepted, rejected } = validateStorageDestinations(destinations);
+   if (rejected.length > 0) {
+      throw new BadRequestError(
+         `storageDestinations was not accepted — ${rejected
+            .map(describeRejection)
+            .join(" ")}`,
+      );
+   }
    return accepted;
 }
 

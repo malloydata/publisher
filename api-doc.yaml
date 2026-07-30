@@ -2684,6 +2684,11 @@ components:
             entry that names a stored destination and carries no config is read
             as "keep this one", so echoing back what a read returned does not
             strip the stored configs.
+
+            A write is all-or-nothing: because the list replaces what is stored,
+            a value that is not a list of usable destinations is refused with
+            400 naming every defect, and none of it is applied. Sending an empty
+            list is the way to clear the destinations.
           items:
             $ref: "#/components/schemas/Connection"
         packages:

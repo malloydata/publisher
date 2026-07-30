@@ -8,6 +8,7 @@ import { components } from "../api";
 import { getProcessedPublisherConfig } from "../config";
 import { PUBLISHER_CONFIG_NAME } from "../constants";
 import {
+   BadRequestError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    internalErrorToHttpError,
@@ -549,13 +550,17 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          [ducklakeDestination("managed", "org_a")],
       );
 
-      await environment.update({
-         name: "test-env",
-         storageDestinations: [
-            { name: "managed", type: "ducklake" },
-            { name: "invented", type: "ducklake" },
-         ],
-      });
+      // "managed" resolves to the stored destination; "invented" has no config to
+      // resolve to and none of its own, so the update is refused whole.
+      await expect(
+         environment.update({
+            name: "test-env",
+            storageDestinations: [
+               { name: "managed", type: "ducklake" },
+               { name: "invented", type: "ducklake" },
+            ],
+         }),
+      ).rejects.toThrow(/invented/);
 
       expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
          "managed",
@@ -596,19 +601,100 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(environment.hasStorageDestination("other")).toBe(true);
    });
 
-   it("validates destinations that arrive over the API, not just from config", async () => {
-      const environment = makeEnvironment([], []);
+   it("refuses an update carrying an unusable destination, and applies none of it", async () => {
+      // A partial application would be the quiet kind of data loss: the accepted
+      // entries become the authoritative set, so the entry we could not read is
+      // un-registered — and its stored row pruned — by an update the caller was
+      // told succeeded.
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a")],
+      );
 
-      await environment.update({
-         name: "test-env",
-         storageDestinations: [
-            tenantPostgresConnection("managed"),
-            ducklakeDestination("also_managed", "org_b"),
-         ],
-      });
+      await expect(
+         environment.update({
+            name: "test-env",
+            storageDestinations: [
+               tenantPostgresConnection("wrong_type"),
+               ducklakeDestination("also_managed", "org_b"),
+            ],
+         }),
+      ).rejects.toThrow(BadRequestError);
 
       expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
-         "also_managed",
+         "managed",
+      ]);
+   });
+
+   it("refuses an update whose destination list is not a list at all", async () => {
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a")],
+      );
+
+      await expect(
+         environment.update({
+            name: "test-env",
+            storageDestinations: "lake" as unknown as ApiConnection[],
+         }),
+      ).rejects.toThrow(BadRequestError);
+
+      expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
+         "managed",
+      ]);
+      // Still the desired state, so the store sync that follows an update has no
+      // reason to prune the rows the refused body failed to describe.
+      expect(environment.hasAuthoritativeStorageDestinations()).toBe(true);
+   });
+
+   it("names every defect in a refusal, so one round trip is enough to fix it", async () => {
+      const environment = makeEnvironment([], []);
+
+      let refusal: Error | undefined;
+      try {
+         await environment.update({
+            name: "test-env",
+            storageDestinations: [
+               tenantPostgresConnection("wrong_type"),
+               { name: "duckdb", type: "ducklake" },
+            ],
+         });
+      } catch (error) {
+         refusal = error as Error;
+      }
+
+      expect(refusal?.message).toContain("wrong_type");
+      expect(refusal?.message).toContain("duckdb");
+      // And it reaches the caller as a request error rather than a server fault.
+      expect(internalErrorToHttpError(refusal!).status).toBe(400);
+   });
+
+   it("clears the destination list for an explicit empty list", async () => {
+      // Distinct from a shape we cannot read: an empty list is understood, and
+      // means the environment should hold no destinations.
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a")],
+      );
+
+      await environment.update({ name: "test-env", storageDestinations: [] });
+
+      expect(environment.listStorageDestinations()).toEqual([]);
+   });
+
+   it("drops an unusable destination from config instead of refusing to load", async () => {
+      // The other half of the same decision. A config file and a restored row
+      // cannot be asked to fix themselves, and one bad entry must not take a
+      // tenant's whole environment offline.
+      const environment = makeEnvironment([], []);
+
+      environment.setStorageDestinations([
+         tenantPostgresConnection("wrong_type"),
+         ducklakeDestination("usable", "org_b"),
+      ]);
+
+      expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
+         "usable",
       ]);
    });
 
