@@ -11,7 +11,7 @@
  * from.
  *
  * So this asks the registry what `latest` is and says something when we are
- * behind. Three rules, because a scaffolder that misbehaves offline is worse than
+ * behind. Four rules, because a scaffolder that misbehaves offline is worse than
  * a stale one:
  *
  *   - Fail open. Every failure path resolves undefined and prints nothing. No
@@ -26,8 +26,10 @@
  *     to go back; it is a limit worth stating rather than a claim to make.
  *   - Cancellable, so a run that fails before the output is written does not sit
  *     waiting on a check nobody will read.
- *   - Opt out with CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK, for CI and for anyone
- *     who does not want the call made at all. Documented in both READMEs.
+ *   - Off by default where nobody is reading. CI and NO_UPDATE_NOTIFIER both
+ *     skip the call, and CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK is ours for
+ *     anyone else who does not want it made. See OPT_OUT_ENV; documented in
+ *     both READMEs.
  *
  * This is the only network call this package makes. It is a plain unauthenticated
  * GET of a public package document, it sends nothing about the user or their
@@ -57,6 +59,47 @@ const TIMEOUT_MS = 1500;
 
 /** Enough for the manifest; a hostile endpoint does not get to stream forever. */
 const MAX_BODY_BYTES = 1_000_000;
+
+/**
+ * Names that switch the check off. Any of them is enough.
+ *
+ * CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK is ours, and documented in both READMEs.
+ *
+ * CI is set by every mainstream runner, and a build has nobody to read the
+ * advice: the check would be a network call and up to TIMEOUT_MS added to a job
+ * that did not ask for it, and its own answer changes nothing there. This
+ * repository's create-malloy-package-npm.yml scaffolds with the built bin, so
+ * without this line CI made the call on every run.
+ *
+ * NO_UPDATE_NOTIFIER is the de-facto name in this ecosystem (npm's own
+ * update-notifier honours it). Someone who has already turned these off globally
+ * should not have to discover that we invented a second spelling.
+ *
+ * `false` and `0` mean off, not on. Plain truthiness would read `CI=false` as
+ * "in CI", and that value is real: Netlify and create-react-app builds set it
+ * deliberately. This does change one thing about the flag we already shipped,
+ * `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=0` now leaves the check running, but
+ * the READMEs document `=1`, and someone writing `=0` means "no, do check".
+ */
+const OPT_OUT_ENV = [
+   "CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK",
+   "CI",
+   "NO_UPDATE_NOTIFIER",
+] as const;
+
+export function updateCheckDisabled(
+   env: NodeJS.ProcessEnv = process.env,
+): boolean {
+   return OPT_OUT_ENV.some((name) => {
+      const value = env[name]?.trim().toLowerCase();
+      return (
+         value !== undefined &&
+         value !== "" &&
+         value !== "0" &&
+         value !== "false"
+      );
+   });
+}
 
 /**
  * Parse a plain `x.y.z`. Anything else (a prerelease, build metadata, a range,
@@ -121,10 +164,26 @@ function getBody(
                   return;
                }
                let body = "";
+               let bytes = 0;
                res.setEncoding("utf8");
                res.on("data", (chunk: string) => {
                   body += chunk;
-                  if (body.length > MAX_BODY_BYTES) req.destroy();
+                  // Bytes, not chunk.length. With setEncoding the chunks are
+                  // strings, and String#length counts UTF-16 code units, so a
+                  // body of non-ASCII would be measured at up to half its real
+                  // size and the cap would let through twice what it names.
+                  bytes += Buffer.byteLength(chunk, "utf8");
+                  if (bytes > MAX_BODY_BYTES) {
+                     req.destroy();
+                     // Settle here rather than leaving it to whatever destroy()
+                     // emits. It does settle on its own, and quickly, but not
+                     // by the same route on each runtime: measured against a
+                     // server streaming 1MB every 5ms, node lands on res 'error'
+                     // (ECONNRESET) at 12ms and bun on res 'end' at 12ms. Both
+                     // are fine and neither is promised anywhere, so the one
+                     // line makes the outcome ours instead of theirs.
+                     finish(undefined);
+                  }
                });
                res.on("end", () => finish(body));
                res.on("error", () => finish(undefined));
@@ -168,7 +227,7 @@ export async function fetchLatestVersion(
    timeoutMs: number = TIMEOUT_MS,
    onCancel: (cancel: () => void) => void = () => {},
 ): Promise<string | undefined> {
-   if (process.env.CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK) return undefined;
+   if (updateCheckDisabled()) return undefined;
    const body = await getBody(url, timeoutMs, onCancel);
    if (body === undefined) return undefined;
    try {

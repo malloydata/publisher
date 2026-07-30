@@ -1,11 +1,27 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as http from "node:http";
 import {
    fetchLatestVersion,
    isOlder,
    staleScaffolderWarning,
    startVersionCheck,
+   updateCheckDisabled,
 } from "./registry_check";
+
+/**
+ * Every name that switches the check off, cleared around each test.
+ *
+ * CI is the one that matters: it is set on every GitHub runner, and the check
+ * declines there on purpose. Without this, the whole `fetchLatestVersion` block
+ * would go green in CI by never making a request at all, which is the precise
+ * shape of a test that cannot fail when the feature breaks.
+ */
+const OPT_OUTS = [
+   "CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK",
+   "CI",
+   "NO_UPDATE_NOTIFIER",
+];
+let savedEnv: Record<string, string | undefined> = {};
 
 /**
  * A stand-in registry, so nothing here touches the network. Every test that needs
@@ -28,10 +44,20 @@ function serve(
    });
 }
 
+beforeEach(() => {
+   savedEnv = Object.fromEntries(OPT_OUTS.map((k) => [k, process.env[k]]));
+   for (const k of OPT_OUTS) delete process.env[k];
+});
+
 afterEach(() => {
    server?.close();
    server = undefined;
-   delete process.env.CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK;
+   // Restored rather than deleted: CI belongs to the runner, not to us.
+   for (const k of OPT_OUTS) {
+      const value = savedEnv[k];
+      if (value === undefined) delete process.env[k];
+      else process.env[k] = value;
+   }
 });
 
 describe("isOlder", () => {
@@ -188,15 +214,73 @@ describe("fetchLatestVersion", () => {
       if (timer) clearInterval(timer);
    });
 
-   test("makes no request at all when the opt-out is set", async () => {
-      let hits = 0;
+   test("makes no request at all when any opt-out is set", async () => {
+      for (const name of OPT_OUTS) {
+         let hits = 0;
+         const url = await serve((_req, res) => {
+            hits++;
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ version: "9.9.9" }));
+         });
+         process.env[name] = "1";
+         expect(await fetchLatestVersion(url)).toBeUndefined();
+         expect(hits).toBe(0);
+         delete process.env[name];
+         server?.close();
+         server = undefined;
+      }
+   });
+
+   test("gives up on a body larger than the cap, without waiting out the deadline", async () => {
+      // A hostile endpoint that answers 200 and then streams forever. What this
+      // discriminates on is MAX_BODY_BYTES itself: remove the cap and the read
+      // runs until the deadline, so the assertion below goes from ~20ms to the
+      // full 10s. It does NOT discriminate on the finish() beside the destroy(),
+      // which was measured settling on its own at 12ms on both runtimes; that
+      // line is there to fix the route, not the timing.
+      let timer: ReturnType<typeof setInterval> | undefined;
       const url = await serve((_req, res) => {
-         hits++;
          res.writeHead(200, { "content-type": "application/json" });
-         res.end(JSON.stringify({ version: "9.9.9" }));
+         const megabyte = "x".repeat(1_000_000);
+         timer = setInterval(() => {
+            if (!res.writableEnded) res.write(megabyte);
+         }, 5);
       });
-      process.env.CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK = "1";
-      expect(await fetchLatestVersion(url)).toBeUndefined();
-      expect(hits).toBe(0);
+      const started = Date.now();
+      // A 3s deadline it must not reach, so the assertion below is what reports
+      // a regression. Deliberately under bun's own 5s per-test timeout: at 10s
+      // the capless case trips that instead and the failure says "timed out"
+      // rather than naming the number.
+      expect(await fetchLatestVersion(url, 3000)).toBeUndefined();
+      expect(Date.now() - started).toBeLessThan(1500);
+      if (timer) clearInterval(timer);
+   });
+});
+
+describe("updateCheckDisabled", () => {
+   test("any of the three names, with any ordinary truthy value", () => {
+      for (const name of OPT_OUTS) {
+         expect(updateCheckDisabled({ [name]: "1" })).toBe(true);
+         expect(updateCheckDisabled({ [name]: "true" })).toBe(true);
+         expect(updateCheckDisabled({ [name]: "yes" })).toBe(true);
+      }
+      expect(updateCheckDisabled({})).toBe(false);
+   });
+
+   test("`false` and `0` mean off, not on", () => {
+      // CI=false is a real value that real builds set (Netlify, CRA), and plain
+      // truthiness would read the string "false" as "in CI" and skip the check
+      // for exactly the people who asked for it.
+      for (const name of OPT_OUTS) {
+         for (const value of ["", " ", "0", "false", "FALSE", " false "]) {
+            expect(updateCheckDisabled({ [name]: value })).toBe(false);
+         }
+      }
+   });
+
+   test("one name set off does not cancel another set on", () => {
+      expect(
+         updateCheckDisabled({ CI: "false", NO_UPDATE_NOTIFIER: "1" }),
+      ).toBe(true);
    });
 });

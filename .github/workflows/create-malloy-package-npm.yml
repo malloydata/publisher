@@ -51,6 +51,13 @@ jobs:
           node-version: "24"
 
       - name: Smoke-test the built bin under Node
+        env:
+          # This step scaffolds for real, and the scaffolder asks the npm
+          # registry whether it is the current version. The runner already sets
+          # CI, which the check honours, so this is belt and braces: it keeps the
+          # step off the network even if that behaviour is ever narrowed, and it
+          # is the one place in this repo that exercises the documented opt-out.
+          CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK: "1"
         run: |
           bun run --cwd packages/skills build
           BIN="$PWD/packages/create-malloy-package/dist/index.js"

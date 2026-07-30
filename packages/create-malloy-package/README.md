@@ -24,12 +24,18 @@ writing, it asks the npm registry which version is `latest` and prints a note if
 you are running is older. That is the only network request this package makes: a plain
 unauthenticated GET of a public package document, sending nothing about you or your
 files. It is bounded at 1.5 seconds and fails open, so no network, a proxy, or a
-registry outage costs you a moment of silence and nothing else. To skip the request
-entirely, in CI or on an air-gapped machine:
+registry outage costs you a moment of silence and nothing else.
+
+The request is not made at all when `CI` or `NO_UPDATE_NOTIFIER` is set, so a build
+never pays for advice nobody will read, and a machine that has already switched off
+update notices stays switched off. Anywhere else, `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK`
+does the same thing:
 
 ```bash
 CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1 npm create @malloy-publisher/malloy-package@latest sales
 ```
+
+Set any of the three to a value other than `0` or `false`.
 
 The workspace files land in the current directory and the package in `./sales`, so you
 run `npm start` from where you created it (no need to `cd` into the package). The
