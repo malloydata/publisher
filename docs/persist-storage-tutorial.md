@@ -1,7 +1,7 @@
 # Tutorial: materialize a source into DuckLake and serve it back
 
 Malloy Publisher can materialize a `#@ persist` source into a **store you choose**
-— a registered DuckDB or DuckLake connection — instead of the source's own
+— a registered DuckLake materialization destination — instead of the source's own
 warehouse, and then serve queries against that source **straight from the
 materialized table**, cross-dialect, with no changes to your model. The query
 you already run keeps working; behind it, the rows now come from the
@@ -18,7 +18,9 @@ do. Every step here was run against a real server; the outputs shown are real.
 > annotation. The default (no `storage=`) is a **colocated** materialization: the
 > source materializes into and serves from its own warehouse, unchanged. This
 > tutorial is about **external** materialization — materialize into a _separate_
-> DuckDB/DuckLake store and serve from there.
+> DuckLake store and serve from there. That store is a **materialization
+> destination**: declared alongside `connections` rather than in it, so it is not
+> a name any model, notebook cell, or query can resolve.
 
 ---
 
@@ -28,8 +30,9 @@ do. Every step here was run against a real server; the outputs shown are real.
   The build pushes the compiled query to the source warehouse via a native
   passthrough; supported source types are `postgres`, `bigquery`, and
   `snowflake`. Postgres is the easiest to run locally.
-- A **DuckLake** connection — a catalog (a Postgres database) plus a local data
-  directory — that you create and materialize into. (A cloud deployment would
+- A **DuckLake** materialization destination — a catalog (a Postgres database)
+  plus a local data directory — that you create and materialize into. (A cloud
+  deployment would
   point `bucketUrl` at `s3://`/`gs://`; locally a filesystem path is enough and
   no object-storage secret is created. Publisher disables DuckLake's small-table
   inlining on materialization writes, so data always lands as Parquet in the
@@ -88,15 +91,21 @@ PERSIST_STORAGE_MODE=off bun run start        # REST :4000, MCP :4040
 curl -s http://localhost:4000/api/v0/status | jq -r .operationalState   # -> "serving"
 ```
 
-A clone serves the bundled `examples` environment; we'll add our connections and
-package to it.
+A clone serves the bundled `examples` environment; we'll add our source
+connection, our destination, and the package to it.
 
 ---
 
-## 3. Register the two connections
+## 3. Register the source connection and the destination
 
-`POST /environments/{env}/connections/{name}` — the name is in the path, the
-body carries the type-specific config. (The response is a success message.)
+These are two different things, registered two different ways. The warehouse your
+model queries is a **connection**. The lake you materialize into is a
+**materialization destination** — a separate list that models cannot name, so a
+`storage=` target can never be read or written by a query. (See
+[connections.md](connections.md#materialization-destinations).)
+
+`POST /environments/{env}/connections/{name}` registers a connection — the name
+is in the path, the body carries the type-specific config:
 
 ```bash
 # Postgres source
@@ -106,18 +115,46 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/connections/o
     "postgresConnection":{"host":"localhost","port":5432,"databaseName":"tutorial","userName":"tutorial","password":"tutorial"}
   }'
 
-# DuckLake destination: catalog = the ducklake_catalog DB, storage = a local dir
-curl -s -X POST http://localhost:4000/api/v0/environments/examples/connections/lake \
-  -H 'content-type: application/json' -d '{
-    "name":"lake","type":"ducklake",
-    "ducklakeConnection":{
-      "catalog":{"postgresConnection":{"host":"localhost","port":5432,"databaseName":"ducklake_catalog","userName":"tutorial","password":"tutorial"}},
-      "storage":{"bucketUrl":"/tmp/publisher-tutorial-lake"}
-    }
-  }'
-
 curl -s http://localhost:4000/api/v0/environments/examples/connections | jq '[.[].name]'
-# -> [ ..., "orders_pg", "lake" ]
+# -> [ ..., "orders_pg" ]
+```
+
+Destinations are set on the environment, as a list:
+
+```bash
+# DuckLake destination: catalog = the ducklake_catalog DB, storage = a local dir
+curl -s -X PATCH http://localhost:4000/api/v0/environments/examples \
+  -H 'content-type: application/json' -d '{
+    "name":"examples",
+    "materializationDestinations":[{
+      "name":"lake","type":"ducklake",
+      "ducklakeConnection":{
+        "catalog":{"postgresConnection":{"host":"localhost","port":5432,"databaseName":"ducklake_catalog","userName":"tutorial","password":"tutorial"}},
+        "storage":{"bucketUrl":"/tmp/publisher-tutorial-lake"}
+      }
+    }]
+  }' | jq '.materializationDestinations'
+# -> [ { "name": "lake", "type": "ducklake" } ]
+```
+
+Reads report a destination's name and type only — never its config, which holds
+warehouse credentials. The status endpoint reports the same, which is how you
+confirm what a server picked up:
+
+```bash
+curl -s http://localhost:4000/api/v0/status \
+  | jq '.environments[] | select(.name=="examples") | .materializationDestinations'
+# -> [ { "name": "lake", "type": "ducklake" } ]
+```
+
+`lake` is deliberately absent from the connection list above. Asking the
+connection endpoints for it returns 404, exactly as for a name that was never
+registered:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:4000/api/v0/environments/examples/connections/lake
+# -> 404
 ```
 
 ---
@@ -152,7 +189,8 @@ source: daily_orders is orders -> {
 }
 MALLOY
 
-# Register the package (connections must already exist so the source compiles).
+# Register the package. The source connection must already exist so the model
+# compiles; the destination is resolved at build and serve time, not at compile.
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
   -H 'content-type: application/json' -d '{"name":"persist-tutorial"}' \
   | jq '{name, sources: (.buildPlan.sources|keys|map(split("@")[0])), warnings}'

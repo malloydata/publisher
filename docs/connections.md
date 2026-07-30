@@ -25,7 +25,9 @@ An env-level DuckDB connection must declare at least one attached database. If y
 
 A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.
 
-It also doubles as a materialization **destination** for the storage tier: a `#@ persist storage=<name>` source is built into it and served back from it (see [persist-storage-tutorial.md](persist-storage-tutorial.md)). The live user-facing attach is read-only; a build materializes over a transient, build-scoped read-write session. It pairs a **catalog** — a metadata database, typically Postgres — with **storage** — a `bucketUrl` for the Parquet data (an `s3://`/`gs://` URL in the cloud, or a local directory for dev):
+The same shape also describes a materialization **destination** — where a `#@ persist storage=<name>` source is built and served from — but a destination is **not** a connection and is declared in its own list. See [Materialization destinations](#materialization-destinations) below and [persist-storage-tutorial.md](persist-storage-tutorial.md).
+
+A `ducklake` connection pairs a **catalog** — a metadata database, typically Postgres — with **storage** — a `bucketUrl` for the Parquet data (an `s3://`/`gs://` URL in the cloud, or a local directory for dev):
 
 ```json
 {
@@ -47,6 +49,57 @@ It also doubles as a materialization **destination** for the storage tier: a `#@
 ```
 
 Materialized data always lands as **Parquet** in the storage bucket (Publisher disables DuckLake small-table inlining on the write path, so it never accumulates in the catalog database). The materialization tier is gated by `PERSIST_STORAGE_MODE` — see [configuration.md](configuration.md).
+
+## Materialization destinations
+
+A `#@ persist storage=<name>` source is built into, and served from, a
+**materialization destination**. Destinations are declared in
+`materializationDestinations`, a sibling of `connections`:
+
+```jsonc
+{
+  "name": "examples",
+  "packages": [ /* … */ ],
+  "connections": [ /* the warehouses your models query */ ],
+  "materializationDestinations": [
+    {
+      "name": "lake",
+      "type": "ducklake",
+      "ducklakeConnection": {
+        "catalog": { "postgresConnection": { /* … */ } },
+        "storage": { "bucketUrl": "/path/or/s3://bucket/prefix" }
+      }
+    }
+  ]
+}
+```
+
+The entry has the same shape as a `ducklake` connection. What differs is which
+list it lives in, and that difference is the point:
+
+- **A destination is not resolvable from a model.** `connection.table(...)` /
+  `connection.sql(...)`, a notebook cell, and query text all resolve against
+  `connections`, so a model naming a destination does not compile — the name is
+  not in scope. Only the build path and the materialized-serve path resolve
+  destinations.
+- **A destination has no endpoint.** It is absent from
+  `GET /connections` and `GET /connections/{name}` (404, exactly as for a name
+  that does not exist), and the connection SQL endpoints cannot address it.
+  The status endpoint reports each destination's `name` and `type` so an operator
+  can confirm what a server picked up; the config itself is never returned.
+- **Names are independent.** A connection and a destination may share a name and
+  mean two different warehouses; neither shadows the other. Only `duckdb` is
+  refused, since the per-package sandbox claims that name.
+- **`type` is restricted to `ducklake`.** Every type admitted here is another way
+  to define a warehouse that no connection endpoint audits.
+
+Destinations persist in `publisher.db` like connections do, so one registered
+over the API survives a restart. `materializationDestinations` in the config file
+seeds an environment that has none stored.
+
+A `storage=` build naming a destination that is not configured fails with HTTP
+422. It does **not** fall back to a connection of that name: that fallback would
+materialize a tenant's data into a warehouse nobody chose.
 
 ## Connection naming rules
 
