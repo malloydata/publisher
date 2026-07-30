@@ -41,10 +41,9 @@ returning the old model's rows; it may instead make the source vanish, so every 
 fails with `Reference to undefined object '<source>'`. Either way the failure goes only
 to the server's stdout, which you are not reading if you started it in the background.
 So a query that succeeds after an edit is not proof the edit compiled, and the rows you
-get back may be the old model's. Compile-check the edit with `malloy_compile`, or
-reload with `malloy_reloadPackage` afterwards (both described below, with the REST forms
-for when nobody can reconnect you); either one reports the failure that watch mode
-swallowed, though they report it differently over REST.
+get back may be the old model's. Compile-check the edit with `malloy_compile`, or reload with
+`malloy_reloadPackage` afterwards (both described below, and reload has a REST form for a
+script or an unattended run); either one reports the failure that watch mode swallowed.
 
 Poll until it reports serving rather than assuming a fixed wait; the first run
 downloads the server, so it can take a minute:
@@ -147,13 +146,10 @@ watch-mode recompile that failed), and
 `malloy_searchDocs`. {{mcpNote}}
 
 REST, for a script or a check that does not need an agent: every model is queryable at
-`POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`, and
-compile-checkable at that same path with `/compile` in place of `/query`, sending
-`{"source": ""}` to check the model file on its own. Compile answers HTTP 200 whether or
-not it compiled, so read `status` in the body rather than the status code.
-`GET /api/v0/environments/<env>/packages/<package>?reload=true` reloads the package after
-an edit, and answers 424 with the compile errors when it fails. This lists what the
-server has loaded:
+`POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`, and after a
+model-file edit `GET /api/v0/environments/<env>/packages/<package>?reload=true` recompiles
+the package and comes back 424 with the compile errors when it does not compile. Treat any
+non-2xx as a failed check. This lists what the server has loaded:
 
 ```bash
 curl -s http://localhost:{{port}}/api/v0/environments/{{envName}}/packages

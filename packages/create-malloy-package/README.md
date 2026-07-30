@@ -71,6 +71,12 @@ whatever that file names, and the generated agent briefing spells out the URLs f
 this workspace. That briefing is `AGENTS.md`, or `AGENTS.malloy.md` in a directory
 that already had an `AGENTS.md` of its own; see "Running it again" below.
 
+One thing to expect the first time an agent runs here. A directory nobody has trusted
+yet is a separate gate from connecting the MCP server: Claude Code will list the
+`malloy_*` tools and then refuse every call, and a `.claude/settings.json` allowlist is
+discarded rather than merged. Start Claude Code in the directory once and answer the
+trust prompt, which is asked once per directory.
+
 ## Query it
 
 The web UI at http://localhost:4000 is the quickest look. For a check you can script,

@@ -137,6 +137,9 @@ semantic model. No schema spelunking, no hallucinated column names.
 
 - **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
   ([`skills/`](skills/)) that most AI coding hosts auto-discover. Start there.
+- **In a workspace nobody has trusted yet**, Claude Code lists the `malloy_*` tools and then refuses
+  every call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude
+  Code in the directory once and answer the trust prompt; it is asked once per directory.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
   [docs/ai-agents.md](docs/ai-agents.md) for per-client config and the stdio bridge.
 

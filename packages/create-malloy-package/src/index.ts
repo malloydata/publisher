@@ -1044,11 +1044,14 @@ export function formatSuccess(result: ScaffoldResult): string {
    // saying this to a Cursor user would send them hunting for a dialog Cursor
    // never shows, past the Refresh that does work for them.
    if (result.host !== "cursor") {
+      // "a human has to", not "do this": an agent that ran the scaffolder itself
+      // reads this output, and it cannot answer a trust prompt. The template says
+      // the same thing the same way.
       lines.push(
          log.yellow(
-            "  Trust this workspace: open an agent here interactively once and accept\n" +
-               "  the dialog. Until then the malloy tools can report connected and still\n" +
-               "  refuse to run, and a permissions allowlist is ignored.",
+            "  Trust this workspace: a human has to open Claude Code here once and\n" +
+               "  accept the dialog. Until then the malloy tools can report connected and\n" +
+               "  still refuse to run, and a permissions allowlist is ignored.",
          ),
       );
    }

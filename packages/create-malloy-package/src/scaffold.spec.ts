@@ -536,18 +536,44 @@ describe("scaffold: cursor host", () => {
       // A cursor run writes no .claude/settings.json and Cursor shows no trust
       // dialog, so naming either would have the agent report a blocker that does
       // not exist, and demote the Refresh that is the real fix for it.
+      //
+      // Asserted as the INVARIANT (no Claude-Code-only marker survives into a
+      // cursor briefing) rather than as the two literal phrases this change
+      // happens to add. The merge this branch is behind on reintroduces the same
+      // defect from another direction, and a phrase-matching test would stay
+      // green through it. `.claude/skills/` is the one legitimate exception:
+      // skillsNote prints that path for both hosts because the scaffolder really
+      // does install skills there.
       run({ host: "cursor" });
       const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
-      // Both phrases sit within one wrapped line. A phrase that straddles the
-      // template's hard wrap would make these not.toContain pass over text that
-      // is in fact present.
-      expect(agents).not.toContain("settings.json");
-      expect(agents).not.toContain("One gate can void");
+      const claudeOnly = agents
+         .split("\n")
+         .filter((line) =>
+            /claude mcp add|(^|[^.\w])\/mcp\b|Claude Code|\.claude\/settings/.test(
+               line,
+            ),
+         );
+      expect(claudeOnly).toEqual([]);
       expect(agents).not.toContain("{{");
-      // The claude-code run is the one that carries it.
+
+      // The claude-code run is the one that carries it, asserted positively so
+      // the facts cannot be deleted from the product text with a green suite.
       run({ host: "claude-code", force: true });
       const claudeAgents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
       expect(claudeAgents).toContain("One gate can void");
+      expect(claudeAgents).toContain("settings.json");
+   });
+
+   test("AGENTS.md keeps the two facts that make the REST fallback usable", () => {
+      // The reload form is offered as the check for an unattended run, and it is
+      // only usable with its failure channel: a failed recompile is a 424, and a
+      // non-2xx is a failed check. Untested, a later trim can drop either and
+      // leave the route documented without the facts that make it safe.
+      run({ host: "claude-code" });
+      const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      expect(agents).toContain("?reload=true");
+      expect(agents).toContain("424");
+      expect(agents).toContain("non-2xx");
    });
 });
 

@@ -1751,16 +1751,23 @@ function renderAgentsFile(
    // Measured on Claude Code only, and the gate, the dialog and the discarded
    // allowlist are all its own, so Cursor gets nothing rather than a dialog it
    // does not have. Delegated to the user like reconnectNote above, because the
-   // reader here is the agent and only a human can answer a trust prompt.
+   // reader here is the agent and only a human can answer a trust prompt. It
+   // leads with the symptom that separates this from the case below, since
+   // otherwise an agent with no tools at all sends the user to do the trust
+   // dance for a cause it does not have. And it reports rather than lobbies:
+   // this file gets committed, so in someone else's cloned workspace the text
+   // would otherwise be repo-controlled prose arguing to trust that repo.
    const trustNote =
       host === "cursor"
          ? ""
          : [
               "",
-              "One gate can void the reconnect fix below, and you cannot clear it yourself: until a",
-              "human opens an interactive agent session in this directory once and accepts the trust",
-              "prompt, the `malloy_*` tools can report connected and still refuse to run. A",
-              "`.claude/settings.json` allowlist is no substitute for it. Ask the user to do it.",
+              "One gate can void the reconnect fix below, and you cannot clear it yourself: if the",
+              "`malloy_*` tools are listed but every call is refused, this workspace has not been",
+              "trusted, and a `.claude/settings.json` allowlist is discarded until it is. A human has to",
+              "start Claude Code in this directory once and answer the trust prompt, which is asked once",
+              "per directory. Tell the user, and leave the choice to them. If the tools are not listed at",
+              "all, this is not the cause and the paragraph below is.",
               "",
            ].join("\n");
    // The count is the real one, not the shipped one. This file used to assert the

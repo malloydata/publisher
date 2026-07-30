@@ -437,6 +437,13 @@ describe("formatSuccess: the MCP endpoint", () => {
       expect(output.indexOf("Trust this workspace")).toBeLessThan(
          output.indexOf("can't reconnect MCP"),
       );
+      // Asserted positively as well, because the cursor test below guards these
+      // two facts only with not.toContain, which stays green if they are deleted.
+      expect(output).toContain("permissions allowlist");
+      // An agent that ran the scaffolder itself reads this output and cannot
+      // answer a trust prompt, so the line names the human rather than telling
+      // the reader to do it.
+      expect(output).toContain("a human has to");
    });
 
    test("a cursor run is not told to accept a dialog Cursor does not have", () => {
