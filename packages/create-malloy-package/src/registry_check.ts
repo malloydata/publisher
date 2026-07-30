@@ -10,6 +10,15 @@
  * one server release that could not read the spreadsheet it had just been seeded
  * from.
  *
+ * The mechanism, measured on npm 11.12.1 against the live registry: `npm create`
+ * rewrites a bare spec to `@*` before caching it, and the `_npx` slot then freezes
+ * the range it first resolved (`^0.0.1`, which on 0.0.x means exactly 0.0.1). `@*`
+ * is satisfied by that, so no request is made. Reproduced with the real slot: the
+ * bare command served 0.0.1 and pinned server 0.0.231 with 29 skills, twice, while
+ * `@latest` in the same cache got 0.0.2 and 30 skills. `npx` with a bare name
+ * behaves the OPPOSITE way, recording the spec verbatim and re-resolving it, which
+ * is why the server pin in scaffold.ts exists. Same cache, different subcommand.
+ *
  * So this asks the registry what `latest` is and says something when we are
  * behind. Four rules, because a scaffolder that misbehaves offline is worse than
  * a stale one:

@@ -257,7 +257,11 @@ const BIND_HOST = "127.0.0.1";
  *
  * `npx -y @malloy-publisher/server` with no version re-resolves `latest` on
  * every start, forever, and there is no lockfile behind it: a workspace
- * generated months ago boots whatever was published this morning. That is a
+ * generated months ago boots whatever was published this morning. Measured on
+ * npm 11.12.1: `npx` records a bare spec verbatim and re-resolves it, so a slot
+ * already holding an older version is replaced. This is the opposite of what
+ * `npm create` does with a bare spec, and registry_check.ts covers that; the two
+ * are different npm subcommands, not a contradiction. That is a
  * silent behaviour change on someone else's machine, and the flag it would be
  * felt through first is `--host`. The server accepts an unknown flag without a
  * word and falls back to binding 0.0.0.0, so the day a release renames or drops
