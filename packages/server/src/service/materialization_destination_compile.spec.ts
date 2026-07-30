@@ -53,7 +53,7 @@ type ApiConnection = components["schemas"]["Connection"];
  */
 const DESTINATION_NAME = "managed";
 /** A name deliberately held by BOTH lists. */
-const SHARED_NAME = "credible";
+const SHARED_NAME = "shared";
 
 /** What Malloy says when a name is not in the config it was handed. */
 const NOT_IN_CONFIG = `No connection named "${DESTINATION_NAME}" found in config`;

@@ -281,12 +281,12 @@ describe("Environment: connections and materialization destinations are disjoint
 
    it("keeps a connection and a destination that share a name independent", () => {
       const environment = makeEnvironment(
-         [tenantPostgresConnection("credible")],
-         [ducklakeDestination("credible", "org_a")],
+         [tenantPostgresConnection("shared")],
+         [ducklakeDestination("shared", "org_a")],
       );
 
-      const connection = environment.getApiConnection("credible");
-      const destination = environment.getMaterializationDestination("credible");
+      const connection = environment.getApiConnection("shared");
+      const destination = environment.getMaterializationDestination("shared");
 
       expect(connection.type).toBe("postgres");
       expect(destination.type).toBe("ducklake");
@@ -346,16 +346,16 @@ describe("Environment: connections and materialization destinations are disjoint
       // would replace the other's, across two namespaces that are allowed to
       // reuse a name. Different roots is what makes that unreachable.
       const connectionSide = assembleEnvironmentConnections(
-         [ducklakeDestination("credible", "tenant_lake")],
+         [ducklakeDestination("shared", "tenant_lake")],
          envPath,
       );
       const destinationSide = assembleEnvironmentConnections(
-         [ducklakeDestination("credible", "org_a")],
+         [ducklakeDestination("shared", "org_a")],
          materializationDestinationRoot(envPath),
       );
 
-      const connectionMeta = connectionSide.metadata.get("credible")!;
-      const destinationMeta = destinationSide.metadata.get("credible")!;
+      const connectionMeta = connectionSide.metadata.get("shared")!;
+      const destinationMeta = destinationSide.metadata.get("shared")!;
 
       expect(destinationMeta.databasePath).not.toBe(
          connectionMeta.databasePath,
@@ -378,8 +378,8 @@ describe("Environment: connections and materialization destinations are disjoint
       // one opened is what the instance pool keys on, so two files is two
       // instances.
       const environment = makeEnvironment(
-         [ducklakeDestination("credible", "tenant_lake")],
-         [ducklakeDestination("credible", "org_a")],
+         [ducklakeDestination("shared", "tenant_lake")],
+         [ducklakeDestination("shared", "org_a")],
       );
 
       for (const config of [
@@ -387,20 +387,20 @@ describe("Environment: connections and materialization destinations are disjoint
          environment.getMaterializationDestinationMalloyConfig(),
       ]) {
          try {
-            await config.connections.lookupConnection("credible");
+            await config.connections.lookupConnection("shared");
          } catch {
             // Expected: the catalogs behind both are unreachable.
          }
       }
 
-      expect(
-         fs.existsSync(path.join(envPath, "credible_ducklake.duckdb")),
-      ).toBe(true);
+      expect(fs.existsSync(path.join(envPath, "shared_ducklake.duckdb"))).toBe(
+         true,
+      );
       expect(
          fs.existsSync(
             path.join(
                materializationDestinationRoot(envPath),
-               "credible_ducklake.duckdb",
+               "shared_ducklake.duckdb",
             ),
          ),
       ).toBe(true);
@@ -584,9 +584,9 @@ describe("publisher config round-trip", () => {
             {
                name: "examples",
                packages: [{ name: "storefront", location: "./storefront" }],
-               connections: [tenantPostgresConnection("credible")],
+               connections: [tenantPostgresConnection("shared")],
                materializationDestinations: [
-                  ducklakeDestination("credible", "org_a"),
+                  ducklakeDestination("shared", "org_a"),
                ],
             },
          ],
@@ -595,10 +595,10 @@ describe("publisher config round-trip", () => {
       const processed = getProcessedPublisherConfig(serverRoot);
       const environment = processed.environments[0];
 
-      expect(environment.connections.map((c) => c.name)).toEqual(["credible"]);
+      expect(environment.connections.map((c) => c.name)).toEqual(["shared"]);
       expect(
          environment.materializationDestinations.map((d) => d.name),
-      ).toEqual(["credible"]);
+      ).toEqual(["shared"]);
    });
 
    it("reports no destinations when the key is absent or not a list", () => {
@@ -612,7 +612,7 @@ describe("publisher config round-trip", () => {
             {
                name: "other",
                packages: [{ name: "storefront", location: "./storefront" }],
-               materializationDestinations: "credible",
+               materializationDestinations: "shared",
             },
          ],
       });

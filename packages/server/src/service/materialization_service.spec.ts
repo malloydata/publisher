@@ -1984,7 +1984,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
    afterEach(() => ctx.sandbox.restore());
 
    const MANAGED_DESTINATION = {
-      name: "credible",
+      name: "shared",
       type: "ducklake",
       ducklakeConnection: {
          catalog: {
@@ -1999,7 +1999,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
 
    /** The tenant's own warehouse, sharing a name with the destination above. */
    const TENANT_CONNECTION = {
-      name: "credible",
+      name: "shared",
       type: "postgres",
       postgresConnection: {
          host: "tenant.example.com",
@@ -2014,7 +2014,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       // Stub the write seam so a resolved destination does not need a live
       // catalog: reaching it at all is what these tests are about.
       const write = sinon.stub().resolves({
-         storageConnectionName: "credible",
+         storageConnectionName: "shared",
          schema: [{ name: "order_month", type: "DATE" }],
       });
       (
@@ -2038,14 +2038,14 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
             fakeSource({
                name: "monthly",
                sourceEntityId: "abcdef1234567890",
-               annotationFields: { storage: "credible" },
+               annotationFields: { storage: "shared" },
             }),
             {
                sourceEntityId: "abcdef1234567890",
                materializedTableId: "mt",
                physicalTableName: "monthly__mabc",
                realization: "COPY",
-               destination: "credible",
+               destination: "shared",
             },
             new Manifest(),
             environment,
@@ -2055,7 +2055,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
                   sourceEntityId: "up",
                   sourceName: "daily",
                   physicalTableName: "daily__mabc",
-                  storageConnectionName: "credible",
+                  storageConnectionName: "shared",
                   schema: [{ name: "order_date", type: "DATE" }],
                },
             },
@@ -2068,20 +2068,20 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
    it("materializes into the destination the destination list holds", async () => {
       const environment = buildEnvironmentStub({
          connections: { duckdb: { name: "duckdb", type: "duckdb" } },
-         destinations: { credible: MANAGED_DESTINATION },
+         destinations: { shared: MANAGED_DESTINATION },
       });
       const { run, write } = callInto(environment);
 
       const entry = await run();
 
-      expect(entry.storageConnectionName).toBe("credible");
+      expect(entry.storageConnectionName).toBe("shared");
       expect(
-         environment.getMaterializationDestination.calledWith("credible"),
+         environment.getMaterializationDestination.calledWith("shared"),
       ).toBe(true);
       // The config handed to the write is the destination's, by identity - not a
       // same-named connection's, and not a copy assembled from somewhere else.
       expect(write.firstCall.args[2]).toBe(MANAGED_DESTINATION);
-      expect(environment.getApiConnection.calledWith("credible")).toBe(false);
+      expect(environment.getApiConnection.calledWith("shared")).toBe(false);
    });
 
    it("refuses rather than writing into a same-named connection", async () => {
@@ -2092,7 +2092,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       const environment = buildEnvironmentStub({
          connections: {
             duckdb: { name: "duckdb", type: "duckdb" },
-            credible: TENANT_CONNECTION,
+            shared: TENANT_CONNECTION,
          },
          destinations: {},
       });
@@ -2108,7 +2108,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       expect(error).toBeInstanceOf(DestinationNotFoundError);
       // Nothing was written, and the tenant's connection was never even resolved.
       expect(write.called).toBe(false);
-      expect(environment.getApiConnection.calledWith("credible")).toBe(false);
+      expect(environment.getApiConnection.calledWith("shared")).toBe(false);
       // Reported as a misconfigured target, not as a missing connection.
       expect(internalErrorToHttpError(error as Error).status).toBe(422);
    });

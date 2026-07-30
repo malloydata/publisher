@@ -176,7 +176,7 @@ describe("service/connection_service", () => {
          );
          try {
             const destination: ApiConnection = {
-               name: "credible",
+               name: "shared",
                type: "ducklake",
                ducklakeConnection: {
                   catalog: {
@@ -213,8 +213,8 @@ describe("service/connection_service", () => {
                environment,
             );
 
-            await connectionService.addConnection("test-project", "credible", {
-               name: "credible",
+            await connectionService.addConnection("test-project", "shared", {
+               name: "shared",
                type: "postgres",
                postgresConnection: {
                   host: "tenant.example.com",
@@ -227,14 +227,14 @@ describe("service/connection_service", () => {
 
             // The connection landed, and the destination of the same name is
             // untouched — still a ducklake, still pointed at its own catalog.
-            expect(environment.getApiConnection("credible").type).toBe(
+            expect(environment.getApiConnection("shared").type).toBe(
                "postgres",
             );
             expect(
                environment.listMaterializationDestinations().map((d) => d.name),
-            ).toEqual(["credible"]);
+            ).toEqual(["shared"]);
             expect(
-               environment.getMaterializationDestination("credible")
+               environment.getMaterializationDestination("shared")
                   .ducklakeConnection?.storage?.bucketUrl,
             ).toBe("gs://managed-tier/org_a");
          } finally {
