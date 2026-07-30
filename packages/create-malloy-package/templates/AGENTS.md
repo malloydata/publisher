@@ -177,18 +177,8 @@ this workspace's MCP config is only discovered by an agent session that **starte
 this directory**. A session rooted anywhere else, a parent directory included, never
 sees the server, and no message anywhere reports it. The two causes need different
 fixes, so tell them apart before acting. If the server is running and the tools were
-never offered at all, ask the user to relaunch the agent from this directory, or to
-register the server so the directory stops deciding:
-
-```bash
-claude mcp add --transport http malloy http://localhost:{{mcpPort}}/mcp -s user
-```
-
-That registration is stored per user rather than per project, so the tools follow the
-agent everywhere. Skills need no such escape hatch: they are rescanned as the working
-directory changes, so a session started further up picks them up once work moves into
-this directory.
-
+never offered at all, ask the user to relaunch the agent from this directory.
+{{registrationNote}}
 ## Skills ({{skillsCount}} installed)
 
 {{skillsNote}}

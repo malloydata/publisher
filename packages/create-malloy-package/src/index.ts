@@ -1082,19 +1082,33 @@ export function formatSuccess(result: ScaffoldResult): string {
    // shape and saying so matters, because the two symptoms are identical from the
    // outside: .claude/skills is rescanned as the working directory changes, so a
    // session started further up picks them up on its own.
-   lines.push(
-      log.dim(
-         `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
-            "  STARTED in this directory. Launch your agent from here. If you cannot,\n" +
-            "  register the server so the directory stops mattering (.claude/skills\n" +
-            "  needs nothing: it is rescanned as the working directory changes):",
-      ),
-   );
-   lines.push(
-      `    ${log.cyan(
-         `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
-      )}`,
-   );
+   // The directory-scope fact holds for both hosts, since a project MCP config is
+   // read from the session's own root either way. The escape hatch below it does
+   // not: `claude mcp add -s user` is Claude Code's CLI and the skills rescan is
+   // its behaviour, so a Cursor user would be handed a command they cannot run as
+   // the fix for missing tools.
+   if (trustNamed) {
+      lines.push(
+         log.dim(
+            `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
+               "  STARTED in this directory. Launch your agent from here. If you cannot,\n" +
+               "  register the server so the directory stops mattering (.claude/skills\n" +
+               "  needs nothing: it is rescanned as the working directory changes):",
+         ),
+      );
+      lines.push(
+         `    ${log.cyan(
+            `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
+         )}`,
+      );
+   } else {
+      lines.push(
+         log.dim(
+            `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
+               "  STARTED in this directory. Launch your agent from here.",
+         ),
+      );
+   }
    lines.push("");
 
    return lines.join("\n") + "\n";

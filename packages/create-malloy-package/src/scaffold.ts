@@ -1757,6 +1757,30 @@ function renderAgentsFile(
    // dance for a cause it does not have. And it reports rather than lobbies:
    // this file gets committed, so in someone else's cloned workspace the text
    // would otherwise be repo-controlled prose arguing to trust that repo.
+   // The escape hatch for a session started outside this directory. Both halves
+   // are Claude Code's: `claude mcp add -s user` is its CLI, and the skills
+   // rescan is its behaviour, so Cursor gets neither rather than a command it
+   // cannot run. The directory-scope fact itself stays ungated in the template,
+   // because a project MCP config is read from the opened root in both hosts.
+   const registrationNote =
+      host === "cursor"
+         ? ""
+         : [
+              // Own leading and trailing blank, so the empty cursor case collapses
+              // to a single blank line instead of leaving a double one.
+              "",
+              "If they cannot, ask them to register the server so the directory stops deciding:",
+              "",
+              "```bash",
+              `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
+              "```",
+              "",
+              "That registration is stored per user rather than per project, so the tools follow the",
+              "agent everywhere. Skills need no such escape hatch: they are rescanned as the working",
+              "directory changes, so a session started further up picks them up once work moves into",
+              "this directory.",
+              "",
+           ].join("\n");
    const trustNote =
       host === "cursor"
          ? ""
@@ -1813,6 +1837,7 @@ function renderAgentsFile(
       packageSection: packageSection(result, envPackages),
       mcpNote,
       reconnectNote,
+      registrationNote,
       trustNote,
       skillsNote,
    });
