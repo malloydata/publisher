@@ -1,9 +1,15 @@
+import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import {
    BuildInstruction,
    ManifestReference,
 } from "../storage/DatabaseInterface";
 import { MaterializationService } from "../service/materialization_service";
+import { queryMetadataViolations } from "../service/query_metadata";
+
+type RunContext = components["schemas"]["RunContext"];
+
+const RUN_TRIGGERS = ["publish", "on_demand", "scheduler"] as const;
 
 export class MaterializationController {
    constructor(private materializationService: MaterializationService) {}
@@ -31,6 +37,7 @@ export class MaterializationController {
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      runContext?: RunContext;
    } {
       const result: {
          forceRefresh?: boolean;
@@ -38,7 +45,11 @@ export class MaterializationController {
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         runContext?: RunContext;
       } = {};
+      if (body.runContext !== undefined && body.runContext !== null) {
+         result.runContext = this.validateRunContext(body.runContext);
+      }
       if (
          body.buildInstructions !== undefined &&
          body.buildInstructions !== null
@@ -70,6 +81,55 @@ export class MaterializationController {
          result.sourceNames = body.sourceNames as string[];
       }
       return result;
+   }
+
+   /**
+    * Validate `runContext`, the caller's observability context for one run.
+    * `trigger` is a closed enum here even though it feeds a metadata property:
+    * the whole point is that a reader can group runs by how they started, which a
+    * free-form value would quietly break.
+    *
+    * Note this is NOT the service-level `trigger` the parser above deliberately
+    * refuses. That one decides whether the run counts as scheduled; this one only
+    * labels the statements the run issues, so accepting `publish` from a caller
+    * forges nothing.
+    */
+   private validateRunContext(raw: unknown): RunContext {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+         throw new BadRequestError("runContext must be an object");
+      }
+      const obj = raw as Record<string, unknown>;
+      const context: RunContext = {};
+      if (obj.trigger !== undefined && obj.trigger !== null) {
+         if (
+            typeof obj.trigger !== "string" ||
+            !RUN_TRIGGERS.includes(obj.trigger as (typeof RUN_TRIGGERS)[number])
+         ) {
+            throw new BadRequestError(
+               `runContext.trigger must be one of ${RUN_TRIGGERS.join(" | ")}`,
+            );
+         }
+         context.trigger = obj.trigger as RunContext["trigger"];
+      }
+      if (obj.runId !== undefined && obj.runId !== null) {
+         if (typeof obj.runId !== "string") {
+            throw new BadRequestError("runContext.runId must be a string");
+         }
+         // Held to the metadata contract like any other caller-supplied
+         // property: it becomes the `run_id` on every statement of the build,
+         // and a value the contract rejects would otherwise be truncated and
+         // rewritten in silence — leaving the caller with an id it cannot join
+         // on and no way to know why.
+         const violations = queryMetadataViolations({ run_id: obj.runId });
+         if (violations.length > 0) {
+            throw new BadRequestError(
+               `runContext.runId is attached to every statement as the run_id ` +
+                  `property: ${violations.join("; ")}`,
+            );
+         }
+         context.runId = obj.runId;
+      }
+      return context;
    }
 
    /**

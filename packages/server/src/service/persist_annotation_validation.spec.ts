@@ -66,6 +66,18 @@ describe("assertPersistNamesQuoted", () => {
       ).not.toThrow();
    });
 
+   it("does not mistake a DOTTED key for the name field", () => {
+      // `.` is a word boundary, so a `\b`-anchored pattern reads
+      // `queryMetadata.name=` as the persist name and fails the whole model
+      // load with a 424 about quoting a name the author never declared.
+      expect(() =>
+         assertPersistNamesQuoted(
+            `#@ persist name="bar" queryMetadata.name=finance`,
+            "m.malloy",
+         ),
+      ).not.toThrow();
+   });
+
    it("reports every offending annotation in the message", () => {
       expect(() =>
          assertPersistNamesQuoted(

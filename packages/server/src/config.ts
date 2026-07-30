@@ -615,6 +615,40 @@ export const getPersistCollisionEnforce = (): boolean =>
    // prevent. A typo throws at startup, like every other flag here.
    parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
+/**
+ * Whether the publisher attaches per-query metadata at all, from
+ * `PUBLISHER_QUERY_METADATA` (default `off`).
+ *
+ * Ships dark for a release, like `PERSIST_STORAGE_MODE` before it, and for the
+ * same reason: this is the rare feature that touches EVERY statement the server
+ * sends. On a backend with no native tag facility the bag rides as a leading SQL
+ * comment, so `on` changes the text of the statement (never its meaning or its
+ * results) and puts the bag in query logs and `pg_stat_activity`.
+ *
+ * The risk that decides the default is upstream, not here. Malloy validates the
+ * bag at dispatch and THROWS on one it cannot render, and the contract it
+ * validates against is mirrored in `service/query_metadata.ts` against a pinned
+ * version. Every mitigation on this path — clamping, shedding, never throwing —
+ * is downstream of that mirror being right, so a tightened upstream limit would
+ * surface as failing customer queries on a path nobody opted into. `off` for a
+ * release means a deployment turns attribution on deliberately, having read
+ * what it does to its statements.
+ *
+ * Case-insensitive; loud-fails on an unrecognized value, so a typo cannot
+ * silently leave a deployment that asked for attribution without it.
+ */
+export type QueryMetadataMode = "on" | "off";
+
+export const getQueryMetadataMode = (): QueryMetadataMode => {
+   const raw = process.env.PUBLISHER_QUERY_METADATA;
+   if (raw === undefined || raw.trim() === "") return "off";
+   const value = raw.trim().toLowerCase();
+   if (value === "on" || value === "off") return value;
+   throw new Error(
+      `PUBLISHER_QUERY_METADATA must be on | off (got ${JSON.stringify(raw)})`,
+   );
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

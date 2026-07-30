@@ -2,8 +2,16 @@ import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
-import { ModelNotFoundError } from "../errors";
+import { BadRequestError, ModelNotFoundError } from "../errors";
 import { bigIntReplacer } from "../json_utils";
+import { logger } from "../logger";
+import {
+   mintCorrelationId,
+   parseQueryClass,
+   parseSuppliedQueryMetadata,
+   type QueryClass,
+   type QueryMetadata,
+} from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
@@ -29,7 +37,26 @@ export class QueryController {
       filterParams?: FilterParams,
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
+      /**
+       * The request's per-query metadata fields, unvalidated — this controller is
+       * the boundary that turns a bad bag into a 400 rather than letting the
+       * connector refuse the statement at dispatch.
+       */
+      metadata?: {
+         queryMetadata?: unknown;
+         queryClass?: unknown;
+         versionId?: string;
+      },
    ): Promise<ApiQuery> {
+      let requestMetadata: QueryMetadata | undefined;
+      let queryClass: QueryClass | undefined;
+      try {
+         requestMetadata = parseSuppliedQueryMetadata(metadata?.queryMetadata);
+         queryClass = parseQueryClass(metadata?.queryClass);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
+      }
+
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -46,20 +73,60 @@ export class QueryController {
       if (!model) {
          throw new ModelNotFoundError(`${modelPath} does not exist`);
       } else {
-         const { result, compactResult, rowLimit, rowLimitSource } =
-            await runWithQueryTimeout(
-               (abortSignal) =>
-                  model.getQueryResults(
-                     sourceName,
-                     queryName,
-                     query,
-                     filterParams,
-                     bypassFilters,
-                     givens,
-                     abortSignal,
-                  ),
-               getQueryTimeoutMs(),
-            );
+         const {
+            result,
+            compactResult,
+            rowLimit,
+            rowLimitSource,
+            queryCorrelationId,
+         } = await runWithQueryTimeout(
+            (abortSignal) =>
+               model.getQueryResults(
+                  sourceName,
+                  queryName,
+                  query,
+                  filterParams,
+                  bypassFilters,
+                  givens,
+                  abortSignal,
+                  {
+                     request: requestMetadata,
+                     queryClass,
+                     environment: environmentName,
+                     // Always undefined today: the route 501s any versionId
+                     // before this runs. Wired so that lifting that rejection
+                     // is the whole change.
+                     version: metadata?.versionId,
+                     // Minted here because this is the boundary that returns
+                     // it; a path with nowhere to put it does not mint one.
+                     correlationId: mintCorrelationId(),
+                     // The environment owns the connection configs, so the
+                     // default and enforced layers are read here rather than
+                     // from the model.
+                     connectionMetadata: (connectionName) => {
+                        try {
+                           const connection =
+                              environment.getApiConnection(connectionName);
+                           return {
+                              default: connection.queryMetadata,
+                              enforced: connection.queryMetadataEnforced,
+                           };
+                        } catch (error) {
+                           // Failing open is right — a tag must not fail a
+                           // query — but this is the one drop with no metric
+                           // behind it, and what it costs is the ENFORCED
+                           // layer. Log it so it is diagnosable.
+                           logger.debug(
+                              "No query-metadata layers for connection",
+                              { connectionName, error },
+                           );
+                           return null;
+                        }
+                     },
+                  },
+               ),
+            getQueryTimeoutMs(),
+         );
          const renderLogs = validateRenderTags(result);
          return {
             result: compactJson
@@ -78,6 +145,7 @@ export class QueryController {
             // deliberate `limit:`/`top:` from the silently-applied default, and
             // so cannot reproduce the MCP envelope's _limit_hit.
             queryRowLimitSource: rowLimitSource,
+            queryCorrelationId,
          } as ApiQuery;
       }
    }

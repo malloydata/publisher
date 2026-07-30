@@ -2,7 +2,13 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { logger } from "../logger";
 import { parseHostKeys } from "./proxy";
+import {
+   queryMetadataAdvisoryWarnings,
+   queryMetadataBudgetWarning,
+   queryMetadataViolations,
+} from "./query_metadata";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -269,6 +275,48 @@ function buildDuckdbEntry(
       is: "duckdb",
       databasePath: path.join(environmentPath, databaseFilename),
    };
+}
+
+/**
+ * Report a connection default that will not do what it says — a property name
+ * the contract rejects, one BigQuery would drop, a bag with no room for the
+ * server's own context.
+ *
+ * Warns rather than throws, unlike everything else in this file: query metadata
+ * is observability, and an environment that refuses to load because a tag has a
+ * hyphen in it would trade a missing label for an outage. The connection update
+ * API rejects the same bag outright (see validateAdminAuthoredConnection) —
+ * strict where a human is waiting, lenient where a config is being loaded.
+ */
+function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
+   let declared = 0;
+   for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
+      const metadata = connection[field];
+      if (!metadata) continue;
+      declared += Object.keys(metadata).length;
+      const problems = [
+         ...queryMetadataViolations(metadata),
+         ...queryMetadataAdvisoryWarnings(metadata),
+      ];
+      for (const problem of problems) {
+         logger.warn("Connection query metadata will not apply as declared", {
+            connectionName: connection.name,
+            field,
+            problem,
+         });
+      }
+   }
+   // The budget is checked over BOTH maps, not each one: they merge into the
+   // same bag, so a connection declaring 6 defaults and 6 enforced is over it
+   // while neither map is. This is the boundary where the admin who created the
+   // squeeze is the one reading the warning.
+   const overBudget = queryMetadataBudgetWarning(declared);
+   if (overBudget) {
+      logger.warn("Connection query metadata will not apply as declared", {
+         connectionName: connection.name,
+         problem: overBudget,
+      });
+   }
 }
 
 function validateConnectionShape(connection: ApiConnection): void {
@@ -606,6 +654,7 @@ export function assembleEnvironmentConnections(
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
       validateConnectionShape(connection);
+      warnOnConnectionQueryMetadata(connection);
 
       const apiConnection = cloneApiConnection(connection);
       apiConnection.attributes = getStaticConnectionAttributes(connection.type);

@@ -18,6 +18,7 @@ import {
 } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
+import { mintCorrelationId } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 
@@ -80,6 +81,7 @@ A JSON object, the same shape Credible's execute_query returns, so a data app be
 - _limit_source: "query" when the cap came from the query's own limit:/top:, "server_default" otherwise.
 - _limit_hit: the row count equals that cap AND the cap was the server default.
 - _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
+- _query_id: this query's id in the warehouse's own query history. Present only where enabled.
 - warning, renderLogErrors: present only when they apply.
 
 A query with no limit: of its own gets the server default, so a result landing exactly on _query_row_limit is almost never the whole table. Values above 2^53 are returned as JSON strings so their digits survive.`;
@@ -150,7 +152,7 @@ export function registerExecuteQueryTool(
          }
 
          // --- Execute Query ---
-         const { model } = modelResult;
+         const { model, environment } = modelResult;
          logger.info(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
          );
@@ -164,33 +166,67 @@ export function registerExecuteQueryTool(
          let querySlot: QuerySlotHandle | null = null;
          try {
             querySlot = tryAcquireQuerySlot("mcp:executeQuery");
+            // Per-query metadata, built the same way the HTTP query controller
+            // builds it: MCP is a query boundary like any other, and a
+            // connection's enforced properties describe the deployment rather
+            // than the protocol a query arrived over.
+            const queryMetadataInput = {
+               environment: environmentName,
+               // Minted here because the envelope below returns it.
+               correlationId: mintCorrelationId(),
+               // The environment owns the connection configs, so the default
+               // and enforced layers are read here rather than from the model.
+               connectionMetadata: (connectionName: string) => {
+                  try {
+                     const connection =
+                        environment.getApiConnection(connectionName);
+                     return {
+                        default: connection.queryMetadata,
+                        enforced: connection.queryMetadataEnforced,
+                     };
+                  } catch (error) {
+                     logger.debug(
+                        "[MCP Tool executeQuery] No query-metadata layers for connection",
+                        { connectionName, error },
+                     );
+                     return null;
+                  }
+               },
+            };
             // The two call modes differ only in which arguments carry the
             // query; everything after the run is identical, so they share one
             // path rather than two copies that can drift.
-            const { result, compactResult, rowLimit, rowLimitSource } =
-               await runWithQueryTimeout(
-                  (abortSignal) =>
-                     query
-                        ? model.getQueryResults(
-                             undefined,
-                             undefined,
-                             query,
-                             filterParams,
-                             undefined,
-                             givens as Record<string, GivenValue> | undefined,
-                             abortSignal,
-                          )
-                        : model.getQueryResults(
-                             sourceName,
-                             queryName,
-                             undefined,
-                             filterParams,
-                             undefined,
-                             givens as Record<string, GivenValue> | undefined,
-                             abortSignal,
-                          ),
-                  getQueryTimeoutMs(),
-               );
+            const {
+               result,
+               compactResult,
+               rowLimit,
+               rowLimitSource,
+               queryCorrelationId,
+            } = await runWithQueryTimeout(
+               (abortSignal) =>
+                  query
+                     ? model.getQueryResults(
+                          undefined,
+                          undefined,
+                          query,
+                          filterParams,
+                          undefined,
+                          givens as Record<string, GivenValue> | undefined,
+                          abortSignal,
+                          queryMetadataInput,
+                       )
+                     : model.getQueryResults(
+                          sourceName,
+                          queryName,
+                          undefined,
+                          filterParams,
+                          undefined,
+                          givens as Record<string, GivenValue> | undefined,
+                          abortSignal,
+                          queryMetadataInput,
+                       ),
+               getQueryTimeoutMs(),
+            );
 
             // Render-tag validation reads the FULL Malloy result: the tags live
             // in its schema annotations, which the flat rows do not carry. It
@@ -217,6 +253,7 @@ export function registerExecuteQueryTool(
                renderLogs.map((log) => log.message),
                undefined,
                rowLimitSource,
+               queryCorrelationId,
             );
 
             // A capped or truncated result, and a broken render tag, are the

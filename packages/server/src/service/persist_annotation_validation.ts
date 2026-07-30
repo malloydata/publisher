@@ -5,11 +5,16 @@ const PERSIST_LINE_PATTERN = /^\s*#@\s+persist\b/;
 /**
  * A `name=` key whose value is NOT immediately opened by a single or double
  * quote — i.e. a bare `name=engaged_events` (whitespace around `=` tolerated).
- * `name="..."` and `name='...'` pass. The `\bname` word boundary requires a
- * standalone key, so neighbours like `tablename=` / `realization_name=` are
- * never mistaken for it.
+ * `name="..."` and `name='...'` pass.
+ *
+ * The lookbehind requires a standalone key: neither an `_`-joined neighbour
+ * (`tablename=`, `realization_name=`) nor a DOTTED one (`queryMetadata.name=`)
+ * is the persist name. A `\b` word boundary would catch the underscore case but
+ * not the dotted one, because `.` is itself a boundary — so a legitimate
+ * `#@ persist queryMetadata.name=finance` would fail the load with a 424 about
+ * quoting a persist name it never declared.
  */
-const UNQUOTED_NAME_PATTERN = /\bname\s*=\s*(?!["'])/;
+const UNQUOTED_NAME_PATTERN = /(?<![.\w])name\s*=\s*(?!["'])/;
 
 /**
  * Reject `#@ persist name=<value>` annotations whose name is unquoted.

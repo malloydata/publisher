@@ -113,11 +113,15 @@ describe("OOM guardrails: end-to-end chain", () => {
       max: process.env.PUBLISHER_MAX_QUERY_ROWS,
       timeout: process.env.PUBLISHER_QUERY_TIMEOUT_MS,
       concurrency: process.env.PUBLISHER_MAX_CONCURRENT_QUERIES,
+      metadata: process.env.PUBLISHER_QUERY_METADATA,
    };
 
    beforeEach(() => {
       resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
+      // Query metadata ships dark; the happy path below asserts the correlation
+      // id the response carries, which needs it on.
+      process.env.PUBLISHER_QUERY_METADATA = "on";
    });
 
    afterEach(() => {
@@ -132,6 +136,7 @@ describe("OOM guardrails: end-to-end chain", () => {
       restore("max", "PUBLISHER_MAX_QUERY_ROWS");
       restore("timeout", "PUBLISHER_QUERY_TIMEOUT_MS");
       restore("concurrency", "PUBLISHER_MAX_CONCURRENT_QUERIES");
+      restore("metadata", "PUBLISHER_QUERY_METADATA");
    });
 
    it("admission gate fires FIRST: 503 before the connector is touched", async () => {
@@ -254,8 +259,11 @@ describe("OOM guardrails: end-to-end chain", () => {
          .send({ sqlStatement: "SELECT 1" });
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({
-         data: JSON.stringify({ rows, totalRows: rows.length }),
-      });
+      expect(res.body.data).toEqual(
+         JSON.stringify({ rows, totalRows: rows.length }),
+      );
+      // The response carries the id the statement was tagged with, so a caller
+      // can find this query in the backend's own history.
+      expect(res.body.queryCorrelationId).toMatch(/^[0-9a-f-]{36}$/);
    });
 });

@@ -18,10 +18,10 @@ export const PACKAGE_SCOPES = ["version", "package"] as const;
 export type PackageScope = (typeof PACKAGE_SCOPES)[number];
 
 /**
- * Read the manifest root's `scope`, defaulting to `"package"` when absent or
- * null. Any other value is a manifest error: scope is load-bearing (it decides
- * version-owned vs cross-version reuse), so a typo must fail loudly rather than
- * silently pick a default. Throws on an invalid value.
+ * Read a `scope` value, defaulting to `"package"` when absent or null. Any other
+ * value is a manifest error: scope is load-bearing (it decides version-owned vs
+ * cross-version reuse), so a typo must fail loudly rather than silently pick a
+ * default. Throws on an invalid value.
  */
 export function parsePackageScope(raw: unknown): PackageScope {
    if (raw === undefined || raw === null) {
@@ -35,6 +35,69 @@ export function parsePackageScope(raw: unknown): PackageScope {
          `Expected "version" or "package" (default "package").`,
    );
 }
+
+/**
+ * Resolve the package's scope from its two possible homes: `materialization.scope`
+ * (canonical — every other build-behavioral knob lives in that block) and the
+ * manifest root (the original home, deprecated).
+ *
+ * The root form keeps working because scope rides the published artifact: a
+ * package published before the move must keep parsing until it is republished.
+ * Declaring DIFFERENT values in the two homes throws, because scope decides
+ * whether an artifact is version-owned and guessing which one the author meant
+ * could reuse a table across versions that was never supposed to be shared.
+ *
+ * Only a root-ONLY declaration is deprecated. Both homes agreeing is the
+ * transition state the server itself writes (see `writePackageManifest`): the
+ * envelope for this build, the root for an older publisher that would otherwise
+ * silently default to `package`. Warning about that would be warning an operator
+ * about something the server did on their behalf and they cannot fix.
+ */
+export function resolvePackageScope(
+   rootRaw: unknown,
+   materializationRaw: unknown,
+): { scope: PackageScope; warnings: string[] } {
+   const envelopeRaw =
+      materializationRaw && typeof materializationRaw === "object"
+         ? (materializationRaw as { scope?: unknown }).scope
+         : undefined;
+   const rootDeclared = rootRaw !== undefined && rootRaw !== null;
+   const envelopeDeclared = envelopeRaw !== undefined && envelopeRaw !== null;
+
+   // Validate both homes before comparing, so a typo is reported as a typo
+   // rather than as a conflict.
+   const rootScope = parsePackageScope(rootRaw);
+   const envelopeScope = parsePackageScope(envelopeRaw);
+
+   if (rootDeclared && envelopeDeclared) {
+      if (rootScope !== envelopeScope) {
+         // Names the fix, because this throw fails the package LOAD: the
+         // package is skipped and its only trace is /status loadErrors, so the
+         // message is the whole diagnosis. Guessing instead would be worse —
+         // picking the wrong one reuses a table across versions that was never
+         // meant to be shared, silently.
+         throw new Error(
+            `Conflicting "scope" in publisher.json: root "${rootScope}" vs ` +
+               `"materialization.scope" "${envelopeScope}". The package cannot ` +
+               `load until they agree. Edit "materialization": { "scope": ... } ` +
+               `to the value you want and delete the root-level "scope" (the ` +
+               `server rewrites both homes on its next manifest write).`,
+         );
+      }
+      return { scope: envelopeScope, warnings: [] };
+   }
+   if (rootDeclared) {
+      return { scope: rootScope, warnings: [SCOPE_ROOT_DEPRECATION] };
+   }
+   return { scope: envelopeScope, warnings: [] };
+}
+
+const SCOPE_ROOT_DEPRECATION =
+   `"scope" at the manifest root is deprecated: declare it as ` +
+   `"materialization": { "scope": ... } alongside the other build knobs. The ` +
+   `root form still works and will be removed in a future release; until then ` +
+   `the server keeps both homes in sync when it writes the manifest, so an ` +
+   `older publisher still reads the right value.`;
 
 /**
  * The manifest's `materialization.freshness` block, surfaced verbatim for the
@@ -63,6 +126,18 @@ export interface PackageMaterializationConfig {
     * "no policy" from "policy with no valid fields".
     */
    freshness: PackageFreshnessConfig | null;
+   /**
+    * Package-level per-query metadata: the least specific model-side layer,
+    * overridden per property by a model-file, source or per-request declaration.
+    * Null when the manifest declares none.
+    *
+    * Kept VERBATIM (every string-valued property, conforming or not) rather than
+    * filtered to what Malloy will accept. A property that violates the contract
+    * has to be visible somewhere to be fixable: publish reports it as a warning
+    * from this block, and the runtime clamps it with a metric. Filtering here
+    * would make an author's typo disappear with nothing to point at.
+    */
+   queryMetadata: Record<string, string> | null;
 }
 
 function parseFreshness(raw: unknown): PackageFreshnessConfig | null {
@@ -84,10 +159,54 @@ function parseFreshness(raw: unknown): PackageFreshnessConfig | null {
 }
 
 /**
+ * The `materialization.queryMetadata` block: string-valued properties verbatim.
+ * A non-object block, or one with no string values, degrades to null so absence
+ * on the wire always means "declared nothing usable". A non-string value is
+ * dropped here because it cannot round-trip as a property at all; contract
+ * violations of the string values are deliberately NOT dropped (see
+ * {@link PackageMaterializationConfig.queryMetadata}).
+ *
+ * Each dropped value is reported, because the drop happens BEFORE the config
+ * validation that would otherwise name it: an unquoted `"team": 123` is a
+ * plausible hand-edit, and without this it disappears with nothing anywhere to
+ * point at.
+ */
+function parseQueryMetadata(raw: unknown): {
+   metadata: Record<string, string> | null;
+   warnings: string[];
+} {
+   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return { metadata: null, warnings: [] };
+   }
+   const out: Record<string, string> = {};
+   const warnings: string[] = [];
+   for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof value === "string") {
+         out[name] = value;
+      } else {
+         warnings.push(
+            `materialization.queryMetadata: property '${name}' must be a ` +
+               `string (got ${value === null ? "null" : typeof value}); it is ` +
+               `not attached to any statement`,
+         );
+      }
+   }
+   return {
+      metadata: Object.keys(out).length > 0 ? out : null,
+      warnings,
+   };
+}
+
+/**
  * Read the manifest's `materialization` object, keeping only recognized fields.
  * Returns null when the block is absent so the API field is null rather than an
  * empty object; a non-string schedule degrades to null, and an absent or
  * non-object freshness degrades to null.
+ *
+ * `materialization.scope` is deliberately NOT read here: scope is a package-level
+ * mode rather than a layered knob, and it has two possible homes to reconcile —
+ * see {@link resolvePackageScope}, which owns that read and surfaces the
+ * resolved value on the package itself.
  */
 export function parsePackageMaterialization(
    raw: unknown,
@@ -95,12 +214,28 @@ export function parsePackageMaterialization(
    if (!raw || typeof raw !== "object") {
       return null;
    }
-   const { schedule, freshness } = raw as {
+   const { schedule, freshness, queryMetadata } = raw as {
       schedule?: unknown;
       freshness?: unknown;
+      queryMetadata?: unknown;
    };
    return {
       schedule: typeof schedule === "string" ? schedule : null,
       freshness: parseFreshness(freshness),
+      queryMetadata: parseQueryMetadata(queryMetadata).metadata,
    };
+}
+
+/**
+ * What the `materialization` parse tolerated but could not keep, for the
+ * operator warnings array. Reads the same parse as
+ * {@link parsePackageMaterialization} rather than re-deriving it, so the two
+ * cannot disagree about what was dropped.
+ */
+export function packageMaterializationWarnings(raw: unknown): string[] {
+   if (!raw || typeof raw !== "object") {
+      return [];
+   }
+   const { queryMetadata } = raw as { queryMetadata?: unknown };
+   return parseQueryMetadata(queryMetadata).warnings;
 }

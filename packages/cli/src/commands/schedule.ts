@@ -41,8 +41,9 @@ export async function viewSchedule(
  * A schedule and a freshness policy are mutually exclusive, and the request
  * replaces the whole `materialization` object, so setting a schedule drops any
  * existing freshness. That is intended (they cannot coexist) but we warn first
- * so it is never silent. An empty cron is rejected up front: every server rule
- * is truthiness-guarded, so `""` would otherwise skip them all and persist.
+ * so it is never silent. Everything else in the block that the caller is not
+ * changing is resent verbatim. An empty cron is rejected up front: every server
+ * rule is truthiness-guarded, so `""` would otherwise skip them all and persist.
  */
 export async function setSchedule(
   client: PublisherClient,
@@ -65,7 +66,16 @@ export async function setSchedule(
     name: packageName,
     description: current?.description,
     scope: PackageScopeEnum.Version,
-    materialization: { schedule: cron },
+    // The request replaces the whole block, so anything not resent is dropped.
+    // Freshness is dropped deliberately (warned above); query metadata is
+    // orthogonal to scheduling and must survive, or setting a schedule would
+    // silently untag every statement the package's builds issue.
+    materialization: {
+      schedule: cron,
+      ...(current?.materialization?.queryMetadata
+        ? { queryMetadata: current.materialization.queryMetadata }
+        : {}),
+    },
   });
   logSuccess(`Schedule set on ${packageName}: "${cron}" (scope: version).`);
 }
@@ -97,7 +107,14 @@ export async function clearSchedule(
   await client.updatePackage(environmentName, packageName, {
     name: packageName,
     description: current?.description,
-    materialization: { schedule: null },
+    // Carried for the same reason as in setSchedule: clearing a schedule must
+    // not also clear the package's query metadata.
+    materialization: {
+      schedule: null,
+      ...(current?.materialization?.queryMetadata
+        ? { queryMetadata: current.materialization.queryMetadata }
+        : {}),
+    },
   });
   logSuccess(`Schedule cleared on ${packageName}.`);
 }

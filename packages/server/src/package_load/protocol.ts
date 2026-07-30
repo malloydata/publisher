@@ -185,6 +185,12 @@ export interface LoadPackageResult {
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;
       scope?: PackageScope;
+      /**
+       * Manifest-shape deprecations the load tolerated (e.g. a root-level
+       * `scope`). Surfaced with the package's other policy warnings so a
+       * still-parsing-but-outdated manifest is visible without failing a load.
+       */
+      manifestWarnings?: string[];
    };
    models: SerializedModel[];
    /** Wall-clock ms inside the worker for the full package load. */

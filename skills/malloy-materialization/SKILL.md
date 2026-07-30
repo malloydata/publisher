@@ -30,13 +30,17 @@ Materialize an expensive source once so queries read a **pre-built warehouse tab
    ```jsonc
    {
      "name": "my-package",
-     "scope": "package",  // default; "version" = each published version owns its own tables
-     "materialization": { "freshness": { "window": "24h", "fallback": "live" } }
+     "materialization": {
+       "scope": "package",  // default; "version" = each published version owns its own tables
+       "freshness": { "window": "24h", "fallback": "live" },
+       "queryMetadata": { "team": "finance" }  // tags the build's backend statements
+     }
    }
    ```
    Enforced at publish (strict), on edits (strict), at load (warn, still serves), and by the scheduler (an offending package is skipped):
-   - **`scope`**: `package` (default; artifacts reused across published versions) or `version` (each artifact owned by one version). Package-level only; there is no per-source scope.
+   - **`scope`**: `package` (default; artifacts reused across published versions) or `version` (each artifact owned by one version). Package-level only; there is no per-source scope. A root-level `scope` is the deprecated home and still works, with a warning; declaring both homes with different values is rejected.
    - **`materialization.freshness`** (`window` + `fallback` of `live`/`stale_ok`/`fail`) is the objective a **hosted control plane** enforces by refreshing the table to meet it (`fallback: "live"` serves live compute while stale/absent). A **standalone** Publisher does **not** act on `freshness` for refresh - see **Building and refreshing**.
+   - **`materialization.queryMetadata`** is a bag of string properties attached to every statement the build issues, for the backend's own cost attribution (Snowflake `QUERY_TAG`, BigQuery job labels, a leading SQL comment elsewhere). Overridable per source with `#@ persist queryMetadata.<name>="<value>"`. Observability only: it never changes what gets built. See `docs/query-metadata.md`.
    - **`materialization.schedule`** is a 5-field UTC cron (`min hour dom mon dow`; `L`/`W`/`#`/`?` rejected). It **requires `scope: "version"`** and is **mutually exclusive with `freshness`**. This is how a standalone Publisher refreshes on a cadence.
 
 4. **Reads vs writes.** The persist source can *read* any dataset the connection can read; the persist *target* (`name=`'s dataset) must be a dataset the connection can **write** (typically a scratch dataset).

@@ -895,12 +895,14 @@ describe("service/model", () => {
    describe("runtime storage failure → freshnessFallback=live", () => {
       const originalMode = process.env.PERSIST_STORAGE_MODE;
       const originalDefaultRows = process.env.PUBLISHER_DEFAULT_QUERY_ROW_LIMIT;
+      const originalMetadata = process.env.PUBLISHER_QUERY_METADATA;
 
       afterEach(() => {
          sinon.restore();
          for (const [name, original] of [
             ["PERSIST_STORAGE_MODE", originalMode],
             ["PUBLISHER_DEFAULT_QUERY_ROW_LIMIT", originalDefaultRows],
+            ["PUBLISHER_QUERY_METADATA", originalMetadata],
          ] as const) {
             if (original === undefined) delete process.env[name];
             else process.env[name] = original;
@@ -936,7 +938,10 @@ describe("service/model", () => {
             getPreparedResult:
                opts.storageFailsAt === "prepare"
                   ? sinon.stub().rejects(storageErr)
-                  : sinon.stub().resolves({ resultExplore: { limit: 0 } }),
+                  : sinon.stub().resolves({
+                       resultExplore: { limit: 0 },
+                       connectionName: "lake",
+                    }),
             run:
                opts.storageFailsAt === "run"
                   ? sinon.stub().rejects(storageErr)
@@ -954,6 +959,7 @@ describe("service/model", () => {
          const liveRunnable = {
             getPreparedResult: sinon.stub().resolves({
                resultExplore: { limit: opts.livePreparedLimit ?? 0 },
+               connectionName: "live_pg",
             }),
             run: liveRun,
          };
@@ -1018,6 +1024,44 @@ describe("service/model", () => {
 
          expect(liveRun.calledOnce).toBe(true);
          expect(liveRun.firstCall.args[0].rowLimit).toBe(250);
+      });
+
+      it("tags the live retry, with the LIVE connection's layers and the same id", async () => {
+         // Two failures in one: the statement that actually answered the query
+         // carried no attribution at all, so the full-cost fallback — the one an
+         // operator goes looking for on a bill — landed in the untagged bucket;
+         // and the response still returned the id from the bag resolved before
+         // the storage attempt, pointing a caller at the statement that FAILED.
+         // The layers must come from the live connection: on this tier the store
+         // is routinely a different connection, with different enforced
+         // properties.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-1",
+               connectionMetadata: (connectionName: string) =>
+                  connectionName === "live_pg"
+                     ? { default: null, enforced: { tenant: "acme" } }
+                     : { default: null, enforced: { tenant: "wrong" } },
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.tenant).toBe("acme");
+         expect(attached.query_id).toBe("corr-1");
+         expect(result.queryCorrelationId).toBe("corr-1");
       });
 
       it("does not record a live-served answer as a storage hit", async () => {
