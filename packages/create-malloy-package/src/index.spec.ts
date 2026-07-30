@@ -445,12 +445,21 @@ describe("formatSuccess: the MCP endpoint", () => {
          flat.indexOf("can't reconnect MCP"),
       );
       // Asserted positively as well, because the cursor test below guards these
-      // two facts only with not.toContain, which stays green if they are deleted.
-      expect(output).toContain("permissions allowlist");
+      // facts only with not.toContain, which stays green if they are deleted. All
+      // over `flat` for the same reason as above: a reword that moves the wrap
+      // must not quietly void an assertion.
+      expect(flat).toContain("permissions allowlist");
       // An agent that ran the scaffolder itself reads this output and cannot
       // answer a trust prompt, so the line names the human rather than telling
       // the reader to do it.
-      expect(output).toContain("a human has to");
+      expect(flat).toContain("a human has to");
+      // The gate is useless without a way to tell it cleared, and every other
+      // check this output prints comes with one.
+      expect(flat).toContain("You will know the prompt was answered");
+      // Two problems, so they are separated. The label only has an antecedent
+      // where the trust note was printed, which is why the cursor test asserts it
+      // is absent there.
+      expect(output).toContain("\n\n  A different problem:");
    });
 
    test("a cursor run is not told to accept a prompt Cursor does not raise", () => {
@@ -464,7 +473,9 @@ describe("formatSuccess: the MCP endpoint", () => {
       // not only as the phrases this change adds: this output is the other
       // surface host-specific text arrives on, so a phrase test here guards only
       // today's wording. ANSI is stripped first because the printed lines are
-      // colored. Keep the pattern identical to the one in scaffold.spec.ts.
+      // colored. Keep the pattern identical to the one in scaffold.spec.ts, whose
+      // doc comment says what to do when it fires on a line you did not write:
+      // host-gate the whole paragraph, not the one line it named.
       const claudeOnlyLines = (text: string): string[] =>
          text
             // eslint-disable-next-line no-control-regex
@@ -494,12 +505,17 @@ describe("formatSuccess: the MCP endpoint", () => {
                force: false,
             }),
          );
+         const flatCursor = output.replace(/\s+/g, " ");
          expect(claudeOnlyLines(output)).toEqual([]);
-         expect(output).not.toContain("permissions allowlist");
+         expect(flatCursor).not.toContain("permissions allowlist");
          // The two files a cursor run does not write, which the pattern above
          // cannot see because they are plain filenames.
          expect(output).not.toContain("CLAUDE.md");
          expect(output).toContain(".cursor/mcp.json");
+         // With no trust note printed, "a different problem" would have nothing to
+         // be different from, so the reconnect note takes its unlabelled wording.
+         expect(flatCursor).not.toContain("A different problem");
+         expect(flatCursor).toContain("can't reconnect MCP");
          // Not passing by printing nothing: the section itself is still there.
          expect(output).toContain("Connect an agent:");
       } finally {

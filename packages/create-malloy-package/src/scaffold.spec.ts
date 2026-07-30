@@ -529,6 +529,13 @@ describe("scaffold: setup-only (no name)", () => {
  *
  * index.spec.ts has the same filter over the printed output, where it strips ANSI
  * first. Keep the two patterns identical.
+ *
+ * If this fires on a line you did not write, host-gate the whole paragraph that
+ * line belongs to, rather than loosening the pattern or gating the one line it
+ * named. The pattern only recognises commands and product names, so a paragraph
+ * that hands a Cursor reader a Claude Code remedy typically has one matchable
+ * line and two or three unmatchable sentences of prose around it that are just
+ * as wrong for that reader.
  */
 function claudeOnlyLines(text: string): string[] {
    return text
@@ -579,8 +586,16 @@ describe("scaffold: cursor host", () => {
       // the facts cannot be deleted from the product text with a green suite.
       run({ host: "claude-code", force: true });
       const claudeAgents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
-      expect(claudeAgents).toContain("One gate can void");
-      expect(claudeAgents).toContain("settings.json");
+      // Whitespace-collapsed, because the note is hard wrapped in the source and
+      // a reword moves the breaks; an assertion anchored on today's line breaks
+      // stops testing the fact and starts testing the wrap.
+      const flat = claudeAgents.replace(/\s+/g, " ");
+      expect(flat).toContain("One gate can void");
+      expect(flat).toContain("settings.json");
+      // Without a way to tell the gate cleared, and a second cause to try when it
+      // did not, the note is a dead end for the agent that relays it.
+      expect(flat).toContain("You will know the prompt was answered");
+      expect(flat).toContain("approval was never given");
       // The filter self-checks here: if it matched nothing even on the briefing
       // that is full of Claude Code text, the assertion above would be vacuous.
       expect(claudeOnlyLines(claudeAgents).length).toBeGreaterThan(0);

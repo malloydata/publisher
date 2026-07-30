@@ -1053,8 +1053,8 @@ export function formatSuccess(result: ScaffoldResult): string {
             "  Trust this workspace: a human has to open Claude Code here interactively\n" +
                "  once and answer the trust prompt. Until then the malloy tools can report\n" +
                "  connected and still refuse every call, and a permissions allowlist in\n" +
-               "  .claude/settings.json is ignored. It worked when a malloy tool returns\n" +
-               "  data instead of refusing.",
+               "  .claude/settings.json is ignored. You will know the prompt was answered\n" +
+               "  when a malloy tool returns data instead of refusing.",
          ),
       );
       // A blank line, because this and the note below are two different problems
