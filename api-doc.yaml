@@ -3309,6 +3309,21 @@ components:
             query preparation
           items:
             $ref: "#/components/schemas/LogMessage"
+        queryRowLimit:
+          type: integer
+          description:
+            Row cap pushed into the SQL for this query, taken from the query's
+            own limit/top when it has one and otherwise from the server default.
+            A caller cannot derive it, since it depends on server configuration
+            as well as the query, and without it a result that the cap cut off
+            is indistinguishable from a complete one.
+        queryRowLimitSource:
+          type: string
+          enum: [query, server_default]
+          description:
+            Which of the two queryRowLimit came from. Only server_default means
+            rows were probably left behind; a deliberate limit or top returning
+            exactly that many rows is a complete answer.
 
     LogMessage:
       type: object

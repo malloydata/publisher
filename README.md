@@ -118,8 +118,14 @@ This is the fast path to the "wow." Start the server, then connect any MCP-compa
 MCP endpoint on port **4040**:
 
 ```bash
-claude mcp add --transport http malloy http://localhost:4040/mcp
+claude mcp add --transport http malloy http://localhost:4040/mcp -s user
 ```
+
+`-s user` registers the server for you rather than for one project directory, so the tools are there
+whichever directory you launch the agent from. Without it the registration is tied to the directory
+you happened to run the command in, which is the most common reason an agent reports no `malloy_*`
+tools: a project-scoped server (or a scaffolded `.mcp.json`) is only discovered by a session that
+*started* in that directory, and no message anywhere says so.
 
 Then just ask, in plain English:
 

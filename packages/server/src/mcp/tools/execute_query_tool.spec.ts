@@ -13,7 +13,11 @@ import {
 // compile_tool.spec.ts and reload_package_tool.spec.ts.
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
-   content: Array<{ resource: { text: string } }>;
+   content: Array<{
+      type?: string;
+      text?: string;
+      resource?: { text: string };
+   }>;
 }>;
 
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
@@ -28,8 +32,8 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
    return handler;
 }
 
-function parse(result: { content: Array<{ resource: { text: string } }> }) {
-   return JSON.parse(result.content[0].resource.text);
+function parse(result: { content: Array<{ resource?: { text: string } }> }) {
+   return JSON.parse(result.content[0].resource!.text);
 }
 
 /**
@@ -139,5 +143,21 @@ describe("malloy_executeQuery error classification", () => {
       // The class exists so a hidden target is indistinguishable from a missing
       // one; echoing the name back would undo that.
       expect(parsed.error).not.toContain("salaries");
+   });
+
+   it("also states the error in a text block", async () => {
+      // The structured payload rides in an embedded resource block. A client
+      // that renders only text blocks on an isError result shows nothing at
+      // all for it, which is how a real diagnostic surfaces to the agent as a
+      // bare "Unknown error". Every error must say it in plain text too.
+      const handler = captureHandler(
+         storeWhoseQueryThrows(new MalloyError("unexpected '@'", [])),
+      );
+      const result = await handler(args);
+      const parsed = parse(result);
+
+      const textBlock = result.content.find((b) => b.type === "text");
+      expect(textBlock).toBeDefined();
+      expect(textBlock!.text).toContain(parsed.error);
    });
 });
