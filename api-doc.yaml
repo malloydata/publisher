@@ -1388,6 +1388,12 @@ paths:
         Updates the configuration and metadata of an existing package. This allows you to
         modify package settings, update the description, change the location, or update other
         package-level properties. The package must exist and be accessible.
+
+        A supplied `materialization` block REPLACES the one on disk, so re-send every
+        field of it you want to keep. Two exceptions, because neither is expressible
+        in the block a caller sends: `scope` (a top-level field) and `queryMetadata`
+        (orthogonal to the schedule and freshness policy this call usually carries) are
+        preserved when omitted. Send `queryMetadata: null` to clear it.
       parameters:
         - name: environmentName
           in: path

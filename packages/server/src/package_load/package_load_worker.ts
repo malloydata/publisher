@@ -86,6 +86,7 @@ import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
    PackageScope,
+   packageMaterializationWarnings,
    parsePackageMaterialization,
    resolvePackageScope,
 } from "../service/package_manifest";
@@ -428,6 +429,10 @@ async function readPackageMetadata(packagePath: string): Promise<{
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
+   const manifestWarnings = [
+      ...scope.warnings,
+      ...packageMaterializationWarnings(parsed.materialization),
+   ];
    return {
       name: parsed.name,
       description: parsed.description,
@@ -449,7 +454,8 @@ async function readPackageMetadata(packagePath: string): Promise<{
       materialization: parsePackageMaterialization(parsed.materialization),
       // Package-level persist scope mode; defaults to "package".
       scope: scope.scope,
-      manifestWarnings: scope.warnings.length > 0 ? scope.warnings : undefined,
+      manifestWarnings:
+         manifestWarnings.length > 0 ? manifestWarnings : undefined,
    };
 }
 

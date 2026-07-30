@@ -239,6 +239,27 @@ describe("mergeQueryMetadata", () => {
       expect(resolved.drops.every((d) => d.name.startsWith("p"))).toBe(true);
    });
 
+   it("keeps a property named __proto__, which the contract allows", () => {
+      // `__proto__` passes the name rule, so it reaches the merge — and on an
+      // object literal the assignment hits the prototype setter, which ignores
+      // a string and drops the property with no drop record and no metric. It
+      // is the one silent loss in a module whose whole argument is that a lost
+      // property is always accounted for.
+      // JSON.parse, not a literal: `__proto__:` in source sets the prototype,
+      // while a parsed request body carries it as an own property — which is
+      // how it arrives here.
+      const resolved = mergeQueryMetadata({
+         request: JSON.parse('{"__proto__":"surprise","team":"finance"}'),
+      });
+      expect(Object.keys(resolved.metadata ?? {}).sort()).toEqual([
+         "__proto__",
+         "team",
+      ]);
+      expect(resolved.drops).toEqual([]);
+      // A string property, not a reshaped bag.
+      expect(JSON.stringify(resolved.metadata)).toContain('"__proto__"');
+   });
+
    it("drops a property whose name violates the contract", () => {
       // Never throws: it would fail the customer's query at dispatch.
       const resolved = mergeQueryMetadata({

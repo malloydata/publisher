@@ -265,4 +265,29 @@ describe("MaterializationController.createMaterialization validation", () => {
          }),
       ).rejects.toThrow(BadRequestError);
    });
+
+   it("rejects a runId the metadata contract cannot carry", async () => {
+      // runId becomes the `run_id` property on every statement of the build, so
+      // an over-long or unrenderable value is silently truncated and rewritten
+      // at dispatch — leaving the caller holding an id that joins to nothing.
+      // The neighbouring `trigger` is enum-validated; this is the same kind of
+      // boundary and gets the same treatment.
+      const { controller } = build();
+      await expect(
+         controller.createMaterialization("env", "pkg", {
+            runContext: { runId: "x".repeat(300) },
+         }),
+      ).rejects.toThrow(BadRequestError);
+      await expect(
+         controller.createMaterialization("env", "pkg", {
+            runContext: { runId: 'has "quotes"' },
+         }),
+      ).rejects.toThrow(BadRequestError);
+   });
+
+   it("still accepts a conforming runId", async () => {
+      expect(
+         await parse({ runContext: { trigger: "publish", runId: "run-42" } }),
+      ).toEqual({ runContext: { trigger: "publish", runId: "run-42" } });
+   });
 });

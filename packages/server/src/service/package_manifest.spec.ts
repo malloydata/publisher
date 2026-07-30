@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+   packageMaterializationWarnings,
    parsePackageMaterialization,
    parsePackageScope,
    resolvePackageScope,
@@ -200,6 +201,30 @@ describe("service/package_manifest", () => {
          expect(
             parsePackageMaterialization({ queryMetadata: "team=finance" }),
          ).toEqual({ schedule: null, freshness: null, queryMetadata: null });
+      });
+   });
+
+   describe("packageMaterializationWarnings", () => {
+      it("names a dropped non-string value", () => {
+         // The drop happens before the config validation that would otherwise
+         // report it, so without this an unquoted `"team": 123` — a plausible
+         // hand-edit — vanishes with nothing anywhere to point at.
+         const warnings = packageMaterializationWarnings({
+            queryMetadata: { team: "finance", retries: 3 },
+         });
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("'retries'");
+         expect(warnings[0]).toContain("got number");
+      });
+
+      it("says nothing about a block that parses cleanly", () => {
+         expect(
+            packageMaterializationWarnings({
+               schedule: "0 6 * * *",
+               queryMetadata: { team: "finance" },
+            }),
+         ).toEqual([]);
+         expect(packageMaterializationWarnings(undefined)).toEqual([]);
       });
    });
 });

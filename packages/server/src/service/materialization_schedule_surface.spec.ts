@@ -197,4 +197,60 @@ describe("materialization schedule surfacing", () => {
       },
       { timeout: 20000 },
    );
+
+   it(
+      "keeps queryMetadata a schedule PATCH said nothing about",
+      async () => {
+         // The block is replaced wholesale, which is right for the policy the
+         // caller is setting — but queryMetadata is orthogonal to it, so a
+         // client that sets a schedule without re-sending the tags would
+         // silently untag every statement the package's builds issue. The UI
+         // and the control plane are separate clients; preserving it here fixes
+         // all of them at once.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            materialization: {
+               scope: "version",
+               queryMetadata: { team: "finance" },
+            },
+         });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "0 6 * * *" },
+         });
+
+         expect((await readManifest()).materialization).toMatchObject({
+            schedule: "0 6 * * *",
+            queryMetadata: { team: "finance" },
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "still lets an explicit null clear queryMetadata",
+      async () => {
+         // Preserved-on-omission must not make it unclearable.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            materialization: {
+               scope: "version",
+               queryMetadata: { team: "finance" },
+            },
+         });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "0 6 * * *", queryMetadata: null },
+         });
+
+         expect(
+            (await readManifest()).materialization as Record<string, unknown>,
+         ).toMatchObject({ schedule: "0 6 * * *", queryMetadata: null });
+      },
+      { timeout: 20000 },
+   );
 });

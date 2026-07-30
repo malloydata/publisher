@@ -125,7 +125,13 @@ function connectionMetadataLayers(
          default: connection?.queryMetadata ?? null,
          enforced: connection?.queryMetadataEnforced ?? null,
       };
-   } catch {
+   } catch (error) {
+      // Diagnosable rather than silent: the layer this costs is the enforced
+      // one, and it is the only drop with no metric behind it.
+      logger.debug("No query-metadata layers for connection", {
+         connectionName,
+         error,
+      });
       return { default: null, enforced: null };
    }
 }

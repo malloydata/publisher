@@ -356,7 +356,11 @@ export function mergeQueryMetadata(
    // property remembers the layer whose value SURVIVED, not the first layer that
    // mentioned it, so the shed order below matches the precedence that produced
    // the bag.
-   const merged: QueryMetadata = {};
+   // Null-prototype: `__proto__` satisfies the contract's name rule, so it
+   // reaches an assignment that an object literal would route to the prototype
+   // setter — which ignores a string and drops the property with no record of
+   // it. Every other invalid name is dropped loudly; this one would not be.
+   const merged: QueryMetadata = Object.create(null) as QueryMetadata;
    const winningLayer = new Map<string, number>();
    const orderedLayers = [
       layers.connection,
@@ -391,7 +395,13 @@ export function mergeQueryMetadata(
    // correlating — outlives it, and an enforced property outlives them all,
    // because the deployment is billed by it.
    const shedOrder = [...winningLayer.entries()]
-      .filter(([name]) => !(name in contextProperties))
+      // hasOwnProperty, not `in`: `__proto__` is a contract-legal property name
+      // and `in` finds it on every object literal's prototype, which would take
+      // a declared one off the shed list and make it unsheddable.
+      .filter(
+         ([name]) =>
+            !Object.prototype.hasOwnProperty.call(contextProperties, name),
+      )
       .sort((a, b) => a[1] - b[1])
       .map(([name]) => name);
    const shed = (reason: QueryMetadataDropReason) => {

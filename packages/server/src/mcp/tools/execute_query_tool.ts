@@ -81,7 +81,7 @@ A JSON object, the same shape Credible's execute_query returns, so a data app be
 - _limit_source: "query" when the cap came from the query's own limit:/top:, "server_default" otherwise.
 - _limit_hit: the row count equals that cap AND the cap was the server default.
 - _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
-- _query_id: the id this query's statements carry at the backend, for looking it up in the warehouse's own query history. Present only when the deployment enables query metadata.
+- _query_id: this query's id in the warehouse's own query history. Present only where enabled.
 - warning, renderLogErrors: present only when they apply.
 
 A query with no limit: of its own gets the server default, so a result landing exactly on _query_row_limit is almost never the whole table. Values above 2^53 are returned as JSON strings so their digits survive.`;

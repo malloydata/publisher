@@ -1,6 +1,7 @@
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { ModelNotFoundError } from "../errors";
+import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
@@ -145,7 +146,13 @@ export class ModelController {
                            default: connection.queryMetadata,
                            enforced: connection.queryMetadataEnforced,
                         };
-                     } catch {
+                     } catch (error) {
+                        // Fails open, and says so: what an unreadable
+                        // connection costs is the enforced layer.
+                        logger.debug(
+                           "No query-metadata layers for connection",
+                           { connectionName, error },
+                        );
                         return null;
                      }
                   },

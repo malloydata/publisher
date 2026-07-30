@@ -5,6 +5,7 @@ import {
    ManifestReference,
 } from "../storage/DatabaseInterface";
 import { MaterializationService } from "../service/materialization_service";
+import { queryMetadataViolations } from "../service/query_metadata";
 
 type RunContext = components["schemas"]["RunContext"];
 
@@ -113,6 +114,18 @@ export class MaterializationController {
       if (obj.runId !== undefined && obj.runId !== null) {
          if (typeof obj.runId !== "string") {
             throw new BadRequestError("runContext.runId must be a string");
+         }
+         // Held to the metadata contract like any other caller-supplied
+         // property: it becomes the `run_id` on every statement of the build,
+         // and a value the contract rejects would otherwise be truncated and
+         // rewritten in silence — leaving the caller with an id it cannot join
+         // on and no way to know why.
+         const violations = queryMetadataViolations({ run_id: obj.runId });
+         if (violations.length > 0) {
+            throw new BadRequestError(
+               `runContext.runId is attached to every statement as the run_id ` +
+                  `property: ${violations.join("; ")}`,
+            );
          }
          context.runId = obj.runId;
       }

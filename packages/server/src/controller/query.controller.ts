@@ -4,6 +4,7 @@ import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
 import { bigIntReplacer } from "../json_utils";
+import { logger } from "../logger";
 import {
    mintCorrelationId,
    parseQueryClass,
@@ -107,7 +108,15 @@ export class QueryController {
                               default: connection.queryMetadata,
                               enforced: connection.queryMetadataEnforced,
                            };
-                        } catch {
+                        } catch (error) {
+                           // Failing open is right — a tag must not fail a
+                           // query — but this is the one drop with no metric
+                           // behind it, and what it costs is the ENFORCED
+                           // layer. Log it so it is diagnosable.
+                           logger.debug(
+                              "No query-metadata layers for connection",
+                              { connectionName, error },
+                           );
                            return null;
                         }
                      },

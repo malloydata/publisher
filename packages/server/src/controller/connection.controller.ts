@@ -191,7 +191,13 @@ export class ConnectionController {
             default: connection.queryMetadata ?? null,
             enforced: connection.queryMetadataEnforced ?? null,
          };
-      } catch {
+      } catch (error) {
+         // Fails open like every other metadata path, but not invisibly: the
+         // layer lost here is the enforced one, and no metric covers it.
+         logger.debug("No query-metadata layers for connection", {
+            connectionName,
+            error,
+         });
          return { default: null, enforced: null };
       }
    }

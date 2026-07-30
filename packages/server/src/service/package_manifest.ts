@@ -158,16 +158,36 @@ function parseFreshness(raw: unknown): PackageFreshnessConfig | null {
  * dropped here because it cannot round-trip as a property at all; contract
  * violations of the string values are deliberately NOT dropped (see
  * {@link PackageMaterializationConfig.queryMetadata}).
+ *
+ * Each dropped value is reported, because the drop happens BEFORE the config
+ * validation that would otherwise name it: an unquoted `"team": 123` is a
+ * plausible hand-edit, and without this it disappears with nothing anywhere to
+ * point at.
  */
-function parseQueryMetadata(raw: unknown): Record<string, string> | null {
+function parseQueryMetadata(raw: unknown): {
+   metadata: Record<string, string> | null;
+   warnings: string[];
+} {
    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      return null;
+      return { metadata: null, warnings: [] };
    }
    const out: Record<string, string> = {};
+   const warnings: string[] = [];
    for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
-      if (typeof value === "string") out[name] = value;
+      if (typeof value === "string") {
+         out[name] = value;
+      } else {
+         warnings.push(
+            `materialization.queryMetadata: property '${name}' must be a ` +
+               `string (got ${value === null ? "null" : typeof value}); it is ` +
+               `not attached to any statement`,
+         );
+      }
    }
-   return Object.keys(out).length > 0 ? out : null;
+   return {
+      metadata: Object.keys(out).length > 0 ? out : null,
+      warnings,
+   };
 }
 
 /**
@@ -195,6 +215,20 @@ export function parsePackageMaterialization(
    return {
       schedule: typeof schedule === "string" ? schedule : null,
       freshness: parseFreshness(freshness),
-      queryMetadata: parseQueryMetadata(queryMetadata),
+      queryMetadata: parseQueryMetadata(queryMetadata).metadata,
    };
+}
+
+/**
+ * What the `materialization` parse tolerated but could not keep, for the
+ * operator warnings array. Reads the same parse as
+ * {@link parsePackageMaterialization} rather than re-deriving it, so the two
+ * cannot disagree about what was dropped.
+ */
+export function packageMaterializationWarnings(raw: unknown): string[] {
+   if (!raw || typeof raw !== "object") {
+      return [];
+   }
+   const { queryMetadata } = raw as { queryMetadata?: unknown };
+   return parseQueryMetadata(queryMetadata).warnings;
 }

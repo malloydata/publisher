@@ -1667,9 +1667,24 @@ export class Environment {
             (onDiskMaterialization?.scope as ApiPackage["scope"] | undefined) ??
             (existingManifest.scope as ApiPackage["scope"] | undefined);
 
-         const materializationBase =
+         // A materialization PATCH replaces the block wholesale, which is right
+         // for schedule and freshness — they are the policy the caller is
+         // setting, and they are mutually exclusive with each other.
+         // `queryMetadata` is orthogonal to both: a client setting a schedule
+         // has no reason to re-send the package's tags, and dropping them
+         // silently untags every statement the package's builds issue. So it is
+         // preserved on omission, like `scope` above; an explicit null still
+         // clears it, which keeps the block expressible.
+         const preservedQueryMetadata =
+            metadata.materialization !== undefined &&
+            metadata.materialization?.queryMetadata === undefined &&
+            onDiskMaterialization?.queryMetadata !== undefined
+               ? { queryMetadata: onDiskMaterialization.queryMetadata }
+               : {};
+
+         const materializationBase: Record<string, unknown> | undefined =
             metadata.materialization !== undefined
-               ? { ...metadata.materialization }
+               ? { ...metadata.materialization, ...preservedQueryMetadata }
                : onDiskMaterialization !== undefined
                  ? { ...onDiskMaterialization }
                  : undefined;
