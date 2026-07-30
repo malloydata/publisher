@@ -75,7 +75,8 @@ A directory nobody has trusted yet is a second gate, separate from connecting th
 server: Claude Code lists the `malloy_*` tools and then refuses every call, and a
 `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
 interactively in the directory once and answer the trust prompt, which is asked once per
-directory and is never raised by a non-interactive run.
+directory. A headless run is never asked, so it cannot clear the gate either. You will
+know it worked when the agent's first Malloy query returns data.
 
 ## Query it
 
@@ -115,9 +116,9 @@ no route falls through to the web app and answers `200` with an HTML page, which
 as success until you look at the body.
 
 Agents should reach the same models through MCP rather than curl, which buys them
-schema discovery and compile checks. The generated briefing lists those tools, and
-for an agent with no user to reconnect it, the REST reload it also documents is the
-same check.
+schema discovery and compile checks. The generated briefing lists those tools. It also
+gives the REST route that recompiles a package after an edit, for an agent with nobody
+around to reconnect its MCP client.
 
 ## What it creates
 

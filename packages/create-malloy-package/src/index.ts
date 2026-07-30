@@ -1043,7 +1043,8 @@ export function formatSuccess(result: ScaffoldResult): string {
    // Claude Code only: the gate, the dialog and the allowlist are all its own, so
    // saying this to a Cursor user would send them hunting for a dialog Cursor
    // never shows, past the Refresh that does work for them.
-   if (result.host !== "cursor") {
+   const trustNamed = result.host !== "cursor";
+   if (trustNamed) {
       // "a human has to", not "do this": an agent that ran the scaffolder itself
       // reads this output, and it cannot answer a trust prompt. The template says
       // the same thing the same way.
@@ -1051,14 +1052,24 @@ export function formatSuccess(result: ScaffoldResult): string {
          log.yellow(
             "  Trust this workspace: a human has to open Claude Code here interactively\n" +
                "  once and answer the trust prompt. Until then the malloy tools can report\n" +
-               "  connected and still refuse to run, and a permissions allowlist is ignored.",
+               "  connected and still refuse every call, and a permissions allowlist in\n" +
+               "  .claude/settings.json is ignored. It worked when a malloy tool returns\n" +
+               "  data instead of refusing.",
          ),
       );
+      // A blank line, because this and the note below are two different problems
+      // with two different fixes, and consecutive lines at one indent read as one
+      // item with one remedy.
+      lines.push("");
    }
    lines.push(
       log.dim(
-         "  An agent that starts the server itself can't reconnect MCP in that\n" +
-            `  session; ask the user to reconnect it. See ${result.agentsFile}.`,
+         // The "different problem" framing only has an antecedent where the trust
+         // note was printed, which is not the cursor case.
+         (trustNamed
+            ? "  A different problem: an agent that starts the server itself can't\n  reconnect MCP in that session"
+            : "  An agent that starts the server itself can't reconnect MCP in that\n  session") +
+            `; ask the user to reconnect it. See ${result.agentsFile}.`,
       ),
    );
    // The other way this fails, and the one with no signal at all: both the MCP

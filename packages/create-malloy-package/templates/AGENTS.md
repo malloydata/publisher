@@ -149,7 +149,8 @@ REST, for a script or a check that does not need an agent: every model is querya
 `POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`, and after a
 model-file edit `GET /api/v0/environments/<env>/packages/<package>?reload=true` recompiles
 the package and comes back 424 with the compile errors when it does not compile. Any other
-non-2xx means the check never ran, so fix the request rather than the model. This lists
+non-2xx is a failed check too, and its `message` says what went wrong: a 404 for a package
+name this server does not serve, a 503 for a package it could not load at all. This lists
 what the server has loaded:
 
 ```bash

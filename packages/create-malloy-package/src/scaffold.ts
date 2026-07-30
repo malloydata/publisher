@@ -1766,9 +1766,11 @@ function renderAgentsFile(
               "`malloy_*` tools are listed but every call is refused, the usual cause is that this",
               "workspace has not been trusted, which also discards a `.claude/settings.json` allowlist.",
               "A human has to start Claude Code interactively in this directory once and answer the",
-              "trust prompt, asked once per directory; a non-interactive run never raises it. Tell the",
-              "user and leave the choice to them. If the tools are not listed at all, this gate is not",
-              "the cause, so read on.",
+              "trust prompt; a non-interactive run is never asked, so it cannot clear the gate either.",
+              "Tell the user and leave the choice to them. You will know it worked when a `malloy_*`",
+              "call returns data instead of being refused. If that does not change it, the other cause",
+              "is a `malloy` server whose own approval prompt was never answered. If the tools are not",
+              "listed at all, this gate is not the cause, so read on.",
               "",
            ].join("\n");
    // The count is the real one, not the shipped one. This file used to assert the

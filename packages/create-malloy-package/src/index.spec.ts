@@ -431,11 +431,18 @@ describe("formatSuccess: the MCP endpoint", () => {
       // rather than merging it. It voids the reconnect remedy, so a reader who
       // acts on that one first fixes the wrong thing. The order is the claim,
       // which is why it is asserted rather than just the presence.
+      //
+      // Searched over whitespace-collapsed text, because these lines are hard
+      // wrapped: a phrase that straddles a wrap makes toContain fail and indexOf
+      // return -1, which silently inverts an ordering assertion. Rewording the
+      // block moves the wrap, so anchoring on the prose rather than on the
+      // current line breaks is what keeps this test about the ordering.
       const output = formatSuccess(resultFor());
-      expect(output).toContain("Trust this workspace");
-      expect(output).toContain("can't reconnect MCP");
-      expect(output.indexOf("Trust this workspace")).toBeLessThan(
-         output.indexOf("can't reconnect MCP"),
+      const flat = output.replace(/\s+/g, " ");
+      expect(flat).toContain("Trust this workspace");
+      expect(flat).toContain("can't reconnect MCP");
+      expect(flat.indexOf("Trust this workspace")).toBeLessThan(
+         flat.indexOf("can't reconnect MCP"),
       );
       // Asserted positively as well, because the cursor test below guards these
       // two facts only with not.toContain, which stays green if they are deleted.
@@ -472,16 +479,39 @@ describe("formatSuccess: the MCP endpoint", () => {
                ),
             );
 
-      // One scaffold, two renders: resultFor() runs a real scaffold, so calling
-      // it twice in one test collides on the directory it just created.
-      const result = resultFor();
-      const output = formatSuccess({ ...result, host: "cursor" });
-      expect(claudeOnlyLines(output)).toEqual([]);
-      expect(output).not.toContain("permissions allowlist");
-      // Not passing by printing nothing: the section itself is still there.
-      expect(output).toContain("Connect an agent:");
-      // And the filter is not vacuous: it matches on the claude-code output.
-      expect(claudeOnlyLines(formatSuccess(result)).length).toBeGreaterThan(0);
+      // A REAL cursor scaffold, into its own directory. Overriding host on a
+      // claude-code result instead would keep that run's mcpConfigPath
+      // (".mcp.json") and its written list (which holds CLAUDE.md), so the
+      // assertions would pass over a render that cannot occur, and specifically
+      // over one naming two files a cursor run never writes.
+      const cursorDir = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-cursor-"));
+      try {
+         const output = formatSuccess(
+            scaffold({
+               name: "sales",
+               cwd: cursorDir,
+               host: "cursor",
+               force: false,
+            }),
+         );
+         expect(claudeOnlyLines(output)).toEqual([]);
+         expect(output).not.toContain("permissions allowlist");
+         // The two files a cursor run does not write, which the pattern above
+         // cannot see because they are plain filenames.
+         expect(output).not.toContain("CLAUDE.md");
+         expect(output).toContain(".cursor/mcp.json");
+         // Not passing by printing nothing: the section itself is still there.
+         expect(output).toContain("Connect an agent:");
+      } finally {
+         fs.rmSync(cursorDir, { recursive: true, force: true });
+      }
+
+      // And the filter is not vacuous: it matches the claude-code output, where
+      // each alternative it tests for really does appear.
+      const claudeOutput = formatSuccess(resultFor());
+      expect(claudeOnlyLines(claudeOutput).length).toBeGreaterThan(0);
+      expect(claudeOutput).toContain("Claude Code");
+      expect(claudeOutput).toContain(".claude/settings.json");
    });
 });
 
