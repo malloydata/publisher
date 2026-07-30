@@ -102,7 +102,7 @@ export class ConnectionError extends Error {
 }
 
 /**
- * A materialization destination was named but is not configured on the
+ * A storage destination was named but is not configured on the
  * environment. Distinct from {@link ConnectionNotFoundError} so a misconfigured
  * destination is diagnosable in logs, and mapped to 422 rather than 404 because
  * it can only be raised by a build or serve path: the connection endpoints

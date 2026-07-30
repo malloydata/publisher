@@ -25,7 +25,7 @@ An env-level DuckDB connection must declare at least one attached database. If y
 
 A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.
 
-The same shape also describes a materialization **destination** — where a `#@ persist storage=<name>` source is built and served from — but a destination is **not** a connection and is declared in its own list. See [Materialization destinations](#materialization-destinations) below and [persist-storage-tutorial.md](persist-storage-tutorial.md).
+The same shape also describes a storage **destination** — where a `#@ persist storage=<name>` source is built and served from — but a destination is **not** a connection and is declared in its own list. See [Storage destinations](#storage-destinations) below and [persist-storage-tutorial.md](persist-storage-tutorial.md).
 
 A `ducklake` connection pairs a **catalog** — a metadata database, typically Postgres — with **storage** — a `bucketUrl` for the Parquet data (an `s3://`/`gs://` URL in the cloud, or a local directory for dev):
 
@@ -50,18 +50,18 @@ A `ducklake` connection pairs a **catalog** — a metadata database, typically P
 
 Materialized data always lands as **Parquet** in the storage bucket (Publisher disables DuckLake small-table inlining on the write path, so it never accumulates in the catalog database). The materialization tier is gated by `PERSIST_STORAGE_MODE` — see [configuration.md](configuration.md).
 
-## Materialization destinations
+## Storage destinations
 
 A `#@ persist storage=<name>` source is built into, and served from, a
-**materialization destination**. Destinations are declared in
-`materializationDestinations`, a sibling of `connections`:
+**storage destination**. Destinations are declared in
+`storageDestinations`, a sibling of `connections`:
 
 ```jsonc
 {
   "name": "examples",
   "packages": [ /* … */ ],
   "connections": [ /* the warehouses your models query */ ],
-  "materializationDestinations": [
+  "storageDestinations": [
     {
       "name": "lake",
       "type": "ducklake",
@@ -94,7 +94,7 @@ list it lives in, and that difference is the point:
   to define a warehouse that no connection endpoint audits.
 
 Destinations persist in `publisher.db` like connections do, so one registered
-over the API survives a restart. `materializationDestinations` in the config file
+over the API survives a restart. `storageDestinations` in the config file
 seeds an environment that has none stored.
 
 A `storage=` build naming a destination that is not configured fails with HTTP

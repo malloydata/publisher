@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { DuckDBRepository } from "./DuckDBRepository";
-import { MaterializationDestinationRepository } from "./MaterializationDestinationRepository";
+import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { initializeSchema } from "./schema";
 
 /**
@@ -9,7 +9,7 @@ import { initializeSchema } from "./schema";
  * `(environment_id, name)` uniqueness, and the JSON round-trip of a config are
  * all covered — the parts a SQL-shape assertion would miss.
  */
-describe("MaterializationDestinationRepository", () => {
+describe("StorageDestinationRepository", () => {
    const dbs: DuckDBConnection[] = [];
    const ENV_ID = "env-1";
    const OTHER_ENV_ID = "env-2";
@@ -57,7 +57,7 @@ describe("MaterializationDestinationRepository", () => {
    }
 
    it("round-trips a destination config through the store", async () => {
-      const repo = new MaterializationDestinationRepository(await freshDb());
+      const repo = new StorageDestinationRepository(await freshDb());
 
       await repo.upsert({
          environmentId: ENV_ID,
@@ -75,7 +75,7 @@ describe("MaterializationDestinationRepository", () => {
    });
 
    it("replaces the row for a name instead of duplicating it", async () => {
-      const repo = new MaterializationDestinationRepository(await freshDb());
+      const repo = new StorageDestinationRepository(await freshDb());
 
       await repo.upsert({
          environmentId: ENV_ID,
@@ -99,7 +99,7 @@ describe("MaterializationDestinationRepository", () => {
    });
 
    it("scopes a destination to its environment", async () => {
-      const repo = new MaterializationDestinationRepository(await freshDb());
+      const repo = new StorageDestinationRepository(await freshDb());
 
       await repo.upsert({
          environmentId: ENV_ID,
@@ -114,7 +114,7 @@ describe("MaterializationDestinationRepository", () => {
    });
 
    it("deletes a destination by id and by environment", async () => {
-      const repo = new MaterializationDestinationRepository(await freshDb());
+      const repo = new StorageDestinationRepository(await freshDb());
 
       const first = await repo.upsert({
          environmentId: ENV_ID,
@@ -144,7 +144,7 @@ describe("MaterializationDestinationRepository", () => {
       const db = await freshDb();
       const repository = new DuckDBRepository(db);
 
-      await repository.upsertMaterializationDestination({
+      await repository.upsertStorageDestination({
          environmentId: ENV_ID,
          name: "managed",
          type: "ducklake",
@@ -153,9 +153,7 @@ describe("MaterializationDestinationRepository", () => {
 
       await repository.deleteEnvironment(ENV_ID);
 
-      expect(await repository.listMaterializationDestinations(ENV_ID)).toEqual(
-         [],
-      );
+      expect(await repository.listStorageDestinations(ENV_ID)).toEqual([]);
       expect(await repository.getEnvironmentById(ENV_ID)).toBeNull();
    });
 });

@@ -37,7 +37,7 @@ type MockData = Record<string, unknown>;
 // so a test can assign it before constructing the store.
 let mockDbEnvironments: unknown[] = [];
 
-// Materialization destination rows the mock database holds, keyed by
+// Storage destination rows the mock database holds, keyed by
 // environment id. Reset between tests like `mockDbEnvironments`, and written by
 // the store's own sync, so a test can assert what a restart would read back.
 type MockDestinationRow = {
@@ -256,7 +256,7 @@ mock.module("../storage/StorageManager", () => {
                // Backed by `mockDbDestinations` rather than stubbed out, so a
                // test can drive both directions the store uses: what a restart
                // reads back, and what the sync writes and prunes.
-               listMaterializationDestinations: async (
+               listStorageDestinations: async (
                   environmentId: string,
                ): Promise<unknown[]> => {
                   if (failNextDestinationReads > 0) {
@@ -268,7 +268,7 @@ mock.module("../storage/StorageManager", () => {
                   );
                },
 
-               getMaterializationDestinationByName: async (
+               getStorageDestinationByName: async (
                   environmentId: string,
                   name: string,
                ): Promise<MockData | null> =>
@@ -278,7 +278,7 @@ mock.module("../storage/StorageManager", () => {
                         row.name === name,
                   ) ?? null,
 
-               upsertMaterializationDestination: async (
+               upsertStorageDestination: async (
                   data: MockData,
                ): Promise<MockData> => {
                   const row = {
@@ -299,15 +299,13 @@ mock.module("../storage/StorageManager", () => {
                   return row;
                },
 
-               deleteMaterializationDestination: async (
-                  id: string,
-               ): Promise<void> => {
+               deleteStorageDestination: async (id: string): Promise<void> => {
                   mockDbDestinations = mockDbDestinations.filter(
                      (row) => row.id !== id,
                   );
                },
 
-               deleteMaterializationDestinationsByEnvironmentId: async (
+               deleteStorageDestinationsByEnvironmentId: async (
                   environmentId: string,
                ): Promise<void> => {
                   mockDbDestinations = mockDbDestinations.filter(
@@ -865,7 +863,7 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors?.[0]?.message).toBeTruthy();
    });
 
-   it("should report configured materialization destinations on the status endpoint", async () => {
+   it("should report configured storage destinations on the status endpoint", async () => {
       // The status endpoint is how an operator or orchestrator confirms a worker
       // picked up the destination it was configured with. It reports the name and
       // type; the catalog credentials behind them must not leave the server.
@@ -885,7 +883,7 @@ describe("EnvironmentStore Service", () => {
                   name: projectName,
                   packages: [{ name: projectName, location: envPath }],
                   connections: [],
-                  materializationDestinations: [
+                  storageDestinations: [
                      {
                         name: "managed",
                         type: "ducklake",
@@ -914,7 +912,7 @@ describe("EnvironmentStore Service", () => {
       const environment = status.environments.find(
          (e) => e.name === projectName,
       );
-      expect(environment?.materializationDestinations).toEqual([
+      expect(environment?.storageDestinations).toEqual([
          { name: "managed", type: "ducklake" },
       ]);
       expect(JSON.stringify(status)).not.toContain("catalog-secret");
@@ -942,7 +940,7 @@ describe("EnvironmentStore Service", () => {
                   name: projectName,
                   packages: [{ name: projectName, location: envPath }],
                   connections: [],
-                  materializationDestinations: [managedDestination()],
+                  storageDestinations: [managedDestination()],
                },
             ],
          }),
@@ -983,7 +981,7 @@ describe("EnvironmentStore Service", () => {
 
       const environment = await afterRestart.getEnvironment(projectName);
       expect(
-         environment.getMaterializationDestination("managed").ducklakeConnection
+         environment.getStorageDestination("managed").ducklakeConnection
             ?.storage?.bucketUrl,
       ).toBe("gs://managed-tier/org_a");
    });
@@ -1006,7 +1004,7 @@ describe("EnvironmentStore Service", () => {
                   name: projectName,
                   packages: [{ name: projectName, location: envPath }],
                   connections: [],
-                  materializationDestinations: [managedDestination()],
+                  storageDestinations: [managedDestination()],
                },
             ],
          }),
@@ -1018,7 +1016,7 @@ describe("EnvironmentStore Service", () => {
 
       await newEnvironmentStore.updateEnvironment({
          name: projectName,
-         materializationDestinations: [managedDestination("replacement")],
+         storageDestinations: [managedDestination("replacement")],
       });
 
       expect(mockDbDestinations.map((row) => row.name)).toEqual([
@@ -1105,7 +1103,7 @@ describe("EnvironmentStore Service", () => {
                   name: projectName,
                   packages: [{ name: projectName, location: envPath }],
                   connections: [],
-                  materializationDestinations: [managedDestination()],
+                  storageDestinations: [managedDestination()],
                },
             ],
          }),
@@ -1117,7 +1115,7 @@ describe("EnvironmentStore Service", () => {
 
       await newEnvironmentStore.updateEnvironment({
          name: projectName,
-         materializationDestinations: [],
+         storageDestinations: [],
       });
 
       expect(mockDbDestinations).toEqual([]);
@@ -1142,7 +1140,7 @@ describe("EnvironmentStore Service", () => {
                   name: projectName,
                   packages: [{ name: projectName, location: envPath }],
                   connections: [],
-                  materializationDestinations: [managedDestination()],
+                  storageDestinations: [managedDestination()],
                },
             ],
          }),
@@ -1160,9 +1158,9 @@ describe("EnvironmentStore Service", () => {
       await newEnvironmentStore.finishedInitialization;
 
       const environment = await newEnvironmentStore.getEnvironment(projectName);
-      expect(
-         environment.listMaterializationDestinations().map((d) => d.name),
-      ).toEqual(["managed"]);
+      expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
+         "managed",
+      ]);
    });
 
    it("should report a package that failed to load while its siblings serve", async () => {

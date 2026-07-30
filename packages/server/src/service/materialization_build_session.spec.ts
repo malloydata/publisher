@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestError } from "../errors";
-import { materializationDestinationRoot } from "./connection_config";
+import { storageDestinationRoot } from "./connection_config";
 import type { components } from "../api";
 import {
    assertStorageServeShapeCompiles,
@@ -285,7 +285,7 @@ describe.skipIf(process.platform === "win32")(
        * cannot collide with a connection of the same name.
        */
       async function seedLake(dir: string): Promise<void> {
-         const root = materializationDestinationRoot(dir);
+         const root = storageDestinationRoot(dir);
          mkdirSync(root, { recursive: true });
          const seed = new DuckDBConnection("lake", join(root, "lake.duckdb"));
          try {

@@ -53,22 +53,19 @@ export interface ResourceRepository {
    ): Promise<Connection>;
    deleteConnection(id: string): Promise<void>;
 
-   // Materialization destinations
-   listMaterializationDestinations(
+   // Storage destinations
+   listStorageDestinations(
       environmentId: string,
-   ): Promise<MaterializationDestination[]>;
-   getMaterializationDestinationByName(
+   ): Promise<StorageDestination[]>;
+   getStorageDestinationByName(
       environmentId: string,
       name: string,
-   ): Promise<MaterializationDestination | null>;
-   upsertMaterializationDestination(
-      destination: Omit<
-         MaterializationDestination,
-         "id" | "createdAt" | "updatedAt"
-      >,
-   ): Promise<MaterializationDestination>;
-   deleteMaterializationDestination(id: string): Promise<void>;
-   deleteMaterializationDestinationsByEnvironmentId(id: string): Promise<void>;
+   ): Promise<StorageDestination | null>;
+   upsertStorageDestination(
+      destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,
+   ): Promise<StorageDestination>;
+   deleteStorageDestination(id: string): Promise<void>;
+   deleteStorageDestinationsByEnvironmentId(id: string): Promise<void>;
 
    // Materializations
    listMaterializations(
@@ -142,7 +139,7 @@ export interface Connection {
  * warehouses a destination may be is enforced where destinations are validated,
  * not by the store.
  */
-export interface MaterializationDestination {
+export interface StorageDestination {
    id: string;
    environmentId: string;
    name: string;

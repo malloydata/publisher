@@ -1,7 +1,7 @@
 # Tutorial: materialize a source into DuckLake and serve it back
 
 Malloy Publisher can materialize a `#@ persist` source into a **store you choose**
-— a registered DuckLake materialization destination — instead of the source's own
+— a registered DuckLake storage destination — instead of the source's own
 warehouse, and then serve queries against that source **straight from the
 materialized table**, cross-dialect, with no changes to your model. The query
 you already run keeps working; behind it, the rows now come from the
@@ -30,7 +30,7 @@ do. Every step here was run against a real server; the outputs shown are real.
   The build pushes the compiled query to the source warehouse via a native
   passthrough; supported source types are `postgres`, `bigquery`, and
   `snowflake`. Postgres is the easiest to run locally.
-- A **DuckLake** materialization destination — a catalog (a Postgres database)
+- A **DuckLake** storage destination — a catalog (a Postgres database)
   plus a local data directory — that you create and materialize into. (A cloud
   deployment would
   point `bucketUrl` at `s3://`/`gs://`; locally a filesystem path is enough and
@@ -100,9 +100,9 @@ connection, our destination, and the package to it.
 
 These are two different things, registered two different ways. The warehouse your
 model queries is a **connection**. The lake you materialize into is a
-**materialization destination** — a separate list that models cannot name, so a
+**storage destination** — a separate list that models cannot name, so a
 `storage=` target can never be read or written by a query. (See
-[connections.md](connections.md#materialization-destinations).)
+[connections.md](connections.md#storage-destinations).)
 
 `POST /environments/{env}/connections/{name}` registers a connection — the name
 is in the path, the body carries the type-specific config:
@@ -126,14 +126,14 @@ Destinations are set on the environment, as a list:
 curl -s -X PATCH http://localhost:4000/api/v0/environments/examples \
   -H 'content-type: application/json' -d '{
     "name":"examples",
-    "materializationDestinations":[{
+    "storageDestinations":[{
       "name":"lake","type":"ducklake",
       "ducklakeConnection":{
         "catalog":{"postgresConnection":{"host":"localhost","port":5432,"databaseName":"ducklake_catalog","userName":"tutorial","password":"tutorial"}},
         "storage":{"bucketUrl":"/tmp/publisher-tutorial-lake"}
       }
     }]
-  }' | jq '.materializationDestinations'
+  }' | jq '.storageDestinations'
 # -> [ { "name": "lake", "type": "ducklake" } ]
 ```
 
@@ -143,7 +143,7 @@ confirm what a server picked up:
 
 ```bash
 curl -s http://localhost:4000/api/v0/status \
-  | jq '.environments[] | select(.name=="examples") | .materializationDestinations'
+  | jq '.environments[] | select(.name=="examples") | .storageDestinations'
 # -> [ { "name": "lake", "type": "ducklake" } ]
 ```
 

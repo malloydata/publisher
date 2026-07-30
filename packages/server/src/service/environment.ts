@@ -40,8 +40,8 @@ import {
    InternalConnection,
 } from "./connection";
 import {
-   materializationDestinationRoot,
-   processMaterializationDestinations,
+   storageDestinationRoot,
+   processStorageDestinations,
 } from "./connection_config";
 import {
    fetchManifestEntries,
@@ -96,11 +96,11 @@ type RetiredConnectionGeneration = {
 const RETIRED_CONNECTION_DRAIN_MS = 30_000;
 
 /**
- * The only fields of a materialization destination any read reports, so an
+ * The only fields of a storage destination any read reports, so an
  * operator or orchestrator can see which destinations a worker holds without
  * being handed their warehouse credentials. Also the test for a write entry that
  * is a reference to a stored destination rather than a new config for it — see
- * {@link Environment.setMaterializationDestinations}.
+ * {@link Environment.setStorageDestinations}.
  */
 const DESTINATION_READ_FIELDS: ReadonlySet<string> = new Set([
    "name",
@@ -256,7 +256,7 @@ export class Environment {
       environmentPath: string,
       malloyConfig: EnvironmentMalloyConfig,
       apiConnections: InternalConnection[],
-      materializationDestinations: ApiConnection[] = [],
+      storageDestinations: ApiConnection[] = [],
    ) {
       // Sanitizer barrier: every downstream `path.join(this.environmentPath,
       // …)` site (including the static `sweepStaleInstallDirs` sweep) gets a
@@ -267,7 +267,7 @@ export class Environment {
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
       this.destinations = [];
-      this.setMaterializationDestinations(materializationDestinations);
+      this.setStorageDestinations(storageDestinations);
       this.metadata = {
          resource: `${API_PREFIX}/environments/${this.environmentName}`,
          name: this.environmentName,
@@ -300,10 +300,8 @@ export class Environment {
 
       // Absent means "leave alone", so a caller updating only the readme or the
       // connections cannot blank the destination list by omission.
-      if (payload.materializationDestinations) {
-         this.setMaterializationDestinations(
-            payload.materializationDestinations,
-         );
+      if (payload.storageDestinations) {
+         this.setStorageDestinations(payload.storageDestinations);
       }
 
       // Handle connections update
@@ -340,7 +338,7 @@ export class Environment {
       environmentName: string,
       environmentPath: string,
       connections: ApiConnection[],
-      materializationDestinations: ApiConnection[] = [],
+      storageDestinations: ApiConnection[] = [],
    ): Promise<Environment> {
       assertSafeEnvironmentPath(environmentPath);
       if (!(await fs.promises.stat(environmentPath))?.isDirectory()) {
@@ -370,7 +368,7 @@ export class Environment {
          environmentPath,
          malloyConfig,
          malloyConfig.apiConnections,
-         materializationDestinations,
+         storageDestinations,
       );
 
       // Best-effort: a previous run may have crashed mid-install or
@@ -647,17 +645,15 @@ export class Environment {
     * against the stored list first, so a read-modify-write of the environment
     * keeps the configs it was never shown.
     */
-   public setMaterializationDestinations(
-      materializationDestinations: ApiConnection[],
-   ): void {
+   public setStorageDestinations(storageDestinations: ApiConnection[]): void {
       const previousCount = this.destinations.length;
       const previous = JSON.stringify(this.destinations);
-      this.destinations = processMaterializationDestinations(
-         Array.isArray(materializationDestinations)
-            ? materializationDestinations.map((destination) =>
+      this.destinations = processStorageDestinations(
+         Array.isArray(storageDestinations)
+            ? storageDestinations.map((destination) =>
                  this.resolveDestinationReference(destination),
               )
-            : materializationDestinations,
+            : storageDestinations,
       );
       // An explicit set makes the list authoritative again: whatever could not be
       // read before, this is now the set the store should be reconciled to.
@@ -680,7 +676,7 @@ export class Environment {
       // one that empties the list.
       if (previousCount > 0 || this.destinations.length > 0) {
          logger.info(
-            `Environment ${this.environmentName} has ${this.destinations.length} materialization destination(s)`,
+            `Environment ${this.environmentName} has ${this.destinations.length} storage destination(s)`,
             { destinations: this.destinations.map((d) => d.name) },
          );
       }
@@ -725,7 +721,7 @@ export class Environment {
     */
    private attachDestinationServeConfig(_package: Package): void {
       _package.setServeDestinationConfig(() =>
-         this.getMaterializationDestinationMalloyConfig(),
+         this.getStorageDestinationMalloyConfig(),
       );
    }
 
@@ -743,11 +739,9 @@ export class Environment {
       try {
          // Rooted apart from the connections' files so a destination can never
          // share a pooled DuckDB instance with a connection of the same name —
-         // see MATERIALIZATION_DESTINATIONS_DIR. Created here because the
+         // see STORAGE_DESTINATIONS_DIR. Created here because the
          // directory has to exist before the first lookup opens a database in it.
-         const destinationRoot = materializationDestinationRoot(
-            this.environmentPath,
-         );
+         const destinationRoot = storageDestinationRoot(this.environmentPath);
          if (this.destinations.length > 0) {
             fs.mkdirSync(destinationRoot, { recursive: true });
          }
@@ -757,12 +751,12 @@ export class Environment {
          );
       } catch (error) {
          logger.error(
-            `Failed to assemble materialization destinations for environment ${this.environmentName}; serving without them`,
+            `Failed to assemble storage destinations for environment ${this.environmentName}; serving without them`,
             { error },
          );
          this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
             [],
-            materializationDestinationRoot(this.environmentPath),
+            storageDestinationRoot(this.environmentPath),
          );
       }
       if (previous && previous !== this.destinationMalloyConfig) {
@@ -799,21 +793,21 @@ export class Environment {
     * out the same object for both is exactly the mistake this split exists to
     * make impossible.
     */
-   public getMaterializationDestinationMalloyConfig() {
+   public getStorageDestinationMalloyConfig() {
       return this.destinationMalloyConfig.malloyConfig;
    }
 
    /**
     * Records that this environment's stored destinations could not be read, so
-    * {@link listMaterializationDestinations} is a fallback rather than the
+    * {@link listStorageDestinations} is a fallback rather than the
     * authoritative set. Callers that reconcile storage must not prune against it.
     */
-   public markMaterializationDestinationsUnknown(): void {
+   public markStorageDestinationsUnknown(): void {
       this.destinationsAuthoritative = false;
    }
 
    /** See {@link destinationsAuthoritative}. */
-   public hasAuthoritativeMaterializationDestinations(): boolean {
+   public hasAuthoritativeStorageDestinations(): boolean {
       return this.destinationsAuthoritative;
    }
 
@@ -823,31 +817,29 @@ export class Environment {
     * warehouse credentials and the destination has no endpoint of its own, so
     * nothing can fetch or probe one.
     */
-   public listMaterializationDestinations(): ApiConnection[] {
+   public listStorageDestinations(): ApiConnection[] {
       return this.destinations;
    }
 
-   public hasMaterializationDestination(destinationName: string): boolean {
+   public hasStorageDestination(destinationName: string): boolean {
       return this.destinations.some(
          (destination) => destination.name === destinationName,
       );
    }
 
    /**
-    * Resolves a materialization destination by name. Never falls back to the
+    * Resolves a storage destination by name. Never falls back to the
     * connection list: a `storage=` build naming a destination that is not
     * configured must fail rather than write into a same-named connection, which
     * would be the tenant's own warehouse.
     */
-   public getMaterializationDestination(
-      destinationName: string,
-   ): ApiConnection {
+   public getStorageDestination(destinationName: string): ApiConnection {
       const destination = this.destinations.find(
          (destination) => destination.name === destinationName,
       );
       if (!destination) {
          throw new DestinationNotFoundError(
-            `Materialization destination ${destinationName} not found`,
+            `Storage destination ${destinationName} not found`,
          );
       }
       return destination;
@@ -2389,7 +2381,7 @@ export class Environment {
          await this.destinationMalloyConfig.releaseConnections();
       } catch (error) {
          logger.error(
-            `Error closing materialization destinations for environment ${this.environmentName}`,
+            `Error closing storage destinations for environment ${this.environmentName}`,
             { error },
          );
       }
@@ -2415,9 +2407,10 @@ export class Environment {
          // Name and type only. This is what the status endpoint reports, so it
          // is how an operator or orchestrator confirms which destinations a
          // worker picked up; the configs behind them stay server-side.
-         materializationDestinations: this.destinations.map(
-            ({ name, type }) => ({ name, type }),
-         ),
+         storageDestinations: this.destinations.map(({ name, type }) => ({
+            name,
+            type,
+         })),
          packages: await this.listPackages(),
       };
    }

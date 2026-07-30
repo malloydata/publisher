@@ -8,7 +8,7 @@ package: sec2
 
 Besides Malloy, the publisher exposes `POST /connections/<c>/sqlQuery`, and it
 takes a caller-supplied connection name that no layer above validates. A
-destination is not in that namespace — it lives in `materializationDestinations`,
+destination is not in that namespace — it lives in `storageDestinations`,
 which no connection endpoint reads — so DDL aimed at the lake through this route
 is refused before it becomes SQL, and the materialized table must survive.
 

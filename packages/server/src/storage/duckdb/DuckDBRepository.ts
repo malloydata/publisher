@@ -2,7 +2,7 @@ import {
    Connection,
    Environment,
    Materialization,
-   MaterializationDestination,
+   StorageDestination,
    MaterializationStatus,
    MaterializationUpdate,
    Package,
@@ -11,7 +11,7 @@ import {
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { EnvironmentRepository } from "./EnvironmentRepository";
-import { MaterializationDestinationRepository } from "./MaterializationDestinationRepository";
+import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
 
@@ -19,14 +19,14 @@ export class DuckDBRepository implements ResourceRepository {
    private environmentRepo: EnvironmentRepository;
    private packageRepo: PackageRepository;
    private connectionRepo: ConnectionRepository;
-   private destinationRepo: MaterializationDestinationRepository;
+   private destinationRepo: StorageDestinationRepository;
    private materializationRepo: MaterializationRepository;
 
    constructor(public db: DuckDBConnection) {
       this.environmentRepo = new EnvironmentRepository(db);
       this.packageRepo = new PackageRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
-      this.destinationRepo = new MaterializationDestinationRepository(db);
+      this.destinationRepo = new StorageDestinationRepository(db);
       this.materializationRepo = new MaterializationRepository(db);
    }
 
@@ -150,35 +150,30 @@ export class DuckDBRepository implements ResourceRepository {
 
    // ============ MATERIALIZATION DESTINATIONS ============
 
-   async listMaterializationDestinations(
+   async listStorageDestinations(
       environmentId: string,
-   ): Promise<MaterializationDestination[]> {
+   ): Promise<StorageDestination[]> {
       return this.destinationRepo.list(environmentId);
    }
 
-   async getMaterializationDestinationByName(
+   async getStorageDestinationByName(
       environmentId: string,
       name: string,
-   ): Promise<MaterializationDestination | null> {
+   ): Promise<StorageDestination | null> {
       return this.destinationRepo.getByName(environmentId, name);
    }
 
-   async upsertMaterializationDestination(
-      destination: Omit<
-         MaterializationDestination,
-         "id" | "createdAt" | "updatedAt"
-      >,
-   ): Promise<MaterializationDestination> {
+   async upsertStorageDestination(
+      destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,
+   ): Promise<StorageDestination> {
       return this.destinationRepo.upsert(destination);
    }
 
-   async deleteMaterializationDestination(id: string): Promise<void> {
+   async deleteStorageDestination(id: string): Promise<void> {
       return this.destinationRepo.deleteById(id);
    }
 
-   async deleteMaterializationDestinationsByEnvironmentId(
-      id: string,
-   ): Promise<void> {
+   async deleteStorageDestinationsByEnvironmentId(id: string): Promise<void> {
       return this.destinationRepo.deleteByEnvironmentId(id);
    }
 

@@ -20,7 +20,7 @@ import {
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "./connection";
-import { materializationDestinationRoot } from "./connection_config";
+import { storageDestinationRoot } from "./connection_config";
 import {
    assertServesInDuckDB,
    type ServeBinding,
@@ -44,7 +44,12 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
    "postgres",
 ];
 
-/** Destination (storage) connection types the build can materialize INTO. */
+/**
+ * Warehouse types the build can materialize INTO. Wider than
+ * `DECLARABLE_STORAGE_DESTINATION_TYPES`, which is what a storage destination may
+ * be declared as and admits `ducklake` only — so the `duckdb` branch here is not
+ * reachable from configuration today.
+ */
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
 
 /**
@@ -581,7 +586,7 @@ async function attachDestinationReadWrite(
    // collide with a connection of the same name. The directory is created here
    // because a build can be the first thing that ever touches it: on a worker
    // that has not served this destination, nothing else has made it yet.
-   const destinationRoot = materializationDestinationRoot(environmentPath);
+   const destinationRoot = storageDestinationRoot(environmentPath);
    mkdirSync(destinationRoot, { recursive: true });
    const dbPath = path.join(destinationRoot, `${destinationName}.duckdb`);
    await session.runSQL(

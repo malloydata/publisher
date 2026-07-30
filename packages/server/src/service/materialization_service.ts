@@ -92,13 +92,13 @@ import { redactPgSecrets } from "../pg_helpers";
  * The two lookups are separate on purpose, and which one a call site uses is the
  * whole security property: `getApiConnection` resolves the SOURCE the data is
  * read from, a warehouse the package's own model already names, while
- * `getMaterializationDestination` resolves where the table is WRITTEN. They read
+ * `getStorageDestination` resolves where the table is WRITTEN. They read
  * disjoint lists, so a `storage=` build can never be steered into a connection
  * by naming it — including one whose name matches a destination.
  */
 interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
-   getMaterializationDestination(destinationName: string): ApiConnection;
+   getStorageDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
 }
 
@@ -1359,10 +1359,10 @@ export class MaterializationService {
       destinationName: string,
    ): ApiConnection | undefined {
       try {
-         return environment.getMaterializationDestination(destinationName);
+         return environment.getStorageDestination(destinationName);
       } catch (error) {
          logger.warn(
-            "Skipping a table drop: its materialization destination is no longer configured",
+            "Skipping a table drop: its storage destination is no longer configured",
             { destinationName, error: errMessage(error) },
          );
          return undefined;
@@ -1704,7 +1704,7 @@ export class MaterializationService {
       // fall through to a same-named connection and write a tenant's own
       // warehouse. The throw surfaces as a 422 on the run.
       const destinationConnection =
-         environment.getMaterializationDestination(destinationName);
+         environment.getStorageDestination(destinationName);
 
       const startTime = performance.now();
       let result;

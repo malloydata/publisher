@@ -4,10 +4,10 @@ tags: security
 package: dnn
 ---
 
-# Security: a published model cannot name a materialization destination
+# Security: a published model cannot name a storage destination
 
 The destination a `#@ persist … storage=` writes to lives in
-`materializationDestinations`, a list nothing a user authors resolves against. A
+`storageDestinations`, a list nothing a user authors resolves against. A
 package's models resolve connections through the environment's `connections`, and
 those two lists are disjoint — so a model file naming the destination has no such
 name in scope, and the package carrying it does not load at all.

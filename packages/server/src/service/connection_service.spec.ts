@@ -166,7 +166,7 @@ describe("service/connection_service", () => {
          expect(mockProject.updateConnections.called).toBe(true);
       });
 
-      it("should add a connection whose name a materialization destination also holds", async () => {
+      it("should add a connection whose name a storage destination also holds", async () => {
          // The two namespaces are independent, so a tenant naming their connection
          // after the tier's destination is legal and must not read as a duplicate.
          // Driven against a REAL Environment: a stub would answer whatever it was
@@ -231,11 +231,11 @@ describe("service/connection_service", () => {
                "postgres",
             );
             expect(
-               environment.listMaterializationDestinations().map((d) => d.name),
+               environment.listStorageDestinations().map((d) => d.name),
             ).toEqual(["shared"]);
             expect(
-               environment.getMaterializationDestination("shared")
-                  .ducklakeConnection?.storage?.bucketUrl,
+               environment.getStorageDestination("shared").ducklakeConnection
+                  ?.storage?.bucketUrl,
             ).toBe("gs://managed-tier/org_a");
          } finally {
             fs.rmSync(envPath, { recursive: true, force: true });

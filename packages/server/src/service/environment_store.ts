@@ -542,10 +542,9 @@ export class EnvironmentStore {
                // Only asserted when the config declares destinations: an empty
                // list is an instruction to clear, and this call reaches
                // `Environment.update` for an environment that is already loaded.
-               ...(environment.materializationDestinations.length
+               ...(environment.storageDestinations.length
                   ? {
-                       materializationDestinations:
-                          environment.materializationDestinations,
+                       storageDestinations: environment.storageDestinations,
                     }
                   : {}),
                packages: environment.packages,
@@ -653,8 +652,8 @@ export class EnvironmentStore {
                                        resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
                                        connections:
                                           environmentConfig.connections,
-                                       materializationDestinations:
-                                          environmentConfig.materializationDestinations,
+                                       storageDestinations:
+                                          environmentConfig.storageDestinations,
                                        packages: environmentConfig.packages,
                                     },
                                     true,
@@ -694,11 +693,11 @@ export class EnvironmentStore {
                         // materialized queries serve live, which is a better
                         // outcome than dropping every package in the environment.
                         let destinations =
-                           environmentConfig?.materializationDestinations;
+                           environmentConfig?.storageDestinations;
                         let destinationsRead = true;
                         try {
                            const stored =
-                              await repository.listMaterializationDestinations(
+                              await repository.listStorageDestinations(
                                  dbEnvironment.id,
                               );
                            if (stored.length) {
@@ -711,7 +710,7 @@ export class EnvironmentStore {
                         } catch (error) {
                            destinationsRead = false;
                            logger.error(
-                              `Error reading materialization destinations for "${dbEnvironment.name}"; continuing without the stored ones`,
+                              `Error reading storage destinations for "${dbEnvironment.name}"; continuing without the stored ones`,
                               { error },
                            );
                         }
@@ -729,9 +728,9 @@ export class EnvironmentStore {
                         );
                         // Whatever we ended up with is a fallback, not the set of
                         // record, so the sync must not reconcile the stored rows
-                        // against it — see markMaterializationDestinationsUnknown.
+                        // against it — see markStorageDestinationsUnknown.
                         if (!destinationsRead) {
-                           environmentInstance.markMaterializationDestinationsUnknown();
+                           environmentInstance.markStorageDestinationsUnknown();
                         }
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
@@ -876,8 +875,8 @@ export class EnvironmentStore {
       // Sync connections
       await this.addConnections(environment, dbEnvironment.id, repository);
 
-      // Sync materialization destinations
-      await this.syncMaterializationDestinations(
+      // Sync storage destinations
+      await this.syncStorageDestinations(
          environment,
          dbEnvironment.id,
          repository,
@@ -1074,13 +1073,13 @@ export class EnvironmentStore {
     * left-behind row would silently resurrect a destination that had been removed
     * the next time the environment loaded from the database.
     */
-   private async syncMaterializationDestinations(
+   private async syncStorageDestinations(
       environment: Environment,
       environmentId: string,
       repository: ReturnType<typeof this.storageManager.getRepository>,
    ): Promise<void> {
       try {
-         const destinations = environment.listMaterializationDestinations();
+         const destinations = environment.listStorageDestinations();
          const kept = new Set<string>();
 
          for (const destination of destinations) {
@@ -1088,7 +1087,7 @@ export class EnvironmentStore {
                continue;
             }
             kept.add(destination.name);
-            await repository.upsertMaterializationDestination({
+            await repository.upsertStorageDestination({
                environmentId,
                name: destination.name,
                type: destination.type,
@@ -1101,27 +1100,26 @@ export class EnvironmentStore {
          // than empty, and reconciling to it would delete every registration over
          // a transient read error — permanently, since the next restart then has
          // nothing to restore. Upserting what we do hold stays safe either way.
-         if (!environment.hasAuthoritativeMaterializationDestinations()) {
+         if (!environment.hasAuthoritativeStorageDestinations()) {
             logger.warn(
-               `Not reconciling stored materialization destinations for "${environment.metadata?.name}": this environment's destinations were never read, so the in-memory list is not the desired state`,
+               `Not reconciling stored storage destinations for "${environment.metadata?.name}": this environment's destinations were never read, so the in-memory list is not the desired state`,
             );
             return;
          }
 
-         const stored =
-            await repository.listMaterializationDestinations(environmentId);
+         const stored = await repository.listStorageDestinations(environmentId);
          for (const row of stored) {
             if (!kept.has(row.name)) {
-               await repository.deleteMaterializationDestination(row.id);
+               await repository.deleteStorageDestination(row.id);
                logger.info(
-                  `Removed materialization destination ${row.name} from environment ${environment.metadata?.name}`,
+                  `Removed storage destination ${row.name} from environment ${environment.metadata?.name}`,
                );
             }
          }
       } catch (err: unknown) {
          const error = err as Error;
          logger.error(
-            `Error syncing materialization destinations for "${environment.metadata?.name}":`,
+            `Error syncing storage destinations for "${environment.metadata?.name}":`,
             error,
          );
       }
@@ -1515,10 +1513,9 @@ export class EnvironmentStore {
             // Only asserted when the config declares destinations. A `reload=true`
             // on an environment whose destinations were registered over the API
             // would otherwise carry an empty list, which reads as "clear them".
-            ...(environmentConfig?.materializationDestinations?.length
+            ...(environmentConfig?.storageDestinations?.length
                ? {
-                    materializationDestinations:
-                       environmentConfig.materializationDestinations,
+                    storageDestinations: environmentConfig.storageDestinations,
                  }
                : {}),
          });
@@ -1580,7 +1577,7 @@ export class EnvironmentStore {
          environmentName,
          absoluteEnvironmentPath,
          environment.connections || [],
-         environment.materializationDestinations || [],
+         environment.storageDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
 

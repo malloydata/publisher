@@ -74,7 +74,7 @@ export async function initializeSchema(
     )
   `);
 
-   // Materialization destinations table.
+   // Storage destinations table.
    //
    // Warehouses materialization builds write to and materialized queries are
    // served from. A separate table from `connections`, mirroring the two
@@ -82,7 +82,7 @@ export async function initializeSchema(
    // namespaces are independent, so `UNIQUE (environment_id, name)` here says
    // nothing about a connection of the same name.
    await db.run(`
-    CREATE TABLE IF NOT EXISTS materialization_destinations (
+    CREATE TABLE IF NOT EXISTS storage_destinations (
       id VARCHAR PRIMARY KEY,
       environment_id VARCHAR NOT NULL,
       name VARCHAR NOT NULL,
@@ -153,7 +153,7 @@ export async function initializeSchema(
       "CREATE INDEX IF NOT EXISTS idx_connections_environment_id ON connections(environment_id)",
    );
    await db.run(
-      "CREATE INDEX IF NOT EXISTS idx_materialization_destinations_environment_id ON materialization_destinations(environment_id)",
+      "CREATE INDEX IF NOT EXISTS idx_storage_destinations_environment_id ON storage_destinations(environment_id)",
    );
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_materializations_environment_package ON materializations(environment_id, package_name)",
@@ -235,7 +235,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "materializations",
       "packages",
       "connections",
-      "materialization_destinations",
+      "storage_destinations",
       "environments",
       "themes",
       "entity_embeddings",

@@ -238,7 +238,7 @@ function createMocks() {
  * A stub of the environment surface the build path depends on, with the two
  * lookups kept as disjoint as the real Environment keeps them: connection names
  * resolve only through `getApiConnection` and destination names only through
- * `getMaterializationDestination`, and asking either for the other's name fails
+ * `getStorageDestination`, and asking either for the other's name fails
  * the way the real one does.
  *
  * That disjointness is the point. A stub that answered both lookups from one map
@@ -261,11 +261,11 @@ function buildEnvironmentStub(opts: {
          }
          return connection;
       }),
-      getMaterializationDestination: sinon.stub().callsFake((name: string) => {
+      getStorageDestination: sinon.stub().callsFake((name: string) => {
          const destination = destinations[name];
          if (!destination) {
             throw new DestinationNotFoundError(
-               `Materialization destination ${name} not found`,
+               `Storage destination ${name} not found`,
             );
          }
          return destination;
@@ -322,8 +322,7 @@ describe("MaterializationService", () => {
             destinations: { lake: { name: "lake", type: "postgres" } },
             environmentPath: "/test",
          });
-         const getMaterializationDestination =
-            environment.getMaterializationDestination;
+         const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon
                .stub()
@@ -355,7 +354,7 @@ describe("MaterializationService", () => {
          // Routed to the storage path (resolved the destination connection for
          // an RW drop, not the old skip), and the delete completed despite the
          // drop's best-effort failure.
-         expect(getMaterializationDestination.calledWith("lake")).toBe(true);
+         expect(getStorageDestination.calledWith("lake")).toBe(true);
          expect(
             (
                ctx.repository.deleteMaterialization as sinon.SinonStub
@@ -371,8 +370,7 @@ describe("MaterializationService", () => {
             destinations: { lake: { name: "lake", type: "duckdb" } },
             environmentPath: "/test",
          });
-         const getMaterializationDestination =
-            environment.getMaterializationDestination;
+         const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon
                .stub()
@@ -412,7 +410,7 @@ describe("MaterializationService", () => {
 
          // The drop was skipped (never resolved the destination), and the record
          // was still deleted.
-         expect(getMaterializationDestination.called).toBe(false);
+         expect(getStorageDestination.called).toBe(false);
          expect(
             (
                ctx.repository.deleteMaterialization as sinon.SinonStub
@@ -2075,9 +2073,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       const entry = await run();
 
       expect(entry.storageConnectionName).toBe("shared");
-      expect(
-         environment.getMaterializationDestination.calledWith("shared"),
-      ).toBe(true);
+      expect(environment.getStorageDestination.calledWith("shared")).toBe(true);
       // The config handed to the write is the destination's, by identity - not a
       // same-named connection's, and not a copy assembled from somewhere else.
       expect(write.firstCall.args[2]).toBe(MANAGED_DESTINATION);

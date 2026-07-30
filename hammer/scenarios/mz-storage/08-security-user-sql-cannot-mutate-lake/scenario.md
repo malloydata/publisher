@@ -9,7 +9,7 @@ package: sec1
 A user authors Malloy (models and ad-hoc queries) and can embed raw SQL via
 `connection.sql(...)`. None of it may touch the storage destination — no `DROP`,
 no `CREATE SCHEMA`, no writes, and no reads either. The guard is that a
-destination is not a connection: it lives in `materializationDestinations`, which
+destination is not a connection: it lives in `storageDestinations`, which
 nothing a user authors resolves against, so `lake` is not a name in scope and the
 query never compiles. (A read-only attach still backs the serve path, but it is
 no longer what has to hold — an unnameable destination cannot be addressed at

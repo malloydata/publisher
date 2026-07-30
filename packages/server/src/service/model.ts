@@ -228,7 +228,7 @@ export class Model {
     */
    /**
     * The connections a serve-shape compile may resolve: this environment's
-    * materialization destinations. Deliberately NOT the config this model itself
+    * storage destinations. Deliberately NOT the config this model itself
     * compiles against — a destination must not be resolvable from the author's
     * model, a notebook cell, or a query, and the serve shape is a separate
     * synthetic model, so the two compiles can and must read disjoint name sets.
@@ -1371,7 +1371,7 @@ export class Model {
          modelInfo,
       );
       // The connections a serve shape compiles against are NOT this model's: the
-      // owning Package pushes the environment's materialization destinations
+      // owning Package pushes the environment's storage destinations
       // instead (see Package.setServeDestinationConfig). Capturing `malloyConfig`
       // here would put a destination in reach of the author's own namespace.
       return model;

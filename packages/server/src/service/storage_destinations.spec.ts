@@ -17,9 +17,9 @@ import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import {
    assembleEnvironmentConnections,
-   MATERIALIZATION_DESTINATIONS_DIR,
-   materializationDestinationRoot,
-   processMaterializationDestinations,
+   STORAGE_DESTINATIONS_DIR,
+   storageDestinationRoot,
+   processStorageDestinations,
 } from "./connection_config";
 import { Environment } from "./environment";
 import type { EnvironmentStore } from "./environment_store";
@@ -27,7 +27,7 @@ import type { EnvironmentStore } from "./environment_store";
 type ApiConnection = components["schemas"]["Connection"];
 
 /**
- * A materialization destination is a warehouse the build path writes to and the
+ * A storage destination is a warehouse the build path writes to and the
  * serve path reads from, and it must be reachable from neither of the two
  * namespaces a tenant can name: the connection endpoints and a model's
  * connection references. These tests pin the first half of that — the lists are
@@ -70,9 +70,9 @@ function tenantPostgresConnection(name: string): ApiConnection {
    };
 }
 
-describe("processMaterializationDestinations", () => {
+describe("processStorageDestinations", () => {
    it("accepts a well-formed DuckLake destination and drops its resource path", () => {
-      const accepted = processMaterializationDestinations([
+      const accepted = processStorageDestinations([
          {
             ...ducklakeDestination("managed", "org_a"),
             resource: "/api/v0/connections/managed",
@@ -90,9 +90,7 @@ describe("processMaterializationDestinations", () => {
 
    it("drops a type outside the supported destination set", () => {
       expect(
-         processMaterializationDestinations([
-            tenantPostgresConnection("managed"),
-         ]),
+         processStorageDestinations([tenantPostgresConnection("managed")]),
       ).toEqual([]);
    });
 
@@ -100,11 +98,11 @@ describe("processMaterializationDestinations", () => {
       const noBucket = ducklakeDestination("managed", "org_a");
       delete noBucket.ducklakeConnection!.storage;
 
-      expect(processMaterializationDestinations([noBucket])).toEqual([]);
+      expect(processStorageDestinations([noBucket])).toEqual([]);
    });
 
    it("keeps the first of two destinations sharing a name", () => {
-      const accepted = processMaterializationDestinations([
+      const accepted = processStorageDestinations([
          ducklakeDestination("managed", "org_a"),
          ducklakeDestination("managed", "org_b"),
       ]);
@@ -117,15 +115,13 @@ describe("processMaterializationDestinations", () => {
 
    it("drops a destination named duckdb, which the package sandbox would shadow", () => {
       expect(
-         processMaterializationDestinations([
-            ducklakeDestination("duckdb", "org_a"),
-         ]),
+         processStorageDestinations([ducklakeDestination("duckdb", "org_a")]),
       ).toEqual([]);
    });
 
    it("drops entries that are not objects at all", () => {
       expect(
-         processMaterializationDestinations([
+         processStorageDestinations([
             null,
             "managed",
          ] as unknown as ApiConnection[]),
@@ -133,7 +129,7 @@ describe("processMaterializationDestinations", () => {
    });
 });
 
-describe("Environment: connections and materialization destinations are disjoint", () => {
+describe("Environment: connections and storage destinations are disjoint", () => {
    let envPath: string;
 
    beforeEach(() => {
@@ -189,7 +185,7 @@ describe("Environment: connections and materialization destinations are disjoint
       await environment.serialize();
       try {
          await environment
-            .getMaterializationDestinationMalloyConfig()
+            .getStorageDestinationMalloyConfig()
             .connections.lookupConnection("managed");
       } catch {
          // The catalog is not reachable; the attach attempt is what logs.
@@ -218,7 +214,7 @@ describe("Environment: connections and materialization destinations are disjoint
       expect(environment.listApiConnections().map((c) => c.name)).toEqual([
          "warehouse",
       ]);
-      expect(environment.listMaterializationDestinations()).toHaveLength(1);
+      expect(environment.listStorageDestinations()).toHaveLength(1);
    });
 
    it("answers getApiConnection for a destination exactly as for a name that does not exist", () => {
@@ -258,12 +254,10 @@ describe("Environment: connections and materialization destinations are disjoint
          [],
       );
 
-      expect(() =>
-         environment.getMaterializationDestination("warehouse"),
-      ).toThrow(DestinationNotFoundError);
-      expect(environment.hasMaterializationDestination("warehouse")).toBe(
-         false,
+      expect(() => environment.getStorageDestination("warehouse")).toThrow(
+         DestinationNotFoundError,
       );
+      expect(environment.hasStorageDestination("warehouse")).toBe(false);
    });
 
    it("maps a missing destination to 422, not to a connection 404", () => {
@@ -271,7 +265,7 @@ describe("Environment: connections and materialization destinations are disjoint
 
       let error: unknown;
       try {
-         environment.getMaterializationDestination("managed");
+         environment.getStorageDestination("managed");
       } catch (caught) {
          error = caught;
       }
@@ -286,7 +280,7 @@ describe("Environment: connections and materialization destinations are disjoint
       );
 
       const connection = environment.getApiConnection("shared");
-      const destination = environment.getMaterializationDestination("shared");
+      const destination = environment.getStorageDestination("shared");
 
       expect(connection.type).toBe("postgres");
       expect(destination.type).toBe("ducklake");
@@ -305,22 +299,18 @@ describe("Environment: connections and materialization destinations are disjoint
          [],
          [ducklakeDestination("managed", "org_a")],
       );
-      const first = environment.getMaterializationDestinationMalloyConfig();
+      const first = environment.getStorageDestinationMalloyConfig();
 
-      environment.setMaterializationDestinations([
+      environment.setStorageDestinations([
          ducklakeDestination("managed", "org_a"),
       ]);
-      expect(environment.getMaterializationDestinationMalloyConfig()).toBe(
-         first,
-      );
+      expect(environment.getStorageDestinationMalloyConfig()).toBe(first);
 
       // A real change still swaps it.
-      environment.setMaterializationDestinations([
+      environment.setStorageDestinations([
          ducklakeDestination("managed", "org_b"),
       ]);
-      expect(environment.getMaterializationDestinationMalloyConfig()).not.toBe(
-         first,
-      );
+      expect(environment.getStorageDestinationMalloyConfig()).not.toBe(first);
    });
 
    it("clears the destination list when the environment is torn down", async () => {
@@ -331,11 +321,9 @@ describe("Environment: connections and materialization destinations are disjoint
 
       await environment.closeAllConnections();
 
-      expect(environment.listMaterializationDestinations()).toEqual([]);
+      expect(environment.listStorageDestinations()).toEqual([]);
       // And the empty list is not mistaken for a desired state afterwards.
-      expect(environment.hasAuthoritativeMaterializationDestinations()).toBe(
-         false,
-      );
+      expect(environment.hasAuthoritativeStorageDestinations()).toBe(false);
    });
 
    it("derives a destination's DuckDB file apart from a same-named connection's", () => {
@@ -351,7 +339,7 @@ describe("Environment: connections and materialization destinations are disjoint
       );
       const destinationSide = assembleEnvironmentConnections(
          [ducklakeDestination("shared", "org_a")],
-         materializationDestinationRoot(envPath),
+         storageDestinationRoot(envPath),
       );
 
       const connectionMeta = connectionSide.metadata.get("shared")!;
@@ -363,11 +351,9 @@ describe("Environment: connections and materialization destinations are disjoint
       expect(destinationMeta.workingDirectory).not.toBe(
          connectionMeta.workingDirectory,
       );
-      expect(destinationMeta.databasePath).toContain(
-         MATERIALIZATION_DESTINATIONS_DIR,
-      );
+      expect(destinationMeta.databasePath).toContain(STORAGE_DESTINATIONS_DIR);
       expect(connectionMeta.databasePath).not.toContain(
-         MATERIALIZATION_DESTINATIONS_DIR,
+         STORAGE_DESTINATIONS_DIR,
       );
    });
 
@@ -384,7 +370,7 @@ describe("Environment: connections and materialization destinations are disjoint
 
       for (const config of [
          environment.getEnvironmentMalloyConfig(),
-         environment.getMaterializationDestinationMalloyConfig(),
+         environment.getStorageDestinationMalloyConfig(),
       ]) {
          try {
             await config.connections.lookupConnection("shared");
@@ -399,7 +385,7 @@ describe("Environment: connections and materialization destinations are disjoint
       expect(
          fs.existsSync(
             path.join(
-               materializationDestinationRoot(envPath),
+               storageDestinationRoot(envPath),
                "shared_ducklake.duckdb",
             ),
          ),
@@ -414,7 +400,7 @@ describe("Environment: connections and materialization destinations are disjoint
 
       const serialized = await environment.serialize();
 
-      expect(serialized.materializationDestinations).toEqual([
+      expect(serialized.storageDestinations).toEqual([
          { name: "managed", type: "ducklake" },
       ]);
       const payload = JSON.stringify(serialized);
@@ -426,9 +412,7 @@ describe("Environment: connections and materialization destinations are disjoint
    it("reports an empty list when no destination is configured", async () => {
       const environment = makeEnvironment([], []);
 
-      expect(
-         (await environment.serialize()).materializationDestinations,
-      ).toEqual([]);
+      expect((await environment.serialize()).storageDestinations).toEqual([]);
    });
 
    it("keeps stored configs when an update echoes back what a read reported", async () => {
@@ -436,16 +420,15 @@ describe("Environment: connections and materialization destinations are disjoint
          [],
          [ducklakeDestination("managed", "org_a")],
       );
-      const reported = (await environment.serialize())
-         .materializationDestinations;
+      const reported = (await environment.serialize()).storageDestinations;
 
       await environment.update({
          name: "test-env",
-         materializationDestinations: reported,
+         storageDestinations: reported,
       });
 
       expect(
-         environment.getMaterializationDestination("managed").ducklakeConnection
+         environment.getStorageDestination("managed").ducklakeConnection
             ?.storage?.bucketUrl,
       ).toBe("gs://managed-tier/org_a");
    });
@@ -458,15 +441,15 @@ describe("Environment: connections and materialization destinations are disjoint
 
       await environment.update({
          name: "test-env",
-         materializationDestinations: [
+         storageDestinations: [
             { name: "managed", type: "ducklake" },
             { name: "invented", type: "ducklake" },
          ],
       });
 
-      expect(
-         environment.listMaterializationDestinations().map((d) => d.name),
-      ).toEqual(["managed"]);
+      expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
+         "managed",
+      ]);
    });
 
    it("leaves destinations alone when an update carries only connections", async () => {
@@ -483,7 +466,7 @@ describe("Environment: connections and materialization destinations are disjoint
       expect(environment.listApiConnections().map((c) => c.name)).toEqual([
          "warehouse",
       ]);
-      expect(environment.getMaterializationDestination("managed").type).toBe(
+      expect(environment.getStorageDestination("managed").type).toBe(
          "ducklake",
       );
    });
@@ -496,11 +479,11 @@ describe("Environment: connections and materialization destinations are disjoint
 
       await environment.update({
          name: "test-env",
-         materializationDestinations: [ducklakeDestination("other", "org_b")],
+         storageDestinations: [ducklakeDestination("other", "org_b")],
       });
 
-      expect(environment.hasMaterializationDestination("managed")).toBe(false);
-      expect(environment.hasMaterializationDestination("other")).toBe(true);
+      expect(environment.hasStorageDestination("managed")).toBe(false);
+      expect(environment.hasStorageDestination("other")).toBe(true);
    });
 
    it("validates destinations that arrive over the API, not just from config", async () => {
@@ -508,15 +491,15 @@ describe("Environment: connections and materialization destinations are disjoint
 
       await environment.update({
          name: "test-env",
-         materializationDestinations: [
+         storageDestinations: [
             tenantPostgresConnection("managed"),
             ducklakeDestination("also_managed", "org_b"),
          ],
       });
 
-      expect(
-         environment.listMaterializationDestinations().map((d) => d.name),
-      ).toEqual(["also_managed"]);
+      expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
+         "also_managed",
+      ]);
    });
 
    it("validates destinations handed to the constructor", () => {
@@ -528,9 +511,9 @@ describe("Environment: connections and materialization destinations are disjoint
          ],
       );
 
-      expect(
-         environment.listMaterializationDestinations().map((d) => d.name),
-      ).toEqual(["ok"]);
+      expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
+         "ok",
+      ]);
    });
 
    it("does not list or fetch a destination through the connection endpoints", async () => {
@@ -577,7 +560,7 @@ describe("publisher config round-trip", () => {
       );
    }
 
-   it("carries materializationDestinations through, including a name a connection already uses", () => {
+   it("carries storageDestinations through, including a name a connection already uses", () => {
       writeConfig({
          frozenConfig: false,
          environments: [
@@ -585,9 +568,7 @@ describe("publisher config round-trip", () => {
                name: "examples",
                packages: [{ name: "storefront", location: "./storefront" }],
                connections: [tenantPostgresConnection("shared")],
-               materializationDestinations: [
-                  ducklakeDestination("shared", "org_a"),
-               ],
+               storageDestinations: [ducklakeDestination("shared", "org_a")],
             },
          ],
       });
@@ -596,9 +577,9 @@ describe("publisher config round-trip", () => {
       const environment = processed.environments[0];
 
       expect(environment.connections.map((c) => c.name)).toEqual(["shared"]);
-      expect(
-         environment.materializationDestinations.map((d) => d.name),
-      ).toEqual(["shared"]);
+      expect(environment.storageDestinations.map((d) => d.name)).toEqual([
+         "shared",
+      ]);
    });
 
    it("reports no destinations when the key is absent or not a list", () => {
@@ -612,14 +593,14 @@ describe("publisher config round-trip", () => {
             {
                name: "other",
                packages: [{ name: "storefront", location: "./storefront" }],
-               materializationDestinations: "shared",
+               storageDestinations: "shared",
             },
          ],
       });
 
       const processed = getProcessedPublisherConfig(serverRoot);
 
-      expect(processed.environments[0].materializationDestinations).toEqual([]);
-      expect(processed.environments[1].materializationDestinations).toEqual([]);
+      expect(processed.environments[0].storageDestinations).toEqual([]);
+      expect(processed.environments[1].storageDestinations).toEqual([]);
    });
 });

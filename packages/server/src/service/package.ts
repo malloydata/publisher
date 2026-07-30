@@ -115,7 +115,7 @@ export class Package {
    private packagePath: string;
    private malloyConfig: MalloyConfig;
    /**
-    * Resolves the environment's materialization destinations for a serve-shape
+    * Resolves the environment's storage destinations for a serve-shape
     * compile. Set by the owning Environment; see
     * {@link setServeDestinationConfig}.
     */
@@ -941,7 +941,7 @@ export class Package {
 
    /**
     * Set the connections this package's materialization serve shapes compile
-    * against: the environment's materialization destinations, and nothing a model
+    * against: the environment's storage destinations, and nothing a model
     * in this package can name. Called by the owning Environment after load.
     *
     * Separate from {@link malloyConfig} on purpose. That one is what the author's

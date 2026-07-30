@@ -1995,7 +1995,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "connection": {
                // Runs THROUGH the publisher's connection sqlQuery endpoint (what a
-               // caller can reach). A materialization destination is not in that
+               // caller can reach). A storage destination is not in that
                // namespace at all, and a user connection onto a lake is attached
                // read-only, so `refused` covers both: unreachable, or reachable
                // but not writable.

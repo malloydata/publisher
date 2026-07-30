@@ -1,5 +1,5 @@
 /**
- * The property this whole split exists for: a materialization destination is
+ * The property this whole split exists for: a storage destination is
  * reachable from the serve path and from nowhere a tenant can author.
  *
  * Driven through a REAL Package (the worker-pool harness the other package
@@ -80,7 +80,7 @@ function ducklakeDestination(name: string): ApiConnection {
 
 const ORIGINAL_WORKERS = process.env.PACKAGE_LOAD_WORKERS;
 
-describe("a materialization destination is not in the namespace a tenant authors in", () => {
+describe("a storage destination is not in the namespace a tenant authors in", () => {
    let tempDir: string;
    let envDir: string;
    let pool: PackageLoadPool;
@@ -313,7 +313,7 @@ describe("a materialization destination is not in the namespace a tenant authors
       ).serveDestinationConfig;
       expect(serveProvider).toBeDefined();
       expect(serveProvider!()).toBe(
-         environment.getMaterializationDestinationMalloyConfig(),
+         environment.getStorageDestinationMalloyConfig(),
       );
       expect(serveProvider!()).not.toBe(
          environment.getEnvironmentMalloyConfig(),
@@ -322,12 +322,12 @@ describe("a materialization destination is not in the namespace a tenant authors
       // And it is live wiring, not a captured snapshot: replacing the destination
       // list is reflected without reloading the package.
       const before = serveProvider!();
-      environment.setMaterializationDestinations([
+      environment.setStorageDestinations([
          ducklakeDestination(DESTINATION_NAME),
       ]);
       expect(serveProvider!()).not.toBe(before);
       expect(serveProvider!()).toBe(
-         environment.getMaterializationDestinationMalloyConfig(),
+         environment.getStorageDestinationMalloyConfig(),
       );
 
       // A memoized serve shape holds the connections of the generation it compiled
@@ -347,7 +347,7 @@ describe("a materialization destination is not in the namespace a tenant authors
          // The catalog is unreachable, but the compile still memoizes a shape.
       }
       expect(cacheOf()).toBeDefined();
-      environment.setMaterializationDestinations([
+      environment.setStorageDestinations([
          ducklakeDestination(DESTINATION_NAME),
          ducklakeDestination(SHARED_NAME),
          ducklakeDestination("added_later"),
@@ -363,7 +363,7 @@ describe("a materialization destination is not in the namespace a tenant authors
       ).serveDestinationConfig;
       expect(reloadedProvider).toBeDefined();
       expect(reloadedProvider!()).toBe(
-         environment.getMaterializationDestinationMalloyConfig(),
+         environment.getStorageDestinationMalloyConfig(),
       );
 
       // Behaviourally, the shape does reach for the destination: it gets as far as
@@ -401,7 +401,7 @@ describe("a materialization destination is not in the namespace a tenant authors
       // asserted here, on one Environment.
       const environment = makeEnvironment();
 
-      expect(environment.getMaterializationDestinationMalloyConfig()).not.toBe(
+      expect(environment.getStorageDestinationMalloyConfig()).not.toBe(
          environment.getEnvironmentMalloyConfig(),
       );
 
@@ -422,7 +422,7 @@ describe("a materialization destination is not in the namespace a tenant authors
       let serveSide = "";
       try {
          await environment
-            .getMaterializationDestinationMalloyConfig()
+            .getStorageDestinationMalloyConfig()
             .connections.lookupConnection(DESTINATION_NAME);
       } catch (error) {
          serveSide = String((error as Error).message);
@@ -435,8 +435,7 @@ describe("a materialization destination is not in the namespace a tenant authors
       // whole destination list, so a shape cannot reach a sibling destination it
       // has no binding for — including one belonging to another package.
       const environment = makeEnvironment();
-      const destinations =
-         environment.getMaterializationDestinationMalloyConfig();
+      const destinations = environment.getStorageDestinationMalloyConfig();
       const narrowed = restrictMalloyConfigToConnections(
          destinations,
          new Set([DESTINATION_NAME]),
@@ -466,7 +465,7 @@ describe("a materialization destination is not in the namespace a tenant authors
       const environment = makeEnvironment();
 
       expect(environment.getApiConnection(SHARED_NAME).type).toBe("postgres");
-      expect(environment.getMaterializationDestination(SHARED_NAME).type).toBe(
+      expect(environment.getStorageDestination(SHARED_NAME).type).toBe(
          "ducklake",
       );
    });

@@ -628,18 +628,22 @@ function validateConnectionShape(connection: ApiConnection): void {
 }
 
 /**
- * Warehouse types a materialization destination may be. Deliberately narrower
- * than the connection types: a destination is attached read-write by the build
- * path, and every type admitted here is another way to define a warehouse that
- * no connection endpoint audits.
+ * Warehouse types a storage destination may be DECLARED as. Deliberately
+ * narrower than the connection types: a destination is attached read-write by
+ * the build path, and every type admitted here is another way to define a
+ * warehouse that no connection endpoint audits.
+ *
+ * Narrower than `STORAGE_DESTINATION_TYPES` in materialization_build_session,
+ * which is what the build can materialize INTO and also accepts `duckdb`. Nothing
+ * can currently reach that branch with a `duckdb` destination, because this is the
+ * only way one gets configured — widen here, deliberately, if that changes.
  */
-export const MATERIALIZATION_DESTINATION_TYPES: ReadonlySet<string> = new Set([
-   "ducklake",
-]);
+export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
+   new Set(["ducklake"]);
 
 /**
  * Subdirectory of the environment root holding the local DuckDB files of
- * materialization destinations, keeping them out of the directory connection
+ * storage destinations, keeping them out of the directory connection
  * files derive into.
  *
  * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
@@ -655,17 +659,15 @@ export const MATERIALIZATION_DESTINATION_TYPES: ReadonlySet<string> = new Set([
  *
  * Dot-prefixed so the package walkers skip it, as they do `.staging`/`.retired`.
  */
-export const MATERIALIZATION_DESTINATIONS_DIR = ".destinations";
+export const STORAGE_DESTINATIONS_DIR = ".destinations";
 
-/** Where {@link MATERIALIZATION_DESTINATIONS_DIR} sits for an environment. */
-export function materializationDestinationRoot(
-   environmentPath: string,
-): string {
-   return path.join(environmentPath, MATERIALIZATION_DESTINATIONS_DIR);
+/** Where {@link STORAGE_DESTINATIONS_DIR} sits for an environment. */
+export function storageDestinationRoot(environmentPath: string): string {
+   return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);
 }
 
 /**
- * Validates a `materializationDestinations` list and returns the entries that
+ * Validates a `storageDestinations` list and returns the entries that
  * may be built into and served from. The one place destinations are checked, so
  * no caller can seat an unvalidated destination on an Environment.
  *
@@ -681,7 +683,7 @@ export function materializationDestinationRoot(
  * dropped destination fails rather than falling through to a same-named
  * connection.
  */
-export function processMaterializationDestinations(
+export function processStorageDestinations(
    destinations: ApiConnection[] = [],
 ): ApiConnection[] {
    if (!Array.isArray(destinations)) {
@@ -694,7 +696,7 @@ export function processMaterializationDestinations(
    for (const destination of destinations) {
       if (!destination || typeof destination !== "object") {
          logger.warn(
-            "Invalid materialization destination: entry must be an object. Skipping.",
+            "Invalid storage destination: entry must be an object. Skipping.",
          );
          continue;
       }
@@ -702,14 +704,14 @@ export function processMaterializationDestinations(
       const { name, type } = destination;
       if (!name || typeof name !== "string") {
          logger.warn(
-            `Invalid materialization destination: missing or invalid "name" field. Skipping.`,
+            `Invalid storage destination: missing or invalid "name" field. Skipping.`,
          );
          continue;
       }
-      if (!type || !MATERIALIZATION_DESTINATION_TYPES.has(type)) {
+      if (!type || !DECLARABLE_STORAGE_DESTINATION_TYPES.has(type)) {
          logger.warn(
-            `Materialization destination "${name}" has unsupported type "${type}". ` +
-               `Supported types: ${[...MATERIALIZATION_DESTINATION_TYPES].join(", ")}. Skipping.`,
+            `Storage destination "${name}" has unsupported type "${type}". ` +
+               `Supported types: ${[...DECLARABLE_STORAGE_DESTINATION_TYPES].join(", ")}. Skipping.`,
          );
          continue;
       }
@@ -719,13 +721,13 @@ export function processMaterializationDestinations(
       // would read an empty sandbox instead of the destination.
       if (name === "duckdb") {
          logger.warn(
-            `Materialization destination name "duckdb" is reserved for per-package sandboxes. Skipping.`,
+            `Storage destination name "duckdb" is reserved for per-package sandboxes. Skipping.`,
          );
          continue;
       }
       if (seen.has(name)) {
          logger.warn(
-            `Duplicate materialization destination "${name}". Keeping the first entry and skipping this one.`,
+            `Duplicate storage destination "${name}". Keeping the first entry and skipping this one.`,
          );
          continue;
       }
@@ -734,7 +736,7 @@ export function processMaterializationDestinations(
          validateConnectionShape(destination);
       } catch (error) {
          logger.warn(
-            `Invalid materialization destination "${name}": ${(error as Error).message} Skipping.`,
+            `Invalid storage destination "${name}": ${(error as Error).message} Skipping.`,
          );
          continue;
       }

@@ -584,7 +584,7 @@ async function main(): Promise<void> {
       const environments: EnvSpec[] = [...envs].map((name) => ({
          name,
          connections: connectionsFor(name),
-         materializationDestinations: destinationsFor(name),
+         storageDestinations: destinationsFor(name),
          packages: pkgsByEnv.get(name) ?? [],
       }));
 

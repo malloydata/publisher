@@ -1,8 +1,8 @@
-import { MaterializationDestination } from "../DatabaseInterface";
+import { StorageDestination } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
 /**
- * Persistence for an environment's materialization destinations, so the
+ * Persistence for an environment's storage destinations, so the
  * warehouses a worker builds into and serves from survive a restart the same way
  * its connections do.
  *
@@ -12,16 +12,16 @@ import { DuckDBConnection } from "./DuckDBConnection";
  * are all the store needs. There is no `getById` because no caller holds a
  * destination id.
  */
-export class MaterializationDestinationRepository {
+export class StorageDestinationRepository {
    constructor(private db: DuckDBConnection) {}
 
    private generateId(): string {
       return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
    }
 
-   async list(environmentId: string): Promise<MaterializationDestination[]> {
+   async list(environmentId: string): Promise<StorageDestination[]> {
       const rows = await this.db.all<Record<string, unknown>>(
-         "SELECT * FROM materialization_destinations WHERE environment_id = ? ORDER BY name",
+         "SELECT * FROM storage_destinations WHERE environment_id = ? ORDER BY name",
          [environmentId],
       );
       return rows.map(this.mapToDestination);
@@ -30,9 +30,9 @@ export class MaterializationDestinationRepository {
    async getByName(
       environmentId: string,
       name: string,
-   ): Promise<MaterializationDestination | null> {
+   ): Promise<StorageDestination | null> {
       const row = await this.db.get<Record<string, unknown>>(
-         "SELECT * FROM materialization_destinations WHERE environment_id = ? AND name = ?",
+         "SELECT * FROM storage_destinations WHERE environment_id = ? AND name = ?",
          [environmentId, name],
       );
       return row ? this.mapToDestination(row) : null;
@@ -45,11 +45,8 @@ export class MaterializationDestinationRepository {
     * the id is an internal handle.
     */
    async upsert(
-      destination: Omit<
-         MaterializationDestination,
-         "id" | "createdAt" | "updatedAt"
-      >,
-   ): Promise<MaterializationDestination> {
+      destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,
+   ): Promise<StorageDestination> {
       const existing = await this.getByName(
          destination.environmentId,
          destination.name,
@@ -59,7 +56,7 @@ export class MaterializationDestinationRepository {
 
       if (existing) {
          await this.db.run(
-            `UPDATE materialization_destinations
+            `UPDATE storage_destinations
                 SET type = ?, config = ?, updated_at = ?
               WHERE id = ?`,
             [destination.type, configJson, now.toISOString(), existing.id],
@@ -69,7 +66,7 @@ export class MaterializationDestinationRepository {
 
       const id = this.generateId();
       await this.db.run(
-         `INSERT INTO materialization_destinations
+         `INSERT INTO storage_destinations
              (id, environment_id, name, type, config, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
          [
@@ -86,22 +83,17 @@ export class MaterializationDestinationRepository {
    }
 
    async deleteById(id: string): Promise<void> {
-      await this.db.run(
-         "DELETE FROM materialization_destinations WHERE id = ?",
-         [id],
-      );
+      await this.db.run("DELETE FROM storage_destinations WHERE id = ?", [id]);
    }
 
    async deleteByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run(
-         "DELETE FROM materialization_destinations WHERE environment_id = ?",
+         "DELETE FROM storage_destinations WHERE environment_id = ?",
          [environmentId],
       );
    }
 
-   private mapToDestination(
-      row: Record<string, unknown>,
-   ): MaterializationDestination {
+   private mapToDestination(row: Record<string, unknown>): StorageDestination {
       return {
          id: row.id as string,
          environmentId: row.environment_id as string,
