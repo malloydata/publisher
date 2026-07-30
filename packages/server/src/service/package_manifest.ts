@@ -71,10 +71,17 @@ export function resolvePackageScope(
 
    if (rootDeclared && envelopeDeclared) {
       if (rootScope !== envelopeScope) {
+         // Names the fix, because this throw fails the package LOAD: the
+         // package is skipped and its only trace is /status loadErrors, so the
+         // message is the whole diagnosis. Guessing instead would be worse —
+         // picking the wrong one reuses a table across versions that was never
+         // meant to be shared, silently.
          throw new Error(
-            `Conflicting "scope" in the package manifest: root "${rootScope}" vs ` +
-               `"materialization.scope" "${envelopeScope}". Declare it once, in ` +
-               `"materialization".`,
+            `Conflicting "scope" in publisher.json: root "${rootScope}" vs ` +
+               `"materialization.scope" "${envelopeScope}". The package cannot ` +
+               `load until they agree. Edit "materialization": { "scope": ... } ` +
+               `to the value you want and delete the root-level "scope" (the ` +
+               `server rewrites both homes on its next manifest write).`,
          );
       }
       return { scope: envelopeScope, warnings: [] };

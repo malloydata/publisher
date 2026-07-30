@@ -3583,14 +3583,16 @@ components:
             source or per-request declaration, and given up only after every
             declared property when a bag has to shrink.
 
-            For the properties a host is billed or audited by. The connection API
-            is administered; a package annotation and a query request are not — so
-            a host running one Publisher for several tenants can label a
-            connection's traffic without a tenant relabelling it as someone
-            else's, or pushing the label out of the bag by declaring twenty
-            properties of its own. The server's own context (`class`,
-            `environment`, `query_id`, …) still wins over these, because it
-            describes what the server is actually doing.
+            For the properties a host is billed or audited by, in a deployment
+            where writing a connection is an operator's to do and publishing a
+            package is not — so a host running one Publisher for several tenants
+            can label a connection's traffic without a tenant relabelling it as
+            someone else's, or pushing the label out of the bag by declaring
+            twenty properties of its own. That split lives in whatever fronts
+            this API: Publisher does not authenticate it, so on an unfronted
+            server the same caller can write both. The server's own context
+            (`class`, `environment`, `query_id`, …) still wins over these,
+            because it describes what the server is actually doing.
 
             Same contract as `queryMetadata`, counted against the same
             20-property budget. Rejected with 400 on a connection write when it

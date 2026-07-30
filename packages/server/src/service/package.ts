@@ -1097,7 +1097,7 @@ export class Package {
             warnings.push(
                `#@ persist source "${source.name}" declares sharing=... which is ` +
                   `no longer supported: scope is a single package-level mode. Set ` +
-                  `the root-level "scope": "version" | "package" in ` +
+                  `"materialization": { "scope": "version" | "package" } in ` +
                   `${PACKAGE_MANIFEST_NAME} instead.`,
             );
          }

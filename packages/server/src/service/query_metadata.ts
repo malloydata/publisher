@@ -198,7 +198,14 @@ export interface QueryContext {
    queryClass?: QueryClass;
    environment?: string;
    package?: string;
-   /** Published version id, when the query runs against a versioned package. */
+   /**
+    * Published version id, when the query runs against a versioned package.
+    *
+    * Reserved, not yet reachable: the only path that supplies it is a query
+    * request's `versionId`, which the route rejects with 501 until versioned
+    * packages land. It keeps its slot in {@link CONTEXT_SHED_ORDER} so that
+    * wiring it later is a one-line change rather than a shed-order revision.
+    */
    version?: string;
    /** Package-relative model path, for query paths. */
    model?: string;
@@ -286,12 +293,15 @@ export interface QueryMetadataLayers {
     * declaration can overwrite and which outlive every author property when the
     * bag has to shrink.
     *
-    * The connection API is admin-authored; a package annotation and a request are
-    * not. A host that runs one Publisher for several tenants needs the admin
-    * layer to win for the properties it is billed by — otherwise the tenant label
-    * is both forgeable (a `#@ persist queryMetadata.tenant=…` outranks a
-    * connection default) and the first thing shed under budget, which is a poor
-    * showing for the property finance reads.
+    * A host that runs one Publisher for several tenants needs this layer to win
+    * for the properties it is billed by — otherwise the tenant label is both
+    * forgeable (a `#@ persist queryMetadata.tenant=…` outranks a connection
+    * default) and the first thing shed under budget, which is a poor showing for
+    * the property finance reads.
+    *
+    * The trust split it rests on is the DEPLOYMENT's, not this module's: nothing
+    * here authenticates a connection write, so it separates operator from author
+    * only where something in front of Publisher does.
     */
    enforced?: QueryMetadata | null;
    /** The server's own context, which wins over every other layer. */
@@ -328,7 +338,12 @@ function sanitizeValue(value: string): string {
 
 /**
  * Merge the layers into one bag Malloy will accept, and report what was lost.
- * Never throws: metadata must not be the reason a query or a build fails.
+ *
+ * Never throws — metadata must not be the reason a query or a build fails —
+ * with one precondition: `getQueryMetadataMode()` rejects an unrecognized
+ * `PUBLISHER_QUERY_METADATA`, and it is the boot probe in `server.ts` that
+ * turns that into a startup failure rather than a per-query one. A host that
+ * embeds this module without that probe owes itself the same check.
  *
  * Precedence is most-specific-wins per property across the author layers
  * (connection < model < request), then the connection's ENFORCED properties,

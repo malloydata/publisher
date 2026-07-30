@@ -93,6 +93,9 @@ export class QueryController {
                      request: requestMetadata,
                      queryClass,
                      environment: environmentName,
+                     // Always undefined today: the route 501s any versionId
+                     // before this runs. Wired so that lifting that rejection
+                     // is the whole change.
                      version: metadata?.versionId,
                      // Minted here because this is the boundary that returns
                      // it; a path with nowhere to put it does not mint one.

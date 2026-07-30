@@ -14,6 +14,8 @@ Each backend gets the bag through a mechanism that attaches **per query**:
 | BigQuery | per-job `labels` | `INFORMATION_SCHEMA.JOBS` |
 | Trino / Presto, Databricks, Postgres, DuckDB, MySQL | a leading SQL comment — `-- team="finance" class="interactive"` | query history, `pg_stat_activity`, `system.runtime.queries` |
 
+On the comment-carrying backends the bag is part of the statement text, so it shares whatever window that text is stored in: Postgres truncates `pg_stat_activity.query` at `track_activity_query_size` (1024 bytes by default), and a large declared bag can eat enough of it to cut off the SQL itself. Publisher's own context is about 200 characters; a bag near the 20-property cap is not.
+
 Session-scoped mechanisms (Trino client tags, Databricks `SET QUERY_TAGS`, Postgres `application_name`) are deliberately not used: a pooled session serves many queries, so a session-level tag would attribute all of them to whichever one set it last.
 
 ## What Publisher adds by itself
@@ -23,7 +25,7 @@ Publisher attaches its own context to every statement, so attribution needs no m
 | Property | Meaning |
 |---|---|
 | `class` | `interactive`, `materialize`, `index` or `ops` |
-| `environment`, `package`, `version` | where the query came from |
+| `environment`, `package` | where the query came from |
 | `model` | the model a query ran against |
 | `source` | the persist source a build was materializing |
 | `trigger`, `run_id` | what started a build, and which run it belongs to (also the run whose tables a drop is retiring) |
@@ -71,16 +73,18 @@ Under pressure — the 20-property cap, or Snowflake's tag limit — properties 
 
 ### Properties the deployment owns
 
-`queryMetadataEnforced` on the connection is the same kind of map, with two differences: **no declaration can overwrite it**, and it is given up only after every declared property when a bag has to shrink. Use it for what a host is billed or audited by.
+`queryMetadataEnforced` on the connection is the same kind of map, with two differences: **no package declaration or query request can overwrite it**, and it is given up only after every declared property when a bag has to shrink. Use it for what a host is billed or audited by.
 
-The reason it exists: the connection API is administered, while a package annotation and a query request are not. Without it, a host running one Publisher for several tenants would label a connection `tenant=acme` and any package author in that environment could relabel their queries `tenant=someone_else` — or push the label out of the bag entirely by declaring twenty properties of their own. The server's own context still wins over enforced properties, because it describes what the server is actually doing rather than who is paying for it.
+The reason it exists: in a deployment where connection configuration is an operator's to write and package publishing is not, the two are different levels of trust, and only one of them should be able to set the tenant label. Without it, a host running one Publisher for several tenants would label a connection `tenant=acme` and any package author in that environment could relabel their queries `tenant=someone_else` — or push the label out of the bag entirely by declaring twenty properties of their own. The server's own context still wins over enforced properties, because it describes what the server is actually doing rather than who is paying for it.
+
+That split is a property of the deployment, not of this code. Publisher's own REST and MCP surfaces are unauthenticated by design (see [ai-agents.md](ai-agents.md)), so on a bare Publisher whoever can publish a package can also `PATCH` the connection. The layer is worth using where a gateway or control plane restricts connection writes to operators — which is what it was built for — and is a convention rather than a guarantee anywhere else.
 
 ```jsonc
 // connection config
 {
    "name": "warehouse",
-   "queryMetadata": { "team": "finance" },          // a default; anyone can override
-   "queryMetadataEnforced": { "tenant": "acme" }    // the deployment's; nobody can
+   "queryMetadata": { "team": "finance" },          // a default; any declaration overrides it
+   "queryMetadataEnforced": { "tenant": "acme" }    // the deployment's; no declaration can
 }
 ```
 
