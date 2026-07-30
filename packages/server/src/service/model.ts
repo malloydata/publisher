@@ -1897,7 +1897,7 @@ export class Model {
          throw new Error("no fresh storage serve bindings for this query");
       }
       const key = freshBindings
-         .map((b) => `${b.sourceName}@${b.connectionName}/${b.virtualHandle}`)
+         .map((b) => `${b.sourceName}@${b.destinationName}/${b.virtualHandle}`)
          .sort()
          .join("|");
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
@@ -2006,7 +2006,7 @@ export class Model {
          // business reaching.
          config: restrictMalloyConfigToConnections(
             this.serveDestinationConfig!(),
-            new Set(bindings.map((binding) => binding.connectionName)),
+            new Set(bindings.map((binding) => binding.destinationName)),
          ),
       });
       return runtime.loadModel(new URL(url), {

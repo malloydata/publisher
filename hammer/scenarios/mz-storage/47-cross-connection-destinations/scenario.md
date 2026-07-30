@@ -7,7 +7,7 @@ package: xc
 # Each source routes to its own destination when a package targets several
 
 A package can materialize different sources into different storage destinations;
-each serve binding carries its own `storageConnectionName`, so the serve path
+each serve binding carries its own `storageDestinationName`, so the serve path
 routes each source to the right connection independently. This declares a second
 DuckLake destination (`lake2`, its own catalog + storage) alongside the default
 `lake`, and materializes one source into each — proving cross-connection routing.

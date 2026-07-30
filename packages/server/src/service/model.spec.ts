@@ -912,7 +912,7 @@ describe("service/model", () => {
       const binding = (sourceName: string, freshnessFallback?: string) =>
          ({
             sourceName,
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: `eid-${sourceName}`,
             tablePath: `lake.t_${sourceName}`,
             schema: [{ name: "region", type: "string" }],

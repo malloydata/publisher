@@ -721,7 +721,7 @@ export class Package {
       if (this.storageServeBindings.length > 0) {
          metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
             sourceName: b.sourceName,
-            storageConnectionName: b.connectionName,
+            storageDestinationName: b.destinationName,
             tablePath: b.tablePath,
          }));
       }
@@ -854,7 +854,7 @@ export class Package {
     * manifest entries, and push them onto every loaded model so a query can be
     * routed through the virtual-source serve transform. Called by the build's
     * post-run distribution with the full {@link ManifestEntry} map (which
-    * carries `storageConnectionName` + captured `schema`); only entries that
+    * carries `storageDestinationName` + captured `schema`); only entries that
     * were materialized into a storage destination produce a binding. Re-applied
     * on model reload via {@link pushStorageServeBindingsToModels}.
     */

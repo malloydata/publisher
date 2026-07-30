@@ -197,7 +197,7 @@ export function createIsolatedBuildSession(sessionName: string): {
 /** Result of building one source into a storage destination. */
 export interface StorageBuildResult {
    /** The connection the physical table now lives in (the destination). */
-   storageConnectionName: string;
+   storageDestinationName: string;
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
 }
@@ -302,7 +302,7 @@ export async function buildSourceIntoStorage(params: {
       // type-check a virtual source's declared columns.
       const schema = await createTableAndDescribe(session, target, passthrough);
 
-      return { storageConnectionName: destinationName, schema };
+      return { storageDestinationName: destinationName, schema };
    } finally {
       // Dispose closes the private instance (releasing every secret + attach —
       // nothing federated or read-write survives the build) and removes its
@@ -342,7 +342,7 @@ export async function buildDownstreamIntoStorage(params: {
    transientModel: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
-   /** connectionName → handle → quoted physical path for the upstream virtuals. */
+   /** destinationName → handle → quoted physical path for the upstream virtuals. */
    virtualMap: Map<string, Map<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
@@ -442,7 +442,7 @@ export async function buildDownstreamIntoStorage(params: {
       );
       const schema = await createTableAndDescribe(session, target, sql);
 
-      return { storageConnectionName: destinationName, schema };
+      return { storageDestinationName: destinationName, schema };
    } finally {
       await dispose();
    }
@@ -474,7 +474,7 @@ export async function assertStorageServeShapeCompiles(params: {
       params;
    const binding: ServeBinding = {
       sourceName,
-      connectionName: destinationName,
+      destinationName,
       virtualHandle,
       tablePath: `${destinationName}.${physicalTableName}`,
       schema: params.schema

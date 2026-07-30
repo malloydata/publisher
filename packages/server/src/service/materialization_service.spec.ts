@@ -339,7 +339,7 @@ describe("MaterializationService", () => {
                         sourceName: "daily",
                         physicalTableName: "daily__mabc123",
                         connectionName: "wh",
-                        storageConnectionName: "lake",
+                        storageDestinationName: "lake",
                      },
                   },
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -383,7 +383,7 @@ describe("MaterializationService", () => {
                sourceName: "daily",
                physicalTableName: "daily", // shared logical name
                connectionName: "wh",
-               storageConnectionName: "lake",
+               storageDestinationName: "lake",
             },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
          } as any;
@@ -426,11 +426,11 @@ describe("MaterializationService", () => {
             sourceName: "daily",
             physicalTableName: "daily__mabc",
             connectionName: "wh",
-            storageConnectionName: "lake",
+            storageDestinationName: "lake",
             schema: [{ name: "a", type: "BIGINT" }],
          },
       };
-      // A colocated entry carries NO storageConnectionName.
+      // A colocated entry carries NO storageDestinationName.
       const colocatedEntry = {
          ce1: {
             sourceEntityId: "ce1",
@@ -1056,13 +1056,13 @@ describe("manifestExcludingStorage (chained-storage inline)", () => {
             sourceEntityId: "wh_up",
             physicalTableName: "wh_up_v1",
             connectionName: "duckdb",
-            // no storageConnectionName -> colocated, keep it
+            // no storageDestinationName -> colocated, keep it
          },
          lake_up: {
             sourceEntityId: "lake_up",
             physicalTableName: "lake_up__mabc",
             connectionName: "wh",
-            storageConnectionName: "lake", // storage -> exclude it
+            storageDestinationName: "lake", // storage -> exclude it
          },
       };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1791,7 +1791,7 @@ describe("buildOneSource", () => {
          up_storage: {
             sourceEntityId: "up_storage",
             physicalTableName: "daily__mabc",
-            storageConnectionName: "lake",
+            storageDestinationName: "lake",
          },
          up_pathc: {
             sourceEntityId: "up_pathc",
@@ -1865,7 +1865,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       stackOnParent: "ok" | "throw" | "infra";
    }): Promise<{
       physicalTableName: string;
-      storageConnectionName?: string;
+      storageDestinationName?: string;
    }> {
       const source = fakeSource({
          name: "monthly",
@@ -1897,14 +1897,14 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             dep: boolean,
          ) => Promise<{
             physicalTableName: string;
-            storageConnectionName?: string;
+            storageDestinationName?: string;
          }>;
       };
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
       svc.buildDownstreamViaParents =
          opts.stackOnParent === "ok"
             ? sinon.stub().resolves({
-                 storageConnectionName: "lake",
+                 storageDestinationName: "lake",
                  schema: [
                     { name: "order_month", type: "DATE" },
                     { name: "monthly_total", type: "DOUBLE" },
@@ -1932,7 +1932,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                sourceEntityId: "up",
                sourceName: "daily",
                physicalTableName: "daily__mabc",
-               storageConnectionName: "lake",
+               storageDestinationName: "lake",
                schema: [{ name: "order_date", type: "DATE" }],
             },
          },
@@ -1942,7 +1942,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
 
    it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
       const entry = await callInto({ strict: false, stackOnParent: "ok" });
-      expect(entry.storageConnectionName).toBe("lake");
+      expect(entry.storageDestinationName).toBe("lake");
       expect(entry.physicalTableName).toBe("monthly__mabc");
    });
 
@@ -2006,13 +2006,13 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
    };
 
    function callInto(environment: ReturnType<typeof buildEnvironmentStub>): {
-      run: () => Promise<{ storageConnectionName?: string }>;
+      run: () => Promise<{ storageDestinationName?: string }>;
       write: sinon.SinonStub;
    } {
       // Stub the write seam so a resolved destination does not need a live
       // catalog: reaching it at all is what these tests are about.
       const write = sinon.stub().resolves({
-         storageConnectionName: "shared",
+         storageDestinationName: "shared",
          schema: [{ name: "order_month", type: "DATE" }],
       });
       (
@@ -2030,7 +2030,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
                   sql: string,
                   built: Record<string, unknown>,
                   dep: boolean,
-               ) => Promise<{ storageConnectionName?: string }>;
+               ) => Promise<{ storageDestinationName?: string }>;
             }
          ).buildOneSourceIntoStorage(
             fakeSource({
@@ -2053,7 +2053,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
                   sourceEntityId: "up",
                   sourceName: "daily",
                   physicalTableName: "daily__mabc",
-                  storageConnectionName: "shared",
+                  storageDestinationName: "shared",
                   schema: [{ name: "order_date", type: "DATE" }],
                },
             },
@@ -2072,7 +2072,7 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
 
       const entry = await run();
 
-      expect(entry.storageConnectionName).toBe("shared");
+      expect(entry.storageDestinationName).toBe("shared");
       expect(environment.getStorageDestination.calledWith("shared")).toBe(true);
       // The config handed to the write is the destination's, by identity - not a
       // same-named connection's, and not a copy assembled from somewhere else.
@@ -2451,7 +2451,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
          sourceEntityId: `eid-${table}`,
          sourceName: "daily",
          physicalTableName: table,
-         storageConnectionName: "lake",
+         storageDestinationName: "lake",
       }) as unknown as Parameters<
          MaterializationService["reclaimStorageTablesFromFailedRun"]
       >[0][number];
@@ -2498,7 +2498,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
                manifest: {
                   entries: {
                      other: {
-                        storageConnectionName: "lake",
+                        storageDestinationName: "lake",
                         physicalTableName: "daily_v1",
                      },
                   },
@@ -2573,7 +2573,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
                manifest: {
                   entries: {
                      old: {
-                        storageConnectionName: "lake",
+                        storageDestinationName: "lake",
                         physicalTableName: "daily_v3",
                      },
                   },

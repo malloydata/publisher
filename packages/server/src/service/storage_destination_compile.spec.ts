@@ -293,7 +293,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       model.setServeBindings([
          {
             sourceName: "nums",
-            connectionName: DESTINATION_NAME,
+            destinationName: DESTINATION_NAME,
             virtualHandle: "h",
             tablePath: `${DESTINATION_NAME}.mz_nums`,
             schema: [{ name: "a", type: "BIGINT" }],
@@ -372,7 +372,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       model.setServeBindings([
          {
             sourceName: "nums",
-            connectionName: DESTINATION_NAME,
+            destinationName: DESTINATION_NAME,
             virtualHandle: "h",
             tablePath: `${DESTINATION_NAME}.mz_nums`,
             schema: [{ name: "a", type: "BIGINT" }],

@@ -1655,7 +1655,7 @@ export class Environment {
 
    /**
     * Bind a package's `storage=` serve bindings from a build's FULL manifest
-    * entries (carrying `storageConnectionName` + captured `schema`), so a query
+    * entries (carrying `storageDestinationName` + captured `schema`), so a query
     * against a materialized-into-storage source can be routed through the
     * virtual-source serve transform. Distinct from
     * {@link reloadAllModelsForPackage}, which binds the tableName-only manifest

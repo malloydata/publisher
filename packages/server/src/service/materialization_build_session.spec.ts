@@ -265,7 +265,7 @@ describe.skipIf(process.platform === "win32")(
    () => {
       const parent: ServeBinding = {
          sourceName: "daily_orders",
-         connectionName: "lake",
+         destinationName: "lake",
          virtualHandle: "daily_h",
          tablePath: "lake.daily_orders__mabc",
          schema: [
@@ -331,7 +331,7 @@ describe.skipIf(process.platform === "win32")(
                environmentPath: dir,
             });
 
-            expect(result.storageConnectionName).toBe("lake");
+            expect(result.storageDestinationName).toBe("lake");
             expect(result.schema.map((c) => c.name).sort()).toEqual([
                "monthly_total",
                "order_month",

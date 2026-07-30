@@ -1713,7 +1713,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   // the assertion is deterministic rather than racing the rebind.
                   type Binding = {
                      sourceName: string;
-                     storageConnectionName: string;
+                     storageDestinationName: string;
                   };
                   const has = (
                      bindings: Binding[],
@@ -1722,7 +1722,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      bindings.some(
                         (x) =>
                            x.sourceName === b.source &&
-                           x.storageConnectionName === b.conn,
+                           x.storageDestinationName === b.conn,
                      );
                   let bindings: Binding[] = [];
                   for (let attempt = 0; attempt < 40; attempt++) {
@@ -2180,7 +2180,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      sourceEntityId: eid,
                      sourceName: e.src,
                      physicalTableName: e.table,
-                     storageConnectionName: e.dest,
+                     storageDestinationName: e.dest,
                      schema: schemaOf.schema,
                      ...(e.fallback ? { freshnessFallback: e.fallback } : {}),
                      ...(e.asof ? { dataAsOf: e.asof } : {}),

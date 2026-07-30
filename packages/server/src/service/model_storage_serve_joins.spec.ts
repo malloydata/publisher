@@ -36,7 +36,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'r1' AS region_id") extend {
 
 const ORDERS_BINDING: ServeBinding = {
    sourceName: "orders",
-   connectionName: "duckdb",
+   destinationName: "duckdb",
    virtualHandle: "orders_h",
    tablePath: "orders_mz",
    schema: [
@@ -46,7 +46,7 @@ const ORDERS_BINDING: ServeBinding = {
 };
 const REGIONS_BINDING: ServeBinding = {
    sourceName: "regions",
-   connectionName: "duckdb",
+   destinationName: "duckdb",
    virtualHandle: "regions_h",
    tablePath: "regions_mz",
    schema: [

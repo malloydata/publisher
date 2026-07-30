@@ -246,7 +246,7 @@ table:
 ```bash
 MZID=$(curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations | jq -r '.[0].id')
 curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/$MZID \
-  | jq '{status, entry: (.manifest.entries|to_entries[0].value|{sourceName, storageConnectionName, physicalTableName, schema})}'
+  | jq '{status, entry: (.manifest.entries|to_entries[0].value|{sourceName, storageDestinationName, physicalTableName, schema})}'
 ```
 
 ```json
@@ -254,7 +254,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "status": "MANIFEST_FILE_READY",
   "entry": {
     "sourceName": "daily_orders",
-    "storageConnectionName": "lake",
+    "storageDestinationName": "lake",
     "physicalTableName": "daily_orders",
     "schema": [
       { "name": "order_date", "type": "DATE" },
@@ -362,7 +362,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "storageServeBindings": [
     {
       "sourceName": "daily_orders",
-      "storageConnectionName": "lake",
+      "storageDestinationName": "lake",
       "tablePath": "lake.daily_orders"
     }
   ],
@@ -465,7 +465,7 @@ curl -s -X DELETE \
 ```
 
 ```
-info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageConnectionName: "lake" }
+info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageDestinationName: "lake" }
 ```
 
 ---
@@ -713,7 +713,7 @@ Everything you need is on the package status and the logs:
     served from storage — mode `off` (ignored) or `write-only` (built, served
     live). Empty when everything routes.
 - `GET …/materializations/{id}` → run status and, on success, the manifest entry
-  with `storageConnectionName` and the captured `schema`.
+  with `storageDestinationName` and the captured `schema`.
 - Server logs → `info` when a query serves from storage; `debug` when a query
   falls back to live.
 - Metrics (OpenTelemetry, under the `publisher` meter):

@@ -20,7 +20,7 @@ const ROOT = "file:///storage-serve-e2e/";
 const QUERY = "run: X -> { aggregate: t is total.sum() }";
 const BINDING: ServeBinding = {
    sourceName: "X",
-   connectionName: "duckdb",
+   destinationName: "duckdb",
    virtualHandle: "h",
    tablePath: "mz_real",
    schema: [{ name: "total", type: "BIGINT" }],
@@ -132,9 +132,9 @@ describe("storage= serve routing (end-to-end)", () => {
    it("falls back to live when the serve shape cannot compile (bad connection)", async () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       const model = await buildModel();
-      // A binding on a connection the config doesn't have — the serve-shape
+      // A binding on a destination the config doesn't have — the serve-shape
       // compile throws, and the query must still succeed, served live.
-      model.setServeBindings([{ ...BINDING, connectionName: "missing_conn" }]);
+      model.setServeBindings([{ ...BINDING, destinationName: "missing_dest" }]);
       expect(await runTotal(model)).toBe(0);
    });
 
@@ -150,7 +150,7 @@ describe("storage= serve routing (end-to-end)", () => {
          BINDING,
          {
             sourceName: "OtherModelSource", // not defined in this model
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "h2",
             tablePath: "mz_real",
             schema: [{ name: "total", type: "BIGINT" }],
