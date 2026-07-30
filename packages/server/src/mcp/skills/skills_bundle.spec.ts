@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { buildSkills, type SkillEntry } from "./build_skills_bundle";
+import {
+   buildSkills,
+   isCredible,
+   type SkillEntry,
+} from "./build_skills_bundle";
 import bundle from "./skills_bundle.json";
 
 const skills = (
@@ -66,9 +70,12 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       const referenceEntries = skills.filter(isReference);
 
       it("bundles every reference/*.md in the tree", () => {
+         // Mirror the builder's own exclusion. A stray credible-* skill with a
+         // reference/ dir is never bundled, so walking without this filter
+         // fails on a correct bundle.
          const onDisk = fs
             .readdirSync(sourceDir, { withFileTypes: true })
-            .filter((d) => d.isDirectory())
+            .filter((d) => d.isDirectory() && !isCredible(d.name))
             .flatMap((d) => {
                const dir = path.join(sourceDir, d.name, "reference");
                return fs.existsSync(dir)
@@ -97,10 +104,16 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       it("gives each one a description drawn from its heading", () => {
          // Reference files carry no frontmatter, so a listing would otherwise
          // show them nameless. Every file in the tree has an H1 to use.
+         //
+         // Assert against the no-heading fallback rather than a length floor:
+         // the fallback is itself long enough to clear any such floor, so a
+         // length check alone stays green even if heading extraction breaks
+         // entirely and all of a skill's entries collapse to one string.
          for (const entry of referenceEntries) {
+            const parent = entry.name.split("/")[0];
             expect(entry.description).toContain("Reference detail for");
-            expect(entry.description.length).toBeGreaterThan(
-               "Reference detail for the  skill.".length,
+            expect(entry.description).not.toBe(
+               `Reference detail for the ${parent} skill.`,
             );
          }
       });
