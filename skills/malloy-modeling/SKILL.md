@@ -24,7 +24,7 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 6. **No fixed scale on measures**: use `# currency` not `# currency=usd0m`
 7. **Cast strings for aggregates:** `avg(score::number)` not `avg(score)`
 8. **Boolean columns:** use `= true` not `= 'true'` (no quotes!)
-9. **Read data files in place:** `.csv`, `.parquet`, `.json`, `.ndjson`, and `.xlsx` all work as-is through `duckdb.table('data/file.ext')`. Never convert a file to another format first, and never read one with python or jq to "have a look" first: query it. (Per-format quirks: `skill:malloy-gotchas-modeling`)
+9. **Read data files in place:** `.csv`, `.parquet`, `.json`, `.ndjson`, and `.xlsx` all work as-is through `duckdb.table('data/file.ext')`. Never convert a file to another format first, and never read one with python or jq to "have a look" first: query it. For `.xlsx`, check the row count before trusting it: a workbook with a title row or a blank spacer reads short and reports no error. (Per-format quirks: `skill:malloy-gotchas-modeling`)
 
 ## Planning and `modeling-notes.md`
 
