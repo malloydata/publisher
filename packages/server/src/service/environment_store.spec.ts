@@ -55,7 +55,7 @@ let mockDbDestinations: MockDestinationRow[] = [];
 let failNextDestinationReads = 0;
 
 /** A well-formed DuckLake destination, as publisher.config.json declares one. */
-function managedDestination(name = "managed") {
+function managedDestination(name = "managed"): Connection {
    return {
       name,
       type: "ducklake",

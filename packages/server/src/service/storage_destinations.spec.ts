@@ -95,8 +95,12 @@ describe("processStorageDestinations", () => {
    });
 
    it("drops a DuckLake destination missing the fields its attach needs", () => {
+      // A config that arrived without its storage block. The schema marks the
+      // field required, which is exactly why the validator has to check it: a
+      // request body and a config file are not type-checked on the way in.
       const noBucket = ducklakeDestination("managed", "org_a");
-      delete noBucket.ducklakeConnection!.storage;
+      delete (noBucket.ducklakeConnection as unknown as Record<string, unknown>)
+         .storage;
 
       expect(processStorageDestinations([noBucket])).toEqual([]);
    });

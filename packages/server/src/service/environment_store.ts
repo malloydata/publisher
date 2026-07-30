@@ -1743,6 +1743,7 @@ export class EnvironmentStore {
                            },
                         ],
                         connections: [],
+                        storageDestinations: [],
                      });
                   }
                }
