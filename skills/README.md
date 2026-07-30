@@ -2,7 +2,7 @@
 
 Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`malloy-getting-started`](malloy-getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
 
-[`packages/skills`](../packages/skills) publishes this directory to npm, for consumers that need the files themselves without cloning. That is the channel the `reference/` directories reach: the MCP prompts carry each `SKILL.md` body and nothing else. It copies this tree in when it is packed, so adding a skill here needs no extra step to ship it.
+[`packages/skills`](../packages/skills) publishes this directory to npm, for consumers that need the files themselves without cloning. The MCP prompts carry the same tree: each `SKILL.md` body as one prompt, plus every `reference/*.md` as its own prompt named `<skill>/<file stem>`. It copies this tree in when it is packed, so adding a skill here needs no extra step to ship it.
 
 ## Where these come from
 

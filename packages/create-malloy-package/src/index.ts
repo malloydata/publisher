@@ -7,7 +7,9 @@ import { Command, Option } from "commander";
 import { ScaffoldError } from "./errors";
 import * as log from "./log";
 import { preview, printable } from "./names";
+import { startVersionCheck, staleScaffolderWarning } from "./registry_check";
 import {
+   isSpreadsheet,
    scaffold,
    type DeclinedScript,
    type Host,
@@ -63,8 +65,17 @@ function resolveDataFile(cwd: string, data?: string): string | undefined {
    return path.resolve(cwd, data);
 }
 
-function run(name: string | undefined, options: CliOptions): void {
+async function run(
+   name: string | undefined,
+   options: CliOptions,
+): Promise<void> {
    const cwd = process.cwd();
+   // Fired before the scaffold rather than after it, so the round trip overlaps
+   // the work instead of being added to it, and awaited only once the output is
+   // otherwise complete. It never rejects. On the failure path below it is
+   // cancelled rather than awaited, because a run that has already printed an
+   // error should not then sit waiting for an answer nobody will read.
+   const versionCheck = startVersionCheck();
    // Taken before anything is written, so a failure part-way through can name
    // both what this run put on disk and what it rewrote, rather than leaving the
    // user to guess or, worse, telling them nothing was rewritten.
@@ -78,7 +89,21 @@ function run(name: string | undefined, options: CliOptions): void {
          force: Boolean(options.force),
       });
       process.stdout.write(formatSuccess(result));
+      // Last, so it is the line still on screen, and after the success output so
+      // a registry that is slow or unreachable never delays the thing the user
+      // actually asked for.
+      const warning = staleScaffolderWarning(
+         version(),
+         await versionCheck.result,
+      );
+      if (warning) {
+         process.stdout.write(`\n${log.yellow(warning)}\n`);
+      }
    } catch (err) {
+      // Nothing will read the answer now, and the request would otherwise hold
+      // the process open until its deadline, printing the error and then going
+      // quiet for a second and a half.
+      versionCheck.cancel();
       process.stderr.write(
          formatFailure(
             err,
@@ -770,6 +795,31 @@ export function formatSuccess(result: ScaffoldResult): string {
       }
    }
 
+   // A spreadsheet is only a table when its header is the first row, and a
+   // report export usually has a title or a banner above it. The read then
+   // succeeds, takes the wrong row as the column names, stops at the first blank
+   // line, and serves a handful of rows for a file with thousands. Nothing
+   // errors: the package loads, load_errors is 0, and the query returns 200. The
+   // scaffolder cannot tell (it never opens the file, and giving it a
+   // spreadsheet parser to find out is a bigger change than this), so the honest
+   // thing is to say what to check and where the fix already is.
+   if (result.dataPath !== undefined && isSpreadsheet(result.dataPath)) {
+      lines.push("");
+      lines.push(log.yellow("Spreadsheets need one check first:"));
+      lines.push(
+         `  Run the ${log.cyan("overview")} view and compare its row count against what you`,
+      );
+      lines.push(
+         `  know is in ${printable(result.dataPath)}. If it comes back far too small, the header`,
+      );
+      lines.push(
+         "  is not on the first row and the model is reading a title or a banner",
+      );
+      lines.push(
+         `  instead of your data. ${printable(result.modelFile ?? "the model file")} carries the fix inline.`,
+      );
+   }
+
    const url = `http://localhost:${result.publisherPort}`;
    // Counted by scaffold() out of the config it wrote, not inferred from what
    // this run did: whether the server has anything to serve and whether this run
@@ -785,7 +835,7 @@ export function formatSuccess(result: ScaffoldResult): string {
       // /api/v0/environments/<env>/packages answers 404. Saying so here is the
       // difference between "empty" and "broken" for whoever runs it next.
       lines.push(
-         `  ${log.cyan("npx @malloy-publisher/create-malloy-package <name>")}   ${log.dim(
+         `  ${log.cyan("npx @malloy-publisher/create-malloy-package@latest <name>")}   ${log.dim(
             "add a package; the server has nothing to serve without one",
          )}`,
       );
@@ -987,10 +1037,39 @@ export function formatSuccess(result: ScaffoldResult): string {
          }
       }
    }
+   // Measured 2026-07-29: the trust gate supersedes MCP scope, connection state,
+   // and a .claude/settings.json allowlist (which is discarded, not merged), and
+   // it voids the remedy in the reconnect note below, so it is named above it.
+   // Claude Code only: the gate, the dialog and the allowlist are all its own, so
+   // saying this to a Cursor user would send them hunting for a dialog Cursor
+   // never shows, past the Refresh that does work for them.
+   const trustNamed = result.host !== "cursor";
+   if (trustNamed) {
+      // "a human has to", not "do this": an agent that ran the scaffolder itself
+      // reads this output, and it cannot answer a trust prompt. The template says
+      // the same thing the same way.
+      lines.push(
+         log.yellow(
+            "  Trust this workspace: a human has to open Claude Code here interactively\n" +
+               "  once and answer the trust prompt. Until then the malloy tools can report\n" +
+               "  connected and still refuse every call, and a permissions allowlist in\n" +
+               "  .claude/settings.json is ignored. You will know the prompt was answered\n" +
+               "  when a malloy tool returns data instead of refusing.",
+         ),
+      );
+      // A blank line, because this and the note below are two different problems
+      // with two different fixes, and consecutive lines at one indent read as one
+      // item with one remedy.
+      lines.push("");
+   }
    lines.push(
       log.dim(
-         "  An agent that starts the server itself can't reconnect MCP in that\n" +
-            `  session; ask the user to reconnect it. See ${result.agentsFile}.`,
+         // The "different problem" framing only has an antecedent where the trust
+         // note was printed, which is not the cursor case.
+         (trustNamed
+            ? "  A different problem: an agent that starts the server itself can't\n  reconnect MCP in that session"
+            : "  An agent that starts the server itself can't reconnect MCP in that\n  session") +
+            `; ask the user to reconnect it. See ${result.agentsFile}.`,
       ),
    );
    // The other way this fails, and the one with no signal at all: both the MCP
@@ -1003,19 +1082,33 @@ export function formatSuccess(result: ScaffoldResult): string {
    // shape and saying so matters, because the two symptoms are identical from the
    // outside: .claude/skills is rescanned as the working directory changes, so a
    // session started further up picks them up on its own.
-   lines.push(
-      log.dim(
-         `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
-            "  STARTED in this directory. Launch your agent from here. If you cannot,\n" +
-            "  register the server so the directory stops mattering (.claude/skills\n" +
-            "  needs nothing: it is rescanned as the working directory changes):",
-      ),
-   );
-   lines.push(
-      `    ${log.cyan(
-         `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
-      )}`,
-   );
+   // The directory-scope fact holds for both hosts, since a project MCP config is
+   // read from the session's own root either way. The escape hatch below it does
+   // not: `claude mcp add -s user` is Claude Code's CLI and the skills rescan is
+   // its behaviour, so a Cursor user would be handed a command they cannot run as
+   // the fix for missing tools.
+   if (trustNamed) {
+      lines.push(
+         log.dim(
+            `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
+               "  STARTED in this directory. Launch your agent from here. If you cannot,\n" +
+               "  register the server so the directory stops mattering (.claude/skills\n" +
+               "  needs nothing: it is rescanned as the working directory changes):",
+         ),
+      );
+      lines.push(
+         `    ${log.cyan(
+            `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
+         )}`,
+      );
+   } else {
+      lines.push(
+         log.dim(
+            `  ${result.mcpConfigPath} is only picked up by an agent session that\n` +
+               "  STARTED in this directory. Launch your agent from here.",
+         ),
+      );
+   }
    lines.push("");
 
    return lines.join("\n") + "\n";
@@ -1068,7 +1161,7 @@ function startNote(
  */
 function excessArgumentsHint(): string {
    const npmCreateFix = `  ${log.cyan(
-      "npm create @malloy-publisher/malloy-package sales -- --data mydata.csv",
+      "npm create @malloy-publisher/malloy-package@latest sales -- --data mydata.csv",
    )}`;
    if (process.env.npm_command === "init") {
       return [
@@ -1088,7 +1181,7 @@ function excessArgumentsHint(): string {
       "",
       "With npx there is no separator: it forwards the flags as they are, and a",
       "-- would be passed through and counted as another argument.",
-      `  ${log.cyan("npx @malloy-publisher/create-malloy-package sales --data mydata.csv")}`,
+      `  ${log.cyan("npx @malloy-publisher/create-malloy-package@latest sales --data mydata.csv")}`,
       "",
    ].join("\n");
 }
@@ -1142,8 +1235,8 @@ program
       }
       process.exit(err.exitCode);
    })
-   .action((name: string | undefined, options: CliOptions) => {
-      run(name, options);
+   .action(async (name: string | undefined, options: CliOptions) => {
+      await run(name, options);
    });
 
 /**
@@ -1173,5 +1266,18 @@ function startedAsProgram(): boolean {
 }
 
 if (startedAsProgram()) {
-   program.parse();
+   // parseAsync, not parse: the action is async now (it awaits the registry
+   // check), and parse() would return before that promise settled, so the
+   // process could exit with the scaffold done and the warning unprinted.
+   // The action itself never rejects, and commander's own errors go through the
+   // exitOverride above, which exits; the catch is a backstop so an unexpected
+   // rejection surfaces as a failure rather than an unhandled-rejection warning.
+   program.parseAsync().catch((err: unknown) => {
+      // No workspace changes to report: run() owns its own try/catch and reports
+      // what it wrote, so anything reaching here failed outside a scaffold.
+      process.stderr.write(
+         formatFailure(err, { created: [], changed: [] }, false),
+      );
+      process.exitCode = 1;
+   });
 }

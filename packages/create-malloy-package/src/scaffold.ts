@@ -257,7 +257,11 @@ const BIND_HOST = "127.0.0.1";
  *
  * `npx -y @malloy-publisher/server` with no version re-resolves `latest` on
  * every start, forever, and there is no lockfile behind it: a workspace
- * generated months ago boots whatever was published this morning. That is a
+ * generated months ago boots whatever was published this morning. Measured on
+ * npm 11.12.1: `npx` records a bare spec verbatim and re-resolves it, so a slot
+ * already holding an older version is replaced. This is the opposite of what
+ * `npm create` does with a bare spec, and registry_check.ts covers that; the two
+ * are different npm subcommands, not a contradiction. That is a
  * silent behaviour change on someone else's machine, and the flag it would be
  * felt through first is `--host`. The server accepts an unknown flag without a
  * word and falls back to binding 0.0.0.0, so the day a release renames or drops
@@ -463,7 +467,7 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
             `If you passed --force to \`npm create\`, npm read it as one of its ` +
             `own settings and it never reached this tool. Options need a \`--\` ` +
             `in front of them there:\n` +
-            `  npm create @malloy-publisher/malloy-package ${name} -- --force`,
+            `  npm create @malloy-publisher/malloy-package@latest ${name} -- --force`,
       );
    }
 
@@ -497,9 +501,18 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
       if (siblings.length > 0) {
          result.siblingDataFiles = siblings;
       }
+      // Spreadsheets get their own starter model. The Malloy is identical; the
+      // comment above it is not, because a .csv either parses or fails loudly
+      // while a .xlsx whose header is not on row one loads clean and reports the
+      // wrong number of rows. That model has to say so, since nothing else will.
       writeFile(
          path.join(packageDir, modelFile),
-         renderTemplate("model.custom.malloy", { sourceName, dataPath }),
+         renderTemplate(
+            isSpreadsheet(dataPath)
+               ? "model.custom.xlsx.malloy"
+               : "model.custom.malloy",
+            { sourceName, dataPath },
+         ),
          options.cwd,
       );
    } else {
@@ -1739,6 +1752,56 @@ function renderAgentsFile(
       host === "cursor"
          ? "ask the user to reload the MCP servers from Cursor's settings (the `malloy` server, then Refresh), or to restart Cursor."
          : "ask the user to run `/mcp`, select the `malloy` server, and choose Reconnect, or to restart Claude Code. That panel reports `Auth: not authenticated` and offers `Authenticate` first, which is a red herring: this endpoint has no auth, and Reconnect is the one that works.";
+   // Measured on Claude Code only, and the gate, the dialog and the discarded
+   // allowlist are all its own, so Cursor gets nothing rather than a dialog it
+   // does not have. Delegated to the user like reconnectNote above, because the
+   // reader here is the agent and only a human can answer a trust prompt. It
+   // leads with the symptom that separates this from the case below, since
+   // otherwise an agent with no tools at all sends the user to do the trust
+   // dance for a cause it does not have. And it reports rather than lobbies:
+   // this file gets committed, so in someone else's cloned workspace the text
+   // would otherwise be repo-controlled prose arguing to trust that repo.
+   // The escape hatch for a session started outside this directory. Both halves
+   // are Claude Code's: `claude mcp add -s user` is its CLI, and the skills
+   // rescan is its behaviour, so Cursor gets neither rather than a command it
+   // cannot run. The directory-scope fact itself stays ungated in the template,
+   // because a project MCP config is read from the opened root in both hosts.
+   const registrationNote =
+      host === "cursor"
+         ? ""
+         : [
+              // Own leading and trailing blank, so the empty cursor case collapses
+              // to a single blank line instead of leaving a double one.
+              "",
+              "If they cannot, ask them to register the server so the directory stops deciding:",
+              "",
+              "```bash",
+              `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
+              "```",
+              "",
+              "That registration is stored per user rather than per project, so the tools follow the",
+              "agent everywhere. Skills need no such escape hatch: they are rescanned as the working",
+              "directory changes, so a session started further up picks them up once work moves into",
+              "this directory.",
+              "",
+           ].join("\n");
+   const trustNote =
+      host === "cursor"
+         ? ""
+         : [
+              "",
+              "One gate can void the reconnect fix below, and you cannot clear it yourself: if the",
+              "`malloy_*` tools are listed but every call is refused, the usual cause is that this",
+              "workspace has not been trusted, which also discards a `.claude/settings.json` allowlist.",
+              "A human has to start Claude Code interactively in this directory once and answer the",
+              "trust prompt; a non-interactive run is never asked, so it cannot clear the gate either.",
+              "Tell the user and leave the choice to them. You will know the prompt was answered when a",
+              "`malloy_*` call returns data instead of being refused. If that does not change it, the",
+              "other cause is a `malloy` server whose own approval was never given, which the user",
+              "clears in the same `/mcp` panel named below. If the tools are not listed at all, this",
+              "gate is not the cause, so read on.",
+              "",
+           ].join("\n");
    // The count is the real one, not the shipped one. This file used to assert the
    // skills were there in the same run that installed none of them, and an agent
    // reading it went looking for skills that do not exist.
@@ -1778,6 +1841,8 @@ function renderAgentsFile(
       packageSection: packageSection(result, envPackages),
       mcpNote,
       reconnectNote,
+      registrationNote,
+      trustNote,
       skillsNote,
    });
 }
@@ -2047,6 +2112,20 @@ function isLoadableDataFile(file: string): boolean {
    return (LOADABLE_DATA_EXTENSIONS as readonly string[]).includes(
       path.extname(file).toLowerCase(),
    );
+}
+
+/**
+ * Is this data file a spreadsheet?
+ *
+ * Deliberately narrower than LOADABLE_DATA_EXTENSIONS rather than derived from
+ * it: every entry on that list loads in place, but only `.xlsx` loads in place
+ * and can still be silently wrong, so only `.xlsx` earns the extra warning.
+ * Kept as a named predicate rather than an inline `endsWith` because two places
+ * have to agree on the answer, the starter model that carries the warning and
+ * the success output that repeats it, and they are in different files.
+ */
+export function isSpreadsheet(dataPath: string): boolean {
+   return path.extname(dataPath).toLowerCase() === ".xlsx";
 }
 
 function validateDataFile(dataFile: string): void {

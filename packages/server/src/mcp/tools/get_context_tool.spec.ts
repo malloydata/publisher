@@ -18,6 +18,7 @@ import {
 } from "./get_context_tool";
 import { embeddingText } from "./embedding_index";
 import type { EnvironmentStore } from "../../service/environment_store";
+import { PackageNotFoundError } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import {
@@ -132,9 +133,15 @@ describe("get_context sanitize", () => {
 
 // Capture the tool handler that registerGetContextTool passes to McpServer.tool,
 // so each discovery tier can be exercised against a mocked EnvironmentStore.
+type Content = Array<{
+   type?: string;
+   text?: string;
+   resource?: { text: string };
+}>;
+
 type Handler = (params: Record<string, unknown>) => Promise<{
    isError?: boolean;
-   content: Array<{ resource: { text: string } }>;
+   content: Content;
 }>;
 
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
@@ -149,8 +156,12 @@ function captureHandler(store: Partial<EnvironmentStore>): Handler {
    return handler;
 }
 
-function parse(result: { content: Array<{ resource: { text: string } }> }) {
-   return JSON.parse(result.content[0].resource.text);
+function parse(result: { content: Content }) {
+   return JSON.parse(result.content[0].resource!.text);
+}
+
+function textBlock(result: { content: Content }) {
+   return result.content.find((b) => b.type === "text")?.text;
 }
 
 // A model with one source (order_items) carrying one dimension (state).
@@ -242,6 +253,53 @@ describe("get_context discovery tiers", () => {
       const parsed = parse(result);
       expect(parsed.results).toEqual([]);
       expect(parsed.error).toContain("could not be resolved");
+      // Suggestions and a text block, same as this tool's three siblings. Both
+      // were absent before: the payload carried a bare message, and a
+      // text-only client saw nothing at all.
+      expect(parsed.suggestions.length).toBeGreaterThan(0);
+      expect(textBlock(result)).toContain("could not be resolved");
+   });
+
+   it("reports an unknown package as not-found, not as an internal fault", async () => {
+      // Pins the classification, not just that an error came back. Before this
+      // routed through classifyToolError every failure arrived as the raw
+      // message with no remediation, so a typo'd package name gave the agent
+      // nothing to act on.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               getPackage: async () => {
+                  throw new PackageNotFoundError("Package 'nope' not found");
+               },
+            }) as never,
+      });
+      const result = await handler({
+         environmentName: "malloy-samples",
+         packageName: "nope",
+         query: "state",
+      });
+      expect(result.isError).toBe(true);
+      const parsed = parse(result);
+      expect(parsed.results).toEqual([]);
+      expect(parsed.error).toContain("Resource not found");
+      expect(parsed.error).toContain("nope");
+      expect(textBlock(result)).toContain("Resource not found");
+   });
+
+   it("reports a non-Error throwable without inventing 'Unknown error'", async () => {
+      // The old per-site `error instanceof Error ? error.message : "Unknown
+      // error"` turned a thrown string into exactly the unhelpful text this
+      // tool's callers reported. classifyToolError stringifies it instead.
+      const handler = captureHandler({
+         listEnvironments: async () => {
+            throw "the store exploded";
+         },
+      });
+      const result = await handler({});
+      const parsed = parse(result);
+      expect(parsed.error).toContain("the store exploded");
+      expect(parsed.error).not.toContain("Unknown error");
+      expect(textBlock(result)).toContain("the store exploded");
    });
 
    it("tier 3: package without a query lists only its sources", async () => {
@@ -299,6 +357,8 @@ describe("get_context discovery tiers", () => {
       const parsed = parse(result);
       expect(parsed.results).toEqual([]);
       expect(parsed.error).toContain("not initialized");
+      expect(parsed.suggestions.length).toBeGreaterThan(0);
+      expect(textBlock(result)).toContain("not initialized");
    });
 
    it("tier 3: lists every source, not just the first 10", async () => {

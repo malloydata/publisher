@@ -128,6 +128,14 @@ measure: median_x is sql_number("PERCENTILE_CONT(...) ...") { is_aggregate: true
 
 **Ship `avg` instead, or defer median with a documented gap** ("median deferred: no scalar median / runtime rejects raw-SQL aggregates"). Tell the user; don't silently substitute `avg` for a metric that was specified as median.
 
+**`stddev` does work**, so reach for it when the question is about spread. It is a native Malloy aggregate rather than a raw-SQL escape, so unlike everything above it compiles both inline and as a `measure:`, and it is the sample standard deviation. `variance`, `stddev_samp`, and `stddev_pop` are not Malloy functions, and pushing them through `!` fails as a scalar exactly like `percentile_cont!`.
+
+```malloy
+// WORKS: inline, or as a measure on a source
+run: order_items -> { aggregate: sd is stddev(sale_price) }
+source: items is order_items extend { measure: price_stddev is stddev(sale_price) }
+```
+
 ## Field Management: `extend {}` vs `include {}` Don't Compose
 
 Malloy has two field-management mechanisms for base sources. **`include {}` is the curated default; `extend { except / accept / rename }` is the fallback when a `rename:` is unavoidable.** They have different capabilities and **do not combine**.
@@ -206,6 +214,17 @@ source: facts is conn.table('t') -> { group_by: user_id, aggregate: total is sum
 
 To add `#(doc)` tags to existing query columns, use `include {}` between the query and extend.
 
+## Extending a Source Cannot Reuse a Name It Already Defines
+
+```malloy
+// WRONG: "Cannot redefine 'overview'" when sales already declares view: overview
+source: wines is sales extend { view: overview is { aggregate: record_count } }
+// RIGHT: give the extension its own name
+source: wines is sales extend { view: summary is { aggregate: record_count } }
+```
+
+An extension adds to the parent's namespace, it does not override it. This bites when you extend a source to "replace" one of its views: rename the new definition, or edit the view on the parent source instead of extending it. Malloy reports the same `Cannot redefine 'X'` for dimensions and measures that collide with an inherited name, per the sections above and below.
+
 ## Never Use `conn.sql()` When Malloy Has a Native Pattern
 
 ```malloy
@@ -238,26 +257,71 @@ source: facts is conn.table('orders') -> { group_by: user_id, aggregate: total i
 
 If a project's standards file specifies a stricter policy (e.g., a `search_malloy_docs` rationale comment requirement above every `conn.sql()` block), defer to that.
 
+## JSON Files: Read Them In Place Like CSV
+
+```malloy
+// RIGHT: .json works like .csv/.parquet
+source: reviews is duckdb.table('data/reviews.json')
+// RIGHT: newline-delimited JSON is read the same way
+source: events is duckdb.table('data/events.ndjson')
+// RIGHT: read options need read_json_auto in a SQL source
+source: nested is duckdb.sql("""SELECT * FROM read_json_auto('data/reviews.json')""")
+// WRONG: shelling out to python, or converting to CSV first
+```
+
+DuckDB reads JSON directly, so never preprocess a `.json` file before modeling it and never reach for a scripting language to inspect one. Both a top-level array of objects and newline-delimited JSON work through `duckdb.table()`.
+
+Quirk: JSON carries no schema, so a value written as `"90"` arrives as a string where the same data in CSV would be inferred as a number. Cast it in the source, under a new name (reusing the column's own name is a redefinition error):
+
+```malloy
+source: reviews is duckdb.table('data/reviews.json') extend {
+  dimension: points_num is points::number
+}
+```
+
 ## Excel Files: Read `.xlsx` In Place, Never Convert
 
 ```malloy
-// RIGHT: .xlsx works like .csv/.parquet (in a Publisher package the sandbox connection is `duckdb`)
+// RIGHT when the sheet is a plain table (header in row 1, data under it, no blank row inside
+// it): read it where it sits, like .csv/.parquet (in a Publisher package the sandbox
+// connection is `duckdb`)
 source: budget is duckdb.table('data/budget.xlsx')
-// RIGHT: sheet selection or any read option needs read_xlsx in a SQL source
-source: q2 is duckdb.sql("""SELECT * FROM read_xlsx('data/budget.xlsx', sheet = 'Q2')""")
+// RIGHT for anything messier. Profile the top rows first to find the real header row and the
+// last real column, because nothing else will tell you where they are. Put the probe in the
+// model file as its own source: Publisher refuses raw SQL in an ad-hoc query.
+//   SELECT * FROM read_xlsx('data/sales.xlsx', sheet = 'Sales Data',
+//                           range = 'A1:Z15', header = false, all_varchar = true)
+source: sales is duckdb.sql("""
+  SELECT * FROM read_xlsx('data/sales.xlsx',
+    sheet = 'Sales Data',      -- EDIT: only the first sheet is read by default
+    header = true,
+    range = 'A5:J100000'       -- EDIT: A5 is the real header row. Keep the column bound at the
+  )                            -- last real column; the row bound just has to clear the end.
+  WHERE "Order ID" LIKE 'SO-%' -- EDIT, REQUIRED: a data-row predicate. This is what ends the
+""")                           -- read; drop it and every empty row in the range comes back.
 // WRONG: converting the spreadsheet to Parquet or CSV first (an unnecessary extra step)
 ```
 
-Do not convert spreadsheets before modeling. DuckDB's excel extension reads `.xlsx` directly and loads automatically on first use, so `duckdb.table('file.xlsx')` just works. `table()` takes a plain file path only, so anything needing `read_xlsx` options (`sheet`, `range`, `header`, `ignore_errors`, `normalize_names`, `all_varchar`, `empty_as_varchar`) goes through the SQL-source form.
+Do not convert spreadsheets before modeling. DuckDB's excel extension reads `.xlsx` directly and loads automatically on first use, so a sheet that is a plain table needs nothing more than `duckdb.table()`. Converting does not avoid any of the problems below, it just moves them into a copy that goes stale the next time someone updates the workbook.
+
+**Plenty of real exports are not plain tables, and nothing tells you.** A report title, a "generated on" banner, a merged group header, a blank line above the header, or a blank spacer row inside the data are all ordinary, and none of them is visible from Malloy. There is no error either: the package loads, the server reports serving, the query returns 200, and the number is just wrong. So make two checks before building on the read: compare `aggregate: record_count is count()` against what you know is in the file, and `select: *; limit: 1` to see what the columns really are. If either disagrees with the file, the read is wrong and so is every measure over it.
+
+`table()` takes a plain file path only, so anything needing `read_xlsx` options (`sheet`, `range`, `header`, `ignore_errors`, `normalize_names`, `all_varchar`, `empty_as_varchar`, `stop_at_empty`) goes through the SQL-source form.
 
 Quirks:
 
-- Only the FIRST sheet is read by default. Select another with `sheet = 'Name'`.
-- Every numeric column arrives as `number` (xlsx stores all numbers as doubles); there are no integer columns.
-- A column mixing numbers and text fails at query time (`Could not convert string ... to DOUBLE`). Add `ignore_errors = true` (bad cells become null) or `all_varchar = true`.
+- Only the FIRST sheet is read by default. Select another with `sheet = 'Name'`. There is no function that lists a workbook's sheet names, but passing one that does not exist reports a suggestion (`Sheet "x" not found ... Did you mean: "Notes"`), which is one way to find a name you were not given.
+- A title or banner row above the header collapses the read. DuckDB takes the first row it finds as the column names, so a lone title cell in A1 becomes the only column. How many rows you then get is the next quirk's business: whatever sits between the title and the first blank row, often none or one, otherwise a plausible-looking partial count. Pass a `range` that starts at the real header row.
+- With no `range`, `stop_at_empty` defaults to true and the read stops at the first blank row, which on a real sheet is usually a spacer between blocks rather than the end of the data: a 30-row sheet with one spacer after row 10 reads as 10 rows. `stop_at_empty = false` lifts that, but it only helps when the header really is in row 1; with a title above the header you need the `range` anyway, and a `range` flips the default for you. It also hands the blank rows back as all-null rows, so the count comes out one high per spacer until you filter them.
+- A `range` reads every cell inside it, so an overshot bound manufactures padding: past the last real column you get all-null fields (`A5:Z100000` on a ten-column sheet yields 26, the extras named `C10` and `_1` through `_15`), and past the last real row all-null rows (`A5:J100000` on a 1,500-row sheet reads 99,995). Spacers, subtotals, and footnotes come through as rows too. So the row filter is not tidying-up, it is the thing that ends the read: filter to what a data row looks like (`WHERE "Order ID" LIKE 'SO-%'`) rather than to `IS NOT NULL`, which keeps any footnote carrying text in the first column. A bound that falls SHORT of the data is the dangerous direction: the rows and columns past it are dropped with no error at all, so overshoot the row bound and let the filter end the read.
+- Every number in an xlsx is stored as a double, so there are no integer columns. Typing is per column and decided by the FIRST data row, and `$1,234`, `12%` and `N/A` are all text: a text cell in that first row makes the whole column a string (on one real export, all ten of them), while a text cell further down leaves the column numeric and makes the read throw instead (`Could not convert string ... to DOUBLE`). `ignore_errors = true` fixes that second case, nulling the bad cells and keeping the column a number. It does nothing for the first.
+- Sample the column's SHAPES before writing any conversion, not its values: `run: source -> { group_by: shape is replace(raw_col, r'[0-9]', '9'); aggregate: n is count(); order_by: n desc }` collapses every value to its format and counts it, so on one real price column the 16 euro-denominated rows surface beside the 1,484 in dollars. A plain `group_by raw_col; limit: 20` sorts lexicographically, which hides exactly the shapes that matter.
+- Convert in the SQL source, not in Malloy, where `::number` throws on the first bad cell. `try_cast(regexp_replace("Total Revenue", '[^0-9.-]', '', 'g') AS double)` nulls what it cannot read instead of failing and is right for a plain `$1,234.56`, but it is not a general parser. It concatenates every digit in the cell, so `1,234 (see tab 2)` becomes 12342. It understands only a leading ASCII `-`, so an accounting `(1,234)`, a Unicode minus and a `CR` suffix all come back positive, while a trailing `-` (`1,234-`) comes back null and drops the row from the sum. And it assumes `.` is the decimal point, so a European `1.234,56` comes back a thousandfold small. Handle the shapes your sample actually found, and divide a percent by 100. Failure is quiet either way: a cast that fails on every row sums to 0 rather than erroring, and a text date strips to a number rather than a null (`'01/02/2023'` becomes 1022023).
+- Check the answer against the sheet's own total row, read as raw text. Lift the data-row filter and select the footer by its label, which usually sits in a different column from the one your data-row predicate uses: on one export `WHERE "Customer Name" = 'TOTAL'` finds it and `WHERE "Order ID" = 'TOTAL'` returns nothing, and an empty result reads as a pass. Do not run the total through the same expression, because a wrong sign survives a row count, survives `select: *`, and cancels out when both sides are parsed the same broken way.
 - A sheet with no header row whose first row is all text silently loses that row to header detection. Pass `header = false`.
 - Headers with spaces are kept verbatim: backtick them in Malloy, or pass `normalize_names = true` for snake_case names.
-- `all_varchar = true` returns date cells as Excel serial strings (for example `'46027.0'`), not dates.
+- `all_varchar = true` hands back each cell's stored value as text, so a date arrives as its raw Excel serial number rather than a date: `'44929'` from a sheet Excel wrote, `'44927.0'` from one DuckDB's own xlsx writer wrote, and `'44929.5'` where the cell carries a time of day. Which form you get depends on the tool that wrote the file, so do not detect serials by matching for an integer; `try_cast(... AS double)` accepts all three and returns null for a cell that was stored as text (`'01/02/2023'`), which is the test you want. Convert with `date '1899-12-30' + floor(try_cast(d AS double))::int`, not from 1900-01-01. Both wrappers earn their place: adding a double to a date does not compile, and a bare `::int` rounds, so an afternoon timestamp would land on the next day.
+- A date column that mixes both, which is what an export edited by hand gives you, needs both branches or you silently lose every row of one kind: `CASE WHEN try_cast(d AS double) IS NOT NULL THEN date '1899-12-30' + floor(try_cast(d AS double))::int ELSE try_strptime(d, '%m/%d/%Y')::date END`. Without `all_varchar`, a uniformly date-formatted column arrives as real `date` and `timestamp` values, and a stray text cell behaves exactly as the typing rule above says. Note what `ignore_errors = true` does here: it nulls that cell rather than parsing it, so the hand-typed date is lost silently.
 
 ## Duplicate Rows: Check Before Building Measures
 
@@ -292,7 +356,7 @@ Malloy compiles top-to-bottom. Define lookup/dimension tables before the source 
 Call `search_malloy_docs` BEFORE first use of any of these. Don't guess the syntax:
 - `pick` expressions
 - Window functions (`calculate`)
-- `percentile` or statistical functions: but see the hard limit above, raw-SQL aggregates (`sql_number` / `is_aggregate` / `percentile_cont!`) do **not** compile as measures in this build; there is no scalar median
+- `percentile` or statistical functions: but see the hard limit above, raw-SQL aggregates (`sql_number` / `is_aggregate` / `percentile_cont!`) do **not** compile as measures in this build; there is no scalar median (`stddev` is the exception and does work as a measure)
 - Time interval functions (`days()`, `seconds()`): only `seconds`/`minutes`/`hours`/`days` exist (see above)
 - Query-based sources (`from()`)
 - `!` operator / `sql_number()`

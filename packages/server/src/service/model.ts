@@ -92,6 +92,8 @@ import {
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    assertWithinModelResponseLimits,
+   type QueryRowLimitSource,
+   queryRowLimitSource,
    resolveModelQueryRowLimit,
 } from "./model_limits";
 import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
@@ -2059,6 +2061,10 @@ export class Model {
       compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
+      /** Row cap pushed into the SQL: the query's own LIMIT, else the default. */
+      rowLimit: number;
+      /** Which of those two the cap came from. */
+      rowLimitSource: QueryRowLimitSource;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
@@ -2318,6 +2324,7 @@ export class Model {
       // a 500. `executionTime` is still captured after prepare and before run,
       // preserving the pre-existing timing recorded by the success histogram.
       let rowLimit = 0;
+      let rowLimitSource: QueryRowLimitSource = "server_default";
       let executionTime = 0;
       let queryResults;
       // Givens supplied only so a joined source's authorize gate could see
@@ -2332,16 +2339,18 @@ export class Model {
       // shape can read them; the authorize gate above already saw the full set.
       const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
-         rowLimit = resolveModelQueryRowLimit(
-            (
-               await runnable.getPreparedResult({
-                  givens: effectiveGivens,
-                  buildManifest: effectiveBuildManifest,
-                  virtualMap: serveVirtualMap,
-               })
-            ).resultExplore.limit,
-            { defaultLimit: getDefaultQueryRowLimit(), maxRows },
-         );
+         const preparedLimit = (
+            await runnable.getPreparedResult({
+               givens: effectiveGivens,
+               buildManifest: effectiveBuildManifest,
+               virtualMap: serveVirtualMap,
+            })
+         ).resultExplore.limit;
+         rowLimitSource = queryRowLimitSource(preparedLimit);
+         rowLimit = resolveModelQueryRowLimit(preparedLimit, {
+            defaultLimit: getDefaultQueryRowLimit(),
+            maxRows,
+         });
          executionTime = performance.now() - startTime;
 
          queryResults = await runnable.run({
@@ -2471,15 +2480,17 @@ export class Model {
             // the connector reads as a hard cap and stops before the first row: a
             // successful, EMPTY answer. Asking the live shape is also the honest
             // limit, since the live shape is what runs.
-            rowLimit = resolveModelQueryRowLimit(
-               (
-                  await liveRunnable!.getPreparedResult({
-                     givens: querySurfaceGivens,
-                     buildManifest,
-                  })
-               ).resultExplore.limit,
-               { defaultLimit: getDefaultQueryRowLimit(), maxRows },
-            );
+            const livePreparedLimit = (
+               await liveRunnable!.getPreparedResult({
+                  givens: querySurfaceGivens,
+                  buildManifest,
+               })
+            ).resultExplore.limit;
+            rowLimitSource = queryRowLimitSource(livePreparedLimit);
+            rowLimit = resolveModelQueryRowLimit(livePreparedLimit, {
+               defaultLimit: getDefaultQueryRowLimit(),
+               maxRows,
+            });
             queryResults = await liveRunnable!.run({
                rowLimit,
                givens: querySurfaceGivens,
@@ -2536,6 +2547,17 @@ export class Model {
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
+         // The cap actually pushed into the SQL. A caller cannot otherwise tell
+         // a complete result from one the row limit cut off: with no LIMIT of
+         // its own a query silently gets DEFAULT_QUERY_ROW_LIMIT rows, and that
+         // is under maxRows, so assertWithinModelResponseLimits raises nothing.
+         // Returning the number lets a caller compare it against the row count
+         // and say so, with no extra query.
+         rowLimit,
+         // Whether that cap was the author's own limit:/top: or the silent
+         // default. Only the second means rows were probably left behind; a
+         // deliberate `top: 10` returning 10 rows is a complete answer.
+         rowLimitSource,
       };
    }
 

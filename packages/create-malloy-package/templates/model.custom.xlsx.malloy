@@ -1,0 +1,147 @@
+// {{sourceName}}: a starter Malloy model over {{dataPath}}, served by Publisher.
+//
+// Check the row count before you trust this. A spreadsheet is only a table when
+// its first row is the header and every row under it is data. Plenty are not: a
+// report title, a "generated on" banner, a merged group header, or a blank line
+// above the header are all ordinary in an export, and none of them is visible
+// from here. DuckDB takes the first row it finds as the column names and stops
+// at the first blank row, so a workbook with thousands of rows can load as a
+// handful, or as one, and nothing anywhere reports a problem: the package loads,
+// the server says it is serving, and the query returns 200 with the wrong number.
+//
+// So run `overview` first and compare `record_count` against what you know is in
+// the file. If it is short, the read is wrong. Fixing it takes two steps.
+//
+// STEP 1: look at the sheet, because the fix needs three things this file cannot
+// tell you: which sheet, which row the header is on, and which column marks a
+// real row. Add this to the bottom of THIS FILE, reload the package, then run
+// `{{sourceName}}_probe -> peek`. Delete it once you have what you need.
+//
+//   source: {{sourceName}}_probe is duckdb.sql("""
+//     SELECT * FROM read_xlsx(
+//       '{{dataPath}}',
+//       header = false, range = 'A1:Z25', all_varchar = true
+//     )
+//   """) extend {
+//     view: peek is { select: *; limit: 25 }
+//   }
+//
+// It has to go in the file rather than being sent as a one-off query: Publisher
+// refuses raw SQL in an ad-hoc query ("`duckdb.sql(...)` cannot be used in a
+// restricted query"), and only allows it where it is part of a model.
+//
+// `peek` prints the first 25 rows exactly as they sit in the sheet, banner rows
+// and all, so you can count down to the real header row and see which column
+// carries an id.
+//
+// It does NOT tell you which sheet you are looking at. With no `sheet =`,
+// read_xlsx reads the first one and says nothing about it, so a workbook whose
+// first sheet is a cover page or a notes tab hands you a plausible-looking
+// answer about the wrong sheet. There is no function that lists the sheets, so
+// if the workbook has more than one tab, take the name from the tabs along the
+// bottom in Excel and pass `sheet = '...'`.
+//
+// A name that does not exist fails loudly, which is safe, but do not use it to
+// go fishing: the error suggests at most one sheet and it picks by spelling, so
+// it can name the tab nearest your typo rather than the one holding your data.
+//
+// STEP 2: read it properly. Name the sheet and the range so the header is found,
+// AND filter the decoration back out, because an explicit range reads every row
+// in it: the blank spacers, the subtotal rows, the total, and the footnotes
+// underneath. Replace the source below, keeping the `extend` block so `overview`
+// still exists to re-run:
+//
+//   source: {{sourceName}} is duckdb.sql("""
+//     SELECT * FROM read_xlsx(
+//       '{{dataPath}}',
+//       sheet = 'Sheet1',        -- EDIT: the sheet from step 1 (or drop this line
+//                                -- entirely if the workbook has only one)
+//       header = true,
+//       range = 'A5:Z100000',    -- EDIT BOTH BOUNDS: A5 is where the real header
+//                                -- is; Z and 100000 are a cap, not a guess at your
+//                                -- size. Columns past Z and rows past 100000 are
+//                                -- dropped silently, which is the failure above
+//                                -- all over again.
+//       all_varchar = true       -- see the mixed-column note below
+//     )
+//     WHERE "Order ID" LIKE 'SO-%'   -- EDIT: a column every real row has and the
+//                                    -- decoration does not, and what a real value
+//                                    -- looks like. An id is the usual choice.
+//   """) extend {
+//     measure: record_count is count()
+//     view: overview is { aggregate: record_count }
+//   }
+//
+// Then reload the package, check the reload itself came back OK, and only then
+// run `overview` again. A reload that fails to compile leaves the previously
+// compiled model serving, so `overview` answers 200 with the OLD number and it
+// looks as though your edit did nothing. The reason is in the reload response,
+// not in the query.
+//
+// If no column is unique to real rows, exclude the labels instead of matching
+// them, and check the count both ways rather than trusting either:
+//
+//   WHERE "Region" IS NOT NULL AND "Region" NOT IN ('Subtotal', 'Total')
+//
+// Getting this wrong is quiet: a filter that also admits the subtotal rows raises
+// `record_count` to something plausible and double-counts every measure built on
+// it. That is the same failure this whole comment is about, so re-run `overview`
+// and check the number, do not assume.
+//
+// Both halves matter. Without the range you get the title row as your header.
+// Without the filter you get the whole range, padded with empty rows.
+// Do not reach for `stop_at_empty`: it stops at the first blank spacer, which is
+// usually somewhere in the middle of the data.
+//
+// `duckdb.table()` takes a plain path and nothing else, which is why every option
+// above needs the SQL form. Other things a real spreadsheet does: a column mixing
+// numbers and text fails at query time rather than at load, which is what
+// `all_varchar = true` avoids; a cell someone typed as text, `$1,234` or `12%`,
+// stays text even where the column looks numeric; dates may be text or Excel
+// serial numbers; and every number is a double. `skill:malloy-gotchas-modeling`
+// has the full list.
+//
+// Note that `all_varchar = true` hands you every column as a string, so a measure
+// cannot just sum it. Do the conversion in the SQL above, where you already are,
+// rather than in the measure:
+//
+//   SELECT
+//     *,
+//     try_cast(regexp_replace("Units Sold", '[^0-9.-]', '', 'g') AS DOUBLE) AS units_sold_num
+//   FROM read_xlsx(...)
+//
+// then `measure: total_units is units_sold_num.sum()` in Malloy. `try_cast` is
+// what makes it survive: a real export has cells reading `N/A` or `12 (est)`, and
+// a plain cast throws on the first one at query time. Note the regex keeps the
+// digits out of `12 (est)`, so those rows count as 12; strip the whole cell
+// instead if an estimate should not count.
+//
+// Keep the `-` in that character class. Without it every negative comes back
+// POSITIVE: a refund of `-500` sums as `500`, and a revenue total that quietly
+// adds its credits back is the same class of silent wrongness as the bad read
+// above. Accounting parentheses need a step of their own, because stripping them
+// also leaves a positive:
+//
+//   (CASE WHEN "Amount" LIKE '(%)' THEN -1 ELSE 1 END)
+//     * try_cast(regexp_replace("Amount", '[^0-9.]', '', 'g') AS DOUBLE) AS amount_num
+//
+// The Malloy-side form is `sum(amount::number)`, not `amount::number.sum()`,
+// which does not parse. It is fine on a clean column and throws on a dirty one,
+// which is why the SQL layer is the better place.
+// (`ignore_errors = true` on read_xlsx is the other way: it keeps real types and
+// nulls the cells that do not fit.)
+//
+// Beyond that this is the same starting point as any seeded package: the
+// scaffolder does not read your columns, so it begins with a row count. Build it
+// out for your columns: group_by a column to break the count down, and define
+// measures over the numeric ones. Validate edits with malloy_compile and run new
+// views by name with malloy_reloadPackage. The malloy-modeling skill walks
+// through turning a raw table into a semantic model.
+
+source: {{sourceName}} is duckdb.table('{{dataPath}}') extend {
+  measure: record_count is count()
+
+  view: overview is {
+    aggregate: record_count
+  }
+}

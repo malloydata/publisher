@@ -79,6 +79,37 @@ function offeredCommands(output: string): string[] {
       );
 }
 
+describe("formatSuccess: the spreadsheet check", () => {
+   test("tells an xlsx user to check the row count, and where the fix is", () => {
+      // The failure this guards is silent: a header that is not on row one makes
+      // the read wrong while everything reports success, so the only signal the
+      // user gets is a row count that looks too small. Nothing else in the
+      // output would prompt them to look at it.
+      const output = formatSuccess(
+         resultFor({ dataPath: "data/budget.xlsx", modelFile: "sales.malloy" }),
+      );
+      expect(output).toContain("Spreadsheets need one check first");
+      expect(output).toContain("overview");
+      expect(output).toContain("data/budget.xlsx");
+      expect(output).toContain("sales.malloy");
+   });
+
+   test("says nothing for a csv or parquet", () => {
+      // One real scaffold, then vary the field: resultFor() scaffolds for real,
+      // so calling it twice in a test fails on the directory already existing.
+      const base = resultFor();
+      for (const dataPath of ["data/orders.csv", "data/orders.parquet"]) {
+         const output = formatSuccess({ ...base, dataPath });
+         expect(output).not.toContain("Spreadsheets need one check first");
+      }
+   });
+
+   test("says nothing for a bare scaffold with no --data", () => {
+      const output = formatSuccess(resultFor({ dataPath: undefined }));
+      expect(output).not.toContain("Spreadsheets need one check first");
+   });
+});
+
 describe("formatSuccess: the readiness check", () => {
    test("offers the package list, not just the status", () => {
       const output = formatSuccess(resultFor());
@@ -392,6 +423,111 @@ describe("formatSuccess: the MCP endpoint", () => {
    test("a wired config is not reported as wired when it is not", () => {
       const output = formatSuccess(resultFor({ mcpWired: false }));
       expect(output).toContain("the MCP endpoint is not wired");
+   });
+
+   test("workspace trust is named before the reconnect remedy it voids", () => {
+      // A workspace nobody has trusted yet lets the tools report connected and
+      // still refuse to run, and discards a .claude/settings.json allowlist
+      // rather than merging it. It voids the reconnect remedy, so a reader who
+      // acts on that one first fixes the wrong thing. The order is the claim,
+      // which is why it is asserted rather than just the presence.
+      //
+      // Searched over whitespace-collapsed text, because these lines are hard
+      // wrapped: a phrase that straddles a wrap makes toContain fail and indexOf
+      // return -1, which silently inverts an ordering assertion. Rewording the
+      // block moves the wrap, so anchoring on the prose rather than on the
+      // current line breaks is what keeps this test about the ordering.
+      const output = formatSuccess(resultFor());
+      const flat = output.replace(/\s+/g, " ");
+      expect(flat).toContain("Trust this workspace");
+      expect(flat).toContain("can't reconnect MCP");
+      expect(flat.indexOf("Trust this workspace")).toBeLessThan(
+         flat.indexOf("can't reconnect MCP"),
+      );
+      // Asserted positively as well, because the cursor test below guards these
+      // facts only with not.toContain, which stays green if they are deleted. All
+      // over `flat` for the same reason as above: a reword that moves the wrap
+      // must not quietly void an assertion.
+      expect(flat).toContain("permissions allowlist");
+      // An agent that ran the scaffolder itself reads this output and cannot
+      // answer a trust prompt, so the line names the human rather than telling
+      // the reader to do it.
+      expect(flat).toContain("a human has to");
+      // The gate is useless without a way to tell it cleared, and every other
+      // check this output prints comes with one.
+      expect(flat).toContain("You will know the prompt was answered");
+      // Two problems, so they are separated. The label only has an antecedent
+      // where the trust note was printed, which is why the cursor test asserts it
+      // is absent there.
+      expect(output).toContain("\n\n  A different problem:");
+   });
+
+   test("a cursor run is not told to accept a prompt Cursor does not raise", () => {
+      // The trust gate, the prompt and the discarded allowlist are all Claude
+      // Code's. Printed to a Cursor user, they send them hunting for a prompt
+      // that does not exist, past the Refresh that does work for them, which the
+      // reconnect note two lines down already tells them. Every other
+      // host-specific claim in this output is gated the same way.
+      //
+      // Asserted as the same invariant scaffold.spec.ts applies to the briefing,
+      // not only as the phrases this change adds: this output is the other
+      // surface host-specific text arrives on, so a phrase test here guards only
+      // today's wording. ANSI is stripped first because the printed lines are
+      // colored. Keep the pattern identical to the one in scaffold.spec.ts, whose
+      // doc comment says what to do when it fires on a line you did not write:
+      // host-gate the whole paragraph, not the one line it named.
+      const claudeOnlyLines = (text: string): string[] =>
+         text
+            // eslint-disable-next-line no-control-regex
+            .replace(
+               new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"),
+               "",
+            )
+            .split("\n")
+            .filter((line) =>
+               /claude mcp add|(^|[^.\w])\/mcp\b|Claude Code|\.claude\/settings/.test(
+                  line,
+               ),
+            );
+
+      // A REAL cursor scaffold, into its own directory. Overriding host on a
+      // claude-code result instead would keep that run's mcpConfigPath
+      // (".mcp.json") and its written list (which holds CLAUDE.md), so the
+      // assertions would pass over a render that cannot occur, and specifically
+      // over one naming two files a cursor run never writes.
+      const cursorDir = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-cursor-"));
+      try {
+         const output = formatSuccess(
+            scaffold({
+               name: "sales",
+               cwd: cursorDir,
+               host: "cursor",
+               force: false,
+            }),
+         );
+         const flatCursor = output.replace(/\s+/g, " ");
+         expect(claudeOnlyLines(output)).toEqual([]);
+         expect(flatCursor).not.toContain("permissions allowlist");
+         // The two files a cursor run does not write, which the pattern above
+         // cannot see because they are plain filenames.
+         expect(output).not.toContain("CLAUDE.md");
+         expect(output).toContain(".cursor/mcp.json");
+         // With no trust note printed, "a different problem" would have nothing to
+         // be different from, so the reconnect note takes its unlabelled wording.
+         expect(flatCursor).not.toContain("A different problem");
+         expect(flatCursor).toContain("can't reconnect MCP");
+         // Not passing by printing nothing: the section itself is still there.
+         expect(output).toContain("Connect an agent:");
+      } finally {
+         fs.rmSync(cursorDir, { recursive: true, force: true });
+      }
+
+      // And the filter is not vacuous: it matches the claude-code output, where
+      // each alternative it tests for really does appear.
+      const claudeOutput = formatSuccess(resultFor());
+      expect(claudeOnlyLines(claudeOutput).length).toBeGreaterThan(0);
+      expect(claudeOutput).toContain("Claude Code");
+      expect(claudeOutput).toContain(".claude/settings.json");
    });
 });
 
