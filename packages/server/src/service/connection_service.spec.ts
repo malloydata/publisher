@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import sinon from "sinon";
 import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
+import { buildEnvironmentMalloyConfig } from "./connection";
 import { ConnectionService } from "./connection_service";
+import { Environment } from "./environment";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -159,6 +164,82 @@ describe("service/connection_service", () => {
             (mockEnvironmentStore.addConnection as sinon.SinonStub).called,
          ).toBe(true);
          expect(mockProject.updateConnections.called).toBe(true);
+      });
+
+      it("should add a connection whose name a materialization destination also holds", async () => {
+         // The two namespaces are independent, so a tenant naming their connection
+         // after the tier's destination is legal and must not read as a duplicate.
+         // Driven against a REAL Environment: a stub would answer whatever it was
+         // told, and the claim here is about which list the service consults.
+         const envPath = fs.mkdtempSync(
+            path.join(os.tmpdir(), "publisher-conn-service-"),
+         );
+         try {
+            const destination: ApiConnection = {
+               name: "credible",
+               type: "ducklake",
+               ducklakeConnection: {
+                  catalog: {
+                     postgresConnection: {
+                        host: "catalog.internal",
+                        databaseName: "ducklake",
+                        userName: "publisher",
+                        password: "catalog-secret",
+                     },
+                  },
+                  storage: { bucketUrl: "gs://managed-tier/org_a" },
+               },
+            };
+            const malloyConfig = buildEnvironmentMalloyConfig([], envPath);
+            const environment = new Environment(
+               "test-project",
+               envPath,
+               malloyConfig,
+               malloyConfig.apiConnections,
+               [destination],
+            );
+
+            (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves({
+               id: "project-123",
+               name: "test-project",
+               path: envPath,
+               createdAt: new Date(),
+               updatedAt: new Date(),
+            });
+            (mockRepository.getConnectionByName as sinon.SinonStub).resolves(
+               null,
+            );
+            (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+               environment,
+            );
+
+            await connectionService.addConnection("test-project", "credible", {
+               name: "credible",
+               type: "postgres",
+               postgresConnection: {
+                  host: "tenant.example.com",
+                  port: 5432,
+                  databaseName: "analytics",
+                  userName: "tenant",
+                  password: "tenant-secret",
+               },
+            } as ApiConnection);
+
+            // The connection landed, and the destination of the same name is
+            // untouched — still a ducklake, still pointed at its own catalog.
+            expect(environment.getApiConnection("credible").type).toBe(
+               "postgres",
+            );
+            expect(
+               environment.listMaterializationDestinations().map((d) => d.name),
+            ).toEqual(["credible"]);
+            expect(
+               environment.getMaterializationDestination("credible")
+                  .ducklakeConnection?.storage?.bucketUrl,
+            ).toBe("gs://managed-tier/org_a");
+         } finally {
+            fs.rmSync(envPath, { recursive: true, force: true });
+         }
       });
 
       it("should throw FrozenConfigError when config is frozen", async () => {

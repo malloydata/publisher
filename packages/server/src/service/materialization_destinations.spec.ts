@@ -13,6 +13,7 @@ import {
    internalErrorToHttpError,
 } from "../errors";
 import { ConnectionController } from "../controller/connection.controller";
+import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import {
    assembleEnvironmentConnections,
@@ -159,6 +160,54 @@ describe("Environment: connections and materialization destinations are disjoint
          destinations,
       );
    }
+
+   it("never writes a destination's catalog password to a log line", async () => {
+      // A destination carries warehouse credentials, and the paths that handle one
+      // log freely: the list is logged when it is set, an unusable entry is logged
+      // with the validator's reason, and the DuckLake attach echoes the whole
+      // catalog DSN into its own log line. That last one is why this is a test and
+      // not a code reading — `redactPgSecrets` covers it today, and nothing else
+      // proves it keeps covering a DESTINATION's DSN rather than only a
+      // connection's.
+      const levels = ["info", "warn", "error", "debug"] as const;
+      const captured: unknown[][] = [];
+      for (const level of levels) {
+         sinon.stub(logger, level).callsFake((...args: unknown[]) => {
+            captured.push(args);
+            return logger as never;
+         });
+      }
+
+      const environment = makeEnvironment(
+         [],
+         [
+            ducklakeDestination("managed", "org_a", "sup3r-secret-catalog-pw"),
+            // An entry that fails validation, so the reject path logs too.
+            { name: "broken", type: "ducklake" },
+         ],
+      );
+      await environment.serialize();
+      try {
+         await environment
+            .getMaterializationDestinationMalloyConfig()
+            .connections.lookupConnection("managed");
+      } catch {
+         // The catalog is not reachable; the attach attempt is what logs.
+      }
+
+      const logged = JSON.stringify(
+         captured.map((args) =>
+            args.map((arg) =>
+               arg instanceof Error ? `${arg.message}\n${arg.stack}` : arg,
+            ),
+         ),
+      );
+      expect(captured.length).toBeGreaterThan(0);
+      expect(logged).not.toContain("sup3r-secret-catalog-pw");
+      // The name is not a secret and stays visible — an operator has to be able to
+      // tell WHICH destination a line is about.
+      expect(logged).toContain("managed");
+   });
 
    it("omits destinations from the connection list", () => {
       const environment = makeEnvironment(
