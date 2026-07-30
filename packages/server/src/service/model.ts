@@ -2534,22 +2534,32 @@ export class Model {
             // the connector reads as a hard cap and stops before the first row: a
             // successful, EMPTY answer. Asking the live shape is also the honest
             // limit, since the live shape is what runs.
-            const livePreparedLimit = (
-               await liveRunnable!.getPreparedResult({
-                  givens: querySurfaceGivens,
-                  buildManifest,
-               })
-            ).resultExplore.limit;
+            const livePrepared = await liveRunnable!.getPreparedResult({
+               givens: querySurfaceGivens,
+               buildManifest,
+            });
+            const livePreparedLimit = livePrepared.resultExplore.limit;
             rowLimitSource = queryRowLimitSource(livePreparedLimit);
             rowLimit = resolveModelQueryRowLimit(livePreparedLimit, {
                defaultLimit: getDefaultQueryRowLimit(),
                maxRows,
             });
+            // Re-resolve rather than reuse: the bag above was resolved against
+            // the STORAGE connection, which on this tier is routinely not the
+            // one the live shape runs on, so reusing it would stamp another
+            // connection's default and enforced layers on this statement. The
+            // correlation id rides in the input, so the retry keeps the id the
+            // response returns — one API call, one join key, two statements.
+            appliedQueryMetadata = this.resolveQueryMetadata(
+               queryMetadataInput,
+               livePrepared.connectionName,
+            );
             queryResults = await liveRunnable!.run({
                rowLimit,
                givens: querySurfaceGivens,
                abortSignal,
                buildManifest,
+               queryMetadata: appliedQueryMetadata,
             });
          } catch (retryError) {
             failQuery(retryError);
