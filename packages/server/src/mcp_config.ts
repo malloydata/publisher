@@ -104,8 +104,9 @@ export function resolveBoundPort(
  * the more specific `127.0.0.1:PORT` while this server holds the wildcard, and
  * any attacker able to do that already runs as this user and could rewrite the
  * file directly. `displayHost` in `service/environment_store.ts` answers the
- * same question with `localhost`; reconciling them is its own change, because
- * that one feeds a documented line scripts parse.
+ * same question with `localhost`, as do the committed root `.mcp.json` and the
+ * scaffolder. Reconciling all three is its own change: one feeds a documented
+ * line scripts parse, and another ships from a different package.
  */
 export function resolveClientHost(
    address: ReturnType<import("net").Server["address"]>,
@@ -218,7 +219,17 @@ export function ensureMcpConfig(options: {
       // returns before writing, so without this a stale config sitting in this
       // very directory goes unmentioned in exactly the cases where it is the
       // most useful thing to say.
-      const staleConfig = fs.existsSync(file) ? file : undefined;
+      // lstat, not existsSync: they disagree on a dangling symlink, which is
+      // the case this module's header calls out, and the write path (via
+      // EEXIST) counts that as present. Reporting and writing must agree.
+      const staleConfig = ((): string | undefined => {
+         try {
+            fs.lstatSync(file);
+            return file;
+         } catch {
+            return undefined;
+         }
+      })();
 
       // Only write a port that will still be this port next boot. Comparing
       // bound against requested catches every way they diverge with one
@@ -330,8 +341,13 @@ export function addCommand(endpoint: string): string {
  * not a middle ground, because it disappears entirely at `LOG_LEVEL=info`.
  */
 /** The stale-file warning, appended to whichever skip fired. */
-function staleNote(staleConfig: string | undefined): string {
-   return staleConfig === undefined
+function staleNote(
+   staleConfig: string | undefined,
+   alreadyNamed?: string,
+): string {
+   // `alreadyNamed` is the git branch's rootConfig: when cwd is the repo root
+   // the two are the same path, and naming it twice reads like two files.
+   return staleConfig === undefined || staleConfig === alreadyNamed
       ? ""
       : `. Note that ${staleConfig} is already here and was not written by this run, so an agent started here uses whatever that names.`;
 }
@@ -366,7 +382,7 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
                ? // Named, not acted on: it may register an unrelated server, or
                  // name a port this run is not on, and we never read it to find
                  // out. So the endpoint and the command are still given.
-                 `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}, which already has ${outcome.rootConfig}. This server is at ${outcome.endpoint}; if your agent does not list malloy, run this from the directory you start it in: ${addCommand(outcome.endpoint)}${staleNote(outcome.staleConfig)}`
+                 `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}, which already has ${outcome.rootConfig}. This server is at ${outcome.endpoint}; if your agent does not list malloy, run this from the directory you start it in: ${addCommand(outcome.endpoint)}${staleNote(outcome.staleConfig, outcome.rootConfig)}`
                : `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}. To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}${staleNote(outcome.staleConfig)}`,
          );
          return;
@@ -377,7 +393,7 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
          return;
       case "skipped-unstable-port":
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME}: this server asked for MCP port ${outcome.requestedPort} and got ${outcome.boundPort}, so the port changes from run to run and a saved config would be wrong next boot. To connect an agent to this run: ${addCommand(outcome.endpoint)}. That registration outlives this run, and the port will have moved by the next one, so undo it with claude mcp remove malloy.${staleNote(outcome.staleConfig)}`,
+            `Did not write ${MCP_CONFIG_FILENAME}: this server asked for MCP port ${outcome.requestedPort} and got ${outcome.boundPort}, so the port changes from run to run and a saved config would be wrong next boot. To connect an agent to this run: ${addCommand(outcome.endpoint)}. That registration outlives this run, and the port will have moved by the next one, so undo it with claude mcp remove malloy${staleNote(outcome.staleConfig)}`,
          );
          return;
       case "skipped-root":

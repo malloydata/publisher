@@ -280,15 +280,24 @@ describe("ensureMcpConfig", () => {
       });
 
       it("defaults the home guard to the real os.homedir()", () => {
-         // Injection is for the tests above; the default must still protect the
-         // directory it exists for. Asserted without writing anything anywhere.
-         const outcome = ensureMcpConfig({
-            dir: os.homedir(),
-            endpoint: ep(4040),
-            requestedPort: 4040,
-            boundPort: 4040,
-         });
-         expect(outcome.action).toBe("skipped-home");
+         // Points at the developer's actual home, so it cleans up after itself:
+         // if guard ordering ever regressed, this test would otherwise create
+         // ~/.mcp.json on the way to going red, which is the very thing the
+         // guard exists to prevent.
+         const realCfg = path.join(os.homedir(), MCP_CONFIG_FILENAME);
+         const preexisting = fs.existsSync(realCfg);
+         try {
+            expect(
+               ensureMcpConfig({
+                  dir: os.homedir(),
+                  endpoint: ep(4040),
+                  requestedPort: 4040,
+                  boundPort: 4040,
+               }).action,
+            ).toBe("skipped-home");
+         } finally {
+            if (!preexisting && fs.existsSync(realCfg)) fs.rmSync(realCfg);
+         }
       });
 
       // Every way the bound port can differ from the requested one. Checking
@@ -595,6 +604,77 @@ describe("logMcpConfigOutcome", () => {
       expect(said).toContain("malloy 'http://[::1]:4040/mcp'");
    });
 
+   // Mutation-proven gap: making staleNote return "" removed the feature
+   // outright and all 46 tests stayed green, because every fixture set
+   // staleConfig to undefined. These render it.
+   it("names a stale config in the message, on every skip that can carry one", () => {
+      const withStale: McpConfigOutcome[] = [
+         {
+            action: "skipped-home",
+            dir: "/home/x",
+            endpoint: ep(4040),
+            staleConfig: "/home/x/.mcp.json",
+         },
+         {
+            action: "skipped-root",
+            dir: "/",
+            endpoint: ep(4040),
+            staleConfig: "/.mcp.json",
+         },
+         {
+            action: "skipped-git",
+            dir: "/repo/sub",
+            gitRoot: "/repo",
+            rootConfig: undefined,
+            endpoint: ep(4040),
+            staleConfig: "/repo/sub/.mcp.json",
+         },
+         {
+            action: "skipped-unstable-port",
+            dir: "/w",
+            endpoint: ep(51234),
+            requestedPort: 0,
+            boundPort: 51234,
+            staleConfig: "/w/.mcp.json",
+         },
+      ];
+      for (const outcome of withStale) {
+         const said = capture(() => logMcpConfigOutcome(outcome));
+         expect(said).toContain("was not written by this run");
+         expect(said).toContain(
+            (outcome as { staleConfig: string }).staleConfig,
+         );
+         expect(said).not.toContain(".."); // the note must join cleanly
+      }
+   });
+
+   it("says nothing about a stale config when there is none", () => {
+      const said = capture(() =>
+         logMcpConfigOutcome({
+            action: "skipped-home",
+            dir: "/home/x",
+            endpoint: ep(4040),
+            staleConfig: undefined,
+         }),
+      );
+      expect(said).not.toContain("was not written by this run");
+   });
+
+   it("does not name the same file twice when cwd is the repo root", () => {
+      // A clone of this repo produces exactly this on every boot from its root.
+      const said = capture(() =>
+         logMcpConfigOutcome({
+            action: "skipped-git",
+            dir: "/repo",
+            gitRoot: "/repo",
+            rootConfig: "/repo/.mcp.json",
+            endpoint: ep(4040),
+            staleConfig: "/repo/.mcp.json",
+         }),
+      );
+      expect(said.split("/repo/.mcp.json").length - 1).toBe(1);
+   });
+
    it("never advises user scope, which the file that caused the message outranks", () => {
       // Claude Code resolves duplicates by precedence (local, then project, then
       // user) and takes the winning entry whole. Every branch printing this
@@ -686,6 +766,17 @@ describe("mcpConfigEnabled", () => {
       for (const value of ["1", "true", "YES", "on"]) {
          withEnv(value, () => expect(mcpConfigEnabled()).toBe(false));
       }
+   });
+
+   it("reads the variable when called, not when the module was imported", () => {
+      // server.ts sets this from --no-mcp-config in parseArgs() and reads it at
+      // module scope afterwards. If the read were ever hoisted above parseArgs,
+      // or the value captured at import, the flag would silently stop working.
+      withEnv(undefined, () => {
+         expect(mcpConfigEnabled()).toBe(true);
+         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
+         expect(mcpConfigEnabled()).toBe(false);
+      });
    });
 
    it("throws on a value that is neither, like every other flag in this server", () => {

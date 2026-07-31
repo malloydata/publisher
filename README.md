@@ -137,11 +137,11 @@ The file is only read by a session that **started** in that directory, so launch
 
 It also stays on disk after you stop the server, and is never corrected. That matters more than a
 broken link: if something else later holds that port, perhaps a second Publisher serving different
-data, an agent started there connects to it and answers confidently from the wrong model. So when a
-directory's file is one the server wrote, delete it once you are done with that directory, and if you
-are unsure, ask your agent to run `malloy_getContext`, which names the environment and packages it is
-actually connected to. Do not delete
-a `.mcp.json` you did not create: it may hold other servers and their credentials.
+data, an agent started there connects to it and answers confidently from the wrong model. Nothing marks
+the file as the server's, so do not go hunting for ones to delete: a `.mcp.json` may be your own, and it
+may hold other servers and their credentials. If you made a scratch directory for this, deleting the
+directory is enough. If you are ever unsure what an agent is connected to, ask it to run
+`malloy_getContext`, which names the environment and packages it is actually talking to.
 
 **When the server does not write one.** Read the startup log rather than guessing: it always says
 which of these happened, and prints the command that connects an agent anyway.
