@@ -91,10 +91,12 @@ const SEARCH_DOCS_DESCRIPTION = `Search the Malloy documentation by keyword and 
 ## When to use
 - Before writing unfamiliar Malloy syntax (window functions, autobin, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
 - Do NOT use it to look up field or source names in a model; use malloy_getContext for that.
+- Do NOT use it for anything about running Publisher itself — server flags, deployment, connection or embedding-provider configuration, publisher.json, packages, watch mode. This index covers the Malloy LANGUAGE docs only. Those answers live in the deployment's own docs/ directory and bundled skills, not here.
 
 ## Contract rules
 - These are documentation pages, not model entities. Do not treat a doc title as a field or source name.
 - The excerpt is only a hint; open the url for the full detail.
+- Matching is keyword-based, so a result is not evidence the topic is covered. An off-topic query still returns its best keyword matches, and a title can match on a word it shares with your question while the page is about something else. Read the excerpt before trusting a hit, and treat a page-full of near-misses as "not documented here" rather than retrying with more keywords.
 
 ## Parameters
 - query (required): keywords describing what you need.

@@ -406,5 +406,5 @@ Call `search_malloy_docs` BEFORE first use of any of these. Don't guess the synt
 - Window functions (`calculate`)
 - `percentile` or statistical functions: but see the hard limit above, raw-SQL aggregates (`sql_number` / `is_aggregate` / `percentile_cont!`) do **not** compile as measures in this build; there is no scalar median (`stddev` is the exception and does work as a measure)
 - Time interval functions (`days()`, `months()`): always `unit(start to end)`, and calendar units need date operands (see above)
-- Query-based sources (`from()`)
+- Query-based sources (`source: x is (q -> {...}) extend {...}`; `from()` was removed and no longer parses)
 - `!` operator / `sql_number()`

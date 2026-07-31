@@ -863,6 +863,31 @@ const setVersionIdError = (res: express.Response) => {
    res.status(status).json(json);
 };
 
+/**
+ * Refuse `reload` on a collection route, naming the single-resource route that
+ * honors it.
+ *
+ * Reload recompiles one named resource, so a collection cannot serve the
+ * request. Ignoring the parameter answers 200 with the list, which a caller
+ * reads as a reload that worked: they edit a model, reload the collection, see
+ * 200, and query a model the server never recompiled.
+ *
+ * `perResourceRoute` is the path to point at, with its `{name}` placeholder
+ * already filled in as far as the caller's own params allow.
+ */
+const setCollectionReloadError = (
+   res: express.Response,
+   perResourceRoute: string,
+) => {
+   const { json, status } = internalErrorToHttpError(
+      new BadRequestError(
+         `Reload recompiles one named resource, and this endpoint lists them. ` +
+            `Use GET ${perResourceRoute}?reload=true instead.`,
+      ),
+   );
+   res.status(status).json(json);
+};
+
 app.use(
    cors({
       origin: "http://localhost:5173",
@@ -1064,7 +1089,14 @@ app.get(
    },
 );
 
-app.get(`${API_PREFIX}/environments`, async (_req, res) => {
+app.get(`${API_PREFIX}/environments`, async (req, res) => {
+   if (req.query.reload !== undefined) {
+      setCollectionReloadError(
+         res,
+         `${API_PREFIX}/environments/{environmentName}`,
+      );
+      return;
+   }
    try {
       res.status(200).json(await environmentStore.listEnvironments());
    } catch (error) {
@@ -1507,6 +1539,13 @@ app.get(
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
+         return;
+      }
+      if (req.query.reload !== undefined) {
+         setCollectionReloadError(
+            res,
+            `${API_PREFIX}/environments/${req.params.environmentName}/packages/{packageName}`,
+         );
          return;
       }
 

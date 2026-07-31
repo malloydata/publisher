@@ -99,10 +99,12 @@ source: subscriptions is duckdb.table('subscriptions.parquet') extend {
   }
 
   #(doc) Overview dashboard: KPIs, MRR trend, and plan mix
-  # dashboard
+  # dashboard { columns=2 }
   view: overview is {
     nest:
+      # colspan=2
       kpis
+    nest:
       mrr_by_month
       plan_mix
       mrr_by_industry

@@ -111,10 +111,12 @@ extend {
 
 ### Computed Source (from Query)
 
+Wrap the query in parentheses and extend it. `from(...)` was removed from the language and no longer parses (`unexpected 'from'`).
+
 ```malloy
 import "orders.malloy"
 
-source: user_order_facts is from(
+source: user_order_facts is (
   orders -> {
     group_by: customer_id
     aggregate:

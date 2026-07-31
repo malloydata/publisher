@@ -263,7 +263,7 @@ async function getPackageIndex(
    return built;
 }
 
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you can ground a query in what the model actually defines instead of guessing. This is the starting point when you do not yet know the environment, package, or model names.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in what the model defines, not a guess. Start here when you do not know the environment, package, or model names.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
@@ -271,16 +271,16 @@ const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes an
 - An error, stale, or note field means the data did not load or predates the files: read it before trusting a number.
 
 ## Parameters
-All optional. Supply what you know and omit the rest; each combination answers at its own level.
+All optional; supply what you know. Each combination answers at its own level.
 - none: lists the environments, each with its package names.
 - environmentName: lists that environment's packages, with descriptions.
 - + packageName: lists that package's sources.
-- + query: a plain-English description of what you need, returning the sources, views, named queries, and dimension/measure fields most relevant to it.
-- sourceName: narrows retrieval to one source (the drill-down phase).
-- limit: caps results (max 50). Retrieval defaults to 10; the listing levels return all unless set.
+- + query: a plain-English description of what you need; returns the most relevant sources, views, named queries, and dimension/measure fields.
+- sourceName: narrows to one source. Without a query it lists that source, then its views, dimensions, measures and named queries — how you see a source's fields; with a query it restricts retrieval to that source. An unmatched name returns an empty results array, not an error.
+- limit: caps results (max 50). Retrieval defaults to 10; the listing levels return all unless set. A drill-down's source row counts toward it.
 
 ## Response
-A JSON object with a results array whose items carry a kind field. For retrieval, each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName. When the server is configured with an embedding provider, retrieval is ranked by semantic similarity: the payload then carries a retrieval field ("semantic", or "lexical" when the provider is unavailable) and each semantic entity a score.
+A JSON object with a results array. Each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map onto malloy_executeQuery parameters; pass a view or named query as queryName with sourceName. With an embedding provider configured, retrieval is ranked semantically: the payload carries a retrieval field ("semantic", or "lexical" if the provider is down) plus a per-entity score. With no provider both are absent rather than defaulted — not an error.
 
 ## Worked example
 { "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
@@ -514,12 +514,23 @@ export function registerGetContextTool(
          // overview the agent can then query or drill into.
          const sanitized = query ? sanitize(query) : "";
          if (!sanitized) {
-            // Enumeration: return every source unless the caller sets an explicit
+            // With sourceName set this is the drill-down, so it lists every
+            // entity the named source offers: the source row itself, then its
+            // views, dimensions, measures, and any named query built on it.
+            // Filtering to kind === "source" here as well returned exactly one
+            // row — the source — which the caller already had from the tier-3
+            // listing, and never the fields the tool description promises.
+            // collectEntities pushes a source ahead of its own fields, and
+            // Array.from preserves that insertion order, so the source's doc
+            // still leads the drill-down.
+            //
+            // Enumeration: return everything unless the caller sets an explicit
             // limit. slice(0, undefined) keeps the whole list, so discovery is
             // not silently capped the way ranked retrieval (tier 4) is.
             const results = Array.from(byId.values())
-               .filter((e) => e.kind === "source")
-               .filter((e) => !sourceName || e.source === sourceName)
+               .filter((e) =>
+                  sourceName ? e.source === sourceName : e.kind === "source",
+               )
                .slice(0, limit)
                .map((e) => ({
                   kind: e.kind,

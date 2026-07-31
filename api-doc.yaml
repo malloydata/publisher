@@ -191,6 +191,10 @@ paths:
         Retrieves a list of all environments currently hosted on this Malloy Publisher server.
         Each environment contains metadata about its packages, connections, and configuration.
         This endpoint is typically used to discover available environments and their basic information.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-environment: use `GET /environments/{environmentName}?reload=true`.
       responses:
         "200":
           description: A list of all available environments
@@ -200,6 +204,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1286,6 +1292,10 @@ paths:
         Retrieves a list of all Malloy packages within the specified environment. Each package
         contains models, notebooks, databases, and other resources. This endpoint is useful
         for discovering available packages and their basic metadata.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
       parameters:
         - name: environmentName
           in: path
@@ -1302,6 +1312,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
