@@ -46,7 +46,14 @@ export type McpConfigOutcome =
         rootConfig: string | undefined;
         endpoint: string;
      }
-   | { action: "skipped-unstable-port"; dir: string; endpoint: string }
+   | { action: "skipped-root"; dir: string; endpoint: string }
+   | {
+        action: "skipped-unstable-port";
+        dir: string;
+        endpoint: string;
+        requestedPort: number;
+        boundPort: number;
+     }
    | { action: "created"; file: string }
    | { action: "exists"; file: string; endpoint: string }
    | { action: "failed"; file: string; problem: string; endpoint: string };
@@ -73,19 +80,36 @@ export function resolveBoundPort(
 }
 
 /**
- * The host an agent on this machine should dial to reach the bound socket.
+ * The host an agent on this machine should dial to reach the bound socket. A
+ * wildcard becomes the loopback literal of its own family; a specific bind
+ * address is written as-is, since when the server is bound only to some address
+ * that address is the only one that reaches it.
  *
- * NOT `localhost`, which is the trap this replaces. `localhost` resolves to both
- * `127.0.0.1` and `::1`, and the server binds exactly ONE family: `0.0.0.0` is
- * the IPv4 wildcard and does not cover IPv6. So with the server on IPv4, `::1`
- * is still free, and any other local process can bind the same port number
- * there. Clients using `fetch` prefer the IPv6 answer, so that process, not
- * Publisher, is what the agent connects to and trusts, while Publisher is still
- * running and healthy. Verified reproducible 3 times out of 3.
+ * Not `localhost`, which is ambiguous: it resolves to both `127.0.0.1` and
+ * `::1`, while the server binds exactly one family (`0.0.0.0` is the IPv4
+ * wildcard and does not cover IPv6). With the server on IPv4, `::1` is free, any
+ * local process can bind the same port there, and clients using `fetch` prefer
+ * the IPv6 answer, so that process receives the traffic. Reproduced 3 times out
+ * of 3 before this was changed.
  *
- * A wildcard therefore becomes the loopback literal of its own family, and a
- * specific bind address is written as-is, since when the server is bound only to
- * some address, that address is the only one that reaches it.
+ * Read that as "name the socket unambiguously", NOT as a security boundary,
+ * because it is not one. Two measured limits:
+ *
+ *   - On macOS/BSD a second process can bind the more specific `127.0.0.1:PORT`
+ *     while this server holds the wildcard `0.0.0.0:PORT`, and the specific
+ *     socket wins. Also reproduced 3/3, on the default bind, after this change.
+ *     Linux refuses that second bind. So on macOS the unambiguous name does not
+ *     stop a squatter; only `--host 127.0.0.1`, which the README's quick start
+ *     uses, is exclusive.
+ *   - Every variant needs a hostile process running as this user, and such a
+ *     process can already rewrite `.mcp.json`, `~/.claude.json`, or `claude` on
+ *     PATH. It gains nothing from the port that it did not already have.
+ *
+ * So this is correctness worth having and cheap to keep, and the threat it is
+ * sometimes described as closing is not closed by it. `PUBLISHER_READY`'s
+ * `displayHost` in `service/environment_store.ts` still prints `localhost` for
+ * the same reason it always did; that is a documented output scripts parse, so
+ * changing it belongs in its own change.
  */
 export function resolveClientHost(
    address: ReturnType<import("net").Server["address"]>,
@@ -95,8 +119,12 @@ export function resolveClientHost(
       typeof address === "object" && address ? address.address : fallbackHost;
    if (raw === "0.0.0.0" || raw === "") return "127.0.0.1";
    if (raw === "::" || raw === "::0") return "[::1]";
-   // Bracket any IPv6 literal so it is a legal URL authority.
-   return raw.includes(":") ? `[${raw}]` : raw;
+   if (!raw.includes(":")) return raw;
+   // Bracket an IPv6 literal so it is a legal URL authority, and drop any zone
+   // index first: node keeps `%en0` in address() where bun strips it, and no
+   // HTTP client can dial a zone anyway, so keeping it writes a URL that fails
+   // to parse rather than one that merely cannot connect.
+   return `[${raw.split("%")[0]}]`;
 }
 
 /** The URL to write into the config and to print in advice. */
@@ -169,9 +197,13 @@ export function ensureMcpConfig(options: {
    dir: string;
    /** The URL an agent on this machine should dial, from `mcpEndpoint`. */
    endpoint: string;
-   /** What was asked for, and what the OS actually gave. */
-   requestedPort?: number;
-   boundPort?: number;
+   /**
+    * What was asked for, and what the OS actually gave. Required as a pair: when
+    * only one was supplied the guard below silently did nothing, which is the
+    * defect it exists to prevent.
+    */
+   requestedPort: number;
+   boundPort: number;
    /**
     * The home directory to stay out of. Defaults to `os.homedir()`; injected by
     * tests so they never depend on the developer's real one, where a regression
@@ -192,20 +224,41 @@ export function ensureMcpConfig(options: {
    // means the first boot's file is never corrected, so a file naming a port
    // that moves is permanently wrong, which the module considers worse than no
    // file at all.
-   if (
-      requestedPort !== undefined &&
-      boundPort !== undefined &&
-      boundPort !== requestedPort
-   ) {
-      return { action: "skipped-unstable-port", dir, endpoint };
+   if (boundPort !== requestedPort) {
+      return {
+         action: "skipped-unstable-port",
+         dir,
+         endpoint,
+         requestedPort,
+         boundPort,
+      };
    }
 
    const file = path.join(dir, MCP_CONFIG_FILENAME);
    try {
       // Inside the try because os.homedir() throws when HOME is unset and the uid
       // has no passwd entry, which is the ordinary distroless container shape.
-      if (path.resolve(dir) === path.resolve(homeDir ?? os.homedir())) {
+      // realpath, not resolve: `resolve` normalises `.` and `..` but not
+      // symlinks, while process.cwd() is always fully resolved. With HOME on a
+      // symlinked path (an automounted /home is the common one) the two forms
+      // never matched and the file landed in the home directory this guard
+      // exists to protect. Falls back to the unresolved path when it does not
+      // exist, since realpathSync throws on a missing directory.
+      const realish = (p: string) => {
+         try {
+            return fs.realpathSync(p);
+         } catch {
+            return path.resolve(p);
+         }
+      };
+      if (realish(dir) === realish(homeDir ?? os.homedir())) {
          return { action: "skipped-home", dir, endpoint };
+      }
+      // The filesystem root is the other directory nobody opens an agent in,
+      // and it is where a process manager puts you by default: systemd gives
+      // system units a working directory of `/`.
+      if (path.resolve(dir) === path.parse(path.resolve(dir)).root) {
+         return { action: "skipped-root", dir, endpoint };
       }
       const gitRoot = findGitWorkTreeRoot(dir);
       if (gitRoot !== undefined) {
@@ -259,7 +312,10 @@ export function ensureMcpConfig(options: {
  * every directory" instruction, where nothing shadows it.
  */
 function addCommand(endpoint: string): string {
-   return `claude mcp add --transport http malloy ${endpoint}`;
+   // Quoted because an IPv6 endpoint contains brackets, which zsh (the macOS
+   // default) treats as a glob and refuses outright: `no matches found`. The
+   // docs tell the reader to paste this line as printed.
+   return `claude mcp add --transport http malloy '${endpoint}'`;
 }
 
 /**
@@ -316,7 +372,12 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
          return;
       case "skipped-unstable-port":
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME} because this server did not get the MCP port it asked for, so the port changes from run to run and a saved config would be wrong next boot. To connect an agent to this run: ${addCommand(outcome.endpoint)}`,
+            `Did not write ${MCP_CONFIG_FILENAME}: this server asked for MCP port ${outcome.requestedPort} and got ${outcome.boundPort}, so the port changes from run to run and a saved config would be wrong next boot. To connect an agent to this run: ${addCommand(outcome.endpoint)}`,
+         );
+         return;
+      case "skipped-root":
+         logger.info(
+            `Did not write ${MCP_CONFIG_FILENAME} into the filesystem root (${outcome.dir}). To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "disabled":

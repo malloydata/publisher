@@ -295,8 +295,10 @@ jobs:
           # be read there. The git-working-tree guard that would otherwise
           # cover /publisher cannot fire, because .dockerignore excludes .git
           # from the image, so this ENV is the only thing suppressing it. A new
-          # final stage, a stage reorder, or a `target:` added to the publish
-          # job would drop it with nothing going red.
+          # final stage or a stage reorder would drop it with nothing going
+          # red. Scope: this checks the smoke image built here. docker-image.yml
+          # builds its own from the same default final stage and asserts
+          # nothing, so a release built from an unchecked ref is not covered.
           env_json=$(docker inspect malloy-publisher:smoke-test \
             --format='{{json .Config.Env}}')
           echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \

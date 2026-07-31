@@ -28,7 +28,13 @@ function tmpDir(): string {
 
 const cfg = (dir: string) => path.join(dir, MCP_CONFIG_FILENAME);
 const run = (dir: string, mcpPort = 4040, enabled = true) =>
-   ensureMcpConfig({ dir, endpoint: ep(mcpPort), enabled });
+   ensureMcpConfig({
+      dir,
+      endpoint: ep(mcpPort),
+      requestedPort: mcpPort,
+      boundPort: mcpPort,
+      enabled,
+   });
 
 /** The endpoint the server would compute for a loopback bind on `port`. */
 const ep = (port: number) => `http://127.0.0.1:${port}/mcp`;
@@ -208,6 +214,8 @@ describe("ensureMcpConfig", () => {
             dir: home,
             homeDir: home,
             endpoint: ep(4040),
+            requestedPort: 4040,
+            boundPort: 4040,
             enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
@@ -221,6 +229,8 @@ describe("ensureMcpConfig", () => {
             dir: path.join(home, "..", path.basename(home), "."),
             homeDir: home,
             endpoint: ep(4040),
+            requestedPort: 4040,
+            boundPort: 4040,
             enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
@@ -233,6 +243,8 @@ describe("ensureMcpConfig", () => {
          const outcome = ensureMcpConfig({
             dir: os.homedir(),
             endpoint: ep(4040),
+            requestedPort: 4040,
+            boundPort: 4040,
             enabled: false,
          });
          expect(outcome.action).toBe("disabled");
@@ -241,6 +253,8 @@ describe("ensureMcpConfig", () => {
                dir: os.homedir(),
                homeDir: os.homedir(),
                endpoint: ep(4040),
+               requestedPort: 4040,
+               boundPort: 4040,
                enabled: true,
             }).action,
          ).toBe("skipped-home");
@@ -324,6 +338,7 @@ describe("logMcpConfigOutcome", () => {
    const outcomes: McpConfigOutcome[] = [
       { action: "disabled" },
       { action: "skipped-home", dir: "/home/x", endpoint: ep(4040) },
+      { action: "skipped-root", dir: "/", endpoint: ep(4040) },
       {
          action: "skipped-git",
          dir: "/repo/sub",
@@ -338,7 +353,13 @@ describe("logMcpConfigOutcome", () => {
          rootConfig: "/repo/.mcp.json",
          endpoint: ep(4040),
       },
-      { action: "skipped-unstable-port", dir: "/w", endpoint: ep(51234) },
+      {
+         action: "skipped-unstable-port",
+         dir: "/w",
+         endpoint: ep(51234),
+         requestedPort: 0,
+         boundPort: 51234,
+      },
       { action: "created", file: "/w/.mcp.json" },
       { action: "exists", file: "/w/.mcp.json", endpoint: ep(4040) },
       {
@@ -398,7 +419,7 @@ describe("logMcpConfigOutcome", () => {
          (logger as unknown as { info: unknown }).info = info;
       }
       expect(said.join("\n")).toContain(
-         `claude mcp add --transport http malloy ${ep(15040)}`,
+         `claude mcp add --transport http malloy '${ep(15040)}'`,
       );
    });
 
@@ -445,7 +466,7 @@ describe("logMcpConfigOutcome", () => {
       // can be many levels up, and `ls -a` in the working directory shows nothing.
       expect(said).toContain("/work/my-project");
       expect(said).toContain(
-         `claude mcp add --transport http malloy ${ep(15040)}`,
+         `claude mcp add --transport http malloy '${ep(15040)}'`,
       );
    });
 
@@ -509,7 +530,7 @@ describe("logMcpConfigOutcome", () => {
       );
       expect(said).toContain("/Users/x");
       expect(said).toContain(
-         `claude mcp add --transport http malloy ${ep(15040)}`,
+         `claude mcp add --transport http malloy '${ep(15040)}'`,
       );
    });
 
@@ -526,8 +547,23 @@ describe("logMcpConfigOutcome", () => {
       );
       expect(said).toContain("EACCES");
       expect(said).toContain(
-         `claude mcp add --transport http malloy ${ep(15040)}`,
+         `claude mcp add --transport http malloy '${ep(15040)}'`,
       );
+   });
+
+   it("quotes the endpoint, because zsh treats an IPv6 bracket as a glob", () => {
+      // `claude mcp add ... http://[::1]:4040/mcp` unquoted is `no matches
+      // found` in zsh, the macOS default shell, and the docs tell the reader to
+      // paste the line as printed. Unquoted was safe only while the command
+      // interpolated a number rather than a URL string.
+      const said = capture(() =>
+         logMcpConfigOutcome({
+            action: "skipped-home",
+            dir: "/Users/x",
+            endpoint: "http://[::1]:4040/mcp",
+         }),
+      );
+      expect(said).toContain("malloy 'http://[::1]:4040/mcp'");
    });
 
    it("never advises user scope, which the file that caused the message outranks", () => {
@@ -554,7 +590,14 @@ describe("logMcpConfigOutcome", () => {
             endpoint: ep(19999),
          },
          { action: "skipped-home", dir: "/home/x", endpoint: ep(19999) },
-         { action: "skipped-unstable-port", dir: "/w", endpoint: ep(19999) },
+         {
+            action: "skipped-unstable-port",
+            dir: "/w",
+            endpoint: ep(19999),
+            requestedPort: 0,
+            boundPort: 19999,
+         },
+         { action: "skipped-root", dir: "/", endpoint: ep(19999) },
          {
             action: "failed",
             file: "/w/.mcp.json",

@@ -1998,19 +1998,21 @@ const mcpServer = mcpApp.listen(
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
       if (mcpConfigEnabled()) {
-         // The host an agent should dial, which is NOT `localhost`: that name
-         // resolves to both loopback families while the server binds only one,
-         // so another local process can hold the same port on the other family
-         // and receive the agent's traffic instead.
-         const endpoint = mcpEndpoint(
-            resolveClientHost(this.address(), PUBLISHER_HOST),
-            boundPort,
-         );
          // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
-         // raises ENOENT once the working directory has been removed. A throw here
-         // is an uncaught exception inside a listen callback, which would kill a
-         // server that has already bound both ports.
+         // raises ENOENT once the working directory has been removed. A throw
+         // here is an uncaught exception inside a listen callback, which would
+         // kill a server that has already bound both ports. Everything the call
+         // needs is built inside the try for that reason, including the
+         // endpoint: it is the newest and least-exercised code in this block.
          try {
+            // The host an agent should dial, which is NOT `localhost`: that name
+            // resolves to both loopback families while the server binds only one,
+            // so another local process can hold the same port on the other family
+            // and receive the agent's traffic instead.
+            const endpoint = mcpEndpoint(
+               resolveClientHost(this.address(), PUBLISHER_HOST),
+               boundPort,
+            );
             // cwd, not server_root: the file is for whoever opens an agent here.
             logMcpConfigOutcome(
                ensureMcpConfig({
@@ -2023,7 +2025,7 @@ const mcpServer = mcpApp.listen(
             );
          } catch (error) {
             logger.info(
-               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: claude mcp add --transport http malloy ${endpoint}`,
+               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run claude mcp add --transport http malloy with this server's MCP URL.`,
             );
          }
       }

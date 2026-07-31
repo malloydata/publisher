@@ -145,9 +145,11 @@ which of these happened, and prints the command that connects an agent anyway.
   usually a git repo, so this case is common rather than exotic. If the repository root already has a
   `.mcp.json`, which is what a clone of this repo has, the log names that file too.
 - The directory is your home directory.
-- The MCP port was requested as `0`, meaning "any free port". That changes every run, so a file
-  naming it would be wrong from the next boot onward.
-- The write failed, for instance in a read-only directory. That one is a warning, not a note.
+- The MCP port it bound is not the one it asked for, which happens with `--mcp_port 0` ("any free
+  port") and with a non-numeric `MCP_PORT`. That port changes every run, so a file naming it would be
+  wrong from the next boot onward.
+- The write failed, for instance in a read-only directory. Nothing is broken when this happens: the
+  server is serving, and only the convenience file is missing.
 
 `--no-mcp-config` turns the whole thing off, as does `PUBLISHER_NO_MCP_CONFIG=1`.
 
