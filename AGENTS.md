@@ -55,14 +55,14 @@ There is a third case, and it is the one that costs the most time because it loo
 
 Skills are the near miss here, and they behave differently: `.claude/skills/` is rescanned as the working directory changes, so a session started further up picks them up on its own once work moves into this directory. That asymmetry is worth knowing precisely because the two symptoms look identical from the outside: same "the agent has nothing", different cause, different fix.
 
-Tell the three apart by what is missing:
+Tell them apart by what is missing:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `malloy` is listed in `/mcp` but disconnected | client connected before the server existed | Reconnect (or relaunch the agent) |
 | `malloy` is not listed in `/mcp` at all, and `.mcp.json` is here | session started outside this directory | relaunch the agent from here. A session that starts here reads this file, so a user-scoped entry would be shadowed by it; user scope is for sessions started elsewhere |
 | `malloy` is not listed in `/mcp` at all, and there is no `.mcp.json` here | the server skipped writing one, or the write failed; its startup log says which | run the `claude mcp add` line the server printed, from the directory you start the agent in. Relaunching alone cannot help when there is no config to find, and note a config may exist at the repository root instead of here |
-| tools present, no skills auto-invoked | same as above | relaunch the agent from here; skills are rescanned as the working directory changes |
+| tools present, no skills auto-invoked | session started outside this directory, the same cause as the second row | relaunch the agent from here; skills are rescanned as the working directory changes |
 
 The registration that stops the directory mattering, because it is stored per user rather than per project. Use the port this server actually bound, which its startup log prints; `4040` below is only the default:
 

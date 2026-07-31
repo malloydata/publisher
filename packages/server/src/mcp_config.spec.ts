@@ -289,18 +289,38 @@ describe("ensureMcpConfig", () => {
          const root = path.parse(process.cwd()).root;
          const rootCfg = path.join(root, MCP_CONFIG_FILENAME);
          const preexisting = fs.existsSync(rootCfg);
-         const outcome = ensureMcpConfig({
-            dir: root,
-            homeDir: tmpDir(),
-            endpoint: ep(4040),
-            requestedPort: 4040,
-            boundPort: 4040,
-         });
-         expect(outcome.action).toBe("skipped-root");
-         // Cleans up for the same reason the home test does: a mutated guard
-         // would otherwise leave a file at the filesystem root on its way to
-         // going red.
-         if (!preexisting && fs.existsSync(rootCfg)) fs.rmSync(rootCfg);
+         // try/finally, not a trailing statement: on the failure this cleanup
+         // exists for, a regressed guard, the expect throws and anything after
+         // it never runs. The home test below is the model.
+         try {
+            expect(
+               ensureMcpConfig({
+                  dir: root,
+                  homeDir: tmpDir(),
+                  endpoint: ep(4040),
+                  requestedPort: 4040,
+                  boundPort: 4040,
+               }).action,
+            ).toBe("skipped-root");
+         } finally {
+            if (!preexisting && fs.existsSync(rootCfg)) fs.rmSync(rootCfg);
+         }
+      });
+
+      it("names a dangling-symlink config, which is what the write path also sees", () => {
+         // Uncovered until now: swapping the probe's lstat back to existsSync
+         // left the suite green, and the only difference is this case. lstat is
+         // deliberate, so that reporting and the wx write agree about what
+         // counts as present.
+         if (!canSymlink) return;
+         const dir = tmpDir();
+         fs.mkdirSync(path.join(dir, ".git"));
+         fs.symlinkSync(path.join(dir, "nowhere.json"), cfg(dir));
+         const outcome = run(dir);
+         expect(outcome.action).toBe("skipped-git");
+         if (outcome.action === "skipped-git") {
+            expect(outcome.staleConfig).toBe(cfg(dir));
+         }
       });
 
       it("names a stale config that is already in the directory when it skips", () => {
