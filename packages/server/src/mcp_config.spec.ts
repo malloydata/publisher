@@ -307,21 +307,23 @@ describe("ensureMcpConfig", () => {
          }
       });
 
-      it("names a dangling-symlink config, which is what the write path also sees", () => {
-         // Uncovered until now: swapping the probe's lstat back to existsSync
-         // left the suite green, and the only difference is this case. lstat is
-         // deliberate, so that reporting and the wx write agree about what
-         // counts as present.
-         if (!canSymlink) return;
-         const dir = tmpDir();
-         fs.mkdirSync(path.join(dir, ".git"));
-         fs.symlinkSync(path.join(dir, "nowhere.json"), cfg(dir));
-         const outcome = run(dir);
-         expect(outcome.action).toBe("skipped-git");
-         if (outcome.action === "skipped-git") {
-            expect(outcome.staleConfig).toBe(cfg(dir));
-         }
-      });
+      it.skipIf(!canSymlink)(
+         "names a dangling-symlink config, which is what the write path also sees",
+         () => {
+            // Uncovered until now: swapping the probe's lstat back to existsSync
+            // left the suite green, and the only difference is this case. lstat is
+            // deliberate, so that reporting and the wx write agree about what
+            // counts as present.
+            const dir = tmpDir();
+            fs.mkdirSync(path.join(dir, ".git"));
+            fs.symlinkSync(path.join(dir, "nowhere.json"), cfg(dir));
+            const outcome = run(dir);
+            expect(outcome.action).toBe("skipped-git");
+            if (outcome.action === "skipped-git") {
+               expect(outcome.staleConfig).toBe(cfg(dir));
+            }
+         },
+      );
 
       it("names a stale config that is already in the directory when it skips", () => {
          // Every skip returns before the write, so EEXIST never fires for them

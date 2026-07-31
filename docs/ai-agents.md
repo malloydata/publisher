@@ -56,7 +56,7 @@ These examples assume Publisher is already running (`npx @malloy-publisher/serve
 
 ### Over HTTP
 
-For Claude Code you may not have to write anything: in a directory that has no `.mcp.json`, the server usually writes one itself naming the port it bound. It skips several cases, including git working trees and your home directory; the full list is in [configuration.md](configuration.md#the-mcpjson-the-server-writes), and the startup log always says which one applied. Everything below is for the other clients, and for the cases where it does not write one.
+For Claude Code you may not have to write anything: in a directory that has no `.mcp.json`, the server usually writes one itself naming the port it bound. It skips several cases, including git working trees and your home directory; the full list is in [configuration.md](configuration.md#the-mcpjson-the-server-writes), and the startup log says which one applied, unless you turned the feature off, which is silent. Everything below is for the other clients, and for the cases where it does not write one.
 
 Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The exact config shape varies by client (key names differ, for example VS Code uses `servers` rather than `mcpServers`), but each entry points an MCP server at a URL:
 
