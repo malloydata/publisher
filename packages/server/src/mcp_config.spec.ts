@@ -40,12 +40,6 @@ const ep = (port: number) => `http://127.0.0.1:${port}/mcp`;
 
 const isWindows = process.platform === "win32";
 
-/**
- * Can this process create a symlink? Windows needs a privilege or Developer
- * Mode for it, so several hazards here are unstageable on CI. Probed rather
- * than assumed, and used with `skipIf` so an unstageable test reports as
- * skipped instead of passing without asserting anything.
- */
 /** Is `mkfifo` available? Absent on Windows and on minimal images. */
 const hasMkfifo = ((): boolean => {
    const probe = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fifo-probe-"));
@@ -62,6 +56,12 @@ const hasMkfifo = ((): boolean => {
 /** Root ignores the mode bits, so an unwritable directory cannot be staged. */
 const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
+/**
+ * Can this process create a symlink? Windows needs a privilege or Developer
+ * Mode for it, so several hazards here are unstageable on CI. Probed rather
+ * than assumed, and used with `skipIf` so an unstageable test reports as
+ * skipped instead of passing without asserting anything.
+ */
 const canSymlink = ((): boolean => {
    const probe = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-symlink-probe-"));
    try {
