@@ -49,6 +49,7 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { ensureMcpConfig, logMcpConfigOutcome } from "./mcp_config";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
@@ -96,6 +97,8 @@ function parseArgs() {
          i++;
       } else if (arg === "--init") {
          process.env.INITIALIZE_STORAGE = "true";
+      } else if (arg === "--no-mcp-config") {
+         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
       } else if (arg === "--watch-env" && args[i + 1]) {
          // Append (don't overwrite) so multiple --watch-env flags compose
          // and so an explicit env var pre-set still wins.
@@ -133,6 +136,9 @@ function parseArgs() {
          );
          console.log(
             "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
+         );
+         console.log(
+            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written when absent, so an agent opened here finds this server)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -1970,6 +1976,16 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
 });
 const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
    logger.info(`MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`);
+   // Written here rather than at parse time so the port in the file is one the
+   // server actually bound, and into cwd rather than server_root because the
+   // file is for whoever opens an agent here, not for the server.
+   logMcpConfigOutcome(
+      ensureMcpConfig({
+         dir: process.cwd(),
+         mcpPort: MCP_PORT,
+         enabled: process.env.PUBLISHER_NO_MCP_CONFIG !== "true",
+      }),
+   );
 });
 
 mcpServer.timeout = 600000;
