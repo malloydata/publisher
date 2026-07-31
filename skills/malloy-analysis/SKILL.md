@@ -36,6 +36,12 @@ A name is a pointer, not confirmation. A field, source, or view name you saw in 
 
 Write Malloy using only the model's names. Load `skill:malloy-queries` for syntax (aggregates vs dimensions, joins and field paths, dates, `where:` vs `having:`, counting) and `skill:malloy-gotchas-queries` to avoid the common compile errors. If a model `view:` already matches, run it directly rather than rewriting it.
 
+**Check these three before your first `execute_query`** - they account for most first-attempt compile failures, and they are the ones a SQL habit gets wrong:
+
+- **Counting.** `count(field)` is already the *distinct* count of that field. Malloy has no `count(distinct field)`; it is a parse error, not a deprecation.
+- **Separators.** Within a clause, fields are separated by commas or newlines, never `;`. A semicolon fails with `no viable alternative at input '<next-field>'`.
+- **Join paths.** A dotted path like `carriers.name` resolves only if the source declares that join. Confirm the join name and the field under it in a `get_context` result instead of inferring either from a table name.
+
 If you define a calculated field that is not already in the model, treat it carefully: ad-hoc definitions are a common source of subtle errors.
 
 - Announce it: tell the user you are adding an ad-hoc field, what it computes, and why the model does not already provide it.
@@ -54,7 +60,7 @@ Your first result is a draft, not an answer. The difference between a useful ana
 - **Ground it.** Before interpreting any result, query and state the dataset scope: the time range (`min`/`max` of the primary date dimension) and the row or entity count. Every number is meaningless without it.
 - **Ask "what would make this wrong?"** then run the query that would expose that problem. A plausible-looking wrong answer is the most dangerous kind.
 - **Check the common failure modes:**
-  - Fan-out / double-counting: if you joined across grain, compare `count()` to `count(distinct key)`. A large gap means duplication is inflating the aggregates.
+  - Fan-out / double-counting: if you joined across grain, compare `count()` to `count(key)` - in Malloy `count(field)` is already the distinct count. A large gap means duplication is inflating the aggregates.
   - Broken filters: a quick count confirms a filter narrowed the data as expected. Watch case, spelling, and date-format mismatches; a filter that matches nothing still returns a result, just the wrong one.
   - Null-driven loss: `count() - count(the_field)` shows how many rows a key field drops.
   - Parts that do not sum to the whole: if you split a total into categories, confirm they add up.

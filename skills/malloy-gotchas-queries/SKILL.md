@@ -79,6 +79,40 @@ Two separate rules produce those errors:
 
 **Exception: `count(joined.field)` is correct, not a bug.** `count(joined.field)` is the **canonical Malloy idiom** for distinct-count through a join. Keep it as-is even when nearby `sum`/`avg`/`min`/`max` calls have to use method syntax. The closest method-syntax form `joined.count()` counts *rows* in the joined source (different semantics, differs from the distinct count when the joined field has duplicates within the joined table). The Malloy docs example `joined.count(field)` does NOT compile against current Malloy (error: `Expression illegal inside path.count()`); it only works for double-nested paths like `aircraft.count(aircraft_models.code)`.
 
+## `sum`/`avg` Need a Numeric Field
+
+```malloy
+// WRONG: "Can't use type string" - status is a string column
+aggregate: avg_status is avg(status)
+// RIGHT: aggregate a numeric field; count a string one
+aggregate: avg_price is avg(price), statuses is count(status)
+```
+
+Check the field's type in the `get_context` result before aggregating it. A name that reads numeric (`order_number`, `zip`, `account_id`) is very often typed string.
+
+## Dotted Paths Must Name a Declared Join
+
+```malloy
+// WRONG: the source declares the join as `carrier`, so this fails with
+//   "'carriers.name' is not a source or join"
+run: flights -> { group_by: carriers.name }
+// RIGHT: use the join name the source actually declares
+run: flights -> { group_by: carrier.nickname }
+```
+
+A dotted path resolves only against a join declared on the source you are running. Confirm both the join name and the field under it in a `get_context` result; do not infer either from a table name or a plural/singular guess.
+
+## `order_by:` Can Only Name an Output Column
+
+```malloy
+// WRONG: "Unknown field total in output space" - total is never emitted
+run: orders -> { group_by: state, aggregate: revenue is sum(total), order_by: total }
+// RIGHT: order by a column the query actually outputs
+run: orders -> { group_by: state, aggregate: revenue is sum(total), order_by: revenue }
+```
+
+`order_by:` resolves against the query's *output* columns, not the source's fields. To order by something, `group_by` or `aggregate` it first - and if it comes through a join, alias it (see above).
+
 ## Chart Annotation Placement
 
 Place `# bar_chart` / `# line_chart` on the **nested view definition**, not on `nest:` itself. Putting it on `nest:` causes "not a repeated record" errors.
