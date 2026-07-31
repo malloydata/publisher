@@ -56,6 +56,8 @@ These examples assume Publisher is already running (`npx @malloy-publisher/serve
 
 ### Over HTTP
 
+For Claude Code you may not have to write anything: started in a directory that has no `.mcp.json`, and that is not a git working tree or your home directory, the server writes one itself naming the port it bound. The README's "Point your agent at it" section covers when it does and does not. Everything below is for the other clients, and for the cases where it does not write one.
+
 Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The exact config shape varies by client (key names differ, for example VS Code uses `servers` rather than `mcpServers`), but each entry points an MCP server at a URL:
 
 ```json
@@ -68,7 +70,7 @@ Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The ex
 
 Add or drop the `"type": "http"` field to match your client. Clients that speak only stdio (for example older Claude Desktop builds) connect through `mcp-remote`, below.
 
-If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Point the client at the machine's network address instead, or move Publisher's MCP server to another port with `--mcp_port`.
+If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Move Publisher's MCP server to another port with `--mcp_port`, or point the client at the machine's network address. Note that a client which *can* reach the port is not proof it reached Publisher: if the wrong process holds it, the client connects to that instead. `malloy_getContext` names the environment and packages it is actually talking to, which is the quickest way to tell.
 
 ### With a stdio-only client through mcp-remote
 

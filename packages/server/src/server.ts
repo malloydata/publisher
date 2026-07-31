@@ -50,6 +50,7 @@ import { MaterializationController } from "./controller/materialization.controll
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
 import {
+   addCommand,
    ensureMcpConfig,
    logMcpConfigOutcome,
    MCP_CONFIG_FILENAME,
@@ -146,7 +147,7 @@ function parseArgs() {
             "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
          );
          console.log(
-            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server; skipped when the directory already has one, is your home directory, is inside a git working tree, or --mcp_port is 0)",
+            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server; skipped when the directory already has one, is your home directory or the filesystem root, is inside a git working tree, or the MCP port bound is not the one requested)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -201,6 +202,11 @@ getQueryMetadataMode();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+// Resolved here rather than in the listen callback: parseBoolEnv throws on a
+// typo, which is the convention for flags in this server, but a throw inside a
+// listen callback is an uncaughtException that kills a server which has already
+// bound both ports. At module scope it is an ordinary startup failure.
+const MCP_CONFIG_ENABLED = mcpConfigEnabled();
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
@@ -1992,14 +1998,22 @@ const mcpServer = mcpApp.listen(
       // a real port is listening. The listening line uses it as well, which is
       // why it no longer reads `http://127.0.0.1:0`.
       const boundPort = resolveBoundPort(this.address(), MCP_PORT);
-      // Through resolveClientHost so an IPv6 bind prints a bracketed, dialable
-      // URL: the raw host produced `http://::1:4040`, which no client parses,
-      // and this is a line people copy.
-      const clientHost = resolveClientHost(this.address(), PUBLISHER_HOST);
-      logger.info(`MCP server listening at http://${clientHost}:${boundPort}`);
+      // The BIND address, bracketed when it is an IPv6 literal so the URL
+      // parses. Deliberately not resolveClientHost: create-malloy-package's
+      // README and AGENTS template both tell readers these two listening lines
+      // are "the addresses it really bound", and use them to catch a mistyped
+      // --hostt that silently falls back to 0.0.0.0. Mapping the wildcard to
+      // loopback here would confirm the mistake instead of revealing it. The
+      // dialable form belongs in .mcp.json and in the advice, not here.
+      const bound = this.address();
+      const boundHost =
+         typeof bound === "object" && bound ? bound.address : PUBLISHER_HOST;
+      logger.info(
+         `MCP server listening at http://${boundHost.includes(":") ? `[${boundHost}]` : boundHost}:${boundPort}`,
+      );
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
-      if (mcpConfigEnabled()) {
+      if (MCP_CONFIG_ENABLED) {
          // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
          // raises ENOENT once the working directory has been removed. A throw
          // here is an uncaught exception inside a listen callback, which would
@@ -2011,7 +2025,10 @@ const mcpServer = mcpApp.listen(
             // resolves to both loopback families while the server binds only one,
             // so another local process can hold the same port on the other family
             // and receive the agent's traffic instead.
-            const endpoint = mcpEndpoint(clientHost, boundPort);
+            const endpoint = mcpEndpoint(
+               resolveClientHost(this.address(), PUBLISHER_HOST),
+               boundPort,
+            );
             // cwd, not server_root: the file is for whoever opens an agent here.
             logMcpConfigOutcome(
                ensureMcpConfig({
@@ -2019,12 +2036,11 @@ const mcpServer = mcpApp.listen(
                   endpoint,
                   requestedPort: MCP_PORT,
                   boundPort,
-                  enabled: true,
                }),
             );
          } catch (error) {
             logger.info(
-               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: claude mcp add --transport http malloy 'http://${clientHost}:${boundPort}/mcp'`,
+               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(this.address(), PUBLISHER_HOST), boundPort))}`,
             );
          }
       }

@@ -27,13 +27,12 @@ function tmpDir(): string {
 }
 
 const cfg = (dir: string) => path.join(dir, MCP_CONFIG_FILENAME);
-const run = (dir: string, mcpPort = 4040, enabled = true) =>
+const run = (dir: string, mcpPort = 4040) =>
    ensureMcpConfig({
       dir,
       endpoint: ep(mcpPort),
       requestedPort: mcpPort,
       boundPort: mcpPort,
-      enabled,
    });
 
 /** The endpoint the server would compute for a loopback bind on `port`. */
@@ -216,7 +215,6 @@ describe("ensureMcpConfig", () => {
             endpoint: ep(4040),
             requestedPort: 4040,
             boundPort: 4040,
-            enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
          expect(fs.existsSync(cfg(home))).toBe(false);
@@ -231,39 +229,66 @@ describe("ensureMcpConfig", () => {
             endpoint: ep(4040),
             requestedPort: 4040,
             boundPort: 4040,
-            enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
          expect(fs.existsSync(cfg(home))).toBe(false);
       });
 
+      it("skips a home directory reached through a symlink", () => {
+         // Mutation-proven gap: swapping realpathSync back to path.resolve left
+         // the whole suite green, because every other test resolves its tmpdir
+         // first. An automounted /home is the real-world shape.
+         const realHome = tmpDir();
+         const linkedHome = path.join(tmpDir(), "home-link");
+         fs.symlinkSync(realHome, linkedHome);
+         const outcome = ensureMcpConfig({
+            dir: realHome,
+            homeDir: linkedHome,
+            endpoint: ep(4040),
+            requestedPort: 4040,
+            boundPort: 4040,
+         });
+         expect(outcome.action).toBe("skipped-home");
+         expect(fs.existsSync(cfg(realHome))).toBe(false);
+      });
+
+      it("skips the filesystem root", () => {
+         // Also mutation-proven: deleting the root guard left the suite green,
+         // because nothing passed "/" in. systemd gives a unit that cwd.
+         const root = path.parse(process.cwd()).root;
+         const outcome = ensureMcpConfig({
+            dir: root,
+            homeDir: tmpDir(),
+            endpoint: ep(4040),
+            requestedPort: 4040,
+            boundPort: 4040,
+         });
+         expect(outcome.action).toBe("skipped-root");
+      });
+
+      it("names a stale config that is already in the directory when it skips", () => {
+         // Every skip returns before the write, so EEXIST never fires for them
+         // and the file the docs call the main hazard went unmentioned.
+         const dir = tmpDir();
+         fs.mkdirSync(path.join(dir, ".git"));
+         fs.writeFileSync(cfg(dir), "{}");
+         const outcome = run(dir);
+         expect(outcome.action).toBe("skipped-git");
+         if (outcome.action === "skipped-git") {
+            expect(outcome.staleConfig).toBe(cfg(dir));
+         }
+      });
+
       it("defaults the home guard to the real os.homedir()", () => {
-         // Injection is for the tests above; the default must still be the thing
-         // it is protecting. Asserted without writing anything anywhere.
+         // Injection is for the tests above; the default must still protect the
+         // directory it exists for. Asserted without writing anything anywhere.
          const outcome = ensureMcpConfig({
             dir: os.homedir(),
             endpoint: ep(4040),
             requestedPort: 4040,
             boundPort: 4040,
-            enabled: false,
          });
-         expect(outcome.action).toBe("disabled");
-         expect(
-            ensureMcpConfig({
-               dir: os.homedir(),
-               homeDir: os.homedir(),
-               endpoint: ep(4040),
-               requestedPort: 4040,
-               boundPort: 4040,
-               enabled: true,
-            }).action,
-         ).toBe("skipped-home");
-      });
-
-      it("does nothing when disabled", () => {
-         const dir = tmpDir();
-         expect(run(dir, 4040, false).action).toBe("disabled");
-         expect(fs.existsSync(cfg(dir))).toBe(false);
+         expect(outcome.action).toBe("skipped-home");
       });
 
       // Every way the bound port can differ from the requested one. Checking
@@ -286,7 +311,6 @@ describe("ensureMcpConfig", () => {
                endpoint: ep(51234),
                requestedPort,
                boundPort: 51234,
-               enabled: true,
             });
             expect(outcome.action).toBe("skipped-unstable-port");
             expect(fs.existsSync(cfg(dir))).toBe(false);
@@ -300,7 +324,6 @@ describe("ensureMcpConfig", () => {
             endpoint: ep(4040),
             requestedPort: 4040,
             boundPort: 4040,
-            enabled: true,
          });
          expect(outcome.action).toBe("created");
       });
@@ -336,15 +359,25 @@ describe("logMcpConfigOutcome", () => {
    // These exist only to produce log text, so without a test nothing covers
    // whether the text is right or even emitted.
    const outcomes: McpConfigOutcome[] = [
-      { action: "disabled" },
-      { action: "skipped-home", dir: "/home/x", endpoint: ep(4040) },
-      { action: "skipped-root", dir: "/", endpoint: ep(4040) },
+      {
+         action: "skipped-home",
+         dir: "/home/x",
+         endpoint: ep(4040),
+         staleConfig: undefined,
+      },
+      {
+         action: "skipped-root",
+         dir: "/",
+         endpoint: ep(4040),
+         staleConfig: undefined,
+      },
       {
          action: "skipped-git",
          dir: "/repo/sub",
          gitRoot: "/repo",
          rootConfig: undefined,
          endpoint: ep(4040),
+         staleConfig: undefined,
       },
       {
          action: "skipped-git",
@@ -352,6 +385,7 @@ describe("logMcpConfigOutcome", () => {
          gitRoot: "/repo",
          rootConfig: "/repo/.mcp.json",
          endpoint: ep(4040),
+         staleConfig: undefined,
       },
       {
          action: "skipped-unstable-port",
@@ -359,6 +393,7 @@ describe("logMcpConfigOutcome", () => {
          endpoint: ep(51234),
          requestedPort: 0,
          boundPort: 51234,
+         staleConfig: undefined,
       },
       { action: "created", file: "/w/.mcp.json" },
       { action: "exists", file: "/w/.mcp.json", endpoint: ep(4040) },
@@ -438,14 +473,6 @@ describe("logMcpConfigOutcome", () => {
       expect(said.join("\n")).toContain("--no-mcp-config");
    });
 
-   it("stays silent only when the user asked for silence", () => {
-      // `disabled` is the one branch where nothing needs saying: the user passed
-      // the flag, so no file is exactly what they asked for.
-      expect(capture(() => logMcpConfigOutcome({ action: "disabled" }))).toBe(
-         "",
-      );
-   });
-
    // Both skips were silent when this shipped for review, and three separate
    // reviewers landed on the same failure: no file, no tools, no message, and a
    // README that then sends you to relaunch the agent from a directory that has
@@ -459,6 +486,7 @@ describe("logMcpConfigOutcome", () => {
             gitRoot: "/work/my-project",
             rootConfig: undefined,
             endpoint: ep(15040),
+            staleConfig: undefined,
          }),
       );
       expect(said).toContain("/work/my-project/data");
@@ -484,6 +512,7 @@ describe("logMcpConfigOutcome", () => {
             gitRoot: "/repo",
             rootConfig: "/repo/.mcp.json",
             endpoint: ep(4141),
+            staleConfig: undefined,
          }),
       );
       expect(said).toContain("/repo/.mcp.json");
@@ -495,9 +524,7 @@ describe("logMcpConfigOutcome", () => {
       // The regression guard for the above. A branch logged at debug is invisible
       // the moment an operator sets LOG_LEVEL=info, which is the production shape,
       // and an invisible skip is indistinguishable from a broken install.
-      const noFile = outcomes.filter(
-         (o) => o.action !== "created" && o.action !== "disabled",
-      );
+      const noFile = outcomes.filter((o) => o.action !== "created");
       for (const outcome of noFile) {
          const levels: string[] = [];
          const original = {
@@ -526,6 +553,7 @@ describe("logMcpConfigOutcome", () => {
             action: "skipped-home",
             dir: "/Users/x",
             endpoint: ep(15040),
+            staleConfig: undefined,
          }),
       );
       expect(said).toContain("/Users/x");
@@ -561,6 +589,7 @@ describe("logMcpConfigOutcome", () => {
             action: "skipped-home",
             dir: "/Users/x",
             endpoint: "http://[::1]:4040/mcp",
+            staleConfig: undefined,
          }),
       );
       expect(said).toContain("malloy 'http://[::1]:4040/mcp'");
@@ -588,16 +617,28 @@ describe("logMcpConfigOutcome", () => {
             gitRoot: "/repo",
             rootConfig: undefined,
             endpoint: ep(19999),
+            staleConfig: undefined,
          },
-         { action: "skipped-home", dir: "/home/x", endpoint: ep(19999) },
+         {
+            action: "skipped-home",
+            dir: "/home/x",
+            endpoint: ep(19999),
+            staleConfig: undefined,
+         },
          {
             action: "skipped-unstable-port",
             dir: "/w",
             endpoint: ep(19999),
             requestedPort: 0,
             boundPort: 19999,
+            staleConfig: undefined,
          },
-         { action: "skipped-root", dir: "/", endpoint: ep(19999) },
+         {
+            action: "skipped-root",
+            dir: "/",
+            endpoint: ep(19999),
+            staleConfig: undefined,
+         },
          {
             action: "failed",
             file: "/w/.mcp.json",
@@ -614,59 +655,41 @@ describe("logMcpConfigOutcome", () => {
 });
 
 describe("mcpConfigEnabled", () => {
-   // `!process.env.X` made PUBLISHER_NO_MCP_CONFIG=false disable the thing it
-   // names, because every non-empty string is truthy.
-   it("is on when the variable is not set", () => {
-      expect(mcpConfigEnabled({})).toBe(true);
-   });
-
-   it("treats the spellings that mean 'leave it on' as leaving it on", () => {
-      // `no` and `off` are in here because the variable is itself a negation:
-      // writing `no` into PUBLISHER_NO_MCP_CONFIG plainly means "do not disable".
-      for (const value of [
-         "false",
-         "FALSE",
-         "0",
-         "",
-         "  false  ",
-         "no",
-         "OFF",
-      ]) {
-         expect(mcpConfigEnabled({ PUBLISHER_NO_MCP_CONFIG: value })).toBe(
-            true,
-         );
-      }
-   });
-
-   it("sees through quotes an env file may have left attached", () => {
-      for (const value of ['"false"', "'false'", '"0"']) {
-         expect(mcpConfigEnabled({ PUBLISHER_NO_MCP_CONFIG: value })).toBe(
-            true,
-         );
-      }
-   });
-
-   it("turns off for any other value, so =1 works as well as =true", () => {
-      for (const value of ["1", "true", "yes", "please"]) {
-         expect(mcpConfigEnabled({ PUBLISHER_NO_MCP_CONFIG: value })).toBe(
-            false,
-         );
-      }
-   });
-
-   it("reads the variable at call time, not at import time", () => {
-      // --no-mcp-config sets the variable during parseArgs, long after import
-      // and long before the listen callback that reads it.
+   /** Set the variable for one call and restore it. */
+   function withEnv(value: string | undefined, body: () => void): void {
       const saved = process.env.PUBLISHER_NO_MCP_CONFIG;
+      if (value === undefined) delete process.env.PUBLISHER_NO_MCP_CONFIG;
+      else process.env.PUBLISHER_NO_MCP_CONFIG = value;
       try {
-         delete process.env.PUBLISHER_NO_MCP_CONFIG;
-         expect(mcpConfigEnabled()).toBe(true);
-         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
-         expect(mcpConfigEnabled()).toBe(false);
+         body();
       } finally {
          if (saved === undefined) delete process.env.PUBLISHER_NO_MCP_CONFIG;
          else process.env.PUBLISHER_NO_MCP_CONFIG = saved;
       }
+   }
+
+   it("is on when the variable is not set or empty", () => {
+      for (const value of [undefined, "", "   "]) {
+         withEnv(value, () => expect(mcpConfigEnabled()).toBe(true));
+      }
+   });
+
+   it("stays on for every spelling of no", () => {
+      // The bug this guards: `!process.env.X` made =false DISABLE the feature it
+      // names, because every non-empty string is truthy.
+      for (const value of ["false", "FALSE", "0", "no", "OFF", "  false  "]) {
+         withEnv(value, () => expect(mcpConfigEnabled()).toBe(true));
+      }
+   });
+
+   it("turns off for every spelling of yes", () => {
+      for (const value of ["1", "true", "YES", "on"]) {
+         withEnv(value, () => expect(mcpConfigEnabled()).toBe(false));
+      }
+   });
+
+   it("throws on a value that is neither, like every other flag in this server", () => {
+      withEnv("please", () => expect(() => mcpConfigEnabled()).toThrow());
    });
 });
 

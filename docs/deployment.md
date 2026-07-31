@@ -31,7 +31,7 @@ for nothing, so it says nothing.
 Two things to know when you are running this as a service rather than at a terminal. First, the file
 outlives the process and is never corrected, so a stale one does not simply fail: it points an agent
 at whatever else is on that port now, which may be a different Publisher serving different data.
-Check that the URL in the file matches the endpoint in this boot's log. Second, set
+Comparing URLs does not settle it, since two Publishers on the same port give the same URL; ask the agent what it is connected to instead. Second, set
 `PUBLISHER_NO_MCP_CONFIG=1` for unattended deployments, which is what the Docker image does; nothing
 starts an agent session in a service, so the file is pure side effect there. A process manager that
 leaves the working directory unset lands you in `/`, which the server now skips on its own.

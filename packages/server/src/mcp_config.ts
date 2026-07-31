@@ -11,15 +11,11 @@
  * register itself, which is the only reason getting-started had to teach
  * `claude mcp add` before a reader could ask a question.
  *
- * This CREATES, and never edits. An earlier version merged into an existing
- * file the way `scaffold.ts` does, and review found that nearly every hazard in
- * this module came from that one decision: replacing a `malloy` entry destroyed
- * user fields including auth headers, reading an existing file hung the whole
- * process when that file was a FIFO, and a repoint-on-every-boot rewrote
- * version-controlled files. The scaffolder can afford to merge because it runs
- * once, deliberately, at the user's request. A server boot cannot. So: write the
- * file when there is none, otherwise say so and leave it entirely alone,
- * unread.
+ * Creates only, never edits, and never reads. The file may hold other servers
+ * and their credentials, reading it can block when it is a FIFO, and a boot
+ * that rewrites it would churn version-controlled files. The scaffolder can
+ * afford to merge because it runs once at the user's request; a server boot
+ * cannot.
  *
  * `wx` rather than `existsSync` then write, because those two disagree about
  * what they are naming when `.mcp.json` is a dangling symlink: the check says
@@ -29,14 +25,19 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { parseBoolEnv } from "./config";
 import { logger } from "./logger";
 
 export const MCP_CONFIG_FILENAME = ".mcp.json";
 
 /** What happened, so the caller can log it and tests can assert on it. */
 export type McpConfigOutcome =
-   | { action: "disabled" }
-   | { action: "skipped-home"; dir: string; endpoint: string }
+   | {
+        action: "skipped-home";
+        dir: string;
+        endpoint: string;
+        staleConfig: string | undefined;
+     }
    | {
         action: "skipped-git";
         dir: string;
@@ -45,14 +46,21 @@ export type McpConfigOutcome =
         /** A `.mcp.json` already up-tree, named so the reader can go look. */
         rootConfig: string | undefined;
         endpoint: string;
+        staleConfig: string | undefined;
      }
-   | { action: "skipped-root"; dir: string; endpoint: string }
+   | {
+        action: "skipped-root";
+        dir: string;
+        endpoint: string;
+        staleConfig: string | undefined;
+     }
    | {
         action: "skipped-unstable-port";
         dir: string;
         endpoint: string;
         requestedPort: number;
         boundPort: number;
+        staleConfig: string | undefined;
      }
    | { action: "created"; file: string }
    | { action: "exists"; file: string; endpoint: string }
@@ -92,35 +100,36 @@ export function resolveBoundPort(
  * the IPv6 answer, so that process receives the traffic. Reproduced 3 times out
  * of 3 before this was changed.
  *
- * Read that as "name the socket unambiguously", NOT as a security boundary,
- * because it is not one. Two measured limits:
- *
- *   - On macOS/BSD a second process can bind the more specific `127.0.0.1:PORT`
- *     while this server holds the wildcard `0.0.0.0:PORT`, and the specific
- *     socket wins. Also reproduced 3/3, on the default bind, after this change.
- *     Linux refuses that second bind. So on macOS the unambiguous name does not
- *     stop a squatter; only `--host 127.0.0.1`, which the README's quick start
- *     uses, is exclusive.
- *   - Every variant needs a hostile process running as this user, and such a
- *     process can already rewrite `.mcp.json`, `~/.claude.json`, or `claude` on
- *     PATH. It gains nothing from the port that it did not already have.
- *
- * So this is correctness worth having and cheap to keep, and the threat it is
- * sometimes described as closing is not closed by it. `PUBLISHER_READY`'s
- * `displayHost` in `service/environment_store.ts` still prints `localhost` for
- * the same reason it always did; that is a documented output scripts parse, so
- * changing it belongs in its own change.
+ * This is unambiguous naming, not isolation. On macOS a process can still bind
+ * the more specific `127.0.0.1:PORT` while this server holds the wildcard, and
+ * any attacker able to do that already runs as this user and could rewrite the
+ * file directly. `displayHost` in `service/environment_store.ts` answers the
+ * same question with `localhost`; reconciling them is its own change, because
+ * that one feeds a documented line scripts parse.
  */
 export function resolveClientHost(
    address: ReturnType<import("net").Server["address"]>,
    fallbackHost: string,
 ): string {
-   const candidate =
-      typeof address === "object" && address ? address.address : fallbackHost;
-   // Both runtimes populate `address` for a TCP socket, but this runs in a
-   // listen callback where a throw kills an already-bound server, so a missing
-   // or non-string value degrades to the configured host instead.
-   const raw = typeof candidate === "string" && candidate ? candidate : "";
+   // fallbackHost is the one user-controlled input here (everything else is
+   // OS-derived), and it is only consulted on a path no runtime reaches today.
+   // Anything that is not an IP literal is discarded rather than interpolated:
+   // a hostname would reintroduce the ambiguity this function exists to remove,
+   // and a quote would break out of the quoting in addCommand, in a line the
+   // docs tell people to paste.
+   const usableFallback = /^[0-9a-fA-F:.]+$/.test(fallbackHost)
+      ? fallbackHost
+      : "";
+   const fromSocket =
+      typeof address === "object" && address ? address.address : undefined;
+   // Both runtimes populate `address` for a TCP socket. This runs in a listen
+   // callback where a throw kills an already-bound server, so a missing or
+   // non-string value falls back rather than throwing, and both no-address
+   // shapes fall back the same way.
+   const raw =
+      typeof fromSocket === "string" && fromSocket
+         ? fromSocket
+         : usableFallback;
    if (raw === "0.0.0.0" || raw === "") return "127.0.0.1";
    if (raw === "::" || raw === "::0") return "[::1]";
    if (!raw.includes(":")) return raw;
@@ -163,32 +172,18 @@ function findGitWorkTreeRoot(dir: string): string | undefined {
    }
 }
 
-/** Spellings of "no" for a variable that is itself named "no". */
-const LEAVE_ON_SPELLINGS = new Set(["", "0", "false", "no", "off"]);
-
 /**
  * Is the feature on?
  *
- * A "stop writing to my filesystem" switch should honour `=1` as readily as
- * `=true`, so any value turns it off except the spellings a reader plainly means
- * as "leave it on". Bare truthiness got that backwards:
- * `PUBLISHER_NO_MCP_CONFIG=false` disabled the very thing it names, because every
- * non-empty string is truthy.
+ * `parseBoolEnv`, not a bespoke set: `config.ts` already owns boolean env
+ * parsing for this server and throws on an unrecognised value, so a typo in a
+ * manifest is loud rather than silently flipping a filesystem write. An earlier
+ * version of this function invented its own spellings, including stripping
+ * surrounding quotes, which is a problem every flag here would share and so
+ * belongs in the shared helper if it belongs anywhere.
  */
-export function mcpConfigEnabled(
-   env: NodeJS.ProcessEnv = process.env,
-): boolean {
-   const raw = env.PUBLISHER_NO_MCP_CONFIG;
-   if (raw === undefined) return true;
-   // One pair of surrounding quotes is stripped: some env-file and CI paths pass
-   // `"false"` through with the quote characters still attached, and a variable
-   // whose name is a negation is the worst place to get that subtly wrong.
-   const value = raw
-      .trim()
-      .replace(/^(['"])(.*)\1$/, "$2")
-      .trim()
-      .toLowerCase();
-   return LEAVE_ON_SPELLINGS.has(value);
+export function mcpConfigEnabled(): boolean {
+   return !(parseBoolEnv("PUBLISHER_NO_MCP_CONFIG") ?? false);
 }
 
 /**
@@ -214,32 +209,34 @@ export function ensureMcpConfig(options: {
     * in guard ordering would write the file instead of going red.
     */
    homeDir?: string;
-   enabled: boolean;
 }): McpConfigOutcome {
-   const { dir, endpoint, requestedPort, boundPort, homeDir, enabled } =
-      options;
-   if (!enabled) return { action: "disabled" };
-
-   // Only write a port that will still be this port next boot. Comparing bound
-   // against requested catches every way they diverge with one condition:
-   // `--mcp_port 0` asks for any free port, and a non-numeric MCP_PORT becomes
-   // NaN, which bun binds ephemerally too (k8s injects MCP_PORT=tcp://... into
-   // every pod in a namespace with a Service named `mcp`). Create-never-edit
-   // means the first boot's file is never corrected, so a file naming a port
-   // that moves is permanently wrong, which the module considers worse than no
-   // file at all.
-   if (boundPort !== requestedPort) {
-      return {
-         action: "skipped-unstable-port",
-         dir,
-         endpoint,
-         requestedPort,
-         boundPort,
-      };
-   }
+   const { dir, endpoint, requestedPort, boundPort, homeDir } = options;
 
    const file = path.join(dir, MCP_CONFIG_FILENAME);
    try {
+      // Probed before the guards, not just via EEXIST on the write. Every skip
+      // returns before writing, so without this a stale config sitting in this
+      // very directory goes unmentioned in exactly the cases where it is the
+      // most useful thing to say.
+      const staleConfig = fs.existsSync(file) ? file : undefined;
+
+      // Only write a port that will still be this port next boot. Comparing
+      // bound against requested catches every way they diverge with one
+      // condition: `--mcp_port 0` asks for any free port, and a non-numeric
+      // MCP_PORT becomes NaN, which bun binds ephemerally too (k8s injects
+      // MCP_PORT=tcp://... into every pod in a namespace with a Service named
+      // `mcp`). Create-never-edit means the first boot's file is never
+      // corrected, so a file naming a port that moves is permanently wrong.
+      if (boundPort !== requestedPort) {
+         return {
+            action: "skipped-unstable-port",
+            dir,
+            endpoint,
+            requestedPort,
+            boundPort,
+            staleConfig,
+         };
+      }
       // Inside the try because os.homedir() throws when HOME is unset and the uid
       // has no passwd entry, which is the ordinary distroless container shape.
       // realpath, not resolve: `resolve` normalises `.` and `..` but not
@@ -256,13 +253,13 @@ export function ensureMcpConfig(options: {
          }
       };
       if (realish(dir) === realish(homeDir ?? os.homedir())) {
-         return { action: "skipped-home", dir, endpoint };
+         return { action: "skipped-home", dir, endpoint, staleConfig };
       }
       // The filesystem root is the other directory nobody opens an agent in,
       // and it is where a process manager puts you by default: systemd gives
       // system units a working directory of `/`.
       if (path.resolve(dir) === path.parse(path.resolve(dir)).root) {
-         return { action: "skipped-root", dir, endpoint };
+         return { action: "skipped-root", dir, endpoint, staleConfig };
       }
       const gitRoot = findGitWorkTreeRoot(dir);
       if (gitRoot !== undefined) {
@@ -279,6 +276,7 @@ export function ensureMcpConfig(options: {
                ? rootCandidate
                : undefined,
             endpoint,
+            staleConfig,
          };
       }
 
@@ -315,7 +313,7 @@ export function ensureMcpConfig(options: {
  * and works. `-s user` still belongs in the README's separate "register once for
  * every directory" instruction, where nothing shadows it.
  */
-function addCommand(endpoint: string): string {
+export function addCommand(endpoint: string): string {
    // Quoted because an IPv6 endpoint contains brackets, which zsh (the macOS
    // default) treats as a glob and refuses outright: `no matches found`. The
    // docs tell the reader to paste this line as printed.
@@ -327,14 +325,17 @@ function addCommand(endpoint: string): string {
  * will not.
  *
  * Every branch that leaves the user without a file says so at `info`, with the
- * endpoint and the command. Two earlier attempts to be quieter both turned into
- * the same defect: a skip that says nothing leaves someone with no tools and no
- * explanation, and the docs then send them to relaunch the agent in a directory
- * that has nothing to find. The most recent attempt used `debug`, which only
- * looks quiet because the default level happens to be `debug`: set `LOG_LEVEL=info`
- * (the production shape) and the branch went completely silent. One honest line
- * per boot is the smaller cost, so noise is preferred to silence here on purpose.
+ * endpoint and the command. Noise is preferred to silence on purpose: a skip
+ * that says nothing is indistinguishable from a broken install, and `debug` is
+ * not a middle ground, because it disappears entirely at `LOG_LEVEL=info`.
  */
+/** The stale-file warning, appended to whichever skip fired. */
+function staleNote(staleConfig: string | undefined): string {
+   return staleConfig === undefined
+      ? ""
+      : `. Note that ${staleConfig} is already here and was not written by this run, so an agent started here uses whatever that names.`;
+}
+
 export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
    switch (outcome.action) {
       case "created":
@@ -347,7 +348,7 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
          // This fires on every boot of a scaffolded package, where the file is
          // almost always correct, so it must not read as a warning.
          logger.info(
-            `Left the existing ${outcome.file} alone, unread. This server is at ${outcome.endpoint}. Check that the file names the same URL, because a stale one points an agent at whatever else is on that port. To repoint it: ${addCommand(outcome.endpoint)}`,
+            `Left the existing ${outcome.file} alone, unread. This server is at ${outcome.endpoint}. If an agent started here reaches a different Publisher than you expect, ask it to run malloy_getContext, which names the environment and packages it is actually talking to. To point it here: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "failed":
@@ -365,26 +366,24 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
                ? // Named, not acted on: it may register an unrelated server, or
                  // name a port this run is not on, and we never read it to find
                  // out. So the endpoint and the command are still given.
-                 `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}, which already has ${outcome.rootConfig}. This server is at ${outcome.endpoint}; if your agent does not list malloy, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`
-               : `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}. To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
+                 `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}, which already has ${outcome.rootConfig}. This server is at ${outcome.endpoint}; if your agent does not list malloy, run this from the directory you start it in: ${addCommand(outcome.endpoint)}${staleNote(outcome.staleConfig)}`
+               : `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}. To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}${staleNote(outcome.staleConfig)}`,
          );
          return;
       case "skipped-home":
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME} into your home directory (${outcome.dir}). To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
+            `Did not write ${MCP_CONFIG_FILENAME} into your home directory (${outcome.dir}). To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}${staleNote(outcome.staleConfig)}`,
          );
          return;
       case "skipped-unstable-port":
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME}: this server asked for MCP port ${outcome.requestedPort} and got ${outcome.boundPort}, so the port changes from run to run and a saved config would be wrong next boot. To connect an agent to this run: ${addCommand(outcome.endpoint)}`,
+            `Did not write ${MCP_CONFIG_FILENAME}: this server asked for MCP port ${outcome.requestedPort} and got ${outcome.boundPort}, so the port changes from run to run and a saved config would be wrong next boot. To connect an agent to this run: ${addCommand(outcome.endpoint)}. That registration outlives this run, and the port will have moved by the next one, so undo it with claude mcp remove malloy.${staleNote(outcome.staleConfig)}`,
          );
          return;
       case "skipped-root":
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME} into the filesystem root (${outcome.dir}). To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
+            `Did not write ${MCP_CONFIG_FILENAME} into the filesystem root (${outcome.dir}). To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}${staleNote(outcome.staleConfig)}`,
          );
-         return;
-      case "disabled":
          return;
       default: {
          // A new variant must be handled above rather than logging nothing.

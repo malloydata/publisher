@@ -139,7 +139,8 @@ It also stays on disk after you stop the server, and is never corrected. That ma
 broken link: if something else later holds that port, perhaps a second Publisher serving different
 data, an agent started there connects to it and answers confidently from the wrong model. So when a
 directory's file is one the server wrote, delete it once you are done with that directory, and if you
-are unsure, check that the URL in it matches the endpoint in the server's startup log. Do not delete
+are unsure, ask your agent to run `malloy_getContext`, which names the environment and packages it is
+actually connected to. Do not delete
 a `.mcp.json` you did not create: it may hold other servers and their credentials.
 
 **When the server does not write one.** Read the startup log rather than guessing: it always says
