@@ -182,6 +182,47 @@ const mockPackage = {
    getModel: () => mockModel,
 };
 
+// Two sources, each with a view and a dimension/measure, plus a named query on
+// one of them. Enough to prove a drill-down returns a source's own entities and
+// nothing from its neighbour.
+//
+// Source annotations are `{ value }` objects, matching Malloy.SourceInfo;
+// getQueries() hands back raw strings. docText normalizes both, so the shapes
+// are interchangeable here — they are kept faithful so the fixture cannot
+// teach the wrong one.
+const mockTwoSourceModel = {
+   getSourceInfos: () => [
+      {
+         name: "orders",
+         annotations: [{ value: "#(doc) One row per order." }],
+         schema: {
+            fields: [
+               { kind: "view", name: "by_month", annotations: [] },
+               { kind: "dimension", name: "status", annotations: [] },
+               { kind: "measure", name: "total_revenue", annotations: [] },
+               // Structural: collectEntities skips joins, so a drill-down must
+               // not start surfacing them just because the kind filter widened.
+               { kind: "join", name: "customer", annotations: [] },
+            ],
+         },
+      },
+      {
+         name: "customers",
+         annotations: [],
+         schema: {
+            fields: [{ kind: "dimension", name: "state", annotations: [] }],
+         },
+      },
+   ],
+   getQueries: () => [
+      { name: "top_orders", sourceName: "orders", annotations: [] },
+   ],
+};
+const mockTwoSourcePackage = {
+   listModels: async () => [{ path: "sales.malloy" }],
+   getModel: () => mockTwoSourceModel,
+};
+
 // A package with more than 10 sources, to prove the enumeration tier is not
 // silently capped the way ranked retrieval is.
 const manySourceNames = Array.from({ length: 12 }, (_, i) => `s${i}`);
@@ -324,6 +365,128 @@ describe("get_context discovery tiers", () => {
             doc: "",
          },
       ]);
+   });
+
+   it("tier 3 drill-down: sourceName lists that source's fields, views and queries", async () => {
+      // The regression pin. This returned exactly one row — the source itself —
+      // so an agent following the documented drill-down never saw a single
+      // dimension or measure and had no way to learn a source's fields.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockTwoSourcePackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "sales",
+            sourceName: "orders",
+         }),
+      );
+      // Order matters: the source leads, so its doc is the first thing read.
+      expect(
+         results.map((r: { kind: string; name: string }) => [r.kind, r.name]),
+      ).toEqual([
+         ["source", "orders"],
+         ["view", "by_month"],
+         ["dimension", "status"],
+         ["measure", "total_revenue"],
+         ["query", "top_orders"],
+      ]);
+      expect(results[0].doc).toBe("One row per order.");
+   });
+
+   it("tier 3 drill-down: excludes entities belonging to another source", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockTwoSourcePackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "sales",
+            sourceName: "customers",
+         }),
+      );
+      expect(
+         results.map((r: { kind: string; name: string }) => [r.kind, r.name]),
+      ).toEqual([
+         ["source", "customers"],
+         ["dimension", "state"],
+      ]);
+   });
+
+   it("tier 3 without sourceName still lists sources only, not their fields", async () => {
+      // The widened filter must stay scoped to the drill-down: the plain
+      // package listing is an overview and would be unreadable with every
+      // field of every source in it.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockTwoSourcePackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "sales",
+         }),
+      );
+      expect(results.map((r: { name: string }) => r.name)).toEqual([
+         "orders",
+         "customers",
+      ]);
+   });
+
+   it("tier 3 drill-down: an unknown sourceName returns no results, not everything", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockTwoSourcePackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "sales",
+            sourceName: "nope",
+         }),
+      );
+      expect(results).toEqual([]);
+   });
+
+   it("tier 3 drill-down: limit caps the fields returned", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockTwoSourcePackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "sales",
+            sourceName: "orders",
+            limit: 2,
+         }),
+      );
+      expect(
+         results.map((r: { kind: string; name: string }) => [r.kind, r.name]),
+      ).toEqual([
+         ["source", "orders"],
+         ["view", "by_month"],
+      ]);
+   });
+
+   it("omits the retrieval field entirely when no embedding provider is configured", async () => {
+      // Pins what the tool description now promises: absent, not defaulted. A
+      // caller that branches on `retrieval` must not see a value invented for it.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockPackage }) as never,
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "state",
+         }),
+      );
+      expect("retrieval" in payload).toBe(false);
+      expect(payload.results.every((r: object) => !("score" in r))).toBe(true);
    });
 
    it("tier 4: a query retrieves the matching entity", async () => {
