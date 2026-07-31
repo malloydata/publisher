@@ -9,8 +9,10 @@ import {
    logMcpConfigOutcome,
    MCP_CONFIG_FILENAME,
    mcpConfigEnabled,
+   mcpEndpoint,
    type McpConfigOutcome,
    resolveBoundPort,
+   resolveClientHost,
 } from "./mcp_config";
 
 const dirs: string[] = [];
@@ -26,7 +28,10 @@ function tmpDir(): string {
 
 const cfg = (dir: string) => path.join(dir, MCP_CONFIG_FILENAME);
 const run = (dir: string, mcpPort = 4040, enabled = true) =>
-   ensureMcpConfig({ dir, mcpPort, enabled });
+   ensureMcpConfig({ dir, endpoint: ep(mcpPort), enabled });
+
+/** The endpoint the server would compute for a loopback bind on `port`. */
+const ep = (port: number) => `http://127.0.0.1:${port}/mcp`;
 
 const isWindows = process.platform === "win32";
 
@@ -42,7 +47,7 @@ describe("ensureMcpConfig", () => {
       expect(run(dir).action).toBe("created");
       expect(JSON.parse(fs.readFileSync(cfg(dir), "utf8"))).toEqual({
          mcpServers: {
-            malloy: { type: "http", url: "http://localhost:4040/mcp" },
+            malloy: { type: "http", url: ep(4040) },
          },
       });
    });
@@ -51,9 +56,7 @@ describe("ensureMcpConfig", () => {
       // "No ports to know" only holds if the file names the port really bound.
       const dir = tmpDir();
       run(dir, 15040);
-      expect(fs.readFileSync(cfg(dir), "utf8")).toContain(
-         "http://localhost:15040/mcp",
-      );
+      expect(fs.readFileSync(cfg(dir), "utf8")).toContain(ep(15040));
    });
 
    describe("an existing file is left byte-identical and unread", () => {
@@ -115,13 +118,18 @@ describe("ensureMcpConfig", () => {
             return; // unprivileged Windows cannot create one; hazard unreachable
          }
 
-         // The safety property, and it holds on every platform: whatever the
-         // open reports, it must not have written through the link.
+         expect(fs.existsSync(victim)).toBe(false); // precondition
+
+         const outcome = run(dir);
+
+         // The safety property, asserted AFTER the call. It was above the call
+         // for one commit, where it proved nothing: on Windows, which accepts
+         // "failed", a version that wrote through the link and then errored for
+         // any other reason would have passed green.
          expect(fs.existsSync(victim)).toBe(false);
          // Windows returns ENOENT rather than EEXIST for a dangling reparse
          // point, so the label differs while the refusal does not. Both outcomes
          // leave the file alone; only POSIX can promise which one.
-         const outcome = run(dir);
          expect(["exists", "failed"]).toContain(outcome.action);
          if (!isWindows) expect(outcome.action).toBe("exists");
       });
@@ -199,7 +207,7 @@ describe("ensureMcpConfig", () => {
          const outcome = ensureMcpConfig({
             dir: home,
             homeDir: home,
-            mcpPort: 4040,
+            endpoint: ep(4040),
             enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
@@ -212,7 +220,7 @@ describe("ensureMcpConfig", () => {
          const outcome = ensureMcpConfig({
             dir: path.join(home, "..", path.basename(home), "."),
             homeDir: home,
-            mcpPort: 4040,
+            endpoint: ep(4040),
             enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
@@ -224,7 +232,7 @@ describe("ensureMcpConfig", () => {
          // it is protecting. Asserted without writing anything anywhere.
          const outcome = ensureMcpConfig({
             dir: os.homedir(),
-            mcpPort: 4040,
+            endpoint: ep(4040),
             enabled: false,
          });
          expect(outcome.action).toBe("disabled");
@@ -232,7 +240,7 @@ describe("ensureMcpConfig", () => {
             ensureMcpConfig({
                dir: os.homedir(),
                homeDir: os.homedir(),
-               mcpPort: 4040,
+               endpoint: ep(4040),
                enabled: true,
             }).action,
          ).toBe("skipped-home");
@@ -244,27 +252,40 @@ describe("ensureMcpConfig", () => {
          expect(fs.existsSync(cfg(dir))).toBe(false);
       });
 
-      it("skips an ephemeral port, which would be stale from the next boot on", () => {
-         // --mcp_port 0 binds a different port every run. Create-never-edit
-         // means the first boot's file is never corrected, so the second boot
-         // onward has a config naming a dead port, which is worse than none.
-         const dir = tmpDir();
-         const outcome = ensureMcpConfig({
-            dir,
-            mcpPort: 51234,
-            requestedPort: 0,
-            enabled: true,
+      // Every way the bound port can differ from the requested one. Checking
+      // `requestedPort === 0` missed most of them, and the NaN case is not a
+      // typo-only scenario: Kubernetes injects MCP_PORT=tcp://10.96.0.1:4040
+      // into every pod in a namespace with a Service named `mcp`, and
+      // `Number()` of that is NaN, which bun binds ephemerally.
+      const unstable: Array<[string, number]> = [
+         ["--mcp_port 0", 0],
+         ["a non-numeric MCP_PORT (NaN)", Number("tcp://10.96.0.1:4040")],
+         ["a negative port", -1],
+      ];
+      for (const [label, requestedPort] of unstable) {
+         it(`skips ${label}, which would be stale from the next boot on`, () => {
+            // Create-never-edit means the first boot's file is never corrected,
+            // so a port that moves leaves a permanently wrong config.
+            const dir = tmpDir();
+            const outcome = ensureMcpConfig({
+               dir,
+               endpoint: ep(51234),
+               requestedPort,
+               boundPort: 51234,
+               enabled: true,
+            });
+            expect(outcome.action).toBe("skipped-unstable-port");
+            expect(fs.existsSync(cfg(dir))).toBe(false);
          });
-         expect(outcome.action).toBe("skipped-ephemeral-port");
-         expect(fs.existsSync(cfg(dir))).toBe(false);
-      });
+      }
 
-      it("still writes when a real port was requested", () => {
+      it("still writes when the bound port is the one that was requested", () => {
          const dir = tmpDir();
          const outcome = ensureMcpConfig({
             dir,
-            mcpPort: 4040,
+            endpoint: ep(4040),
             requestedPort: 4040,
+            boundPort: 4040,
             enabled: true,
          });
          expect(outcome.action).toBe("created");
@@ -302,29 +323,29 @@ describe("logMcpConfigOutcome", () => {
    // whether the text is right or even emitted.
    const outcomes: McpConfigOutcome[] = [
       { action: "disabled" },
-      { action: "skipped-home", dir: "/home/x", mcpPort: 4040 },
+      { action: "skipped-home", dir: "/home/x", endpoint: ep(4040) },
       {
          action: "skipped-git",
          dir: "/repo/sub",
          gitRoot: "/repo",
          rootConfig: undefined,
-         mcpPort: 4040,
+         endpoint: ep(4040),
       },
       {
          action: "skipped-git",
          dir: "/repo/sub",
          gitRoot: "/repo",
          rootConfig: "/repo/.mcp.json",
-         mcpPort: 4040,
+         endpoint: ep(4040),
       },
-      { action: "skipped-ephemeral-port", dir: "/w", mcpPort: 51234 },
+      { action: "skipped-unstable-port", dir: "/w", endpoint: ep(51234) },
       { action: "created", file: "/w/.mcp.json" },
-      { action: "exists", file: "/w/.mcp.json", mcpPort: 4040 },
+      { action: "exists", file: "/w/.mcp.json", endpoint: ep(4040) },
       {
          action: "failed",
          file: "/w/.mcp.json",
          problem: "EACCES",
-         mcpPort: 4040,
+         endpoint: ep(4040),
       },
    ];
 
@@ -371,13 +392,13 @@ describe("logMcpConfigOutcome", () => {
          logMcpConfigOutcome({
             action: "exists",
             file: "/w/.mcp.json",
-            mcpPort: 15040,
+            endpoint: ep(15040),
          });
       } finally {
          (logger as unknown as { info: unknown }).info = info;
       }
       expect(said.join("\n")).toContain(
-         "claude mcp add --transport http malloy http://localhost:15040/mcp",
+         `claude mcp add --transport http malloy ${ep(15040)}`,
       );
    });
 
@@ -416,7 +437,7 @@ describe("logMcpConfigOutcome", () => {
             dir: "/work/my-project/data",
             gitRoot: "/work/my-project",
             rootConfig: undefined,
-            mcpPort: 15040,
+            endpoint: ep(15040),
          }),
       );
       expect(said).toContain("/work/my-project/data");
@@ -424,25 +445,58 @@ describe("logMcpConfigOutcome", () => {
       // can be many levels up, and `ls -a` in the working directory shows nothing.
       expect(said).toContain("/work/my-project");
       expect(said).toContain(
-         "claude mcp add --transport http malloy http://localhost:15040/mcp",
+         `claude mcp add --transport http malloy ${ep(15040)}`,
       );
    });
 
-   it("does not nag on every clone boot when a config already exists up-tree", () => {
-      // `bun run start` from a clone cds into packages/server and hits this on
-      // every single boot. The repo root already has a working .mcp.json, so an
-      // info-level line telling developers to register a second one is noise
-      // advising them to undo something that works.
+   it("names an up-tree config without pretending it covers this server", () => {
+      // This branch was `logger.debug` for one commit, to keep a clone quiet on
+      // every boot. That only looked quiet because the default level is debug:
+      // under LOG_LEVEL=info it went silent, which is the very defect three
+      // reviewers had already found. A config at the repo root may register an
+      // unrelated server, or name a port this run is not on, and the module
+      // never reads it to find out, so it must still give the endpoint.
       const said = capture(() =>
          logMcpConfigOutcome({
             action: "skipped-git",
             dir: "/repo/packages/server",
             gitRoot: "/repo",
             rootConfig: "/repo/.mcp.json",
-            mcpPort: 4040,
+            endpoint: ep(4141),
          }),
       );
-      expect(said).not.toContain("claude mcp add");
+      expect(said).toContain("/repo/.mcp.json");
+      expect(said).toContain("4141");
+      expect(said).toContain("claude mcp add");
+   });
+
+   it("emits every no-file branch at info, never below it", () => {
+      // The regression guard for the above. A branch logged at debug is invisible
+      // the moment an operator sets LOG_LEVEL=info, which is the production shape,
+      // and an invisible skip is indistinguishable from a broken install.
+      const noFile = outcomes.filter(
+         (o) => o.action !== "created" && o.action !== "disabled",
+      );
+      for (const outcome of noFile) {
+         const levels: string[] = [];
+         const original = {
+            debug: logger.debug.bind(logger),
+            info: logger.info.bind(logger),
+            warn: logger.warn.bind(logger),
+         };
+         for (const level of ["debug", "info", "warn"] as const) {
+            (logger as unknown as Record<string, (m: string) => void>)[level] =
+               (_m) => {
+                  levels.push(level);
+               };
+         }
+         try {
+            logMcpConfigOutcome(outcome);
+         } finally {
+            Object.assign(logger, original);
+         }
+         expect(levels).toEqual(["info"]);
+      }
    });
 
    it("tells a user in their home directory why there is no file", () => {
@@ -450,12 +504,12 @@ describe("logMcpConfigOutcome", () => {
          logMcpConfigOutcome({
             action: "skipped-home",
             dir: "/Users/x",
-            mcpPort: 15040,
+            endpoint: ep(15040),
          }),
       );
       expect(said).toContain("/Users/x");
       expect(said).toContain(
-         "claude mcp add --transport http malloy http://localhost:15040/mcp",
+         `claude mcp add --transport http malloy ${ep(15040)}`,
       );
    });
 
@@ -467,12 +521,12 @@ describe("logMcpConfigOutcome", () => {
             action: "failed",
             file: "/w/.mcp.json",
             problem: "EACCES: permission denied",
-            mcpPort: 15040,
+            endpoint: ep(15040),
          }),
       );
       expect(said).toContain("EACCES");
       expect(said).toContain(
-         "claude mcp add --transport http malloy http://localhost:15040/mcp",
+         `claude mcp add --transport http malloy ${ep(15040)}`,
       );
    });
 
@@ -491,21 +545,21 @@ describe("logMcpConfigOutcome", () => {
       // The whole point of reading back the bound port. A 4040 leaking into any
       // remediation line sends the reader somewhere nothing is listening.
       const branches: McpConfigOutcome[] = [
-         { action: "exists", file: "/w/.mcp.json", mcpPort: 19999 },
+         { action: "exists", file: "/w/.mcp.json", endpoint: ep(19999) },
          {
             action: "skipped-git",
             dir: "/repo",
             gitRoot: "/repo",
             rootConfig: undefined,
-            mcpPort: 19999,
+            endpoint: ep(19999),
          },
-         { action: "skipped-home", dir: "/home/x", mcpPort: 19999 },
-         { action: "skipped-ephemeral-port", dir: "/w", mcpPort: 19999 },
+         { action: "skipped-home", dir: "/home/x", endpoint: ep(19999) },
+         { action: "skipped-unstable-port", dir: "/w", endpoint: ep(19999) },
          {
             action: "failed",
             file: "/w/.mcp.json",
             problem: "EACCES",
-            mcpPort: 19999,
+            endpoint: ep(19999),
          },
       ];
       for (const outcome of branches) {
@@ -570,6 +624,48 @@ describe("mcpConfigEnabled", () => {
          if (saved === undefined) delete process.env.PUBLISHER_NO_MCP_CONFIG;
          else process.env.PUBLISHER_NO_MCP_CONFIG = saved;
       }
+   });
+});
+
+describe("resolveClientHost", () => {
+   // `localhost` resolves to BOTH 127.0.0.1 and ::1, while the server binds
+   // exactly one family: 0.0.0.0 is the IPv4 wildcard and leaves ::1 free. A
+   // local process squatting the same port on the other family then receives the
+   // agent's traffic, because fetch prefers the IPv6 answer. Reproduced 3/3
+   // before this was changed, so these assertions are the fix, not a preference.
+   const v4 = (address: string) =>
+      ({ address, family: "IPv4", port: 4040 }) as const;
+   const v6 = (address: string) =>
+      ({ address, family: "IPv6", port: 4040 }) as const;
+
+   it("never writes the ambiguous name", () => {
+      for (const addr of [v4("0.0.0.0"), v6("::"), v4("127.0.0.1")]) {
+         expect(resolveClientHost(addr, "0.0.0.0")).not.toContain("localhost");
+      }
+   });
+
+   it("maps each wildcard to the loopback of its own family", () => {
+      expect(resolveClientHost(v4("0.0.0.0"), "0.0.0.0")).toBe("127.0.0.1");
+      expect(resolveClientHost(v6("::"), "::")).toBe("[::1]");
+   });
+
+   it("keeps a specific bind address, which is the only one that reaches it", () => {
+      expect(resolveClientHost(v4("127.0.0.1"), "0.0.0.0")).toBe("127.0.0.1");
+      expect(resolveClientHost(v4("192.168.1.5"), "0.0.0.0")).toBe(
+         "192.168.1.5",
+      );
+   });
+
+   it("brackets an IPv6 literal so the URL is legal", () => {
+      expect(resolveClientHost(v6("::1"), "::")).toBe("[::1]");
+      expect(mcpEndpoint(resolveClientHost(v6("::1"), "::"), 4040)).toBe(
+         "http://[::1]:4040/mcp",
+      );
+   });
+
+   it("falls back to the configured host when there is no address", () => {
+      expect(resolveClientHost(null, "127.0.0.1")).toBe("127.0.0.1");
+      expect(resolveClientHost("/tmp/sock", "0.0.0.0")).toBe("127.0.0.1");
    });
 });
 

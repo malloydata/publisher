@@ -290,6 +290,18 @@ jobs:
               || { echo "✗ Missing/empty OCI label: org.opencontainers.image.$key"; exit 1; }
           done
           echo "✓ All five OCI image labels present"
+          # Nobody starts an agent session inside the container, so the
+          # .mcp.json the server writes into its working directory could never
+          # be read there. The git-working-tree guard that would otherwise
+          # cover /publisher cannot fire, because .dockerignore excludes .git
+          # from the image, so this ENV is the only thing suppressing it. A new
+          # final stage, a stage reorder, or a `target:` added to the publish
+          # job would drop it with nothing going red.
+          env_json=$(docker inspect malloy-publisher:smoke-test \
+            --format='{{json .Config.Env}}')
+          echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
+            || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
+          echo "✓ .mcp.json creation suppressed in the image"
       - name: Verify baked DuckDB extensions
         run: |
           # The image bakes the DuckDB extensions the server loads at runtime

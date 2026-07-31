@@ -119,7 +119,7 @@ startup the server writes a `.mcp.json` into the directory you ran it in, pointi
 actually bound. In one terminal:
 
 ```bash
-npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json, then keeps running
+npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json unless one of the cases below applies
 ```
 
 and in a second terminal, in that same directory:
@@ -142,8 +142,8 @@ which of these happened, and prints the command that connects an agent anyway.
   exactly as it is, unread, because it may hold other servers and their credentials.
 - The directory is inside a git working tree. An untracked file in someone's checkout is a surprise
   in `git status` and gets committed by accident, so the server stays out. Your own project is
-  usually a git repo, so this case is common rather than exotic. It stays quiet when the repository
-  root already has a `.mcp.json`, which is what a clone of this repo has.
+  usually a git repo, so this case is common rather than exotic. If the repository root already has a
+  `.mcp.json`, which is what a clone of this repo has, the log names that file too.
 - The directory is your home directory.
 - The MCP port was requested as `0`, meaning "any free port". That changes every run, so a file
   naming it would be wrong from the next boot onward.
@@ -160,7 +160,7 @@ claude mcp add --transport http malloy http://localhost:4040/mcp -s user
 
 That is also the fix when an agent reports no `malloy_*` tools. Two things cause it: the session
 started somewhere other than the directory holding the config, or there is no config there because
-the server skipped one of the three cases above. Check the server's startup log, which says which,
+the server skipped one of the cases above. Check the server's startup log, which says which,
 and `ls -a` to see whether the file is there at all. Other MCP clients take the same endpoint through
 their own config file; see [docs/ai-agents.md](docs/ai-agents.md).
 

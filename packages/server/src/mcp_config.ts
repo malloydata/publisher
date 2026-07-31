@@ -36,31 +36,26 @@ export const MCP_CONFIG_FILENAME = ".mcp.json";
 /** What happened, so the caller can log it and tests can assert on it. */
 export type McpConfigOutcome =
    | { action: "disabled" }
-   | { action: "skipped-home"; dir: string; mcpPort: number }
+   | { action: "skipped-home"; dir: string; endpoint: string }
    | {
         action: "skipped-git";
         dir: string;
         /** The directory holding `.git`, which is often far above `dir`. */
         gitRoot: string;
-        /** A `.mcp.json` already up-tree, so this boot needs to say nothing. */
+        /** A `.mcp.json` already up-tree, named so the reader can go look. */
         rootConfig: string | undefined;
-        mcpPort: number;
+        endpoint: string;
      }
-   | { action: "skipped-ephemeral-port"; dir: string; mcpPort: number }
+   | { action: "skipped-unstable-port"; dir: string; endpoint: string }
    | { action: "created"; file: string }
-   | { action: "exists"; file: string; mcpPort: number }
-   | { action: "failed"; file: string; problem: string; mcpPort: number };
+   | { action: "exists"; file: string; endpoint: string }
+   | { action: "failed"; file: string; problem: string; endpoint: string };
 
 /** Pinned rather than `Record<string, string>`, so `type` cannot drift. */
 type McpServerEntry = { type: "http"; url: string };
 
-/**
- * Always `localhost`, never the bound host. The client runs on this machine by
- * definition, `0.0.0.0` is not an address to dial, and writing a LAN address
- * would point other people's agents at this one's data.
- */
-function malloyServer(mcpPort: number): McpServerEntry {
-   return { type: "http", url: `http://localhost:${mcpPort}/mcp` };
+function malloyServer(endpoint: string): McpServerEntry {
+   return { type: "http", url: endpoint };
 }
 
 /**
@@ -75,6 +70,38 @@ export function resolveBoundPort(
    requestedPort: number,
 ): number {
    return typeof address === "object" && address ? address.port : requestedPort;
+}
+
+/**
+ * The host an agent on this machine should dial to reach the bound socket.
+ *
+ * NOT `localhost`, which is the trap this replaces. `localhost` resolves to both
+ * `127.0.0.1` and `::1`, and the server binds exactly ONE family: `0.0.0.0` is
+ * the IPv4 wildcard and does not cover IPv6. So with the server on IPv4, `::1`
+ * is still free, and any other local process can bind the same port number
+ * there. Clients using `fetch` prefer the IPv6 answer, so that process, not
+ * Publisher, is what the agent connects to and trusts, while Publisher is still
+ * running and healthy. Verified reproducible 3 times out of 3.
+ *
+ * A wildcard therefore becomes the loopback literal of its own family, and a
+ * specific bind address is written as-is, since when the server is bound only to
+ * some address, that address is the only one that reaches it.
+ */
+export function resolveClientHost(
+   address: ReturnType<import("net").Server["address"]>,
+   fallbackHost: string,
+): string {
+   const raw =
+      typeof address === "object" && address ? address.address : fallbackHost;
+   if (raw === "0.0.0.0" || raw === "") return "127.0.0.1";
+   if (raw === "::" || raw === "::0") return "[::1]";
+   // Bracket any IPv6 literal so it is a legal URL authority.
+   return raw.includes(":") ? `[${raw}]` : raw;
+}
+
+/** The URL to write into the config and to print in advice. */
+export function mcpEndpoint(host: string, port: number): string {
+   return `http://${host}:${port}/mcp`;
 }
 
 /**
@@ -140,9 +167,11 @@ export function mcpConfigEnabled(
  */
 export function ensureMcpConfig(options: {
    dir: string;
-   mcpPort: number;
-   /** What was asked for. 0 means "any free port", which is not durable. */
+   /** The URL an agent on this machine should dial, from `mcpEndpoint`. */
+   endpoint: string;
+   /** What was asked for, and what the OS actually gave. */
    requestedPort?: number;
+   boundPort?: number;
    /**
     * The home directory to stay out of. Defaults to `os.homedir()`; injected by
     * tests so they never depend on the developer's real one, where a regression
@@ -151,14 +180,24 @@ export function ensureMcpConfig(options: {
    homeDir?: string;
    enabled: boolean;
 }): McpConfigOutcome {
-   const { dir, mcpPort, requestedPort, homeDir, enabled } = options;
+   const { dir, endpoint, requestedPort, boundPort, homeDir, enabled } =
+      options;
    if (!enabled) return { action: "disabled" };
 
-   // An ephemeral port is a different port every boot, so a file naming one is
-   // wrong from the second boot onward, and create-never-edit makes that state
-   // permanent rather than self-correcting.
-   if (requestedPort === 0) {
-      return { action: "skipped-ephemeral-port", dir, mcpPort };
+   // Only write a port that will still be this port next boot. Comparing bound
+   // against requested catches every way they diverge with one condition:
+   // `--mcp_port 0` asks for any free port, and a non-numeric MCP_PORT becomes
+   // NaN, which bun binds ephemerally too (k8s injects MCP_PORT=tcp://... into
+   // every pod in a namespace with a Service named `mcp`). Create-never-edit
+   // means the first boot's file is never corrected, so a file naming a port
+   // that moves is permanently wrong, which the module considers worse than no
+   // file at all.
+   if (
+      requestedPort !== undefined &&
+      boundPort !== undefined &&
+      boundPort !== requestedPort
+   ) {
+      return { action: "skipped-unstable-port", dir, endpoint };
    }
 
    const file = path.join(dir, MCP_CONFIG_FILENAME);
@@ -166,13 +205,14 @@ export function ensureMcpConfig(options: {
       // Inside the try because os.homedir() throws when HOME is unset and the uid
       // has no passwd entry, which is the ordinary distroless container shape.
       if (path.resolve(dir) === path.resolve(homeDir ?? os.homedir())) {
-         return { action: "skipped-home", dir, mcpPort };
+         return { action: "skipped-home", dir, endpoint };
       }
       const gitRoot = findGitWorkTreeRoot(dir);
       if (gitRoot !== undefined) {
-         // Existence only, never a read. A config already up-tree means this
-         // directory is served by it, so the boot has nothing to announce; a
-         // clone hits this on every `bun run start`.
+         // Existence only, never a read. Reported rather than acted on: it tells
+         // the reader where to look, and cannot tell us whether that file names
+         // this server or some unrelated one, so it must not decide whether to
+         // stay quiet.
          const rootCandidate = path.join(gitRoot, MCP_CONFIG_FILENAME);
          return {
             action: "skipped-git",
@@ -181,13 +221,13 @@ export function ensureMcpConfig(options: {
             rootConfig: fs.existsSync(rootCandidate)
                ? rootCandidate
                : undefined,
-            mcpPort,
+            endpoint,
          };
       }
 
       const body =
          JSON.stringify(
-            { mcpServers: { malloy: malloyServer(mcpPort) } },
+            { mcpServers: { malloy: malloyServer(endpoint) } },
             null,
             2,
          ) + "\n";
@@ -197,12 +237,12 @@ export function ensureMcpConfig(options: {
       const code = (error as NodeJS.ErrnoException)?.code;
       // EEXIST covers both an ordinary existing file and a dangling symlink, and
       // the response to each is the same: leave it alone, unread.
-      if (code === "EEXIST") return { action: "exists", file, mcpPort };
+      if (code === "EEXIST") return { action: "exists", file, endpoint };
       return {
          action: "failed",
          file,
          problem: error instanceof Error ? error.message : String(error),
-         mcpPort,
+         endpoint,
       };
    }
 }
@@ -218,15 +258,22 @@ export function ensureMcpConfig(options: {
  * and works. `-s user` still belongs in the README's separate "register once for
  * every directory" instruction, where nothing shadows it.
  */
-function addCommand(mcpPort: number): string {
-   return `claude mcp add --transport http malloy http://localhost:${mcpPort}/mcp`;
+function addCommand(endpoint: string): string {
+   return `claude mcp add --transport http malloy ${endpoint}`;
 }
 
 /**
  * Say whether an agent opened here will find this server, and what to do when it
- * will not. Announced rather than silent: a tool that writes into your directory
- * should say so, and the line is what tells a first-time reader that the
- * connection they were about to configure by hand is already done.
+ * will not.
+ *
+ * Every branch that leaves the user without a file says so at `info`, with the
+ * endpoint and the command. Two earlier attempts to be quieter both turned into
+ * the same defect: a skip that says nothing leaves someone with no tools and no
+ * explanation, and the docs then send them to relaunch the agent in a directory
+ * that has nothing to find. The most recent attempt used `debug`, which only
+ * looks quiet because the default level happens to be `debug`: set `LOG_LEVEL=info`
+ * (the production shape) and the branch went completely silent. One honest line
+ * per boot is the smaller cost, so noise is preferred to silence here on purpose.
  */
 export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
    switch (outcome.action) {
@@ -236,46 +283,40 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
          );
          return;
       case "exists":
-         // Deliberately does not claim to know what is in it. Reading the file is
-         // the thing this module refuses to do.
+         // States the endpoint rather than speculating that the file is wrong.
+         // This fires on every boot of a scaffolded package, where the file is
+         // almost always correct, so it must not read as a warning.
          logger.info(
-            `Left the existing ${outcome.file} alone; it may name a different port than the ${outcome.mcpPort} this server bound. If your agent cannot find this server, run this from that directory: ${addCommand(outcome.mcpPort)}`,
+            `Left the existing ${outcome.file} alone, unread. This server is at ${outcome.endpoint}; if your agent does not list malloy, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "failed":
-         // Also a no-file case, and the one where the user is most stuck, so it
-         // gets the same remedy as the deliberate skips rather than just a
-         // diagnosis.
-         logger.warn(
-            `Could not write ${outcome.file} (${outcome.problem}). An agent started here will not find this server on its own. To connect one, run: ${addCommand(outcome.mcpPort)}`,
+         // info, not warn: nothing is broken. The server is serving, and a
+         // convenience file was not created. On a read-only filesystem this
+         // fires on every pod of every rollout, where a warning would be picked
+         // up by alerting and read by someone who cannot act on it.
+         logger.info(
+            `Could not write ${outcome.file} (${outcome.problem}). An agent started here will not find this server on its own. To connect one, run: ${addCommand(outcome.endpoint)}`,
          );
          return;
-      // The skips have to speak. They are the branches where the user gets no
-      // file and no tools, and silence sends them to the README's other remedy,
-      // relaunching the agent here, which cannot work when there is nothing here
-      // to find.
       case "skipped-git":
-         // Unless something up-tree already registers a server, which is every
-         // `bun run start` from a clone. Announcing that on each boot would be
-         // noise telling developers to undo a registration that works.
-         if (outcome.rootConfig !== undefined) {
-            logger.debug(
-               `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir}: it is inside the git working tree at ${outcome.gitRoot}, which already has ${outcome.rootConfig}.`,
-            );
-            return;
-         }
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}. To connect an agent, run this from the directory you start it in: ${addCommand(outcome.mcpPort)}`,
+            outcome.rootConfig !== undefined
+               ? // Named, not acted on: it may register an unrelated server, or
+                 // name a port this run is not on, and we never read it to find
+                 // out. So the endpoint and the command are still given.
+                 `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}, which already has ${outcome.rootConfig}. This server is at ${outcome.endpoint}; if your agent does not list malloy, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`
+               : `Did not write ${MCP_CONFIG_FILENAME} into ${outcome.dir} because it is inside the git working tree at ${outcome.gitRoot}. To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "skipped-home":
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME} into your home directory (${outcome.dir}). To connect an agent, run this from the directory you start it in: ${addCommand(outcome.mcpPort)}`,
+            `Did not write ${MCP_CONFIG_FILENAME} into your home directory (${outcome.dir}). To connect an agent, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
          );
          return;
-      case "skipped-ephemeral-port":
+      case "skipped-unstable-port":
          logger.info(
-            `Did not write ${MCP_CONFIG_FILENAME} because this server was started on an ephemeral port, which changes every run. To connect an agent to this run: ${addCommand(outcome.mcpPort)}`,
+            `Did not write ${MCP_CONFIG_FILENAME} because this server did not get the MCP port it asked for, so the port changes from run to run and a saved config would be wrong next boot. To connect an agent to this run: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "disabled":

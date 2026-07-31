@@ -18,6 +18,20 @@ Run one first launch at a time: two `npx` first runs installing concurrently can
 npx cache and corrupt the install. If the command stops working after an interrupted or doubled-up
 first run, delete the cache under `~/.npm/_npx` and run it again.
 
+### A file appears in the directory you run from
+
+On startup the server writes a `.mcp.json` into its **working** directory (not `--server_root`),
+naming the MCP port it bound, so an AI agent started in that directory connects with no manual
+setup. It only ever creates: an existing file is left untouched and unread. It also skips a git
+working tree, your home directory, and any run whose MCP port is not the one requested. Whenever it
+does not write one it logs the `claude mcp add` command instead.
+
+Two things to know when you are running this as a service rather than at a terminal. The file
+outlives the process, so one left from an earlier run can name a port nothing is on. And a process
+manager that leaves the working directory unset can put it somewhere surprising: systemd defaults
+system units to `/`. Set `PUBLISHER_NO_MCP_CONFIG=1` for unattended deployments, which is what the
+Docker image does.
+
 ## Verify it's working
 
 ```bash

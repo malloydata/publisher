@@ -54,7 +54,9 @@ import {
    logMcpConfigOutcome,
    MCP_CONFIG_FILENAME,
    mcpConfigEnabled,
+   mcpEndpoint,
    resolveBoundPort,
+   resolveClientHost,
 } from "./mcp_config";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
@@ -1984,19 +1986,26 @@ const mcpServer = mcpApp.listen(
    MCP_PORT,
    PUBLISHER_HOST,
    function (this: import("net").Server) {
-      logger.info(
-         `MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`,
-      );
       // Read back rather than reusing MCP_PORT, which is only what was requested.
-      // `--mcp_port 0` is a live idiom (the REST e2e harness uses it), and under bun
-      // a non-numeric value binds an ephemeral port anyway, so the requested value
-      // can be 0 or NaN while a real port is listening. A config naming a port
-      // nothing is on is worse than no config: the agent reports a connection
-      // failure instead of simply not finding a server.
+      // `--mcp_port 0` asks for any free port, and under bun a non-numeric value
+      // binds an ephemeral one too, so the requested value can be 0 or NaN while
+      // a real port is listening. The listening line uses it as well, which is
+      // why it no longer reads `http://127.0.0.1:0`.
       const boundPort = resolveBoundPort(this.address(), MCP_PORT);
+      logger.info(
+         `MCP server listening at http://${PUBLISHER_HOST}:${boundPort}`,
+      );
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
       if (mcpConfigEnabled()) {
+         // The host an agent should dial, which is NOT `localhost`: that name
+         // resolves to both loopback families while the server binds only one,
+         // so another local process can hold the same port on the other family
+         // and receive the agent's traffic instead.
+         const endpoint = mcpEndpoint(
+            resolveClientHost(this.address(), PUBLISHER_HOST),
+            boundPort,
+         );
          // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
          // raises ENOENT once the working directory has been removed. A throw here
          // is an uncaught exception inside a listen callback, which would kill a
@@ -2006,14 +2015,15 @@ const mcpServer = mcpApp.listen(
             logMcpConfigOutcome(
                ensureMcpConfig({
                   dir: process.cwd(),
-                  mcpPort: boundPort,
+                  endpoint,
                   requestedPort: MCP_PORT,
+                  boundPort,
                   enabled: true,
                }),
             );
          } catch (error) {
-            logger.warn(
-               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: claude mcp add --transport http malloy http://localhost:${boundPort}/mcp`,
+            logger.info(
+               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: claude mcp add --transport http malloy ${endpoint}`,
             );
          }
       }

@@ -114,7 +114,10 @@ ENV NODE_ENV=production
 # tree guard that would normally cover /publisher cannot fire here, because
 # .dockerignore excludes .git from the image. Left on, every boot would write a
 # root-owned file, which matters to anyone bind-mounting a project at /publisher.
-# Unset it (docker run -e PUBLISHER_NO_MCP_CONFIG=) to opt back in.
+# Pass -e PUBLISHER_NO_MCP_CONFIG= to opt back in. Note the same emptiness is
+# reachable by accident: `docker run -e PUBLISHER_NO_MCP_CONFIG` with no value,
+# or a Compose `environment:` entry with none, deletes this ENV when the host
+# does not have the variable, which re-enables the write.
 ENV PUBLISHER_NO_MCP_CONFIG=1
 ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 RUN mkdir -p /etc/publisher
