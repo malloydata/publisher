@@ -158,16 +158,19 @@ describe("ensureMcpConfig", () => {
 
             const outcome = run(dir);
 
-            // The safety property, asserted AFTER the call. It was above the call
-            // for one commit, where it proved nothing: on Windows, which accepts
-            // "failed", a version that wrote through the link and then errored for
-            // any other reason would have passed green.
+            // The safety property, asserted AFTER the call, and now identical on
+            // every platform. It used to allow "failed" and skip the exact label
+            // on Windows, which hid a real defect: `wx` alone does not refuse a
+            // dangling link there, so the target was created. The module rejects
+            // symlinks explicitly now, so there is one answer everywhere.
             expect(fs.existsSync(victim)).toBe(false);
-            // Windows returns ENOENT rather than EEXIST for a dangling reparse
-            // point, so the label differs while the refusal does not. Both outcomes
-            // leave the file alone; only POSIX can promise which one.
-            expect(["exists", "failed"]).toContain(outcome.action);
-            if (!isWindows) expect(outcome.action).toBe("exists");
+            expect(outcome.action).toBe("exists");
+            // Note for anyone tempted to delete the explicit symlink guard in
+            // ensureMcpConfig as redundant: this test cannot catch you. On POSIX
+            // `wx` refuses the link on its own, so removing the guard leaves
+            // this green. It is load-bearing only on Windows, where CREATE_NEW
+            // resolves the reparse point and creates a dangling link's target,
+            // and it was the Windows CI leg that caught the original defect.
          },
       );
 

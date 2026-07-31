@@ -17,10 +17,11 @@
  * afford to merge because it runs once at the user's request; a server boot
  * cannot.
  *
- * `wx` rather than `existsSync` then write, because those two disagree about
- * what they are naming when `.mcp.json` is a dangling symlink: the check says
- * absent, and the write follows the link and creates a file somewhere else on
- * the machine. `O_EXCL` refuses that, and closes the gap between the two calls.
+ * A symlink named `.mcp.json` is never written through. `wx` (`O_EXCL`) refuses
+ * one on POSIX whether or not its target exists, but Windows resolves the
+ * reparse point first, so a DANGLING link there gets its target created. So the
+ * symlink is rejected explicitly, using the same `lstat` that reports a stale
+ * config, and `wx` stays as the race-free backstop for everything else.
  */
 import * as fs from "fs";
 import * as os from "os";
@@ -222,14 +223,19 @@ export function ensureMcpConfig(options: {
       // lstat, not existsSync: they disagree on a dangling symlink, which is
       // the case this module's header calls out, and the write path (via
       // EEXIST) counts that as present. Reporting and writing must agree.
-      const staleConfig = ((): string | undefined => {
+      const existing = (():
+         | { path: string; isSymlink: boolean }
+         | undefined => {
          try {
-            fs.lstatSync(file);
-            return file;
+            return {
+               path: file,
+               isSymlink: fs.lstatSync(file).isSymbolicLink(),
+            };
          } catch {
             return undefined;
          }
       })();
+      const staleConfig = existing?.path;
 
       // Only write a port that will still be this port next boot. Comparing
       // bound against requested catches every way they diverge with one
@@ -290,6 +296,15 @@ export function ensureMcpConfig(options: {
             staleConfig,
          };
       }
+
+      // Refuse a symlink before attempting the write, rather than relying on
+      // `wx` to refuse it. `O_EXCL` does that on POSIX whether or not the
+      // target exists, but Windows resolves the reparse point first, so
+      // CREATE_NEW on a DANGLING link creates the target: the write-through
+      // this module exists to prevent, on the one platform where `wx` does not
+      // prevent it. Caught by the cross-platform CI run, not by reasoning.
+      // `wx` stays as the race-free backstop for the non-symlink case.
+      if (existing?.isSymlink) return { action: "exists", file, endpoint };
 
       const body =
          JSON.stringify(
