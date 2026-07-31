@@ -52,7 +52,9 @@ import { initializeMcpServer } from "./mcp/server";
 import {
    ensureMcpConfig,
    logMcpConfigOutcome,
+   MCP_CONFIG_FILENAME,
    mcpConfigEnabled,
+   resolveBoundPort,
 } from "./mcp_config";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
@@ -142,7 +144,7 @@ function parseArgs() {
             "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
          );
          console.log(
-            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server, unless the directory already has one or is your home directory or inside a git working tree)",
+            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server; skipped when the directory already has one, is your home directory, is inside a git working tree, or --mcp_port is 0)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -1978,35 +1980,45 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
       }
    }
 });
-const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
-   logger.info(`MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`);
-   // Read back rather than reusing MCP_PORT, which is only what was requested.
-   // `--mcp_port 0` is a live idiom (the REST e2e harness uses it), and under bun
-   // a non-numeric value binds an ephemeral port anyway, so the requested value
-   // can be 0 or NaN while a real port is listening. A config naming a port
-   // nothing is on is worse than no config: the agent reports a connection
-   // failure instead of simply not finding a server.
-   const bound = mcpServer.address();
-   const boundPort = typeof bound === "object" && bound ? bound.port : MCP_PORT;
-   // ensureMcpConfig cannot throw, but the arguments can: process.cwd() raises
-   // ENOENT when the working directory has been removed. A throw here is an
-   // uncaught exception inside a listen callback, which kills a server that has
-   // already bound both ports. A convenience file must not be able to do that.
-   try {
-      // cwd rather than server_root: the file is for whoever opens an agent here.
-      logMcpConfigOutcome(
-         ensureMcpConfig({
-            dir: process.cwd(),
-            mcpPort: boundPort,
-            enabled: mcpConfigEnabled(),
-         }),
+const mcpServer = mcpApp.listen(
+   MCP_PORT,
+   PUBLISHER_HOST,
+   function (this: import("net").Server) {
+      logger.info(
+         `MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`,
       );
-   } catch (error) {
-      logger.warn(
-         `Skipped .mcp.json setup (${error instanceof Error ? error.message : String(error)}). An agent started here will not find this server on its own.`,
-      );
-   }
-});
+      // Read back rather than reusing MCP_PORT, which is only what was requested.
+      // `--mcp_port 0` is a live idiom (the REST e2e harness uses it), and under bun
+      // a non-numeric value binds an ephemeral port anyway, so the requested value
+      // can be 0 or NaN while a real port is listening. A config naming a port
+      // nothing is on is worse than no config: the agent reports a connection
+      // failure instead of simply not finding a server.
+      const boundPort = resolveBoundPort(this.address(), MCP_PORT);
+      // Checked before process.cwd(), which can throw: someone who turned the
+      // feature off should not get a warning about it.
+      if (mcpConfigEnabled()) {
+         // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
+         // raises ENOENT once the working directory has been removed. A throw here
+         // is an uncaught exception inside a listen callback, which would kill a
+         // server that has already bound both ports.
+         try {
+            // cwd, not server_root: the file is for whoever opens an agent here.
+            logMcpConfigOutcome(
+               ensureMcpConfig({
+                  dir: process.cwd(),
+                  mcpPort: boundPort,
+                  requestedPort: MCP_PORT,
+                  enabled: true,
+               }),
+            );
+         } catch (error) {
+            logger.warn(
+               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: claude mcp add --transport http malloy http://localhost:${boundPort}/mcp`,
+            );
+         }
+      }
+   },
+);
 
 mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;

@@ -10,6 +10,7 @@ import {
    MCP_CONFIG_FILENAME,
    mcpConfigEnabled,
    type McpConfigOutcome,
+   resolveBoundPort,
 } from "./mcp_config";
 
 const dirs: string[] = [];
@@ -26,6 +27,8 @@ function tmpDir(): string {
 const cfg = (dir: string) => path.join(dir, MCP_CONFIG_FILENAME);
 const run = (dir: string, mcpPort = 4040, enabled = true) =>
    ensureMcpConfig({ dir, mcpPort, enabled });
+
+const isWindows = process.platform === "win32";
 
 afterEach(() => {
    while (dirs.length) {
@@ -106,11 +109,21 @@ describe("ensureMcpConfig", () => {
          const dir = tmpDir();
          const victimDir = tmpDir();
          const victim = path.join(victimDir, "victim.json");
-         fs.symlinkSync(victim, cfg(dir));
+         try {
+            fs.symlinkSync(victim, cfg(dir));
+         } catch {
+            return; // unprivileged Windows cannot create one; hazard unreachable
+         }
 
-         const outcome = run(dir);
-         expect(outcome.action).toBe("exists");
+         // The safety property, and it holds on every platform: whatever the
+         // open reports, it must not have written through the link.
          expect(fs.existsSync(victim)).toBe(false);
+         // Windows returns ENOENT rather than EEXIST for a dangling reparse
+         // point, so the label differs while the refusal does not. Both outcomes
+         // leave the file alone; only POSIX can promise which one.
+         const outcome = run(dir);
+         expect(["exists", "failed"]).toContain(outcome.action);
+         if (!isWindows) expect(outcome.action).toBe("exists");
       });
 
       it("does not modify the target of a symlink to a real file", () => {
@@ -119,7 +132,11 @@ describe("ensureMcpConfig", () => {
          const victim = path.join(victimDir, "package.json");
          const body = JSON.stringify({ name: "someone-elses-file" });
          fs.writeFileSync(victim, body);
-         fs.symlinkSync(victim, cfg(dir));
+         try {
+            fs.symlinkSync(victim, cfg(dir));
+         } catch {
+            return; // unprivileged Windows cannot create one
+         }
 
          expect(run(dir).action).toBe("exists");
          expect(fs.readFileSync(victim, "utf8")).toBe(body);
@@ -129,6 +146,10 @@ describe("ensureMcpConfig", () => {
    it("returns promptly on a FIFO instead of hanging the process", () => {
       // A blocking read here stalls the event loop and takes /health with it.
       // `wx` never opens it for reading, so this must be fast and inert.
+      // Windows has no FIFO in the filesystem namespace (named pipes live under
+      // \\.\pipe), and its mkfifo, if git-bash puts one on PATH, does not make
+      // something Node reports as a FIFO. The hazard does not exist there.
+      if (isWindows) return;
       const dir = tmpDir();
       try {
          execFileSync("mkfifo", [cfg(dir)]);
@@ -169,23 +190,52 @@ describe("ensureMcpConfig", () => {
          expect(run(dir).action).toBe("skipped-git");
       });
 
+      // These inject a scratch home rather than running against the real one.
+      // Passing the developer's actual home in is only safe while the guard
+      // returns before any write; if that ordering ever regressed, the old form
+      // wrote .mcp.json into their home directory instead of going red.
       it("skips the home directory", () => {
+         const home = tmpDir();
          const outcome = ensureMcpConfig({
-            dir: os.homedir(),
+            dir: home,
+            homeDir: home,
             mcpPort: 4040,
             enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
+         expect(fs.existsSync(cfg(home))).toBe(false);
       });
 
       it("skips home even when the path is not normalised", () => {
          // The guard resolves before comparing; a raw string compare would miss.
+         const home = tmpDir();
          const outcome = ensureMcpConfig({
-            dir: path.join(os.homedir(), "..", path.basename(os.homedir())),
+            dir: path.join(home, "..", path.basename(home), "."),
+            homeDir: home,
             mcpPort: 4040,
             enabled: true,
          });
          expect(outcome.action).toBe("skipped-home");
+         expect(fs.existsSync(cfg(home))).toBe(false);
+      });
+
+      it("defaults the home guard to the real os.homedir()", () => {
+         // Injection is for the tests above; the default must still be the thing
+         // it is protecting. Asserted without writing anything anywhere.
+         const outcome = ensureMcpConfig({
+            dir: os.homedir(),
+            mcpPort: 4040,
+            enabled: false,
+         });
+         expect(outcome.action).toBe("disabled");
+         expect(
+            ensureMcpConfig({
+               dir: os.homedir(),
+               homeDir: os.homedir(),
+               mcpPort: 4040,
+               enabled: true,
+            }).action,
+         ).toBe("skipped-home");
       });
 
       it("does nothing when disabled", () => {
@@ -193,9 +243,47 @@ describe("ensureMcpConfig", () => {
          expect(run(dir, 4040, false).action).toBe("disabled");
          expect(fs.existsSync(cfg(dir))).toBe(false);
       });
+
+      it("skips an ephemeral port, which would be stale from the next boot on", () => {
+         // --mcp_port 0 binds a different port every run. Create-never-edit
+         // means the first boot's file is never corrected, so the second boot
+         // onward has a config naming a dead port, which is worse than none.
+         const dir = tmpDir();
+         const outcome = ensureMcpConfig({
+            dir,
+            mcpPort: 51234,
+            requestedPort: 0,
+            enabled: true,
+         });
+         expect(outcome.action).toBe("skipped-ephemeral-port");
+         expect(fs.existsSync(cfg(dir))).toBe(false);
+      });
+
+      it("still writes when a real port was requested", () => {
+         const dir = tmpDir();
+         const outcome = ensureMcpConfig({
+            dir,
+            mcpPort: 4040,
+            requestedPort: 4040,
+            enabled: true,
+         });
+         expect(outcome.action).toBe("created");
+      });
+   });
+
+   it("reports rather than throws when the directory does not exist", () => {
+      // The portable half of the failure contract: no mode bits involved, so it
+      // runs everywhere including Windows, where chmod does not restrict.
+      const outcome = run(path.join(tmpDir(), "no", "such", "dir"));
+      expect(outcome.action).toBe("failed");
+      if (outcome.action === "failed")
+         expect(outcome.problem).toContain("ENOENT");
    });
 
    it("reports rather than throws when the directory cannot be written", () => {
+      if (isWindows) {
+         return; // POSIX mode bits do not restrict on Windows; ACLs would
+      }
       if (typeof process.getuid === "function" && process.getuid() === 0) {
          return; // root ignores the mode bits, so there is nothing to provoke
       }
@@ -215,17 +303,40 @@ describe("logMcpConfigOutcome", () => {
    const outcomes: McpConfigOutcome[] = [
       { action: "disabled" },
       { action: "skipped-home", dir: "/home/x", mcpPort: 4040 },
-      { action: "skipped-git", dir: "/repo", mcpPort: 4040 },
+      {
+         action: "skipped-git",
+         dir: "/repo/sub",
+         gitRoot: "/repo",
+         rootConfig: undefined,
+         mcpPort: 4040,
+      },
+      {
+         action: "skipped-git",
+         dir: "/repo/sub",
+         gitRoot: "/repo",
+         rootConfig: "/repo/.mcp.json",
+         mcpPort: 4040,
+      },
+      { action: "skipped-ephemeral-port", dir: "/w", mcpPort: 51234 },
       { action: "created", file: "/w/.mcp.json" },
       { action: "exists", file: "/w/.mcp.json", mcpPort: 4040 },
-      { action: "failed", file: "/w/.mcp.json", problem: "EACCES" },
+      {
+         action: "failed",
+         file: "/w/.mcp.json",
+         problem: "EACCES",
+         mcpPort: 4040,
+      },
    ];
 
-   /** Collect everything the logger is told, at either level. */
+   /** Collect everything the logger is told, at any level. */
    function capture(run: () => void): string {
       const said: string[] = [];
       const info = logger.info.bind(logger);
       const warn = logger.warn.bind(logger);
+      const debug = logger.debug.bind(logger);
+      (logger as unknown as { debug: (m: string) => void }).debug = (m) => {
+         said.push(m);
+      };
       (logger as unknown as { info: (m: string) => void }).info = (m) => {
          said.push(m);
       };
@@ -235,6 +346,7 @@ describe("logMcpConfigOutcome", () => {
       try {
          run();
       } finally {
+         (logger as unknown as { debug: unknown }).debug = debug;
          (logger as unknown as { info: unknown }).info = info;
          (logger as unknown as { warn: unknown }).warn = warn;
       }
@@ -296,23 +408,44 @@ describe("logMcpConfigOutcome", () => {
    // reviewers landed on the same failure: no file, no tools, no message, and a
    // README that then sends you to relaunch the agent from a directory that has
    // nothing in it. Running inside your own project is the common case, not an
-   // edge one, so these two lines are load-bearing.
+   // edge one, so these lines are load-bearing.
    it("tells a user inside a git repo why there is no file, and what to run", () => {
       const said = capture(() =>
          logMcpConfigOutcome({
             action: "skipped-git",
-            dir: "/work/my-project",
+            dir: "/work/my-project/data",
+            gitRoot: "/work/my-project",
+            rootConfig: undefined,
             mcpPort: 15040,
          }),
       );
+      expect(said).toContain("/work/my-project/data");
+      // Naming the .git that stopped it. With a dotfiles repo in $HOME the cause
+      // can be many levels up, and `ls -a` in the working directory shows nothing.
       expect(said).toContain("/work/my-project");
-      expect(said).toContain("git working tree");
       expect(said).toContain(
-         "claude mcp add --transport http malloy http://localhost:15040/mcp -s user",
+         "claude mcp add --transport http malloy http://localhost:15040/mcp",
       );
    });
 
-   it("tells a user in their home directory the same thing", () => {
+   it("does not nag on every clone boot when a config already exists up-tree", () => {
+      // `bun run start` from a clone cds into packages/server and hits this on
+      // every single boot. The repo root already has a working .mcp.json, so an
+      // info-level line telling developers to register a second one is noise
+      // advising them to undo something that works.
+      const said = capture(() =>
+         logMcpConfigOutcome({
+            action: "skipped-git",
+            dir: "/repo/packages/server",
+            gitRoot: "/repo",
+            rootConfig: "/repo/.mcp.json",
+            mcpPort: 4040,
+         }),
+      );
+      expect(said).not.toContain("claude mcp add");
+   });
+
+   it("tells a user in their home directory why there is no file", () => {
       const said = capture(() =>
          logMcpConfigOutcome({
             action: "skipped-home",
@@ -322,8 +455,36 @@ describe("logMcpConfigOutcome", () => {
       );
       expect(said).toContain("/Users/x");
       expect(said).toContain(
-         "claude mcp add --transport http malloy http://localhost:15040/mcp -s user",
+         "claude mcp add --transport http malloy http://localhost:15040/mcp",
       );
+   });
+
+   it("tells a stuck user what to run when the write itself failed", () => {
+      // The branch where the user is most stuck was the only no-file case with a
+      // diagnosis but no remedy.
+      const said = capture(() =>
+         logMcpConfigOutcome({
+            action: "failed",
+            file: "/w/.mcp.json",
+            problem: "EACCES: permission denied",
+            mcpPort: 15040,
+         }),
+      );
+      expect(said).toContain("EACCES");
+      expect(said).toContain(
+         "claude mcp add --transport http malloy http://localhost:15040/mcp",
+      );
+   });
+
+   it("never advises user scope, which the file that caused the message outranks", () => {
+      // Claude Code resolves duplicates by precedence (local, then project, then
+      // user) and takes the winning entry whole. Every branch printing this
+      // command has, or may have, a project-scope .mcp.json in play, so `-s user`
+      // is silently shadowed by the very file being reported.
+      for (const outcome of outcomes) {
+         const said = capture(() => logMcpConfigOutcome(outcome));
+         expect(said).not.toContain("-s user");
+      }
    });
 
    it("never sends the reader to a hardcoded port on any branch that names one", () => {
@@ -331,8 +492,21 @@ describe("logMcpConfigOutcome", () => {
       // remediation line sends the reader somewhere nothing is listening.
       const branches: McpConfigOutcome[] = [
          { action: "exists", file: "/w/.mcp.json", mcpPort: 19999 },
-         { action: "skipped-git", dir: "/repo", mcpPort: 19999 },
+         {
+            action: "skipped-git",
+            dir: "/repo",
+            gitRoot: "/repo",
+            rootConfig: undefined,
+            mcpPort: 19999,
+         },
          { action: "skipped-home", dir: "/home/x", mcpPort: 19999 },
+         { action: "skipped-ephemeral-port", dir: "/w", mcpPort: 19999 },
+         {
+            action: "failed",
+            file: "/w/.mcp.json",
+            problem: "EACCES",
+            mcpPort: 19999,
+         },
       ];
       for (const outcome of branches) {
          const said = capture(() => logMcpConfigOutcome(outcome));
@@ -350,7 +524,25 @@ describe("mcpConfigEnabled", () => {
    });
 
    it("treats the spellings that mean 'leave it on' as leaving it on", () => {
-      for (const value of ["false", "FALSE", "0", "", "  false  "]) {
+      // `no` and `off` are in here because the variable is itself a negation:
+      // writing `no` into PUBLISHER_NO_MCP_CONFIG plainly means "do not disable".
+      for (const value of [
+         "false",
+         "FALSE",
+         "0",
+         "",
+         "  false  ",
+         "no",
+         "OFF",
+      ]) {
+         expect(mcpConfigEnabled({ PUBLISHER_NO_MCP_CONFIG: value })).toBe(
+            true,
+         );
+      }
+   });
+
+   it("sees through quotes an env file may have left attached", () => {
+      for (const value of ['"false"', "'false'", '"0"']) {
          expect(mcpConfigEnabled({ PUBLISHER_NO_MCP_CONFIG: value })).toBe(
             true,
          );
@@ -363,5 +555,38 @@ describe("mcpConfigEnabled", () => {
             false,
          );
       }
+   });
+
+   it("reads the variable at call time, not at import time", () => {
+      // --no-mcp-config sets the variable during parseArgs, long after import
+      // and long before the listen callback that reads it.
+      const saved = process.env.PUBLISHER_NO_MCP_CONFIG;
+      try {
+         delete process.env.PUBLISHER_NO_MCP_CONFIG;
+         expect(mcpConfigEnabled()).toBe(true);
+         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
+         expect(mcpConfigEnabled()).toBe(false);
+      } finally {
+         if (saved === undefined) delete process.env.PUBLISHER_NO_MCP_CONFIG;
+         else process.env.PUBLISHER_NO_MCP_CONFIG = saved;
+      }
+   });
+});
+
+describe("resolveBoundPort", () => {
+   // The piece that makes "no ports to know" true. It was inline in the listen
+   // callback and therefore untestable.
+   it("prefers the port the OS actually bound", () => {
+      expect(
+         resolveBoundPort({ address: "::", family: "IPv6", port: 51234 }, 0),
+      ).toBe(51234);
+   });
+
+   it("falls back to the requested port when the address is a pipe path", () => {
+      expect(resolveBoundPort("/tmp/sock", 4040)).toBe(4040);
+   });
+
+   it("falls back when there is no address at all", () => {
+      expect(resolveBoundPort(null, 4040)).toBe(4040);
    });
 });

@@ -131,22 +131,25 @@ claude
 Your agent may ask you to trust the folder, to use the server it found, and to approve the first tool
 call. Say yes, then ask it a question about the data.
 
-The file is only read by a session that **started** in that directory, so launch your agent there. It
-also stays on disk after you stop the server, still naming a port nothing is listening on, so delete
-it when you are done with that directory.
+The file is only read by a session that **started** in that directory, so launch your agent there.
+The one the server writes also stays on disk after you stop the server, still naming a port nothing is
+listening on, so delete it when you are done with that directory.
 
-**When the server does not write it.** Three cases, and it says which one applies in its startup log
-rather than leaving you to guess:
+**When the server does not write one.** Read the startup log rather than guessing: it always says
+which of these happened, and prints the command that connects an agent anyway.
 
 - The directory already has a `.mcp.json`. It is only ever created, never edited: your file is left
   exactly as it is, unread, because it may hold other servers and their credentials.
 - The directory is inside a git working tree. An untracked file in someone's checkout is a surprise
   in `git status` and gets committed by accident, so the server stays out. Your own project is
-  usually a git repo, so this case is common rather than exotic.
+  usually a git repo, so this case is common rather than exotic. It stays quiet when the repository
+  root already has a `.mcp.json`, which is what a clone of this repo has.
 - The directory is your home directory.
+- The MCP port was requested as `0`, meaning "any free port". That changes every run, so a file
+  naming it would be wrong from the next boot onward.
+- The write failed, for instance in a read-only directory. That one is a warning, not a note.
 
-In all three the server logs the one command that connects an agent anyway, and `--no-mcp-config`
-turns the whole thing off.
+`--no-mcp-config` turns the whole thing off, as does `PUBLISHER_NO_MCP_CONFIG=1`.
 
 To register the server for yourself rather than for one directory, so the tools are there whichever
 directory you launch from:
