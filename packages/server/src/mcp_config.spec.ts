@@ -424,6 +424,40 @@ describe("ensureMcpConfig", () => {
    );
 });
 
+/**
+ * Capture what the logger is told, then put it back EXACTLY as it was.
+ *
+ * `logger.info` and friends are inherited from winston's prototype, so assigning
+ * a replacement creates an own property that shadows it. Restoring by assigning
+ * a bound copy therefore leaves the shadow in place for the rest of the process,
+ * and this file runs 12th of 99 in the serial suite. The own-property snapshot is
+ * the difference between restoring and merely overwriting.
+ */
+function captureLogger(sink: string[]): () => void {
+   const levels = ["debug", "info", "warn"] as const;
+   const saved = levels.map((level) => ({
+      level,
+      own: Object.prototype.hasOwnProperty.call(logger, level),
+      value: (logger as unknown as Record<string, unknown>)[level],
+   }));
+   for (const level of levels) {
+      (logger as unknown as Record<string, (m: string) => void>)[level] = (
+         m,
+      ) => {
+         sink.push(String(m));
+      };
+   }
+   return () => {
+      for (const s of saved) {
+         if (s.own) {
+            (logger as unknown as Record<string, unknown>)[s.level] = s.value;
+         } else {
+            delete (logger as unknown as Record<string, unknown>)[s.level];
+         }
+      }
+   };
+}
+
 describe("logMcpConfigOutcome", () => {
    // These exist only to produce log text, so without a test nothing covers
    // whether the text is right or even emitted.
@@ -477,24 +511,11 @@ describe("logMcpConfigOutcome", () => {
    /** Collect everything the logger is told, at any level. */
    function capture(run: () => void): string {
       const said: string[] = [];
-      const info = logger.info.bind(logger);
-      const warn = logger.warn.bind(logger);
-      const debug = logger.debug.bind(logger);
-      (logger as unknown as { debug: (m: string) => void }).debug = (m) => {
-         said.push(m);
-      };
-      (logger as unknown as { info: (m: string) => void }).info = (m) => {
-         said.push(m);
-      };
-      (logger as unknown as { warn: (m: string) => void }).warn = (m) => {
-         said.push(m);
-      };
+      const restore = captureLogger(said);
       try {
          run();
       } finally {
-         (logger as unknown as { debug: unknown }).debug = debug;
-         (logger as unknown as { info: unknown }).info = info;
-         (logger as unknown as { warn: unknown }).warn = warn;
+         restore();
       }
       return said.join("\n");
    }
@@ -509,10 +530,7 @@ describe("logMcpConfigOutcome", () => {
       // The one branch whose text the user has to act on. A hardcoded 4040 here
       // would send them to a port nothing is listening on.
       const said: string[] = [];
-      const info = logger.info.bind(logger);
-      (logger as unknown as { info: (m: string) => void }).info = (m) => {
-         said.push(m);
-      };
+      const restore = captureLogger(said);
       try {
          logMcpConfigOutcome({
             action: "exists",
@@ -520,7 +538,7 @@ describe("logMcpConfigOutcome", () => {
             endpoint: ep(15040),
          });
       } finally {
-         (logger as unknown as { info: unknown }).info = info;
+         restore();
       }
       expect(said.join("\n")).toContain(
          `claude mcp add --transport http malloy '${ep(15040)}'`,
@@ -529,14 +547,11 @@ describe("logMcpConfigOutcome", () => {
 
    it("says it wrote the file, and how to turn that off", () => {
       const said: string[] = [];
-      const info = logger.info.bind(logger);
-      (logger as unknown as { info: (m: string) => void }).info = (m) => {
-         said.push(m);
-      };
+      const restore = captureLogger(said);
       try {
          logMcpConfigOutcome({ action: "created", file: "/w/.mcp.json" });
       } finally {
-         (logger as unknown as { info: unknown }).info = info;
+         restore();
       }
       expect(said.join("\n")).toContain("/w/.mcp.json");
       expect(said.join("\n")).toContain("--no-mcp-config");
@@ -596,11 +611,10 @@ describe("logMcpConfigOutcome", () => {
       const noFile = outcomes.filter((o) => o.action !== "created");
       for (const outcome of noFile) {
          const levels: string[] = [];
-         const original = {
-            debug: logger.debug.bind(logger),
-            info: logger.info.bind(logger),
-            warn: logger.warn.bind(logger),
-         };
+         // captureLogger snapshots whether each method was an own property and
+         // restores that exactly; this test then re-wraps on top to record the
+         // LEVEL rather than the text, and hands restoration back to it.
+         const restore = captureLogger([]);
          for (const level of ["debug", "info", "warn"] as const) {
             (logger as unknown as Record<string, (m: string) => void>)[level] =
                (_m) => {
@@ -610,7 +624,7 @@ describe("logMcpConfigOutcome", () => {
          try {
             logMcpConfigOutcome(outcome);
          } finally {
-            Object.assign(logger, original);
+            restore();
          }
          expect(levels).toEqual(["info"]);
       }
