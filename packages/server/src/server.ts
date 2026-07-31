@@ -1983,7 +1983,16 @@ const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
       ensureMcpConfig({
          dir: process.cwd(),
          mcpPort: MCP_PORT,
-         enabled: process.env.PUBLISHER_NO_MCP_CONFIG !== "true",
+         // Off under test. The integration suite boots servers on ephemeral
+         // ports with a package directory as cwd, so leaving this on wrote an
+         // untracked .mcp.json into the repo on every run, pointing at a port
+         // that died seconds later. A config aimed at a dead port is worse than
+         // none: the agent reports a connection failure rather than simply not
+         // finding a server. Decided here rather than inside ensureMcpConfig so
+         // that function stays a pure function of its arguments.
+         enabled:
+            process.env.PUBLISHER_NO_MCP_CONFIG !== "true" &&
+            process.env.NODE_ENV !== "test",
       }),
    );
 });
