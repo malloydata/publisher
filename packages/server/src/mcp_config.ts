@@ -36,8 +36,8 @@ export const MCP_CONFIG_FILENAME = ".mcp.json";
 /** What happened, so the caller can log it and tests can assert on it. */
 export type McpConfigOutcome =
    | { action: "disabled" }
-   | { action: "skipped-home"; dir: string }
-   | { action: "skipped-git"; dir: string }
+   | { action: "skipped-home"; dir: string; mcpPort: number }
+   | { action: "skipped-git"; dir: string; mcpPort: number }
    | { action: "created"; file: string }
    | { action: "exists"; file: string; mcpPort: number }
    | { action: "failed"; file: string; problem: string };
@@ -54,12 +54,19 @@ function malloyServer(mcpPort: number): Record<string, string> {
 /**
  * Is this directory inside a git working tree?
  *
- * A checkout belongs to somebody, and dropping an untracked file into one is
- * both a surprise in `git status` and usually wrong: a clone of this repo already
- * ships a `.mcp.json` at its root, and a scaffolded workspace writes its own. The
- * case this feature exists for, `npx` in a directory the user just made, is never
- * a repo. Walks up rather than shelling out to git, and treats `.git` as present
- * whether it is a directory or the file that worktrees and submodules use.
+ * A checkout belongs to somebody, and dropping an untracked file into one is both
+ * a surprise in `git status` and a thing that gets committed by accident. A clone
+ * of this repo is the sharp case: the documented `bun run start` chdirs into
+ * `packages/server`, so without this the file landed there, untracked, and not at
+ * the root where a session actually reads it.
+ *
+ * This is deliberately blunt: one `.git` anywhere above the working directory is
+ * enough, so it also covers a user's own project, which is a normal place to run
+ * the server. That case gets no file, so the caller logs the manual command
+ * rather than leaving them with nothing.
+ *
+ * Walks up rather than shelling out to git, and treats `.git` as present whether
+ * it is a directory or the file that worktrees and submodules use.
  */
 function insideGitWorkTree(dir: string): boolean {
    let current = path.resolve(dir);
@@ -69,6 +76,24 @@ function insideGitWorkTree(dir: string): boolean {
       if (parent === current) return false;
       current = parent;
    }
+}
+
+/**
+ * Is the feature on?
+ *
+ * A "stop writing to my filesystem" switch should honour `=1` as readily as
+ * `=true`, so any value turns it off except the spellings a reader plainly means
+ * as "leave it on". Bare truthiness got that backwards:
+ * `PUBLISHER_NO_MCP_CONFIG=false` disabled the very thing it names, because every
+ * non-empty string is truthy.
+ */
+export function mcpConfigEnabled(
+   env: NodeJS.ProcessEnv = process.env,
+): boolean {
+   const raw = env.PUBLISHER_NO_MCP_CONFIG;
+   if (raw === undefined) return true;
+   const value = raw.trim().toLowerCase();
+   return value === "" || value === "0" || value === "false";
 }
 
 /**
@@ -90,9 +115,10 @@ export function ensureMcpConfig(options: {
       // Inside the try because os.homedir() throws when HOME is unset and the uid
       // has no passwd entry, which is the ordinary distroless container shape.
       if (path.resolve(dir) === path.resolve(os.homedir())) {
-         return { action: "skipped-home", dir };
+         return { action: "skipped-home", dir, mcpPort };
       }
-      if (insideGitWorkTree(dir)) return { action: "skipped-git", dir };
+      if (insideGitWorkTree(dir))
+         return { action: "skipped-git", dir, mcpPort };
 
       const body =
          JSON.stringify(
@@ -132,7 +158,7 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
          // Deliberately does not claim to know what is in it. Reading the file is
          // the thing this module refuses to do.
          logger.info(
-            `Left the existing ${outcome.file} alone. If your agent cannot find this server, add it with: claude mcp add --transport http malloy http://localhost:${outcome.mcpPort}/mcp`,
+            `Left the existing ${outcome.file} alone. If your agent cannot find this server, add it with: claude mcp add --transport http malloy http://localhost:${outcome.mcpPort}/mcp -s user`,
          );
          return;
       case "failed":
@@ -140,8 +166,22 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
             `Could not write ${outcome.file} (${outcome.problem}). An agent started here will not find this server on its own.`,
          );
          return;
+      // The two skips have to speak. They are the branches where the user gets no
+      // file and no tools, and silence there sends them to the README's other
+      // remedy, relaunching the agent from this directory, which cannot work
+      // because there is nothing here to find. One `.git` anywhere above the
+      // working directory reaches this line, which includes the ordinary case of
+      // running inside your own project.
       case "skipped-git":
+         logger.info(
+            `Did not write ${MCP_CONFIG_FILENAME} because ${outcome.dir} is inside a git working tree. To connect an agent, run: claude mcp add --transport http malloy http://localhost:${outcome.mcpPort}/mcp -s user`,
+         );
+         return;
       case "skipped-home":
+         logger.info(
+            `Did not write ${MCP_CONFIG_FILENAME} into your home directory (${outcome.dir}). To connect an agent, run: claude mcp add --transport http malloy http://localhost:${outcome.mcpPort}/mcp -s user`,
+         );
+         return;
       case "disabled":
          return;
       default: {

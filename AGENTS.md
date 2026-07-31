@@ -25,7 +25,7 @@ bun run build && bun run start        # REST on :4000, MCP on :4040
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
 
-On startup the server creates a `.mcp.json` in the directory it was run in, naming the MCP port it bound, which is why a session started in that directory finds the `malloy_*` tools with no registration step. It only ever creates: an existing file is left exactly as it is, unread, and the server prints the command to add itself instead. It also skips git working trees, so none of this applies from a clone, which ships its own `.mcp.json` at the repo root. `--no-mcp-config` turns it off.
+On startup the server creates a `.mcp.json` in the directory it was run in, naming the MCP port it bound, which is why a session started in that directory finds the `malloy_*` tools with no registration step. It does not always create one, so do not promise a user the file exists without checking: it skips a directory that already has a `.mcp.json` (left exactly as it is, unread, because it may hold other servers and their credentials), any directory inside a git working tree (a clone included, which ships its own at the repo root, but also the user's own project), and the home directory. Each case is logged with the `claude mcp add` command that connects an agent anyway, so read the startup output rather than assuming, and `ls -a` if you need certainty. The file also outlives the server, so one left from an earlier run can name a dead port. `--no-mcp-config` turns it off.
 
 Poll until the server reports `serving` rather than assuming a fixed wait. From a clone the sample packages are read straight from `examples/`, so this is usually seconds. A first `npx` run has to download the published package and then fetch the samples from GitHub, which is network-bound and can push it to a minute or two:
 
@@ -60,7 +60,8 @@ Tell the three apart by what is missing:
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `malloy` is listed in `/mcp` but disconnected | client connected before the server existed | Reconnect (or relaunch the agent) |
-| `malloy` is not listed in `/mcp` at all | session started outside this directory | relaunch the agent from here, or register at user scope (below) |
+| `malloy` is not listed in `/mcp` at all, and `.mcp.json` is here | session started outside this directory | relaunch the agent from here, or register at user scope (below) |
+| `malloy` is not listed in `/mcp` at all, and there is no `.mcp.json` | the server skipped writing one (git working tree, home directory, or `--no-mcp-config`) | register at user scope (below); relaunching cannot help, there is nothing here to find |
 | tools present, no skills auto-invoked | same as above | relaunch the agent from here; skills are rescanned as the working directory changes |
 
 The registration that stops the directory mattering, because it is stored per user rather than per project:

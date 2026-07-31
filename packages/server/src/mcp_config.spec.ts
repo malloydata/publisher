@@ -8,6 +8,7 @@ import {
    ensureMcpConfig,
    logMcpConfigOutcome,
    MCP_CONFIG_FILENAME,
+   mcpConfigEnabled,
    type McpConfigOutcome,
 } from "./mcp_config";
 
@@ -213,12 +214,32 @@ describe("logMcpConfigOutcome", () => {
    // whether the text is right or even emitted.
    const outcomes: McpConfigOutcome[] = [
       { action: "disabled" },
-      { action: "skipped-home", dir: "/home/x" },
-      { action: "skipped-git", dir: "/repo" },
+      { action: "skipped-home", dir: "/home/x", mcpPort: 4040 },
+      { action: "skipped-git", dir: "/repo", mcpPort: 4040 },
       { action: "created", file: "/w/.mcp.json" },
       { action: "exists", file: "/w/.mcp.json", mcpPort: 4040 },
       { action: "failed", file: "/w/.mcp.json", problem: "EACCES" },
    ];
+
+   /** Collect everything the logger is told, at either level. */
+   function capture(run: () => void): string {
+      const said: string[] = [];
+      const info = logger.info.bind(logger);
+      const warn = logger.warn.bind(logger);
+      (logger as unknown as { info: (m: string) => void }).info = (m) => {
+         said.push(m);
+      };
+      (logger as unknown as { warn: (m: string) => void }).warn = (m) => {
+         said.push(m);
+      };
+      try {
+         run();
+      } finally {
+         (logger as unknown as { info: unknown }).info = info;
+         (logger as unknown as { warn: unknown }).warn = warn;
+      }
+      return said.join("\n");
+   }
 
    it("handles every outcome variant without throwing", () => {
       for (const outcome of outcomes) {
@@ -263,24 +284,84 @@ describe("logMcpConfigOutcome", () => {
       expect(said.join("\n")).toContain("--no-mcp-config");
    });
 
-   it("stays silent on the paths where nothing happened", () => {
-      const said: string[] = [];
-      const info = logger.info.bind(logger);
-      const warn = logger.warn.bind(logger);
-      (logger as unknown as { info: (m: string) => void }).info = (m) => {
-         said.push(m);
-      };
-      (logger as unknown as { warn: (m: string) => void }).warn = (m) => {
-         said.push(m);
-      };
-      try {
-         logMcpConfigOutcome({ action: "disabled" });
-         logMcpConfigOutcome({ action: "skipped-git", dir: "/repo" });
-         logMcpConfigOutcome({ action: "skipped-home", dir: "/home/x" });
-      } finally {
-         (logger as unknown as { info: unknown }).info = info;
-         (logger as unknown as { warn: unknown }).warn = warn;
+   it("stays silent only when the user asked for silence", () => {
+      // `disabled` is the one branch where nothing needs saying: the user passed
+      // the flag, so no file is exactly what they asked for.
+      expect(capture(() => logMcpConfigOutcome({ action: "disabled" }))).toBe(
+         "",
+      );
+   });
+
+   // Both skips were silent when this shipped for review, and three separate
+   // reviewers landed on the same failure: no file, no tools, no message, and a
+   // README that then sends you to relaunch the agent from a directory that has
+   // nothing in it. Running inside your own project is the common case, not an
+   // edge one, so these two lines are load-bearing.
+   it("tells a user inside a git repo why there is no file, and what to run", () => {
+      const said = capture(() =>
+         logMcpConfigOutcome({
+            action: "skipped-git",
+            dir: "/work/my-project",
+            mcpPort: 15040,
+         }),
+      );
+      expect(said).toContain("/work/my-project");
+      expect(said).toContain("git working tree");
+      expect(said).toContain(
+         "claude mcp add --transport http malloy http://localhost:15040/mcp -s user",
+      );
+   });
+
+   it("tells a user in their home directory the same thing", () => {
+      const said = capture(() =>
+         logMcpConfigOutcome({
+            action: "skipped-home",
+            dir: "/Users/x",
+            mcpPort: 15040,
+         }),
+      );
+      expect(said).toContain("/Users/x");
+      expect(said).toContain(
+         "claude mcp add --transport http malloy http://localhost:15040/mcp -s user",
+      );
+   });
+
+   it("never sends the reader to a hardcoded port on any branch that names one", () => {
+      // The whole point of reading back the bound port. A 4040 leaking into any
+      // remediation line sends the reader somewhere nothing is listening.
+      const branches: McpConfigOutcome[] = [
+         { action: "exists", file: "/w/.mcp.json", mcpPort: 19999 },
+         { action: "skipped-git", dir: "/repo", mcpPort: 19999 },
+         { action: "skipped-home", dir: "/home/x", mcpPort: 19999 },
+      ];
+      for (const outcome of branches) {
+         const said = capture(() => logMcpConfigOutcome(outcome));
+         expect(said).toContain("19999");
+         expect(said).not.toContain("4040");
       }
-      expect(said).toEqual([]);
+   });
+});
+
+describe("mcpConfigEnabled", () => {
+   // `!process.env.X` made PUBLISHER_NO_MCP_CONFIG=false disable the thing it
+   // names, because every non-empty string is truthy.
+   it("is on when the variable is not set", () => {
+      expect(mcpConfigEnabled({})).toBe(true);
+   });
+
+   it("treats the spellings that mean 'leave it on' as leaving it on", () => {
+      for (const value of ["false", "FALSE", "0", "", "  false  "]) {
+         expect(mcpConfigEnabled({ PUBLISHER_NO_MCP_CONFIG: value })).toBe(
+            true,
+         );
+      }
+   });
+
+   it("turns off for any other value, so =1 works as well as =true", () => {
+      for (const value of ["1", "true", "yes", "please"]) {
+         expect(mcpConfigEnabled({ PUBLISHER_NO_MCP_CONFIG: value })).toBe(
+            false,
+         );
+      }
    });
 });

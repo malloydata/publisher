@@ -114,25 +114,39 @@ they are, so a `--` there leaves the flags after it to arrive as stray arguments
 
 ## Point your agent at it
 
-This is the fast path to the "wow," and for Claude Code there is nothing to configure. On startup the
-server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port it actually
-bound, so:
+This is the fast path to the "wow," and for Claude Code there is usually nothing to configure. On
+startup the server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port it
+actually bound. In one terminal:
 
 ```bash
-npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json
-claude                                                       # in that same directory
+npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json, then keeps running
 ```
 
-is the whole setup. Say yes to the prompts your agent shows you the first time (trusting the folder,
-using the server it found, and the first tool call) and ask it a question about the data.
+and in a second terminal, in that same directory:
 
-The file is only read by a session that **started** in that directory, so launch your agent there.
+```bash
+claude
+```
 
-It is only ever created, never edited. If the directory already has a `.mcp.json` the server leaves
-it exactly as it is and prints the one command to add this server yourself, because that file may
-hold other servers and their credentials. It also stays out of git working trees: a clone of this
-repo already ships a `.mcp.json`, and a scaffolded workspace writes its own, so there is nothing
-useful to add. Pass `--no-mcp-config` to turn it off entirely.
+Your agent may ask you to trust the folder, to use the server it found, and to approve the first tool
+call. Say yes, then ask it a question about the data.
+
+The file is only read by a session that **started** in that directory, so launch your agent there. It
+also stays on disk after you stop the server, still naming a port nothing is listening on, so delete
+it when you are done with that directory.
+
+**When the server does not write it.** Three cases, and it says which one applies in its startup log
+rather than leaving you to guess:
+
+- The directory already has a `.mcp.json`. It is only ever created, never edited: your file is left
+  exactly as it is, unread, because it may hold other servers and their credentials.
+- The directory is inside a git working tree. An untracked file in someone's checkout is a surprise
+  in `git status` and gets committed by accident, so the server stays out. Your own project is
+  usually a git repo, so this case is common rather than exotic.
+- The directory is your home directory.
+
+In all three the server logs the one command that connects an agent anyway, and `--no-mcp-config`
+turns the whole thing off.
 
 To register the server for yourself rather than for one directory, so the tools are there whichever
 directory you launch from:
@@ -141,10 +155,11 @@ directory you launch from:
 claude mcp add --transport http malloy http://localhost:4040/mcp -s user
 ```
 
-That is also the fix when an agent reports no `malloy_*` tools, which is almost always because the
-session started somewhere other than the directory holding the config, and no message anywhere says
-so. Other MCP clients take the same endpoint through their own config file; see
-[docs/ai-agents.md](docs/ai-agents.md).
+That is also the fix when an agent reports no `malloy_*` tools. Two things cause it: the session
+started somewhere other than the directory holding the config, or there is no config there because
+the server skipped one of the three cases above. Check the server's startup log, which says which,
+and `ls -a` to see whether the file is there at all. Other MCP clients take the same endpoint through
+their own config file; see [docs/ai-agents.md](docs/ai-agents.md).
 
 Then just ask, in plain English:
 

@@ -49,7 +49,11 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
-import { ensureMcpConfig, logMcpConfigOutcome } from "./mcp_config";
+import {
+   ensureMcpConfig,
+   logMcpConfigOutcome,
+   mcpConfigEnabled,
+} from "./mcp_config";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
@@ -138,7 +142,7 @@ function parseArgs() {
             "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
          );
          console.log(
-            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written when absent, so an agent opened here finds this server)",
+            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server, unless the directory already has one or is your home directory or inside a git working tree)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -1984,16 +1988,24 @@ const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
    // failure instead of simply not finding a server.
    const bound = mcpServer.address();
    const boundPort = typeof bound === "object" && bound ? bound.port : MCP_PORT;
-   // cwd rather than server_root: the file is for whoever opens an agent here.
-   logMcpConfigOutcome(
-      ensureMcpConfig({
-         dir: process.cwd(),
-         mcpPort: boundPort,
-         // Any truthy spelling turns it off. This is a "stop writing to my
-         // filesystem" switch, so `=1` must work as well as `=true`.
-         enabled: !process.env.PUBLISHER_NO_MCP_CONFIG,
-      }),
-   );
+   // ensureMcpConfig cannot throw, but the arguments can: process.cwd() raises
+   // ENOENT when the working directory has been removed. A throw here is an
+   // uncaught exception inside a listen callback, which kills a server that has
+   // already bound both ports. A convenience file must not be able to do that.
+   try {
+      // cwd rather than server_root: the file is for whoever opens an agent here.
+      logMcpConfigOutcome(
+         ensureMcpConfig({
+            dir: process.cwd(),
+            mcpPort: boundPort,
+            enabled: mcpConfigEnabled(),
+         }),
+      );
+   } catch (error) {
+      logger.warn(
+         `Skipped .mcp.json setup (${error instanceof Error ? error.message : String(error)}). An agent started here will not find this server on its own.`,
+      );
+   }
 });
 
 mcpServer.timeout = 600000;
