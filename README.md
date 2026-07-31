@@ -143,22 +143,11 @@ may hold other servers and their credentials. If you made a scratch directory fo
 directory is enough. If you are ever unsure what an agent is connected to, ask it to run
 `malloy_getContext`, which names the environment and packages it is actually talking to.
 
-**When the server does not write one.** Read the startup log rather than guessing: it always says
-which of these happened, and prints the command that connects an agent anyway.
-
-- The directory already has a `.mcp.json`. It is only ever created, never edited: your file is left
-  exactly as it is, unread, because it may hold other servers and their credentials.
-- The directory is inside a git working tree. An untracked file in someone's checkout is a surprise
-  in `git status` and gets committed by accident, so the server stays out. Your own project is
-  usually a git repo, so this case is common rather than exotic. If the repository root already has a
-  `.mcp.json`, which is what a clone of this repo has, the log names that file too.
-- The directory is your home directory, or the filesystem root.
-- The MCP port it bound is not the one it asked for, which happens with `--mcp_port 0` ("any free
-  port") and, under Bun, with a non-numeric `MCP_PORT`. That port changes every run, so a file naming
-  it would be wrong from the next boot onward. Under Node a non-numeric port is refused at startup
-  rather than skipped.
-- The write failed, for instance in a read-only directory. Nothing is broken when this happens: the
-  server is serving, and only the convenience file is missing.
+**When the server does not write one.** It skips a directory that already has a `.mcp.json`, anything
+inside a git working tree (so, usually, your own project), your home directory, and a few other cases.
+You do not have to memorise them: whenever it skips, it says so in the startup log and prints the one
+command that connects an agent anyway. The full list is in
+[docs/configuration.md](docs/configuration.md#the-mcpjson-the-server-writes).
 
 `--no-mcp-config` turns the whole thing off, as does `PUBLISHER_NO_MCP_CONFIG=1`.
 

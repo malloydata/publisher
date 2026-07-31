@@ -20,21 +20,16 @@ first run, delete the cache under `~/.npm/_npx` and run it again.
 
 ### A file appears in the directory you run from
 
-On startup the server writes a `.mcp.json` into its **working** directory (not `--server_root`),
-naming the MCP port it bound, so an AI agent started in that directory connects with no manual
-setup. It only ever creates: an existing file is left untouched and unread. It also skips a git
-working tree, your home directory, the filesystem root, and any run whose MCP port is not the one
-requested. In each of those it logs the `claude mcp add` command instead, at `info`. Turning the
-feature off with `PUBLISHER_NO_MCP_CONFIG` is the one case that is silent, deliberately: you asked
-for nothing, so it says nothing.
+On startup the server writes a `.mcp.json` into its **working** directory (not `--server_root`) so an AI
+agent started there connects with no manual setup. It only ever creates, never edits, and it skips
+several cases including git working trees and the home directory; see
+[configuration.md](configuration.md#the-mcpjson-the-server-writes) for the rules.
 
-Two things to know when you are running this as a service rather than at a terminal. First, the file
-outlives the process and is never corrected, so a stale one does not simply fail: it points an agent
-at whatever else is on that port now, which may be a different Publisher serving different data.
-Comparing URLs does not settle it, since two Publishers on the same port give the same URL; ask the agent what it is connected to instead. Second, set
-`PUBLISHER_NO_MCP_CONFIG=1` for unattended deployments, which is what the Docker image does; nothing
-starts an agent session in a service, so the file is pure side effect there. A process manager that
-leaves the working directory unset lands you in `/`, which the server now skips on its own.
+For a service rather than a terminal, set `PUBLISHER_NO_MCP_CONFIG=1`, which is what the Docker image
+does: nothing starts an agent session in a service, so the file is pure side effect there. Two things
+otherwise bite. The file outlives the process and is never corrected, so a stale one can point an agent
+at whatever holds that port now. And a process manager that leaves the working directory unset lands in
+`/`, which the server skips on its own.
 
 ## Verify it's working
 
