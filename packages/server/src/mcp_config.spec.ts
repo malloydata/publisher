@@ -40,6 +40,24 @@ const ep = (port: number) => `http://127.0.0.1:${port}/mcp`;
 
 const isWindows = process.platform === "win32";
 
+/**
+ * Can this process create a symlink? Windows needs a privilege or Developer
+ * Mode for it, so several hazards here are unstageable on CI. Probed rather
+ * than assumed, and used with `skipIf` so an unstageable test reports as
+ * skipped instead of passing without asserting anything.
+ */
+const canSymlink = ((): boolean => {
+   const probe = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-symlink-probe-"));
+   try {
+      fs.symlinkSync(path.join(probe, "target"), path.join(probe, "link"));
+      return true;
+   } catch {
+      return false;
+   } finally {
+      fs.rmSync(probe, { recursive: true, force: true });
+   }
+})();
+
 afterEach(() => {
    while (dirs.length) {
       fs.rmSync(dirs.pop() as string, { recursive: true, force: true });
@@ -111,69 +129,67 @@ describe("ensureMcpConfig", () => {
    });
 
    describe("symlinks", () => {
-      it("does NOT create the target of a dangling symlink", () => {
-         // The hazard `existsSync`-then-write could not see: the check says
-         // absent, and the write follows the link and creates a file elsewhere.
-         const dir = tmpDir();
-         const victimDir = tmpDir();
-         const victim = path.join(victimDir, "victim.json");
-         try {
+      it.skipIf(!canSymlink)(
+         "does NOT create the target of a dangling symlink",
+         () => {
+            // The hazard `existsSync`-then-write could not see: the check says
+            // absent, and the write follows the link and creates a file elsewhere.
+            const dir = tmpDir();
+            const victimDir = tmpDir();
+            const victim = path.join(victimDir, "victim.json");
             fs.symlinkSync(victim, cfg(dir));
-         } catch {
-            return; // unprivileged Windows cannot create one; hazard unreachable
-         }
+            expect(fs.existsSync(victim)).toBe(false); // precondition
 
-         expect(fs.existsSync(victim)).toBe(false); // precondition
+            const outcome = run(dir);
 
-         const outcome = run(dir);
+            // The safety property, asserted AFTER the call. It was above the call
+            // for one commit, where it proved nothing: on Windows, which accepts
+            // "failed", a version that wrote through the link and then errored for
+            // any other reason would have passed green.
+            expect(fs.existsSync(victim)).toBe(false);
+            // Windows returns ENOENT rather than EEXIST for a dangling reparse
+            // point, so the label differs while the refusal does not. Both outcomes
+            // leave the file alone; only POSIX can promise which one.
+            expect(["exists", "failed"]).toContain(outcome.action);
+            if (!isWindows) expect(outcome.action).toBe("exists");
+         },
+      );
 
-         // The safety property, asserted AFTER the call. It was above the call
-         // for one commit, where it proved nothing: on Windows, which accepts
-         // "failed", a version that wrote through the link and then errored for
-         // any other reason would have passed green.
-         expect(fs.existsSync(victim)).toBe(false);
-         // Windows returns ENOENT rather than EEXIST for a dangling reparse
-         // point, so the label differs while the refusal does not. Both outcomes
-         // leave the file alone; only POSIX can promise which one.
-         expect(["exists", "failed"]).toContain(outcome.action);
-         if (!isWindows) expect(outcome.action).toBe("exists");
-      });
-
-      it("does not modify the target of a symlink to a real file", () => {
-         const dir = tmpDir();
-         const victimDir = tmpDir();
-         const victim = path.join(victimDir, "package.json");
-         const body = JSON.stringify({ name: "someone-elses-file" });
-         fs.writeFileSync(victim, body);
-         try {
+      it.skipIf(!canSymlink)(
+         "does not modify the target of a symlink to a real file",
+         () => {
+            const dir = tmpDir();
+            const victimDir = tmpDir();
+            const victim = path.join(victimDir, "package.json");
+            const body = JSON.stringify({ name: "someone-elses-file" });
+            fs.writeFileSync(victim, body);
             fs.symlinkSync(victim, cfg(dir));
-         } catch {
-            return; // unprivileged Windows cannot create one
-         }
+            expect(run(dir).action).toBe("exists");
+            expect(fs.readFileSync(victim, "utf8")).toBe(body);
+         },
+      );
+   });
 
+   it.skipIf(isWindows)(
+      "returns promptly on a FIFO instead of hanging the process",
+      () => {
+         // A blocking read here stalls the event loop and takes /health with it.
+         // `wx` never opens it for reading, so this must be fast and inert.
+         // Windows has no FIFO in the filesystem namespace (named pipes live under
+         // \\.\pipe), and its mkfifo, if git-bash puts one on PATH, does not make
+         // something Node reports as a FIFO. The hazard does not exist there.
+         const dir = tmpDir();
+         try {
+            execFileSync("mkfifo", [cfg(dir)]);
+         } catch {
+            return; // no mkfifo on this platform; nothing to assert
+         }
+         const started = Date.now();
          expect(run(dir).action).toBe("exists");
-         expect(fs.readFileSync(victim, "utf8")).toBe(body);
-      });
-   });
-
-   it("returns promptly on a FIFO instead of hanging the process", () => {
-      // A blocking read here stalls the event loop and takes /health with it.
-      // `wx` never opens it for reading, so this must be fast and inert.
-      // Windows has no FIFO in the filesystem namespace (named pipes live under
-      // \\.\pipe), and its mkfifo, if git-bash puts one on PATH, does not make
-      // something Node reports as a FIFO. The hazard does not exist there.
-      if (isWindows) return;
-      const dir = tmpDir();
-      try {
-         execFileSync("mkfifo", [cfg(dir)]);
-      } catch {
-         return; // no mkfifo on this platform; nothing to assert
-      }
-      const started = Date.now();
-      expect(run(dir).action).toBe("exists");
-      expect(Date.now() - started).toBeLessThan(2000);
-      expect(fs.lstatSync(cfg(dir)).isFIFO()).toBe(true);
-   });
+         expect(Date.now() - started).toBeLessThan(2000);
+         expect(fs.lstatSync(cfg(dir)).isFIFO()).toBe(true);
+      },
+   );
 
    describe("directories it stays out of", () => {
       it("skips a git work tree", () => {
@@ -234,23 +250,26 @@ describe("ensureMcpConfig", () => {
          expect(fs.existsSync(cfg(home))).toBe(false);
       });
 
-      it("skips a home directory reached through a symlink", () => {
-         // Mutation-proven gap: swapping realpathSync back to path.resolve left
-         // the whole suite green, because every other test resolves its tmpdir
-         // first. An automounted /home is the real-world shape.
-         const realHome = tmpDir();
-         const linkedHome = path.join(tmpDir(), "home-link");
-         fs.symlinkSync(realHome, linkedHome);
-         const outcome = ensureMcpConfig({
-            dir: realHome,
-            homeDir: linkedHome,
-            endpoint: ep(4040),
-            requestedPort: 4040,
-            boundPort: 4040,
-         });
-         expect(outcome.action).toBe("skipped-home");
-         expect(fs.existsSync(cfg(realHome))).toBe(false);
-      });
+      it.skipIf(!canSymlink)(
+         "skips a home directory reached through a symlink",
+         () => {
+            // Mutation-proven gap: swapping realpathSync back to path.resolve left
+            // the whole suite green, because every other test resolves its tmpdir
+            // first. An automounted /home is the real-world shape.
+            const realHome = tmpDir();
+            const linkedHome = path.join(tmpDir(), "home-link");
+            fs.symlinkSync(realHome, linkedHome);
+            const outcome = ensureMcpConfig({
+               dir: realHome,
+               homeDir: linkedHome,
+               endpoint: ep(4040),
+               requestedPort: 4040,
+               boundPort: 4040,
+            });
+            expect(outcome.action).toBe("skipped-home");
+            expect(fs.existsSync(cfg(realHome))).toBe(false);
+         },
+      );
 
       it("skips the filesystem root", () => {
          // Also mutation-proven: deleting the root guard left the suite green,
@@ -347,21 +366,22 @@ describe("ensureMcpConfig", () => {
          expect(outcome.problem).toContain("ENOENT");
    });
 
-   it("reports rather than throws when the directory cannot be written", () => {
-      if (isWindows) {
-         return; // POSIX mode bits do not restrict on Windows; ACLs would
-      }
-      if (typeof process.getuid === "function" && process.getuid() === 0) {
-         return; // root ignores the mode bits, so there is nothing to provoke
-      }
-      const dir = tmpDir();
-      fs.chmodSync(dir, 0o500);
-      try {
-         expect(run(dir).action).toBe("failed");
-      } finally {
-         fs.chmodSync(dir, 0o700);
-      }
-   });
+   // POSIX mode bits do not restrict on Windows; ACLs would.
+   it.skipIf(isWindows)(
+      "reports rather than throws when the directory cannot be written",
+      () => {
+         if (typeof process.getuid === "function" && process.getuid() === 0) {
+            return; // root ignores the mode bits, so there is nothing to provoke
+         }
+         const dir = tmpDir();
+         fs.chmodSync(dir, 0o500);
+         try {
+            expect(run(dir).action).toBe("failed");
+         } finally {
+            fs.chmodSync(dir, 0o700);
+         }
+      },
+   );
 });
 
 describe("logMcpConfigOutcome", () => {
