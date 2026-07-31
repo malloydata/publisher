@@ -114,7 +114,9 @@ they are, so a `--` there leaves the flags after it to arrive as stray arguments
 
 ## Point your agent at it
 
-This is the fast path to the "wow," and for Claude Code there is usually nothing to configure. On
+This is the fast path to the "wow." In a directory you just made for the purpose there is nothing
+to configure; in a directory inside a git repo, which most real projects are, the server tells you
+the one command to run instead. On
 startup the server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port it
 actually bound. In one terminal:
 
@@ -132,8 +134,13 @@ Your agent may ask you to trust the folder, to use the server it found, and to a
 call. Say yes, then ask it a question about the data.
 
 The file is only read by a session that **started** in that directory, so launch your agent there.
-The one the server writes also stays on disk after you stop the server, still naming a port nothing is
-listening on, so delete it when you are done with that directory.
+
+It also stays on disk after you stop the server, and is never corrected. That matters more than a
+broken link: if something else later holds that port, perhaps a second Publisher serving different
+data, an agent started there connects to it and answers confidently from the wrong model. So when a
+directory's file is one the server wrote, delete it once you are done with that directory, and if you
+are unsure, check that the URL in it matches the endpoint in the server's startup log. Do not delete
+a `.mcp.json` you did not create: it may hold other servers and their credentials.
 
 **When the server does not write one.** Read the startup log rather than guessing: it always says
 which of these happened, and prints the command that connects an agent anyway.
@@ -144,10 +151,11 @@ which of these happened, and prints the command that connects an agent anyway.
   in `git status` and gets committed by accident, so the server stays out. Your own project is
   usually a git repo, so this case is common rather than exotic. If the repository root already has a
   `.mcp.json`, which is what a clone of this repo has, the log names that file too.
-- The directory is your home directory.
+- The directory is your home directory, or the filesystem root.
 - The MCP port it bound is not the one it asked for, which happens with `--mcp_port 0` ("any free
-  port") and with a non-numeric `MCP_PORT`. That port changes every run, so a file naming it would be
-  wrong from the next boot onward.
+  port") and, under Bun, with a non-numeric `MCP_PORT`. That port changes every run, so a file naming
+  it would be wrong from the next boot onward. Under Node a non-numeric port is refused at startup
+  rather than skipped.
 - The write failed, for instance in a read-only directory. Nothing is broken when this happens: the
   server is serving, and only the convenience file is missing.
 
@@ -157,7 +165,7 @@ To register the server for yourself rather than for one directory, so the tools 
 directory you launch from:
 
 ```bash
-claude mcp add --transport http malloy http://localhost:4040/mcp -s user
+claude mcp add --transport http malloy http://127.0.0.1:4040/mcp -s user
 ```
 
 That is also the fix when an agent reports no `malloy_*` tools. Two things cause it: the session

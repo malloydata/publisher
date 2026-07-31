@@ -115,8 +115,12 @@ export function resolveClientHost(
    address: ReturnType<import("net").Server["address"]>,
    fallbackHost: string,
 ): string {
-   const raw =
+   const candidate =
       typeof address === "object" && address ? address.address : fallbackHost;
+   // Both runtimes populate `address` for a TCP socket, but this runs in a
+   // listen callback where a throw kills an already-bound server, so a missing
+   // or non-string value degrades to the configured host instead.
+   const raw = typeof candidate === "string" && candidate ? candidate : "";
    if (raw === "0.0.0.0" || raw === "") return "127.0.0.1";
    if (raw === "::" || raw === "::0") return "[::1]";
    if (!raw.includes(":")) return raw;
@@ -343,7 +347,7 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
          // This fires on every boot of a scaffolded package, where the file is
          // almost always correct, so it must not read as a warning.
          logger.info(
-            `Left the existing ${outcome.file} alone, unread. This server is at ${outcome.endpoint}; if your agent does not list malloy, run this from the directory you start it in: ${addCommand(outcome.endpoint)}`,
+            `Left the existing ${outcome.file} alone, unread. This server is at ${outcome.endpoint}. Check that the file names the same URL, because a stale one points an agent at whatever else is on that port. To repoint it: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "failed":

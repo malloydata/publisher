@@ -23,14 +23,18 @@ first run, delete the cache under `~/.npm/_npx` and run it again.
 On startup the server writes a `.mcp.json` into its **working** directory (not `--server_root`),
 naming the MCP port it bound, so an AI agent started in that directory connects with no manual
 setup. It only ever creates: an existing file is left untouched and unread. It also skips a git
-working tree, your home directory, and any run whose MCP port is not the one requested. Whenever it
-does not write one it logs the `claude mcp add` command instead.
+working tree, your home directory, the filesystem root, and any run whose MCP port is not the one
+requested. In each of those it logs the `claude mcp add` command instead, at `info`. Turning the
+feature off with `PUBLISHER_NO_MCP_CONFIG` is the one case that is silent, deliberately: you asked
+for nothing, so it says nothing.
 
-Two things to know when you are running this as a service rather than at a terminal. The file
-outlives the process, so one left from an earlier run can name a port nothing is on. And a process
-manager that leaves the working directory unset can put it somewhere surprising: systemd defaults
-system units to `/`. Set `PUBLISHER_NO_MCP_CONFIG=1` for unattended deployments, which is what the
-Docker image does.
+Two things to know when you are running this as a service rather than at a terminal. First, the file
+outlives the process and is never corrected, so a stale one does not simply fail: it points an agent
+at whatever else is on that port now, which may be a different Publisher serving different data.
+Check that the URL in the file matches the endpoint in this boot's log. Second, set
+`PUBLISHER_NO_MCP_CONFIG=1` for unattended deployments, which is what the Docker image does; nothing
+starts an agent session in a service, so the file is pure side effect there. A process manager that
+leaves the working directory unset lands you in `/`, which the server now skips on its own.
 
 ## Verify it's working
 

@@ -1992,9 +1992,11 @@ const mcpServer = mcpApp.listen(
       // a real port is listening. The listening line uses it as well, which is
       // why it no longer reads `http://127.0.0.1:0`.
       const boundPort = resolveBoundPort(this.address(), MCP_PORT);
-      logger.info(
-         `MCP server listening at http://${PUBLISHER_HOST}:${boundPort}`,
-      );
+      // Through resolveClientHost so an IPv6 bind prints a bracketed, dialable
+      // URL: the raw host produced `http://::1:4040`, which no client parses,
+      // and this is a line people copy.
+      const clientHost = resolveClientHost(this.address(), PUBLISHER_HOST);
+      logger.info(`MCP server listening at http://${clientHost}:${boundPort}`);
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
       if (mcpConfigEnabled()) {
@@ -2009,10 +2011,7 @@ const mcpServer = mcpApp.listen(
             // resolves to both loopback families while the server binds only one,
             // so another local process can hold the same port on the other family
             // and receive the agent's traffic instead.
-            const endpoint = mcpEndpoint(
-               resolveClientHost(this.address(), PUBLISHER_HOST),
-               boundPort,
-            );
+            const endpoint = mcpEndpoint(clientHost, boundPort);
             // cwd, not server_root: the file is for whoever opens an agent here.
             logMcpConfigOutcome(
                ensureMcpConfig({
@@ -2025,7 +2024,7 @@ const mcpServer = mcpApp.listen(
             );
          } catch (error) {
             logger.info(
-               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run claude mcp add --transport http malloy with this server's MCP URL.`,
+               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: claude mcp add --transport http malloy 'http://${clientHost}:${boundPort}/mcp'`,
             );
          }
       }
