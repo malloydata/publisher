@@ -1976,23 +1976,22 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
 });
 const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
    logger.info(`MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`);
-   // Written here rather than at parse time so the port in the file is one the
-   // server actually bound, and into cwd rather than server_root because the
-   // file is for whoever opens an agent here, not for the server.
+   // Read back rather than reusing MCP_PORT, which is only what was requested.
+   // `--mcp_port 0` is a live idiom (the REST e2e harness uses it), and under bun
+   // a non-numeric value binds an ephemeral port anyway, so the requested value
+   // can be 0 or NaN while a real port is listening. A config naming a port
+   // nothing is on is worse than no config: the agent reports a connection
+   // failure instead of simply not finding a server.
+   const bound = mcpServer.address();
+   const boundPort = typeof bound === "object" && bound ? bound.port : MCP_PORT;
+   // cwd rather than server_root: the file is for whoever opens an agent here.
    logMcpConfigOutcome(
       ensureMcpConfig({
          dir: process.cwd(),
-         mcpPort: MCP_PORT,
-         // Off under test. The integration suite boots servers on ephemeral
-         // ports with a package directory as cwd, so leaving this on wrote an
-         // untracked .mcp.json into the repo on every run, pointing at a port
-         // that died seconds later. A config aimed at a dead port is worse than
-         // none: the agent reports a connection failure rather than simply not
-         // finding a server. Decided here rather than inside ensureMcpConfig so
-         // that function stays a pure function of its arguments.
-         enabled:
-            process.env.PUBLISHER_NO_MCP_CONFIG !== "true" &&
-            process.env.NODE_ENV !== "test",
+         mcpPort: boundPort,
+         // Any truthy spelling turns it off. This is a "stop writing to my
+         // filesystem" switch, so `=1` must work as well as `=true`.
+         enabled: !process.env.PUBLISHER_NO_MCP_CONFIG,
       }),
    );
 });

@@ -2,29 +2,29 @@
  * Put this server in the host's MCP config, so an agent opened here finds the
  * `malloy_*` tools without being told how.
  *
- * Why the server does this at all. An MCP client only knows a server exists if
- * something registered it: a `.mcp.json` in the directory the session starts in,
- * or a manual `claude mcp add`. A running server on port 4040 is otherwise
- * invisible, and no amount of starting it first helps. Three of the four ways
- * into Publisher already register themselves (the repo ships a committed
- * `.mcp.json`, and the scaffolder writes one), and `npx @malloy-publisher/server`
- * was the one that did not, which is the only reason the getting-started docs
- * had to teach `claude mcp add` before a reader could ask a question.
+ * An MCP client only knows a server exists if something registered it: a
+ * `.mcp.json` in the directory the session starts in, or a manual
+ * `claude mcp add`. A running server is otherwise invisible to it, and starting
+ * the server first does not help, because registration and ordering are separate
+ * requirements. The repo ships a committed `.mcp.json` and the scaffolder writes
+ * one, so `npx @malloy-publisher/server` was the only way in that did not
+ * register itself, which is the only reason getting-started had to teach
+ * `claude mcp add` before a reader could ask a question.
  *
- * What it deliberately does NOT change. The file is only read from the directory
- * an agent session STARTED in, so "open your agent here" is still a real
- * requirement. And the host still prompts: on a directory it has not seen before,
- * measured as three, once each, in order: trust the folder, use the MCP server it
- * found, then allow the first `malloy_*` call. All three are the host's business,
- * not ours, and suppressing them is not something a server that reads your data
- * should want.
+ * This CREATES, and never edits. An earlier version merged into an existing
+ * file the way `scaffold.ts` does, and review found that nearly every hazard in
+ * this module came from that one decision: replacing a `malloy` entry destroyed
+ * user fields including auth headers, reading an existing file hung the whole
+ * process when that file was a FIFO, and a repoint-on-every-boot rewrote
+ * version-controlled files. The scaffolder can afford to merge because it runs
+ * once, deliberately, at the user's request. A server boot cannot. So: write the
+ * file when there is none, otherwise say so and leave it entirely alone,
+ * unread.
  *
- * Merging, not skipping, and that is a decision with history. An existing
- * `.mcp.json` is the common case in a project an agent already works in, and the
- * scaffolder learned that skipping one leaves the agent with no `malloy_*` tools
- * while the CLI cheerfully reports the endpoint wired. `scaffold.ts`'s
- * `writeMcpConfig` is the reference; this mirrors its rules so the two entry
- * points cannot drift into disagreeing about the same file.
+ * `wx` rather than `existsSync` then write, because those two disagree about
+ * what they are naming when `.mcp.json` is a dangling symlink: the check says
+ * absent, and the write follows the link and creates a file somewhere else on
+ * the machine. `O_EXCL` refuses that, and closes the gap between the two calls.
  */
 import * as fs from "fs";
 import * as os from "os";
@@ -37,41 +37,44 @@ export const MCP_CONFIG_FILENAME = ".mcp.json";
 export type McpConfigOutcome =
    | { action: "disabled" }
    | { action: "skipped-home"; dir: string }
+   | { action: "skipped-git"; dir: string }
    | { action: "created"; file: string }
-   | { action: "merged"; file: string; otherServers: number }
-   | { action: "updated"; file: string; from: string }
-   | { action: "already-correct"; file: string }
-   | { action: "unparseable"; file: string; problem: string; paste: string }
+   | { action: "exists"; file: string; mcpPort: number }
    | { action: "failed"; file: string; problem: string };
 
 /**
- * Always `localhost`, never the bound host. The MCP client runs on this machine
- * by definition, `0.0.0.0` is not an address to dial, and writing a LAN address
- * into a config file would point other people's agents at this one's data.
+ * Always `localhost`, never the bound host. The client runs on this machine by
+ * definition, `0.0.0.0` is not an address to dial, and writing a LAN address
+ * would point other people's agents at this one's data.
  */
 function malloyServer(mcpPort: number): Record<string, string> {
    return { type: "http", url: `http://localhost:${mcpPort}/mcp` };
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
- * Say why a file could not be merged into. A syntax error and a file that parses
- * but holds the wrong shape are different problems, and reporting both as "bad
- * JSON" sends the reader hunting for a broken quote that is not there.
- */
-function describeProblem(parsed: unknown, parses: boolean): string {
-   if (!parses) return "it is not valid JSON";
-   if (!isPlainObject(parsed)) return "its top level is not a JSON object";
-   return "its `mcpServers` is not a JSON object";
-}
-
-/**
- * Ensure `<dir>/.mcp.json` registers this server.
+ * Is this directory inside a git working tree?
  *
- * Never throws: a convenience file must not be able to stop a server booting, so
+ * A checkout belongs to somebody, and dropping an untracked file into one is
+ * both a surprise in `git status` and usually wrong: a clone of this repo already
+ * ships a `.mcp.json` at its root, and a scaffolded workspace writes its own. The
+ * case this feature exists for, `npx` in a directory the user just made, is never
+ * a repo. Walks up rather than shelling out to git, and treats `.git` as present
+ * whether it is a directory or the file that worktrees and submodules use.
+ */
+function insideGitWorkTree(dir: string): boolean {
+   let current = path.resolve(dir);
+   for (;;) {
+      if (fs.existsSync(path.join(current, ".git"))) return true;
+      const parent = path.dirname(current);
+      if (parent === current) return false;
+      current = parent;
+   }
+}
+
+/**
+ * Create `<dir>/.mcp.json` if this directory should have one and does not.
+ *
+ * Never throws. A convenience file must not be able to stop a server booting, so
  * every failure path returns an outcome instead.
  */
 export function ensureMcpConfig(options: {
@@ -82,74 +85,28 @@ export function ensureMcpConfig(options: {
    const { dir, mcpPort, enabled } = options;
    if (!enabled) return { action: "disabled" };
 
-   // Running from the home directory is the one case where "helpful" becomes
-   // "invasive": `--server_root /data/packages` launched from ~ would otherwise
-   // create ~/.mcp.json for a directory the user never meant as a workspace.
-   if (path.resolve(dir) === path.resolve(os.homedir())) {
-      return { action: "skipped-home", dir };
-   }
-
    const file = path.join(dir, MCP_CONFIG_FILENAME);
-   const desired = malloyServer(mcpPort);
-
    try {
-      if (!fs.existsSync(file)) {
-         const body =
-            JSON.stringify({ mcpServers: { malloy: desired } }, null, 2) + "\n";
-         fs.writeFileSync(file, body, "utf8");
-         return { action: "created", file };
+      // Inside the try because os.homedir() throws when HOME is unset and the uid
+      // has no passwd entry, which is the ordinary distroless container shape.
+      if (path.resolve(dir) === path.resolve(os.homedir())) {
+         return { action: "skipped-home", dir };
       }
+      if (insideGitWorkTree(dir)) return { action: "skipped-git", dir };
 
-      let parsed: unknown;
-      let parses = true;
-      try {
-         parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-      } catch {
-         parses = false;
-      }
-
-      const config = isPlainObject(parsed) ? parsed : undefined;
-      const servers =
-         config && "mcpServers" in config
-            ? isPlainObject(config.mcpServers)
-               ? config.mcpServers
-               : undefined
-            : {};
-      if (!config || servers === undefined) {
-         // Not ours to rewrite. These files hold other servers' credentials, and
-         // "we cannot read it" is not "it is empty".
-         return {
-            action: "unparseable",
-            file,
-            problem: describeProblem(parsed, parses),
-            paste: JSON.stringify({ mcpServers: { malloy: desired } }, null, 2),
-         };
-      }
-
-      const existing = servers.malloy;
-      if (JSON.stringify(existing) === JSON.stringify(desired)) {
-         return { action: "already-correct", file };
-      }
-
-      // A merge, never a rewrite: every other server in here belongs to the user
-      // and only the `malloy` key is ours to set.
-      const merged = { ...config, mcpServers: { ...servers, malloy: desired } };
-      fs.writeFileSync(file, JSON.stringify(merged, null, 2) + "\n", "utf8");
-
-      if (existing !== undefined) {
-         const from =
-            isPlainObject(existing) && typeof existing.url === "string"
-               ? existing.url
-               : "a different entry";
-         return { action: "updated", file, from };
-      }
-      return {
-         action: "merged",
-         file,
-         otherServers: Object.keys(servers).filter((k) => k !== "malloy")
-            .length,
-      };
+      const body =
+         JSON.stringify(
+            { mcpServers: { malloy: malloyServer(mcpPort) } },
+            null,
+            2,
+         ) + "\n";
+      fs.writeFileSync(file, body, { encoding: "utf8", flag: "wx" });
+      return { action: "created", file };
    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      // EEXIST covers both an ordinary existing file and a dangling symlink, and
+      // the response to each is the same: leave it alone, unread.
+      if (code === "EEXIST") return { action: "exists", file, mcpPort };
       return {
          action: "failed",
          file,
@@ -159,10 +116,8 @@ export function ensureMcpConfig(options: {
 }
 
 /**
- * Log the outcome in the terms a reader cares about: whether an agent opened here
- * will find this server, and what to do when it will not.
- *
- * Announced rather than silent. A tool that writes a file into your directory
+ * Say whether an agent opened here will find this server, and what to do when it
+ * will not. Announced rather than silent: a tool that writes into your directory
  * should say so, and the line is what tells a first-time reader that the
  * connection they were about to configure by hand is already done.
  */
@@ -173,33 +128,26 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
             `Wrote ${outcome.file} so an agent started in this directory finds this server. Disable with --no-mcp-config.`,
          );
          return;
-      case "merged":
+      case "exists":
+         // Deliberately does not claim to know what is in it. Reading the file is
+         // the thing this module refuses to do.
          logger.info(
-            `Added the malloy server to ${outcome.file}${
-               outcome.otherServers > 0
-                  ? `, alongside the ${outcome.otherServers} already there`
-                  : ""
-            }.`,
-         );
-         return;
-      case "updated":
-         logger.info(
-            `Updated the malloy server in ${outcome.file} to this server's port (was ${outcome.from}).`,
-         );
-         return;
-      case "unparseable":
-         logger.warn(
-            `Left ${outcome.file} alone because ${outcome.problem}. An agent started here will not find this server until you add:\n${outcome.paste}`,
+            `Left the existing ${outcome.file} alone. If your agent cannot find this server, add it with: claude mcp add --transport http malloy http://localhost:${outcome.mcpPort}/mcp`,
          );
          return;
       case "failed":
          logger.warn(
-            `Could not write ${outcome.file} (${outcome.problem}). An agent started here will not find this server; register it with: claude mcp add --transport http malloy ...`,
+            `Could not write ${outcome.file} (${outcome.problem}). An agent started here will not find this server on its own.`,
          );
          return;
-      case "already-correct":
+      case "skipped-git":
       case "skipped-home":
       case "disabled":
          return;
+      default: {
+         // A new variant must be handled above rather than logging nothing.
+         const exhaustive: never = outcome;
+         return exhaustive;
+      }
    }
 }

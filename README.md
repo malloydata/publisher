@@ -126,10 +126,13 @@ claude                                                       # in that same dire
 is the whole setup. Say yes to the prompts your agent shows you the first time (trusting the folder,
 using the server it found, and the first tool call) and ask it a question about the data.
 
-Two things that file does not change. It is only read by a session that **started** in that
-directory, so launch your agent there. And it is only written when the directory has none: an
-existing `.mcp.json` is merged into, keeping any other servers in it, and one that cannot be parsed
-is left alone. Pass `--no-mcp-config` to turn the whole thing off.
+The file is only read by a session that **started** in that directory, so launch your agent there.
+
+It is only ever created, never edited. If the directory already has a `.mcp.json` the server leaves
+it exactly as it is and prints the one command to add this server yourself, because that file may
+hold other servers and their credentials. It also stays out of git working trees: a clone of this
+repo already ships a `.mcp.json`, and a scaffolded workspace writes its own, so there is nothing
+useful to add. Pass `--no-mcp-config` to turn it off entirely.
 
 To register the server for yourself rather than for one directory, so the tools are there whichever
 directory you launch from:
