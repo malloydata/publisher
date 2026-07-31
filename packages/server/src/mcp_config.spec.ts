@@ -46,6 +46,22 @@ const isWindows = process.platform === "win32";
  * than assumed, and used with `skipIf` so an unstageable test reports as
  * skipped instead of passing without asserting anything.
  */
+/** Is `mkfifo` available? Absent on Windows and on minimal images. */
+const hasMkfifo = ((): boolean => {
+   const probe = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fifo-probe-"));
+   try {
+      execFileSync("mkfifo", [path.join(probe, "f")]);
+      return true;
+   } catch {
+      return false;
+   } finally {
+      fs.rmSync(probe, { recursive: true, force: true });
+   }
+})();
+
+/** Root ignores the mode bits, so an unwritable directory cannot be staged. */
+const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+
 const canSymlink = ((): boolean => {
    const probe = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-symlink-probe-"));
    try {
@@ -170,7 +186,7 @@ describe("ensureMcpConfig", () => {
       );
    });
 
-   it.skipIf(isWindows)(
+   it.skipIf(isWindows || !hasMkfifo)(
       "returns promptly on a FIFO instead of hanging the process",
       () => {
          // A blocking read here stalls the event loop and takes /health with it.
@@ -179,11 +195,7 @@ describe("ensureMcpConfig", () => {
          // \\.\pipe), and its mkfifo, if git-bash puts one on PATH, does not make
          // something Node reports as a FIFO. The hazard does not exist there.
          const dir = tmpDir();
-         try {
-            execFileSync("mkfifo", [cfg(dir)]);
-         } catch {
-            return; // no mkfifo on this platform; nothing to assert
-         }
+         execFileSync("mkfifo", [cfg(dir)]);
          const started = Date.now();
          expect(run(dir).action).toBe("exists");
          expect(Date.now() - started).toBeLessThan(2000);
@@ -275,6 +287,8 @@ describe("ensureMcpConfig", () => {
          // Also mutation-proven: deleting the root guard left the suite green,
          // because nothing passed "/" in. systemd gives a unit that cwd.
          const root = path.parse(process.cwd()).root;
+         const rootCfg = path.join(root, MCP_CONFIG_FILENAME);
+         const preexisting = fs.existsSync(rootCfg);
          const outcome = ensureMcpConfig({
             dir: root,
             homeDir: tmpDir(),
@@ -283,6 +297,10 @@ describe("ensureMcpConfig", () => {
             boundPort: 4040,
          });
          expect(outcome.action).toBe("skipped-root");
+         // Cleans up for the same reason the home test does: a mutated guard
+         // would otherwise leave a file at the filesystem root on its way to
+         // going red.
+         if (!preexisting && fs.existsSync(rootCfg)) fs.rmSync(rootCfg);
       });
 
       it("names a stale config that is already in the directory when it skips", () => {
@@ -367,12 +385,9 @@ describe("ensureMcpConfig", () => {
    });
 
    // POSIX mode bits do not restrict on Windows; ACLs would.
-   it.skipIf(isWindows)(
+   it.skipIf(isWindows || isRoot)(
       "reports rather than throws when the directory cannot be written",
       () => {
-         if (typeof process.getuid === "function" && process.getuid() === 0) {
-            return; // root ignores the mode bits, so there is nothing to provoke
-         }
          const dir = tmpDir();
          fs.chmodSync(dir, 0o500);
          try {

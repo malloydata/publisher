@@ -66,7 +66,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the five MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`) and the agent skills as MCP prompts. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
-| `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | _unset_ | Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else is a startup error. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes). |
+| `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | _unset_ | Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes). |
 | `PUBLISHER_USE_BUNDLED_DEFAULT` | — | _unset_ | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
 | `INITIALIZE_STORAGE` | `--init` | _unset_ | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown_drain_duration_seconds <s>` | `0` | After SIGTERM, how long to keep serving in-flight and new requests (readiness reports not-ready immediately) before the server starts refusing new traffic. |
@@ -117,7 +117,9 @@ agent there. It only ever creates, and never reads: an existing file may hold ot
 credentials, and rewriting it on every boot would churn version-controlled files.
 
 It does not always write one. Whenever it does not, it says so at `info` and prints the `claude mcp add`
-command that connects an agent anyway, so the startup log is the authority rather than this list:
+command that connects an agent anyway, so the startup log is the authority rather than this list. The one
+exception is turning it off with `PUBLISHER_NO_MCP_CONFIG` or `--no-mcp-config`, which is deliberately
+silent: you asked for nothing, so it says nothing. Everything below is announced.
 
 | Case | Why |
 | --- | --- |
@@ -137,7 +139,9 @@ not isolation: any process running as you can bind the same port.
 **The file outlives the server and is never corrected.** A stale one does not simply fail. If something
 else holds that port later, perhaps a second Publisher serving different data, an agent started there
 connects to it and answers from the wrong model. `malloy_getContext` names the environment and packages
-an agent is actually talking to, which is the way to settle it.
+an agent is actually talking to, which is the way to settle it. That detects the accident, which is the
+realistic case; it is not proof against a process deliberately holding the port, since that process can
+answer too.
 
 The Docker image sets `PUBLISHER_NO_MCP_CONFIG=1`, since no agent session starts inside a container.
 
