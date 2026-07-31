@@ -114,18 +114,34 @@ they are, so a `--` there leaves the flags after it to arrive as stray arguments
 
 ## Point your agent at it
 
-This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the
-MCP endpoint on port **4040**:
+This is the fast path to the "wow," and for Claude Code there is nothing to configure. On startup the
+server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port it actually
+bound, so:
+
+```bash
+npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json
+claude                                                       # in that same directory
+```
+
+is the whole setup. Say yes to the prompts your agent shows you the first time (trusting the folder,
+using the server it found, and the first tool call) and ask it a question about the data.
+
+Two things that file does not change. It is only read by a session that **started** in that
+directory, so launch your agent there. And it is only written when the directory has none: an
+existing `.mcp.json` is merged into, keeping any other servers in it, and one that cannot be parsed
+is left alone. Pass `--no-mcp-config` to turn the whole thing off.
+
+To register the server for yourself rather than for one directory, so the tools are there whichever
+directory you launch from:
 
 ```bash
 claude mcp add --transport http malloy http://localhost:4040/mcp -s user
 ```
 
-`-s user` registers the server for you rather than for one project directory, so the tools are there
-whichever directory you launch the agent from. Without it the registration is tied to the directory
-you happened to run the command in, which is the most common reason an agent reports no `malloy_*`
-tools: a project-scoped server (or a scaffolded `.mcp.json`) is only discovered by a session that
-*started* in that directory, and no message anywhere says so.
+That is also the fix when an agent reports no `malloy_*` tools, which is almost always because the
+session started somewhere other than the directory holding the config, and no message anywhere says
+so. Other MCP clients take the same endpoint through their own config file; see
+[docs/ai-agents.md](docs/ai-agents.md).
 
 Then just ask, in plain English:
 

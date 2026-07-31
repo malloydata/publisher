@@ -25,6 +25,8 @@ bun run build && bun run start        # REST on :4000, MCP on :4040
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
 
+On startup the server writes a `.mcp.json` into the directory it was run in, pointing at the MCP port it actually bound, unless one is already there or `--no-mcp-config` is passed. That is why a session started in that directory usually finds the `malloy_*` tools with no registration step. This repo also ships its own `.mcp.json`, so from a clone the file already exists and is left alone.
+
 Poll until the server reports `serving` rather than assuming a fixed wait. From a clone the sample packages are read straight from `examples/`, so this is usually seconds. A first `npx` run has to download the published package and then fetch the samples from GitHub, which is network-bound and can push it to a minute or two:
 
 ```bash
