@@ -26,6 +26,7 @@
  */
 
 import type { QueryMetadata } from "@malloydata/malloy";
+import * as crypto from "node:crypto";
 import { getQueryMetadataMode } from "../config";
 import {
    recordQueryMetadataApplied,
@@ -235,6 +236,10 @@ export interface QueryContext {
  * its own request id in the bag declares it under its own property name.
  */
 export function mintCorrelationId(): string {
+   // Via the imported module, not the `crypto` global: the global does not exist
+   // before Node 20, and this line is on the query-execution path, so relying on
+   // it failed every query with "crypto is not defined" while compilation, which
+   // never mints an id, kept working.
    return crypto.randomUUID();
 }
 
