@@ -21,6 +21,8 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
+import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
@@ -429,6 +431,16 @@ export class Environment {
    ): Promise<{ problems: LogMessage[]; sql?: string }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelName);
+      // The submitted source is appended to the target model's namespace, so an
+      // authorize annotation in it would land alongside the author's. Same
+      // rejection as the query path — and `includeSql` makes this door the more
+      // valuable one to an attacker.
+      try {
+         assertNoCallerAuthorizeAnnotation(source);
+      } catch (err) {
+         recordAuthorizeGuardRejection("compile_source");
+         throw err;
+      }
       // /compile appends the submitted source to the TARGET MODEL's content for
       // namespace context. A notebook (.malloynb) is markdown + cells, not a
       // model, so compiling against it only yields a confusing parse error —
@@ -559,9 +571,9 @@ export class Environment {
             // matches the FIRST `run:`, but the LAST statement is what executes).
             // Compiling a gated source even without SQL is a schema oracle
             // (field-not-found errors leak its columns), so this must not be
-            // conditional on SQL extraction. (A `source: x is gated` alias makes
-            // a new ungated source — that's the documented "extend doesn't
-            // inherit authorize" footgun, the same as the query path.)
+            // conditional on SQL extraction. (A `source: x is gated` alias
+            // carries the gate: only a declaration of its OWN `#(authorize)`
+            // replaces it, and caller text may not declare one.)
 
             // Boundary backstop (the *what* axis, 404) before the authorize
             // one (the *who* axis, 403). /compile text is always ad-hoc — the
@@ -579,13 +591,13 @@ export class Environment {
             }
 
             // Authorize backstop (the *who* axis, 403). NOT guarded by
-            // hasAuthorize(): that only inspects top-level modelDef.contents
-            // sources, so a gated source reached only via a cross-file/deep
-            // join is invisible to it and this backstop would silently never
-            // run for such a model — the same bypass assertAuthorizedForRunnable
-            // itself closes on the query path (see model.ts
-            // assertAuthorizedForAllSources). The own-source probe and joined-
-            // gate walk it runs are cheap no-ops for a genuinely ungated model.
+            // hasAuthorize(): that reads only top-level modelDef.contents
+            // sources' OWN annotations, so a run target gated solely by what it
+            // derives from is invisible to it and this backstop would silently
+            // never run for such a model — the same bypass
+            // assertAuthorizedForRunnable itself closes on the query path (see
+            // model.ts assertAuthorizedForAllSources). The own-source probe and
+            // derivation walk it runs are cheap no-ops for an ungated model.
             if (queryMaterializer && gateModel) {
                await gateModel.assertAuthorizedForRunnable(
                   queryMaterializer,
