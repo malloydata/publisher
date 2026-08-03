@@ -26,6 +26,20 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 ### Authoring tools
 
 - `malloy_compile`: compile Malloy source against a model and return structured diagnostics (`severity`, `message`, `line`, `character`) without running a query, so an agent can validate a change while authoring instead of firing a throwaway query. Positions are 0-based and relative to the model file with the submitted source appended to it.
+
+  Because the source is *appended*, it has to stand on its own as top-level Malloy, and the two most natural ways to check an edit both fail for reasons that have nothing to do with the edit. A bare `view:` / `dimension:` / `measure:` is not a top-level statement (`no viable alternative at input 'view:'`), and resubmitting the source you are editing collides with the model's own copy (`Cannot redefine '<name>'`). To check part of a source, either send the view body as a top-level query:
+
+  ```malloy
+  query: check is orders -> { group_by: status, aggregate: revenue }
+  ```
+
+  or wrap the fragment in a throwaway extension, which puts it in the namespace the real edit will live in:
+
+  ```malloy
+  source: check is orders extend { measure: aov is revenue / nullif(order_count, 0) }
+  ```
+
+  Both compile against the real source, so inherited measures resolve and `private:` fields stay hidden exactly as they would in place. An extension *adds* to a source's namespace rather than overriding it, so a fragment reusing an existing view name reports `Cannot redefine` too; rename it for the check.
 - `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after boot becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. A reload that fails to compile leaves the package's files alone and keeps serving the previously compiled model, returning the compile errors.
 
 ### Skills as MCP prompts
@@ -42,6 +56,8 @@ These examples assume Publisher is already running (`npx @malloy-publisher/serve
 
 ### Over HTTP
 
+For Claude Code you may not have to write anything: in a directory that has no `.mcp.json`, the server usually writes one itself naming the port it bound. It skips several cases, including git working trees and your home directory; the full list is in [configuration.md](configuration.md#the-mcpjson-the-server-writes), and the startup log says which one applied, unless you turned the feature off, which is silent. Everything below is for the other clients, and for the cases where it does not write one.
+
 Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The exact config shape varies by client (key names differ, for example VS Code uses `servers` rather than `mcpServers`), but each entry points an MCP server at a URL:
 
 ```json
@@ -54,7 +70,7 @@ Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The ex
 
 Add or drop the `"type": "http"` field to match your client. Clients that speak only stdio (for example older Claude Desktop builds) connect through `mcp-remote`, below.
 
-If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Point the client at the machine's network address instead, or move Publisher's MCP server to another port with `--mcp_port`.
+If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Move Publisher's MCP server to another port with `--mcp_port`, or point the client at the machine's network address. Note that a client which *can* reach the port is not proof it reached Publisher: if the wrong process holds it, the client connects to that instead. `malloy_getContext` names the environment and packages it is actually talking to, which is the quickest way to tell.
 
 ### With a stdio-only client through mcp-remote
 

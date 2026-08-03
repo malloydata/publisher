@@ -56,7 +56,62 @@ measure: cogs is inventory_items.item_cost.sum()
 
 `sum`, `avg`, `min`, and `max` over a dotted joined path all produce that compile error; the diagnostic message even tells you the exact fix. Don't worry about catching this in code review; the compiler does it for you.
 
+**Method syntax is for aggregates over a path. Scalar functions never take it.**
+
+```malloy
+// WRONG: "something is missing before 'round'"
+aggregate: avg_price_r is avg(price).round(2)
+aggregate: avg_price_r is price.avg().round(2)
+// WRONG: "Cannot call function round(number, number) with source"
+aggregate: avg_price_r is avg_price.round(2)
+dimension: rounded is price.round(2)
+// RIGHT: scalar functions are always call form
+aggregate: avg_price_r is round(avg(price), 2)
+dimension: rounded is round(price, 2)
+```
+
+Two separate rules produce those errors:
+
+- **No method call chains onto the result of a function call.** `avg(price).round(2)` and `price.avg().round(2)` are both parse errors. The message names `round` without saying it is unsupported in that position, so it reads like a typo somewhere else. `.floor()` and `.ceil()` fail identically.
+- **Scalar functions have no method form.** `round`, `floor`, and `ceil` are always `round(x, 2)`, never `x.round(2)`, whether `x` is a named measure or a plain column.
+
+`price.avg()` and `inventory_items.item_cost.sum()` are correct because `avg` and `sum` are aggregate functions over a field path, which is exactly what method syntax is for.
+
 **Exception: `count(joined.field)` is correct, not a bug.** `count(joined.field)` is the **canonical Malloy idiom** for distinct-count through a join. Keep it as-is even when nearby `sum`/`avg`/`min`/`max` calls have to use method syntax. The closest method-syntax form `joined.count()` counts *rows* in the joined source (different semantics, differs from the distinct count when the joined field has duplicates within the joined table). The Malloy docs example `joined.count(field)` does NOT compile against current Malloy (error: `Expression illegal inside path.count()`); it only works for double-nested paths like `aircraft.count(aircraft_models.code)`.
+
+## `sum`/`avg` Need a Numeric Field
+
+```malloy
+// WRONG: "Can't use type string" - status is a string column
+aggregate: avg_status is avg(status)
+// RIGHT: aggregate a numeric field; count a string one
+aggregate: avg_price is avg(price), statuses is count(status)
+```
+
+Check the field's type in the `get_context` result before aggregating it. A name that reads numeric (`order_number`, `zip`, `account_id`) is very often typed string.
+
+## Dotted Paths Must Name a Declared Join
+
+```malloy
+// WRONG: the source declares the join as `carrier`, so this fails with
+//   "'carriers.name' is not a source or join"
+run: flights -> { group_by: carriers.name }
+// RIGHT: use the join name the source actually declares
+run: flights -> { group_by: carrier.nickname }
+```
+
+A dotted path resolves only against a join declared on the source you are running. Confirm both the join name and the field under it in a `get_context` result; do not infer either from a table name or a plural/singular guess.
+
+## `order_by:` Can Only Name an Output Column
+
+```malloy
+// WRONG: "Unknown field total in output space" - total is never emitted
+run: orders -> { group_by: state, aggregate: revenue is sum(total), order_by: total }
+// RIGHT: order by a column the query actually outputs
+run: orders -> { group_by: state, aggregate: revenue is sum(total), order_by: revenue }
+```
+
+`order_by:` resolves against the query's *output* columns, not the source's fields. To order by something, `group_by` or `aggregate` it first - and if it comes through a join, alias it (see above).
 
 ## Chart Annotation Placement
 

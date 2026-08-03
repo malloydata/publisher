@@ -10,9 +10,32 @@ instructions, and the Malloy agent skills copied in), so you can go from nothing
 
 ```bash
 mkdir my-data && cd my-data
-npm create @malloy-publisher/malloy-package sales
+npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
+
+Keep the `@latest`. `npm create` and `npx` both resolve through npm's npx cache, and an
+unversioned name is satisfied by any copy already in it, so on a machine that has run
+the command before npm reuses that copy instead of asking the registry. Without
+`@latest` you can scaffold from an old scaffolder, which pins an old server, silently.
+
+Because that is silent, the scaffolder also checks for itself. After it has finished
+writing, it asks the npm registry which version is `latest` and prints a note if the one
+you are running is older. That is the only network request this package makes: a plain
+unauthenticated GET of a public package document, sending nothing about you or your
+files. It is bounded at 1.5 seconds and fails open, so no network, a proxy, or a
+registry outage costs you a moment of silence and nothing else.
+
+The request is not made at all when `CI` or `NO_UPDATE_NOTIFIER` is set, so a build
+never pays for advice nobody will read, and a machine that has already switched off
+update notices stays switched off. Anywhere else, `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK`
+does the same thing:
+
+```bash
+CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1 npm create @malloy-publisher/malloy-package@latest sales
+```
+
+Set any of the three to a value other than `0` or `false`.
 
 The workspace files land in the current directory and the package in `./sales`, so you
 run `npm start` from where you created it (no need to `cd` into the package). The
@@ -47,6 +70,13 @@ package to a `publisher.config.json` that was already there, the environment is
 whatever that file names, and the generated agent briefing spells out the URLs for
 this workspace. That briefing is `AGENTS.md`, or `AGENTS.malloy.md` in a directory
 that already had an `AGENTS.md` of its own; see "Running it again" below.
+
+A directory nobody has trusted yet is a second gate, separate from connecting the MCP
+server: Claude Code lists the `malloy_*` tools and then refuses every call, and a
+`.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
+interactively in the directory once and answer the trust prompt, which is asked once per
+directory. A headless run is never asked, so it cannot clear the gate either. You will
+know it worked when the agent's first Malloy query returns data.
 
 ## Query it
 
@@ -86,12 +116,13 @@ no route falls through to the web app and answers `200` with an HTML page, which
 as success until you look at the body.
 
 Agents should reach the same models through MCP rather than curl, which buys them
-schema discovery, compile checks and a reload that needs no restart. The generated
-briefing lists those tools.
+schema discovery and compile checks. The generated briefing lists those tools. It also
+gives the REST route that recompiles a package after an edit, for an agent with nobody
+around to reconnect its MCP client.
 
 ## What it creates
 
-Running `npm create @malloy-publisher/malloy-package sales` in an empty directory produces:
+Running `npm create @malloy-publisher/malloy-package@latest sales` in an empty directory produces:
 
 ```
 publisher.config.json    the server config, with your package registered
@@ -282,7 +313,7 @@ and binds `0.0.0.0`. Write the flag and the address with a space between them.
 ## Options
 
 ```bash
-npm create @malloy-publisher/malloy-package [name] -- [options]
+npm create @malloy-publisher/malloy-package@latest [name] -- [options]
 ```
 
 `npm create` parses the command line with npm's own config parser before handing
@@ -291,26 +322,26 @@ it npm swallows `--force` as one of its own settings and turns `--data mydata.cs
 into two stray positional arguments:
 
 ```bash
-npm create @malloy-publisher/malloy-package sales -- --data mydata.csv
-npm create @malloy-publisher/malloy-package sales -- --client cursor
-npm create @malloy-publisher/malloy-package sales -- --force
+npm create @malloy-publisher/malloy-package@latest sales -- --data mydata.csv
+npm create @malloy-publisher/malloy-package@latest sales -- --client cursor
+npm create @malloy-publisher/malloy-package@latest sales -- --force
 ```
 
 Running the published bin directly takes the flags as-is, with no separator:
 
 ```bash
-npx @malloy-publisher/create-malloy-package sales --data mydata.csv
+npx @malloy-publisher/create-malloy-package@latest sales --data mydata.csv
 ```
 
 - `name` (positional): the package name. Omit it to only set up the agent workspace in
   the current directory (write the MCP connection, agent instructions, and skills)
   without scaffolding a package.
-- `--data <file>`: seed the package from your own CSV, Parquet, or XLSX file instead of
-  the built-in sample. The file is copied into the package and the starter model points
-  at it. DuckDB reads all three formats in place; an Excel file is read as its first
-  sheet. It seeds a new package, so it requires a package name: it cannot be combined
-  with the setup-only mode above, and passing it without a name is an error rather than
-  a silently ignored flag.
+- `--data <file>`: seed the package from your own CSV, Parquet, JSON, NDJSON, or XLSX
+  file instead of the built-in sample. The file is copied into the package and the
+  starter model points at it. DuckDB reads all of them in place, so nothing needs
+  converting first; an Excel file is read as its first sheet. It seeds a new package,
+  so it requires a package name: it cannot be combined with the setup-only mode above,
+  and passing it without a name is an error rather than a silently ignored flag.
 - `--client <claude-code|cursor>`: which agent client to wire up. Defaults to
   `claude-code`. `AGENTS.md` and the skills in `.claude/skills/` are written for every
   client; the MCP config file (`.mcp.json` for Claude Code, `.cursor/mcp.json` for

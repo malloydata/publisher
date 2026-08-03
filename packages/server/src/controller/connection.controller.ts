@@ -21,6 +21,15 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
 } from "../service/db_utils";
+import {
+   mergeQueryMetadata,
+   mintCorrelationId,
+   parseQueryClass,
+   parseSuppliedQueryMetadata,
+   queryMetadataViolations,
+   type QueryClass,
+   type QueryMetadata,
+} from "../service/query_metadata";
 import type { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
@@ -112,6 +121,22 @@ function validateAdminAuthoredConnection(
    } catch (error) {
       throw new BadRequestError((error as Error).message);
    }
+
+   // The connection is the one metadata layer whose author is right here, so it
+   // is the one that can be told. A property the contract rejects (a hyphen in
+   // `cost-centre` is the natural spelling and the first thing anyone tries)
+   // would otherwise be dropped at dispatch and only ever surface as a metric —
+   // every statement on the connection missing the property its operator
+   // believes they configured. Config LOAD warns instead of throwing (see
+   // assembleEnvironmentConnections): a tag must never fail an environment.
+   for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
+      const violations = queryMetadataViolations(connectionConfig[field]);
+      if (violations.length > 0) {
+         throw new BadRequestError(
+            `Connection "${connectionName}" ${field} is invalid: ${violations.join("; ")}`,
+         );
+      }
+   }
 }
 
 export class ConnectionController {
@@ -138,6 +163,43 @@ export class ConnectionController {
          };
       }
       return environment.getApiConnection(connectionName);
+   }
+
+   /**
+    * A connection's default per-query metadata, or null when it declares none.
+    * Fails open: metadata is observability, so a connection whose config can't be
+    * read contributes no default rather than failing the query the caller asked
+    * for.
+    */
+   private async connectionQueryMetadata(
+      environmentName: string,
+      connectionName: string,
+   ): Promise<{
+      default: QueryMetadata | null;
+      enforced: QueryMetadata | null;
+   }> {
+      try {
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const connection = this.getApiConnectionForLookup(
+            environment,
+            connectionName,
+         );
+         return {
+            default: connection.queryMetadata ?? null,
+            enforced: connection.queryMetadataEnforced ?? null,
+         };
+      } catch (error) {
+         // Fails open like every other metadata path, but not invisibly: the
+         // layer lost here is the enforced one, and no metric covers it.
+         logger.debug("No query-metadata layers for connection", {
+            connectionName,
+            error,
+         });
+         return { default: null, enforced: null };
+      }
    }
 
    private async getMalloyConnection(
@@ -453,6 +515,12 @@ export class ConnectionController {
       sqlStatement: string,
       options: string,
       packageName?: string,
+      /**
+       * The request's per-query metadata fields, unvalidated — this controller is
+       * the boundary that turns a bad bag into a 400 rather than letting the
+       * connector refuse the statement at dispatch.
+       */
+      metadata?: { queryMetadata?: unknown; queryClass?: unknown },
    ): Promise<ApiQueryData> {
       // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
       // and array-shaped JSON bodies as `string[]`, not `string`. The route
@@ -511,6 +579,41 @@ export class ConnectionController {
          logger.info("Clearing unsupported abortSignal");
          runSQLOptions.abortSignal = undefined;
       }
+
+      // Per-query metadata. Validated here, not clamped: a raw-SQL caller gets a
+      // 400 telling it which property is wrong instead of a statement the
+      // connector refuses at dispatch. `options` is forwarded as RunSQLOptions, so
+      // a bag can also arrive inside it — validate that one too, and let the
+      // documented field win.
+      const suppliedMetadata =
+         metadata?.queryMetadata ?? runSQLOptions.queryMetadata;
+      let requestMetadata: QueryMetadata | undefined;
+      let queryClass: QueryClass | undefined;
+      try {
+         requestMetadata = parseSuppliedQueryMetadata(suppliedMetadata);
+         queryClass = parseQueryClass(metadata?.queryClass);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
+      }
+      const connectionLayers = await this.connectionQueryMetadata(
+         environmentName,
+         connectionName,
+      );
+      const resolvedMetadata = mergeQueryMetadata({
+         connection: connectionLayers.default,
+         enforced: connectionLayers.enforced,
+         request: requestMetadata,
+         context: {
+            // Raw SQL against a connection is platform maintenance unless the
+            // caller says otherwise — it is not a modeled query.
+            queryClass: queryClass ?? "ops",
+            environment: environmentName,
+            package: packageName,
+            correlationId: mintCorrelationId(),
+         },
+      });
+      runSQLOptions.queryMetadata = resolvedMetadata.metadata;
+      const queryCorrelationId = resolvedMetadata.metadata?.query_id ?? null;
 
       // Bound the response with two layered caps:
       //
@@ -572,7 +675,7 @@ export class ConnectionController {
                throw new ConnectionError((error as Error).message);
             }
          }, getQueryTimeoutMs());
-         return { data: JSON.stringify(streamed) };
+         return { data: JSON.stringify(streamed), queryCorrelationId };
       }
 
       const result = await runWithQueryTimeout(async (signal) => {
@@ -601,7 +704,7 @@ export class ConnectionController {
          );
       }
 
-      return { data: JSON.stringify(result) };
+      return { data: JSON.stringify(result), queryCorrelationId };
    }
 
    public async getConnectionTemporaryTable(

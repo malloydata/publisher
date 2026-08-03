@@ -239,6 +239,8 @@ export interface LoadPackageOutcome {
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;
       scope?: PackageScope;
+      /** See {@link LoadPackageResult.packageMetadata.manifestWarnings}. */
+      manifestWarnings?: string[];
    };
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {

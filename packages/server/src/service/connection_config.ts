@@ -2,7 +2,13 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { logger } from "../logger";
 import { parseHostKeys } from "./proxy";
+import {
+   queryMetadataAdvisoryWarnings,
+   queryMetadataBudgetWarning,
+   queryMetadataViolations,
+} from "./query_metadata";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -271,6 +277,48 @@ function buildDuckdbEntry(
    };
 }
 
+/**
+ * Report a connection default that will not do what it says — a property name
+ * the contract rejects, one BigQuery would drop, a bag with no room for the
+ * server's own context.
+ *
+ * Warns rather than throws, unlike everything else in this file: query metadata
+ * is observability, and an environment that refuses to load because a tag has a
+ * hyphen in it would trade a missing label for an outage. The connection update
+ * API rejects the same bag outright (see validateAdminAuthoredConnection) —
+ * strict where a human is waiting, lenient where a config is being loaded.
+ */
+function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
+   let declared = 0;
+   for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
+      const metadata = connection[field];
+      if (!metadata) continue;
+      declared += Object.keys(metadata).length;
+      const problems = [
+         ...queryMetadataViolations(metadata),
+         ...queryMetadataAdvisoryWarnings(metadata),
+      ];
+      for (const problem of problems) {
+         logger.warn("Connection query metadata will not apply as declared", {
+            connectionName: connection.name,
+            field,
+            problem,
+         });
+      }
+   }
+   // The budget is checked over BOTH maps, not each one: they merge into the
+   // same bag, so a connection declaring 6 defaults and 6 enforced is over it
+   // while neither map is. This is the boundary where the admin who created the
+   // squeeze is the one reading the warning.
+   const overBudget = queryMetadataBudgetWarning(declared);
+   if (overBudget) {
+      logger.warn("Connection query metadata will not apply as declared", {
+         connectionName: connection.name,
+         problem: overBudget,
+      });
+   }
+}
+
 function validateConnectionShape(connection: ApiConnection): void {
    if (connection.proxy) {
       // A connection proxy makes THIS server open an outbound SSH tunnel to a
@@ -444,6 +492,32 @@ function validateConnectionShape(connection: ApiConnection): void {
                `Storage bucketUrl is required for DuckLake: ${connection.name}`,
             );
          }
+         // metadataSchema is optional, but when present it reaches the ATTACH as a
+         // quoted string literal AND the catalog-format preflight as a quoted
+         // identifier. Rather than escape one value for two grammars, restrict it
+         // to a plain identifier here — a deterministic config error, caught at
+         // load instead of at the connection's first attach.
+         //
+         // The typeof check is load-bearing, not defensive: the value arrives from
+         // untyped JSON, and RegExp.test() coerces its argument, so `true` and `null`
+         // both satisfy the pattern as "true"/"null" and would reach escapeSQL's
+         // String.replace as a non-string — a TypeError at the first attach, which is
+         // exactly the failure this check exists to turn into a config error.
+         if (
+            connection.ducklakeConnection.catalog.metadataSchema !== undefined
+         ) {
+            const schema = connection.ducklakeConnection.catalog.metadataSchema;
+            if (
+               typeof schema !== "string" ||
+               !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
+            ) {
+               throw new Error(
+                  `DuckLake catalog metadataSchema must be a plain identifier ` +
+                     `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
+                     `${connection.name}`,
+               );
+            }
+         }
          break;
       case "trino":
          if (!connection.trinoConnection) {
@@ -580,6 +654,7 @@ export function assembleEnvironmentConnections(
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
       validateConnectionShape(connection);
+      warnOnConnectionQueryMetadata(connection);
 
       const apiConnection = cloneApiConnection(connection);
       apiConnection.attributes = getStaticConnectionAttributes(connection.type);

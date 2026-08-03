@@ -1,10 +1,63 @@
 import { describe, expect, it } from "bun:test";
 import {
+   packageMaterializationWarnings,
    parsePackageMaterialization,
    parsePackageScope,
+   resolvePackageScope,
 } from "./package_manifest";
 
 describe("service/package_manifest", () => {
+   describe("resolvePackageScope", () => {
+      it("reads the canonical materialization.scope with no warning", () => {
+         expect(resolvePackageScope(undefined, { scope: "version" })).toEqual({
+            scope: "version",
+            warnings: [],
+         });
+      });
+
+      it("defaults to 'package' when neither home declares it", () => {
+         expect(resolvePackageScope(undefined, undefined)).toEqual({
+            scope: "package",
+            warnings: [],
+         });
+         expect(resolvePackageScope(undefined, { freshness: {} })).toEqual({
+            scope: "package",
+            warnings: [],
+         });
+      });
+
+      it("still honors a root scope, with a deprecation warning", () => {
+         const resolved = resolvePackageScope("version", undefined);
+         expect(resolved.scope).toBe("version");
+         expect(resolved.warnings).toHaveLength(1);
+         expect(resolved.warnings[0]).toMatch(/deprecated/i);
+      });
+
+      it("accepts both homes agreeing without a warning", () => {
+         // The transition state the server writes: envelope for this build, root
+         // for an older publisher. Warning would blame the operator for it.
+         expect(resolvePackageScope("version", { scope: "version" })).toEqual({
+            scope: "version",
+            warnings: [],
+         });
+      });
+
+      it("throws when the two homes disagree rather than guessing", () => {
+         expect(() =>
+            resolvePackageScope("package", { scope: "version" }),
+         ).toThrow(/conflicting/i);
+      });
+
+      it("reports an invalid value as invalid, not as a conflict", () => {
+         expect(() =>
+            resolvePackageScope(undefined, { scope: "shared" }),
+         ).toThrow(/expected "version" or "package"/i);
+         expect(() =>
+            resolvePackageScope("shared", { scope: "version" }),
+         ).toThrow(/expected "version" or "package"/i);
+      });
+   });
+
    describe("parsePackageScope", () => {
       it("defaults to 'package' when absent", () => {
          expect(parsePackageScope(undefined)).toBe("package");
@@ -26,7 +79,7 @@ describe("service/package_manifest", () => {
    describe("parsePackageMaterialization", () => {
       it("extracts a string schedule", () => {
          expect(parsePackageMaterialization({ schedule: "0 6 * * *" })).toEqual(
-            { schedule: "0 6 * * *", freshness: null },
+            { schedule: "0 6 * * *", freshness: null, queryMetadata: null },
          );
       });
 
@@ -41,17 +94,23 @@ describe("service/package_manifest", () => {
                schedule: "*/15 * * * *",
                retries: 3,
             }),
-         ).toEqual({ schedule: "*/15 * * * *", freshness: null });
+         ).toEqual({
+            schedule: "*/15 * * * *",
+            freshness: null,
+            queryMetadata: null,
+         });
       });
 
       it("degrades a non-string schedule to null", () => {
          expect(parsePackageMaterialization({ schedule: 42 })).toEqual({
             schedule: null,
             freshness: null,
+            queryMetadata: null,
          });
          expect(parsePackageMaterialization({})).toEqual({
             schedule: null,
             freshness: null,
+            queryMetadata: null,
          });
       });
 
@@ -68,13 +127,18 @@ describe("service/package_manifest", () => {
          ).toEqual({
             schedule: null,
             freshness: { window: "24h", fallback: "stale_ok" },
+            queryMetadata: null,
          });
       });
 
       it("keeps a partial freshness block (window only)", () => {
          expect(
             parsePackageMaterialization({ freshness: { window: "1h" } }),
-         ).toEqual({ schedule: null, freshness: { window: "1h" } });
+         ).toEqual({
+            schedule: null,
+            freshness: { window: "1h" },
+            queryMetadata: null,
+         });
       });
 
       it("drops invalid freshness fields rather than defaulting them", () => {
@@ -84,14 +148,83 @@ describe("service/package_manifest", () => {
             parsePackageMaterialization({
                freshness: { window: 24, fallback: "retry" },
             }),
-         ).toEqual({ schedule: null, freshness: {} });
+         ).toEqual({ schedule: null, freshness: {}, queryMetadata: null });
       });
 
       it("degrades a non-object freshness to null", () => {
          expect(parsePackageMaterialization({ freshness: "24h" })).toEqual({
             schedule: null,
             freshness: null,
+            queryMetadata: null,
          });
+      });
+
+      it("keeps queryMetadata properties verbatim", () => {
+         expect(
+            parsePackageMaterialization({
+               queryMetadata: { team: "finance", workload: "marts" },
+            }),
+         ).toEqual({
+            schedule: null,
+            freshness: null,
+            queryMetadata: { team: "finance", workload: "marts" },
+         });
+      });
+
+      it("keeps a contract-violating property so publish can report it", () => {
+         // Filtering here would make the author's typo disappear with nothing
+         // to point at; the validator warns and the runtime clamps instead.
+         expect(
+            parsePackageMaterialization({
+               queryMetadata: { "team.name": "finance" },
+            }),
+         ).toEqual({
+            schedule: null,
+            freshness: null,
+            queryMetadata: { "team.name": "finance" },
+         });
+      });
+
+      it("drops non-string values and empties to null", () => {
+         expect(
+            parsePackageMaterialization({
+               queryMetadata: { team: "finance", retries: 3 },
+            }),
+         ).toEqual({
+            schedule: null,
+            freshness: null,
+            queryMetadata: { team: "finance" },
+         });
+         expect(
+            parsePackageMaterialization({ queryMetadata: { retries: 3 } }),
+         ).toEqual({ schedule: null, freshness: null, queryMetadata: null });
+         expect(
+            parsePackageMaterialization({ queryMetadata: "team=finance" }),
+         ).toEqual({ schedule: null, freshness: null, queryMetadata: null });
+      });
+   });
+
+   describe("packageMaterializationWarnings", () => {
+      it("names a dropped non-string value", () => {
+         // The drop happens before the config validation that would otherwise
+         // report it, so without this an unquoted `"team": 123` — a plausible
+         // hand-edit — vanishes with nothing anywhere to point at.
+         const warnings = packageMaterializationWarnings({
+            queryMetadata: { team: "finance", retries: 3 },
+         });
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("'retries'");
+         expect(warnings[0]).toContain("got number");
+      });
+
+      it("says nothing about a block that parses cleanly", () => {
+         expect(
+            packageMaterializationWarnings({
+               schedule: "0 6 * * *",
+               queryMetadata: { team: "finance" },
+            }),
+         ).toEqual([]);
+         expect(packageMaterializationWarnings(undefined)).toEqual([]);
       });
    });
 });

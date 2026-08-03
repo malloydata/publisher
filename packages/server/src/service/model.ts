@@ -92,13 +92,48 @@ import {
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    assertWithinModelResponseLimits,
+   type QueryRowLimitSource,
+   queryRowLimitSource,
    resolveModelQueryRowLimit,
 } from "./model_limits";
 import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
 import {
+   mergeQueryMetadata,
+   type QueryClass,
+   type QueryMetadata,
+} from "./query_metadata";
+import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "./source_extraction";
+
+/**
+ * What a request boundary contributes to a model query's per-query metadata: the
+ * caller's own properties and class, the environment the query runs in, and a
+ * reader for the executing connection's default (the controller owns the
+ * environment, so it supplies the lookup rather than the model reaching for it).
+ */
+export interface ModelQueryMetadataInput {
+   request?: QueryMetadata;
+   queryClass?: QueryClass;
+   environment?: string;
+   version?: string;
+   /**
+    * The id this query is correlated by, minted by the boundary that returns it
+    * (see `mintCorrelationId`). Omitted by callers with no response field to
+    * carry it, which is why it is not minted here.
+    */
+   correlationId?: string;
+   /**
+    * The executing connection's two metadata layers: its overridable default and
+    * the properties the deployment enforces. Supplied by the controller, which
+    * owns the environment; the model only knows the connection by name.
+    */
+   connectionMetadata?: (connectionName: string) => {
+      default?: QueryMetadata | null;
+      enforced?: QueryMetadata | null;
+   } | null;
+}
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
@@ -2054,11 +2089,28 @@ export class Model {
       // background callers (materialization, tests) that own their
       // own deadline.
       abortSignal?: AbortSignal,
+      /**
+       * Per-query metadata inputs from the request boundary (see
+       * {@link ModelQueryMetadataInput}). Omitting it still tags the query with
+       * the server context; what is lost is the caller's own properties, the
+       * connection default, and the correlation id.
+       */
+      queryMetadataInput?: ModelQueryMetadataInput,
    ): Promise<{
       result: Malloy.Result;
       compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
+      /** Row cap pushed into the SQL: the query's own LIMIT, else the default. */
+      rowLimit: number;
+      /** Which of those two the cap came from. */
+      rowLimitSource: QueryRowLimitSource;
+      /**
+       * The `query_id` property attached to this query's statements, which is the
+       * caller's join key into the backend's own query record. Null when no
+       * metadata was attached.
+       */
+      queryCorrelationId: string | null;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
@@ -2318,8 +2370,10 @@ export class Model {
       // a 500. `executionTime` is still captured after prepare and before run,
       // preserving the pre-existing timing recorded by the success histogram.
       let rowLimit = 0;
+      let rowLimitSource: QueryRowLimitSource = "server_default";
       let executionTime = 0;
       let queryResults;
+      let appliedQueryMetadata: QueryMetadata | undefined;
       // Givens supplied only so a joined source's authorize gate could see
       // them (checked above, against the full unfiltered set) must not reach
       // the real query if this model doesn't itself surface them — see
@@ -2332,15 +2386,23 @@ export class Model {
       // shape can read them; the authorize gate above already saw the full set.
       const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
-         rowLimit = resolveModelQueryRowLimit(
-            (
-               await runnable.getPreparedResult({
-                  givens: effectiveGivens,
-                  buildManifest: effectiveBuildManifest,
-                  virtualMap: serveVirtualMap,
-               })
-            ).resultExplore.limit,
-            { defaultLimit: getDefaultQueryRowLimit(), maxRows },
+         // The prepared result is also where the executing connection's name
+         // comes from, which is what makes the connection's default metadata
+         // layer resolvable BEFORE the statement is issued.
+         const preparedResult = await runnable.getPreparedResult({
+            givens: effectiveGivens,
+            buildManifest: effectiveBuildManifest,
+            virtualMap: serveVirtualMap,
+         });
+         const preparedLimit = preparedResult.resultExplore.limit;
+         rowLimitSource = queryRowLimitSource(preparedLimit);
+         rowLimit = resolveModelQueryRowLimit(preparedLimit, {
+            defaultLimit: getDefaultQueryRowLimit(),
+            maxRows,
+         });
+         appliedQueryMetadata = this.resolveQueryMetadata(
+            queryMetadataInput,
+            preparedResult.connectionName,
          );
          executionTime = performance.now() - startTime;
 
@@ -2350,6 +2412,7 @@ export class Model {
             abortSignal,
             buildManifest: effectiveBuildManifest,
             virtualMap: serveVirtualMap,
+            queryMetadata: appliedQueryMetadata,
          });
       } catch (error) {
          // A binding that declares `freshnessFallback=live` is saying the tier is
@@ -2471,20 +2534,32 @@ export class Model {
             // the connector reads as a hard cap and stops before the first row: a
             // successful, EMPTY answer. Asking the live shape is also the honest
             // limit, since the live shape is what runs.
-            rowLimit = resolveModelQueryRowLimit(
-               (
-                  await liveRunnable!.getPreparedResult({
-                     givens: querySurfaceGivens,
-                     buildManifest,
-                  })
-               ).resultExplore.limit,
-               { defaultLimit: getDefaultQueryRowLimit(), maxRows },
+            const livePrepared = await liveRunnable!.getPreparedResult({
+               givens: querySurfaceGivens,
+               buildManifest,
+            });
+            const livePreparedLimit = livePrepared.resultExplore.limit;
+            rowLimitSource = queryRowLimitSource(livePreparedLimit);
+            rowLimit = resolveModelQueryRowLimit(livePreparedLimit, {
+               defaultLimit: getDefaultQueryRowLimit(),
+               maxRows,
+            });
+            // Re-resolve rather than reuse: the bag above was resolved against
+            // the STORAGE connection, which on this tier is routinely not the
+            // one the live shape runs on, so reusing it would stamp another
+            // connection's default and enforced layers on this statement. The
+            // correlation id rides in the input, so the retry keeps the id the
+            // response returns — one API call, one join key, two statements.
+            appliedQueryMetadata = this.resolveQueryMetadata(
+               queryMetadataInput,
+               livePrepared.connectionName,
             );
             queryResults = await liveRunnable!.run({
                rowLimit,
                givens: querySurfaceGivens,
                abortSignal,
                buildManifest,
+               queryMetadata: appliedQueryMetadata,
             });
          } catch (retryError) {
             failQuery(retryError);
@@ -2536,7 +2611,72 @@ export class Model {
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
+         // The cap actually pushed into the SQL. A caller cannot otherwise tell
+         // a complete result from one the row limit cut off: with no LIMIT of
+         // its own a query silently gets DEFAULT_QUERY_ROW_LIMIT rows, and that
+         // is under maxRows, so assertWithinModelResponseLimits raises nothing.
+         // Returning the number lets a caller compare it against the row count
+         // and say so, with no extra query.
+         rowLimit,
+         // Whether that cap was the author's own limit:/top: or the silent
+         // default. Only the second means rows were probably left behind; a
+         // deliberate `top: 10` returning 10 rows is a complete answer.
+         rowLimitSource,
+         // The id from the bag that was actually attached, not the one supplied:
+         // a bag shed under budget pressure sheds context last, but a caller
+         // should be told the truth about what it can look up.
+         queryCorrelationId: appliedQueryMetadata?.query_id ?? null,
       };
+   }
+
+   /**
+    * The per-query metadata for one model query: the executing connection's
+    * default, the caller's request override, and the server's context (which
+    * package, which model, which class of work), merged most-specific-wins.
+    *
+    * There is no model-side layer here. `materialization.queryMetadata` describes
+    * how a persist source is BUILT; a live query against the model is a different
+    * unit of work, and inheriting a build's tags would attribute interactive
+    * traffic to the build that happens to share the source.
+    *
+    * Fails open, like every other metadata path: a connection whose config can't
+    * be read contributes no default rather than failing the query.
+    */
+   private resolveQueryMetadata(
+      input: ModelQueryMetadataInput | undefined,
+      connectionName: string | undefined,
+   ): QueryMetadata | undefined {
+      let connectionLayers: {
+         default?: QueryMetadata | null;
+         enforced?: QueryMetadata | null;
+      } | null = null;
+      if (connectionName && input?.connectionMetadata) {
+         try {
+            connectionLayers = input.connectionMetadata(connectionName);
+         } catch {
+            connectionLayers = null;
+         }
+      }
+      const resolved = mergeQueryMetadata({
+         connection: connectionLayers?.default,
+         enforced: connectionLayers?.enforced,
+         request: input?.request,
+         context: {
+            queryClass: input?.queryClass ?? "interactive",
+            environment: input?.environment,
+            package: this.packageName,
+            model: this.modelPath,
+            version: input?.version,
+            correlationId: input?.correlationId,
+         },
+      });
+      if (resolved.drops.length > 0) {
+         logger.warn("Dropped query-metadata properties for a query", {
+            modelPath: this.modelPath,
+            drops: resolved.drops,
+         });
+      }
+      return resolved.metadata;
    }
 
    private getStandardModel(): ApiCompiledModel {
@@ -2633,6 +2773,11 @@ export class Model {
       // See `getQueryResults`: forwarded into `runnable.run` so the
       // publisher's wall-clock timeout actually cancels the query.
       abortSignal?: AbortSignal,
+      // A notebook cell issues real backend SQL on an interactive path, so it is
+      // tagged like any other query. No correlation id: the cell response has no
+      // field to hand one back on, and an id nobody can read costs the result
+      // cache for nothing.
+      queryMetadataInput?: ModelQueryMetadataInput,
    ): Promise<{
       type: "code" | "markdown";
       text: string;
@@ -2712,13 +2857,12 @@ export class Model {
             // See getQueryResults / filterGivensToModelSurface: the gate
             // above already saw the full unfiltered givens.
             const cellSurfaceGivens = this.filterGivensToModelSurface(givens);
+            const preparedCell = await runnableToExecute.getPreparedResult({
+               givens: cellSurfaceGivens,
+               buildManifest,
+            });
             const rowLimit = resolveModelQueryRowLimit(
-               (
-                  await runnableToExecute.getPreparedResult({
-                     givens: cellSurfaceGivens,
-                     buildManifest,
-                  })
-               ).resultExplore.limit,
+               preparedCell.resultExplore.limit,
                {
                   defaultLimit: getDefaultQueryRowLimit(),
                   maxRows: cellMaxRows,
@@ -2729,6 +2873,10 @@ export class Model {
                givens: cellSurfaceGivens,
                abortSignal,
                buildManifest,
+               queryMetadata: this.resolveQueryMetadata(
+                  queryMetadataInput,
+                  preparedCell.connectionName,
+               ),
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;

@@ -93,7 +93,7 @@ Frame each recommendation with the evidence from Step 2 (the run IDs, timings, b
 
   `set` also sets `scope: version` (a schedule requires it); the server rejects an invalid cron or an illegal scope/freshness combination, so a rejection means the change was unsafe.
 
-- **Change the scope:** `scope` is declared at the root of the package's `publisher.json` (`"scope": "package"` or `"version"`). Edit it there, then reload/republish the package. Remember a schedule pins scope to `version`, so clear the schedule first if moving to `package`.
+- **Change the scope:** `scope` is declared in the package's `publisher.json` under `materialization` (`"scope": "package"` or `"version"`; the root-level form is deprecated but still read). Edit it there, then reload/republish the package. Remember a schedule pins scope to `version`, so clear the schedule first if moving to `package`.
 
 After applying, re-run Step 2 on the next few builds to confirm the change did what you predicted (more reuse, shorter builds, or a table that is actually read).
 

@@ -41,6 +41,7 @@ import {
    getMemoryGovernorConfig,
    getPersistCollisionEnforce,
    getPersistStorageMode,
+   getQueryMetadataMode,
 } from "./config";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
@@ -48,6 +49,16 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import {
+   addCommand,
+   ensureMcpConfig,
+   logMcpConfigOutcome,
+   MCP_CONFIG_FILENAME,
+   mcpConfigEnabled,
+   mcpEndpoint,
+   resolveBoundPort,
+   resolveClientHost,
+} from "./mcp_config";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
@@ -95,6 +106,8 @@ function parseArgs() {
          i++;
       } else if (arg === "--init") {
          process.env.INITIALIZE_STORAGE = "true";
+      } else if (arg === "--no-mcp-config") {
+         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
       } else if (arg === "--watch-env" && args[i + 1]) {
          // Append (don't overwrite) so multiple --watch-env flags compose
          // and so an explicit env var pre-set still wins.
@@ -132,6 +145,9 @@ function parseArgs() {
          );
          console.log(
             "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
+         );
+         console.log(
+            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server; skipped when the directory already has one, is your home directory or the filesystem root, is inside a git working tree, or the MCP port bound is not the one requested)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -177,9 +193,20 @@ getPersistStorageMode();
 // than a failed boot.
 getPersistCollisionEnforce();
 
+// Same hazard, wider blast radius: getQueryMetadataMode() throws on an invalid
+// value and is read while resolving EVERY statement, so a typo'd off switch
+// ("false", "0", "disabled") would boot clean and then fail every query and
+// every build — the one thing the metadata path promises never to do.
+getQueryMetadataMode();
+
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+// Resolved here rather than in the listen callback: parseBoolEnv throws on a
+// typo, which is the convention for flags in this server, but a throw inside a
+// listen callback is an uncaughtException that kills a server which has already
+// bound both ports. At module scope it is an ordinary startup failure.
+const MCP_CONFIG_ENABLED = mcpConfigEnabled();
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
@@ -1273,6 +1300,11 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.body?.options as string,
+               undefined,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+               },
             ),
          );
       } catch (error) {
@@ -1295,6 +1327,10 @@ app.post(
                req.body.sqlStatement as string,
                req.body?.options as string,
                req.params.packageName,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+               },
             ),
          );
       } catch (error) {
@@ -1664,6 +1700,11 @@ app.post(
                | undefined,
             req.body.bypassFilters === true ? true : undefined,
             req.body.givens as Record<string, GivenValue> | undefined,
+            {
+               queryMetadata: req.body?.queryMetadata,
+               queryClass: req.body?.queryClass,
+               versionId: req.body?.versionId as string | undefined,
+            },
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
@@ -1947,9 +1988,64 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
       }
    }
 });
-const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
-   logger.info(`MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`);
-});
+const mcpServer = mcpApp.listen(
+   MCP_PORT,
+   PUBLISHER_HOST,
+   function (this: import("net").Server) {
+      // Read back rather than reusing MCP_PORT, which is only what was requested.
+      // `--mcp_port 0` asks for any free port, and under bun a non-numeric value
+      // binds an ephemeral one too, so the requested value can be 0 or NaN while
+      // a real port is listening. The listening line uses it as well, which is
+      // why it no longer reads `http://127.0.0.1:0`.
+      const boundPort = resolveBoundPort(this.address(), MCP_PORT);
+      // The BIND address, bracketed when it is an IPv6 literal so the URL
+      // parses. Deliberately not resolveClientHost: create-malloy-package's
+      // README and AGENTS template both tell readers these two listening lines
+      // are "the addresses it really bound", and use them to catch a mistyped
+      // --hostt that silently falls back to 0.0.0.0. Mapping the wildcard to
+      // loopback here would confirm the mistake instead of revealing it. The
+      // dialable form belongs in .mcp.json and in the advice, not here.
+      const bound = this.address();
+      const boundHost =
+         typeof bound === "object" && bound ? bound.address : PUBLISHER_HOST;
+      logger.info(
+         `MCP server listening at http://${boundHost.includes(":") ? `[${boundHost}]` : boundHost}:${boundPort}`,
+      );
+      // Checked before process.cwd(), which can throw: someone who turned the
+      // feature off should not get a warning about it.
+      if (MCP_CONFIG_ENABLED) {
+         // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
+         // raises ENOENT once the working directory has been removed. A throw
+         // here is an uncaught exception inside a listen callback, which would
+         // kill a server that has already bound both ports. Everything the call
+         // needs is built inside the try for that reason, including the
+         // endpoint: it is the newest and least-exercised code in this block.
+         try {
+            // The host an agent should dial, which is NOT `localhost`: that name
+            // resolves to both loopback families while the server binds only one,
+            // so another local process can hold the same port on the other family
+            // and receive the agent's traffic instead.
+            const endpoint = mcpEndpoint(
+               resolveClientHost(this.address(), PUBLISHER_HOST),
+               boundPort,
+            );
+            // cwd, not server_root: the file is for whoever opens an agent here.
+            logMcpConfigOutcome(
+               ensureMcpConfig({
+                  dir: process.cwd(),
+                  endpoint,
+                  requestedPort: MCP_PORT,
+                  boundPort,
+               }),
+            );
+         } catch (error) {
+            logger.info(
+               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(this.address(), PUBLISHER_HOST), boundPort))}`,
+            );
+         }
+      }
+   },
+);
 
 mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;

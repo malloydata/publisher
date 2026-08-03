@@ -13,15 +13,24 @@ Everything below talks to a running server, so start it before anything else:
 {{startCommand}}
 ```
 
-That is meant to run Publisher on http://localhost:{{port}} (web UI and REST) with the
-MCP endpoint on http://localhost:{{mcpPort}}/mcp, and to mount this workspace's
-packages in watch mode so model edits recompile. All three of those come from flags in
-the command above (`--port`, `--mcp_port`, `--watch-env`), and where that command is an
-`npm` script, from the script `package.json` runs for it. Read them there before you
-trust anything below: different ports move every URL in this file, a `--server_root` or
-`--config` pointing outside this directory serves a different workspace entirely, and
-no `--watch-env` means an edit on disk is not picked up at all until you reload the
-package. The server settles all of it on boot, printing
+That is *meant* to run Publisher on http://localhost:{{port}} (web UI and REST) with
+the MCP endpoint on http://localhost:{{mcpPort}}/mcp, and to mount this workspace's
+packages in watch mode so model edits recompile. Meant to, because only some of that
+is written in the command, and this paragraph cannot see what yours says. Go and
+read it, and where it is an `npm` script, read the script `package.json` runs for it.
+Five flags decide whether the rest of this file is true:
+
+- `--port` and `--mcp_port` are absent from a command that uses the defaults above,
+  which is the usual case. Where either one is present, it moves every URL here.
+- `--watch-env` is not a default, so watch mode is on only if you can see it. Without
+  it, an edit on disk is not picked up at all until you reload the package.
+- `--server_root` and `--config` say which workspace is being served. Pointing either
+  one outside this directory serves a different workspace entirely, and then nothing
+  below describes what you are talking to.
+- `--host` decides whether the endpoint is reachable from off this machine. That one
+  has a section of its own further down; read it before you assume this is private.
+
+The server settles all of it on boot, printing
 `Publisher server listening at http://<address>:<port>` and a
 `MCP server listening at ...` line beside it, so read those two lines rather than
 taking this paragraph's word for it.
@@ -32,9 +41,9 @@ returning the old model's rows; it may instead make the source vanish, so every 
 fails with `Reference to undefined object '<source>'`. Either way the failure goes only
 to the server's stdout, which you are not reading if you started it in the background.
 So a query that succeeds after an edit is not proof the edit compiled, and the rows you
-get back may be the old model's. Compile-check the edit with `malloy_compile`, or
-reload with `malloy_reloadPackage` afterwards (both described below); either one
-reports the failure that watch mode swallowed.
+get back may be the old model's. Compile-check the edit with `malloy_compile`, or reload with
+`malloy_reloadPackage` afterwards (both described below, and reload has a REST form for a
+script or an unattended run); either one reports the failure that watch mode swallowed.
 
 Poll until it reports serving rather than assuming a fixed wait; the first run
 downloads the server, so it can take a minute:
@@ -136,9 +145,13 @@ the model file's own errors too),
 watch-mode recompile that failed), and
 `malloy_searchDocs`. {{mcpNote}}
 
-REST, for a script or a check that does not need an agent: every model is queryable
-at `POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`. This
-lists what the server has loaded:
+REST, for a script or a check that does not need an agent: every model is queryable at
+`POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`, and after a
+model-file edit `GET /api/v0/environments/<env>/packages/<package>?reload=true` recompiles
+the package and comes back 424 with the compile errors when it does not compile. Any other
+non-2xx is a failed check too, and its `message` says what went wrong: a 404 for a package
+name this server does not serve, a 503 for a package it could not load at all. This lists
+what the server has loaded:
 
 ```bash
 curl -s http://localhost:{{port}}/api/v0/environments/{{envName}}/packages
@@ -149,16 +162,23 @@ package, the one the scaffolder created on the run that wrote this file. A works
 scaffolded more than once serves more than that, so take the packages, sources and
 views you do not see here from the list above and from `malloy_getContext`, never
 from their absence here.
-
+{{trustNote}}
 If you started this server yourself in this session, your `malloy_*` tools will not
 appear however long you wait: an MCP client fixes its tool list when it connects, so
 it never saw a server that did not yet exist. You cannot reconnect yourself. Say so,
 and {{reconnectNote}} Do not quietly switch to curl instead and call it done: it
 looks like it is working while hiding a problem the user can clear in seconds, and
-it gives up the grounded discovery, compile checks, and reload the tools exist to
-provide. If the user would rather keep going without reconnecting, the REST endpoint
-above runs the same models.
+it gives up the grounded discovery and compile checks the tools exist to provide. With
+nobody there to reconnect you, REST is the supported interface rather than a workaround,
+and the reload form above is the same check.
 
+There is a second reason the tools can be missing, and it looks identical from here:
+this workspace's MCP config is only discovered by an agent session that **started in
+this directory**. A session rooted anywhere else, a parent directory included, never
+sees the server, and no message anywhere reports it. The two causes need different
+fixes, so tell them apart before acting. If the server is running and the tools were
+never offered at all, ask the user to relaunch the agent from this directory.
+{{registrationNote}}
 ## Skills ({{skillsCount}} installed)
 
 {{skillsNote}}

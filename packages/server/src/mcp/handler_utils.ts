@@ -19,6 +19,7 @@ import {
    type ErrorDetails,
 } from "./error_messages";
 import type { Model } from "../service/model";
+import type { Environment } from "../service/environment";
 import { logger } from "../logger";
 
 /**
@@ -116,6 +117,11 @@ export function classifyToolError(
 /**
  * Fetches and validates the Package and Model instances needed for query execution.
  * Handles errors related to package/model access and initial compilation.
+ *
+ * The resolved Environment comes back with the model because a query needs it for
+ * more than the lookup: it owns the connection configs the per-query metadata
+ * layers are read from.
+ *
  * @returns An object containing the Model instance or a pre-formatted ErrorDetails object.
  */
 export async function getModelForQuery(
@@ -123,7 +129,9 @@ export async function getModelForQuery(
    environmentName: string,
    packageName: string,
    modelPath: string,
-): Promise<{ model: Model } | { error: ErrorDetails }> {
+): Promise<
+   { model: Model; environment: Environment } | { error: ErrorDetails }
+> {
    try {
       const environment = await environmentStore.getEnvironment(
          environmentName,
@@ -143,7 +151,7 @@ export async function getModelForQuery(
       }
       // Attempt to get the model definition early to catch initial compilation errors
       await model.getModel(); // This might throw ModelCompilationError
-      return { model };
+      return { model, environment };
    } catch (error) {
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;

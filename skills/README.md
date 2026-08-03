@@ -2,7 +2,7 @@
 
 Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`malloy-getting-started`](malloy-getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
 
-[`packages/skills`](../packages/skills) publishes this directory to npm, for consumers that need the files themselves without cloning. That is the channel the `reference/` directories reach: the MCP prompts carry each `SKILL.md` body and nothing else. It copies this tree in when it is packed, so adding a skill here needs no extra step to ship it.
+[`packages/skills`](../packages/skills) publishes this directory to npm, for consumers that need the files themselves without cloning. The MCP prompts carry the same tree: each `SKILL.md` body as one prompt, plus every `reference/*.md` as its own prompt named `<skill>/<file stem>`. It copies this tree in when it is packed, so adding a skill here needs no extra step to ship it.
 
 ## Where these come from
 
@@ -23,5 +23,6 @@ Shared skills refer to MCP tools by **bare name** — `get_context`, `execute_qu
 ## Adding or updating a skill
 
 - Update a shared skill **upstream first** (in `ms2data/agent-skills`), then copy it here — that keeps the two byte-identical. Editing only this copy makes the next sync a conflict.
+- **Any edit under `skills/` means regenerating the MCP bundle** — `cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills` — and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree.
 - A new skill directory needs a `.claude/skills/<name>` symlink (`ln -s ../../skills/<name> .claude/skills/<name>`) so Claude Code discovers it.
 - A shared skill may only `skill:`-reference other shared skills; refer to a host wrapper in neutral prose so a verbatim copy never leaves a dangling reference.

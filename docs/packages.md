@@ -59,9 +59,17 @@ control-plane deployments; a locally authored package never needs it.)
 ## Where the data comes from
 
 Every loaded package automatically gets a DuckDB connection named `duckdb`, rooted at the package
-directory. `duckdb.table('data/sales.csv')` and `duckdb.table('data/sales.parquet')` both work
-with zero configuration, and relative paths resolve against the package root. It is also the
-default connection, so a model that names no connection gets it.
+directory. `duckdb.table('data/sales.csv')` works with zero configuration, and so do
+`.parquet`, `.json`, `.ndjson`, and `.xlsx` files read the same way. Relative paths resolve
+against the package root. It is also the default connection, so a model that names no connection
+gets it.
+
+There is no preprocessing step for any of these: DuckDB reads them in place, so a file never needs
+converting to CSV, and inspecting one with a script instead of querying it is always the slower
+path. JSON carries no schema, so a value written as `"90"` arrives as a string where CSV would
+infer a number; cast it in the source with `::number`. Anything needing read options (an Excel
+sheet name, a JSON format hint) goes through `duckdb.sql("""SELECT * FROM read_json_auto(...)""")`
+instead of `table()`.
 
 A package cannot declare its own warehouse connection. Connections to BigQuery, Snowflake,
 Postgres, and the rest are defined per environment, in the server's config; the name `duckdb` is

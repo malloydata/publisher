@@ -113,7 +113,7 @@ export interface ScaffoldOptions {
    name?: string;
    /** Directory the workspace files are written to; also the server root. */
    cwd: string;
-   /** A CSV, Parquet, or XLSX file to seed the package from instead of the sample. */
+   /** A CSV, Parquet, JSON, NDJSON, or XLSX file to seed the package from instead of the sample. */
    dataFile?: string;
    host: Host;
    /** Overwrite existing workspace files instead of leaving them in place. */
@@ -129,6 +129,11 @@ export interface ScaffoldResult {
    dataPath?: string;
    /** The --data file's own name, set only when copying it in had to rename it. */
    dataFileRenamedFrom?: string;
+   /**
+    * Other loadable data files alongside the --data file, which this run did
+    * NOT include. Set only when there is at least one.
+    */
+   siblingDataFiles?: string[];
    /** The environment the package is registered in, which may not be "default". */
    envName: string;
    /**
@@ -252,7 +257,11 @@ const BIND_HOST = "127.0.0.1";
  *
  * `npx -y @malloy-publisher/server` with no version re-resolves `latest` on
  * every start, forever, and there is no lockfile behind it: a workspace
- * generated months ago boots whatever was published this morning. That is a
+ * generated months ago boots whatever was published this morning. Measured on
+ * npm 11.12.1: `npx` records a bare spec verbatim and re-resolves it, so a slot
+ * already holding an older version is replaced. This is the opposite of what
+ * `npm create` does with a bare spec, and registry_check.ts covers that; the two
+ * are different npm subcommands, not a contradiction. That is a
  * silent behaviour change on someone else's machine, and the flag it would be
  * felt through first is `--host`. The server accepts an unknown flag without a
  * word and falls back to binding 0.0.0.0, so the day a release renames or drops
@@ -266,7 +275,7 @@ const BIND_HOST = "127.0.0.1";
  * and confirm the new version still honours --host. A generated workspace can
  * move itself off it by editing the scripts in its own package.json.
  */
-export const SERVER_VERSION = "0.0.232";
+export const SERVER_VERSION = "0.0.234";
 
 function startCommandFor(envName: string): string {
    return (
@@ -458,7 +467,7 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
             `If you passed --force to \`npm create\`, npm read it as one of its ` +
             `own settings and it never reached this tool. Options need a \`--\` ` +
             `in front of them there:\n` +
-            `  npm create @malloy-publisher/malloy-package ${name} -- --force`,
+            `  npm create @malloy-publisher/malloy-package@latest ${name} -- --force`,
       );
    }
 
@@ -488,9 +497,22 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
          // one the user has to look for. Silently renaming it hid their file.
          result.dataFileRenamedFrom = sourceBase;
       }
+      const siblings = findSiblingDataFiles(options.dataFile);
+      if (siblings.length > 0) {
+         result.siblingDataFiles = siblings;
+      }
+      // Spreadsheets get their own starter model. The Malloy is identical; the
+      // comment above it is not, because a .csv either parses or fails loudly
+      // while a .xlsx whose header is not on row one loads clean and reports the
+      // wrong number of rows. That model has to say so, since nothing else will.
       writeFile(
          path.join(packageDir, modelFile),
-         renderTemplate("model.custom.malloy", { sourceName, dataPath }),
+         renderTemplate(
+            isSpreadsheet(dataPath)
+               ? "model.custom.xlsx.malloy"
+               : "model.custom.malloy",
+            { sourceName, dataPath },
+         ),
          options.cwd,
       );
    } else {
@@ -1730,6 +1752,56 @@ function renderAgentsFile(
       host === "cursor"
          ? "ask the user to reload the MCP servers from Cursor's settings (the `malloy` server, then Refresh), or to restart Cursor."
          : "ask the user to run `/mcp`, select the `malloy` server, and choose Reconnect, or to restart Claude Code. That panel reports `Auth: not authenticated` and offers `Authenticate` first, which is a red herring: this endpoint has no auth, and Reconnect is the one that works.";
+   // Measured on Claude Code only, and the gate, the dialog and the discarded
+   // allowlist are all its own, so Cursor gets nothing rather than a dialog it
+   // does not have. Delegated to the user like reconnectNote above, because the
+   // reader here is the agent and only a human can answer a trust prompt. It
+   // leads with the symptom that separates this from the case below, since
+   // otherwise an agent with no tools at all sends the user to do the trust
+   // dance for a cause it does not have. And it reports rather than lobbies:
+   // this file gets committed, so in someone else's cloned workspace the text
+   // would otherwise be repo-controlled prose arguing to trust that repo.
+   // The escape hatch for a session started outside this directory. Both halves
+   // are Claude Code's: `claude mcp add -s user` is its CLI, and the skills
+   // rescan is its behaviour, so Cursor gets neither rather than a command it
+   // cannot run. The directory-scope fact itself stays ungated in the template,
+   // because a project MCP config is read from the opened root in both hosts.
+   const registrationNote =
+      host === "cursor"
+         ? ""
+         : [
+              // Own leading and trailing blank, so the empty cursor case collapses
+              // to a single blank line instead of leaving a double one.
+              "",
+              "If they cannot, ask them to register the server so the directory stops deciding:",
+              "",
+              "```bash",
+              `claude mcp add --transport http malloy http://localhost:${result.mcpPort}/mcp -s user`,
+              "```",
+              "",
+              "That registration is stored per user rather than per project, so the tools follow the",
+              "agent everywhere. Skills need no such escape hatch: they are rescanned as the working",
+              "directory changes, so a session started further up picks them up once work moves into",
+              "this directory.",
+              "",
+           ].join("\n");
+   const trustNote =
+      host === "cursor"
+         ? ""
+         : [
+              "",
+              "One gate can void the reconnect fix below, and you cannot clear it yourself: if the",
+              "`malloy_*` tools are listed but every call is refused, the usual cause is that this",
+              "workspace has not been trusted, which also discards a `.claude/settings.json` allowlist.",
+              "A human has to start Claude Code interactively in this directory once and answer the",
+              "trust prompt; a non-interactive run is never asked, so it cannot clear the gate either.",
+              "Tell the user and leave the choice to them. You will know the prompt was answered when a",
+              "`malloy_*` call returns data instead of being refused. If that does not change it, the",
+              "other cause is a `malloy` server whose own approval was never given, which the user",
+              "clears in the same `/mcp` panel named below. If the tools are not listed at all, this",
+              "gate is not the cause, so read on.",
+              "",
+           ].join("\n");
    // The count is the real one, not the shipped one. This file used to assert the
    // skills were there in the same run that installed none of them, and an agent
    // reading it went looking for skills that do not exist.
@@ -1769,6 +1841,8 @@ function renderAgentsFile(
       packageSection: packageSection(result, envPackages),
       mcpNote,
       reconnectNote,
+      registrationNote,
+      trustNote,
       skillsNote,
    });
 }
@@ -2018,20 +2092,78 @@ function claudeFile(agentsFile: string): string {
    );
 }
 
+/**
+ * Extensions the generated `duckdb.table('<path>')` reads with no extra setup.
+ *
+ * One list, used both to validate --data and to spot loadable files sitting
+ * next to it. DuckDB reads all of these in place, so a package never needs a
+ * file converted first; keeping JSON off this list is what taught agents that
+ * only CSV worked and sent them to python to read a .json.
+ */
+const LOADABLE_DATA_EXTENSIONS = [
+   ".csv",
+   ".parquet",
+   ".json",
+   ".ndjson",
+   ".xlsx",
+] as const;
+
+function isLoadableDataFile(file: string): boolean {
+   return (LOADABLE_DATA_EXTENSIONS as readonly string[]).includes(
+      path.extname(file).toLowerCase(),
+   );
+}
+
+/**
+ * Is this data file a spreadsheet?
+ *
+ * Deliberately narrower than LOADABLE_DATA_EXTENSIONS rather than derived from
+ * it: every entry on that list loads in place, but only `.xlsx` loads in place
+ * and can still be silently wrong, so only `.xlsx` earns the extra warning.
+ * Kept as a named predicate rather than an inline `endsWith` because two places
+ * have to agree on the answer, the starter model that carries the warning and
+ * the success output that repeats it, and they are in different files.
+ */
+export function isSpreadsheet(dataPath: string): boolean {
+   return path.extname(dataPath).toLowerCase() === ".xlsx";
+}
+
 function validateDataFile(dataFile: string): void {
    if (!fs.existsSync(dataFile) || !fs.statSync(dataFile).isFile()) {
       // printable(), because the path is echoed to a terminal and a filename can
       // hold ESC or CR: see printable() in names.ts.
       throw new ScaffoldError(`--data file not found: ${printable(dataFile)}`);
    }
-   const ext = path.extname(dataFile).toLowerCase();
-   if (ext !== ".csv" && ext !== ".parquet" && ext !== ".xlsx") {
+   if (!isLoadableDataFile(dataFile)) {
       throw new ScaffoldError(
-         `--data must be a .csv, .parquet, or .xlsx file (got "${printable(
+         `--data must be one of ${LOADABLE_DATA_EXTENSIONS.join(", ")} (got "${printable(
             path.basename(dataFile),
          )}").`,
       );
    }
+}
+
+/**
+ * Other loadable files in the --data file's own directory.
+ *
+ * --data takes exactly one file and said nothing about the rest, so pointing it
+ * at a folder of related exports silently modelled one of them. Naming the
+ * others does not change what gets scaffolded; it just stops the omission from
+ * being invisible.
+ */
+function findSiblingDataFiles(dataFile: string): string[] {
+   let entries: string[];
+   try {
+      entries = fs.readdirSync(path.dirname(dataFile));
+   } catch {
+      // An unreadable directory is not worth failing a successful scaffold over.
+      return [];
+   }
+   const chosen = path.basename(dataFile);
+   return entries
+      .filter((e) => e !== chosen && isLoadableDataFile(e))
+      .sort()
+      .map(printable);
 }
 
 /** npm names are lowercase and url-safe; fall back if nothing survives. */

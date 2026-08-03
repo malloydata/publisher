@@ -58,9 +58,17 @@ scaffold one:
 
 ```bash
 mkdir my-data && cd my-data
-npm create @malloy-publisher/malloy-package sales
+npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
+
+Keep the `@latest`. `npm create` resolves the scaffolder through npm's npx cache, and on a machine
+that has run the command before, an unversioned name is satisfied by whatever copy is already
+cached, so npm never asks the registry. Drop it and you can quietly scaffold from a months-old
+scaffolder that pins an older server than the one you meant to run. The scaffolder checks its own
+version against the registry once it has finished writing and tells you when it is behind; that
+check is bounded and fails open, it is skipped where `CI` or `NO_UPDATE_NOTIFIER` is set,
+and `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1` turns it off anywhere else.
 
 Make the directory first. The package lands in `./sales`, but the workspace around it is written to
 the current directory, so running this somewhere you did not mean to scatters config files through
@@ -70,10 +78,11 @@ against your package, in watch mode, so edits to the model take effect as you sa
 
 Run bare like that, the package comes with a small sample dataset, so there is something to query
 before you have wired up anything of your own. To start from one of your own files instead, pass
-`--data` (CSV, Parquet, or Excel `.xlsx`):
+`--data` (CSV, Parquet, JSON, newline-delimited JSON, or Excel `.xlsx` - DuckDB reads all of them
+in place, so nothing needs converting first):
 
 ```bash
-npm create @malloy-publisher/malloy-package sales -- --data ./orders.csv
+npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
 ```
 
 That path is relative to the directory you run the command in, so either move your file there first
@@ -98,19 +107,62 @@ this directory picks up the same file. The walkthrough in the next section is wr
 examples, so run that one from a directory without this config.
 
 To run the scaffolder without `npm create`, call the package by its full name:
-`npx @malloy-publisher/create-malloy-package sales --data ./orders.csv`. Note that the name is
-`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, and that npx
-needs no separator: it forwards flags as they are, so a `--` there leaves the flags after it to
-arrive as stray arguments.
+`npx @malloy-publisher/create-malloy-package@latest sales --data ./orders.csv`. Note that the name is
+`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, that the same
+caching applies so `@latest` is worth keeping, and that npx needs no separator: it forwards flags as
+they are, so a `--` there leaves the flags after it to arrive as stray arguments.
 
 ## Point your agent at it
 
-This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the
-MCP endpoint on port **4040**:
+This is the fast path to the "wow." In a directory you just made for the purpose there is nothing
+to configure; in a directory inside a git repo, which most real projects are, the server tells you
+the one command to run instead. On
+startup the server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port it
+actually bound. In one terminal:
 
 ```bash
-claude mcp add --transport http malloy http://localhost:4040/mcp
+npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json unless one of the cases below applies
 ```
+
+and in a second terminal, in that same directory:
+
+```bash
+claude
+```
+
+Your agent may ask you to trust the folder, to use the server it found, and to approve the first tool
+call. Say yes, then ask it a question about the data.
+
+The file is only read by a session that **started** in that directory, so launch your agent there.
+
+It also stays on disk after you stop the server, and is never corrected. That matters more than a
+broken link: if something else later holds that port, perhaps a second Publisher serving different
+data, an agent started there connects to it and answers confidently from the wrong model. Nothing marks
+the file as the server's, so do not go hunting for ones to delete: a `.mcp.json` may be your own, and it
+may hold other servers and their credentials. If you made a scratch directory for this, deleting the
+directory is enough. If you are ever unsure what an agent is connected to, ask it to run
+`malloy_getContext`, which names the environment and packages it is actually talking to.
+
+**When the server does not write one.** It skips a directory that already has a `.mcp.json`, anything
+inside a git working tree (so, usually, your own project), your home directory, and a few other cases.
+You do not have to memorise them: whenever it skips, it says so in the startup log and prints the one
+command that connects an agent anyway. The full list is in
+[docs/configuration.md](docs/configuration.md#the-mcpjson-the-server-writes).
+
+`--no-mcp-config` turns the whole thing off, as does `PUBLISHER_NO_MCP_CONFIG=1`.
+
+To register the server for yourself rather than for one directory, so the tools are there whichever
+directory you launch from:
+
+```bash
+claude mcp add --transport http malloy http://127.0.0.1:4040/mcp -s user
+```
+
+That is also the fix when an agent reports no `malloy_*` tools. Two things cause it: the session
+started somewhere other than the directory holding the config, or there is no config there because
+the server skipped one of the cases above. Check the server's startup log, which says which,
+and `ls -a` to see whether the file is there at all. Other MCP clients take the same endpoint through
+their own config file; see [docs/ai-agents.md](docs/ai-agents.md).
 
 Then just ask, in plain English:
 
@@ -120,6 +172,11 @@ The agent discovers what data exists (`malloy_getContext`), grounds itself in th
 and field names, runs the query (`malloy_executeQuery`), and returns an answer backed by your
 semantic model. No schema spelunking, no hallucinated column names.
 
+- **Trust the directory first.** This is a second gate, separate from connecting the server: in a
+  workspace nobody has trusted yet, Claude Code lists the `malloy_*` tools and then refuses every
+  call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
+  interactively there once and answer the trust prompt, asked once per directory. A headless run is
+  never asked, so it cannot clear the gate either. You will know it cleared when a query returns data.
 - **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
   ([`skills/`](skills/)) that most AI coding hosts auto-discover. Start there.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
