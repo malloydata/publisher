@@ -130,16 +130,13 @@ jobs:
   # skills and create-malloy-package version on their own lines, so this job
   # triggers them rather than versioning them.
   #
-  # This delivers half of what PR #926's review asked for and deliberately not
-  # the other half, so be clear about which. The ask was to call the new npm
-  # workflow from here "so versioning stays aligned, the same pattern used in
-  # the malloydata repository". The trigger half is here: one release publishes
-  # every package. The versioning half is not, and cannot be: malloydata/malloy
-  # aligns versions with Lerna fixed mode, one number for every package, and
-  # these two were already published on their own lines before this landed. npm
-  # versions are immutable, so there is no path back to a shared number.
-  # For the same reason this job publishes each package at the version its own
-  # package.json declares, and skips it when that version is already on npm.
+  # It triggers them but does NOT align their version numbers with sdk/app/
+  # server, and that is not an omission to be tidied up later. malloydata/malloy
+  # gets one shared number across its packages from Lerna fixed mode; these two
+  # were already published on their own lines before this job existed, and npm
+  # versions are immutable, so there is no path back to a shared number. Each
+  # package therefore publishes at the version its own package.json declares,
+  # and is skipped when that version is already on npm.
   #
   # They are DISPATCHED through the Actions API rather than called with
   # workflow_call, deliberately. npm allows one trusted publisher per package
@@ -251,26 +248,53 @@ jobs:
           # second package never dispatched.
           POLL_MAX_REGISTRY_ERRORS=3
 
-          # These packages are read from main, and the dispatch resolves main
-          # when it creates the child run. If main moves in between we would
-          # poll for a version nobody is publishing, time out after the full
-          # budget, and (because the failure stops the sequence) never dispatch
-          # the second package. Fail immediately and accurately instead.
-          EXPECTED_SHA="$(git rev-parse HEAD)"
-
-          # Registry output can contain anything, including a line starting with
+          # Registry and API output can contain anything, including a line starting with
           # "::" that the runner would parse as a workflow command. Prefix every
           # line with a non-whitespace marker: the runner trims leading
           # whitespace before it looks for "::", so indenting would not help.
-          echo_registry_output() {
+          echo_untrusted_output() {
             printf '%s\n' "$1" | sed 's/^/[npm] /'
           }
 
+          # The sha this job verified its versions against. Fixed for the whole
+          # job by definition: it is what the checkout above contains, and
+          # nothing here commits or pulls. Re-reading it per package would
+          # return the same value and fix nothing, which is why the staleness
+          # problem is solved by scoping the comparison (below) rather than by
+          # moving this line.
+          CHECKOUT_SHA="$(git rev-parse HEAD)"
+
           publish_pkg() {
             local dir="$1" wf="$2" name version spec out deadline live_sha errors
+            local changed file_count relevant file path
+            local -a paths
             name="$(node -p "require('./packages/${dir}/package.json').name")"
             version="$(node -p "require('./packages/${dir}/package.json').version")"
             spec="${name}@${version}"
+
+            # The paths this package's PUBLISHED content is built from, which is
+            # not the same as the paths it lives in.
+            #
+            # skills packs the repo-root skills/ tree as well as its own
+            # directory, so it has both.
+            #
+            # create-malloy-package ships dist/ and templates/ built from its own
+            # directory, PLUS a dependency range its publish job bakes in by
+            # reading packages/skills/package.json from main at dispatch time.
+            # That file therefore belongs in its list even though its contents
+            # never enter the tarball. Scoped to the one file rather than the
+            # skills directory: a skill edit cannot change what the scaffolder
+            # publishes, only a version change can.
+            #
+            # The child workflow file is in both lists because a dispatch runs
+            # whatever definition main holds at dispatch time, not the one this
+            # job read.
+            case "$dir" in
+              skills) paths=("skills/" "packages/skills/") ;;
+              create-malloy-package) paths=("packages/${dir}/" "packages/skills/package.json") ;;
+              *) paths=("packages/${dir}/") ;;
+            esac
+            paths+=(".github/workflows/${wf}")
 
             # Three outcomes, matching create-malloy-package-npm.yml: published
             # means there is nothing to do; E404 means the version is free;
@@ -281,26 +305,130 @@ jobs:
               echo "- \`${spec}\` was already on npm, skipped" >> "$GITHUB_STEP_SUMMARY"
               return 0
             elif [[ "$out" != *E404* ]]; then
-              echo_registry_output "$out"
+              echo_untrusted_output "$out"
               echo "::error title=${name}::could not ask npm whether ${spec} is taken"
+              echo "- \`${spec}\` NOT dispatched: npm did not answer whether it is already published" >> "$GITHUB_STEP_SUMMARY"
               return 1
             fi
 
-            # Fail closed on ANY movement, not just a version change: skills
-            # publishes content from the repo-root skills/ tree, so a commit that
-            # leaves the version untouched can still change what gets published
-            # under it, and npm versions are immutable.
-            live_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
-            if [[ ! "$live_sha" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error title=${name}::could not read main's current sha (got '${live_sha}'); ${wf} was not dispatched"
+            # Fail closed on a content change, not just a version change: skills
+            # publishes the repo-root skills/ tree, so a commit that leaves the
+            # version untouched can still change what ships under it, and npm
+            # versions are immutable.
+            #
+            # Scoped to this package's paths rather than to any movement at all.
+            # The second package's check runs after the first has finished a full
+            # dispatch-and-wait, up to POLL_BUDGET_SECONDS, so comparing bare shas
+            # failed the scaffolder whenever anything at all merged inside that
+            # window, including changes that could not affect it. That is a
+            # likely event on a busy day and it stops the sequence.
+            # `if !` rather than a bare assignment. Under set -e a failing
+            # command substitution kills the step outright, before the check
+            # below can run, so a gh crash here produced no annotation and an
+            # empty job summary: the exact silent failure the summary lines
+            # exist to prevent. The regex below only catches a gh that SUCCEEDS
+            # and returns something that is not a sha.
+            if ! live_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha 2>&1)"; then
+              echo_untrusted_output "$live_sha"
+              echo "::error title=${name}::could not reach the GitHub API to read main's current sha (logged above); ${wf} was not dispatched"
+              echo "- \`${spec}\` NOT dispatched: could not reach the API to read main's sha" >> "$GITHUB_STEP_SUMMARY"
               return 1
             fi
-            if [ "$live_sha" != "$EXPECTED_SHA" ]; then
-              # Deliberately does not claim nothing was published: on the second
-              # package, the first may already have been dispatched and confirmed.
-              # The job summary above records what actually shipped.
-              echo "::error title=${name}::main moved from ${EXPECTED_SHA} to ${live_sha} during this release, so ${spec} may not be the version ${wf} would publish. ${wf} was NOT dispatched; see the job summary for what already shipped. Re-run THIS JOB (Re-run failed jobs), or dispatch ${wf} on main directly. Do not re-run the whole release: that bumps and republishes sdk/app/server."
+            if [[ ! "$live_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              # Through the prefixer, not inlined: this is the branch where the
+              # value FAILED validation, so it is exactly the case where it may
+              # not be a bare sha. Same reasoning as the count below.
+              echo_untrusted_output "$live_sha"
+              echo "::error title=${name}::could not read main's current sha as 40 hex characters (logged above); ${wf} was not dispatched"
+              echo "- \`${spec}\` NOT dispatched: could not read main's sha" >> "$GITHUB_STEP_SUMMARY"
               return 1
+            fi
+
+            if [ "$live_sha" != "$CHECKOUT_SHA" ]; then
+              # Every branch from here fails closed. A wrong "proceed" publishes
+              # an immutable version whose content nobody verified; a wrong
+              # "stop" costs a re-run.
+              #
+              # One request, and deliberately NOT --paginate. The compare
+              # endpoint paginates its `commits` array; `files` is capped at 300
+              # and comes back whole on every page, so --paginate would emit the
+              # same filenames once per commit page. That inflates the count
+              # below and would trip the cap check on a wide-enough release
+              # window: a false failure of exactly the kind this whole change
+              # exists to remove.
+              #
+              # The count comes from the same response as the names, in one
+              # --jq program, so the two cannot disagree and it stays a single
+              # round trip. Line prefixes because filenames are untrusted text.
+              # The `type` assertion is not decoration. Without it a response
+              # carrying no `files` array yields `COUNT 0` from `null | length`
+              # before it errors, and the whole point of this block is that
+              # "zero relevant files" means "go ahead and publish".
+              # `previous_filename` as well as `filename`, and that is not
+              # belt and braces. The compare API reports a rename under its NEW
+              # path only, so moving packages/skills/foo.md to docs/foo.md
+              # changes what the skills tarball contains while reporting a path
+              # that matches nothing here. Emitting both makes a rename OUT of a
+              # watched directory count, which is the fail-closed direction. A
+              # deletion already reports the old path, so it was never affected.
+              if ! changed="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${CHECKOUT_SHA}...${live_sha}" --jq 'if (.files | type) == "array" then ("COUNT \(.files | length)"), (.files[] | "FILE \(.filename)"), (.files[] | select(.previous_filename) | "FILE \(.previous_filename)") else error("compare response has no files array") end' 2>&1)"; then
+                echo_untrusted_output "$changed"
+                echo "::error title=${name}::main moved from ${CHECKOUT_SHA} to ${live_sha} and the compare API did not answer, so whether it touched ${dir} is unknown. ${wf} was NOT dispatched."
+                echo "- \`${spec}\` NOT dispatched: main moved and the compare API did not answer" >> "$GITHUB_STEP_SUMMARY"
+                return 1
+              fi
+
+              file_count="$(printf '%s\n' "$changed" | sed -n 's/^COUNT //p')"
+              if [[ ! "$file_count" =~ ^[0-9]+$ ]]; then
+                # Print the value through the prefixer rather than inlining it in
+                # the annotation. It is derived from filenames, a filename may
+                # contain a newline, and two forged COUNT lines would otherwise
+                # put attacker text at the start of a line inside this ::error,
+                # where the runner reads it as a workflow command.
+                echo_untrusted_output "$file_count"
+                echo "::error title=${name}::could not read a single numeric changed-file count from the compare of ${CHECKOUT_SHA}...${live_sha} (logged above), so a change to ${dir} cannot be ruled out. ${wf} was NOT dispatched."
+                echo "- \`${spec}\` NOT dispatched: unreadable compare response" >> "$GITHUB_STEP_SUMMARY"
+                return 1
+              fi
+
+              # The compare endpoint caps files at 300 and signals that only by
+              # returning exactly that many, so a diff at the cap may be
+              # truncated and a relevant file may be missing from it.
+              if [ "$file_count" -ge 300 ]; then
+                echo "::error title=${name}::main moved from ${CHECKOUT_SHA} to ${live_sha} across at least 300 files, which is the compare API's cap, so the file list may be truncated and cannot rule out a change to ${dir}. ${wf} was NOT dispatched."
+                echo "- \`${spec}\` NOT dispatched: compare diff hit the 300-file cap" >> "$GITHUB_STEP_SUMMARY"
+                return 1
+              fi
+
+              relevant=""
+              while IFS= read -r file; do
+                # Only FILE lines; the COUNT line above shares this stream.
+                case "$file" in FILE\ *) file="${file#FILE }" ;; *) continue ;; esac
+                [ -n "$file" ] || continue
+                # A trailing slash means "this directory and everything under
+                # it"; anything else is one exact file. Without the distinction
+                # a bare filename also matches its own neighbours by prefix, so
+                # packages/skills/package.json.bak would count as a change to
+                # packages/skills/package.json.
+                for path in "${paths[@]}"; do
+                  case "$path" in
+                    */) case "$file" in "$path"*) relevant="${relevant}  ${file}"$'\n'; break ;; esac ;;
+                    *) [ "$file" = "$path" ] && { relevant="${relevant}  ${file}"$'\n'; break; } ;;
+                  esac
+                done
+              done <<< "$changed"
+
+              if [ -n "$relevant" ]; then
+                # Deliberately does not claim nothing was published: on the second
+                # package, the first may already have been dispatched and confirmed.
+                # The job summary records what actually shipped.
+                echo "::error title=${name}::main moved from ${CHECKOUT_SHA} to ${live_sha} during this release and touched files ${spec} is built from, so ${wf} would not publish what this job verified. It was NOT dispatched; see the job summary for what already shipped. Re-run THIS JOB (Re-run failed jobs), or dispatch ${wf} on main directly. Do not re-run the whole release: that bumps and republishes sdk/app/server."
+                printf '%s\n' "$relevant" | sed 's/^/[changed] /'
+                echo "- \`${spec}\` NOT dispatched: main moved under its own paths" >> "$GITHUB_STEP_SUMMARY"
+                return 1
+              fi
+
+              echo "::notice title=${name}::main moved from ${CHECKOUT_SHA} to ${live_sha} during this release, but nothing under ${paths[*]} changed, so ${spec} is still what ${wf} will publish"
             fi
 
             # The dispatch API returns no run id, and picking one out of
@@ -309,7 +437,16 @@ jobs:
             local runs_url="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/${wf}?query=branch%3Amain"
 
             echo "::notice title=${name}::dispatching ${wf} on main to publish ${spec} (${runs_url})"
-            gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref main
+            # Aborting here is right: polling 25 minutes for a run that was never
+            # created helps nobody. But under `set -e` a bare command would exit
+            # the step with only gh's stderr and the notice above to go on, which
+            # is the one exit from this function with no explanation of its own.
+            if ! out="$(gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref main 2>&1)"; then
+              echo_untrusted_output "$out"
+              echo "::error title=${name}::could not dispatch ${wf} on main, so ${spec} was not published and nothing is waiting for it. Check that the workflow exists on main and still declares workflow_dispatch, then dispatch it yourself at ${runs_url}."
+              echo "- \`${spec}\` NOT dispatched: the dispatch API call failed" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
 
             deadline=$((SECONDS + POLL_BUDGET_SECONDS))
             errors=0
@@ -327,9 +464,10 @@ jobs:
                 return 0
               elif [[ "$out" != *E404* ]]; then
                 errors=$((errors + 1))
-                echo_registry_output "$out"
+                echo_untrusted_output "$out"
                 if [ "$errors" -ge "$POLL_MAX_REGISTRY_ERRORS" ]; then
                   echo "::error title=${name}::npm stopped answering while waiting for ${spec} (${errors} consecutive errors); the ${wf} run may have published it. Check ${runs_url} and npm before re-dispatching."
+                  echo "- \`${spec}\` dispatched, then npm stopped answering; check ${runs_url} and npm" >> "$GITHUB_STEP_SUMMARY"
                   return 1
                 fi
               else

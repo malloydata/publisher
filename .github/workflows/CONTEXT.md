@@ -51,10 +51,20 @@ npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored tok
 
 ### Rules that bite (not guessable from the YAML)
 
+The first two rules below are npm's behaviour, not ours, and they drive a one-way-door decision, so
+they carry sources. Check them before acting on them: npm can change either unilaterally, and
+everything in this file that follows from them changes with it.
+
 - **One trusted publisher per package.** npm allows a single entry per package, so a package cannot
-  be publishable from two workflows.
+  be publishable from two workflows. Sources: npm's
+  [trusted publishing docs](https://docs.npmjs.com/trusted-publishers), and
+  `malloydata/malloy`'s own `.github/workflows/CONTEXT.md`, which records the concrete check and the
+  **409** the registry returns on a second registration for the same package.
 - **Matching is on the top-level caller workflow filename**, not a reusable workflow it calls. npm's
-  own docs describe this as a mismatch hazard. This is why `@malloy-publisher/sdk`, `app`, and
+  [trusted publishing docs](https://docs.npmjs.com/trusted-publishers) describe this as a mismatch
+  hazard, and `malloydata/malloy`'s `CONTEXT.md` states the same rule verbatim ("Matching is on the
+  top-level caller workflow filename, not a reusable workflow it calls"), independently arrived at.
+  This is why `@malloy-publisher/sdk`, `app`, and
   `server` have entries naming `release.yml` even though the `npm publish` calls live in
   `npm-sdk.yml`.
 - **`release.yml` dispatches the two independently-versioned packages, it does not call them.**
@@ -104,6 +114,15 @@ before dispatching the package it names, but note it can fire on the second pack
 has already published, so read the job summary for what actually shipped rather than assuming the
 registry is untouched. Either recovery above is safe either way, because both skip a version that is
 already on npm.
+
+It fires only when `main` moved **under the paths that package's published content is built from**, not
+on any movement at all: the second package is checked after the first has finished a full
+dispatch-and-wait, so a bare sha comparison failed it whenever anything merged inside that window,
+including changes that could not affect it. Those paths are not simply "where the package lives".
+`create-malloy-package` includes `packages/skills/package.json`, because its publish job reads the
+skills version from `main` at dispatch time and bakes it into the published dependency range, even
+though no skills file enters its tarball. Every uncertain answer still aborts: an unanswered compare
+API, and a diff at that API's 300-file cap, where the list may be truncated.
 
 **Two skips are how a green release ships nothing, and both name themselves in the job summary.**
 Read that summary rather than the run's green tick if you expected a publish.

@@ -6,13 +6,12 @@ name: skills
 # the package out.
 #
 # release.yml DOES trigger this workflow, so one release publishes every
-# package. It dispatches this file through the Actions API rather than calling
-# it with workflow_call, which is what keeps both entry points working: npm
-# matches a trusted publisher on the TOP-LEVEL workflow filename, and a
-# dispatched run is its own top-level run, so this package's npm entry still
-# names this file and a manual dispatch still publishes. release.yml also asks
-# the registry first and does not dispatch a version that is already published,
-# so an unchanged skills package is skipped rather than reddening the release.
+# package. It dispatches this file rather than calling it with workflow_call, so
+# that both entry points keep working; do not change that without reading
+# .github/workflows/CONTEXT.md first, because it is a one-way door. release.yml
+# also asks the registry first and does not dispatch a version that is already
+# published, so an unchanged skills package is skipped rather than reddening the
+# release.
 
 on:
   push:
@@ -67,15 +66,11 @@ jobs:
     # the same branch's tarball. Without this check, dispatching from a stale or
     # half-finished branch publishes that branch's code under the real name.
     #
-    # A guardrail, not a boundary: anyone who can dispatch can push a branch
-    # whose copy of this file drops the line, because npm matches repo plus
-    # filename and never a ref. The control that survives that is binding the
-    # trusted-publisher entry to a GitHub Environment whose deployment branches
-    # are restricted to main. Land `environment:` here before setting the name
-    # on npm, never after, or every publish fails on a mismatch.
-    #
-    # release.yml dispatches this workflow on main, so this holds on that path
-    # too. The sibling create-malloy-package-npm.yml carries the same guard.
+    # A guardrail, not a boundary, and CONTEXT.md says what would actually be
+    # one (a branch-restricted GitHub Environment) and the ordering that has to
+    # be respected if anyone adds it. release.yml dispatches this workflow on
+    # main, so the guard holds on that path too; create-malloy-package-npm.yml
+    # carries the same one.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: check_pack
     runs-on: ubuntu-latest

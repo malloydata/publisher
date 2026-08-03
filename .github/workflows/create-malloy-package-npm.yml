@@ -8,13 +8,13 @@ name: create-malloy-package
 # workflow exists solely to publish, which should never happen automatically on
 # a push or a PR.
 #
-# The "Release (NPM + Docker)" workflow now triggers this one, so a single
-# release publishes every package (Sagar review, PR #926). It dispatches this
-# file through the Actions API rather than calling it with workflow_call, which
-# is what keeps this workflow_dispatch entry point working as well; see the
-# trusted-publishing note on the publish step. release.yml also asks the
-# registry first and does not dispatch a version that is already published, so
-# an unchanged scaffolder is skipped rather than reddening the release.
+# The "Release (NPM + Docker)" workflow also triggers this one, so a single
+# release publishes every package. It dispatches this file through the Actions
+# API rather than calling it with workflow_call, which is what keeps this
+# workflow_dispatch entry point working as well; see the trusted-publishing note
+# on the publish step. release.yml asks the registry first and does not dispatch
+# a version that is already published, so an unchanged scaffolder is skipped
+# rather than reddening the release.
 on:
   workflow_dispatch:
 
@@ -95,14 +95,10 @@ jobs:
     # the same branch's tarball. Without this check, dispatching from a stale or
     # half-finished branch publishes that branch's code under the real name.
     #
-    # A guardrail, not a boundary, and worth being honest about which: the same
-    # premise applies to this line, so anyone who can dispatch can push a branch
-    # whose copy of this file drops it. npm matches repo plus filename and never
-    # a ref. The control that survives that is binding the trusted-publisher
-    # entry to a GitHub Environment whose deployment branches are restricted to
-    # main; npm verifies the environment claim in the OIDC token. Land that
-    # before setting the environment name on npm, never after, or every publish
-    # fails on a mismatch.
+    # A guardrail, not a boundary: anyone who can dispatch can push a branch
+    # whose copy of this file drops the line. CONTEXT.md says what would
+    # actually be one, and the ordering that has to be respected if anyone
+    # adds it.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: check_pack
     runs-on: ubuntu-latest
@@ -239,21 +235,12 @@ jobs:
       # deprecation message, so `npm create malloy-package` returns a bare E404
       # that points nowhere, and the name is free for anyone to claim.
       #
-      # The trusted-publisher entry must name THIS file,
-      # create-malloy-package-npm.yml. npm allows one entry per package and
-      # matches it against the CALLING workflow's filename, so if the entry ever
-      # names another workflow, this job cannot authenticate and fails with a
-      # bare ENEEDAUTH after check_pack and both registry round-trips have
-      # passed.
-      #
-      # That is exactly why release.yml DISPATCHES this workflow through the
-      # Actions API instead of calling it with workflow_call. A dispatched run is
-      # its own top-level run, so the OIDC claim still names this file and the
-      # entry stays correct for both entry points. Converting this workflow to
-      # workflow_call would require re-pointing the npm entry at release.yml,
-      # and would immediately break every manual dispatch of this file.
-      # Do not "simplify" it that way without changing the npm entry first, and
-      # note that doing so is a one-way door: npm allows only one entry.
+      # The trusted-publisher entry must name THIS file. Do NOT convert this
+      # workflow to workflow_call, and do not re-point the entry at release.yml:
+      # either one breaks publishing here with a bare ENEEDAUTH, and it is a
+      # one-way door. The reasoning, and the npm rules it rests on, are in
+      # .github/workflows/CONTEXT.md; read it before changing how this workflow
+      # is invoked.
       #
       # Do not hand-publish from a workstation instead. It skips check_pack, the
       # workspace:* rewrite above, and the registry check, which are the three
