@@ -189,7 +189,7 @@ function parseFloatEnv(name: string): number | undefined {
    return value;
 }
 
-function parseBoolEnv(name: string): boolean | undefined {
+export function parseBoolEnv(name: string): boolean | undefined {
    const raw = process.env[name];
    if (raw === undefined || raw.trim() === "") return undefined;
    const normalised = raw.trim().toLowerCase();

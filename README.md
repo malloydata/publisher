@@ -114,18 +114,55 @@ they are, so a `--` there leaves the flags after it to arrive as stray arguments
 
 ## Point your agent at it
 
-This is the fast path to the "wow." Start the server, then connect any MCP-compatible agent to the
-MCP endpoint on port **4040**:
+This is the fast path to the "wow." In a directory you just made for the purpose there is nothing
+to configure; in a directory inside a git repo, which most real projects are, the server tells you
+the one command to run instead. On
+startup the server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port it
+actually bound. In one terminal:
 
 ```bash
-claude mcp add --transport http malloy http://localhost:4040/mcp -s user
+npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json unless one of the cases below applies
 ```
 
-`-s user` registers the server for you rather than for one project directory, so the tools are there
-whichever directory you launch the agent from. Without it the registration is tied to the directory
-you happened to run the command in, which is the most common reason an agent reports no `malloy_*`
-tools: a project-scoped server (or a scaffolded `.mcp.json`) is only discovered by a session that
-*started* in that directory, and no message anywhere says so.
+and in a second terminal, in that same directory:
+
+```bash
+claude
+```
+
+Your agent may ask you to trust the folder, to use the server it found, and to approve the first tool
+call. Say yes, then ask it a question about the data.
+
+The file is only read by a session that **started** in that directory, so launch your agent there.
+
+It also stays on disk after you stop the server, and is never corrected. That matters more than a
+broken link: if something else later holds that port, perhaps a second Publisher serving different
+data, an agent started there connects to it and answers confidently from the wrong model. Nothing marks
+the file as the server's, so do not go hunting for ones to delete: a `.mcp.json` may be your own, and it
+may hold other servers and their credentials. If you made a scratch directory for this, deleting the
+directory is enough. If you are ever unsure what an agent is connected to, ask it to run
+`malloy_getContext`, which names the environment and packages it is actually talking to.
+
+**When the server does not write one.** It skips a directory that already has a `.mcp.json`, anything
+inside a git working tree (so, usually, your own project), your home directory, and a few other cases.
+You do not have to memorise them: whenever it skips, it says so in the startup log and prints the one
+command that connects an agent anyway. The full list is in
+[docs/configuration.md](docs/configuration.md#the-mcpjson-the-server-writes).
+
+`--no-mcp-config` turns the whole thing off, as does `PUBLISHER_NO_MCP_CONFIG=1`.
+
+To register the server for yourself rather than for one directory, so the tools are there whichever
+directory you launch from:
+
+```bash
+claude mcp add --transport http malloy http://127.0.0.1:4040/mcp -s user
+```
+
+That is also the fix when an agent reports no `malloy_*` tools. Two things cause it: the session
+started somewhere other than the directory holding the config, or there is no config there because
+the server skipped one of the cases above. Check the server's startup log, which says which,
+and `ls -a` to see whether the file is there at all. Other MCP clients take the same endpoint through
+their own config file; see [docs/ai-agents.md](docs/ai-agents.md).
 
 Then just ask, in plain English:
 

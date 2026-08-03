@@ -25,6 +25,8 @@ bun run build && bun run start        # REST on :4000, MCP on :4040
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server --port 4000` runs the published build. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
 
+On startup the server creates a `.mcp.json` in the directory it was run in, naming the MCP port it bound, which is why a session started in that directory finds the `malloy_*` tools with no registration step. **It does not always create one**, so do not promise a user the file exists without checking: it skips an existing file, git working trees, the home directory, and a few other cases ([the full list](docs/configuration.md#the-mcpjson-the-server-writes)). Read the startup log rather than assuming, and `ls -a` if you need certainty. Whenever it skips, it prints the `claude mcp add` command that connects an agent anyway; use it as printed, because it is deliberately local scope and `-s user` would be shadowed by the very file that caused the message. The file also outlives the server and is never corrected, so a stale one does not merely fail: another process may hold that port and answer from the wrong data. Comparing URLs does not settle that, since two Publishers on one port give the same URL; call `malloy_getContext`, which names what you are actually talking to. Never delete a `.mcp.json` you did not create. `--no-mcp-config` turns it off, and the Docker image sets `PUBLISHER_NO_MCP_CONFIG=1`.
+
 Poll until the server reports `serving` rather than assuming a fixed wait. From a clone the sample packages are read straight from `examples/`, so this is usually seconds. A first `npx` run has to download the published package and then fetch the samples from GitHub, which is network-bound and can push it to a minute or two:
 
 ```bash
@@ -53,19 +55,22 @@ There is a third case, and it is the one that costs the most time because it loo
 
 Skills are the near miss here, and they behave differently: `.claude/skills/` is rescanned as the working directory changes, so a session started further up picks them up on its own once work moves into this directory. That asymmetry is worth knowing precisely because the two symptoms look identical from the outside: same "the agent has nothing", different cause, different fix.
 
-Tell the three apart by what is missing:
+Tell them apart by what is missing:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `malloy` is listed in `/mcp` but disconnected | client connected before the server existed | Reconnect (or relaunch the agent) |
-| `malloy` is not listed in `/mcp` at all | session started outside this directory | relaunch the agent from here, or register at user scope (below) |
-| tools present, no skills auto-invoked | same as above | relaunch the agent from here; skills are rescanned as the working directory changes |
+| `malloy` is not listed in `/mcp` at all, and `.mcp.json` is here | session started outside this directory | relaunch the agent from here. A session that starts here reads this file, so a user-scoped entry would be shadowed by it; user scope is for sessions started elsewhere |
+| `malloy` is not listed in `/mcp` at all, and there is no `.mcp.json` here | the server skipped writing one, or the write failed; its startup log says which | run the `claude mcp add` line the server printed, from the directory you start the agent in. Relaunching alone cannot help when there is no config to find, and note a config may exist at the repository root instead of here |
+| tools present, no skills auto-invoked | session started outside this directory, the same cause as the second row | relaunch the agent from here; skills are rescanned as the working directory changes |
 
-The registration that stops the directory mattering, because it is stored per user rather than per project:
+The registration that stops the directory mattering, because it is stored per user rather than per project. Use the port this server actually bound, which its startup log prints; `4040` below is only the default:
 
 ```bash
-claude mcp add --transport http malloy http://localhost:4040/mcp -s user
+claude mcp add --transport http malloy http://127.0.0.1:4040/mcp -s user
 ```
+
+This one is persistent and global: it outlives the session and the server. Undo it with `claude mcp remove malloy -s user`. Prefer the command the server printed, at its default local scope, unless the point is specifically to stop the directory mattering.
 
 Note the two symptoms of that one cause do **not** share a fix: the MCP server list is fixed at session boot, so it needs either a relaunch or the user-scoped registration above, while skills need the session actually rooted in the directory. There is no user-scope equivalent for project skills short of symlinking them into `~/.claude/skills/`.
 

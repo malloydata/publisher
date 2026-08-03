@@ -18,6 +18,19 @@ Run one first launch at a time: two `npx` first runs installing concurrently can
 npx cache and corrupt the install. If the command stops working after an interrupted or doubled-up
 first run, delete the cache under `~/.npm/_npx` and run it again.
 
+### A file appears in the directory you run from
+
+On startup the server writes a `.mcp.json` into its **working** directory (not `--server_root`) so an AI
+agent started there connects with no manual setup. It only ever creates, never edits, and it skips
+several cases including git working trees and the home directory; see
+[configuration.md](configuration.md#the-mcpjson-the-server-writes) for the rules.
+
+For a service rather than a terminal, set `PUBLISHER_NO_MCP_CONFIG=1`, which is what the Docker image
+does: nothing starts an agent session in a service, so the file is pure side effect there. Two things
+otherwise bite. The file outlives the process and is never corrected, so a stale one can point an agent
+at whatever holds that port now. And a process manager that leaves the working directory unset lands in
+`/`, which the server skips on its own.
+
 ## Verify it's working
 
 ```bash
