@@ -1,3 +1,7 @@
+// Refuse to run on an unsupported Node before anything else happens. Imported
+// first, and deliberately importing nothing itself, so it is evaluated ahead of
+// the rest of the graph.
+import { assertSupportedNodeVersion } from "./node_version_check";
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
 import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -70,6 +74,15 @@ import {
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
+
+// The first statement this module runs. On an unsupported Node this exits
+// non-zero here, before any argument parsing, any storage init, and any
+// listener. Node under the floor has no global Web Crypto API, and the failure
+// it produced surfaced only on the first query, as a 500 naming neither Node nor
+// a version, on a server whose boot log read completely healthy. Bun is
+// exempt: the Docker image and `start:dev` both run under Bun, which provides
+// the global regardless of the Node version it reports.
+assertSupportedNodeVersion();
 
 // Parse command line arguments
 function parseArgs() {

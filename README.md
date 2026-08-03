@@ -21,6 +21,15 @@ the model defines — not your raw tables — and you decide exactly what each c
 
 Point Publisher at your Malloy models and it serves them over a REST API and a single MCP endpoint.
 
+## Requirements
+
+Node.js 20 or newer. Publisher refuses to start on anything older, printing both the version it
+needs and the version it found. Older Node releases do not provide the global Web Crypto API that
+Publisher and the Malloy libraries use, so queries fail at run time.
+
+Building from a clone also needs [Bun](https://bun.sh/) 1.3.13 or newer. The Docker image carries
+its own runtime and needs neither.
+
 ## Quick start
 
 ```bash
@@ -49,7 +58,9 @@ PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments
 `/api/v0/status` names each one under `.loadErrors`. The `url=` host reads `localhost` when the
 server binds every interface (the default); a configured `--host` shows as itself. If initialization
 fails, a `PUBLISHER_INIT_FAILED` line is printed in its place; a startup failure outside
-initialization, like a port already in use, crashes without either token.
+initialization, like a port already in use, crashes without either token. On a Node older than 20
+the server prints `PUBLISHER_UNSUPPORTED_NODE required=>=20 detected=<version>` and exits non-zero
+before it binds anything, so a script waiting on `PUBLISHER_READY` fails fast instead of hanging.
 
 ## Start from your own data
 

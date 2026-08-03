@@ -6,6 +6,9 @@
    "bin": {
       "malloy-publisher": "dist/server.mjs"
    },
+   "engines": {
+      "node": ">=20"
+   },
    "repository": {
       "type": "git",
       "url": "https://github.com/malloydata/publisher.git"
