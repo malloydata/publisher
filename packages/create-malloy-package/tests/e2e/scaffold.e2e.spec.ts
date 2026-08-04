@@ -323,7 +323,7 @@ describe("generated project serves against a real server", () => {
       expect(rows[0].record_value[0].number_value).toBe(3);
    });
 
-   test("the MCP endpoint lists the five malloy tools", async () => {
+   test("the MCP endpoint lists the malloy tools", async () => {
       const client = new Client({ name: "cmp-e2e", version: "0.0.0" });
       const transport = new StreamableHTTPClientTransport(
          new URL(`http://localhost:${mcpPort}/mcp`),
@@ -336,6 +336,7 @@ describe("generated project serves against a real server", () => {
          "malloy_executeQuery",
          "malloy_getContext",
          "malloy_reloadPackage",
+         "malloy_searchDatabaseSchema",
          "malloy_searchDocs",
       ]);
    });

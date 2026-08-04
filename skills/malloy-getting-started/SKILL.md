@@ -43,6 +43,8 @@ The result is JSON. Charts and dashboards defined in the model render in the Pub
 
 Use `malloy_searchDocs` for language questions (filters, aggregates, joins, nesting, renderers).
 
+If the data you want is in a connected database but not yet in any package, use `malloy_searchDatabaseSchema` instead of `malloy_getContext`: it walks a connection's schemas and tables and ranks them against a plain-English description, and hands back the `source:` line to start a model from. It reads names and types only, so ask `malloy_executeQuery` with `select: distinct` when you need to know what a column actually contains.
+
 ## 4. What else you can do here
 
 Answering questions is the start, not the whole surface. When the user asks what is possible, say so rather than offering queries alone. Switch skills for the deeper work:

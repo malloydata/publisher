@@ -102,6 +102,7 @@ Ensure the Publisher MCP tools are configured before modeling.
 | `malloy_compile` | Compile-check a change and get diagnostics back without running a query |
 | `malloy_reloadPackage` | Recompile a package from disk so a saved edit becomes queryable by name |
 | `malloy_searchDocs` | Search Malloy docs (call BEFORE unfamiliar patterns) |
+| `malloy_searchDatabaseSchema` | Find the tables in a database connection by plain-English description, when modelling data that is not in a package yet. Returns each table's columns and the `source:` line to start from. Names and types only, never row values |
 
 Never guess field names. Ground yourself with `malloy_getContext` to see the sources and fields a package defines.
 

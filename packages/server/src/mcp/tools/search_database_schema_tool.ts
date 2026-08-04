@@ -100,10 +100,17 @@ function escapeMalloyString(value: string): string {
    return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-/** Quote an identifier, escaping any backtick it already contains. */
+/**
+ * Quote an identifier, escaping backslashes and any backtick it contains.
+ *
+ * Backslash FIRST, for the same reason as escapeMalloyString: escaping the
+ * backtick first would then double the backslash that escape introduced. And a
+ * name ending in a backslash, left unescaped, would consume the closing
+ * backtick and swallow the rest of the line.
+ */
 function malloyIdentifier(name: string): string {
    if (BARE_IDENTIFIER.test(name)) return name;
-   return `\`${name.replace(/`/g, "\\`")}\``;
+   return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
 }
 
 export function malloySourceSnippet(

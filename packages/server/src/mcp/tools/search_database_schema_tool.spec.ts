@@ -92,6 +92,37 @@ describe("malloySourceSnippet", () => {
          "is `my-conn`.table(",
       );
    });
+
+   // CodeQL caught this class: escaping the delimiter but not the escape
+   // character itself. A name ending in a backslash would consume the closing
+   // backtick and swallow the rest of the line.
+   it("escapes backslashes in a quoted identifier, not just backticks", () => {
+      const snippet = malloySourceSnippet("c", "s.t", "odd\\name");
+      expect(snippet).toContain("source: `odd\\\\name` is");
+      // The identifier must terminate: exactly one unescaped closing backtick.
+      expect(snippet).toContain("` is c.table(");
+   });
+
+   it("escapes a backtick inside an identifier", () => {
+      expect(malloySourceSnippet("c", "s.t", "we`ird")).toContain(
+         "source: `we\\`ird` is",
+      );
+   });
+
+   // Malloy escapes string literals with a backslash, NOT by doubling the
+   // quote as SQL does, so a warehouse path with an apostrophe needs \'.
+   it("escapes quotes and backslashes in the table path", () => {
+      expect(
+         malloySourceSnippet(
+            "c",
+            "s3://bucket/o'brien/orders.parquet",
+            "orders",
+         ),
+      ).toContain("table('s3://bucket/o\\'brien/orders.parquet')");
+      expect(malloySourceSnippet("c", "a\\b", "t")).toContain(
+         "table('a\\\\b')",
+      );
+   });
 });
 
 describe("bareTableName", () => {
