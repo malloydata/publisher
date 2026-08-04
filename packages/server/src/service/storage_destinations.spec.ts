@@ -449,6 +449,29 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(environment.getStorageDestinationMalloyConfig()).toBe(first);
    });
 
+   it("assembles a destination config for an environment that has none", async () => {
+      // The overwhelmingly common case, and the one the no-op check can swallow:
+      // the constructor's list and the list it is given are both empty, so
+      // "nothing changed" is true while nothing has been built yet. What that
+      // costs is not confined to the storage tier — every shutdown of every
+      // deployment logs an error, and the serve path throws a TypeError instead
+      // of the ConnectionNotFoundError a caller can act on.
+      const environment = makeEnvironment([], []);
+
+      expect(() =>
+         environment.getStorageDestinationMalloyConfig(),
+      ).not.toThrow();
+
+      const errors: unknown[][] = [];
+      sinon.stub(logger, "error").callsFake((...args: unknown[]) => {
+         errors.push(args);
+         return logger;
+      });
+      await environment.closeAllConnections();
+
+      expect(errors).toEqual([]);
+   });
+
    it("clears the destination list when the environment is torn down", async () => {
       const environment = makeEnvironment(
          [],

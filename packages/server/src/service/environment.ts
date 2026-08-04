@@ -211,8 +211,11 @@ export class Environment {
     * namespace a package compiles against can. Rebuilt whenever the list is
     * replaced, retiring the previous generation's handles.
     *
-    * Always assigned: the constructor sets the destination list unconditionally,
-    * and that is what builds this.
+    * Always assigned by the time anything can read it: the constructor sets the
+    * destination list unconditionally, and `setStorageDestinations` treats an
+    * unbuilt config as a reason to build even when the list has not changed —
+    * which is what makes the assertion here true for an environment with no
+    * destinations at all.
     */
    private destinationMalloyConfig!: EnvironmentMalloyConfig;
    /**
@@ -693,7 +696,15 @@ export class Environment {
       // drop the serve shapes compiled against them, so the comparison ignores
       // list order and config key order, neither of which changes what a
       // destination is.
-      if (storageDestinationsEqual(previous, this.destinations)) {
+      //
+      // "Same as before" only means there is nothing to do once something has
+      // been built. On the constructor's call both lists are empty for every
+      // environment with no destinations, so skipping on equality alone would
+      // leave the config unassigned for the common case, not the rare one.
+      if (
+         this.destinationMalloyConfig &&
+         storageDestinationsEqual(previous, this.destinations)
+      ) {
          return;
       }
 
@@ -2407,9 +2418,12 @@ export class Environment {
       try {
          await this.destinationMalloyConfig.releaseConnections();
       } catch (error) {
+         // `{ error }` alone serializes an Error to `{}`, which is what a reader
+         // of this line gets told. Carry the message so a shutdown failure is
+         // diagnosable from the log rather than only from a debugger.
          logger.error(
             `Error closing storage destinations for environment ${this.environmentName}`,
-            { error },
+            { error: error instanceof Error ? error.message : String(error) },
          );
       }
 
