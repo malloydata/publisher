@@ -258,7 +258,7 @@ Supply what you know, omit the rest. No arguments lists the environments and the
 ## Contract rules
 - Use connectionName, tablePath and column names exactly as returned.
 - A connection with scope "package" (the "duckdb" sandbox) is per package: pass packageName too, from those it lists.\n- Schemas marked isHidden are system schemas; your tables are in the others.
-- malloySource is the ready-to-use \`source:\` line. Rename the source if the table name is a Malloy keyword.
+- malloySource is the ready-to-use \`source:\` line; its identifiers are already quoted, so paste it as-is.
 - Names and types only: no row value is returned. For a column's values, run malloy_executeQuery against a model using this connection: \`run: c.table('s.t') -> { group_by: col }\`.
 - No tables for a searchQuery means nothing matched, not an empty schema. Broaden it, or list without one.
 - An empty schema may still hold data: DuckDB over CSV or Parquet addresses files by path, registering none.
@@ -287,6 +287,21 @@ export function registerSearchDatabaseSchemaTool(
    environmentStore: EnvironmentStore,
 ): void {
    const connectionController = new ConnectionController(environmentStore);
+
+   /**
+    * Shed load before querying the warehouse, the way getModelForQuery does for
+    * the other MCP tools.
+    *
+    * Every tier that reaches the warehouse calls this, not just the ranked one:
+    * introspection can pull 100k rows, and tier 5 waives the column cap and can
+    * fan out one DESCRIBE per file, so it is the most expensive of the three.
+    * Without it the memory governor cannot see any of this traffic.
+    */
+   const assertCanAdmit = async (environmentName: string) => {
+      (
+         await environmentStore.getEnvironment(environmentName, false)
+      ).assertCanAdmitQuery();
+   };
 
    mcpServer.tool(
       "malloy_searchDatabaseSchema",
@@ -436,8 +451,11 @@ export function registerSearchDatabaseSchemaTool(
                });
             }
 
-            // Tier 3: connection only -> its schemas.
+            // Tier 3: connection only -> its schemas. Shed load first: this
+            // queries the warehouse too, and on DuckDB it can list cloud
+            // directories.
             if (!schemaName) {
+               await assertCanAdmit(environmentName);
                const schemas = await connectionController.listSchemas(
                   environmentName,
                   connectionName,
@@ -457,8 +475,11 @@ export function registerSearchDatabaseSchemaTool(
                });
             }
 
-            // Tier 5 (checked before 4): one named table, in full.
+            // Tier 5 (checked before 4): one named table, in full. The most
+            // expensive tier, since it waives the column cap and can fan out one
+            // DESCRIBE per file on the cloud branches.
             if (tableName) {
+               await assertCanAdmit(environmentName);
                const tables = await connectionController.listTables(
                   environmentName,
                   connectionName,
@@ -490,13 +511,13 @@ export function registerSearchDatabaseSchemaTool(
                const entities = (matching.length > 0 ? matching : tables).map(
                   (t) => toEntity(t, connectionName, schemaName),
                );
-               if (matching.length === 0 && tables.length > 1) {
+               if (matching.length === 0) {
                   return jsonToolError(
                      uri,
                      {
                         message: `Table "${tableName}" not found in schema "${schemaName}" of connection "${connectionName}".`,
                         suggestions: [
-                           `This schema lists ${tables.length} tables. Call this tool with schemaName "${schemaName}" and no tableName to see them.`,
+                           `This schema lists ${tables.length} table(s). Call this tool with schemaName "${schemaName}" and no tableName to see them.`,
                            "Check the table name's spelling and case; some warehouses are case-sensitive.",
                         ],
                      },
@@ -523,13 +544,7 @@ export function registerSearchDatabaseSchemaTool(
             }
 
             // Tier 4: a schema's tables, listed or ranked.
-            // Shed load before the introspection query, the same way
-            // getModelForQuery does for the other MCP tools. Introspection can
-            // pull 100k rows, and without this the memory governor cannot see
-            // any of it.
-            (
-               await environmentStore.getEnvironment(environmentName, false)
-            ).assertCanAdmitQuery();
+            await assertCanAdmit(environmentName);
             const allTables = await connectionController.listTables(
                environmentName,
                connectionName,

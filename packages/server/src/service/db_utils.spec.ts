@@ -1085,16 +1085,29 @@ describe("listTablesForSchema bigquery", () => {
 });
 
 describe("SQL escaping and identifier validation", () => {
-   it("escapes backslashes only where a backslash is an escape", async () => {
+   it("escapes backslashes for exactly the dialects that treat them as escapes", async () => {
       const { sqlLiteral } = await import("./db_utils");
-      // MySQL: doubling the quote alone leaves `x\' OR 1=1 #` a working
-      // break-out, because MySQL reads \' as a literal quote.
-      expect(sqlLiteral("x\\' OR 1=1 #", true)).toBe("x\\\\'' OR 1=1 #");
-      // ANSI dialects: a backslash is an ordinary character, so doubling it
+      // From Malloy's own dialect layer (stringLiteralStyle). Getting this set
+      // wrong is what left Snowflake and Databricks injectable after the fix
+      // that was supposed to close them.
+      for (const dialect of ["mysql", "snowflake", "databricks", "bigquery"]) {
+         expect(sqlLiteral("x\\' OR 1=1 #", dialect)).toBe("x\\\\'' OR 1=1 #");
+      }
+      // Doubled dialects: a backslash is an ordinary character, so doubling it
       // would corrupt a legitimate name like a Postgres schema `data\archive`.
-      expect(sqlLiteral("data\\archive")).toBe("data\\archive");
+      for (const dialect of [
+         "postgres",
+         "duckdb",
+         "motherduck",
+         "ducklake",
+         "trino",
+      ]) {
+         expect(sqlLiteral("data\\archive", dialect)).toBe("data\\archive");
+      }
+      // Quote doubling applies everywhere, including with no dialect given.
+      expect(sqlLiteral("o'brien", "snowflake")).toBe("o''brien");
       expect(sqlLiteral("o'brien")).toBe("o''brien");
-      expect(sqlLiteral("plain")).toBe("plain");
+      expect(sqlLiteral("plain", "postgres")).toBe("plain");
    });
 
    it("rejects an identifier that is not a plain name", async () => {

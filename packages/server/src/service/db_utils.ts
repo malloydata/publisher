@@ -30,10 +30,10 @@ type ApiAzureConnection = components["schemas"]["AzureConnection"];
 export function sqlInFilter(
    columnName: string,
    values?: string[],
-   backslashEscapes = false,
+   connectionType?: string,
 ): string {
    if (!values || values.length === 0) return "";
-   const escaped = values.map((v) => `'${sqlLiteral(v, backslashEscapes)}'`);
+   const escaped = values.map((v) => `'${sqlLiteral(v, connectionType)}'`);
    return `AND ${columnName} IN (${escaped.join(", ")})`;
 }
 
@@ -618,7 +618,7 @@ async function getSchemasForDuckLake(
       const catalogName = connection.name ?? "";
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName)}' ORDER BY schema_name`,
+         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
       );
       const rows = standardizeRunSQLResult(result);
 
@@ -959,6 +959,9 @@ function isDataFile(key: string): boolean {
  * literals are; it was missed when they were done. DuckDB follows the ANSI rule,
  * so quote-doubling is the correct escape here.
  */
+/** These builders always run against DuckDB, whatever connection reached them. */
+const DUCKDB_DIALECT = "duckdb";
+
 async function describeRemoteFile(
    malloyConnection: Connection,
    fileUri: string,
@@ -969,16 +972,16 @@ async function describeRemoteFile(
    let describeQuery: string;
    switch (fileType) {
       case "csv":
-         describeQuery = `DESCRIBE SELECT * FROM read_csv('${sqlLiteral(fileUri)}', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_csv('${sqlLiteral(fileUri, DUCKDB_DIALECT)}', auto_detect=true) LIMIT 1`;
          break;
       case "parquet":
-         describeQuery = `DESCRIBE SELECT * FROM read_parquet('${sqlLiteral(fileUri)}') LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_parquet('${sqlLiteral(fileUri, DUCKDB_DIALECT)}') LIMIT 1`;
          break;
       case "json":
-         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri)}', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri, DUCKDB_DIALECT)}', auto_detect=true) LIMIT 1`;
          break;
       case "jsonl":
-         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri)}', format='newline_delimited', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri, DUCKDB_DIALECT)}', format='newline_delimited', auto_detect=true) LIMIT 1`;
          break;
       default:
          logger.warn(`Unsupported file type for file: ${fileUri}`);
@@ -1212,7 +1215,7 @@ async function listTablesForMySQL(
    try {
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, true)}' ${sqlInFilter("TABLE_NAME", tableNames, true)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1241,7 +1244,7 @@ async function listTablesForPostgres(
       // de-JSONs each row via row.row (matching Malloy-generated queries).
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position) t`,
+         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position) t`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1289,7 +1292,7 @@ async function listTablesForSnowflake(
       const qualifiedSchema = `${databaseName}.${schemaOnly}`;
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${sqlLiteral(schemaOnly)}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${qualifiedSchema}.${t}`);
@@ -1344,7 +1347,7 @@ async function listTablesForTrino(
 
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
@@ -1399,7 +1402,7 @@ async function listTablesForDatabricks(
 
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
@@ -1502,7 +1505,7 @@ async function listTablesForDuckDB(
    try {
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName)}' AND table_catalog = '${sqlLiteral(catalogName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1529,7 +1532,7 @@ async function listTablesForMotherDuck(
    try {
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1561,7 +1564,7 @@ async function listTablesForDuckLake(
    try {
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName)}' AND table_catalog = '${sqlLiteral(catalogName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);

@@ -324,7 +324,12 @@ async function tryRankSemantically(args: {
       // (which several dialects answer with [] rather than an error) still
       // stored a cache entry, taking one of the few LRU slots from a real
       // schema, and still spent a billable round trip embedding the query.
-      return { hits: [], matched: 0 };
+      //
+      // null, not an empty result: returning a result here labelled the call
+      // `ranking: "semantic"` when no embedding ran, which is exactly the
+      // configuration-not-behaviour claim this file forbids a few lines below.
+      // Falling through to lexical over zero tables is both honest and correct.
+      return null;
    }
 
    if (tables.length > MAX_INDEXED_TABLES) {

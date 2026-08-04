@@ -1,4 +1,24 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
+
+// Tiers 3, 4 and 5 go through ConnectionController, so they were never driven
+// through the handler at all: the tier-5 defect (returning a DIFFERENT table as
+// a success) and the missing load-shedding both got through review green
+// because nothing exercised these paths.
+const controllerCalls: string[] = [];
+let schemasResult: unknown[] = [];
+let tablesResult: unknown[] = [];
+mock.module("../../controller/connection.controller", () => ({
+   ConnectionController: class {
+      async listSchemas() {
+         controllerCalls.push("listSchemas");
+         return schemasResult;
+      }
+      async listTables() {
+         controllerCalls.push("listTables");
+         return tablesResult;
+      }
+   },
+}));
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    bareTableName,
@@ -256,5 +276,81 @@ describe("reserved words in the emitted source line", () => {
       expect(malloySourceSnippet("duckdb", "main.source", "source")).toContain(
          "source: `source` is",
       );
+   });
+});
+
+describe("tiers 3, 4 and 5 through the handler", () => {
+   const admitted: string[] = [];
+   function store(): Partial<EnvironmentStore> {
+      return {
+         getEnvironment: async (name: string) =>
+            ({
+               assertCanAdmitQuery: () => admitted.push(name),
+               listApiConnections: () => CONNECTIONS,
+               listPackages: async () => [{ name: "p" }],
+            }) as never,
+      };
+   }
+   const base = { environmentName: "examples", connectionName: "warehouse" };
+
+   it("tier 3 lists schemas and sheds load first", async () => {
+      admitted.length = 0;
+      schemasResult = [{ name: "sales", isDefault: false, isHidden: false }];
+      const payload = parse(await captureHandler(store())(base));
+      expect(payload.schemas).toEqual([
+         { name: "sales", isDefault: false, isHidden: false },
+      ]);
+      expect(admitted).toEqual(["examples"]);
+   });
+
+   it("tier 4 pages, and sheds load first", async () => {
+      admitted.length = 0;
+      tablesResult = [
+         { resource: "sales.a", columns: [{ name: "x", type: "int" }] },
+         { resource: "sales.b", columns: [{ name: "y", type: "int" }] },
+      ];
+      const payload = parse(
+         await captureHandler(store())({
+            ...base,
+            schemaName: "sales",
+            limit: 1,
+         }),
+      );
+      expect(payload.returned).toBe(1);
+      expect(payload.totalAvailable).toBe(2);
+      expect(payload.nextOffset).toBe(1);
+      expect(admitted).toEqual(["examples"]);
+   });
+
+   // The defect: when the dialect ignores the table filter and the schema holds
+   // exactly ONE table, the tool used to return that unrelated table as a
+   // success, with the column cap waived, as though it were the one asked for.
+   it("tier 5 errors rather than returning a different table", async () => {
+      tablesResult = [
+         { resource: "sales.orders", columns: [{ name: "x", type: "int" }] },
+      ];
+      const result = await captureHandler(store())({
+         ...base,
+         schemaName: "sales",
+         tableName: "customers",
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).tables).toEqual([]);
+   });
+
+   it("tier 5 returns the requested table when it is present", async () => {
+      admitted.length = 0;
+      tablesResult = [
+         { resource: "sales.customers", columns: [{ name: "x", type: "int" }] },
+      ];
+      const payload = parse(
+         await captureHandler(store())({
+            ...base,
+            schemaName: "sales",
+            tableName: "customers",
+         }),
+      );
+      expect(payload.tables[0].tableName).toBe("customers");
+      expect(admitted).toEqual(["examples"]);
    });
 });

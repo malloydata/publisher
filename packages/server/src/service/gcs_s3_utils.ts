@@ -222,16 +222,16 @@ async function getTableSchema(
 
       switch (fileType) {
          case "csv":
-            describeQuery = `DESCRIBE SELECT * FROM read_csv('${sqlLiteral(uri)}', auto_detect=true) LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_csv('${sqlLiteral(uri, "duckdb")}', auto_detect=true) LIMIT 1`;
             break;
          case "parquet":
-            describeQuery = `DESCRIBE SELECT * FROM read_parquet('${sqlLiteral(uri)}') LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_parquet('${sqlLiteral(uri, "duckdb")}') LIMIT 1`;
             break;
          case "json":
-            describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(uri)}', auto_detect=true) LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(uri, "duckdb")}', auto_detect=true) LIMIT 1`;
             break;
          case "jsonl":
-            describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(uri)}', format='newline_delimited', auto_detect=true) LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(uri, "duckdb")}', format='newline_delimited', auto_detect=true) LIMIT 1`;
             break;
          default:
             logger.warn(`Unsupported file type for ${fileKey}`);
