@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   setDefaultTimeout,
+} from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
    Notification,
@@ -74,6 +81,14 @@ async function callGetContext(
    return JSON.parse(text) as GetContextPayload;
 }
 
+// This spec's setup is slow enough to need a raised timeout. `beforeAll` takes
+// no timeout argument in Bun -- passing one throws "beforeAll() expects a
+// function as the second argument" and the file errors out without running a
+// single test -- so the budget is set here instead. This covers the hooks too,
+// and unlike relying on `bun test --timeout` it still holds when the spec is
+// run on its own.
+setDefaultTimeout(200_000);
+
 describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    beforeAll(async () => {
       // A local OpenAI-compatible /embeddings endpoint with deterministic
@@ -121,7 +136,7 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
 
       env = await setupE2ETestEnvironment();
       mcpClient = env.mcpClient;
-   }, 200000);
+   });
 
    afterAll(async () => {
       await cleanupE2ETestEnvironment(env);

@@ -171,6 +171,10 @@ paths:
         Retrieves a list of all environments currently hosted on this Malloy Publisher server.
         Each environment contains metadata about its packages, connections, and configuration.
         This endpoint is typically used to discover available environments and their basic information.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-environment: use `GET /environments/{environmentName}?reload=true`.
       responses:
         "200":
           description: A list of all available environments
@@ -180,6 +184,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1262,6 +1268,10 @@ paths:
         Retrieves a list of all Malloy packages within the specified environment. Each package
         contains models, notebooks, databases, and other resources. This endpoint is useful
         for discovering available packages and their basic metadata.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
       parameters:
         - name: environmentName
           in: path
@@ -1278,6 +1288,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -2747,12 +2759,12 @@ components:
           readOnly: true
           description: >-
             Non-fatal render-tag findings collected when the package loaded: a
-            render annotation (e.g. `# big_value` or `# currency`) misconfigured
-            for the field it sits on, so it renders as "[object Object]" or an
-            inline error at query time but does not stop the model compiling or
-            the package loading. Server-computed and read-only: ignored on
-            create/update requests and only returned in responses. Present only
-            when there are such findings.
+            render annotation (e.g. `# big_value`, `# currency` or `# colspan`)
+            that the renderer cannot apply as written, so the field renders
+            wrongly or the tag is ignored outright — but the model still compiles
+            and the package still loads. Server-computed and read-only: ignored
+            on create/update requests and only returned in responses. Present
+            only when there are such findings.
           items:
             type: object
             properties:
@@ -2774,9 +2786,15 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Currently only `error`-severity render
-                  findings are surfaced here; lower-severity findings remain on
-                  the query-time `renderLogs` surface.
+                  Finding severity, as the renderer reports it. `error`: the tag
+                  is malformed for the field it sits on, and renders as
+                  "[object Object]" or an inline error at query time. `warn`: the
+                  tag is well-formed but inert where it sits, so the renderer
+                  ignores it (e.g. `# colspan` outside
+                  `# dashboard { columns=N }`) — nothing looks broken at query
+                  time, the layout simply is not what was written. These are the
+                  only two severities the renderer emits, so no finding is
+                  withheld from this list.
         queryableSources:
           type: string
           enum:

@@ -41,7 +41,11 @@ import {
 } from "./errors";
 import { logger } from "./logger";
 import { queryConcurrency } from "./query_concurrency";
-import { normalizeQueryArray } from "./query_param_utils";
+import {
+   invalidReloadMessage,
+   normalizeQueryArray,
+   parseReloadParam,
+} from "./query_param_utils";
 import { EnvironmentStore } from "./service/environment_store";
 
 const LEGACY_API_PREFIX = "/api/v0";
@@ -78,6 +82,30 @@ const setVersionIdError = (res: Response) => {
       new NotImplementedError("Version IDs not implemented."),
    );
    res.status(status).json(json);
+};
+
+/**
+ * The legacy twin of `server.ts`'s `reloadOr400`, sharing the same
+ * {@link parseReloadParam} so "what is a valid `reload` value" has one
+ * definition. These routes are exact twins of the modern ones, so a typo'd
+ * value has to fail here the same way rather than silently answering 200
+ * without recompiling. No known legacy client sends `reload` at all
+ * (`@malloydata/db-publisher` does not), so nothing depends on the old
+ * lenient reading.
+ */
+const reloadOr400 = (
+   req: { query: ParsedQs; path: string },
+   res: Response,
+): boolean | undefined => {
+   const parsed = parseReloadParam(req.query.reload);
+   if (parsed.ok) {
+      return parsed.reload;
+   }
+   const { json, status } = internalErrorToHttpError(
+      new BadRequestError(invalidReloadMessage(req.query.reload, req.path)),
+   );
+   res.status(status).json(json);
+   return undefined;
 };
 
 // ─── route registration ────────────────────────────────────────────────────
@@ -126,10 +154,14 @@ export function registerLegacyRoutes(
    });
 
    app.get(`${LEGACY_API_PREFIX}/projects/:projectName`, async (req, res) => {
+      const reload = reloadOr400(req, res);
+      if (reload === undefined) {
+         return;
+      }
       try {
          const environment = await environmentStore.getEnvironment(
             req.params.projectName,
-            req.query.reload === "true",
+            reload,
          );
          res.status(200).json(await environment.serialize());
       } catch (error) {
@@ -611,12 +643,16 @@ export function registerLegacyRoutes(
             setVersionIdError(res);
             return;
          }
+         const reload = reloadOr400(req, res);
+         if (reload === undefined) {
+            return;
+         }
          try {
             res.status(200).json(
                await packageController.getPackage(
                   req.params.projectName,
                   req.params.packageName,
-                  req.query.reload === "true",
+                  reload,
                ),
             );
          } catch (error) {

@@ -1,0 +1,57 @@
+// Deliberately-broken render tags, one per severity the renderer emits, plus a
+// correctly-tagged control. Load-time validation (Model.validateRenderTags) has
+// to surface both severities on the package's `warnings`, because neither one
+// stops the model compiling or the query running -- an inert tag in particular
+// looks completely fine at query time and only the layout is wrong.
+//
+// Every view here compiles. If a change makes one of them fail to compile, the
+// spec's expectations go quiet rather than red (validateRenderTags skips a
+// target that will not prepare), so the spec also pins the clean control.
+
+source: nums is duckdb.sql("SELECT 1 as one, 2 as two") extend {
+  measure:
+    total_one is one.sum()
+    total_two is two.sum()
+
+  # big_value
+  view: kpis is {
+    aggregate: total_one, total_two
+  }
+
+  view: trend is {
+    group_by: one
+    aggregate: total_two
+  }
+
+  // WARN: `# dashboard` with no `columns` is flex mode, where colspan does not
+  // apply. The tag is well-formed, so it compiles and renders -- the renderer
+  // just ignores it. Expected finding: "Ignored # colspan on 'kpis'".
+  # dashboard
+  view: inert_colspan is {
+    nest:
+      # colspan=2
+      kpis
+    nest: trend
+  }
+
+  // ERROR: colspan is malformed for the field it sits on. Expected finding:
+  // "Invalid # colspan on 'kpis'".
+  # dashboard { columns=2 }
+  view: invalid_colspan is {
+    nest:
+      # colspan=abc
+      kpis
+    nest: trend
+  }
+
+  // Control: colspan correctly attached inside columns mode. Must produce no
+  // finding at all, so widening the severity filter cannot be shown to work by
+  // simply reporting everything.
+  # dashboard { columns=2 }
+  view: clean_dashboard is {
+    nest:
+      # colspan=2
+      kpis
+    nest: trend
+  }
+}

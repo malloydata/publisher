@@ -22,7 +22,8 @@ Say "model my data" and the agent will orchestrate the full modeling workflow au
 | `skill:malloy-model` | Writing base and joined source .malloy files, review, curate (includes normalized schema support) |
 | `skill:malloy-analyze` | Exploratory data analysis: profiling, building views and dashboards |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
-| `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
+| `skill:malloy-html-data-apps` | Building a data app: a hand-authored HTML page in a package's `public/`, served with no build step |
+| `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) for an exploratory or analysis narrative |
 | `skill:malloy-debug` | Fixing compile errors and interpreting diagnostics |
 | `skill:malloy-patterns` | Finding syntax/pattern docs: YoY, cohorts, percent-of-total, window functions |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
@@ -37,6 +38,15 @@ Two top-level workflows orchestrate the phase and support skills above:
 
 - **Model data from scratch:** load `skill:malloy-modeling`. It drives the full pipeline (discover, scope, define, build, review, curate) and routes to the phase skills.
 - **Answer a data question or explore:** load `skill:malloy-analysis`. It drives exploratory analysis, views, and notebooks, using `skill:malloy-analyze` and `skill:malloy-charts`.
+
+### "Build a data app" means HTML, not a notebook
+
+These two deliverables are easy to confuse, and reaching for the wrong one costs a rewrite:
+
+- **A data app** is a hand-authored HTML page in the package's `public/` directory, backed by that package's models and served by Publisher with no build step. This is what "build a data app", "build a dashboard for users", or "make a page" asks for. Load `skill:malloy-html-data-apps`.
+- **A notebook** (`.malloynb`) is an exploratory or analytical narrative: cells of Malloy with prose, for someone reading the analysis. It is not the default form of an app. Load `skill:malloy-notebooks`.
+
+When the ask is ambiguous, the audience decides: a page someone *uses* is a data app, a document someone *reads* is a notebook.
 
 Publishing is out of scope for open-source Publisher v1. Self-hosters move a finished model into a served package via git and the host's publish path; see `skill:malloy-publish`.
 
