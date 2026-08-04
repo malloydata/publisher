@@ -140,6 +140,27 @@ export function malloySourceSnippet(
    return `source: ${alias} is ${connection}.table('${escapeMalloyString(resource)}') extend { }`;
 }
 
+/**
+ * Whether a table path can be pasted into `table('...')` as-is.
+ *
+ * A dotted path only parses when every segment is a plain identifier. A segment
+ * with a space, quote, backtick or backslash needs identifier quoting INSIDE the
+ * string (`table('main."odd name"')`), and that quoting is per dialect.
+ *
+ * We do not guess it. This exact ten-dialect classification has been wrong three
+ * times in this file's history, so rather than emit a line that does not compile
+ * from a field documented as ready to paste, the caller omits `malloySource` and
+ * says why. A path form (containing "/") is a file or URL and is passed through:
+ * DuckDB takes those as a literal path.
+ */
+export function isPastableTablePath(resource: string): boolean {
+   if (!resource) return false;
+   if (resource.includes("/")) return true;
+   return resource
+      .split(".")
+      .every((segment) => /^[A-Za-z_][A-Za-z0-9_$-]*$/.test(segment));
+}
+
 /** Data-file suffixes DuckDB addresses directly, as whole file paths. */
 const DATA_FILE_EXTENSION = /\.(parquet|csv|tsv|json|jsonl|ndjson|xlsx)$/i;
 
@@ -242,7 +263,7 @@ function toResponseTable(
       // A directory-shaped URL with no blobs yields no usable name; emitting
       // `source: `` is ...` would be a line that cannot compile, from a field
       // documented as ready to paste.
-      ...(entity.tableName && entity.resource
+      ...(entity.tableName && isPastableTablePath(entity.resource)
          ? {
               malloySource: malloySourceSnippet(
                  entity.connectionName,
@@ -277,7 +298,7 @@ JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, co
 ## Worked example
 Start with no arguments and follow what it names. For connection "warehouse", schema "sales":
 { "environmentName": "examples", "connectionName": "warehouse", "schemaName": "sales", "searchQuery": "customer orders" }
-Then paste that table's malloySource, e.g. source: orders is warehouse.table('sales.orders') extend { }`;
+Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`warehouse\`.table('sales.orders') extend { }`;
 
 /**
  * Registers malloy_searchDatabaseSchema: natural-language search over a
@@ -668,6 +689,15 @@ export function registerSearchDatabaseSchemaTool(
                      `offset ${skip} is past the end of this schema, which has ${entities.length} tables. Use an offset below ${entities.length}, or omit it to start from the beginning.`,
                   );
                }
+            }
+
+            const unpastable = page.filter(
+               ({ entity }) => !isPastableTablePath(entity.resource),
+            ).length;
+            if (unpastable > 0) {
+               warnings.push(
+                  `${unpastable} table(s) have a name that needs identifier quoting inside the table path, so malloySource is omitted for them rather than given as a line that will not compile. Quote the offending segment for your dialect, for example duckdb.table('main."odd name"').`,
+               );
             }
 
             const capped = page.filter(

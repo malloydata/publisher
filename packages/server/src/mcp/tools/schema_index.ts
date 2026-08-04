@@ -285,8 +285,10 @@ interface LexicalCacheEntry {
  * environment variables, and a schema above MAX_INDEXED_TABLES is deliberately
  * routed here, so the largest schemas are the ones that land on it. Rebuilding
  * the index per call is synchronous and blocks the event loop for the process
- * that also serves REST: measured on this repo's lunr, 175ms at 5,000 tables,
- * 342ms at 10,000, 489ms at 20,000, repaid on every search. Keyed by
+ * that also serves REST: measured on this repo's lunr, roughly 170-190ms for
+ * 5,000 tables and ~350ms for 10,000, growing about linearly, repaid on every
+ * search. (Two independent measurements agreed at those sizes and diverged at
+ * 20,000, so the shape is stated rather than a third point.) Keyed by
  * fingerprint so a changed schema rebuilds rather than serving a stale index.
  */
 const lexicalCache = new Map<string, LexicalCacheEntry>();

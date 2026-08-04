@@ -50,8 +50,8 @@ skill points to for detail it does not inline. Start with `malloy-getting-starte
 A few skills (`malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and
 the `malloy` index) are written for a Publisher host and name Publisher's `malloy_*` MCP tools
 directly. The rest describe Malloy itself and refer to tools by bare name (`get_context`,
-`execute_query`, `search_malloy_docs`, `search_database_schema`), because the prefix depends on the
-host. On Publisher those are `malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`, and
+`execute_query`, `search_malloy_docs`), because the prefix depends on the
+host. `search_database_schema` maps the same way if a shared skill starts using it. On Publisher those are `malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`, and
 `malloy_searchDatabaseSchema`.
 
 ## Versioning

@@ -1169,3 +1169,21 @@ describe("identifier rejection survives the dialect catch blocks", () => {
       });
    }
 });
+
+describe("an unclassified dialect fails loudly", () => {
+   // The classification has been wrong three times in this file's history. A
+   // dialect added to the dispatch switch but not to either escape set must not
+   // inherit quote-doubling silently, because doubling alone on a
+   // backslash-escaping dialect is exploitable rather than merely cosmetic.
+   it("throws for a type that is given but unrecognised", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      expect(() => sqlLiteral("x", "some_new_warehouse")).toThrow(
+         /Unclassified SQL dialect/,
+      );
+   });
+
+   it("still doubles quotes when no dialect is supplied at all", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      expect(sqlLiteral("o'brien")).toBe("o''brien");
+   });
+});

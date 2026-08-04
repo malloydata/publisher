@@ -40,12 +40,34 @@ const BACKSLASH_ESCAPE_DIALECTS = new Set([
  * Lives here rather than in db_utils because gcs_s3_utils needs it too, and
  * gcs_s3_utils cannot import db_utils: db_utils imports IT, so that is a cycle.
  */
+const DOUBLED_ESCAPE_DIALECTS = new Set([
+   "ducklake",
+   "duckdb",
+   "motherduck",
+   "postgres",
+   "publisher",
+   "trino",
+]);
+
 export function sqlLiteral(value: string, connectionType?: string): string {
-   const escaped = BACKSLASH_ESCAPE_DIALECTS.has(
-      (connectionType ?? "").toLowerCase(),
-   )
-      ? value.replace(/\\/g, "\\\\")
-      : value;
+   const dialect = (connectionType ?? "").toLowerCase();
+   const backslash = BACKSLASH_ESCAPE_DIALECTS.has(dialect);
+   // No type at all means the caller is not dialect-aware; doubling is the
+   // conservative answer and matches the ANSI majority. A type that IS given
+   // but unrecognised is the dangerous case: that is a dialect nobody
+   // classified, and it is the one that throws.
+   if (dialect && !backslash && !DOUBLED_ESCAPE_DIALECTS.has(dialect)) {
+      // Fail LOUDLY on a dialect nobody classified. Both dispatch switches are
+      // exhaustive today, so this is unreachable; it exists because the next
+      // dialect added would otherwise inherit quote-doubling silently, and
+      // doubling alone on a backslash dialect is exploitable rather than merely
+      // cosmetic. That classification has now been wrong three times in this
+      // file's history, so the failure direction is worth pinning.
+      throw new Error(
+         `Unclassified SQL dialect "${connectionType}": add it to BACKSLASH_ESCAPE_DIALECTS or DOUBLED_ESCAPE_DIALECTS in introspection_sql.ts before building SQL for it.`,
+      );
+   }
+   const escaped = backslash ? value.replace(/\\/g, "\\\\") : value;
    return escaped.replace(/'/g, "''");
 }
 

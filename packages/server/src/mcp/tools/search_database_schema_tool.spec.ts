@@ -22,6 +22,7 @@ mock.module("../../controller/connection.controller", () => ({
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    bareTableName,
+   isPastableTablePath,
    malloySourceSnippet,
    registerSearchDatabaseSchemaTool,
 } from "./search_database_schema_tool";
@@ -352,5 +353,30 @@ describe("tiers 3, 4 and 5 through the handler", () => {
       );
       expect(payload.tables[0].tableName).toBe("customers");
       expect(admitted).toEqual(["examples"]);
+   });
+});
+
+describe("only pastable table paths get a malloySource", () => {
+   // Verified against the compiler: `table('main.awkward name')` fails with
+   // "Invalid DuckDB table path". Quoting the segment inside the string fixes
+   // it, but that quoting is per dialect, so the field is omitted instead of
+   // emitting a line that will not compile.
+   it("accepts plain dotted paths and file paths", () => {
+      expect(isPastableTablePath("main.orders")).toBe(true);
+      expect(isPastableTablePath("memory.main.orders")).toBe(true);
+      expect(isPastableTablePath("data/customers.parquet")).toBe(true);
+      expect(isPastableTablePath("s3://bucket/o'brien/x.parquet")).toBe(true);
+   });
+
+   it("rejects a dotted path whose segment needs identifier quoting", () => {
+      for (const bad of [
+         "main.awkward name",
+         "main.o'brien",
+         "main.back`tick",
+         "main.back\\slash",
+         "",
+      ]) {
+         expect(isPastableTablePath(bad)).toBe(false);
+      }
    });
 });
