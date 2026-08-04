@@ -312,7 +312,8 @@ source: gated is duckdb.sql("select 1 as id")`,
          expect(
             warnings.some(
                (m) =>
-                  m.includes("Invalid renderer configuration") &&
+                  m.includes("Render tag findings on") &&
+                  m.includes("[error]") &&
                   m.includes("nums -> card"),
             ),
          ).toBe(true);
@@ -386,7 +387,8 @@ source: gated is duckdb.sql("select 1 as id")`,
          expect(
             warnings.some(
                (m) =>
-                  m.includes("Invalid renderer configuration") &&
+                  m.includes("Render tag findings on") &&
+                  m.includes("[error]") &&
                   m.includes("bad-source -> card"),
             ),
          ).toBe(true);
@@ -426,7 +428,8 @@ source: gated is duckdb.sql("select 1 as id")`,
          expect(
             warnings.some(
                (m) =>
-                  m.includes("Invalid renderer configuration") &&
+                  m.includes("Render tag findings on") &&
+                  m.includes("[error]") &&
                   m.includes("card"),
             ),
          ).toBe(true);
@@ -460,7 +463,10 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(pkg.getModelPaths()).toEqual(["bad_render.malloynb"]);
          const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
          expect(
-            warnings.some((m) => m.includes("Invalid renderer configuration")),
+            warnings.some(
+               (m) =>
+                  m.includes("Render tag findings on") && m.includes("[error]"),
+            ),
          ).toBe(true);
          // The notebook finding also rides the package response (not just logs).
          const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
@@ -518,7 +524,10 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          await expect(reloaded!.getModel()).resolves.toBeDefined();
          const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
          expect(
-            warnings.some((m) => m.includes("Invalid renderer configuration")),
+            warnings.some(
+               (m) =>
+                  m.includes("Render tag findings on") && m.includes("[error]"),
+            ),
          ).toBe(true);
          // Reload refreshes the response-level warnings too.
          const responseWarnings = pkg.getPackageMetadata().warnings ?? [];

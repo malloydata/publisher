@@ -2759,12 +2759,12 @@ components:
           readOnly: true
           description: >-
             Non-fatal render-tag findings collected when the package loaded: a
-            render annotation (e.g. `# big_value` or `# currency`) misconfigured
-            for the field it sits on, so it renders as "[object Object]" or an
-            inline error at query time but does not stop the model compiling or
-            the package loading. Server-computed and read-only: ignored on
-            create/update requests and only returned in responses. Present only
-            when there are such findings.
+            render annotation (e.g. `# big_value`, `# currency` or `# colspan`)
+            that the renderer cannot apply as written, so the field renders
+            wrongly or the tag is ignored outright — but the model still compiles
+            and the package still loads. Server-computed and read-only: ignored
+            on create/update requests and only returned in responses. Present
+            only when there are such findings.
           items:
             type: object
             properties:
@@ -2786,9 +2786,15 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Currently only `error`-severity render
-                  findings are surfaced here; lower-severity findings remain on
-                  the query-time `renderLogs` surface.
+                  Finding severity, as the renderer reports it. `error`: the tag
+                  is malformed for the field it sits on, and renders as
+                  "[object Object]" or an inline error at query time. `warn`: the
+                  tag is well-formed but inert where it sits, so the renderer
+                  ignores it (e.g. `# colspan` outside
+                  `# dashboard { columns=N }`) — nothing looks broken at query
+                  time, the layout simply is not what was written. These are the
+                  only two severities the renderer emits, so no finding is
+                  withheld from this list.
         queryableSources:
           type: string
           enum:
