@@ -6,8 +6,15 @@ name: create-malloy-package
 
 # Run on demand only. The package's tests run in build.yml on every PR, so this
 # workflow exists solely to publish, which should never happen automatically on
-# a push or a PR. A follow-up wires it into the Create Release workflow so a
-# single release triggers all packages (Sagar review, PR #926).
+# a push or a PR.
+#
+# The "Release (NPM + Docker)" workflow also triggers this one, so a single
+# release publishes every package. It dispatches this file through the Actions
+# API rather than calling it with workflow_call, which is what keeps this
+# workflow_dispatch entry point working as well; see the trusted-publishing note
+# on the publish step. release.yml asks the registry first and does not dispatch
+# a version that is already published, so an unchanged scaffolder is skipped
+# rather than reddening the release.
 on:
   workflow_dispatch:
 
@@ -88,14 +95,10 @@ jobs:
     # the same branch's tarball. Without this check, dispatching from a stale or
     # half-finished branch publishes that branch's code under the real name.
     #
-    # A guardrail, not a boundary, and worth being honest about which: the same
-    # premise applies to this line, so anyone who can dispatch can push a branch
-    # whose copy of this file drops it. npm matches repo plus filename and never
-    # a ref. The control that survives that is binding the trusted-publisher
-    # entry to a GitHub Environment whose deployment branches are restricted to
-    # main; npm verifies the environment claim in the OIDC token. Land that
-    # before setting the environment name on npm, never after, or every publish
-    # fails on a mismatch.
+    # A guardrail, not a boundary: anyone who can dispatch can push a branch
+    # whose copy of this file drops the line. CONTEXT.md says what would
+    # actually be one, and the ordering that has to be respected if anyone
+    # adds it.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: check_pack
     runs-on: ubuntu-latest
@@ -162,10 +165,18 @@ jobs:
       # every user's install instead. Ask the registry before the version we are
       # about to publish becomes immutable.
       - name: Verify the pinned skills version is on npm
+        env:
+          # Through env rather than interpolated into the script body: a ${{ }}
+          # expression is substituted before bash parses the line, so a crafted
+          # version string in package.json would become code in a job that holds
+          # id-token: write.
+          SKILLS_VERSION: ${{ steps.skills_dep.outputs.skills_version }}
         run: |
-          SKILLS_RANGE="@malloy-publisher/skills@^${{ steps.skills_dep.outputs.skills_version }}"
+          SKILLS_RANGE="@malloy-publisher/skills@^${SKILLS_VERSION}"
           if ! RESOLVED="$(npm view "$SKILLS_RANGE" version 2>&1)" || [ -z "$RESOLVED" ]; then
-            echo "$RESOLVED"
+            # Prefixed, not indented: registry output is untrusted text and the
+            # runner trims leading whitespace before matching "::" as a command.
+            printf '%s\n' "$RESOLVED" | sed 's/^/[npm] /'
             echo "::error title=Skills dep::$SKILLS_RANGE does not resolve on npm; publish the skills package first"
             exit 1
           fi
@@ -176,12 +187,15 @@ jobs:
       # to `npm publish` before dying with EPUBLISHCONFLICT. Ask up front, for
       # the same reason the step above does.
       - name: Verify this version is not already published
+        env:
+          # See the note on the step above: through env, not interpolated.
+          CURRENT_VERSION: ${{ steps.version_step.outputs.current_version }}
         run: |
           # Read the name rather than hardcoding it: publish uses whatever
           # package.json says, so a hardcoded name would survive a rename and
           # quietly check a package nobody is publishing.
           NAME="$(node -p "require('./packages/create-malloy-package/package.json').name")"
-          SPEC="$NAME@${{ steps.version_step.outputs.current_version }}"
+          SPEC="$NAME@$CURRENT_VERSION"
           # npm view exits non-zero with an E404 both for a version that does not
           # exist and for a package that does not exist at all, and either one
           # means this version is free. Any other failure means the registry did
@@ -190,7 +204,7 @@ jobs:
             echo "::error title=Version::$SPEC is already published; bump the version in packages/create-malloy-package/package.json"
             exit 1
           elif [[ "$PUBLISHED" != *E404* ]]; then
-            echo "$PUBLISHED"
+            printf '%s\n' "$PUBLISHED" | sed 's/^/[npm] /'
             echo "::error title=Version::could not ask npm whether $SPEC is taken"
             exit 1
           fi
@@ -221,15 +235,12 @@ jobs:
       # deprecation message, so `npm create malloy-package` returns a bare E404
       # that points nowhere, and the name is free for anyone to claim.
       #
-      # The trusted-publisher entry must name THIS file,
-      # create-malloy-package-npm.yml. npm allows one entry per package and
-      # matches it against the CALLING workflow's filename, so if the entry ever
-      # names another workflow, this job cannot authenticate and fails with a
-      # bare ENEEDAUTH after check_pack and both registry round-trips have
-      # passed. Verify the filename on the package settings page before the
-      # first dispatch. If this workflow is later invoked from release.yml via
-      # workflow_call, the entry has to be changed to release.yml for the same
-      # reason.
+      # The trusted-publisher entry must name THIS file. Do NOT convert this
+      # workflow to workflow_call, and do not re-point the entry at release.yml:
+      # either one breaks publishing here with a bare ENEEDAUTH, and it is a
+      # one-way door. The reasoning, and the npm rules it rests on, are in
+      # .github/workflows/CONTEXT.md; read it before changing how this workflow
+      # is invoked.
       #
       # Do not hand-publish from a workstation instead. It skips check_pack, the
       # workspace:* rewrite above, and the registry check, which are the three
