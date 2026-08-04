@@ -3009,9 +3009,11 @@ components:
           description: >-
             Non-fatal findings collected when the package loaded, none of which
             stop the model compiling or the package loading. Render-tag
-            findings: a render annotation (e.g. `# big_value` or `# currency`)
-            misconfigured for the field it sits on, so it renders as
-            "[object Object]" or an inline error at query time. Materialization
+            findings: a render annotation (e.g. `# big_value`, `# currency` or
+            `# colspan`) the renderer cannot apply as written, either malformed
+            for the field it sits on, so it renders as "[object Object]" or an
+            inline error at query time, or inert where it sits and silently
+            ignored. Materialization
             findings: a `storage=` source not served from storage, a `#@ persist`
             source that was not recognized as materializable, a persist-target
             collision, and materialization-config problems that degrade
@@ -3102,9 +3104,15 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Render findings are surfaced here only at
-                  `error` severity; lower-severity render findings remain on the
-                  query-time `renderLogs` surface. Materialization and dashboard
+                  Finding severity. Render-tag findings use both: `error` for
+                  a tag malformed for the field it sits on, which renders as
+                  "[object Object]" or an inline error at query time, and `warn`
+                  for one that is well-formed but inert where it sits and so is
+                  silently ignored (e.g. `# colspan` outside
+                  `# dashboard { columns=N }`), where nothing looks broken at
+                  query time and the layout simply is not what was written.
+                  Those are the only two severities the renderer emits, so no
+                  render finding is withheld. Materialization and dashboard
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the

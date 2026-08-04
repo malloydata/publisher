@@ -81,8 +81,10 @@ import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
 import {
+   invalidReloadMessage,
    normalizeQueryArray,
    parseNonNegativeIntParam,
+   parseReloadParam,
 } from "./query_param_utils";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
@@ -888,6 +890,32 @@ const setCollectionReloadError = (
    res.status(status).json(json);
 };
 
+/**
+ * Read `reload` on a route that honors it, answering 400 when it is unusable.
+ *
+ * Returns the boolean on success, or `undefined` after having already written
+ * the error response -- so a caller does `const reload = reloadOr400(req, res);
+ * if (reload === undefined) return;`.
+ *
+ * {@link parseReloadParam} owns which values are valid and why; this only turns
+ * a refusal into the HTTP error, naming the caller's own path so the message is
+ * actionable.
+ */
+const reloadOr400 = (
+   req: express.Request,
+   res: express.Response,
+): boolean | undefined => {
+   const parsed = parseReloadParam(req.query.reload);
+   if (parsed.ok) {
+      return parsed.reload;
+   }
+   const { json, status } = internalErrorToHttpError(
+      new BadRequestError(invalidReloadMessage(req.query.reload, req.path)),
+   );
+   res.status(status).json(json);
+   return undefined;
+};
+
 app.use(
    cors({
       origin: "http://localhost:5173",
@@ -1133,10 +1161,14 @@ app.post(`${API_PREFIX}/environments`, async (req, res) => {
 });
 
 app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
+   const reload = reloadOr400(req, res);
+   if (reload === undefined) {
+      return;
+   }
    try {
       const environment = await environmentStore.getEnvironment(
          req.params.environmentName,
-         req.query.reload === "true",
+         reload,
       );
       res.status(200).json(await environment.serialize());
    } catch (error) {
@@ -1610,13 +1642,17 @@ app.get(
          setVersionIdError(res);
          return;
       }
+      const reload = reloadOr400(req, res);
+      if (reload === undefined) {
+         return;
+      }
 
       try {
          res.status(200).json(
             await packageController.getPackage(
                req.params.environmentName,
                req.params.packageName,
-               req.query.reload === "true",
+               reload,
             ),
          );
       } catch (error) {

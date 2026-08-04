@@ -276,7 +276,7 @@ All optional; supply what you know. Each combination answers at its own level.
 - environmentName: lists that environment's packages, with descriptions.
 - + packageName: lists that package's sources.
 - + query: a plain-English description of what you need; returns the most relevant sources, views, named queries, and dimension/measure fields.
-- sourceName: narrows to one source. Without a query it lists that source, then its views, dimensions, measures and named queries — how you see a source's fields; with a query it restricts retrieval to that source. An unmatched name returns an empty results array, not an error.
+- sourceName: narrows to one source. Without a query it lists that source, then its views, dimensions, measures and named queries — how you see a source's fields; with a query it restricts retrieval to that source. Any match includes the source's own row, so an empty array means no such source.
 - limit: caps results (max 50). Retrieval defaults to 10; the listing levels return all unless set. A drill-down's source row counts toward it.
 
 ## Response
