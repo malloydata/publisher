@@ -3,7 +3,14 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   setDefaultTimeout,
+} from "bun:test";
 import { type ChildProcess, spawn } from "child_process";
 import fs from "fs";
 import net from "net";
@@ -55,6 +62,14 @@ async function poll(
    }
    return false;
 }
+
+// This spec's setup is slow enough to need a raised timeout. `beforeAll` takes
+// no timeout argument in Bun -- passing one throws "beforeAll() expects a
+// function as the second argument" and the file errors out without running a
+// single test -- so the budget is set here instead. This covers the hooks too,
+// and unlike relying on `bun test --timeout` it still holds when the spec is
+// run on its own.
+setDefaultTimeout(150_000);
 
 describe("first-boot readiness line", () => {
    let proc: ChildProcess | undefined;
@@ -141,7 +156,7 @@ describe("first-boot readiness line", () => {
       // The line is written in the same tick that flips the status to
       // serving, but the pipe delivery can trail the HTTP response.
       await poll(async () => readyLines().length > 0, 10_000, 100);
-   }, 150_000);
+   });
 
    afterAll(async () => {
       if (proc && !exited) {

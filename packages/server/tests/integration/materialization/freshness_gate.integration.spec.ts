@@ -3,7 +3,14 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   setDefaultTimeout,
+} from "bun:test";
 import * as fsp from "fs/promises";
 import os from "os";
 import path from "path";
@@ -35,6 +42,14 @@ const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
  * `executedSql()` is the routing evidence: it scans `order_summary` when routed
  * to the table, and `data/orders.csv` when serving live.
  */
+// This spec's setup is slow enough to need a raised timeout. `beforeAll` takes
+// no timeout argument in Bun -- passing one throws "beforeAll() expects a
+// function as the second argument" and the file errors out without running a
+// single test -- so the budget is set here instead. This covers the hooks too,
+// and unlike relying on `bun test --timeout` it still holds when the spec is
+// run on its own.
+setDefaultTimeout(120_000);
+
 describe("Per-query freshness gate (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
@@ -74,7 +89,7 @@ describe("Per-query freshness gate (E2E)", () => {
       // manifest-URI bind is the only thing that can route the served query.
       await buildTableThenRevertToLive();
       sourceEntityId = await orderSummarySourceEntityId();
-   }, 120_000);
+   });
 
    afterAll(async () => {
       if (baseUrl) {

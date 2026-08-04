@@ -263,7 +263,7 @@ async function getPackageIndex(
    return built;
 }
 
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in what the model defines, not a guess. Start here when you do not know the environment, package, or model names.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in what the model defines, not a guess. Start here when you do not know those names.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
@@ -275,12 +275,12 @@ All optional; supply what you know. Each combination answers at its own level.
 - none: lists the environments, each with its package names.
 - environmentName: lists that environment's packages, with descriptions.
 - + packageName: lists that package's sources.
-- + query: a plain-English description of what you need; returns the most relevant sources, views, named queries, and dimension/measure fields.
-- sourceName: narrows to one source. Without a query it lists that source, then its views, dimensions, measures and named queries — how you see a source's fields; with a query it restricts retrieval to that source. Any match includes the source's own row, so an empty array means no such source.
-- limit: caps results (max 50). Retrieval defaults to 10; the listing levels return all unless set. A drill-down's source row counts toward it.
+- + query: a plain-English description of what you need; returns the most relevant sources, views, queries, and dimension/measure fields.
+- sourceName: narrows to one source. Without a query it lists that source and its views, dimensions, measures and queries; with a query it restricts retrieval to it. A match always includes the source's own row, so an empty array means no such source.
+- limit: caps results (max 50). Retrieval defaults to 10; listing levels return all unless set. The drill-down's source row counts.
 
 ## Response
-A JSON object with a results array. Each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map onto malloy_executeQuery parameters; pass a view or named query as queryName with sourceName. With an embedding provider configured, retrieval is ranked semantically: the payload carries a retrieval field ("semantic", or "lexical" if the provider is down) plus a per-entity score. With no provider both are absent rather than defaulted — not an error.
+A JSON object with a results array. Each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map onto malloy_executeQuery; pass a view or query as queryName with sourceName. With an embedding provider, retrieval is ranked semantically: the payload carries a retrieval field ("semantic", or "lexical" if it is down) plus a per-entity score. With no provider both are absent, not an error.
 
 ## Worked example
 { "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
