@@ -14,6 +14,7 @@ import {
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
 import { ApiConnection } from "./model";
+import { runIntrospectionSQL } from "./introspection_sql";
 
 type ApiSchema = components["schemas"]["Schema"];
 type ApiTable = components["schemas"]["Table"];
@@ -25,8 +26,26 @@ type ApiAzureConnection = components["schemas"]["AzureConnection"];
  */
 export function sqlInFilter(columnName: string, values?: string[]): string {
    if (!values || values.length === 0) return "";
-   const escaped = values.map((v) => `'${v.replace(/'/g, "''")}'`);
+   const escaped = values.map((v) => `'${sqlLiteral(v)}'`);
    return `AND ${columnName} IN (${escaped.join(", ")})`;
+}
+
+/**
+ * Escape a value for a single-quoted SQL string literal, the same doubling
+ * `sqlInFilter` already applied to table names.
+ *
+ * Schema and catalog names were interpolated raw. That was reachable through
+ * the connection REST endpoints, but `malloy_searchDatabaseSchema` now takes
+ * these straight from MCP tool arguments, which are model-controlled and
+ * therefore steerable by prompt injection. Escaping where the value is used
+ * costs nothing and removes the question.
+ *
+ * This is for string LITERALS only. Identifier positions (a catalog prefix
+ * before `information_schema`) need identifier quoting instead and are left
+ * alone here.
+ */
+export function sqlLiteral(value: string): string {
+   return value.replace(/'/g, "''");
 }
 
 /**
@@ -177,7 +196,8 @@ async function getSchemasForPostgres(
    try {
       // Wrap in row_to_json because the Malloy Postgres driver's runSQL
       // de-JSONs each row via row.row (matching Malloy-generated queries).
-      const result = await malloyConnection.runSQL(
+      const result = await runIntrospectionSQL(
+         malloyConnection,
          "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t",
       );
       const rows = standardizeRunSQLResult(result);
@@ -241,7 +261,8 @@ async function getSchemasForSnowflake(
       const whereClause =
          filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
 
-      const result = await malloyConnection.runSQL(
+      const result = await runIntrospectionSQL(
+         malloyConnection,
          `SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM ${database ? `${database}.` : ""}INFORMATION_SCHEMA.SCHEMATA ${whereClause} ORDER BY SCHEMA_NAME`,
       );
       const rows = standardizeRunSQLResult(result);
@@ -288,7 +309,8 @@ async function getSchemasForTrino(
 
       if (connection.trinoConnection.catalog) {
          const catalog = connection.trinoConnection.catalog;
-         const result = await malloyConnection.runSQL(
+         const result = await runIntrospectionSQL(
+            malloyConnection,
             `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
          );
          const rows = standardizeRunSQLResult(result);
@@ -300,7 +322,10 @@ async function getSchemasForTrino(
             };
          });
       } else {
-         const catalogsResult = await malloyConnection.runSQL(`SHOW CATALOGS`);
+         const catalogsResult = await runIntrospectionSQL(
+            malloyConnection,
+            `SHOW CATALOGS`,
+         );
          const catalogNames = standardizeRunSQLResult(catalogsResult).map(
             (row: unknown) => {
                const r = row as Record<string, unknown>;
@@ -310,7 +335,8 @@ async function getSchemasForTrino(
 
          for (const catalog of catalogNames) {
             try {
-               const result = await malloyConnection.runSQL(
+               const result = await runIntrospectionSQL(
+                  malloyConnection,
                   `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
                );
                const rows = standardizeRunSQLResult(result);
@@ -366,7 +392,8 @@ async function getSchemasForDatabricks(
 
       if (connection.databricksConnection.defaultCatalog) {
          const catalog = connection.databricksConnection.defaultCatalog;
-         const result = await malloyConnection.runSQL(
+         const result = await runIntrospectionSQL(
+            malloyConnection,
             `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
          );
          const rows = standardizeRunSQLResult(result);
@@ -378,7 +405,10 @@ async function getSchemasForDatabricks(
             };
          });
       } else {
-         const catalogsResult = await malloyConnection.runSQL(`SHOW CATALOGS`);
+         const catalogsResult = await runIntrospectionSQL(
+            malloyConnection,
+            `SHOW CATALOGS`,
+         );
          const catalogNames = standardizeRunSQLResult(catalogsResult).map(
             (row: unknown) => {
                const r = row as Record<string, unknown>;
@@ -388,7 +418,8 @@ async function getSchemasForDatabricks(
 
          for (const catalog of catalogNames) {
             try {
-               const result = await malloyConnection.runSQL(
+               const result = await runIntrospectionSQL(
+                  malloyConnection,
                   `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
                );
                const rows = standardizeRunSQLResult(result);
@@ -437,9 +468,9 @@ async function getSchemasForDuckDB(
       throw new Error("DuckDB connection is required");
    }
    try {
-      const result = await malloyConnection.runSQL(
+      const result = await runIntrospectionSQL(
+         malloyConnection,
          "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
-         { rowLimit: 1000 },
       );
 
       const rows = standardizeRunSQLResult(result);
@@ -532,7 +563,8 @@ async function getSchemasForMotherDuck(
    try {
       const database = connection.motherduckConnection.database;
       const whereClause = database ? `WHERE catalog_name = '${database}'` : "";
-      const result = await malloyConnection.runSQL(
+      const result = await runIntrospectionSQL(
+         malloyConnection,
          `SELECT DISTINCT schema_name FROM information_schema.schemata ${whereClause} ORDER BY schema_name`,
       );
       const rows = standardizeRunSQLResult(result);
@@ -566,10 +598,10 @@ async function getSchemasForDuckLake(
 ): Promise<ApiSchema[]> {
    try {
       // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
-      const catalogName = connection.name;
-      const result = await malloyConnection.runSQL(
-         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${catalogName}' ORDER BY schema_name`,
-         { rowLimit: 1000 },
+      const catalogName = connection.name ?? "";
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName)}' ORDER BY schema_name`,
       );
       const rows = standardizeRunSQLResult(result);
 
@@ -926,7 +958,7 @@ async function describeRemoteFile(
          return { resource: fileUri, columns: [] };
    }
 
-   const result = await malloyConnection.runSQL(describeQuery);
+   const result = await runIntrospectionSQL(malloyConnection, describeQuery);
    const rows = standardizeRunSQLResult(result);
    const columns = rows.map((row: unknown) => {
       const typedRow = row as Record<string, unknown>;
@@ -1151,8 +1183,9 @@ async function listTablesForMySQL(
       throw new Error("Mysql connection is required");
    }
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName)}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1179,8 +1212,9 @@ async function listTablesForPostgres(
    try {
       // Wrap in row_to_json because the Malloy Postgres driver's runSQL
       // de-JSONs each row via row.row (matching Malloy-generated queries).
-      const result = await malloyConnection.runSQL(
-         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position) t`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position) t`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1224,8 +1258,9 @@ async function listTablesForSnowflake(
       }
 
       const qualifiedSchema = `${databaseName}.${schemaOnly}`;
-      const result = await malloyConnection.runSQL(
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${schemaOnly}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${sqlLiteral(schemaOnly)}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${qualifiedSchema}.${t}`);
@@ -1270,8 +1305,9 @@ async function listTablesForTrino(
          resourcePrefix = schemaName;
       }
 
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${schemaOnly}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
@@ -1316,8 +1352,9 @@ async function listTablesForDatabricks(
          resourcePrefix = schemaName;
       }
 
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${schemaOnly}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
@@ -1410,8 +1447,9 @@ async function listTablesForDuckDB(
    const actualSchemaName = schemaName.substring(dotIdx + 1);
 
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName)}' AND table_catalog = '${sqlLiteral(catalogName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1436,8 +1474,9 @@ async function listTablesForMotherDuck(
       throw new Error("MotherDuck connection is required");
    }
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1467,8 +1506,9 @@ async function listTablesForDuckLake(
    const catalogName = schemaName.split(".")[0];
    const actualSchemaName = schemaName.split(".")[1];
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName)}' AND table_catalog = '${sqlLiteral(catalogName)}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);

@@ -6,6 +6,7 @@ import {
 import { Connection } from "@malloydata/malloy";
 import { components } from "../api";
 import { logger } from "../logger";
+import { runIntrospectionSQL } from "./introspection_sql";
 
 type ApiTable = components["schemas"]["Table"];
 type CloudStorageType = "gcs" | "s3";
@@ -237,7 +238,10 @@ async function getTableSchema(
             return { resource: uri, columns: [] };
       }
 
-      const result = await malloyConnection.runSQL(describeQuery);
+      // DESCRIBE returns one row per COLUMN, so the driver's small default
+      // row limit caps a cloud file's schema at ten columns and silently drops
+      // the rest. listTablesForDuckDB routes every cloud schema through here.
+      const result = await runIntrospectionSQL(malloyConnection, describeQuery);
       const rows = standardizeRunSQLResult(result);
       const columns = rows.map((row: unknown) => {
          const typedRow = row as Record<string, unknown>;
