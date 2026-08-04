@@ -1083,3 +1083,36 @@ describe("listTablesForSchema bigquery", () => {
       expect(bqDatasetCalls[0]?.options).toBeUndefined();
    });
 });
+
+describe("SQL escaping and identifier validation", () => {
+   it("escapes the backslash as well as the quote, for MySQL", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      // Doubling the quote alone is not enough where a backslash is itself an
+      // escape: `x\' OR 1=1 #` would survive as a working break-out.
+      expect(sqlLiteral("x\\' OR 1=1 #")).toBe("x\\\\'' OR 1=1 #");
+      expect(sqlLiteral("o'brien")).toBe("o''brien");
+      expect(sqlLiteral("plain")).toBe("plain");
+   });
+
+   it("rejects an identifier that is not a plain name", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      // The payload that would otherwise reach a raw identifier position and
+      // return real row values from a tool that promises it returns none.
+      expect(() =>
+         assertSafeSqlIdentifier(
+            "(SELECT c1 AS TABLE_NAME FROM customers) x --",
+            "catalog name",
+         ),
+      ).toThrow();
+      expect(() => assertSafeSqlIdentifier("a.b", "catalog name")).toThrow();
+      expect(() => assertSafeSqlIdentifier("", "catalog name")).toThrow();
+      expect(() => assertSafeSqlIdentifier("1abc", "catalog name")).toThrow();
+   });
+
+   it("accepts the identifier shapes real catalogs use", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      for (const ok of ["memory", "my_catalog", "MY-CAT", "_x", "c$1"]) {
+         expect(assertSafeSqlIdentifier(ok, "catalog name")).toBe(ok);
+      }
+   });
+});

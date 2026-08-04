@@ -3,6 +3,7 @@ import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Connection, TableSourceDef } from "@malloydata/malloy";
 import { components } from "../api";
+import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import {
    CloudStorageCredentials,
@@ -41,11 +42,45 @@ export function sqlInFilter(columnName: string, values?: string[]): string {
  * costs nothing and removes the question.
  *
  * This is for string LITERALS only. Identifier positions (a catalog prefix
- * before `information_schema`) need identifier quoting instead and are left
- * alone here.
+ * before `information_schema`) cannot be made safe by escaping and go through
+ * {@link assertSafeSqlIdentifier} instead.
  */
 export function sqlLiteral(value: string): string {
-   return value.replace(/'/g, "''");
+   // Backslash FIRST. MySQL treats \ as an escape character unless
+   // NO_BACKSLASH_ESCAPES is set, and the Malloy MySQL driver does not set it,
+   // so doubling the quote alone is not enough there: `x\' OR 1=1 #` would
+   // survive as `x\'' OR 1=1 #`, where MySQL reads \' as a literal quote, the
+   // next quote closes the string, and the rest executes. Doubling the quote
+   // remains what the ANSI dialects need.
+   return value.replace(/\\/g, "\\\\").replace(/'/g, "''");
+}
+
+/**
+ * A catalog or database name safe to splice into an identifier position.
+ *
+ * Escaping cannot help here: these land where a table reference goes
+ * (`FROM <catalog>.INFORMATION_SCHEMA.COLUMNS`), not inside a string, and the
+ * quoting rules differ per dialect. So this REJECTS rather than encodes.
+ *
+ * It matters because the value is the caller's `schemaName` split on its first
+ * dot, and `malloy_searchDatabaseSchema` takes that straight from a
+ * model-controlled MCP argument. Left raw, a schemaName of
+ * `(SELECT c1 AS TABLE_NAME, ... FROM customers) x -- .public` comments out the
+ * rest of the query and returns real ROW VALUES in the response, from a tool
+ * whose documented invariant is that it never returns one.
+ *
+ * The pattern is deliberately narrow: real catalog names are plain identifiers,
+ * and a name needing more than this is better rejected than silently mangled.
+ */
+const SAFE_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
+
+export function assertSafeSqlIdentifier(value: string, what: string): string {
+   if (!SAFE_SQL_IDENTIFIER.test(value)) {
+      throw new BadRequestError(
+         `Invalid ${what} "${value}": expected a plain identifier (letters, digits, underscore, dollar or hyphen, not starting with a digit).`,
+      );
+   }
+   return value;
 }
 
 /**
@@ -1257,6 +1292,8 @@ async function listTablesForSnowflake(
          );
       }
 
+      // Identifier position below, so this is validated, not escaped.
+      assertSafeSqlIdentifier(databaseName, "database name");
       const qualifiedSchema = `${databaseName}.${schemaOnly}`;
       const result = await runIntrospectionSQL(
          malloyConnection,
@@ -1296,7 +1333,10 @@ async function listTablesForTrino(
       } else {
          const dotIdx = schemaName.indexOf(".");
          if (dotIdx > 0) {
-            catalogPrefix = `${schemaName.substring(0, dotIdx)}.`;
+            catalogPrefix = `${assertSafeSqlIdentifier(
+               schemaName.substring(0, dotIdx),
+               "catalog name",
+            )}.`;
             schemaOnly = schemaName.substring(dotIdx + 1);
          } else {
             catalogPrefix = "";
@@ -1343,7 +1383,10 @@ async function listTablesForDatabricks(
       } else {
          const dotIdx = schemaName.indexOf(".");
          if (dotIdx > 0) {
-            catalogPrefix = `${schemaName.substring(0, dotIdx)}.`;
+            catalogPrefix = `${assertSafeSqlIdentifier(
+               schemaName.substring(0, dotIdx),
+               "catalog name",
+            )}.`;
             schemaOnly = schemaName.substring(dotIdx + 1);
          } else {
             catalogPrefix = "";
@@ -1439,8 +1482,11 @@ async function listTablesForDuckDB(
    // Regular DuckDB schema — query information_schema.columns
    const dotIdx = schemaName.indexOf(".");
    if (dotIdx < 0) {
-      throw new Error(
-         `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}"`,
+      // BadRequestError, not Error: this is a deterministic bad argument, and
+      // as a plain Error it was classified as an internal fault whose advice
+      // was "try the request again later", which an agent then does forever.
+      throw new BadRequestError(
+         `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}". List this connection's schemas and use one of those names verbatim.`,
       );
    }
    const catalogName = schemaName.substring(0, dotIdx);

@@ -113,7 +113,7 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 - `malloy_compile`: compile-check Malloy source against a model and get structured diagnostics back (severity, message, line and column) without running a query. Use it to validate a model or a change while authoring, instead of firing a throwaway query.
 - `malloy_reloadPackage`: recompile a package from its on-disk model files so a source or view you added or changed after boot becomes queryable by name, without restarting the server. Use it to close the edit-and-run loop: validate with `malloy_compile`, save, `malloy_reloadPackage`, then `malloy_executeQuery` the new view.
 - `malloy_searchDocs`: search the Malloy language documentation when you need syntax.
-- `malloy_searchDatabaseSchema`: discover what tables a database connection holds, and find the right ones for a plain-English description. Use it when building a model from a database rather than exploring one that already exists. Each table it returns carries the `source:` line to start from. It reads names and types only, never row values.
+- `malloy_searchDatabaseSchema`: discover what tables a database connection holds, and find the right ones for a plain-English description. Use it when building a model from a database rather than exploring one that already exists. Each table it returns carries the `source:` line to start from. It returns names and types only: no row value is returned.
 
 ## 4. A first run, end to end
 
@@ -146,7 +146,7 @@ A save that fails to compile is skipped without a signal, so if a change does no
 
 ## 7. Working unattended: the REST API
 
-If you started the server yourself and there is no user to reconnect your MCP client (a one-shot task, a cloud sandbox), MCP is out of reach for the whole session. Use the REST API on port 4000 instead; discovery, query, compile, and reload are all there (`malloy_searchDocs` and `malloy_getContext`'s plain-English ranking stay MCP-only; for syntax, read the bundled [`skills/`](skills/) markdown). Like MCP it is unauthenticated, so keep it on localhost. The playbook with worked examples is [docs/ai-agents.md](docs/ai-agents.md), and the running server serves its complete OpenAPI spec at http://localhost:4000/api-doc.yaml. The map:
+If you started the server yourself and there is no user to reconnect your MCP client (a one-shot task, a cloud sandbox), MCP is out of reach for the whole session. Use the REST API on port 4000 instead; discovery, query, compile, reload and schema discovery are all there. For schema discovery the endpoints are `GET /api/v0/environments/{env}/connections`, then `.../connections/{conn}/schemas`, then `.../schemas/{schema}/tables`, with a `.../packages/{pkg}/connections/...` form for the per-package `duckdb` sandbox; you rank the table list yourself, since that ranking is MCP-only. (`malloy_searchDocs` and `malloy_getContext`'s plain-English ranking stay MCP-only; for syntax, read the bundled [`skills/`](skills/) markdown). Like MCP it is unauthenticated, so keep it on localhost. The playbook with worked examples is [docs/ai-agents.md](docs/ai-agents.md), and the running server serves its complete OpenAPI spec at http://localhost:4000/api-doc.yaml. The map:
 
 - `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded).
 - `GET /api/v0/environments`: the environment names every other path needs (the bundled one is `examples`).

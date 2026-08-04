@@ -43,7 +43,7 @@ The result is JSON. Charts and dashboards defined in the model render in the Pub
 
 Use `malloy_searchDocs` for language questions (filters, aggregates, joins, nesting, renderers).
 
-If the data you want is in a connected database but not yet in any package, use `malloy_searchDatabaseSchema` instead of `malloy_getContext`: it walks a connection's schemas and tables and ranks them against a plain-English description, and hands back the `source:` line to start a model from. It reads names and types only, so ask `malloy_executeQuery` with `select: distinct` when you need to know what a column actually contains.
+If the data you want is in a connected database but not yet in any package, use `malloy_searchDatabaseSchema` instead of `malloy_getContext`: it walks a connection's schemas and tables and ranks them against a plain-English description, and hands back the `source:` line to start a model from. It returns names and types only, so to see what a column actually contains run `malloy_executeQuery` against a model in a package that uses the same connection, with an ad-hoc query like `run: my_conn.table('sales.orders') -> { group_by: order_status }`. That tool needs an existing model to run against, so a table you have not modelled yet has none of its own.
 
 ## 4. What else you can do here
 

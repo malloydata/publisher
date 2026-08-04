@@ -100,7 +100,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. |
 | `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). |
 | `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. |
-| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `malloy_searchDatabaseSchema` to send a connection's table and column **names** to the embedding endpoint for semantic ranking. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. See "Semantic ranking for malloy_searchDatabaseSchema" below. |
+| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `malloy_searchDatabaseSchema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`; anything else is a startup error rather than a silent disable. See "Semantic ranking for malloy_searchDatabaseSchema" below. |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
 PostgreSQL and other database-specific connections may also honor their respective driver env vars
@@ -190,8 +190,11 @@ a third party. Setting the second variable is how you say you meant to.
 What to know before turning it on:
 
 - What leaves the machine: the schema (or dataset) name, table names, column names, column types,
-  and the query strings agents pass to the tool. **Never any row values.** This tool reads names and types only, so it never
-  reads a row in the first place. Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server
+  and the query strings agents pass to the tool. **Never any row values**: no value from a row is
+  returned, logged or embedded. (One nuance, since this section is the one an auditor quotes: for a
+  DuckDB connection over CSV or JSON files, DuckDB's own type sniffer reads the head of the file to
+  infer column types. That inference happens in your warehouse and only its column names and types
+  leave; no cell value is returned or sent anywhere.) Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server
   (Ollama, vLLM) to keep even the names on-machine.
 - What it buys you: lexical ranking only matches tables that share words with the question, so
   "website visits" does not find `web_session_events` and "newsletter blasts" does not find

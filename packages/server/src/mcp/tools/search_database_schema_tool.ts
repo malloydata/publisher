@@ -20,33 +20,48 @@ const MAX_LIMIT = 100;
  */
 const MAX_COLUMNS_PER_TABLE = 80;
 
+/**
+ * Length cap on the identifier-ish string arguments.
+ *
+ * These are echoed back into human-readable warning and error prose that an
+ * agent reads as server-authored instruction, so an unbounded argument is an
+ * unbounded injection surface into that prose. No real environment, connection,
+ * package, schema or table name approaches this.
+ */
+const MAX_ARG_CHARS = 256;
+
 const searchDatabaseSchemaShape = {
    environmentName: z
       .string()
+      .max(MAX_ARG_CHARS)
       .optional()
       .describe(
          "Environment to look in. Omit to list the environments and their connections.",
       ),
    connectionName: z
       .string()
+      .max(MAX_ARG_CHARS)
       .optional()
       .describe(
          "Connection to introspect. Omit to list the connections in the environment.",
       ),
    packageName: z
       .string()
+      .max(MAX_ARG_CHARS)
       .optional()
       .describe(
          'Required only for the per-package "duckdb" sandbox connection, which exists once per package.',
       ),
    schemaName: z
       .string()
+      .max(MAX_ARG_CHARS)
       .optional()
       .describe(
-         'Schema (or dataset/database) to list tables from. Omit to list the connection\'s schemas. Postgres and DuckDB usually use "main" or "public".',
+         'Schema (or dataset/database) to list tables from. Omit to list the connection\'s schemas and use one of those names verbatim: DuckDB qualifies them as "catalog.schema" (for example "memory.main"), so a bare "main" is rejected.',
       ),
    tableName: z
       .string()
+      .max(MAX_ARG_CHARS)
       .optional()
       .describe(
          "A single table to return in full, with every column. Requires schemaName.",
@@ -233,25 +248,25 @@ function toResponseTable(
    };
 }
 
-const SEARCH_DATABASE_SCHEMA_DESCRIPTION = `Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to confirm schema, table and column names before writing a source. To search an existing model, use malloy_getContext.
+const SEARCH_DATABASE_SCHEMA_DESCRIPTION = `Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names before writing a source. To search an existing model, use malloy_getContext.
 
 ## Drill down, one level at a time
-Supply what you know and omit the rest. No arguments lists the environments and their connections; + connectionName lists that connection's schemas; + schemaName lists its tables (up to ${MAX_COLUMNS_PER_TABLE} columns each, and add searchQuery to rank them); + tableName returns that one table with every column.
+Supply what you know, omit the rest. No arguments lists the environments and their connections; + connectionName lists that connection's schemas; + schemaName lists its tables (up to ${MAX_COLUMNS_PER_TABLE} columns each; add searchQuery to rank them); + tableName returns that one table with every column.
 
 ## Contract rules
 - Use connectionName, tablePath and column names exactly as returned. Do not reformat or re-case.
-- A connection with scope "package" (the "duckdb" sandbox) exists once per package: pass packageName too, from those listed on it.
+- A connection with scope "package" (the "duckdb" sandbox) is per package: pass packageName too, from those listed on it.
 - malloySource is the ready-to-use \`source:\` line. Rename the source if the table name is a Malloy keyword.
-- Names and types only. It never reads rows, so it cannot say what a column contains; use malloy_executeQuery with \`select: distinct\` for that.
+- Names and types only: no row value is returned. For a column's values, run malloy_executeQuery against a model using this connection: \`run: c.table('s.t') -> { group_by: col }\`.
 - No tables for a searchQuery means nothing matched, not that the schema is empty. Broaden it, or list without one.
 - An empty schema is not always an empty database: DuckDB over CSV or Parquet addresses files by path, registering none.
-- Read warnings: they name anything omitted, paged or ignored.
+- Read warnings: they name anything omitted or ignored.
 
 ## Response
-JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns, columnCount), plus totalAvailable and returned. A search adds matched (hits before limit) and ranking; a listing adds nextOffset when more remain, to pass back as offset.
+JSON: tables (connectionName, schemaName, tableName, tablePath, malloySource, columns, columnCount, and score on a search), plus totalAvailable and returned. A search adds matched and ranking; a listing adds nextOffset when more remain, to pass back as offset.
 
 ## Worked example
-Start with no arguments and follow the connections it names. For connection "warehouse", schema "sales":
+Start with no arguments and follow what it names. For connection "warehouse", schema "sales":
 { "environmentName": "examples", "connectionName": "warehouse", "schemaName": "sales", "searchQuery": "customer orders" }
 Then paste that table's malloySource, e.g. source: orders is warehouse.table('sales.orders') extend { }`;
 
@@ -316,39 +331,55 @@ export function registerSearchDatabaseSchemaTool(
             // from which an agent reasonably concludes the table is not there.
             // Naming what was ignored makes each of those self-describing.
             const ignored: string[] = [];
+            const noteIgnored = (
+               entries: readonly (readonly [string, unknown])[],
+            ) => {
+               for (const [name, value] of entries) {
+                  if (value !== undefined && value !== "") ignored.push(name);
+               }
+            };
+            // Paging arguments only mean something on a table listing, so they
+            // are ignored by every other tier and by a ranked search.
+            const pagingArgs = [
+               ["limit", limit],
+               ["offset", offset],
+            ] as const;
             if (!environmentName) {
-               for (const [name, value] of [
+               noteIgnored([
                   ["connectionName", connectionName],
                   ["packageName", packageName],
                   ["schemaName", schemaName],
                   ["tableName", tableName],
                   ["searchQuery", searchQuery],
-               ] as const) {
-                  if (value) ignored.push(name);
-               }
+                  ...pagingArgs,
+               ]);
             } else if (!connectionName) {
-               for (const [name, value] of [
+               noteIgnored([
+                  ["packageName", packageName],
                   ["schemaName", schemaName],
                   ["tableName", tableName],
                   ["searchQuery", searchQuery],
-               ] as const) {
-                  if (value) ignored.push(name);
-               }
+                  ...pagingArgs,
+               ]);
             } else if (!schemaName) {
-               for (const [name, value] of [
+               noteIgnored([
                   ["tableName", tableName],
                   ["searchQuery", searchQuery],
-               ] as const) {
-                  if (value) ignored.push(name);
-               }
-            } else if (tableName && searchQuery) {
-               // Tier 5 wins over tier 4; say so rather than dropping the query.
-               ignored.push("searchQuery");
+                  ...pagingArgs,
+               ]);
+            } else if (tableName) {
+               // Tier 5 wins over tier 4; say so rather than dropping the rest.
+               noteIgnored([["searchQuery", searchQuery], ...pagingArgs]);
+            } else if (searchQuery) {
+               // Ranked results cannot be paged, so offset does nothing here.
+               // Without this the tool silently returns the same top hits for
+               // every offset, and an agent paging a ranked result loops.
+               noteIgnored([["offset", offset]]);
             }
             const ignoredWarning =
                ignored.length > 0
                   ? [
-                       `Ignored ${ignored.join(", ")}: each level of this tool needs the one above it, so supply them in order (environmentName, connectionName, schemaName, then tableName or searchQuery).`,
+                       `Ignored ${ignored.join(", ")}. Each level needs the one above it: environmentName, then connectionName (with packageName for the per-package "duckdb" sandbox), then schemaName, then either tableName or searchQuery. limit and offset apply only to a plain table listing, and offset does nothing on a ranked search because ranked results cannot be paged.`,
                     ]
                   : [];
 
@@ -530,7 +561,13 @@ export function registerSearchDatabaseSchemaTool(
                }));
                // Only when there was something to match against; an empty
                // schema already explained itself above.
-               if (ranked.hits.length === 0 && entities.length > 0) {
+               if (ranked.emptyQuery) {
+                  // Not "nothing matched": nothing was asked. Telling an agent
+                  // to broaden a query that was never run sends it in circles.
+                  warnings.push(
+                     `searchQuery carried no searchable content, so no ranking was run. Provide words to search for, or omit searchQuery to list the schema's tables.`,
+                  );
+               } else if (ranked.hits.length === 0 && entities.length > 0) {
                   warnings.push(
                      `No table in "${schemaName}" matched "${searchQuery}". List the schema without a searchQuery to see everything in it.`,
                   );
@@ -540,8 +577,18 @@ export function registerSearchDatabaseSchemaTool(
                // not the matches, and an agent reading "20 of 500" concludes
                // nothing else matched and stops.
                if (ranked.matched > page.length) {
+                  // Worded per mode, because the two count different things and
+                  // one of them is nearly meaningless on its own. Lexical
+                  // ranking is an OR over terms, so every table sharing one
+                  // common column name (`customer_id`, `created_at`) counts as
+                  // a match: on a real warehouse that number is routinely the
+                  // whole schema, and telling an agent to raise `limit` on the
+                  // strength of it just fills the response with noise. Narrow
+                  // first is the advice that actually helps.
                   warnings.push(
-                     `${ranked.matched} tables matched "${searchQuery}" but only the top ${page.length} are shown, and ranked results cannot be paged. Raise limit (max ${MAX_LIMIT}) or use a more specific searchQuery.`,
+                     ranked.ranking === "lexical"
+                        ? `${ranked.matched} tables share at least one term with "${searchQuery}"; the top ${page.length} by relevance are shown. Term-matching counts loosely, so a large number here is normal and does not mean that many tables are relevant. Ranked results cannot be paged: make searchQuery more specific, or raise limit (max ${MAX_LIMIT}) if you want more of this ranking.`
+                        : `${ranked.matched} tables scored above the relevance floor for "${searchQuery}"; the top ${page.length} are shown. Ranked results cannot be paged: make searchQuery more specific, or raise limit (max ${MAX_LIMIT}).`,
                   );
                }
             } else {

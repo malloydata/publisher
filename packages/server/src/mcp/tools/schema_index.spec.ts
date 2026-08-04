@@ -451,3 +451,32 @@ describe("rankTables", () => {
       expect(result.ranking).toBe("lexical");
    });
 });
+
+describe("empty-query honesty", () => {
+   it("reports lexical, not semantic, when no embedding call was made", async () => {
+      // `ranking` reports what happened. A query with no searchable content
+      // runs nothing, so claiming "semantic" would describe configuration.
+      const result = await rankTables({
+         tables: ALL,
+         query: "  ^~ ",
+         limit: 10,
+         provider: fakeProvider(),
+         cacheKey: "k",
+      });
+      expect(result.ranking).toBe("lexical");
+      expect(result.emptyQuery).toBe(true);
+      expect(result.hits).toEqual([]);
+   });
+
+   it("does not set emptyQuery for a real query that simply matched nothing", async () => {
+      const result = await rankTables({
+         tables: ALL,
+         query: "photosynthesis",
+         limit: 10,
+         provider: null,
+         cacheKey: "k",
+      });
+      expect(result.emptyQuery).toBeUndefined();
+      expect(result.hits).toEqual([]);
+   });
+});

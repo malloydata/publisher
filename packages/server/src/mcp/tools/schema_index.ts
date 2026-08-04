@@ -26,9 +26,13 @@ import { MIN_SIMILARITY, humanizeName } from "./embedding_index";
  *   warehouse with thousands of tables and tens of columns each would blow any
  *   per-column budget. This is the same trade the hosted pipeline avoids by
  *   having a vector database; we do not have one in-process.
- * - **Identifiers only, never values.** Nothing here reads a row. The analogous
+ * - **Identifiers only, never values.** No row value is returned, logged or
+ *   embedded. (Type inference over a CSV or JSON file does read the head of
+ *   that file, inside the warehouse; only the inferred names and types leave.)
+ *   The analogous
  *   non-goal to `get_context`'s "no dimensional_value indexing": an agent that
- *   needs real values runs `execute_query` with `select: distinct`.
+ *   needs real values runs `execute_query` with a `group_by` over the column,
+ *   against a model that shares the connection.
  *
  * The second limit is also what makes the egress story defensible: in every mode,
  * the only thing that can leave the process is names and types.
@@ -74,6 +78,13 @@ export type RankingMode = "lexical" | "semantic";
 export interface RankedResult {
    hits: RankedTable[];
    matched: number;
+   /**
+    * True when the query carried no searchable content (empty, whitespace, or
+    * only lunr operators). Distinguishes "nothing matched" from "nothing was
+    * asked", which otherwise look identical to the caller and send an agent off
+    * to broaden a query that was never run.
+    */
+   emptyQuery?: boolean;
 }
 
 /**
@@ -263,13 +274,22 @@ function storeCacheEntry(key: string, entry: VectorCacheEntry): void {
       if (oldest.done) break;
       vectorCache.delete(oldest.value);
    }
-   // The cooldown map is keyed the same way and is tiny (a timestamp per
-   // schema), but it must not outlive the cache it guards without bound.
-   if (cooldownUntilMs.size > MAX_CACHED_SCHEMAS * 4) {
-      const now = Date.now();
-      for (const [k, until] of cooldownUntilMs) {
-         if (until <= now) cooldownUntilMs.delete(k);
-      }
+}
+
+/**
+ * Drop expired cooldowns.
+ *
+ * Called when a cooldown is SET, which is the only regime that grows this map:
+ * a provider that is down never reaches the success path. Pruning here instead
+ * of alongside the cache eviction is the whole point, since a persistently
+ * failing provider would otherwise add an entry per distinct schema searched
+ * and never remove one.
+ */
+function pruneCooldowns(): void {
+   if (cooldownUntilMs.size <= MAX_CACHED_SCHEMAS * 4) return;
+   const now = Date.now();
+   for (const [k, until] of cooldownUntilMs) {
+      if (until <= now) cooldownUntilMs.delete(k);
    }
 }
 
@@ -359,6 +379,7 @@ async function tryRankSemantically(args: {
       return { hits: scored.slice(0, limit), matched: scored.length };
    } catch (error) {
       cooldownUntilMs.set(cacheKey, Date.now() + PROVIDER_FAILURE_COOLDOWN_MS);
+      pruneCooldowns();
       // The message can carry a provider body excerpt but never the API key,
       // which EmbeddingProvider keeps to the Authorization header.
       logger.warn(
@@ -397,11 +418,12 @@ export async function rankTables(args: {
    // for a query that has none. Same input, same schema, two different answers
    // depending on an operator's env var.
    if (!sanitizeQuery(query)) {
-      return {
-         hits: [],
-         matched: 0,
-         ranking: provider ? "semantic" : "lexical",
-      };
+      // "lexical", not "semantic": no embedding call was made, and `ranking`
+      // reports what actually happened everywhere else in this file (it
+      // degrades to lexical on cooldown, above the table cap, and on provider
+      // failure). Claiming "semantic" here would be the one place the field
+      // describes configuration rather than behaviour.
+      return { hits: [], matched: 0, ranking: "lexical", emptyQuery: true };
    }
 
    if (provider) {

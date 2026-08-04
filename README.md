@@ -183,6 +183,8 @@ semantic model. No schema spelunking, no hallucinated column names.
   for each table it found. Ranking works out of the box with no API key; the optional
   embedding-backed mode, and exactly what it sends where, are covered in
   [docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
+  To point Publisher at your warehouse in the first place, add a connection: see
+  [docs/connections.md](docs/connections.md).
 - **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
   ([`skills/`](skills/)) that most AI coding hosts auto-discover. Start there.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
