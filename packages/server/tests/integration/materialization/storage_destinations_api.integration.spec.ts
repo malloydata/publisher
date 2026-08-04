@@ -86,6 +86,27 @@ describe("storageDestinations write contract (REST)", () => {
       expect(lookup.status).toBe(404);
    });
 
+   it("refuses the same create through the legacy projects alias", async () => {
+      // An alias is still a create. Covered separately because it is a second
+      // route to the same store method, and gating one says nothing about the
+      // other.
+      const res = await fetch(`${baseUrl}/api/v0/projects`, {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PROJECT_NAME,
+            connections: [],
+            storageDestinations: [{ name: "lake", type: "postgres" }],
+         }),
+      });
+
+      expect(res.status).toBe(400);
+      const lookup = await fetch(
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}`,
+      );
+      expect(lookup.status).toBe(404);
+   });
+
    it("creates an environment with a usable destination, reporting name and type only", async () => {
       const res = await post({
          name: PROJECT_NAME,
