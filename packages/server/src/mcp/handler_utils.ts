@@ -3,6 +3,7 @@ import { EnvironmentStore } from "../service/environment_store";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionNotFoundError,
    PackageNotFoundError,
    ModelNotFoundError,
    ModelCompilationError,
@@ -64,7 +65,11 @@ export function classifyToolError(
       // server fault would tell the caller to contact support about a boundary
       // that is working. getNotFoundError also drops the source name this class
       // is careful not to confirm.
-      error instanceof NotQueryableError
+      error instanceof NotQueryableError ||
+      // A mistyped connection name is the most likely caller error of all, and
+      // as an unclassified throw it came back as "unexpected internal error,
+      // try again later", which an agent then does forever.
+      error instanceof ConnectionNotFoundError
    ) {
       return getNotFoundError(identifier);
    }

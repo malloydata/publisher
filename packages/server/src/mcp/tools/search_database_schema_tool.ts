@@ -93,9 +93,6 @@ type SearchDatabaseSchemaParams = z.infer<
    z.ZodObject<typeof searchDatabaseSchemaShape>
 >;
 
-/** A bare identifier Malloy accepts unquoted; anything else needs backticks. */
-const BARE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
 /**
  * The `source:` line an agent can paste to start modelling this table.
  *
@@ -118,13 +115,18 @@ function escapeMalloyString(value: string): string {
 /**
  * Quote an identifier, escaping backslashes and any backtick it contains.
  *
+ * ALWAYS quoted, never bare. A table named `table` or `source` is a Malloy
+ * reserved word, and emitting it bare produces a line that does not compile
+ * from a field the description calls "the ready-to-use source line". Quoting
+ * only when the name looks unusual left exactly those cases broken. Verified
+ * against the compiler: a backticked alias always compiles.
+ *
  * Backslash FIRST, for the same reason as escapeMalloyString: escaping the
  * backtick first would then double the backslash that escape introduced. And a
  * name ending in a backslash, left unescaped, would consume the closing
  * backtick and swallow the rest of the line.
  */
 function malloyIdentifier(name: string): string {
-   if (BARE_IDENTIFIER.test(name)) return name;
    return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
 }
 
@@ -248,18 +250,18 @@ function toResponseTable(
    };
 }
 
-const SEARCH_DATABASE_SCHEMA_DESCRIPTION = `Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names before writing a source. To search an existing model, use malloy_getContext.
+const SEARCH_DATABASE_SCHEMA_DESCRIPTION = `Find the tables in a database connection, by plain-English description. Use it to model a database you have not modelled yet, or to check schema, table and column names. To search an existing model, use malloy_getContext.
 
 ## Drill down, one level at a time
-Supply what you know, omit the rest. No arguments lists the environments and their connections; + connectionName lists that connection's schemas; + schemaName lists its tables (up to ${MAX_COLUMNS_PER_TABLE} columns each; add searchQuery to rank them); + tableName returns that one table with every column.
+Supply what you know, omit the rest. No arguments lists the environments and their connections; + connectionName lists its schemas; + schemaName lists its tables (up to ${MAX_COLUMNS_PER_TABLE} columns each; add searchQuery to rank them); + tableName returns that one table with every column.
 
 ## Contract rules
-- Use connectionName, tablePath and column names exactly as returned. Do not reformat or re-case.
-- A connection with scope "package" (the "duckdb" sandbox) is per package: pass packageName too, from those listed on it.
+- Use connectionName, tablePath and column names exactly as returned.
+- A connection with scope "package" (the "duckdb" sandbox) is per package: pass packageName too, from those it lists.\n- Schemas marked isHidden are system schemas; your tables are in the others.
 - malloySource is the ready-to-use \`source:\` line. Rename the source if the table name is a Malloy keyword.
 - Names and types only: no row value is returned. For a column's values, run malloy_executeQuery against a model using this connection: \`run: c.table('s.t') -> { group_by: col }\`.
-- No tables for a searchQuery means nothing matched, not that the schema is empty. Broaden it, or list without one.
-- An empty schema is not always an empty database: DuckDB over CSV or Parquet addresses files by path, registering none.
+- No tables for a searchQuery means nothing matched, not an empty schema. Broaden it, or list without one.
+- An empty schema may still hold data: DuckDB over CSV or Parquet addresses files by path, registering none.
 - Read warnings: they name anything omitted or ignored.
 
 ## Response
@@ -370,7 +372,7 @@ export function registerSearchDatabaseSchemaTool(
             } else if (tableName) {
                // Tier 5 wins over tier 4; say so rather than dropping the rest.
                noteIgnored([["searchQuery", searchQuery], ...pagingArgs]);
-            } else if (searchQuery) {
+            } else if (searchQuery !== undefined) {
                // Ranked results cannot be paged, so offset does nothing here.
                // Without this the tool silently returns the same top hits for
                // every offset, and an agent paging a ranked result loops.
@@ -477,9 +479,30 @@ export function registerSearchDatabaseSchemaTool(
                      { tables: [] },
                   );
                }
-               const entities = tables.map((t) =>
-                  toEntity(t, connectionName, schemaName),
+               // Several dialects ignore the tableNames filter entirely: the
+               // DuckDB cloud and Azure branches list a whole directory. Without
+               // this, asking for one table on a 200-file prefix returns all 200,
+               // each with every column, because the branch below waives the
+               // column cap on the assumption that one table was requested.
+               const matching = tables.filter(
+                  (t) => bareTableName(t.resource ?? "") === tableName,
                );
+               const entities = (matching.length > 0 ? matching : tables).map(
+                  (t) => toEntity(t, connectionName, schemaName),
+               );
+               if (matching.length === 0 && tables.length > 1) {
+                  return jsonToolError(
+                     uri,
+                     {
+                        message: `Table "${tableName}" not found in schema "${schemaName}" of connection "${connectionName}".`,
+                        suggestions: [
+                           `This schema lists ${tables.length} tables. Call this tool with schemaName "${schemaName}" and no tableName to see them.`,
+                           "Check the table name's spelling and case; some warehouses are case-sensitive.",
+                        ],
+                     },
+                     { tables: [] },
+                  );
+               }
                return jsonResource(uri, {
                   environmentName,
                   connectionName,
@@ -500,6 +523,13 @@ export function registerSearchDatabaseSchemaTool(
             }
 
             // Tier 4: a schema's tables, listed or ranked.
+            // Shed load before the introspection query, the same way
+            // getModelForQuery does for the other MCP tools. Introspection can
+            // pull 100k rows, and without this the memory governor cannot see
+            // any of it.
+            (
+               await environmentStore.getEnvironment(environmentName, false)
+            ).assertCanAdmitQuery();
             const allTables = await connectionController.listTables(
                environmentName,
                connectionName,
@@ -529,7 +559,7 @@ export function registerSearchDatabaseSchemaTool(
             let nextOffset: number | undefined;
             let matched: number | undefined;
 
-            if (searchQuery) {
+            if (searchQuery !== undefined) {
                const provider = resolveProvider();
                const ranked = await rankTables({
                   tables: entities,
@@ -553,8 +583,10 @@ export function registerSearchDatabaseSchemaTool(
                      schemaName,
                   ].join("\x00"),
                });
-               ranking = ranked.ranking;
-               matched = ranked.matched;
+               // An empty query ran no ranking at all, so reporting a mode
+               // would contradict the warning that says none ran.
+               ranking = ranked.emptyQuery ? undefined : ranked.ranking;
+               matched = ranked.emptyQuery ? undefined : ranked.matched;
                page = ranked.hits.map((hit) => ({
                   entity: hit,
                   score: hit.score,

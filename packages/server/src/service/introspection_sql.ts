@@ -2,6 +2,27 @@ import { Connection } from "@malloydata/malloy";
 import { logger } from "../logger";
 
 /**
+ * Escape a value for a single-quoted SQL string literal.
+ *
+ * Lives here rather than in db_utils because gcs_s3_utils needs it too, and
+ * gcs_s3_utils cannot import db_utils: db_utils imports IT, so that would be a
+ * cycle. db_utils re-exports this name for its existing callers.
+ *
+ * Doubling the quote is the ANSI rule and is all Postgres (with the default
+ * standard_conforming_strings), DuckDB, Trino, Snowflake and BigQuery need.
+ * MySQL is the exception: it also treats a backslash as an escape unless
+ * NO_BACKSLASH_ESCAPES is set, and the Malloy MySQL driver does not set it, so
+ * its call sites pass backslashEscapes. Doing that everywhere would NOT be a
+ * safe default: on the ANSI dialects a backslash is an ordinary character, so
+ * doubling it corrupts a legitimate name (a Postgres schema `data\\archive`,
+ * handed back exactly as this API returned it, would match nothing).
+ */
+export function sqlLiteral(value: string, backslashEscapes = false): string {
+   const escaped = backslashEscapes ? value.replace(/\\/g, "\\\\") : value;
+   return escaped.replace(/'/g, "''");
+}
+
+/**
  * Row cap for schema-introspection queries.
  *
  * These read metadata rather than user data, and one row is one COLUMN, so a

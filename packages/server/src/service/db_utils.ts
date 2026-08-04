@@ -15,7 +15,9 @@ import {
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
 import { ApiConnection } from "./model";
-import { runIntrospectionSQL } from "./introspection_sql";
+import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
+
+export { sqlLiteral };
 
 type ApiSchema = components["schemas"]["Schema"];
 type ApiTable = components["schemas"]["Table"];
@@ -25,34 +27,14 @@ type ApiAzureConnection = components["schemas"]["AzureConnection"];
  * Build a SQL `AND column IN (...)` fragment for optional table-name filtering.
  * Returns an empty string when `values` is undefined or empty.
  */
-export function sqlInFilter(columnName: string, values?: string[]): string {
+export function sqlInFilter(
+   columnName: string,
+   values?: string[],
+   backslashEscapes = false,
+): string {
    if (!values || values.length === 0) return "";
-   const escaped = values.map((v) => `'${sqlLiteral(v)}'`);
+   const escaped = values.map((v) => `'${sqlLiteral(v, backslashEscapes)}'`);
    return `AND ${columnName} IN (${escaped.join(", ")})`;
-}
-
-/**
- * Escape a value for a single-quoted SQL string literal, the same doubling
- * `sqlInFilter` already applied to table names.
- *
- * Schema and catalog names were interpolated raw. That was reachable through
- * the connection REST endpoints, but `malloy_searchDatabaseSchema` now takes
- * these straight from MCP tool arguments, which are model-controlled and
- * therefore steerable by prompt injection. Escaping where the value is used
- * costs nothing and removes the question.
- *
- * This is for string LITERALS only. Identifier positions (a catalog prefix
- * before `information_schema`) cannot be made safe by escaping and go through
- * {@link assertSafeSqlIdentifier} instead.
- */
-export function sqlLiteral(value: string): string {
-   // Backslash FIRST. MySQL treats \ as an escape character unless
-   // NO_BACKSLASH_ESCAPES is set, and the Malloy MySQL driver does not set it,
-   // so doubling the quote alone is not enough there: `x\' OR 1=1 #` would
-   // survive as `x\'' OR 1=1 #`, where MySQL reads \' as a literal quote, the
-   // next quote closes the string, and the rest executes. Doubling the quote
-   // remains what the ANSI dialects need.
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "''");
 }
 
 /**
@@ -967,6 +949,16 @@ function isDataFile(key: string): boolean {
    );
 }
 
+/**
+ * DESCRIBE a single remote data file.
+ *
+ * `fileUri` is caller-controlled: `listTablesForDuckDB` routes any `schemaName`
+ * beginning with `https://`, `abfss://` or `az://` here, and that argument comes
+ * straight from an MCP tool argument on the bundled config, with no warehouse
+ * credentials needed. It is escaped for the same reason the information_schema
+ * literals are; it was missed when they were done. DuckDB follows the ANSI rule,
+ * so quote-doubling is the correct escape here.
+ */
 async function describeRemoteFile(
    malloyConnection: Connection,
    fileUri: string,
@@ -977,16 +969,16 @@ async function describeRemoteFile(
    let describeQuery: string;
    switch (fileType) {
       case "csv":
-         describeQuery = `DESCRIBE SELECT * FROM read_csv('${fileUri}', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_csv('${sqlLiteral(fileUri)}', auto_detect=true) LIMIT 1`;
          break;
       case "parquet":
-         describeQuery = `DESCRIBE SELECT * FROM read_parquet('${fileUri}') LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_parquet('${sqlLiteral(fileUri)}') LIMIT 1`;
          break;
       case "json":
-         describeQuery = `DESCRIBE SELECT * FROM read_json('${fileUri}', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri)}', auto_detect=true) LIMIT 1`;
          break;
       case "jsonl":
-         describeQuery = `DESCRIBE SELECT * FROM read_json('${fileUri}', format='newline_delimited', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri)}', format='newline_delimited', auto_detect=true) LIMIT 1`;
          break;
       default:
          logger.warn(`Unsupported file type for file: ${fileUri}`);
@@ -1220,7 +1212,7 @@ async function listTablesForMySQL(
    try {
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName)}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, true)}' ${sqlInFilter("TABLE_NAME", tableNames, true)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1306,6 +1298,11 @@ async function listTablesForSnowflake(
          `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
          { error },
       );
+      // A bad argument must stay a bad argument: rewrapping it as a plain
+      // Error sends it to the internal-fault classifier, whose advice is "try
+      // again later", so an agent retries a deterministically-invalid argument
+      // forever. Only DuckDB escaped that, because its throw sits outside a try.
+      if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Snowflake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
       );
@@ -1356,6 +1353,11 @@ async function listTablesForTrino(
          `Error getting tables for Trino schema ${schemaName} in connection ${connection.name}`,
          { error },
       );
+      // A bad argument must stay a bad argument: rewrapping it as a plain
+      // Error sends it to the internal-fault classifier, whose advice is "try
+      // again later", so an agent retries a deterministically-invalid argument
+      // forever. Only DuckDB escaped that, because its throw sits outside a try.
+      if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Trino schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
       );
@@ -1406,6 +1408,11 @@ async function listTablesForDatabricks(
          `Error getting tables for Databricks schema ${schemaName} in connection ${connection.name}`,
          { error },
       );
+      // A bad argument must stay a bad argument: rewrapping it as a plain
+      // Error sends it to the internal-fault classifier, whose advice is "try
+      // again later", so an agent retries a deterministically-invalid argument
+      // forever. Only DuckDB escaped that, because its throw sits outside a try.
+      if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Databricks schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
       );

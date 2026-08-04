@@ -1085,11 +1085,14 @@ describe("listTablesForSchema bigquery", () => {
 });
 
 describe("SQL escaping and identifier validation", () => {
-   it("escapes the backslash as well as the quote, for MySQL", async () => {
+   it("escapes backslashes only where a backslash is an escape", async () => {
       const { sqlLiteral } = await import("./db_utils");
-      // Doubling the quote alone is not enough where a backslash is itself an
-      // escape: `x\' OR 1=1 #` would survive as a working break-out.
-      expect(sqlLiteral("x\\' OR 1=1 #")).toBe("x\\\\'' OR 1=1 #");
+      // MySQL: doubling the quote alone leaves `x\' OR 1=1 #` a working
+      // break-out, because MySQL reads \' as a literal quote.
+      expect(sqlLiteral("x\\' OR 1=1 #", true)).toBe("x\\\\'' OR 1=1 #");
+      // ANSI dialects: a backslash is an ordinary character, so doubling it
+      // would corrupt a legitimate name like a Postgres schema `data\archive`.
+      expect(sqlLiteral("data\\archive")).toBe("data\\archive");
       expect(sqlLiteral("o'brien")).toBe("o''brien");
       expect(sqlLiteral("plain")).toBe("plain");
    });
@@ -1115,4 +1118,41 @@ describe("SQL escaping and identifier validation", () => {
          expect(assertSafeSqlIdentifier(ok, "catalog name")).toBe(ok);
       }
    });
+});
+
+describe("identifier rejection survives the dialect catch blocks", () => {
+   // The guard was wired INSIDE a try whose catch rewrapped everything as a
+   // plain Error, so on Snowflake, Trino and Databricks a rejected identifier
+   // reached the caller as an "unexpected internal error, try again later".
+   // Testing the helper alone (above) would not have caught that: all three
+   // call sites could be deleted and this file would stay green.
+   const dialects = [
+      { type: "snowflake", conn: { snowflakeConnection: { database: "db" } } },
+      { type: "trino", conn: { trinoConnection: {} } },
+      { type: "databricks", conn: { databricksConnection: {} } },
+   ] as const;
+
+   for (const { type, conn } of dialects) {
+      it(`surfaces a BadRequestError, not a wrapped Error, on ${type}`, async () => {
+         const { listTablesForSchema } = await import("./db_utils");
+         const { BadRequestError } = await import("../errors");
+         const malloyConnection = {
+            runSQL: async () => {
+               throw new Error("should not be reached");
+            },
+         };
+         let thrown: unknown;
+         try {
+            await listTablesForSchema(
+               { name: "c", type, ...conn } as never,
+               // A catalog segment that is not a plain identifier.
+               "evil; DROP TABLE t; --.public",
+               malloyConnection as never,
+            );
+         } catch (error) {
+            thrown = error;
+         }
+         expect(thrown).toBeInstanceOf(BadRequestError);
+      });
+   }
 });

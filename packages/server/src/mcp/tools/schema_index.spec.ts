@@ -176,7 +176,11 @@ describe("rankLexically", () => {
    });
 
    it("respects the limit", () => {
-      expect(rankLexically(ALL, "id", 1).hits.length).toBeLessThanOrEqual(1);
+      const result = rankLexically(ALL, "id", 1);
+      // Exactly one, not "at most one": <= 1 also passes on an empty result,
+      // which is the failure this test exists to catch.
+      expect(result.hits.length).toBe(1);
+      expect(result.matched).toBeGreaterThan(1);
    });
 
    it("handles an empty table list", () => {
@@ -432,6 +436,19 @@ describe("rankTables", () => {
          cacheKey: "schema-0",
       });
       expect(embedded.slice(embedsBefore)).toContain(3);
+
+      // And a recently-used entry must NOT have been evicted, or this test
+      // would pass with a cap of 1.
+      const embedsAfterZero = embedded.length;
+      await rankTables({
+         tables: ALL,
+         query: "orders",
+         limit: 10,
+         provider,
+         cacheKey: `schema-${MAX_CACHED_SCHEMAS}`,
+      });
+      // Query embed only (1), no re-embed of the 3 tables.
+      expect(embedded.slice(embedsAfterZero)).toEqual([1]);
    });
 
    it("falls back to lexical when the provider returns the wrong vector count", async () => {

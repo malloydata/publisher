@@ -70,8 +70,10 @@ function storeWithConnections(
 
 describe("malloySourceSnippet", () => {
    it("builds a source line from the connection and the qualified path", () => {
+      // Identifiers are ALWAYS quoted: a table named `table` or `source` is a
+      // Malloy reserved word, and a bare alias there does not compile.
       expect(malloySourceSnippet("duckdb", "main.orders", "orders")).toBe(
-         "source: orders is duckdb.table('main.orders') extend { }",
+         "source: `orders` is `duckdb`.table('main.orders') extend { }",
       );
    });
 
@@ -100,7 +102,7 @@ describe("malloySourceSnippet", () => {
       const snippet = malloySourceSnippet("c", "s.t", "odd\\name");
       expect(snippet).toContain("source: `odd\\\\name` is");
       // The identifier must terminate: exactly one unescaped closing backtick.
-      expect(snippet).toContain("` is c.table(");
+      expect(snippet).toContain("` is `c`.table(");
    });
 
    it("escapes a backtick inside an identifier", () => {
@@ -240,5 +242,19 @@ describe("malloy_searchDatabaseSchema tiers", () => {
       });
       expect(result.isError).toBe(true);
       expect(parse(result).tables).toEqual([]);
+   });
+});
+
+describe("reserved words in the emitted source line", () => {
+   // Verified against the compiler: `source: table is ...` fails with
+   // "'table' is a reserved word", while the backticked form compiles. The
+   // field is described as ready to use, so it has to be.
+   it("quotes a table named after a Malloy reserved word", () => {
+      expect(malloySourceSnippet("duckdb", "main.table", "table")).toBe(
+         "source: `table` is `duckdb`.table('main.table') extend { }",
+      );
+      expect(malloySourceSnippet("duckdb", "main.source", "source")).toContain(
+         "source: `source` is",
+      );
    });
 });

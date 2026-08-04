@@ -319,6 +319,14 @@ async function tryRankSemantically(args: {
 }): Promise<RankedResult | null> {
    const { tables, query, limit, provider, cacheKey } = args;
 
+   if (tables.length === 0) {
+      // Nothing to embed. Without this an unknown-but-well-formed schema name
+      // (which several dialects answer with [] rather than an error) still
+      // stored a cache entry, taking one of the few LRU slots from a real
+      // schema, and still spent a billable round trip embedding the query.
+      return { hits: [], matched: 0 };
+   }
+
    if (tables.length > MAX_INDEXED_TABLES) {
       logger.warn(
          "[MCP Tool searchDatabaseSchema] Schema exceeds the semantic index cap; ranking lexically",
