@@ -972,7 +972,7 @@ app.get(`${API_PREFIX}/environments`, async (_req, res) => {
 app.post(`${API_PREFIX}/environments`, async (req, res) => {
    try {
       // Redacted like every other body-bearing log line (loggerMiddleware): the
-      // body carries connection and materialization-destination configs, and a
+      // body carries connection and storage-destination configs, and a
       // destination's catalog password would otherwise land in the log verbatim.
       logger.info("Adding environment", { body: redactSensitive(req.body) });
       // Strict where the author is waiting, lenient where a config is being

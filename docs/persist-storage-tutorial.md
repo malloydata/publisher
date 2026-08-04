@@ -18,9 +18,9 @@ do. Every step here was run against a real server; the outputs shown are real.
 > annotation. The default (no `storage=`) is a **colocated** materialization: the
 > source materializes into and serves from its own warehouse, unchanged. This
 > tutorial is about **external** materialization — materialize into a _separate_
-> DuckLake store and serve from there. That store is a **materialization
-> destination**: declared alongside `connections` rather than in it, so it is not
-> a name any model, notebook cell, or query can resolve.
+> DuckLake store and serve from there. That store is a **storage destination**:
+> declared in `storageDestinations`, alongside `connections` rather than in it, so
+> it is not a name any model, notebook cell, or query can resolve.
 
 ---
 

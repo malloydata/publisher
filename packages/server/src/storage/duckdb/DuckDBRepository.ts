@@ -148,7 +148,7 @@ export class DuckDBRepository implements ResourceRepository {
       return this.connectionRepo.deleteConnectionsByEnvironmentId(id);
    }
 
-   // ============ MATERIALIZATION DESTINATIONS ============
+   // ============ STORAGE DESTINATIONS ============
 
    async listStorageDestinations(
       environmentId: string,
