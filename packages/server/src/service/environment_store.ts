@@ -657,6 +657,19 @@ export class EnvironmentStore {
                                        packages: environmentConfig.packages,
                                     },
                                     true,
+                                    // The config is a fallback here, not the set
+                                    // of record: it is read because the
+                                    // directory was missing, and a config
+                                    // declaring no destinations normalizes to an
+                                    // empty list, which the sync would otherwise
+                                    // read as "clear them" and prune every
+                                    // destination registered over the API. A
+                                    // missing directory is transient; that
+                                    // deletion is not. Omitting the field would
+                                    // not help — this call CREATES the
+                                    // environment, and the constructor seats an
+                                    // authoritative empty list either way.
+                                    { storageDestinationsAreFallback: true },
                                  );
 
                               // Update database with new path
@@ -1522,9 +1535,18 @@ export class EnvironmentStore {
       });
    }
 
+   /**
+    * `storageDestinationsAreFallback` says the destinations on this payload are
+    * the best guess available rather than the desired state, so the database sync
+    * below must not reconcile the stored rows against them. It has to be decided
+    * here rather than by the caller afterwards: this method syncs before it
+    * returns, so by the time a caller holds the instance the pruning has already
+    * happened.
+    */
    public async addEnvironment(
       environment: ApiEnvironment,
       skipInitialization: boolean = false,
+      { storageDestinationsAreFallback = false } = {},
    ) {
       if (!skipInitialization) {
          await this.finishedInitialization;
@@ -1543,6 +1565,9 @@ export class EnvironmentStore {
          const updatedEnvironment =
             await existingEnvironment.update(environment);
          this.environments.set(environmentName, updatedEnvironment);
+         if (storageDestinationsAreFallback) {
+            updatedEnvironment.markStorageDestinationsUnknown();
+         }
          await this.addEnvironmentToDatabase(updatedEnvironment);
          return updatedEnvironment;
       }
@@ -1606,6 +1631,9 @@ export class EnvironmentStore {
          }
       });
 
+      if (storageDestinationsAreFallback) {
+         newEnvironment.markStorageDestinationsUnknown();
+      }
       await this.addEnvironmentToDatabase(newEnvironment);
 
       return newEnvironment;

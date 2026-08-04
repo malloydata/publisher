@@ -252,7 +252,7 @@ mock.module("../storage/StorageManager", () => {
 
                deleteConnection: async (_id: string): Promise<void> => {},
 
-               // ===== MATERIALIZATION DESTINATION METHODS =====
+               // ===== STORAGE DESTINATION METHODS =====
                // Backed by `mockDbDestinations` rather than stubbed out, so a
                // test can drive both directions the store uses: what a restart
                // reads back, and what the sync writes and prunes.
@@ -1022,6 +1022,69 @@ describe("EnvironmentStore Service", () => {
       expect(mockDbDestinations.map((row) => row.name)).toEqual([
          "replacement",
       ]);
+   });
+
+   it("should not delete stored destinations when the environment directory is missing", async () => {
+      // The other way an empty list reaches the sync as though it were desired.
+      // A boot that cannot find an environment's directory reloads it from
+      // config, and a config declaring no destinations normalizes to `[]` — which
+      // is an instruction to clear, so the rows are pruned and a destination
+      // registered over the API is gone for good. The directory being absent is
+      // transient; the deletion is not.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  storageDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const firstBoot = new EnvironmentStore(serverRootPath);
+      await firstBoot.finishedInitialization;
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+
+      // Restart with the row present, the config no longer declaring the
+      // destination, and the recorded directory gone.
+      const missingPath = path.join(serverRootPath, "gone-missing");
+      mockDbEnvironments = [
+         {
+            id: mockDbDestinations[0].environmentId,
+            name: projectName,
+            path: missingPath,
+            metadata: {},
+         },
+      ];
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const afterRestart = new EnvironmentStore(serverRootPath);
+      await afterRestart.finishedInitialization;
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
    });
 
    it("should not delete stored destinations when the load could not read them", async () => {
