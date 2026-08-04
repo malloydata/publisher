@@ -24,8 +24,9 @@ Point Publisher at your Malloy models and it serves them over a REST API and a s
 ## Requirements
 
 Node.js 20 or newer. Publisher refuses to start on anything older, printing both the version it
-needs and the version it found. Older Node releases do not provide the global Web Crypto API that
-Publisher and the Malloy libraries use, so queries fail at run time.
+needs and the version it found. Older releases are missing APIs Publisher and the Malloy libraries
+depend on (before Node 19 there is no global Web Crypto API), so queries fail at run time. Every
+`@malloydata/*` dependency requires the same floor.
 
 Building from a clone also needs [Bun](https://bun.sh/) 1.3.13 or newer. The Docker image carries
 its own runtime and needs neither.
