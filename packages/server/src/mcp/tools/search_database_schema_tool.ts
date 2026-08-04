@@ -141,24 +141,44 @@ export function malloySourceSnippet(
 }
 
 /**
+ * DuckDB's file-path grammar for a table path, from its dialect in
+ * @malloydata/malloy. Deliberately NOT a guess: a space, an apostrophe or a
+ * parenthesis is outside it, which is why an S3 key containing one produced a
+ * line that did not compile.
+ */
+const DUCKDB_FILE_PATH = /^[A-Za-z0-9._~:/?#@!$&*+,=%-]+$/;
+
+/**
+ * The strictest bare-identifier rule across the dialects we serve, which is
+ * Malloy's base `tablePathBareIdentRegex`. Individual dialects widen it (MySQL
+ * allows a leading digit, BigQuery allows a hyphen), so requiring the base is
+ * conservative everywhere and wrong nowhere.
+ */
+const STRICT_BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * Whether a table path can be pasted into `table('...')` as-is.
  *
- * A dotted path only parses when every segment is a plain identifier. A segment
- * with a space, quote, backtick or backslash needs identifier quoting INSIDE the
- * string (`table('main."odd name"')`), and that quoting is per dialect.
+ * Conservative by construction. Malloy validates this per dialect, with seven
+ * distinct identifier rules plus DuckDB's separate file-path grammar, and it
+ * does not export `getDialect` through any public entry point, so this cannot
+ * delegate to the authority. Rather than approximate ten grammars with one
+ * regex (an earlier attempt did exactly that and still emitted lines that did
+ * not compile), this accepts only what every dialect accepts, and the caller
+ * omits `malloySource` and says why for anything else.
  *
- * We do not guess it. This exact ten-dialect classification has been wrong three
- * times in this file's history, so rather than emit a line that does not compile
- * from a field documented as ready to paste, the caller omits `malloySource` and
- * says why. A path form (containing "/") is a file or URL and is passed through:
- * DuckDB takes those as a literal path.
+ * The two shapes: a dotted path, where every segment must satisfy the strictest
+ * bare-identifier rule; or a file/URL path, which only DuckDB-family
+ * connections ever produce, checked against DuckDB's own file-path charset.
+ *
+ * A false negative here costs a convenience field plus a warning explaining it.
+ * A false positive costs an agent a line that does not run, from a field the
+ * description calls ready to paste. The asymmetry is the whole design.
  */
 export function isPastableTablePath(resource: string): boolean {
    if (!resource) return false;
-   if (resource.includes("/")) return true;
-   return resource
-      .split(".")
-      .every((segment) => /^[A-Za-z_][A-Za-z0-9_$-]*$/.test(segment));
+   if (resource.includes("/")) return DUCKDB_FILE_PATH.test(resource);
+   return resource.split(".").every((seg) => STRICT_BARE_IDENT.test(seg));
 }
 
 /** Data-file suffixes DuckDB addresses directly, as whole file paths. */
@@ -325,6 +345,21 @@ export function registerSearchDatabaseSchemaTool(
     * fan out one DESCRIBE per file, so it is the most expensive of the three.
     * Without it the memory governor cannot see any of this traffic.
     */
+   /**
+    * The warning for tables whose path could not be pasted, or [] if all could.
+    *
+    * A helper rather than an inline push because it was previously built only
+    * in the listing branch, so the single-table tier omitted `malloySource`
+    * with no explanation at all: the same silence the omission exists to avoid.
+    */
+   const unpastableWarning = (entities: SchemaTableEntity[]): string[] => {
+      const n = entities.filter((e) => !isPastableTablePath(e.resource)).length;
+      if (n === 0) return [];
+      return [
+         `${n} table(s) have a path that cannot be pasted into a Malloy table() call as-is, so malloySource is omitted for them rather than given as a line that will not compile. Use tablePath and quote the offending segment the way your warehouse's dialect requires (DuckDB and Postgres use double quotes, MySQL uses backticks).`,
+      ];
+   };
+
    const assertCanAdmit = async (environmentName: string) => {
       (
          await environmentStore.getEnvironment(environmentName, false)
@@ -572,9 +607,13 @@ export function registerSearchDatabaseSchemaTool(
                   ),
                   totalAvailable: entities.length,
                   returned: entities.length,
-                  ...(ignoredWarning.length > 0
-                     ? { warnings: ignoredWarning }
-                     : {}),
+                  ...(() => {
+                     const w = [
+                        ...ignoredWarning,
+                        ...unpastableWarning(entities),
+                     ];
+                     return w.length > 0 ? { warnings: w } : {};
+                  })(),
                });
             }
 
@@ -691,14 +730,9 @@ export function registerSearchDatabaseSchemaTool(
                }
             }
 
-            const unpastable = page.filter(
-               ({ entity }) => !isPastableTablePath(entity.resource),
-            ).length;
-            if (unpastable > 0) {
-               warnings.push(
-                  `${unpastable} table(s) have a name that needs identifier quoting inside the table path, so malloySource is omitted for them rather than given as a line that will not compile. Quote the offending segment for your dialect, for example duckdb.table('main."odd name"').`,
-               );
-            }
+            warnings.push(
+               ...unpastableWarning(page.map(({ entity }) => entity)),
+            );
 
             const capped = page.filter(
                ({ entity }) => entity.columns.length > MAX_COLUMNS_PER_TABLE,

@@ -361,11 +361,11 @@ describe("only pastable table paths get a malloySource", () => {
    // "Invalid DuckDB table path". Quoting the segment inside the string fixes
    // it, but that quoting is per dialect, so the field is omitted instead of
    // emitting a line that will not compile.
-   it("accepts plain dotted paths and file paths", () => {
+   it("accepts plain dotted paths and clean file paths", () => {
       expect(isPastableTablePath("main.orders")).toBe(true);
       expect(isPastableTablePath("memory.main.orders")).toBe(true);
       expect(isPastableTablePath("data/customers.parquet")).toBe(true);
-      expect(isPastableTablePath("s3://bucket/o'brien/x.parquet")).toBe(true);
+      expect(isPastableTablePath("s3://bucket/data/x.parquet")).toBe(true);
    });
 
    it("rejects a dotted path whose segment needs identifier quoting", () => {
@@ -378,5 +378,28 @@ describe("only pastable table paths get a malloySource", () => {
       ]) {
          expect(isPastableTablePath(bad)).toBe(false);
       }
+   });
+
+   // These were asserted the WRONG way round before. Checked against DuckDB's
+   // file-path grammar in @malloydata/malloy: a space, an apostrophe and a
+   // parenthesis are all outside it, so these emit lines that do not compile.
+   it("rejects a file path containing a character DuckDB's grammar excludes", () => {
+      for (const bad of [
+         "s3://bucket/o'brien/x.parquet",
+         "gs://b/sales data/o.csv",
+         "reports/Q1 report.parquet",
+         "data/file(1).csv",
+      ]) {
+         expect(isPastableTablePath(bad)).toBe(false);
+      }
+   });
+
+   // Conservative on purpose: these compile on SOME dialects (a hyphen on
+   // BigQuery and DuckDB, a leading digit on MySQL and Databricks) and not on
+   // others. Malloy does not export getDialect, so rather than approximate ten
+   // grammars, only what every dialect accepts gets a pasteable line.
+   it("rejects segments that only some dialects would accept", () => {
+      expect(isPastableTablePath("public.my-table")).toBe(false);
+      expect(isPastableTablePath("mydb.2024_orders")).toBe(false);
    });
 });
