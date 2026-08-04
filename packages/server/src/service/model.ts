@@ -95,6 +95,7 @@ import {
    type QueryRowLimitSource,
    queryRowLimitSource,
    resolveModelQueryRowLimit,
+   stringifyQueryResponse,
 } from "./model_limits";
 import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
 import {
@@ -2582,7 +2583,15 @@ export class Model {
       // above is the primary OOM defense.
       const serializedBytes =
          maxBytes > 0
-            ? Buffer.byteLength(JSON.stringify(wrappedResult), "utf8")
+            ? Buffer.byteLength(
+                 stringifyQueryResponse(
+                    wrappedResult,
+                    queryResults.totalRows,
+                    maxBytes,
+                    "model_query",
+                 ),
+                 "utf8",
+              )
             : 0;
       assertWithinModelResponseLimits(
          queryResults.totalRows,
@@ -2883,7 +2892,15 @@ export class Model {
             queryResult =
                result?._queryResult &&
                this.modelInfo &&
-               JSON.stringify(API.util.wrapResult(result));
+               // Same guard as getQueryResults: here the string IS the payload,
+               // not just the measurement, so a cell whose result cannot be
+               // serialized would otherwise return the same bare 500.
+               stringifyQueryResponse(
+                  API.util.wrapResult(result),
+                  result.totalRows,
+                  cellMaxBytes,
+                  "notebook_cell",
+               );
             // Same caveat as `getQueryResults`: by the time we measure
             // bytes the response has already been buffered and stringified,
             // so this is loud-failure detection (clean 413 instead of

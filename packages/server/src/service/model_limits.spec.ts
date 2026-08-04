@@ -1,11 +1,26 @@
 import { describe, expect, it } from "bun:test";
 
-import { PayloadTooLargeError } from "../errors";
+import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";
 import {
    assertWithinModelResponseLimits,
    queryRowLimitSource,
    resolveModelQueryRowLimit,
+   stringifyQueryResponse,
 } from "./model_limits";
+
+/**
+ * A value whose serialization fails the way an oversized one does. Throwing
+ * from `toJSON` reproduces the real failure without allocating the ~512 MB a
+ * genuine overflow needs, and the messages are the ones the two engines
+ * actually produce (verified on node v24 and bun 1.3).
+ */
+function failingToSerialize(error: Error) {
+   return {
+      toJSON() {
+         throw error;
+      },
+   };
+}
 
 describe("resolveModelQueryRowLimit", () => {
    it("uses the user's LIMIT when set and below the maxRows ceiling", () => {
@@ -178,6 +193,104 @@ describe("assertWithinModelResponseLimits", () => {
             "model_query",
          ),
       ).not.toThrow();
+   });
+});
+
+describe("stringifyQueryResponse", () => {
+   it("returns the same JSON as JSON.stringify for a serializable response", () => {
+      const response = { data: [{ id: 1, name: "a" }], schema: {} };
+      expect(stringifyQueryResponse(response, 1, 10_000, "model_query")).toBe(
+         JSON.stringify(response),
+      );
+   });
+
+   it("converts V8's overflow (node: 'Invalid string length') into a 413", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      expect(() =>
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query"),
+      ).toThrow(PayloadTooLargeError);
+   });
+
+   it("throws the subclass, so REST still 413s and MCP can drop the cap advice", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      try {
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query");
+         throw new Error("expected a throw");
+      } catch (error) {
+         expect(error).toBeInstanceOf(ResponseUnserializableError);
+         expect(error).toBeInstanceOf(PayloadTooLargeError);
+      }
+   });
+
+   it("converts JSC's overflow (bun: 'Out of memory') into a 413", () => {
+      // Bun runs the Docker image, and its engine reports the same condition
+      // with a different message, so the RangeError class is what we match on.
+      const tooBig = failingToSerialize(new RangeError("Out of memory"));
+      expect(() =>
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query"),
+      ).toThrow(PayloadTooLargeError);
+   });
+
+   it("names the cap, the row count, and remedies that can actually help", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      let message = "";
+      try {
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query");
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).toContain("exceeded 50000000 bytes");
+      expect(message).toContain("100000-row");
+      expect(message).toContain("Project fewer columns");
+      expect(message).toContain("add a LIMIT");
+      expect(message).toContain("filter wide values");
+      // Raising the cap cannot help a response that will not serialize at any
+      // cap, so the byte-cap message's third remedy must not be repeated here.
+      expect(message).not.toContain("PUBLISHER_MAX_RESPONSE_BYTES");
+   });
+
+   it("omits the cap from the message when the byte cap is disabled", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      let message = "";
+      try {
+         stringifyQueryResponse(tooBig, 42, 0, "notebook_cell");
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).not.toContain("0 bytes");
+      expect(message).toContain("too large to return");
+      expect(message).toContain("42-row");
+   });
+
+   it("leaves a stack overflow alone: deep nesting is not a size cap", () => {
+      const deep = failingToSerialize(
+         new RangeError("Maximum call stack size exceeded"),
+      );
+      expect(() =>
+         stringifyQueryResponse(deep, 1, 50_000_000, "model_query"),
+      ).toThrow("Maximum call stack size exceeded");
+      expect(() =>
+         stringifyQueryResponse(deep, 1, 50_000_000, "model_query"),
+      ).not.toThrow(PayloadTooLargeError);
+   });
+
+   it("leaves a non-RangeError alone: an unserializable type is not too large", () => {
+      // What a BigInt in the payload throws. Reporting it as 413 would send the
+      // caller off shrinking a query that is not too big.
+      const unserializable = failingToSerialize(
+         new TypeError("Do not know how to serialize a BigInt"),
+      );
+      expect(() =>
+         stringifyQueryResponse(unserializable, 1, 50_000_000, "model_query"),
+      ).toThrow(TypeError);
    });
 });
 

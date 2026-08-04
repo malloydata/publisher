@@ -18,6 +18,12 @@
  *      byte cap, throw `PayloadTooLargeError` so the caller sees a
  *      clean HTTP 413.
  *
+ *   3. {@link stringifyQueryResponse} — serialize the response for
+ *      that byte check. The check measures by stringifying, so a
+ *      result too large to stringify fails *inside* the guard before
+ *      it can compare anything to the cap; this wrapper turns that
+ *      into the same 413 rather than a bare 500.
+ *
  * Caveat on the byte cap: this path runs `runnable.run` (buffered),
  * not `runStream`, so by the time we measure bytes the result has
  * already been materialized in memory. The byte cap here is loud-
@@ -32,7 +38,7 @@
  * up a model runtime; the caller injects the env-derived limits.
  */
 
-import { PayloadTooLargeError } from "../errors";
+import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";
 import {
    recordQueryCapExceeded,
    type QueryCapSource,
@@ -126,6 +132,56 @@ export function assertWithinModelResponseLimits(
       recordQueryCapExceeded("bytes", source);
       throw new PayloadTooLargeError(
          `Query response exceeded ${maxBytes} bytes (was ${serializedBytes}). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.`,
+      );
+   }
+}
+
+/**
+ * JSON-serialize a query response, reporting a payload too large to serialize
+ * at all as the same {@link PayloadTooLargeError} (HTTP 413) the byte cap
+ * produces.
+ *
+ * The byte cap measures by stringifying, so the measurement is the thing that
+ * fails first: past a certain size `JSON.stringify` throws and the guard never
+ * reaches its comparison, leaving the caller a bare 500 that names neither the
+ * cap nor a remedy. One step smaller the same query gets a 413 that names both.
+ *
+ * Both engines Publisher runs on signal this as a `RangeError`, but with
+ * different messages — V8 (node) says "Invalid string length" at ~512 MB, JSC
+ * (bun, which runs the Docker image) says "Out of memory" and only much later —
+ * so the error *class* is the portable signal and the message is not. A stack
+ * overflow is also a `RangeError` and is not a size problem, so it is left to
+ * propagate as the 500 it is.
+ *
+ * Raising `PUBLISHER_MAX_RESPONSE_BYTES` is deliberately not offered here: a
+ * response that cannot be serialized will not serialize under a higher cap
+ * either, so the remedies are the ones that shrink the response.
+ */
+export function stringifyQueryResponse(
+   response: unknown,
+   rowCount: number,
+   maxBytes: number,
+   source: QueryCapSource,
+): string {
+   try {
+      return JSON.stringify(response);
+   } catch (error) {
+      if (
+         !(error instanceof RangeError) ||
+         // "Maximum call stack size exceeded": deep nesting, not size.
+         /call stack/i.test(error.message)
+      ) {
+         throw error;
+      }
+      recordQueryCapExceeded("bytes", source);
+      throw new ResponseUnserializableError(
+         // The cap is only worth naming when there is one; with the byte cap
+         // disabled `maxBytes` is 0 and "exceeded 0 bytes" would be nonsense.
+         `${
+            maxBytes > 0
+               ? `Query response exceeded ${maxBytes} bytes`
+               : "Query response too large to return"
+         }: the ${rowCount}-row result is too large to serialize. Project fewer columns, add a LIMIT, or filter wide values.`,
       );
    }
 }

@@ -10,6 +10,7 @@ import {
    NotQueryableError,
    PayloadTooLargeError,
    QueryTimeoutError,
+   ResponseUnserializableError,
    ServiceUnavailableError,
 } from "../errors";
 import {
@@ -74,6 +75,19 @@ export function classifyToolError(
       return {
          message: error.message,
          suggestions: [...BACK_PRESSURE_SUGGESTIONS],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof ResponseUnserializableError) {
+      // Checked before the shared branch below, which would otherwise offer to
+      // raise the cap. There is no cap at which a response that will not
+      // serialize starts serializing, so that advice would send an agent to
+      // change a setting and hit the identical failure.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+            "Raising the byte cap will not help: the response cannot be serialized at any cap. Shrink it instead — project fewer columns, add a LIMIT, or filter out the wide values.",
+         ],
       } satisfies ErrorDetails;
    }
    if (
