@@ -61,6 +61,11 @@ reaches model data only through the query API, which goes through the same
 governance (filters, access modifiers, authorize annotations) as any other
 Publisher client.
 
+Note the `/environments/.../packages/...` prefix. The web UI opens a model at the
+shorter `/<env>/<pkg>/<file>.malloy`, so that form is an easy guess for a page
+too, and it is a different route. Publisher redirects it to the URL above rather
+than leaving you on an app page that cannot find the file.
+
 A package becomes a data app simply by having a `public/` directory. There is no
 flag to set in `publisher.json`.
 

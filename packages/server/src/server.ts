@@ -70,6 +70,7 @@ import {
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
+import { classifySpaFallback } from "./spa_fallback";
 
 // Parse command line arguments
 function parseArgs() {
@@ -435,6 +436,22 @@ app.get("/sdk/publisher.js", (_req, res) => {
 // nothing can be downloaded around the per-model #(authorize) and query
 // controls. The data stays reachable through the permission-checked query path.
 
+// Body for this route's 404s. Deliberately static: the status codes below
+// reflect no request input, so neither does this, and the same bytes are safe
+// for every miss. An empty 404 is honest but leaves a blank page, and someone
+// arriving here has usually guessed at the URL form, so it names the form.
+const PACKAGE_FILE_NOT_FOUND_HTML = `<!doctype html><meta charset="utf-8">
+<title>Not found</title>
+<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
+<h1>Not found</h1>
+<p>This package does not serve that file. Only files inside the package's
+<code>public/</code> directory are web-served, at
+<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is
+relative to <code>public/</code> and does not include it.</p>
+<p>Models and notebooks are not served here; they open in the web UI at
+<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code>. <a href="/">Publisher home</a> lists what
+this server has.</p>`;
+
 async function serveFromPackage(
    req: express.Request,
    res: express.Response,
@@ -485,7 +502,7 @@ async function serveFromPackage(
          if (!res.headersSent) {
             // Generic 404 with no reflected request input (avoids reflecting
             // user-controlled path/package name into the response body).
-            res.status(404).end();
+            res.status(404).type("text/html").send(PACKAGE_FILE_NOT_FOUND_HTML);
          }
          return;
       }
@@ -516,7 +533,9 @@ async function serveFromPackage(
             // catch-all that may error.
             if (!res.headersSent) {
                // Generic 404, no reflected request input (see above).
-               res.status(404).end();
+               res.status(404)
+                  .type("text/html")
+                  .send(PACKAGE_FILE_NOT_FOUND_HTML);
             }
          }
       });
@@ -542,6 +561,26 @@ async function serveFromPackage(
 // path with a trailing slash. That removes any open-redirect / header-injection
 // surface from user-controlled input, with the slash placed before any query
 // string (e.g. ?embed_token=...).
+/**
+ * Re-attach the request's query string to a redirect target. Rebuilt from the
+ * parsed query rather than spliced off the raw URL, so nothing user-controlled
+ * reaches the Location header verbatim. Shared with the SPA fallback's redirect,
+ * where dropping the query would strip an embedded page's `?embed_token=...` on
+ * the way to the right path.
+ */
+function withRequestQuery(req: express.Request, target: string): string {
+   const query = new URLSearchParams();
+   for (const [key, value] of Object.entries(req.query)) {
+      if (Array.isArray(value)) {
+         for (const v of value) query.append(key, String(v));
+      } else if (value !== undefined) {
+         query.append(key, String(value));
+      }
+   }
+   const qs = query.toString();
+   return qs ? `${target}?${qs}` : target;
+}
+
 app.get(
    "/environments/:environmentName/packages/:packageName",
    (req, res, next) => {
@@ -549,16 +588,7 @@ app.get(
       const canonical =
          `/environments/${encodeURIComponent(req.params.environmentName)}` +
          `/packages/${encodeURIComponent(req.params.packageName)}/`;
-      const query = new URLSearchParams();
-      for (const [key, value] of Object.entries(req.query)) {
-         if (Array.isArray(value)) {
-            for (const v of value) query.append(key, String(v));
-         } else if (value !== undefined) {
-            query.append(key, String(value));
-         }
-      }
-      const qs = query.toString();
-      res.redirect(308, qs ? `${canonical}?${qs}` : canonical);
+      res.redirect(308, withRequestQuery(req, canonical));
    },
 );
 
@@ -1883,7 +1913,49 @@ registerLegacyRoutes(app, {
 // Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
    const SPA_INDEX = path.resolve(ROOT, "index.html");
+   const escapeHtml = (value: string) =>
+      value.replace(
+         /[<>&]/g,
+         (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
+      );
    app.get("*", (req, res) => {
+      // Not everything unmatched is an app route. A request that names a file
+      // gets a real answer rather than the app shell with a 200, which reads as
+      // success and then leaves the app blaming the file for a wrong path. See
+      // classifySpaFallback for why the decision is by extension.
+      const fallback = classifySpaFallback(req.path, API_PREFIX);
+      if (fallback.kind === "redirect") {
+         // 302, not a permanent redirect: this maps a mistaken URL onto the
+         // right one, and a path the app may later claim as a route of its own
+         // must not be cached against it in every browser that guessed once.
+         res.redirect(302, withRequestQuery(req, fallback.location));
+         return;
+      }
+      if (fallback.kind === "apiNotFound") {
+         // A caller that asked the API for something gets JSON when it is not
+         // there, not the HTML app shell it cannot parse.
+         res.status(404).json({
+            code: 404,
+            message: `Unknown API endpoint: ${req.method} ${fallback.path}. See /api-doc.yaml for the endpoints this server serves.`,
+         });
+         return;
+      }
+      if (fallback.kind === "assetNotFound") {
+         res.status(404)
+            .type("text/html")
+            .send(
+               `<!doctype html><meta charset="utf-8">
+<title>Not found</title>
+<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
+<h1>Not found</h1>
+<p>Nothing is served at <code>${escapeHtml(fallback.path)}</code>.</p>
+<p>A file inside a package is served from that package's <code>public/</code> directory at
+<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>. Models and notebooks open in the
+web UI at <code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code> and <code>.malloynb</code>.</p>
+<p><a href="/">Publisher home</a> lists the environments and packages this server has.</p>`,
+            );
+         return;
+      }
       res.sendFile(SPA_INDEX, (err) => {
          if (!err) return;
          // The SPA bundle isn't built. This happens when running directly
