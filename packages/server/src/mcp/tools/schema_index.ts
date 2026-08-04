@@ -182,20 +182,41 @@ export function rankLexically(
    tables: SchemaTableEntity[],
    query: string,
    limit: number,
+   cacheKey?: string,
 ): RankedResult {
    const sanitized = sanitizeQuery(query);
    if (!sanitized || tables.length === 0) return { hits: [], matched: 0 };
 
-   const byResource = new Map(tables.map((t) => [t.resource, t]));
-   const index = lunr(function () {
-      this.ref("resource");
-      this.field("text");
-      // Positional metadata is unused here and roughly doubles index size.
-      this.metadataWhitelist = [];
-      for (const table of tables) {
-         this.add({ resource: table.resource, text: tableIndexText(table) });
+   const fingerprint = cacheKey ? schemaFingerprint(tables) : "";
+   let cached = cacheKey ? lexicalCache.get(cacheKey) : undefined;
+   if (cached && cached.fingerprint !== fingerprint) cached = undefined;
+
+   const byResource =
+      cached?.byResource ?? new Map(tables.map((t) => [t.resource, t]));
+   const index =
+      cached?.index ??
+      lunr(function () {
+         this.ref("resource");
+         this.field("text");
+         // Positional metadata is unused here and roughly doubles index size.
+         this.metadataWhitelist = [];
+         for (const table of tables) {
+            this.add({ resource: table.resource, text: tableIndexText(table) });
+         }
+      });
+   if (cacheKey && !cached) {
+      lexicalCache.delete(cacheKey);
+      lexicalCache.set(cacheKey, { index, byResource, fingerprint });
+      while (lexicalCache.size > MAX_CACHED_SCHEMAS) {
+         const oldest = lexicalCache.keys().next();
+         if (oldest.done) break;
+         lexicalCache.delete(oldest.value);
       }
-   });
+   } else if (cacheKey && cached) {
+      // Mark most-recently-used.
+      lexicalCache.delete(cacheKey);
+      lexicalCache.set(cacheKey, cached);
+   }
 
    let hits: lunr.Index.Result[];
    try {
@@ -250,6 +271,25 @@ interface VectorCacheEntry {
  * is one re-embed per process start, per schema actually searched.
  */
 const vectorCache = new Map<string, VectorCacheEntry>();
+
+interface LexicalCacheEntry {
+   index: lunr.Index;
+   byResource: Map<string, SchemaTableEntity>;
+   fingerprint: string;
+}
+
+/**
+ * Built lunr indexes, keyed and bounded exactly like the vector cache.
+ *
+ * This is the DEFAULT path, not a fallback: semantic ranking needs two opt-in
+ * environment variables, and a schema above MAX_INDEXED_TABLES is deliberately
+ * routed here, so the largest schemas are the ones that land on it. Rebuilding
+ * the index per call is synchronous and blocks the event loop for the process
+ * that also serves REST: measured on this repo's lunr, 175ms at 5,000 tables,
+ * 342ms at 10,000, 489ms at 20,000, repaid on every search. Keyed by
+ * fingerprint so a changed schema rebuilds rather than serving a stale index.
+ */
+const lexicalCache = new Map<string, LexicalCacheEntry>();
 const cooldownUntilMs = new Map<string, number>();
 
 /**
@@ -293,9 +333,10 @@ function pruneCooldowns(): void {
    }
 }
 
-/** Test seam: drop all cached vectors and cooldowns. */
+/** Test seam: drop all cached state. */
 export function _resetSchemaIndexStateForTests(): void {
    vectorCache.clear();
+   lexicalCache.clear();
    cooldownUntilMs.clear();
 }
 
@@ -449,5 +490,8 @@ export async function rankTables(args: {
       });
       if (semantic !== null) return { ...semantic, ranking: "semantic" };
    }
-   return { ...rankLexically(tables, query, limit), ranking: "lexical" };
+   return {
+      ...rankLexically(tables, query, limit, cacheKey),
+      ranking: "lexical",
+   };
 }

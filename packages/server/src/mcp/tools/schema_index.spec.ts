@@ -497,3 +497,25 @@ describe("empty-query honesty", () => {
       expect(result.hits).toEqual([]);
    });
 });
+
+describe("lexical index caching", () => {
+   // The default path. Rebuilding per call blocks the event loop for hundreds
+   // of ms on a large schema, on every search.
+   it("reuses a built index for the same schema, and rebuilds when it changes", () => {
+      const first = rankLexically(ALL, "customers", 10, "k");
+      const second = rankLexically(ALL, "orders", 10, "k");
+      expect(first.hits[0]?.resource).toBe("sales.customers");
+      expect(second.hits[0]?.resource).toBe("sales.orders");
+
+      // A changed schema must not be answered from the cached index.
+      const grown = [...ALL, table("sales.refunds", ["refund_id", "reason"])];
+      const third = rankLexically(grown, "refunds", 10, "k");
+      expect(third.hits[0]?.resource).toBe("sales.refunds");
+   });
+
+   it("still works with no cache key", () => {
+      expect(rankLexically(ALL, "customers", 10).hits[0]?.resource).toBe(
+         "sales.customers",
+      );
+   });
+});

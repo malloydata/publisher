@@ -208,7 +208,9 @@ What to know before turning it on:
   `publisher.db`, so a restart re-embeds a schema the first time it is searched again.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, ranking falls back to
   lexical (with a warning in the server log) and retries after a cool-down. A schema with more than
-  5,000 tables stays lexical. A search response carries a `ranking` field (`"semantic"` or `"lexical"`) so you can tell which
+  5,000 tables is not embedded and stays lexical; lexical is not the cheaper branch, it just
+  needs no provider. Its index is built once per schema and cached, so the cost lands on the first
+  search after a schema changes rather than on every search. A search response carries a `ranking` field (`"semantic"` or `"lexical"`) so you can tell which
   one answered; a plain listing does no ranking and carries none.
 - To measure the difference yourself, including the A/B against the lexical baseline, see the eval
   script header in `packages/server/src/mcp/tools/schema_search_eval.ts`.

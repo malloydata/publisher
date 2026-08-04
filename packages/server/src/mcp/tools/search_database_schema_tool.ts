@@ -224,7 +224,7 @@ interface ResponseTable {
    schemaName: string;
    tableName: string;
    tablePath: string;
-   malloySource: string;
+   malloySource?: string;
    columns: { name: string; type?: string }[];
    columnCount: number;
    score?: number;
@@ -239,11 +239,18 @@ function toResponseTable(
       schemaName: entity.schemaName,
       tableName: entity.tableName,
       tablePath: entity.resource,
-      malloySource: malloySourceSnippet(
-         entity.connectionName,
-         entity.resource,
-         entity.tableName,
-      ),
+      // A directory-shaped URL with no blobs yields no usable name; emitting
+      // `source: `` is ...` would be a line that cannot compile, from a field
+      // documented as ready to paste.
+      ...(entity.tableName && entity.resource
+         ? {
+              malloySource: malloySourceSnippet(
+                 entity.connectionName,
+                 entity.resource,
+                 entity.tableName,
+              ),
+           }
+         : {}),
       columns: entity.columns.slice(0, options.maxColumns),
       columnCount: entity.columns.length,
       ...(options.score !== undefined ? { score: options.score } : {}),
@@ -392,6 +399,13 @@ export function registerSearchDatabaseSchemaTool(
                // Without this the tool silently returns the same top hits for
                // every offset, and an agent paging a ranked result loops.
                noteIgnored([["offset", offset]]);
+            }
+            // packageName only selects anything for the per-package sandbox.
+            // On any other connection the controller drops it, so an agent that
+            // passed it believes it scoped the search to that package and did
+            // not. This is the last ignored argument that went unreported.
+            if (connectionName && connectionName !== SANDBOX_CONNECTION) {
+               noteIgnored([["packageName", packageName]]);
             }
             const ignoredWarning =
                ignored.length > 0

@@ -18,7 +18,7 @@ Most of these skills are **shared, open-source Malloy skills** kept in sync with
 
 ## Tool names in shared skills
 
-Shared skills refer to MCP tools by **bare name** — `get_context`, `execute_query`, `search_malloy_docs`, `search_database_schema` — plus a note that the exact prefixed name depends on the host. This Publisher server exposes them as **`malloy_getContext`**, **`malloy_executeQuery`**, **`malloy_searchDocs`**, and **`malloy_searchDatabaseSchema`** (and adds `malloy_compile` / `malloy_reloadPackage`, which are Publisher-only and appear only in the host/router skills). When a shared skill says `get_context`, use `malloy_getContext`; match each bare name to the tool you actually have. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
+Shared skills refer to MCP tools by **bare name** — `get_context`, `execute_query`, `search_malloy_docs` — plus a note that the exact prefixed name depends on the host. `search_database_schema` maps the same way if a shared skill starts using it. This Publisher server exposes them as **`malloy_getContext`**, **`malloy_executeQuery`**, **`malloy_searchDocs`**, and **`malloy_searchDatabaseSchema`** (and adds `malloy_compile` / `malloy_reloadPackage`, which are Publisher-only and appear only in the host/router skills). When a shared skill says `get_context`, use `malloy_getContext`; match each bare name to the tool you actually have. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
 
 ## Adding or updating a skill
 

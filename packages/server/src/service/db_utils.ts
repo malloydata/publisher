@@ -270,10 +270,12 @@ async function getSchemasForSnowflake(
 
       const filters: string[] = [];
       if (database) {
-         filters.push(`CATALOG_NAME = '${database}'`);
+         filters.push(
+            `CATALOG_NAME = '${sqlLiteral(database, connection.type)}'`,
+         );
       }
       if (schema) {
-         filters.push(`SCHEMA_NAME = '${schema}'`);
+         filters.push(`SCHEMA_NAME = '${sqlLiteral(schema, connection.type)}'`);
       }
       const whereClause =
          filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
@@ -579,7 +581,9 @@ async function getSchemasForMotherDuck(
    }
    try {
       const database = connection.motherduckConnection.database;
-      const whereClause = database ? `WHERE catalog_name = '${database}'` : "";
+      const whereClause = database
+         ? `WHERE catalog_name = '${sqlLiteral(database, connection.type)}'`
+         : "";
       const result = await runIntrospectionSQL(
          malloyConnection,
          `SELECT DISTINCT schema_name FROM information_schema.schemata ${whereClause} ORDER BY schema_name`,
@@ -949,6 +953,9 @@ function isDataFile(key: string): boolean {
    );
 }
 
+/** These builders always run against DuckDB, whatever connection reached them. */
+const DUCKDB_DIALECT = "duckdb";
+
 /**
  * DESCRIBE a single remote data file.
  *
@@ -959,9 +966,6 @@ function isDataFile(key: string): boolean {
  * literals are; it was missed when they were done. DuckDB follows the ANSI rule,
  * so quote-doubling is the correct escape here.
  */
-/** These builders always run against DuckDB, whatever connection reached them. */
-const DUCKDB_DIALECT = "duckdb";
-
 async function describeRemoteFile(
    malloyConnection: Connection,
    fileUri: string,
