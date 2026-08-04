@@ -113,6 +113,7 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 - `malloy_compile`: compile-check Malloy source against a model and get structured diagnostics back (severity, message, line and column) without running a query. Use it to validate a model or a change while authoring, instead of firing a throwaway query.
 - `malloy_reloadPackage`: recompile a package from its on-disk model files so a source or view you added or changed after boot becomes queryable by name, without restarting the server. Use it to close the edit-and-run loop: validate with `malloy_compile`, save, `malloy_reloadPackage`, then `malloy_executeQuery` the new view.
 - `malloy_searchDocs`: search the Malloy language documentation when you need syntax.
+- `malloy_searchDatabaseSchema`: discover what tables a database connection holds, and find the right ones for a plain-English description. Use it when building a model from a database rather than exploring one that already exists. Each table it returns carries the `source:` line to start from. It reads names and types only, never row values.
 
 ## 4. A first run, end to end
 

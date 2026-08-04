@@ -64,7 +64,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | --- | --- | --- | --- |
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
 | `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
-| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the five MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`) and the agent skills as MCP prompts. |
+| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the six MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`, `malloy_searchDatabaseSchema`) and the agent skills as MCP prompts. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | _unset_ | Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes). |
 | `PUBLISHER_USE_BUNDLED_DEFAULT` | — | _unset_ | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
@@ -100,6 +100,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. |
 | `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). |
 | `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. |
+| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `malloy_searchDatabaseSchema` to send a connection's table and column **names** to the embedding endpoint for semantic ranking. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. See "Semantic ranking for malloy_searchDatabaseSchema" below. |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
 PostgreSQL and other database-specific connections may also honor their respective driver env vars
@@ -173,6 +174,41 @@ What to know before turning it on:
   than 5,000 entities stays lexical.
 - To measure the difference on your own models, see the eval script header in
   `packages/server/src/mcp/tools/get_context_eval.ts`.
+
+## Semantic ranking for `malloy_searchDatabaseSchema`
+
+`malloy_searchDatabaseSchema` searches a configured connection's schema, so an agent can find the
+right tables in a database it has never seen and start a model from them. Its ranking is lexical by
+default and needs no configuration, no API key, and no network.
+
+Semantic ranking is opt-in and needs **two** variables set, not one: `EMBEDDING_API_KEY` **and**
+`EMBEDDING_INDEX_CONNECTION_SCHEMA=true`. That is deliberate. The API key on its own authorises
+embedding your own model text, which is already on your disk. A database's table and column names are
+your customer's, and turning on semantic `malloy_getContext` should not quietly start sending them to
+a third party. Setting the second variable is how you say you meant to.
+
+What to know before turning it on:
+
+- What leaves the machine: the schema (or dataset) name, table names, column names, column types,
+  and the query strings agents pass to the tool. **Never any row values.** This tool reads names and types only, so it never
+  reads a row in the first place. Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server
+  (Ollama, vLLM) to keep even the names on-machine.
+- What it buys you: lexical ranking only matches tables that share words with the question, so
+  "website visits" does not find `web_session_events` and "newsletter blasts" does not find
+  `marketing_email_campaigns`. Embedding similarity matches those by meaning. On the eval fixture,
+  lexical scores 6/10 at recall@3, missing exactly the four questions that share no words with
+  their table.
+- Storage: schema vectors are held **in memory only**, keyed per connection and schema and
+  invalidated by a fingerprint over the tables and their columns. The key is the environment,
+  connection and schema (plus the package, for the per-package `duckdb` sandbox). At most a few
+  schemas are held at once, least-recently-used evicted. They are not written to
+  `publisher.db`, so a restart re-embeds a schema the first time it is searched again.
+- Failure behavior: if the endpoint is down, times out, or rejects the key, ranking falls back to
+  lexical (with a warning in the server log) and retries after a cool-down. A schema with more than
+  5,000 tables stays lexical. A search response carries a `ranking` field (`"semantic"` or `"lexical"`) so you can tell which
+  one answered; a plain listing does no ranking and carries none.
+- To measure the difference yourself, including the A/B against the lexical baseline, see the eval
+  script header in `packages/server/src/mcp/tools/schema_search_eval.ts`.
 
 ## Operational tuning: OOM guards
 

@@ -177,6 +177,12 @@ semantic model. No schema spelunking, no hallucinated column names.
   call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
   interactively there once and answer the trust prompt, asked once per directory. A headless run is
   never asked, so it cannot clear the gate either. You will know it cleared when a query returns data.
+- **Starting from a database instead of a model.** If you have a warehouse but no Malloy model yet,
+  ask the agent what is in it. `malloy_searchDatabaseSchema` walks a configured connection's schemas
+  and tables and ranks them against a plain-English description, then hands back the `source:` line
+  for each table it found. Ranking works out of the box with no API key; the optional
+  embedding-backed mode, and exactly what it sends where, are covered in
+  [docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
 - **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
   ([`skills/`](skills/)) that most AI coding hosts auto-discover. Start there.
 - **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
