@@ -376,7 +376,11 @@ export function registerSearchDatabaseSchemaTool(
     * with no explanation at all: the same silence the omission exists to avoid.
     */
    const unpastableWarning = (entities: SchemaTableEntity[]): string[] => {
-      const n = entities.filter((e) => !isPastableTablePath(e.resource)).length;
+      // canPasteSource, NOT isPastableTablePath: the field is withheld for two
+      // reasons and this must count both, or the narrower one goes unexplained.
+      // The predicate was extracted for exactly this and the filter was not
+      // switched over, so the silence it was meant to end survived.
+      const n = entities.filter((e) => !canPasteSource(e)).length;
       if (n === 0) return [];
       return [
          `${n} table(s) have a path this server will not vouch for across every dialect it serves, so malloySource is omitted for them rather than risk a line that does not compile. Build it from tablePath: on your own dialect the path may work as-is, or may need the offending segment quoted. Double quotes on DuckDB, Postgres, Snowflake and Trino; backticks on MySQL, BigQuery and Databricks.`,

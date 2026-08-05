@@ -463,3 +463,36 @@ describe("the unpastable warning actually reaches both tiers", () => {
       expect(payload.warnings?.join(" ")).toContain("malloySource is omitted");
    });
 });
+
+describe("the warning covers BOTH reasons malloySource is withheld", () => {
+   // The field is withheld for an unusable path OR an empty name. The warning
+   // counted only the first, so a directory URL matching zero blobs lost the
+   // field with no explanation. This fails if the filter reverts to the
+   // narrower predicate.
+   function storeFor(): Partial<EnvironmentStore> {
+      return {
+         getEnvironment: async () =>
+            ({
+               assertCanAdmitQuery: () => {},
+               listApiConnections: () => CONNECTIONS,
+               listPackages: async () => [{ name: "p" }],
+            }) as never,
+      };
+   }
+
+   it("warns when the path is fine but the table has no usable name", async () => {
+      // A directory-shaped URL: pastable charset, but bareTableName is "".
+      tablesResult = [
+         { resource: "https://acct.blob.core.windows.net/c/dir/", columns: [] },
+      ];
+      const payload = parse(
+         await captureHandler(storeFor())({
+            environmentName: "e",
+            connectionName: "warehouse",
+            schemaName: "s",
+         }),
+      );
+      expect(payload.tables[0].malloySource).toBeUndefined();
+      expect(payload.warnings?.join(" ")).toContain("malloySource is omitted");
+   });
+});

@@ -1127,7 +1127,7 @@ describe("SQL escaping and identifier validation", () => {
 
    it("accepts the identifier shapes real catalogs use", async () => {
       const { assertSafeSqlIdentifier } = await import("./db_utils");
-      for (const ok of ["memory", "my_catalog", "MY-CAT", "_x", "c$1"]) {
+      for (const ok of ["memory", "my_catalog", "_x", "c$1"]) {
          expect(assertSafeSqlIdentifier(ok, "catalog name")).toBe(ok);
       }
    });
@@ -1185,5 +1185,24 @@ describe("an unclassified dialect fails loudly", () => {
    it("still doubles quotes when no dialect is supplied at all", async () => {
       const { sqlLiteral } = await import("./db_utils");
       expect(sqlLiteral("o'brien")).toBe("o''brien");
+   });
+});
+
+describe("the identifier guard rejects the SQL comment token", () => {
+   // A hyphen was in the accepted charset and looked harmless. Two of them are
+   // the SQL line-comment token, so `a--b.public` executed as `FROM a` with the
+   // rest of the query commented away, which can return row values from a tool
+   // documented never to return one.
+   it("rejects a doubled hyphen, which comments out the rest of the query", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      expect(() => assertSafeSqlIdentifier("a--b", "catalog name")).toThrow();
+      expect(() =>
+         assertSafeSqlIdentifier("cat--x", "database name"),
+      ).toThrow();
+   });
+
+   it("rejects a single hyphen too, since no dialect reaching here accepts one bare", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      expect(() => assertSafeSqlIdentifier("MY-CAT", "catalog name")).toThrow();
    });
 });

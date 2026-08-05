@@ -53,8 +53,17 @@ export function sqlInFilter(
  *
  * The pattern is deliberately narrow: real catalog names are plain identifiers,
  * and a name needing more than this is better rejected than silently mangled.
+ *
+ * NO HYPHEN. It was in this class and looked harmless, but two of them are the
+ * SQL line-comment token: `a--b.public` splices as `FROM a--b.information_schema
+ * .columns WHERE ...`, which executes as `FROM a` with the WHERE and ORDER BY
+ * commented away, and can return row values from whatever `a` resolves to. It
+ * bought nothing either: Snowflake, Trino and Unity Catalog all require quoting
+ * for a hyphenated name, so one spliced bare fails regardless, and BigQuery,
+ * the one dialect whose names really do carry hyphens, never reaches this
+ * function because it introspects through its client API.
  */
-const SAFE_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
+const SAFE_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 
 export function assertSafeSqlIdentifier(value: string, what: string): string {
    if (!SAFE_SQL_IDENTIFIER.test(value)) {
