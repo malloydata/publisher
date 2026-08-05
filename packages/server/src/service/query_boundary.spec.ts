@@ -324,6 +324,28 @@ export { customers }`,
             undefined,
             "v\nrun: helper -> { aggregate: c }",
          );
+         // The escape itself, which is what the whole fix rests on: a payload
+         // carrying its own BACKTICK, trying to close the quote we opened and
+         // resume as syntax. quoteMalloyIdentifier escapes `\` before `` ` ``
+         // (the same order, and the same function body, as malloy's internal
+         // escapeIdentifier), so the backtick becomes ``\` `` inside the
+         // identifier instead of terminating it. Escaping in the other order
+         // would let `\` + `` ` `` reopen the hole.
+         await expectNamedRejected(
+            model,
+            "customers",
+            "v` -> `hv`\nrun: `helper",
+         );
+         await expectNamedRejected(
+            model,
+            "customers` -> `v`\nrun: `helper",
+            "hv",
+         );
+         // A backslash-escape payload: ``` is a backtick in JSON-style
+         // unescaping, and malloy's decoder (ParseUtil.parseString) honors
+         // \uXXXX inside the quotes. Escaping the backslash FIRST is what keeps
+         // it a literal six-character name rather than a closing quote.
+         await expectNamedRejected(model, "customers", "v\\u0060 -> \\u0060hv");
          // The ad-hoc equivalent: settled by the compiled backstop instead.
          await expect(
             model.getQueryResults(
