@@ -60,7 +60,7 @@ describe("buildServeShapeModel", () => {
    it("emits the flag, a double-colon type shape, and the virtual source line", () => {
       const binding: ServeBinding = {
          sourceName: "mz_orders",
-         connectionName: "lake",
+         destinationName: "lake",
          virtualHandle: "mz_orders__g1",
          tablePath: "analytics.mz_orders",
          schema: [
@@ -87,7 +87,7 @@ describe("buildServeShapeModel", () => {
    it("backtick-quotes a field name that is not a bare identifier", () => {
       const { modelText } = buildServeShapeModel("s", {
          sourceName: "s",
-         connectionName: "lake",
+         destinationName: "lake",
          virtualHandle: "h",
          tablePath: "t",
          schema: [{ name: "odd name", type: "VARCHAR" }],
@@ -101,14 +101,14 @@ describe("buildVirtualMap", () => {
       const map = buildVirtualMap([
          {
             sourceName: "a",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h1",
             tablePath: "analytics.a",
             schema: [],
          },
          {
             sourceName: "b",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h2",
             tablePath: "b",
             schema: [],
@@ -124,7 +124,7 @@ describe("buildVirtualMap", () => {
       const map = buildVirtualMap([
          {
             sourceName: "a",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: '"My Table"',
             schema: [],
@@ -161,7 +161,7 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
       }));
       return {
          sourceName: "mz",
-         connectionName: "duckdb",
+         destinationName: "duckdb",
          virtualHandle: "mz_handle",
          tablePath: "mz_physical",
          schema,
@@ -203,7 +203,7 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
       // connection must exist, so an unknown connection fails compilation.
       const binding: ServeBinding = {
          sourceName: "mz",
-         connectionName: "does_not_exist",
+         destinationName: "does_not_exist",
          virtualHandle: "h",
          tablePath: "t",
          schema: [{ name: "amount", type: "BIGINT" }],
@@ -240,7 +240,7 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
       const bindings: ServeBinding[] = [
          {
             sourceName: "regions",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "regions_h",
             tablePath: "regions_phys",
             schema: [
@@ -250,7 +250,7 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
          },
          {
             sourceName: "orders",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "orders_h",
             tablePath: "orders_phys",
             schema: [
@@ -305,7 +305,7 @@ describe("deriveServeBindings", () => {
             sourceName: "mz",
             physicalTableName: "mz_g003",
             connectionName: "wh",
-            storageConnectionName: "lake",
+            storageDestinationName: "lake",
             schema: [{ name: "amount", type: "BIGINT" }],
             dataAsOf: "2026-07-20T00:00:00Z",
             realization: "COPY",
@@ -327,7 +327,7 @@ describe("deriveServeBindings", () => {
             sourceName: "x",
             physicalTableName: "lake.x",
             connectionName: "wh",
-            storageConnectionName: "lake",
+            storageDestinationName: "lake",
             schema: [],
             realization: "COPY",
             rowCount: null,
@@ -336,7 +336,7 @@ describe("deriveServeBindings", () => {
       expect(bindings).toEqual([
          {
             sourceName: "mz",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "se_storage",
             tablePath: "lake.mz_g003",
             schema: [{ name: "amount", type: "BIGINT" }],
@@ -427,7 +427,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "daily",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: "lake.daily",
             schema: [
@@ -455,7 +455,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "orders",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: "lake.orders",
             schema: [
@@ -494,7 +494,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "orders",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "o",
             tablePath: "lake.orders",
             schema: [{ name: "region_id", type: "VARCHAR" }],
@@ -510,7 +510,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
          },
          {
             sourceName: "regions",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "r",
             tablePath: "lake.regions",
             schema: [{ name: "region_id", type: "VARCHAR" }],
@@ -767,7 +767,7 @@ describe("buildServeShapeModelForBindings with a view", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "orders",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: "lake.orders",
             schema: [{ name: "amount", type: "BIGINT" }],
@@ -817,7 +817,7 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
       const bindings: ServeBinding[] = [
          {
             sourceName: "regions",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "vr",
             tablePath: "v_regions",
             schema: [
@@ -827,7 +827,7 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
          },
          {
             sourceName: "orders",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "vo",
             tablePath: "v_orders",
             schema: [
@@ -880,7 +880,7 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
 describe("buildChainedStorageBuildModel (stack-on-parent transient build model)", () => {
    const parent: ServeBinding = {
       sourceName: "daily_orders",
-      connectionName: "lake",
+      destinationName: "lake",
       virtualHandle: "daily_h",
       tablePath: "lake.daily_orders__mabc",
       schema: [

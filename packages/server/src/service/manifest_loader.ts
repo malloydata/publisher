@@ -10,7 +10,7 @@ type WireBuildManifest = components["schemas"]["BuildManifest"];
 
 /**
  * A fetched build manifest, split by tier. A storage-materialized entry (one
- * that carries `storageConnectionName`) is served cross-connection via the
+ * that carries `storageDestinationName`) is served cross-connection via the
  * virtual-source transform, so it becomes a serve BINDING — it must never enter
  * the same-connection `tableName` substitution. Everything else is an
  * colocated entry the Malloy runtime resolves by substituting its
@@ -21,7 +21,7 @@ export interface FetchedManifest {
    tableNameManifest: FreshnessManifest;
    /**
     * `storage=` entries keyed by sourceEntityId, carried as full
-    * {@link ManifestEntry}s (with `storageConnectionName` + captured `schema` +
+    * {@link ManifestEntry}s (with `storageDestinationName` + captured `schema` +
     * `sourceName`) so the bind step can derive cross-connection serve bindings.
     */
    storageEntries: Record<string, ManifestEntry>;
@@ -85,7 +85,7 @@ async function readManifestBytes(uri: string): Promise<string> {
  * bind step can quote the path for that connection's dialect — see
  * Package.quoteBoundTableNames).
  *
- * A `storage=`-materialized entry (one carrying `storageConnectionName`) is
+ * A `storage=`-materialized entry (one carrying `storageDestinationName`) is
  * routed instead to `storageEntries` as its full {@link ManifestEntry}: it lives
  * on a DIFFERENT connection and is served through the virtual-source transform
  * from its captured `schema`, so it must never become a same-connection
@@ -116,7 +116,7 @@ export async function fetchManifestEntries(
  * Split an already-in-hand manifest entry map by tier into
  * {@link FetchedManifest}, applying the same wire→runtime translation as
  * {@link fetchManifestEntries} (physicalTableName → colocated `tableName`
- * substitution carrying freshness + connectionName; a `storageConnectionName`
+ * substitution carrying freshness + connectionName; a `storageDestinationName`
  * entry stays a full {@link ManifestEntry} for the virtual-source transform).
  * Pure: no I/O, no freshness filtering. Shared by the URI-fetch path (host
  * manifest) and the local-store rebind (a package's own latest persisted
@@ -137,9 +137,9 @@ export function splitManifestEntries(
          });
          continue;
       }
-      if (entry.storageConnectionName) {
+      if (entry.storageDestinationName) {
          // Cross-connection storage tier: keep the full entry (schema +
-         // sourceName + storageConnectionName) for the serve-binding derivation;
+         // sourceName + storageDestinationName) for the serve-binding derivation;
          // never enter the same-connection tableName manifest.
          storageEntries[sourceEntityId] = entry;
          continue;

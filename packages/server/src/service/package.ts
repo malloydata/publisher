@@ -114,6 +114,12 @@ export class Package {
    private models: Map<string, Model> = new Map();
    private packagePath: string;
    private malloyConfig: MalloyConfig;
+   /**
+    * Resolves the environment's storage destinations for a serve-shape
+    * compile. Set by the owning Environment; see
+    * {@link setServeDestinationConfig}.
+    */
+   private serveDestinationConfig?: () => MalloyConfig;
    // Build-manifest binding state (Malloy Persistence v0). When bound, these
    // entries (sourceEntityId -> { tableName }) are what served queries use to route
    // persist sources to their materialized physical tables; they are also reused
@@ -715,7 +721,7 @@ export class Package {
       if (this.storageServeBindings.length > 0) {
          metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
             sourceName: b.sourceName,
-            storageConnectionName: b.connectionName,
+            storageDestinationName: b.destinationName,
             tablePath: b.tablePath,
          }));
       }
@@ -848,7 +854,7 @@ export class Package {
     * manifest entries, and push them onto every loaded model so a query can be
     * routed through the virtual-source serve transform. Called by the build's
     * post-run distribution with the full {@link ManifestEntry} map (which
-    * carries `storageConnectionName` + captured `schema`); only entries that
+    * carries `storageDestinationName` + captured `schema`); only entries that
     * were materialized into a storage destination produce a binding. Re-applied
     * on model reload via {@link pushStorageServeBindingsToModels}.
     */
@@ -930,6 +936,39 @@ export class Package {
    private pushStorageServeBindingsToModels(): void {
       for (const model of this.models.values()) {
          model.setServeBindings(this.storageServeBindings);
+      }
+   }
+
+   /**
+    * Set the connections this package's materialization serve shapes compile
+    * against: the environment's storage destinations, and nothing a model
+    * in this package can name. Called by the owning Environment after load.
+    *
+    * Separate from {@link malloyConfig} on purpose. That one is what the author's
+    * models resolve through, and a destination must not be reachable from it;
+    * these two configs being the same object is the bug this split exists to
+    * prevent. Absent ⇒ no storage serve routing, so queries serve live.
+    */
+   public setServeDestinationConfig(provider: () => MalloyConfig): void {
+      this.serveDestinationConfig = provider;
+      this.pushServeDestinationConfigToModels();
+   }
+
+   private pushServeDestinationConfigToModels(): void {
+      if (!this.serveDestinationConfig) return;
+      for (const model of this.models.values()) {
+         model.setServeDestinationConfig(this.serveDestinationConfig);
+      }
+   }
+
+   /**
+    * Drop every model's memoized materialization serve shape, so the next routed
+    * query recompiles it. Called by the owning Environment when the destinations
+    * those shapes were compiled against are replaced.
+    */
+   public invalidateServeShapes(): void {
+      for (const model of this.models.values()) {
+         model.invalidateServeShapeCache();
       }
    }
 
@@ -1498,9 +1537,10 @@ export class Package {
          }
       }
       this.models = nextModels;
-      // The freshly-compiled models start with no serve bindings; re-apply the
-      // package's current storage= bindings so a reload preserves serve routing.
+      // The freshly-compiled models start with no serve bindings and no serve
+      // connections; re-apply both so a reload preserves serve routing.
       this.pushStorageServeBindingsToModels();
+      this.pushServeDestinationConfigToModels();
       this.renderTagWarnings = renderTagWarnings;
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to

@@ -56,6 +56,7 @@ import {
 } from "../errors";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
+import { restrictMalloyConfigToConnections } from "./connection";
 import {
    buildServeShapeModelForBindings,
    buildVirtualMap,
@@ -225,7 +226,15 @@ export class Model {
     * query is routed through the `storage=` virtual-source transform. Captured
     * at hydration (fromSerialized) so serve can build a fresh Runtime.
     */
-   private serveMalloyConfig?: ModelConnectionInput;
+   /**
+    * The connections a serve-shape compile may resolve: this environment's
+    * storage destinations. Deliberately NOT the config this model itself
+    * compiles against — a destination must not be resolvable from the author's
+    * model, a notebook cell, or a query, and the serve shape is a separate
+    * synthetic model, so the two compiles can and must read disjoint name sets.
+    * Absent ⇒ no storage serve routing (queries serve live).
+    */
+   private serveDestinationConfig?: () => MalloyConfig;
    /**
     * The package's `storage=` serve bindings, set by the owning Package when a
     * build/manifest binds materialized-into-storage sources. Empty ⇒ no serve
@@ -1361,9 +1370,10 @@ export class Model {
          givens,
          modelInfo,
       );
-      // Capture the config so a storage= serve query can compile a transient
-      // serve-shape model against the same connections.
-      model.setServeMalloyConfig(malloyConfig);
+      // The connections a serve shape compiles against are NOT this model's: the
+      // owning Package pushes the environment's storage destinations
+      // instead (see Package.setServeDestinationConfig). Capturing `malloyConfig`
+      // here would put a destination in reach of the author's own namespace.
       return model;
    }
 
@@ -1798,9 +1808,25 @@ export class Model {
       }
    }
 
-   /** Capture the config used to compile a transient serve-shape model. */
-   public setServeMalloyConfig(config: ModelConnectionInput): void {
-      this.serveMalloyConfig = config;
+   /**
+    * Set the connections a transient serve-shape model compiles against. Pushed
+    * by the owning Package from the environment's destination list, resolved on
+    * each use so a destination-list change takes effect without a reload.
+    */
+   public setServeDestinationConfig(provider: () => MalloyConfig): void {
+      this.serveDestinationConfig = provider;
+      // The reachable connection set is part of what the memoized materializer
+      // was compiled against, so a change invalidates it.
+      this.invalidateServeShapeCache();
+   }
+
+   /**
+    * Forget the memoized serve-shape materializer. The memo is keyed on the
+    * binding set, so anything else it was compiled against — the destination
+    * connections above all — has to invalidate it explicitly.
+    */
+   public invalidateServeShapeCache(): void {
+      this.serveShapeCache = undefined;
    }
 
    /**
@@ -1871,7 +1897,7 @@ export class Model {
          throw new Error("no fresh storage serve bindings for this query");
       }
       const key = freshBindings
-         .map((b) => `${b.sourceName}@${b.connectionName}/${b.virtualHandle}`)
+         .map((b) => `${b.sourceName}@${b.destinationName}/${b.virtualHandle}`)
          .sort()
          .join("|");
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
@@ -1974,7 +2000,14 @@ export class Model {
       const url = `${root}shape.malloy`;
       const runtime = new Runtime({
          urlReader: new InMemoryURLReader(new Map([[url, modelText]])),
-         config: Model.toMalloyConfig(this.serveMalloyConfig!),
+         // Narrowed to the destinations THESE bindings name. The shape's
+         // generated text references nothing else, so anything else resolving
+         // would only ever be a way to reach a warehouse this query has no
+         // business reaching.
+         config: restrictMalloyConfigToConnections(
+            this.serveDestinationConfig!(),
+            new Set(bindings.map((binding) => binding.destinationName)),
+         ),
       });
       return runtime.loadModel(new URL(url), {
          importBaseURL: new URL(root),
@@ -2252,7 +2285,7 @@ export class Model {
          if (
             getPersistStorageMode() === "on" &&
             this.serveBindings.length > 0 &&
-            this.serveMalloyConfig
+            this.serveDestinationConfig
          ) {
             try {
                const shaped = await this.loadServeShapeQuery(queryString);

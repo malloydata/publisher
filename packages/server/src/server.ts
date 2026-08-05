@@ -32,7 +32,7 @@ import {
    getPrometheusMetricsHandler,
    httpMetricsMiddleware,
 } from "./instrumentation";
-import { logger, loggerMiddleware } from "./logger";
+import { logger, loggerMiddleware, redactSensitive } from "./logger";
 
 import {
    getEmbeddingConfig,
@@ -60,6 +60,7 @@ import {
    resolveClientHost,
 } from "./mcp_config";
 import { registerLegacyRoutes } from "./server-old";
+import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
@@ -970,7 +971,21 @@ app.get(`${API_PREFIX}/environments`, async (_req, res) => {
 
 app.post(`${API_PREFIX}/environments`, async (req, res) => {
    try {
-      logger.info("Adding environment", { body: req.body });
+      // Redacted like every other body-bearing log line (loggerMiddleware): the
+      // body carries connection and storage-destination configs, and a
+      // destination's catalog password would otherwise land in the log verbatim.
+      logger.info("Adding environment", { body: redactSensitive(req.body) });
+      // Strict where the author is waiting, lenient where a config is being
+      // loaded — the same split `validateAdminAuthoredConnection` draws for a
+      // connection. Here rather than in `addEnvironment`, which the boot and
+      // restore paths also call: a destination this body fails to describe must
+      // not come back as a 200 whose response quietly omits it, while a bad row
+      // or config entry must still leave an environment serving.
+      //
+      // A bare validation is enough on create, unlike the update path: there is
+      // no stored list yet, so every entry has to carry its own config and none
+      // can be a reference to keep.
+      processStorageDestinationsOrThrow(req.body?.storageDestinations ?? []);
       const environment = await environmentStore.addEnvironment(req.body);
       res.status(200).json(await environment.serialize());
    } catch (error) {

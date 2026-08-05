@@ -36,7 +36,10 @@ import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
 } from "../ducklake_version";
-import { UnsupportedCatalogFormatError } from "../errors";
+import {
+   ConnectionNotFoundError,
+   UnsupportedCatalogFormatError,
+} from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import {
@@ -1420,6 +1423,36 @@ export async function deleteDuckLakeConnectionFile(
          );
       }
    }
+}
+
+/**
+ * A config that resolves `allowed` connection names and nothing else, delegating
+ * those to `base`.
+ *
+ * Used for the materialization serve-shape compile. The shape is generated from a
+ * binding set and names only the destinations those bindings point at, so that is
+ * exactly what it may resolve: not a user connection (the whole point of keeping
+ * the two lists disjoint), and not another destination this shape has no binding
+ * for. Deriving the set from the bindings rather than handing over the whole
+ * destination list keeps the reachable surface minimal by construction, and keeps
+ * working if a binding is ever legitimately allowed to name something else.
+ */
+export function restrictMalloyConfigToConnections(
+   base: MalloyConfig,
+   allowed: ReadonlySet<string>,
+): MalloyConfig {
+   const restricted = new MalloyConfig({ connections: {} });
+   restricted.wrapConnections(() => ({
+      lookupConnection: async (name?: string) => {
+         if (!name || !allowed.has(name)) {
+            throw new ConnectionNotFoundError(
+               `Connection ${name ?? "(default)"} is not available to a materialization serve shape`,
+            );
+         }
+         return base.connections.lookupConnection(name);
+      },
+   }));
+   return restricted;
 }
 
 export type EnvironmentMalloyConfig = {

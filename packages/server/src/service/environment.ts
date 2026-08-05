@@ -16,6 +16,7 @@ import {
 import {
    BadRequestError,
    ConnectionNotFoundError,
+   DestinationNotFoundError,
    EnvironmentNotFoundError,
    PackageNotFoundError,
    ServiceUnavailableError,
@@ -39,6 +40,12 @@ import {
    InternalConnection,
 } from "./connection";
 import {
+   storageDestinationRoot,
+   processStorageDestinations,
+   processStorageDestinationsOrThrow,
+   storageDestinationsEqual,
+} from "./connection_config";
+import {
    fetchManifestEntries,
    splitManifestEntries,
    type FetchedManifest,
@@ -57,8 +64,12 @@ import type { PackageMemoryGovernor } from "./package_memory_governor";
  *    renamed out of the way during a swap or delete. `fs.rm`'d asynchronously
  *    after the lock is released.
  *
- * Both names start with a `.` so the package walkers (which use
- * {@link ignoreDotfiles}) skip them.
+ * Both hold PACKAGE TREES, in the same directory the canonical ones live in, so
+ * both are dot-prefixed: anything that enumerates an environment looking for
+ * packages must not find a half-downloaded or already-superseded copy. No such
+ * enumeration exists today — `listPackages` reads the registered names and this
+ * sweep removes these two paths by name — so the prefix is what keeps that true
+ * for whatever walks the directory next, rather than a guard on a live path.
  */
 const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
@@ -89,6 +100,19 @@ type RetiredConnectionGeneration = {
 };
 
 const RETIRED_CONNECTION_DRAIN_MS = 30_000;
+
+/**
+ * The only fields of a storage destination any read reports, so an
+ * operator or orchestrator can see which destinations a worker holds without
+ * being handed their warehouse credentials. Also the test for a write entry that
+ * is a reference to a stored destination rather than a new config for it — see
+ * {@link Environment.setStorageDestinations}.
+ */
+const DESTINATION_READ_FIELDS: ReadonlySet<string> = new Set([
+   "name",
+   "type",
+   "resource",
+]);
 
 /**
  * Module-scoped admission-rejection counters. Lazy-initialized so
@@ -170,6 +194,41 @@ export class Environment {
    private retiredConnectionGenerations =
       new Set<RetiredConnectionGeneration>();
    private apiConnections: ApiConnection[];
+   /**
+    * Warehouses materialization builds write to and materialized queries are
+    * served from. Disjoint from {@link apiConnections}: a destination is not a
+    * connection, so it is absent from `listApiConnections`, unresolvable by name
+    * from a user's model, and free to share a name with a connection without
+    * colliding with it. Two lists rather than one flagged list so that every
+    * existing connection consumer excludes destinations structurally, instead of
+    * each having to remember a filter.
+    */
+   private destinations: ApiConnection[];
+   /**
+    * The live Malloy connections for {@link destinations}, assembled exactly the
+    * way the user-facing ones are but from the destination list — so a
+    * materialization serve shape can reach a destination while nothing in the
+    * namespace a package compiles against can. Rebuilt whenever the list is
+    * replaced, retiring the previous generation's handles.
+    *
+    * Always assigned by the time anything can read it: the constructor sets the
+    * destination list unconditionally, and `setStorageDestinations` treats an
+    * unbuilt config as a reason to build even when the list has not changed —
+    * which is what makes the assertion here true for an environment with no
+    * destinations at all.
+    */
+   private destinationMalloyConfig!: EnvironmentMalloyConfig;
+   /**
+    * Whether {@link destinations} is the authoritative set for this environment —
+    * i.e. safe to reconcile the stored rows against.
+    *
+    * False when a load could not READ the stored destinations. The list is then
+    * "unknown", not "empty", and the two are not interchangeable: the database
+    * sync prunes rows the list does not hold, so treating a failed read as an
+    * empty list turns a transient error into permanently deleted registrations.
+    * An explicit set (config or API) makes it authoritative again.
+    */
+   private destinationsAuthoritative = true;
    private environmentPath: string;
    private environmentName: string;
    // Resolves a package's latest persisted materialization manifest entries
@@ -206,6 +265,7 @@ export class Environment {
       environmentPath: string,
       malloyConfig: EnvironmentMalloyConfig,
       apiConnections: InternalConnection[],
+      storageDestinations: ApiConnection[] = [],
    ) {
       // Sanitizer barrier: every downstream `path.join(this.environmentPath,
       // …)` site (including the static `sweepStaleInstallDirs` sweep) gets a
@@ -215,6 +275,8 @@ export class Environment {
       this.environmentPath = environmentPath;
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
+      this.destinations = [];
+      this.setStorageDestinations(storageDestinations);
       this.metadata = {
          resource: `${API_PREFIX}/environments/${this.environmentName}`,
          name: this.environmentName,
@@ -240,6 +302,21 @@ export class Environment {
    }
 
    public async update(payload: ApiEnvironment) {
+      // Ahead of the readme write, so a body carrying a destination list we
+      // cannot read is refused before this method has changed anything.
+      //
+      // Absent means "leave alone", so a caller updating only the readme or the
+      // connections cannot blank the destination list by omission. Anything else
+      // present is acted on, including a shape we cannot read: the list replaces
+      // what is stored, so "we did not understand this" must not resolve to "then
+      // keep none of them". An explicit empty list is a different thing and does
+      // clear it.
+      if (payload.storageDestinations !== undefined) {
+         this.setStorageDestinations(payload.storageDestinations, {
+            rejectInvalid: true,
+         });
+      }
+
       if (payload.readme !== undefined) {
          this.metadata.readme = payload.readme;
          await this.writeEnvironmentReadme(payload.readme);
@@ -279,6 +356,7 @@ export class Environment {
       environmentName: string,
       environmentPath: string,
       connections: ApiConnection[],
+      storageDestinations: ApiConnection[] = [],
    ): Promise<Environment> {
       assertSafeEnvironmentPath(environmentPath);
       if (!(await fs.promises.stat(environmentPath))?.isDirectory()) {
@@ -308,6 +386,7 @@ export class Environment {
          environmentPath,
          malloyConfig,
          malloyConfig.apiConnections,
+         storageDestinations,
       );
 
       // Best-effort: a previous run may have crashed mid-install or
@@ -573,6 +652,235 @@ export class Environment {
          );
       }
       return connection;
+   }
+
+   /**
+    * Replaces the destination list. Every entry is re-validated here, so this is
+    * also the barrier that keeps an unvalidated destination off the environment
+    * however it arrived — config file or request body.
+    *
+    * An entry that carries nothing but the fields a read reports is resolved
+    * against the stored list first, so a read-modify-write of the environment
+    * keeps the configs it was never shown.
+    *
+    * `rejectInvalid` picks what an entry we cannot use means. A config file or a
+    * restored row is a source that cannot be asked to fix it, so the default
+    * drops the entry and keeps serving. A request body can be refused, and is:
+    * see {@link processStorageDestinationsOrThrow}.
+    */
+   public setStorageDestinations(
+      storageDestinations: ApiConnection[],
+      { rejectInvalid = false }: { rejectInvalid?: boolean } = {},
+   ): void {
+      const previous = this.destinations;
+      // Resolved before validation so an entry that legitimately carries no
+      // config of its own — the "keep this one" reference — is validated as the
+      // stored destination it names, not as the bare reference.
+      const requested = Array.isArray(storageDestinations)
+         ? storageDestinations.map((destination) =>
+              this.resolveDestinationReference(destination),
+           )
+         : storageDestinations;
+      // Throws before anything is assigned, so a refused update leaves the
+      // environment exactly as it was.
+      this.destinations = rejectInvalid
+         ? processStorageDestinationsOrThrow(requested)
+         : processStorageDestinations(requested);
+      // An explicit set makes the list authoritative again: whatever could not be
+      // read before, this is now the set the store should be reconciled to.
+      this.destinationsAuthoritative = true;
+
+      // Nothing to swap when the resolved list describes the same destinations.
+      // An orchestrator that reconciles by re-pushing its whole desired state on
+      // a loop would otherwise re-attach every destination on every cycle and
+      // drop the serve shapes compiled against them, so the comparison ignores
+      // list order and config key order, neither of which changes what a
+      // destination is.
+      //
+      // "Same as before" only means there is nothing to do once something has
+      // been built. On the constructor's call both lists are empty for every
+      // environment with no destinations, so skipping on equality alone would
+      // leave the config unassigned for the common case, not the rare one.
+      if (
+         this.destinationMalloyConfig &&
+         storageDestinationsEqual(previous, this.destinations)
+      ) {
+         return;
+      }
+
+      this.rebuildDestinationMalloyConfig();
+      // Quiet for the overwhelmingly common case of an environment with no
+      // destinations at all, loud for every transition that matters, including
+      // one that empties the list.
+      if (previous.length > 0 || this.destinations.length > 0) {
+         logger.info(
+            `Environment ${this.environmentName} has ${this.destinations.length} storage destination(s)`,
+            { destinations: this.destinations.map((d) => d.name) },
+         );
+      }
+   }
+
+   /**
+    * Substitutes the stored destination for an entry that names one and carries
+    * no config of its own. Anything carrying a config is returned untouched and
+    * replaces what is stored; a reference to a name that is not stored is
+    * returned untouched too, and then fails validation like any config-less
+    * entry.
+    */
+   private resolveDestinationReference(
+      destination: ApiConnection,
+   ): ApiConnection {
+      if (!destination || typeof destination !== "object") {
+         return destination;
+      }
+      const carriesOnlyReportedFields = Object.keys(destination).every(
+         (field) => DESTINATION_READ_FIELDS.has(field),
+      );
+      if (!carriesOnlyReportedFields) {
+         return destination;
+      }
+      return (
+         this.destinations.find((stored) => stored.name === destination.name) ??
+         destination
+      );
+   }
+
+   /**
+    * Give a freshly loaded package the connections its materialization serve
+    * shapes compile against — this environment's destinations, resolved live so a
+    * destination-list swap propagates without a package reload.
+    *
+    * Deliberately a push rather than a `Package.create` argument: the package
+    * config a model compiles against must never contain a destination, so this is
+    * the only route by which one reaches a compile at all, and it feeds only the
+    * synthetic serve shape. Missing it costs serve routing (queries fall back to
+    * live), never correctness — so it runs before serve bindings are pushed,
+    * which is what routing actually requires.
+    */
+   private attachDestinationServeConfig(_package: Package): void {
+      _package.setServeDestinationConfig(() =>
+         this.getStorageDestinationMalloyConfig(),
+      );
+   }
+
+   /**
+    * (Re)assemble the destination connections after the list changed, draining
+    * the previous generation's handles on the same delay a connection-generation
+    * swap uses.
+    *
+    * A failure here is not fatal to the environment: destinations are an add-on,
+    * and an environment that cannot assemble them still serves its packages —
+    * builds refuse and materialized queries fall back to live.
+    */
+   private rebuildDestinationMalloyConfig(): void {
+      const previous = this.destinationMalloyConfig;
+      try {
+         // Rooted apart from the connections' files so a destination can never
+         // share a pooled DuckDB instance with a connection of the same name —
+         // see STORAGE_DESTINATIONS_DIR. Created here because the
+         // directory has to exist before the first lookup opens a database in it.
+         const destinationRoot = storageDestinationRoot(this.environmentPath);
+         if (this.destinations.length > 0) {
+            fs.mkdirSync(destinationRoot, { recursive: true });
+         }
+         this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
+            this.destinations,
+            destinationRoot,
+         );
+      } catch (error) {
+         logger.error(
+            `Failed to assemble storage destinations for environment ${this.environmentName}; serving without them`,
+            { error },
+         );
+         this.destinationMalloyConfig = buildEnvironmentMalloyConfig(
+            [],
+            storageDestinationRoot(this.environmentPath),
+         );
+      }
+      if (previous && previous !== this.destinationMalloyConfig) {
+         this.retireConnectionGeneration(
+            `environment ${this.environmentName} destinations`,
+            () => previous.releaseConnections(),
+         );
+         // A loaded model memoizes the serve shape it compiled, and that shape
+         // holds the connections of the generation just retired — which are
+         // released once the drain elapses. The memo is keyed on the BINDING set,
+         // so a destination change does not change the key and the stale shape
+         // would be reused until the package reloaded: every routed query for it
+         // failing over to live, permanently and quietly. Dropped here, after the
+         // swap, so the next query recompiles against the config now installed.
+         this.invalidateServeShapes();
+      }
+   }
+
+   /**
+    * Drop every loaded model's memoized materialization serve shape. Cheap: the
+    * next routed query recompiles one, and a package with no `storage=` bindings
+    * has none to drop.
+    */
+   private invalidateServeShapes(): void {
+      for (const _package of this.packages.values()) {
+         _package.invalidateServeShapes();
+      }
+   }
+
+   /**
+    * The connections a materialization serve shape may compile against. Separate
+    * from {@link getEnvironmentMalloyConfig} — which is what a package's models
+    * fall through to — so the two compiles resolve disjoint name sets. Handing
+    * out the same object for both is exactly the mistake this split exists to
+    * make impossible.
+    */
+   public getStorageDestinationMalloyConfig() {
+      return this.destinationMalloyConfig.malloyConfig;
+   }
+
+   /**
+    * Records that this environment's stored destinations could not be read, so
+    * {@link listStorageDestinations} is a fallback rather than the
+    * authoritative set. Callers that reconcile storage must not prune against it.
+    */
+   public markStorageDestinationsUnknown(): void {
+      this.destinationsAuthoritative = false;
+   }
+
+   /** See {@link destinationsAuthoritative}. */
+   public hasAuthoritativeStorageDestinations(): boolean {
+      return this.destinationsAuthoritative;
+   }
+
+   /**
+    * The destinations configured for this environment, with their configs.
+    * Deliberately not exposed by any controller: a destination config carries
+    * warehouse credentials and the destination has no endpoint of its own, so
+    * nothing can fetch or probe one.
+    */
+   public listStorageDestinations(): ApiConnection[] {
+      return this.destinations;
+   }
+
+   public hasStorageDestination(destinationName: string): boolean {
+      return this.destinations.some(
+         (destination) => destination.name === destinationName,
+      );
+   }
+
+   /**
+    * Resolves a storage destination by name. Never falls back to the
+    * connection list: a `storage=` build naming a destination that is not
+    * configured must fail rather than write into a same-named connection, which
+    * would be the tenant's own warehouse.
+    */
+   public getStorageDestination(destinationName: string): ApiConnection {
+      const destination = this.destinations.find(
+         (destination) => destination.name === destinationName,
+      );
+      if (!destination) {
+         throw new DestinationNotFoundError(
+            `Storage destination ${destinationName} not found`,
+         );
+      }
+      return destination;
    }
 
    public async getMalloyConnection(connectionName: string) {
@@ -1026,6 +1334,7 @@ export class Environment {
             packagePath,
             () => this.malloyConfig.malloyConfig,
          );
+         this.attachDestinationServeConfig(_package);
          await this.bindManifestIfConfigured(_package);
          await this.rebindServeBindingsFromLocalStore(_package);
          if (existingPackage !== undefined && reload) {
@@ -1104,15 +1413,14 @@ export class Environment {
 
       this.setPackageStatus(packageName, PackageStatus.LOADING);
       try {
-         this.packages.set(
+         const addedPackage = await Package.create(
+            this.environmentName,
             packageName,
-            await Package.create(
-               this.environmentName,
-               packageName,
-               packagePath,
-               () => this.malloyConfig.malloyConfig,
-            ),
+            packagePath,
+            () => this.malloyConfig.malloyConfig,
          );
+         this.attachDestinationServeConfig(addedPackage);
+         this.packages.set(packageName, addedPackage);
       } catch (error) {
          logger.error("Error adding package", { error });
          this.deletePackageStatus(packageName);
@@ -1220,6 +1528,7 @@ export class Environment {
                // remove; the rollback below restores the previous one.
                true,
             );
+            this.attachDestinationServeConfig(newPackage);
             // Strict-reject hook (publish/update only — reload passes no
             // validator and stays fail-safe). Throw INSIDE the try so the
             // catch below rolls the swap back: the just-installed tree is
@@ -1384,7 +1693,7 @@ export class Environment {
 
    /**
     * Bind a package's `storage=` serve bindings from a build's FULL manifest
-    * entries (carrying `storageConnectionName` + captured `schema`), so a query
+    * entries (carrying `storageDestinationName` + captured `schema`), so a query
     * against a materialized-into-storage source can be routed through the
     * virtual-source serve transform. Distinct from
     * {@link reloadAllModelsForPackage}, which binds the tableName-only manifest
@@ -2105,6 +2414,24 @@ export class Environment {
             { error },
          );
       }
+
+      try {
+         await this.destinationMalloyConfig.releaseConnections();
+      } catch (error) {
+         // `{ error }` alone serializes an Error to `{}`, which is what a reader
+         // of this line gets told. Carry the message so a shutdown failure is
+         // diagnosable from the log rather than only from a debugger.
+         logger.error(
+            `Error closing storage destinations for environment ${this.environmentName}`,
+            { error: error instanceof Error ? error.message : String(error) },
+         );
+      }
+
+      this.destinations = [];
+      // Torn down, so the empty list above describes nothing rather than
+      // describing an environment with no destinations — anything that reconciled
+      // storage against it from here would be pruning on no information.
+      this.destinationsAuthoritative = false;
       await this.releaseAllRetiredConnectionGenerations();
 
       this.apiConnections = [];
@@ -2118,6 +2445,13 @@ export class Environment {
       return {
          ...this.metadata,
          connections: this.listApiConnections(),
+         // Name and type only. This is what the status endpoint reports, so it
+         // is how an operator or orchestrator confirms which destinations a
+         // worker picked up; the configs behind them stay server-side.
+         storageDestinations: this.destinations.map(({ name, type }) => ({
+            name,
+            type,
+         })),
          packages: await this.listPackages(),
       };
    }

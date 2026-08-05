@@ -912,7 +912,7 @@ describe("service/model", () => {
       const binding = (sourceName: string, freshnessFallback?: string) =>
          ({
             sourceName,
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: `eid-${sourceName}`,
             tablePath: `lake.t_${sourceName}`,
             schema: [{ name: "region", type: "string" }],
@@ -992,8 +992,10 @@ describe("service/model", () => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (opts.packageBindings ?? opts.shapeBindings) as any,
          );
+         // Only presence matters here: loadServeShapeQuery is stubbed below, so
+         // the provider is never called.
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         model.setServeMalloyConfig({} as any);
+         model.setServeDestinationConfig((() => ({})) as any);
          sinon
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .stub(model as any, "loadServeShapeQuery")

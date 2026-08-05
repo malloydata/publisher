@@ -81,9 +81,12 @@ enough to honor it.
 **Read-only to serve.** Serving a query attaches the catalog `READ_ONLY`: it reads tables and never
 writes catalog metadata. The lakehouse's own client owns writes.
 
-**Read-write only to build, and only for the build.** A `#@ persist storage=<connection>` source
+**Read-write only to build, and only for the build.** A `#@ persist storage=<destination>` source
 materializes into the catalog, which needs a read-write attach. That attach is confined to a
 transient build-scoped session and is dropped with it, so the serving path stays read-only.
+A `storage=` target is declared in `storageDestinations`, not in `connections` — see
+[storage destinations](connections.md#storage-destinations) — so everything on this page applies to
+a DuckLake declared in either list.
 Neither mode ever sets `AUTOMATIC_MIGRATION`: a catalog whose recorded format is outside the
 supported range fails the attach rather than being migrated in place by whichever server happened
 to reach it first.

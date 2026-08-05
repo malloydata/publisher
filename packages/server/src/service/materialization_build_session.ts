@@ -5,7 +5,7 @@ import {
    type PersistSource,
    Runtime,
 } from "@malloydata/malloy";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
@@ -20,6 +20,7 @@ import {
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "./connection";
+import { storageDestinationRoot } from "./connection_config";
 import {
    assertServesInDuckDB,
    type ServeBinding,
@@ -43,7 +44,12 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
    "postgres",
 ];
 
-/** Destination (storage) connection types the build can materialize INTO. */
+/**
+ * Warehouse types the build can materialize INTO. Wider than
+ * `DECLARABLE_STORAGE_DESTINATION_TYPES`, which is what a storage destination may
+ * be declared as and admits `ducklake` only — so the `duckdb` branch here is not
+ * reachable from configuration today.
+ */
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
 
 /**
@@ -191,7 +197,7 @@ export function createIsolatedBuildSession(sessionName: string): {
 /** Result of building one source into a storage destination. */
 export interface StorageBuildResult {
    /** The connection the physical table now lives in (the destination). */
-   storageConnectionName: string;
+   storageDestinationName: string;
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
 }
@@ -296,7 +302,7 @@ export async function buildSourceIntoStorage(params: {
       // type-check a virtual source's declared columns.
       const schema = await createTableAndDescribe(session, target, passthrough);
 
-      return { storageConnectionName: destinationName, schema };
+      return { storageDestinationName: destinationName, schema };
    } finally {
       // Dispose closes the private instance (releasing every secret + attach —
       // nothing federated or read-write survives the build) and removes its
@@ -336,7 +342,7 @@ export async function buildDownstreamIntoStorage(params: {
    transientModel: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
-   /** connectionName → handle → quoted physical path for the upstream virtuals. */
+   /** destinationName → handle → quoted physical path for the upstream virtuals. */
    virtualMap: Map<string, Map<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
@@ -436,7 +442,7 @@ export async function buildDownstreamIntoStorage(params: {
       );
       const schema = await createTableAndDescribe(session, target, sql);
 
-      return { storageConnectionName: destinationName, schema };
+      return { storageDestinationName: destinationName, schema };
    } finally {
       await dispose();
    }
@@ -468,7 +474,7 @@ export async function assertStorageServeShapeCompiles(params: {
       params;
    const binding: ServeBinding = {
       sourceName,
-      connectionName: destinationName,
+      destinationName,
       virtualHandle,
       tablePath: `${destinationName}.${physicalTableName}`,
       schema: params.schema
@@ -575,8 +581,14 @@ async function attachDestinationReadWrite(
       return;
    }
    // Plain DuckDB destination: attach its database file read-write. The file
-   // path is derived the same way connection assembly derives it.
-   const dbPath = path.join(environmentPath, `${destinationName}.duckdb`);
+   // path is derived the same way connection assembly derives it — under the
+   // destinations root, which is where a destination's files live so they cannot
+   // collide with a connection of the same name. The directory is created here
+   // because a build can be the first thing that ever touches it: on a worker
+   // that has not served this destination, nothing else has made it yet.
+   const destinationRoot = storageDestinationRoot(environmentPath);
+   mkdirSync(destinationRoot, { recursive: true });
+   const dbPath = path.join(destinationRoot, `${destinationName}.duckdb`);
    await session.runSQL(
       `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, "duckdb")}`,
    );

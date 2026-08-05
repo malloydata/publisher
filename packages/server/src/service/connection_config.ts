@@ -2,6 +2,7 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import { parseHostKeys } from "./proxy";
 import {
@@ -625,6 +626,269 @@ function validateConnectionShape(connection: ApiConnection): void {
          break;
       }
    }
+}
+
+/**
+ * Warehouse types a storage destination may be DECLARED as. Deliberately
+ * narrower than the connection types: a destination is attached read-write by
+ * the build path, and every type admitted here is another way to define a
+ * warehouse that no connection endpoint audits.
+ *
+ * Narrower than `STORAGE_DESTINATION_TYPES` in materialization_build_session,
+ * which is what the build can materialize INTO and also accepts `duckdb`. Nothing
+ * can currently reach that branch with a `duckdb` destination, because this is the
+ * only way one gets configured — widen here, deliberately, if that changes.
+ */
+export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
+   new Set(["ducklake"]);
+
+/**
+ * Subdirectory of the environment root holding the local DuckDB files of
+ * storage destinations, keeping them out of the directory connection
+ * files derive into.
+ *
+ * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
+ * `workingDirectory`, and the share key excludes the connection name
+ * (`buildDuckDBShareKey`, `duckdb-share-key-v2`) — while both lists derive that
+ * path as `<root>/<name>…duckdb`. The two namespaces are independent and may
+ * legitimately hold the same name, which would then derive the same path and
+ * share one pooled instance; since the attach is `ATTACH OR REPLACE … AS <name>`,
+ * one would silently replace the other's, and a query could read across the two.
+ * Separate roots make that unreachable rather than relying on names never
+ * coinciding. (If malloydata/malloy#3006 changes how the share key is computed,
+ * re-check that it still excludes the name before relying on anything narrower.)
+ *
+ * Dot-prefixed like `.staging`/`.retired`, so a walk that enumerates an
+ * environment for package trees cannot mistake it for one.
+ *
+ * ASYMMETRY, deliberate: a CONNECTION's local DuckDB file still derives directly
+ * into the environment root, where it sits among the package trees Publisher
+ * copies in. Nothing enumerates that directory today, so nothing is exposed by
+ * it — but moving those files would change every existing deployment's pooled
+ * instance identity, re-attaching each connection against a new empty local
+ * primary and orphaning the old file. That is a change worth making on its own,
+ * not as a side effect of adding this directory.
+ */
+export const STORAGE_DESTINATIONS_DIR = ".storage-destinations";
+
+/** Where {@link STORAGE_DESTINATIONS_DIR} sits for an environment. */
+export function storageDestinationRoot(environmentPath: string): string {
+   return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);
+}
+
+/** An entry of a `storageDestinations` list that cannot be used, and why. */
+export type RejectedStorageDestination = {
+   /** Absent when the entry carried no usable name to attribute the defect to. */
+   name?: string;
+   /** The defect, as a sentence naming what is wrong with the entry. */
+   reason: string;
+};
+
+/**
+ * Sorts a `storageDestinations` list into the entries that may be built into and
+ * served from, and the entries that cannot be used. The one place destinations
+ * are checked, so no caller can seat an unvalidated destination on an
+ * Environment.
+ *
+ * Names are unique within the list and are NOT checked against the
+ * environment's connections. The two lists are separate namespaces: one
+ * environment may hold a connection and a destination that share a name and
+ * mean different warehouses, and both must keep working.
+ *
+ * Reports what it rejected rather than deciding what that means: a list read
+ * from config or from storage drops the bad entry and keeps serving
+ * ({@link processStorageDestinations}), while a list that arrived on a request
+ * body is refused whole ({@link processStorageDestinationsOrThrow}). Dropping is
+ * safe because it is not a substitution: build and serve resolve destinations
+ * only through this list, so a `storage=` build naming a dropped destination
+ * fails rather than falling through to a same-named connection.
+ */
+export function validateStorageDestinations(
+   destinations: ApiConnection[] = [],
+): {
+   accepted: ApiConnection[];
+   rejected: RejectedStorageDestination[];
+} {
+   const accepted: ApiConnection[] = [];
+   const rejected: RejectedStorageDestination[] = [];
+
+   if (!Array.isArray(destinations)) {
+      return {
+         accepted,
+         rejected: [{ reason: "the value is not a list of destinations." }],
+      };
+   }
+
+   const seen = new Set<string>();
+
+   for (const destination of destinations) {
+      if (!destination || typeof destination !== "object") {
+         rejected.push({ reason: "the entry is not an object." });
+         continue;
+      }
+
+      const { name, type } = destination;
+      if (!name || typeof name !== "string") {
+         rejected.push({
+            reason: `the "name" field is missing or not a string.`,
+         });
+         continue;
+      }
+      if (!type || !DECLARABLE_STORAGE_DESTINATION_TYPES.has(type)) {
+         rejected.push({
+            name,
+            reason:
+               `the type "${type}" is not a supported destination type ` +
+               `(supported: ${[...DECLARABLE_STORAGE_DESTINATION_TYPES].join(", ")}).`,
+         });
+         continue;
+      }
+      // A destination named `duckdb` could never be reached: the package
+      // connection lookup answers that name with the per-package :memory:
+      // sandbox before any environment list is consulted, so a serve compile
+      // would read an empty sandbox instead of the destination.
+      if (name === "duckdb") {
+         rejected.push({
+            name,
+            reason: `the name "duckdb" is reserved for per-package sandboxes.`,
+         });
+         continue;
+      }
+      if (seen.has(name)) {
+         rejected.push({
+            name,
+            reason: "an earlier entry already uses this name.",
+         });
+         continue;
+      }
+
+      try {
+         validateConnectionShape(destination);
+      } catch (error) {
+         rejected.push({ name, reason: (error as Error).message });
+         continue;
+      }
+
+      seen.add(name);
+      // `resource` addresses a connection endpoint. A destination has none, and
+      // carrying the field would make it look addressable to anything that
+      // reads one.
+      const { resource: _resource, ...body } = destination;
+      accepted.push(body);
+   }
+
+   return { accepted, rejected };
+}
+
+/** One rejection, as a phrase that reads inside a longer sentence. */
+function describeRejection(rejection: RejectedStorageDestination): string {
+   return rejection.name
+      ? `storage destination "${rejection.name}": ${rejection.reason}`
+      : `storage destination: ${rejection.reason}`;
+}
+
+/**
+ * The usable entries of a list whose source cannot be asked to fix it — the
+ * config file, or the rows restored from storage. An unusable entry is dropped
+ * with a warning rather than failing the whole environment, so one malformed
+ * destination does not take a tenant's packages offline.
+ */
+export function processStorageDestinations(
+   destinations: ApiConnection[] = [],
+): ApiConnection[] {
+   const { accepted, rejected } = validateStorageDestinations(destinations);
+   for (const rejection of rejected) {
+      logger.warn(`Invalid ${describeRejection(rejection)} Skipping.`);
+   }
+   return accepted;
+}
+
+/**
+ * The entries of a list that arrived on a request body, or a `BadRequestError`
+ * naming every defect. Nothing is applied unless the whole list is understood:
+ * the list has replace semantics and the caller's set becomes the set to
+ * reconcile stored rows against, so quietly dropping the part we could not read
+ * would un-register destinations the caller believes it just re-affirmed. A
+ * caller can be told, and can fix it.
+ *
+ * The rejection reasons reach that caller in an HTTP body, so a reason must name
+ * the defect without quoting a credential. The ones assembled here are literals,
+ * and the validator's own messages interpolate only a name, a type, or the
+ * offending identifier — keep it that way when adding one.
+ */
+export function processStorageDestinationsOrThrow(
+   destinations: ApiConnection[] = [],
+): ApiConnection[] {
+   const { accepted, rejected } = validateStorageDestinations(destinations);
+   if (rejected.length > 0) {
+      throw new BadRequestError(
+         `storageDestinations was not accepted — ${rejected
+            .map(describeRejection)
+            .join(" ")}`,
+      );
+   }
+   return accepted;
+}
+
+/**
+ * Whether two validated destination lists describe the same set of
+ * destinations, so a caller re-pushing its desired state can be recognized as a
+ * no-op instead of swapping every destination and dropping the serve shapes
+ * compiled against them.
+ *
+ * Neither the order a caller listed the destinations in nor the key order inside
+ * a config carries meaning: the list is a set keyed by name, and a config is
+ * plain JSON that may have been assembled or parsed in any order. Both are
+ * normalized away, so equality is decided by content alone.
+ *
+ * Compares every field rather than a chosen subset. A destination's config is
+ * what the build attaches — a different bucket, a different catalog host, a
+ * rotated credential — so anything less would let a real change go unapplied.
+ */
+export function storageDestinationsEqual(
+   left: ApiConnection[],
+   right: ApiConnection[],
+): boolean {
+   if (left.length !== right.length) {
+      return false;
+   }
+   return canonicalDestinationList(left) === canonicalDestinationList(right);
+}
+
+/**
+ * Content-determined, order-independent serialization of a destination list.
+ * Sorted by code unit rather than by collation, which is a strict total order on
+ * the distinct names a validated list holds and does not vary with the locale the
+ * process happens to run under.
+ */
+function canonicalDestinationList(destinations: ApiConnection[]): string {
+   return JSON.stringify(
+      [...destinations]
+         .sort((left, right) =>
+            (left.name ?? "") < (right.name ?? "") ? -1 : 1,
+         )
+         .map(canonicalizeJsonValue),
+   );
+}
+
+/**
+ * Rewrites a JSON value with every object's keys in sorted order, so
+ * `JSON.stringify` of the result depends only on content. Arrays keep their
+ * order: within a connection config an array's order is part of its meaning.
+ */
+function canonicalizeJsonValue(value: unknown): unknown {
+   if (Array.isArray(value)) {
+      return value.map(canonicalizeJsonValue);
+   }
+   if (value === null || typeof value !== "object") {
+      return value;
+   }
+   const entries = value as Record<string, unknown>;
+   const sorted: Record<string, unknown> = {};
+   for (const key of Object.keys(entries).sort()) {
+      sorted[key] = canonicalizeJsonValue(entries[key]);
+   }
+   return sorted;
 }
 
 export function assembleEnvironmentConnections(

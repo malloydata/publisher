@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestError } from "../errors";
+import { storageDestinationRoot } from "./connection_config";
 import type { components } from "../api";
 import {
    assertStorageServeShapeCompiles,
@@ -264,7 +265,7 @@ describe.skipIf(process.platform === "win32")(
    () => {
       const parent: ServeBinding = {
          sourceName: "daily_orders",
-         connectionName: "lake",
+         destinationName: "lake",
          virtualHandle: "daily_h",
          tablePath: "lake.daily_orders__mabc",
          schema: [
@@ -277,9 +278,16 @@ describe.skipIf(process.platform === "win32")(
          "  group_by: order_month is order_date.month\n" +
          "  aggregate: monthly_total is total.sum()\n}";
 
-      /** Seed a plain-DuckDB "lake" file with the parent's content-addressed table. */
+      /**
+       * Seed a plain-DuckDB "lake" file with the parent's content-addressed table,
+       * at the path the build attaches: a destination's files live under the
+       * destinations root, not directly in the environment directory, so they
+       * cannot collide with a connection of the same name.
+       */
       async function seedLake(dir: string): Promise<void> {
-         const seed = new DuckDBConnection("lake", join(dir, "lake.duckdb"));
+         const root = storageDestinationRoot(dir);
+         mkdirSync(root, { recursive: true });
+         const seed = new DuckDBConnection("lake", join(root, "lake.duckdb"));
          try {
             await seed.runSQL(
                'CREATE TABLE "daily_orders__mabc" AS ' +
@@ -323,7 +331,7 @@ describe.skipIf(process.platform === "win32")(
                environmentPath: dir,
             });
 
-            expect(result.storageConnectionName).toBe("lake");
+            expect(result.storageDestinationName).toBe("lake");
             expect(result.schema.map((c) => c.name).sort()).toEqual([
                "monthly_total",
                "order_month",
