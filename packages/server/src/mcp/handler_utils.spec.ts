@@ -100,10 +100,10 @@ describe("classifyToolError", () => {
          "executeQuery",
          "env/pkg",
          new ResponseUnserializableError(
-            "Query response exceeded 50000000 bytes: the 25356-row result is too large to serialize. Project fewer columns, add a LIMIT, or filter wide values.",
+            "Query response could not be serialized: the 25356-row result is too large to turn into JSON (byte cap: 50000000). Project fewer columns, add a LIMIT, or filter wide values.",
          ),
       );
-      expect(details.message).toContain("too large to serialize");
+      expect(details.message).toContain("could not be serialized");
       const suggestions = JSON.stringify(details.suggestions);
       expect(suggestions).toContain("will not help");
       expect(suggestions).toContain("not transient");

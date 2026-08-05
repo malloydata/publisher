@@ -275,9 +275,9 @@ describe("stringifyQueryResponse", () => {
       expect(message).toContain("42-row");
    });
 
-   it("is memoization-friendly: two calls on a good value give the same string", () => {
-      // model.ts memoizes this behind a thunk so the byte check and the response
-      // share one pass. Nothing here should make a second call differ.
+   it("is deterministic: two calls on the same value give the same string", () => {
+      // The caller sends the string this returns, so it has to be the same bytes
+      // the byte check measured. Nothing may make a second call differ.
       const response = { data: [{ id: 1 }] };
       const first = stringifyQueryResponse(response, 1, 10_000, "model_query");
       const second = stringifyQueryResponse(response, 1, 10_000, "model_query");

@@ -2239,27 +2239,26 @@ export class Model {
        * connection default, and the correlation id.
        */
       queryMetadataInput?: ModelQueryMetadataInput,
+      /**
+       * Which shape the caller is going to send, so exactly that one is built and
+       * measured. `"compact"` is the `compactJson` response (the rows, with the
+       * bigint replacer); `"full"` is the wrapped result. A caller that sends
+       * neither verbatim, like the MCP tool, leaves it at the default: the byte
+       * cap still has to measure something, and the full shape is what it has
+       * always measured.
+       */
+      responseShape: "full" | "compact" = "full",
    ): Promise<{
       result: Malloy.Result;
       /**
-       * `result` as JSON. A caller that returns the full result should call this
-       * rather than stringify `result` itself: when a byte cap is set the string
-       * has already been built to measure it, so this is free, and when a
-       * response is too large to serialize at all this reports it as the same
-       * HTTP 413 the cap produces instead of a bare 500. Memoized, so calling it
-       * twice costs one pass. Not called for `compactResult`, which is a
-       * different object serialized with a bigint replacer: see
-       * {@link serializeCompactResult}.
+       * The JSON of whichever shape `responseShape` asked for, built once. A
+       * caller that sends that shape should send this string rather than
+       * stringify the object itself: it is the same bytes the byte cap measured,
+       * and a payload too large to serialize is reported here as the same HTTP
+       * 413 the cap produces instead of escaping as a bare 500 from the caller's
+       * own `JSON.stringify`.
        */
-      serializeResult: () => string;
-      /**
-       * `compactResult` as JSON, with the bigint replacer applied. Same guard as
-       * {@link serializeResult} and memoized the same way: a `compactJson`
-       * request sends this shape, and it can be too large to serialize too, so
-       * building it here rather than in the caller is what keeps that case a 413
-       * instead of a bare 500.
-       */
-      serializeCompactResult: () => string;
+      serializedResult: string;
       compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
@@ -2802,46 +2801,39 @@ export class Model {
       // prevention. True prevention requires streaming `Result`
       // construction, which is out of scope for this step. The row cap
       // above is the primary OOM defense.
-      // One guarded serialization, done at most once, and only if somebody needs
-      // it. Both properties matter and they pull in opposite directions:
+      // One serialization: the shape the caller is going to send, built once here,
+      // measured here, and returned. Doing it any other way has been wrong twice.
       //
-      //   - The byte cap has to serialize to measure, so when a cap is set this
-      //     runs here and the string is handed to the caller rather than thrown
-      //     away. Before, a large response was stringified twice per request,
-      //     once to measure and once to send.
-      //   - With the cap disabled (`maxBytes` 0, a supported configuration; see
-      //     config.ts) there is nothing to measure, so serializing here would be
-      //     pure waste for any caller that does not send this object. Two do
-      //     not: a `compactJson` request sends the compact rows instead, and the
-      //     MCP tool builds its own envelope. Serializing eagerly turned those
-      //     into a 413 for a payload they never asked for.
+      // Building BOTH shapes, or building the full one regardless, makes a
+      // `compactJson` request pay for a payload it never sends, and worse, fail
+      // on it: a result whose wrapped JSON will not serialize but whose compact
+      // rows would returned 413 for the shape the client did not ask for.
+      // Building NEITHER here, and leaving the caller to stringify, is what let
+      // the failure escape as the bare 500 this guard exists to replace.
       //
-      // So the caller that sends it calls this, and the failure lands where the
-      // payload is actually built rather than becoming a bare 500 downstream.
-      let serializedOnce: string | undefined;
-      const serializeResult = () =>
-         (serializedOnce ??= stringifyQueryResponse(
-            wrappedResult,
-            queryResults.totalRows,
-            maxBytes,
-            "model_query",
-         ));
-      // The compact shape is a second payload that can also be too large to
-      // serialize, and it is what a `compactJson` request actually sends. Without
-      // its own guarded pass it kept the bare 500 this whole change removes.
-      // Separate memo because it is a different object and needs the bigint
-      // replacer, so it cannot share the string above.
-      let compactSerializedOnce: string | undefined;
-      const serializeCompactResult = () =>
-         (compactSerializedOnce ??= stringifyQueryResponse(
-            queryResults.data.value,
-            queryResults.totalRows,
-            maxBytes,
-            "model_query",
-            bigIntReplacer,
-         ));
+      // So the byte cap now measures the payload that is actually transmitted.
+      // For a `compactJson` request that is a change: the cap used to be enforced
+      // against the larger wrapped shape, so such a request could be refused on
+      // bytes the client would never receive. Capping what is sent is the
+      // defensible reading, and the row cap is unchanged and applies to both.
+      //
+      // What this does NOT cover: the MCP tool leaves `responseShape` at its
+      // default, so the full shape is measured as it always was, but the tool
+      // then builds its own envelope (mcp/query_envelope.ts) with an unguarded
+      // `JSON.stringify`. An unserializable result reaches the 413 there only via
+      // this measurement, which means only when a byte cap is set; with the cap
+      // disabled that envelope build still throws a raw RangeError and the agent
+      // gets an internal error. Guarding it belongs with the envelope's own
+      // truncation budget, not here.
+      const serializedResult = stringifyQueryResponse(
+         responseShape === "compact" ? queryResults.data.value : wrappedResult,
+         queryResults.totalRows,
+         maxBytes,
+         "model_query",
+         responseShape === "compact" ? bigIntReplacer : undefined,
+      );
       const serializedBytes =
-         maxBytes > 0 ? Buffer.byteLength(serializeResult(), "utf8") : 0;
+         maxBytes > 0 ? Buffer.byteLength(serializedResult, "utf8") : 0;
       assertWithinModelResponseLimits(
          queryResults.totalRows,
          serializedBytes,
@@ -2866,8 +2858,7 @@ export class Model {
       });
       return {
          result: wrappedResult,
-         serializeResult,
-         serializeCompactResult,
+         serializedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,

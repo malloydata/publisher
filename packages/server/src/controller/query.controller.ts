@@ -74,8 +74,7 @@ export class QueryController {
       } else {
          const {
             result,
-            serializeResult,
-            serializeCompactResult,
+            serializedResult,
             rowLimit,
             rowLimitSource,
             queryCorrelationId,
@@ -124,19 +123,22 @@ export class QueryController {
                         }
                      },
                   },
+                  // Tell the model which shape this request sends, so exactly
+                  // that one is serialized and measured. Sending `compactJson`
+                  // while the model built and capped the full result was how a
+                  // request came to be refused on bytes it would never receive.
+                  compactJson ? "compact" : "full",
                ),
             getQueryTimeoutMs(),
          );
          const renderLogs = validateRenderTags(result);
          return {
-            // Both shapes go through the model's guarded serializers rather than
-            // being stringified here. Two reasons: when a byte cap is set those
-            // bytes have already been built to measure them, so this is free; and
-            // a payload too large to serialize reports the same 413 the cap does
-            // instead of throwing a bare 500 out of this expression. Each is
-            // called only on the branch that sends it, so neither request pays
-            // for the payload it does not use.
-            result: compactJson ? serializeCompactResult() : serializeResult(),
+            // Already serialized by the model, which was told which shape this
+            // request sends. Stringifying here instead would build a second copy
+            // of the same payload, and a payload too large to serialize would
+            // escape this expression as a bare 500 rather than the 413 the byte
+            // cap produces.
+            result: serializedResult,
             resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
             // The cap the database applied. A caller counting the rows it got

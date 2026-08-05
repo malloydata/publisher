@@ -18,11 +18,14 @@
  *      byte cap, throw `PayloadTooLargeError` so the caller sees a
  *      clean HTTP 413.
  *
- *   3. {@link stringifyQueryResponse}: serialize the response for
- *      that byte check. The check measures by stringifying, so a
- *      result too large to stringify fails *inside* the guard before
- *      it can compare anything to the cap; this wrapper turns that
- *      into the same 413 rather than a bare 500.
+ *   3. {@link stringifyQueryResponse}: serialize the response. It
+ *      produces both the bytes the byte check measures AND the bytes
+ *      the caller transmits, which is the point: the check measures by
+ *      stringifying, so a result too large to stringify fails *inside*
+ *      the guard before it can compare anything to the cap, and a
+ *      caller that stringified its own copy would hit the same wall
+ *      unguarded. Either way this reports it as the same 413 rather
+ *      than a bare 500.
  *
  * Caveat on the byte cap: this path runs `runnable.run` (buffered),
  * not `runStream`, so by the time we measure bytes the result has
@@ -34,11 +37,14 @@
  * for this step (the model-query streaming path entangles with
  * Malloy's `Result` schema metadata in non-trivial ways).
  *
- * The first two helpers are pure, so they can be unit-tested without
- * spinning up a model runtime; the caller injects the env-derived
- * limits. {@link stringifyQueryResponse} is not: it records a
+ * Only {@link resolveModelQueryRowLimit} and
+ * {@link queryRowLimitSource} are pure. Both of the others record a
  * cap-exceeded metric before throwing, which lazily creates and
- * caches OpenTelemetry instruments in module state.
+ * caches OpenTelemetry instruments in module state, so a unit test
+ * that drives them without the metrics harness binds instruments to
+ * whatever provider happens to be installed. All of them take their
+ * limits as arguments, which is what lets them be tested without
+ * spinning up a model runtime.
  */
 
 import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";
