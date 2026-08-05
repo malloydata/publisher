@@ -2,32 +2,43 @@ openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
   description: |
-    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources.
-    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases
-    (.parquet, .csv, and .xlsx files) with a malloy-publisher.json manifest at the package's root directory.
+    The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
+    A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
+    notebooks (`.malloynb` files), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    under `public/`.
 
     ## Key Features
 
-    - **Environment Management**: Create and manage environments with their associated packages and connections
-    - **Package Lifecycle**: Full CRUD operations for Malloy packages and their versions
-    - **Model & Notebook Access**: Retrieve and execute Malloy models and notebooks
-    - **Connection Management**: Secure database connection configuration and testing
-    - **Query Execution**: Execute queries against models and retrieve results
-    - **Watch Mode**: Real-time file watching for development workflows
+    - **Discovery**: List environments, packages, and the models, notebooks, pages, and data a package contains
+    - **Query Execution**: Run queries against models, execute notebooks a cell at a time, and compile-check Malloy without running it
+    - **Pages**: In-package HTML data apps served from a package's `public/` directory
+    - **Materializations**: Persist Malloy sources as tables, on a schedule or on demand
+    - **Connection Management**: Configure and test warehouse connections, and browse their schemas and tables
+    - **Watch Mode**: File watching, and a change-event stream for development workflows
 
     ## Resource Hierarchy
 
     The API follows a hierarchical resource structure:
     ```
-    Environments
-    ├── Connections
-    └── Packages
-        ├── Models
-        ├── Notebooks
-        └── Databases
+    Server
+    ├── /status, /theme               server state, and the UI theme
+    ├── /connections/test             validate a connection config
+    ├── /watch-mode/…                 development file watching
+    └── Environments
+        ├── Connections               schemas, tables, and ad-hoc SQL
+        └── Packages
+            ├── Models                query and compile
+            ├── Notebooks             execute a cell at a time
+            ├── Pages                 static HTML data apps from public/
+            ├── Databases             embedded data files
+            ├── Materializations      persisted sources
+            ├── Connections           package-scoped connection access
+            └── Events                SSE stream of file changes
     ```
 
-    For examples, see the Malloy samples packages (https://github.com/malloydata/malloy-samples) repository.
+    For worked examples, see the packages this server bundles
+    (https://github.com/malloydata/publisher/tree/main/examples); the package format is documented in
+    docs/packages.md (https://github.com/malloydata/publisher/blob/main/docs/packages.md).
   version: v0
 
 servers:

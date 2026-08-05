@@ -56,15 +56,24 @@ A given has a name, a Malloy type, and an optional default. Queries reference th
 
 ### Supported Types
 
-| Type        | Example declaration                                  | Use case                             |
-| ----------- | ---------------------------------------------------- | ------------------------------------ |
-| `string`    | `given: category :: string is 'Footwear'`            | Exact-match dimension values         |
-| `string[]`  | `given: categories :: string[] is []`                | Multi-value `in` filters             |
-| `number`    | `given: min_price :: number is 0`                    | Numeric ranges, thresholds           |
-| `boolean`   | `given: include_returns :: boolean is false`         | Toggle predicates                    |
-| `date`      | `given: cutoff :: date is @2024-01-01`               | Date thresholds                      |
-| `timestamp` | `given: since :: timestamp is @2024-01-01 00:00:00`  | Timestamp thresholds                 |
-| `filter<T>` | `given: REGION :: filter<string> is f''`             | First-class Malloy filter expression |
+| Type          | Example declaration                                            | Use case                             |
+| ------------- | -------------------------------------------------------------- | ------------------------------------ |
+| `string`      | `given: category :: string is 'Footwear'`                      | Exact-match dimension values         |
+| `number`      | `given: min_price :: number is 0`                              | Numeric ranges, thresholds           |
+| `boolean`     | `given: include_returns :: boolean is false`                   | Toggle predicates                    |
+| `date`        | `given: cutoff :: date is @2024-01-01`                         | Date thresholds                      |
+| `timestamp`   | `given: since :: timestamp is @2024-01-01 00:00:00`            | Timestamp thresholds                 |
+| `timestamptz` | `given: since :: timestamptz is @2024-01-01 00:00:00::timestamptz` | Zone-aware timestamp thresholds  |
+| `filter<T>`   | `given: REGION :: filter<string> is f''`                       | First-class Malloy filter expression |
+
+These are the scalar types Malloy's grammar accepts in a `given:` declaration. **Array and record
+givens are not among them**: `given: categories :: string[] is []` is a compile error
+(`unexpected ']'`), not an unsupported-but-tolerated form. To let a caller pass several values, use
+`filter<string>` and send a Malloy filter expression such as `Footwear, Outerwear`.
+
+The `timestamptz` cast is not decoration. A bare `@2024-01-01 00:00:00` literal is a `timestamp`,
+so using it as a `timestamptz` default fails to compile with a type-mismatch error. Declaring the
+given with no default at all also works.
 
 ### Annotations
 
@@ -74,6 +83,22 @@ Givens accept the standard Malloy `#(...)` annotation syntax. Publisher surfaces
 #(description="Earliest report date to include")
 given: report_after :: date is @2024-01-01
 ```
+
+**Expect a `malformed-route` warning on that line, and ignore it.** Malloy reads an annotation's
+route from the sigil to the first whitespace, so a description of more than one word makes the
+route `#(description="Earliest` and the compiler warns that it is not well formed. The annotation
+still reaches the API and still renders as helper text; the warning is cosmetic.
+
+It is called out here because the obvious ways to silence it are all worse, and each was tried
+against the compiler:
+
+| Instead of the form above | Compiles | Helper text |
+| --- | --- | --- |
+| `#(doc) Earliest report date to include` | clean | renders as `doc) Earliest report date to include` |
+| `#(description) Earliest report date to include` | clean | renders as `description) Earliest report date to include` |
+| `# description="Earliest report date to include"` (a tag, note the space) | clean | nothing renders: plain `#` tags are Malloy's reserved namespace and are filtered out before the annotation list reaches a client |
+
+So keep `#(description="…")`.
 
 ## How It Works
 
@@ -93,7 +118,6 @@ Givens are typed in Malloy, but the wire format is JSON. The mapping is:
 | Malloy type      | JS / JSON shape                                              |
 | ---------------- | ------------------------------------------------------------ |
 | `string`         | `"Footwear"`                                                  |
-| `string[]`       | `["Footwear", "Outerwear"]`                                   |
 | `number`         | `42`                                                          |
 | `boolean`        | `true` / `false`                                              |
 | `date`           | `"2024-01-01"` (ISO date string)                              |
@@ -199,11 +223,10 @@ The example above ships in Publisher's default `examples` environment — open [
 
 | Malloy type                        | Widget                                     |
 | ---------------------------------- | ------------------------------------------ |
-| `string`, `filter<string>`         | Text input with × clear                    |
-| `string[]`                         | Multi-value autocomplete with chip removal |
 | `number`                           | Numeric input with × clear                 |
 | `boolean`                          | Checkbox                                   |
 | `date`, `timestamp`, `timestamptz` | Date picker with native clear              |
+| `string`, `filter<…>`, anything else | Text input with × clear                  |
 
 `#(description="...")` annotations render as MUI helper text beneath the input. A **Reset** button appears next to the "Parameters" heading whenever any input has a non-default value.
 
