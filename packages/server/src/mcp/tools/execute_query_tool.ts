@@ -49,8 +49,18 @@ const executeQueryShape = {
       ),
    modelPath: z.string().describe("Path to the .malloy model file"),
    query: z.string().optional().describe("Ad-hoc Malloy query code"),
-   sourceName: z.string().optional().describe("Source name for a view"),
-   queryName: z.string().optional().describe("Named query or view"),
+   sourceName: z
+      .string()
+      .optional()
+      .describe(
+         "Source name for a view. A NAME, not Malloy code: one name exactly as malloy_getContext returned it, sent bare (the server quotes it, so a hyphen or a reserved word is fine — do not add backticks yourself). Anything richer, such as a parameterized source or an inline extension, goes in query.",
+      ),
+   queryName: z
+      .string()
+      .optional()
+      .describe(
+         "Named query or view. A NAME, not Malloy code, on the same terms as sourceName: one view name as malloy_getContext returned it. A dotted path (carriers.by_name), a refinement (by_carrier + { limit: 10 }), or anything containing a newline goes in query instead.",
+      ),
    filterParams: z
       .record(z.union([z.string(), z.array(z.string())]))
       .optional()
@@ -68,23 +78,23 @@ const executeQueryShape = {
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
 
 ## Contract rules
-- Check _limit_hit before reporting any total, count, or "top N". True means the server's default row cap cut the result off and more rows exist, so the numbers in front of you are a partial set, not the answer. A query that set its own limit: or top: does not set it, and returning exactly that many rows is a complete answer to what was asked.
+- Check _limit_hit before reporting any total, count, or "top N". True means the server's default cap cut the result off and more rows exist, so what came back is a partial set, not the answer.
 - Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
 - _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.
-- Use source, view, and field names exactly as malloy_getContext returned them.
+- Use source, view, and field names exactly as malloy_getContext returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a second statement) in query.
 
 ## Response
-A JSON object, the same shape Credible's execute_query returns, so a data app behaves the same authored locally and served in production:
-- rows: flat objects keyed by column name, the shape an in-package data app receives.
+A JSON object, the same shape Credible's execute_query and an in-package data app receive:
+- rows: flat objects keyed by column name.
 - _meta: the Malloy metadata flat rows drop (schema with field types and render tags, annotations, connection_name, query_timezone).
 - _query_row_limit: the cap pushed into the SQL, from the query's own limit: or the server default.
 - _limit_source: "query" when the cap came from the query's own limit:/top:, "server_default" otherwise.
-- _limit_hit: the row count equals that cap AND the cap was the server default.
+- _limit_hit: the row count equals that cap AND the cap was the server default, so a query carrying its own limit:/top: never sets it and exactly that many rows is a complete answer.
 - _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
 - _query_id: this query's id in the warehouse's own query history. Present only where enabled.
 - warning, renderLogErrors: present only when they apply.
 
-A query with no limit: of its own gets the server default, so a result landing exactly on _query_row_limit is almost never the whole table. Values above 2^53 are returned as JSON strings so their digits survive.`;
+Values above 2^53 are returned as JSON strings so their digits survive.`;
 
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
 
