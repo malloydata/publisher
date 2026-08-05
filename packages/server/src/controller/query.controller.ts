@@ -75,6 +75,7 @@ export class QueryController {
       } else {
          const {
             result,
+            serializedResult,
             compactResult,
             rowLimit,
             rowLimitSource,
@@ -129,9 +130,14 @@ export class QueryController {
          );
          const renderLogs = validateRenderTags(result);
          return {
+            // Reuse the JSON the byte guard already built for the full result
+            // rather than stringifying the same object a second time; for a
+            // large response that second pass is the expensive one. The compact
+            // form needs its own pass, since it is a different object and needs
+            // the bigint replacer.
             result: compactJson
                ? JSON.stringify(compactResult, bigIntReplacer)
-               : JSON.stringify(result),
+               : serializedResult,
             resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
             // The cap the database applied. A caller counting the rows it got
