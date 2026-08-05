@@ -5,10 +5,13 @@ import * as sinon from "sinon";
 import {
    MaterializationEligibilityError,
    BadRequestError,
+   ConnectionNotFoundError,
+   DestinationNotFoundError,
    EnvironmentNotFoundError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
+   internalErrorToHttpError,
 } from "../errors";
 import {
    BuildInstruction,
@@ -145,11 +148,10 @@ describe("redactConnectionSecrets", () => {
             );
 
          const { service } = createMocks();
-         const environment = {
-            getApiConnection: (name: string) =>
-               name === "lake" ? destinationConnection : sourceConnection,
-            getEnvironmentPath: () => "/tmp/env",
-         };
+         const environment = buildEnvironmentStub({
+            connections: { orders_pg: sourceConnection },
+            destinations: { lake: destinationConnection },
+         });
 
          const call = (
             service as unknown as {
@@ -232,6 +234,46 @@ function createMocks() {
    return { sandbox, repository, environmentStore, service };
 }
 
+/**
+ * A stub of the environment surface the build path depends on, with the two
+ * lookups kept as disjoint as the real Environment keeps them: connection names
+ * resolve only through `getApiConnection` and destination names only through
+ * `getStorageDestination`, and asking either for the other's name fails
+ * the way the real one does.
+ *
+ * That disjointness is the point. A stub that answered both lookups from one map
+ * would let a build resolve its destination through the connection list and the
+ * test would never notice, which is exactly the confusion these tests exist to
+ * catch.
+ */
+function buildEnvironmentStub(opts: {
+   connections?: Record<string, Record<string, unknown>>;
+   destinations?: Record<string, Record<string, unknown>>;
+   environmentPath?: string;
+}) {
+   const connections = opts.connections ?? {};
+   const destinations = opts.destinations ?? {};
+   return {
+      getApiConnection: sinon.stub().callsFake((name: string) => {
+         const connection = connections[name];
+         if (!connection) {
+            throw new ConnectionNotFoundError(`Connection ${name} not found`);
+         }
+         return connection;
+      }),
+      getStorageDestination: sinon.stub().callsFake((name: string) => {
+         const destination = destinations[name];
+         if (!destination) {
+            throw new DestinationNotFoundError(
+               `Storage destination ${name} not found`,
+            );
+         }
+         return destination;
+      }),
+      getEnvironmentPath: () => opts.environmentPath ?? "/tmp/env",
+   };
+}
+
 /** Point environmentStore.getEnvironment at a package with the given overrides. */
 function setPackage(
    environmentStore: EnvironmentStore,
@@ -276,15 +318,16 @@ describe("MaterializationService", () => {
          // getApiConnection returns a non-storage type so the RW drop refuses
          // at its destination gate (pre-session), exercising the routing + the
          // best-effort failure handling without needing a live DuckDB attach.
-         const getApiConnection = sinon
-            .stub()
-            .returns({ name: "lake", type: "postgres" });
+         const environment = buildEnvironmentStub({
+            destinations: { lake: { name: "lake", type: "postgres" } },
+            environmentPath: "/test",
+         });
+         const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
-            getApiConnection,
-            getEnvironmentPath: () => "/test",
+            ...environment,
          });
          ctx.repository.getMaterializationById.resolves(
             makeMaterialization({
@@ -296,7 +339,7 @@ describe("MaterializationService", () => {
                         sourceName: "daily",
                         physicalTableName: "daily__mabc123",
                         connectionName: "wh",
-                        storageConnectionName: "lake",
+                        storageDestinationName: "lake",
                      },
                   },
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -311,7 +354,7 @@ describe("MaterializationService", () => {
          // Routed to the storage path (resolved the destination connection for
          // an RW drop, not the old skip), and the delete completed despite the
          // drop's best-effort failure.
-         expect(getApiConnection.calledWith("lake")).toBe(true);
+         expect(getStorageDestination.calledWith("lake")).toBe(true);
          expect(
             (
                ctx.repository.deleteMaterialization as sinon.SinonStub
@@ -323,15 +366,16 @@ describe("MaterializationService", () => {
          // name=-verbatim: generations of a source share one physical name, so
          // dropping a superseded record's table must NOT take out the table a
          // remaining run still serves.
-         const getApiConnection = sinon
-            .stub()
-            .returns({ name: "lake", type: "duckdb" });
+         const environment = buildEnvironmentStub({
+            destinations: { lake: { name: "lake", type: "duckdb" } },
+            environmentPath: "/test",
+         });
+         const getStorageDestination = environment.getStorageDestination;
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             getPackage: sinon
                .stub()
                .resolves({ getMalloyConnection: async () => ({}) }),
-            getApiConnection,
-            getEnvironmentPath: () => "/test",
+            ...environment,
          });
          const entries = {
             se1: {
@@ -339,7 +383,7 @@ describe("MaterializationService", () => {
                sourceName: "daily",
                physicalTableName: "daily", // shared logical name
                connectionName: "wh",
-               storageConnectionName: "lake",
+               storageDestinationName: "lake",
             },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
          } as any;
@@ -364,9 +408,9 @@ describe("MaterializationService", () => {
             dropTables: true,
          });
 
-         // The drop was skipped (never resolved the destination connection), and
-         // the record was still deleted.
-         expect(getApiConnection.called).toBe(false);
+         // The drop was skipped (never resolved the destination), and the record
+         // was still deleted.
+         expect(getStorageDestination.called).toBe(false);
          expect(
             (
                ctx.repository.deleteMaterialization as sinon.SinonStub
@@ -382,11 +426,11 @@ describe("MaterializationService", () => {
             sourceName: "daily",
             physicalTableName: "daily__mabc",
             connectionName: "wh",
-            storageConnectionName: "lake",
+            storageDestinationName: "lake",
             schema: [{ name: "a", type: "BIGINT" }],
          },
       };
-      // A colocated entry carries NO storageConnectionName.
+      // A colocated entry carries NO storageDestinationName.
       const colocatedEntry = {
          ce1: {
             sourceEntityId: "ce1",
@@ -1012,13 +1056,13 @@ describe("manifestExcludingStorage (chained-storage inline)", () => {
             sourceEntityId: "wh_up",
             physicalTableName: "wh_up_v1",
             connectionName: "duckdb",
-            // no storageConnectionName -> colocated, keep it
+            // no storageDestinationName -> colocated, keep it
          },
          lake_up: {
             sourceEntityId: "lake_up",
             physicalTableName: "lake_up__mabc",
             connectionName: "wh",
-            storageConnectionName: "lake", // storage -> exclude it
+            storageDestinationName: "lake", // storage -> exclude it
          },
       };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1747,7 +1791,7 @@ describe("buildOneSource", () => {
          up_storage: {
             sourceEntityId: "up_storage",
             physicalTableName: "daily__mabc",
-            storageConnectionName: "lake",
+            storageDestinationName: "lake",
          },
          up_pathc: {
             sourceEntityId: "up_pathc",
@@ -1821,7 +1865,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       stackOnParent: "ok" | "throw" | "infra";
    }): Promise<{
       physicalTableName: string;
-      storageConnectionName?: string;
+      storageDestinationName?: string;
    }> {
       const source = fakeSource({
          name: "monthly",
@@ -1837,13 +1881,10 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       };
       const manifest = new Manifest();
       manifest.strict = opts.strict;
-      const environment = {
-         getApiConnection: (n: string) => ({
-            name: n,
-            type: n === "lake" ? "duckdb" : "postgres",
-         }),
-         getEnvironmentPath: () => "/tmp/env",
-      };
+      const environment = buildEnvironmentStub({
+         connections: { duckdb: { name: "duckdb", type: "duckdb" } },
+         destinations: { lake: { name: "lake", type: "duckdb" } },
+      });
       const svc = ctx.service as unknown as {
          buildDownstreamViaParents: unknown;
          buildOneSourceIntoStorage: (
@@ -1856,14 +1897,14 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
             dep: boolean,
          ) => Promise<{
             physicalTableName: string;
-            storageConnectionName?: string;
+            storageDestinationName?: string;
          }>;
       };
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
       svc.buildDownstreamViaParents =
          opts.stackOnParent === "ok"
             ? sinon.stub().resolves({
-                 storageConnectionName: "lake",
+                 storageDestinationName: "lake",
                  schema: [
                     { name: "order_month", type: "DATE" },
                     { name: "monthly_total", type: "DOUBLE" },
@@ -1891,7 +1932,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                sourceEntityId: "up",
                sourceName: "daily",
                physicalTableName: "daily__mabc",
-               storageConnectionName: "lake",
+               storageDestinationName: "lake",
                schema: [{ name: "order_date", type: "DATE" }],
             },
          },
@@ -1901,7 +1942,7 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
 
    it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
       const entry = await callInto({ strict: false, stackOnParent: "ok" });
-      expect(entry.storageConnectionName).toBe("lake");
+      expect(entry.storageDestinationName).toBe("lake");
       expect(entry.physicalTableName).toBe("monthly__mabc");
    });
 
@@ -1930,6 +1971,142 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       await expect(
          callInto({ strict: false, stackOnParent: "throw" }),
       ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+});
+
+describe("buildOneSourceIntoStorage destination resolution", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+   afterEach(() => ctx.sandbox.restore());
+
+   const MANAGED_DESTINATION = {
+      name: "shared",
+      type: "ducklake",
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: {
+               host: "catalog.internal",
+               password: "catalog-secret",
+            },
+         },
+         storage: { bucketUrl: "gs://managed-tier/org_a" },
+      },
+   };
+
+   /** The tenant's own warehouse, sharing a name with the destination above. */
+   const TENANT_CONNECTION = {
+      name: "shared",
+      type: "postgres",
+      postgresConnection: {
+         host: "tenant.example.com",
+         password: "tenant-secret",
+      },
+   };
+
+   function callInto(environment: ReturnType<typeof buildEnvironmentStub>): {
+      run: () => Promise<{ storageDestinationName?: string }>;
+      write: sinon.SinonStub;
+   } {
+      // Stub the write seam so a resolved destination does not need a live
+      // catalog: reaching it at all is what these tests are about.
+      const write = sinon.stub().resolves({
+         storageDestinationName: "shared",
+         schema: [{ name: "order_month", type: "DATE" }],
+      });
+      (
+         ctx.service as unknown as { buildDownstreamViaParents: unknown }
+      ).buildDownstreamViaParents = write;
+
+      const run = () =>
+         (
+            ctx.service as unknown as {
+               buildOneSourceIntoStorage: (
+                  s: unknown,
+                  i: BuildInstruction,
+                  m: unknown,
+                  e: unknown,
+                  sql: string,
+                  built: Record<string, unknown>,
+                  dep: boolean,
+               ) => Promise<{ storageDestinationName?: string }>;
+            }
+         ).buildOneSourceIntoStorage(
+            fakeSource({
+               name: "monthly",
+               sourceEntityId: "abcdef1234567890",
+               annotationFields: { storage: "shared" },
+            }),
+            {
+               sourceEntityId: "abcdef1234567890",
+               materializedTableId: "mt",
+               physicalTableName: "monthly__mabc",
+               realization: "COPY",
+               destination: "shared",
+            },
+            new Manifest(),
+            environment,
+            "SELECT should_not_run",
+            {
+               up: {
+                  sourceEntityId: "up",
+                  sourceName: "daily",
+                  physicalTableName: "daily__mabc",
+                  storageDestinationName: "shared",
+                  schema: [{ name: "order_date", type: "DATE" }],
+               },
+            },
+            true, // dependsOnStorageUpstream
+         );
+
+      return { run, write };
+   }
+
+   it("materializes into the destination the destination list holds", async () => {
+      const environment = buildEnvironmentStub({
+         connections: { duckdb: { name: "duckdb", type: "duckdb" } },
+         destinations: { shared: MANAGED_DESTINATION },
+      });
+      const { run, write } = callInto(environment);
+
+      const entry = await run();
+
+      expect(entry.storageDestinationName).toBe("shared");
+      expect(environment.getStorageDestination.calledWith("shared")).toBe(true);
+      // The config handed to the write is the destination's, by identity - not a
+      // same-named connection's, and not a copy assembled from somewhere else.
+      expect(write.firstCall.args[2]).toBe(MANAGED_DESTINATION);
+      expect(environment.getApiConnection.calledWith("shared")).toBe(false);
+   });
+
+   it("refuses rather than writing into a same-named connection", async () => {
+      // The hole this whole split exists to close: a `storage=` build naming a
+      // destination that is not configured must fail, even when a connection of
+      // that name would resolve, because that connection is the tenant's own
+      // warehouse.
+      const environment = buildEnvironmentStub({
+         connections: {
+            duckdb: { name: "duckdb", type: "duckdb" },
+            shared: TENANT_CONNECTION,
+         },
+         destinations: {},
+      });
+      const { run, write } = callInto(environment);
+
+      let error: unknown;
+      try {
+         await run();
+      } catch (caught) {
+         error = caught;
+      }
+
+      expect(error).toBeInstanceOf(DestinationNotFoundError);
+      // Nothing was written, and the tenant's connection was never even resolved.
+      expect(write.called).toBe(false);
+      expect(environment.getApiConnection.calledWith("shared")).toBe(false);
+      // Reported as a misconfigured target, not as a missing connection.
+      expect(internalErrorToHttpError(error as Error).status).toBe(422);
    });
 });
 
@@ -2274,16 +2451,16 @@ describe("reclaimStorageTablesFromFailedRun", () => {
          sourceEntityId: `eid-${table}`,
          sourceName: "daily",
          physicalTableName: table,
-         storageConnectionName: "lake",
+         storageDestinationName: "lake",
       }) as unknown as Parameters<
          MaterializationService["reclaimStorageTablesFromFailedRun"]
       >[0][number];
 
    /** A destination whose drop would fail loudly if one were ever attempted. */
-   const environment = {
-      getApiConnection: () => ({ name: "lake", type: "duckdb" }),
-      getEnvironmentPath: () => "/test",
-   } as unknown as Parameters<
+   const environment = buildEnvironmentStub({
+      destinations: { lake: { name: "lake", type: "duckdb" } },
+      environmentPath: "/test",
+   }) as unknown as Parameters<
       MaterializationService["reclaimStorageTablesFromFailedRun"]
    >[1];
 
@@ -2321,7 +2498,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
                manifest: {
                   entries: {
                      other: {
-                        storageConnectionName: "lake",
+                        storageDestinationName: "lake",
                         physicalTableName: "daily_v1",
                      },
                   },
@@ -2348,6 +2525,43 @@ describe("reclaimStorageTablesFromFailedRun", () => {
       ).toBe(true);
    });
 
+   it("skips a table whose destination is no longer configured and keeps sweeping", async () => {
+      // A destination can be un-registered between the build and the reclaim.
+      // Aborting the sweep there would leave every table after it stranded too,
+      // so the entry is skipped and the rest are still attempted.
+      const withoutDestinations = buildEnvironmentStub({
+         destinations: {},
+         environmentPath: "/test",
+      }) as unknown as Parameters<
+         MaterializationService["reclaimStorageTablesFromFailedRun"]
+      >[1];
+      (ctx.repository.listMaterializations as sinon.SinonStub).resolves([]);
+
+      await (
+         ctx.service as unknown as {
+            reclaimStorageTablesFromFailedRun: (
+               b: unknown,
+               e: unknown,
+               o: unknown,
+            ) => Promise<void>;
+         }
+      ).reclaimStorageTablesFromFailedRun(
+         [entry("daily_v4"), entry("daily_v5")],
+         withoutDestinations,
+         { environmentId: "env-1", packageName: "pkg" },
+      );
+
+      expect(said(warnLog, /destination is no longer configured/)).toBe(true);
+      // Both entries were considered, not just the one that tripped the skip.
+      expect(
+         warnLog
+            .getCalls()
+            .filter((c) => /no longer configured/.test(String(c.args[0]))),
+      ).toHaveLength(2);
+      // And the sweep did not report itself as having blown up.
+      expect(said(warnLog, /did not complete/)).toBe(false);
+   });
+
    it("ignores a superseded run's entries when deciding", async () => {
       // Only MANIFEST_FILE_READY runs count as live. A superseded run naming the
       // same table must not pin it forever.
@@ -2359,7 +2573,7 @@ describe("reclaimStorageTablesFromFailedRun", () => {
                manifest: {
                   entries: {
                      old: {
-                        storageConnectionName: "lake",
+                        storageDestinationName: "lake",
                         physicalTableName: "daily_v3",
                      },
                   },

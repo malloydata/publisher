@@ -95,8 +95,8 @@ export type SourceRefinement =
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
    sourceName: string;
-   /** The DuckDB/DuckLake connection the physical table lives in. */
-   connectionName: string;
+   /** The storage destination the physical table lives in. */
+   destinationName: string;
    /** The virtualMap handle for this source (its build-posture identity). */
    virtualHandle: string;
    /** Logical (unquoted) physical table path; quoted for DuckDB at bind time. */
@@ -131,7 +131,7 @@ export interface ServeBinding {
  * Derive the publisher's self-maintained serve bindings from a build's manifest
  * entries — the standalone half of the injectable binding seam (a host/control
  * plane can supply {@link ServeBinding}s directly instead). Only entries that
- * were materialized into a storage destination (carrying `storageConnectionName`
+ * were materialized into a storage destination (carrying `storageDestinationName`
  * and a captured `schema`) produce a binding; colocated entries do
  * not (they serve through the same-connection manifest, not the transform).
  *
@@ -150,7 +150,7 @@ export function deriveServeBindings(
       // Need the source name to rebind it, plus a storage destination + table.
       if (
          !entry.sourceName ||
-         !entry.storageConnectionName ||
+         !entry.storageDestinationName ||
          !entry.physicalTableName
       ) {
          continue;
@@ -162,13 +162,13 @@ export function deriveServeBindings(
       if (schema.length === 0) continue;
       bindings.push({
          sourceName: entry.sourceName,
-         connectionName: entry.storageConnectionName,
+         destinationName: entry.storageDestinationName,
          virtualHandle: entry.sourceEntityId,
          // Qualify the table with the destination catalog (the attach alias) so
          // the serve reads `<store>.<table>` — the build wrote it there, and an
          // unqualified name would resolve against the serve session's default
          // catalog, not the attached store.
-         tablePath: `${entry.storageConnectionName}.${entry.physicalTableName}`,
+         tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
          schema,
          freshAsOf: entry.dataAsOf,
          freshnessWindowSeconds: entry.freshnessWindowSeconds,
@@ -304,7 +304,7 @@ export function buildServeShapeModel(
 type: ${shapeTypeName} is {
 ${fields}
 }
-source: ${sourceName} is ${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}
+source: ${sourceName} is ${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}
 `;
    return { modelText, shapeTypeName };
 }
@@ -321,7 +321,7 @@ function serveShapeFragment(binding: ServeBinding): string {
       .join(",\n");
    let source =
       `source: ${binding.sourceName} is ` +
-      `${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+      `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
    // Re-declare the source's refinements on the virtual base so queries that use
    // them are computed from the stored tables at serve time (the wrapper) rather
    // than falling back to live. Emission order matters for resolution: joins
@@ -702,7 +702,7 @@ export function extractViews(
 }
 
 /**
- * Assemble the per-call `virtualMap` (`connectionName -> handle -> canonical
+ * Assemble the per-call `virtualMap` (`destinationName -> handle -> canonical
  * table path`) core resolves a virtual source through. The table path is quoted
  * canonical for DuckDB — core validates every entry is canonical SQL for some
  * dialect and then pastes it verbatim (it does not quote it), so an unquoted or
@@ -720,10 +720,10 @@ export function buildVirtualMap(
 ): Map<string, Map<string, string>> {
    const map = new Map<string, Map<string, string>>();
    for (const b of bindings) {
-      let inner = map.get(b.connectionName);
+      let inner = map.get(b.destinationName);
       if (!inner) {
          inner = new Map<string, string>();
-         map.set(b.connectionName, inner);
+         map.set(b.destinationName, inner);
       }
       inner.set(b.virtualHandle, quoteManifestTablePath(b.tablePath, "duckdb"));
    }

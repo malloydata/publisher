@@ -58,7 +58,7 @@ source: b is a -> {
 - a -> prt_a__g1 @ lake
 - b -> nosuchschema.prt_b__g1 @ lake
 
-## Connection lake (rows=0)
+## Connection lake_probe (rows=0)
 
 `prt_a__g1` is gone — reclaimed on the failure path. Without that it would be
 unreachable forever: no manifest names it, so no GC can ever find it.
@@ -73,7 +73,7 @@ Now a SUCCESSFUL build, so a committed manifest references `prt_a__g2`.
 
 - a -> prt_a__g2 @ lake
 
-## Connection lake (rows=1)
+## Connection lake_probe (rows=1)
 
 ```sql
 SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g2'
@@ -87,7 +87,7 @@ stable-name case. `b` fails again.
 - a -> prt_a__g2 @ lake
 - b -> nosuchschema.prt_b__g2 @ lake
 
-## Connection lake (rows=1)
+## Connection lake_probe (rows=1)
 
 `prt_a__g2` SURVIVES. A live manifest still references it, so reclaim leaves it alone
 rather than taking a working source offline.

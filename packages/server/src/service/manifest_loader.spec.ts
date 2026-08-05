@@ -50,7 +50,7 @@ describe("fetchManifestEntries", () => {
       expect(storageEntries).toEqual({});
    });
 
-   it("routes storage= entries (with storageConnectionName) to storageEntries, not the tableName manifest", async () => {
+   it("routes storage= entries (with storageDestinationName) to storageEntries, not the tableName manifest", async () => {
       const schema = [
          { name: "d", type: "DATE" },
          { name: "n", type: "BIGINT" },
@@ -69,7 +69,7 @@ describe("fetchManifestEntries", () => {
                sourceName: "daily_orders",
                physicalTableName: "daily_orders",
                connectionName: "bq",
-               storageConnectionName: "lake",
+               storageDestinationName: "lake",
                schema,
             },
          },
@@ -89,7 +89,7 @@ describe("fetchManifestEntries", () => {
             sourceName: "daily_orders",
             physicalTableName: "daily_orders",
             connectionName: "bq",
-            storageConnectionName: "lake",
+            storageDestinationName: "lake",
             schema,
          },
       });
