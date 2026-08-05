@@ -78,6 +78,29 @@ The SDK component that embeds an in-package HTML data app is renamed, along with
 
 The REST `/pages` endpoint is untouched by this change and still answers at its existing path. Renaming it to `/data-apps` is a separate, breaking change with its own release note.
 
+## [Unreleased] — Breaking: `/pages` is now `/data-apps`
+
+The endpoint that lists a package's in-package HTML data apps is renamed, along with its schema and the SPA route that opens one. **There is no alias and no deprecation period: a caller still requesting `/pages` stops getting the listing.**
+
+A production deployment answers it **404 as JSON**, so a client sees a clean error rather than a surprise. That is worth stating because it was not true until recently: an unmatched path under `/api/v0/` used to fall through to the SPA's catch-all and answer 200 with `index.html` on any deployment serving the bundled web UI, which would have handed a migrating client an HTML body instead of an error. #962 fixed that catch-all. (Under `NODE_ENV=development` the JSON fallback is not mounted, so the same request gets an HTML 404 from Express instead.)
+
+### What changed
+
+- **`GET …/packages/{pkg}/pages` → `GET …/packages/{pkg}/data-apps`.** Same response shape, same query parameters, same status codes.
+- **Schema `Page` → `DataApp`**, and the OpenAPI `operationId` `list-pages` → `list-data-apps` under a `data-apps` tag. Anything generated from `api-doc.yaml` changes accordingly: in the TypeScript client, `PagesApi.listPages` becomes `DataAppsApi.listDataApps`, and `apiClients.pages` on `<ServerProvider>`'s context becomes `apiClients.dataApps`.
+- **The SPA route `/{env}/{pkg}/pages/{file}` → `/{env}/{pkg}/data-apps/{file}`, and the old form still works for one release.** A bookmark or shared link using `pages/` opens the data app as before and rewrites itself to the new URL in the address bar, carrying any query string or fragment with it so the rewrite never silently drops state a caller supplied. **This alias is deprecated and comes out one release after this one.** Update stored links now rather than relying on it. The standalone URL (`/environments/{env}/packages/{pkg}/{file}`) never changed. One thing the alias does take away: a model or notebook is excluded from the rewrite, so a `.malloy` or `.malloynb` living in a package's `pages/` directory still opens in the model viewer, but a non-model file under `public/pages/` is no longer reachable at `/{env}/{pkg}/pages/<file>` and is addressed as `/{env}/{pkg}/data-apps/pages/<file>` instead. That is the same collision described below for `public/data-apps/`, and nothing in this repo ships either directory.
+- **The package view's "Pages" section is now labelled "Data Apps."**
+
+### Migration
+
+- Change the request path to `/data-apps`. If you generate a client from the spec, regenerate it.
+- If you use the SDK's API clients directly, `apiClients.pages.listPages(env, pkg)` becomes `apiClients.dataApps.listDataApps(env, pkg)`.
+- Update any stored link of the form `/{env}/{pkg}/pages/{file}`. It still works in this release and stops working in the next one.
+
+Why the REST path breaks cleanly while the browser URL gets a grace period: the two have different costs and different owners. Carrying both spellings in the spec would mean two paths, two operationIds and two generated client methods for one listing, with every future change to it made twice, and the one known consumer of the endpoint reviewed this change and chose the clean break, having already accepted the short window during a rollout where some of its machines answer 404. A bookmark has no owner to consult, and the person who saved it is not reading these notes, so that surface redirects for one release rather than failing. The endpoint is documented (in [docs/html-data-apps.md](docs/html-data-apps.md) and [docs/api-overview.md](docs/api-overview.md), both updated here), so the REST break is a real one for anyone who took it up rather than a quiet one. If that trade is wrong for your deployment, say so on the PR.
+
+One more consequence of the SPA route move, easy to miss: the app now claims the `data-apps` segment, so `/{env}/{pkg}/data-apps/<file>` is no longer redirected to the static route. Clicking a data app in the Console is unaffected, because the listing already includes the file's path relative to `public/`. What changes is a hand-written URL of that shape: it opens the embedded viewer one segment down, on `public/<file>`, rather than redirecting. A package that itself ships a `public/data-apps/` directory is the case to know about, since its files are addressed as `/{env}/{pkg}/data-apps/data-apps/<file>`; the standalone URL `/environments/{env}/packages/{pkg}/data-apps/<file>` serves them unchanged either way. This mirrors what `public/pages/` had before, so it is not a new class of collision, but `data-apps` is a likelier directory name than `pages` was.
+
 ## [0.0.208] — Single-call materialization (plan-as-artifact)
 
 **Breaking change to the materialization API.** Materialization moves from the two-round (compile-then-build) protocol to a single call. The build plan is now a compile-time property of the package, and a build is requested in one request.

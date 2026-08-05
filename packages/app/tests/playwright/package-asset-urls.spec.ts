@@ -178,11 +178,13 @@ test.describe("package asset URLs", () => {
       }
    });
 
-   test("the in-app page viewer route is not diverted", async ({ request }) => {
-      // `pages/<file>.html` ends in an asset extension but is an app route: the
-      // package view links to it and ModelPage iframes the standalone URL.
+   test("the in-app data app viewer route is not diverted", async ({
+      request,
+   }) => {
+      // `data-apps/<file>.html` ends in an asset extension but is an app route:
+      // the package view links to it and ModelPage iframes the standalone URL.
       const response = await request.get(
-         `/${DEFAULT_ENV}/${PACKAGES.dataApp}/pages/index.html`,
+         `/${DEFAULT_ENV}/${PACKAGES.dataApp}/data-apps/index.html`,
          { maxRedirects: 0 },
       );
       expect(response.status()).toBe(200);

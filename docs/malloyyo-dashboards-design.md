@@ -13,11 +13,11 @@ dashboard REST surface in a release. Phases 1 to 3 (discovery and REST, the tag-
 phase 4 (custom JSX components) was built and then **cut**, and that cut is a real decision that
 survives the split. Per-item detail is in [Phasing](#phasing).
 
-Paths, component names, and UI section labels describe the **end state** of the sequence. One still
-differs from `main` today because the endpoint and route rename lands separately: what this document
-calls Data Apps is still labelled Pages in the Console, and still served at `/pages`. The component
-and module names (`DataAppViewer`, `dataAppEmbed.ts`) and the Notebooks label match `main`. Written
-July 2026, revised against the implementation.
+Paths, component names, and UI section labels describe the **end state** of the sequence. The rename
+this document was written ahead of has landed, so its Data Apps and Notebooks naming now matches
+`main`. The dashboard-specific names do not, per the paragraph above: `dashboard.ts`, the `Dashboard`
+export, and the Dashboards section are still ahead of `main`. Written July 2026, revised against the
+implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
 and, once they land, `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or
