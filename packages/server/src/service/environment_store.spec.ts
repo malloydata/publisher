@@ -37,6 +37,42 @@ type MockData = Record<string, unknown>;
 // so a test can assign it before constructing the store.
 let mockDbEnvironments: unknown[] = [];
 
+// Storage destination rows the mock database holds, keyed by
+// environment id. Reset between tests like `mockDbEnvironments`, and written by
+// the store's own sync, so a test can assert what a restart would read back.
+type MockDestinationRow = {
+   id: string;
+   environmentId: string;
+   name: string;
+   type: string;
+   config: Record<string, unknown>;
+};
+let mockDbDestinations: MockDestinationRow[] = [];
+
+// Number of destination READS the mock database should fail before answering
+// normally. Drives the "the load could not read them" case, which is the only way
+// the in-memory list can be empty without the operator having emptied it.
+let failNextDestinationReads = 0;
+
+/** A well-formed DuckLake destination, as publisher.config.json declares one. */
+function managedDestination(name = "managed"): Connection {
+   return {
+      name,
+      type: "ducklake",
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: {
+               host: "catalog.internal",
+               databaseName: "ducklake",
+               userName: "publisher",
+               password: "catalog-secret",
+            },
+         },
+         storage: { bucketUrl: "gs://managed-tier/org_a" },
+      },
+   };
+}
+
 // Recorder for the embeddings-cleanup wiring tests: every SQL statement
 // the store's cleanup path issues lands here. When `blocks` is true the
 // statements never resolve, which pins that the delete APIs do not await
@@ -215,6 +251,67 @@ mock.module("../storage/StorageManager", () => {
                }),
 
                deleteConnection: async (_id: string): Promise<void> => {},
+
+               // ===== STORAGE DESTINATION METHODS =====
+               // Backed by `mockDbDestinations` rather than stubbed out, so a
+               // test can drive both directions the store uses: what a restart
+               // reads back, and what the sync writes and prunes.
+               listStorageDestinations: async (
+                  environmentId: string,
+               ): Promise<unknown[]> => {
+                  if (failNextDestinationReads > 0) {
+                     failNextDestinationReads -= 1;
+                     throw new Error("destination read failed (simulated)");
+                  }
+                  return mockDbDestinations.filter(
+                     (row) => row.environmentId === environmentId,
+                  );
+               },
+
+               getStorageDestinationByName: async (
+                  environmentId: string,
+                  name: string,
+               ): Promise<MockData | null> =>
+                  mockDbDestinations.find(
+                     (row) =>
+                        row.environmentId === environmentId &&
+                        row.name === name,
+                  ) ?? null,
+
+               upsertStorageDestination: async (
+                  data: MockData,
+               ): Promise<MockData> => {
+                  const row = {
+                     id: `${data.environmentId}-${data.name}`,
+                     environmentId: data.environmentId as string,
+                     name: data.name as string,
+                     type: data.type as string,
+                     config: data.config as Record<string, unknown>,
+                  };
+                  const index = mockDbDestinations.findIndex(
+                     (existing) => existing.id === row.id,
+                  );
+                  if (index === -1) {
+                     mockDbDestinations.push(row);
+                  } else {
+                     mockDbDestinations[index] = row;
+                  }
+                  return row;
+               },
+
+               deleteStorageDestination: async (id: string): Promise<void> => {
+                  mockDbDestinations = mockDbDestinations.filter(
+                     (row) => row.id !== id,
+                  );
+               },
+
+               deleteStorageDestinationsByEnvironmentId: async (
+                  environmentId: string,
+               ): Promise<void> => {
+                  mockDbDestinations = mockDbDestinations.filter(
+                     (row) => row.environmentId !== environmentId,
+                  );
+               },
             };
          }
       },
@@ -245,6 +342,8 @@ describe("EnvironmentStore Service", () => {
       // in one process, so a leaked value would silently switch later tests onto
       // the database-restore branch.
       mockDbEnvironments = [];
+      mockDbDestinations = [];
+      failNextDestinationReads = 0;
       sandbox = sinon.createSandbox();
 
       // Mock the configuration to prevent initialization errors
@@ -264,6 +363,8 @@ describe("EnvironmentStore Service", () => {
       }
       mkdirSync(serverRootPath);
       mockDbEnvironments = [];
+      mockDbDestinations = [];
+      failNextDestinationReads = 0;
       sandbox.restore();
    });
 
@@ -760,6 +861,369 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors).toHaveLength(1);
       expect(status.loadErrors?.[0]?.environment).toBe(envName);
       expect(status.loadErrors?.[0]?.message).toBeTruthy();
+   });
+
+   it("should report configured storage destinations on the status endpoint", async () => {
+      // The status endpoint is how an operator or orchestrator confirms a worker
+      // picked up the destination it was configured with. It reports the name and
+      // type; the catalog credentials behind them must not leave the server.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  storageDestinations: [
+                     {
+                        name: "managed",
+                        type: "ducklake",
+                        ducklakeConnection: {
+                           catalog: {
+                              postgresConnection: {
+                                 host: "catalog.internal",
+                                 databaseName: "ducklake",
+                                 userName: "publisher",
+                                 password: "catalog-secret",
+                              },
+                           },
+                           storage: { bucketUrl: "gs://managed-tier/org_a" },
+                        },
+                     },
+                  ],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const status = await newEnvironmentStore.getStatus();
+      const environment = status.environments.find(
+         (e) => e.name === projectName,
+      );
+      expect(environment?.storageDestinations).toEqual([
+         { name: "managed", type: "ducklake" },
+      ]);
+      expect(JSON.stringify(status)).not.toContain("catalog-secret");
+      // Absent from the connection list in the same payload: that disjointness is
+      // the whole point of the second list.
+      expect(environment?.connections?.map((c) => c.name)).toEqual([]);
+   });
+
+   it("should persist a destination so a restart restores it from the database", async () => {
+      // A destination is not a connection row, but it has to outlive a restart
+      // the same way a connection does: without this, every materialized query
+      // naming it falls back to running live until something re-registers it.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  storageDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const firstBoot = new EnvironmentStore(serverRootPath);
+      await firstBoot.finishedInitialization;
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+      expect(mockDbDestinations[0].type).toBe("ducklake");
+
+      // Restart: the database now holds the environment, so initialize() takes
+      // the restore branch, and the config file no longer declares anything.
+      mockDbEnvironments = [
+         {
+            id: mockDbDestinations[0].environmentId,
+            name: projectName,
+            path: envPath,
+            metadata: {},
+         },
+      ];
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const afterRestart = new EnvironmentStore(serverRootPath);
+      await afterRestart.finishedInitialization;
+
+      const environment = await afterRestart.getEnvironment(projectName);
+      expect(
+         environment.getStorageDestination("managed").ducklakeConnection
+            ?.storage?.bucketUrl,
+      ).toBe("gs://managed-tier/org_a");
+   });
+
+   it("should prune a stored destination the environment no longer holds", async () => {
+      // The list has replace semantics, so a row left behind for a removed
+      // destination would resurrect it at the next restart.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  storageDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+
+      await newEnvironmentStore.updateEnvironment({
+         name: projectName,
+         storageDestinations: [managedDestination("replacement")],
+      });
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual([
+         "replacement",
+      ]);
+   });
+
+   it("should not delete stored destinations when the environment directory is missing", async () => {
+      // The other way an empty list reaches the sync as though it were desired.
+      // A boot that cannot find an environment's directory reloads it from
+      // config, and a config declaring no destinations normalizes to `[]` — which
+      // is an instruction to clear, so the rows are pruned and a destination
+      // registered over the API is gone for good. The directory being absent is
+      // transient; the deletion is not.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  storageDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const firstBoot = new EnvironmentStore(serverRootPath);
+      await firstBoot.finishedInitialization;
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+
+      // Restart with the row present, the config no longer declaring the
+      // destination, and the recorded directory gone.
+      const missingPath = path.join(serverRootPath, "gone-missing");
+      mockDbEnvironments = [
+         {
+            id: mockDbDestinations[0].environmentId,
+            name: projectName,
+            path: missingPath,
+            metadata: {},
+         },
+      ];
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const afterRestart = new EnvironmentStore(serverRootPath);
+      await afterRestart.finishedInitialization;
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+   });
+
+   it("should not delete stored destinations when the load could not read them", async () => {
+      // The pair that bites: a read failure leaves the in-memory list EMPTY, and
+      // the sync deletes rows the list does not hold. Reconciling to it would turn
+      // a transient error into permanent deletion — the next restart has nothing
+      // to restore, and every materialized query serves live for good.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      // Config declares nothing, so the fallback on a failed read is an empty list.
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+      // The id the sync will resolve for this environment: the mock's
+      // getEnvironmentByName answers null, so addEnvironmentMetadata creates one
+      // and gets "test-project-id" back. The seeded row has to hang off the SAME
+      // id or the prune has nothing in scope and the test proves nothing.
+      mockDbEnvironments = [
+         {
+            id: "test-project-id",
+            name: projectName,
+            path: envPath,
+            metadata: {},
+         },
+      ];
+      mockDbDestinations = [
+         {
+            id: "test-project-id-managed",
+            environmentId: "test-project-id",
+            name: "managed",
+            type: "ducklake",
+            config: managedDestination(),
+         },
+      ];
+      // The read at restore fails; every later read (the sync's own) succeeds.
+      failNextDestinationReads = 1;
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      // An ordinary environment write — a readme edit is enough to reach the sync.
+      await newEnvironmentStore.updateEnvironment({
+         name: projectName,
+         readme: "touched",
+      });
+
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+   });
+
+   it("should still delete a stored destination the environment deliberately cleared", async () => {
+      // The converse, so the guard above cannot be satisfied by never pruning: an
+      // explicit empty list IS the desired state and must reconcile.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  storageDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+      expect(mockDbDestinations.map((row) => row.name)).toEqual(["managed"]);
+
+      await newEnvironmentStore.updateEnvironment({
+         name: projectName,
+         storageDestinations: [],
+      });
+
+      expect(mockDbDestinations).toEqual([]);
+   });
+
+   it("should seed destinations from the config file when the database holds none", async () => {
+      // The restore branch reads the database first, but an operator adding a
+      // destination to publisher.config.json on an existing server has no rows to
+      // read; the file has to still take effect.
+      const envPath = path.join(serverRootPath, projectName);
+      mkdirSync(envPath, { recursive: true });
+      writeFileSync(
+         path.join(envPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: envPath }],
+                  connections: [],
+                  storageDestinations: [managedDestination()],
+               },
+            ],
+         }),
+      );
+      mockDbEnvironments = [
+         {
+            id: "restored-env-id",
+            name: projectName,
+            path: envPath,
+            metadata: {},
+         },
+      ];
+
+      const newEnvironmentStore = new EnvironmentStore(serverRootPath);
+      await newEnvironmentStore.finishedInitialization;
+
+      const environment = await newEnvironmentStore.getEnvironment(projectName);
+      expect(environment.listStorageDestinations().map((d) => d.name)).toEqual([
+         "managed",
+      ]);
    });
 
    it("should report a package that failed to load while its siblings serve", async () => {
@@ -2227,6 +2691,8 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       }
       mkdirSync(serverRootPath, { recursive: true });
       mockDbEnvironments = [];
+      mockDbDestinations = [];
+      failNextDestinationReads = 0;
       embeddingCleanupRuns.length = 0;
       embeddingCleanupBlocks = false;
       _resetEmbeddingIndexStateForTests();

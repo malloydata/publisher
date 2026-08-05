@@ -40,6 +40,12 @@ information on using pull requests.
 This project follows
 [The Linux Foundation's Code of Conduct](https://lfprojects.org/policies/code-of-conduct/).
 
+## Security
+
+Report a security vulnerability privately rather than as a public issue.
+[SECURITY.md](SECURITY.md) has the reporting form, what's in scope, and when filing in the open is
+fine.
+
 ## Contributing to the Python SDK (`packages/python-client`)
 
 The Python SDK is **auto-generated** from `api-doc.yaml` using OpenAPI Generator plus a thin build script.

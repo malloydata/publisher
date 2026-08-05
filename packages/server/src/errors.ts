@@ -20,6 +20,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(400, error.message);
    } else if (error instanceof ConnectionNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof DestinationNotFoundError) {
+      return httpError(422, error.message);
    } else if (error instanceof ConnectionAuthError) {
       return httpError(422, error.message);
    } else if (error instanceof UnsupportedCatalogFormatError) {
@@ -94,6 +96,20 @@ export class ConnectionNotFoundError extends Error {
 }
 
 export class ConnectionError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * A storage destination was named but is not configured on the
+ * environment. Distinct from {@link ConnectionNotFoundError} so a misconfigured
+ * destination is diagnosable in logs, and mapped to 422 rather than 404 because
+ * it can only be raised by a build or serve path: the connection endpoints
+ * resolve through the connection list alone, which never holds a destination and
+ * so answers for one exactly as it does for a name that does not exist.
+ */
+export class DestinationNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }

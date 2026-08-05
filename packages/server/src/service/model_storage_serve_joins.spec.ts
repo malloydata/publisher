@@ -14,6 +14,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
+   MalloyConfig,
    modelDefToModelInfo,
    Runtime,
 } from "@malloydata/malloy";
@@ -35,7 +36,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'r1' AS region_id") extend {
 
 const ORDERS_BINDING: ServeBinding = {
    sourceName: "orders",
-   connectionName: "duckdb",
+   destinationName: "duckdb",
    virtualHandle: "orders_h",
    tablePath: "orders_mz",
    schema: [
@@ -45,7 +46,7 @@ const ORDERS_BINDING: ServeBinding = {
 };
 const REGIONS_BINDING: ServeBinding = {
    sourceName: "regions",
-   connectionName: "duckdb",
+   destinationName: "duckdb",
    virtualHandle: "regions_h",
    tablePath: "regions_mz",
    schema: [
@@ -105,7 +106,12 @@ async function buildModel(): Promise<Model> {
       undefined,
       modelInfo,
    );
-   model.setServeMalloyConfig(connMap);
+   // The serve shape compiles against the destination connections only, so hand
+   // it a config carrying just this one — the same disjointness the Environment
+   // enforces in production, expressed for a single-connection test.
+   const serveConfig = new MalloyConfig({ connections: {} });
+   serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
+   model.setServeDestinationConfig(() => serveConfig);
    return model;
 }
 
