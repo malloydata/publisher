@@ -70,6 +70,8 @@ describe("classifySpaFallback", () => {
          expect(classify("/examples/storefront/index.html")).toEqual({
             kind: "redirect",
             location: "/environments/examples/packages/storefront/index.html",
+            environmentName: "examples",
+            packageName: "storefront",
          });
       });
 
@@ -78,6 +80,8 @@ describe("classifySpaFallback", () => {
             kind: "redirect",
             location:
                "/environments/examples/packages/storefront/assets/app.js",
+            environmentName: "examples",
+            packageName: "storefront",
          });
       });
 
@@ -90,6 +94,8 @@ describe("classifySpaFallback", () => {
          expect(classify("/examples/storefront/public/index.html")).toEqual({
             kind: "redirect",
             location: "/environments/examples/packages/storefront/index.html",
+            environmentName: "examples",
+            packageName: "storefront",
          });
       });
 
@@ -98,6 +104,8 @@ describe("classifySpaFallback", () => {
          expect(classify("/examples/storefront/public.html")).toEqual({
             kind: "redirect",
             location: "/environments/examples/packages/storefront/public.html",
+            environmentName: "examples",
+            packageName: "storefront",
          });
       });
 
@@ -109,6 +117,7 @@ describe("classifySpaFallback", () => {
          ).toEqual({
             kind: "assetNotFound",
             path: "/environments/examples/packages/storefront/index.html",
+            environmentCandidate: null,
          });
       });
 
@@ -126,13 +135,18 @@ describe("classifySpaFallback", () => {
 
    describe("answers a file request that nothing serves", () => {
       it("404s a two-segment asset path, with the path it was asked for", () => {
+         // `environmentCandidate` is the first segment for these short paths: the
+         // caller checks whether it is really a loaded environment, because a
+         // package may legally be named `report.html`.
          expect(classify("/favicon-missing.ico")).toEqual({
             kind: "assetNotFound",
             path: "/favicon-missing.ico",
+            environmentCandidate: "favicon-missing.ico",
          });
          expect(classify("/assets/deleted-chunk.js")).toEqual({
             kind: "assetNotFound",
             path: "/assets/deleted-chunk.js",
+            environmentCandidate: "assets",
          });
       });
 
@@ -142,6 +156,37 @@ describe("classifySpaFallback", () => {
          expect(
             classify("/examples/storefront/pages/../secret.html").kind,
          ).toBe("spa");
+      });
+   });
+
+   describe("cases the first version of this got wrong", () => {
+      it("keeps a workbook path whose name ends in a servable extension", () => {
+         // Workbook names are arbitrary user-typed keys, so `q1.csv` is legal and
+         // is exactly what SPA_OWNED_SEGMENTS is for. The `.malloynb` case does
+         // not exercise it, because that extension is not in the list at all, so
+         // this is the assertion that actually pins `workbook`.
+         expect(classify("/examples/storefront/workbook/ws/q1.csv")).toEqual({
+            kind: "spa",
+         });
+      });
+
+      it("flags a two-segment path so a package named like a file survives", () => {
+         // `report.html` is a legal package name. Classified as an asset by
+         // shape, but with the first segment handed back so the caller can see it
+         // is a loaded environment and serve the app after all.
+         expect(classify("/examples/report.html")).toEqual({
+            kind: "assetNotFound",
+            path: "/examples/report.html",
+            environmentCandidate: "examples",
+         });
+      });
+
+      it("does not redirect a path with a backslash, which browsers fold to /", () => {
+         // Same hazard as `..` in another spelling: the client normalises `\` to
+         // `/` and re-resolves the Location somewhere other than intended.
+         expect(classify("/examples/storefront/\\..\\x.png").kind).toBe(
+            "assetNotFound",
+         );
       });
    });
 

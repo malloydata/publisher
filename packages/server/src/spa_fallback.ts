@@ -82,10 +82,32 @@ const SPA_OWNED_SEGMENTS = new Set(["pages", "workbook"]);
 export type SpaFallbackAction =
    /** Serve the app shell, as before. */
    | { kind: "spa" }
-   /** A package file addressed on the app route; send it to the static route. */
-   | { kind: "redirect"; location: string }
-   /** A file request nothing served. `path` is safe to echo back. */
-   | { kind: "assetNotFound"; path: string }
+   /**
+    * A package file addressed on the app route. A CANDIDATE only: the caller
+    * confirms both names against what it has loaded before redirecting, because
+    * `/assets/foo/bar.js` has this shape too and the static route would answer a
+    * bad name with an internal-error JSON that echoes it back.
+    */
+   | {
+        kind: "redirect";
+        location: string;
+        environmentName: string;
+        packageName: string;
+     }
+   /**
+    * A file request nothing served. `path` is safe to echo back.
+    *
+    * `environmentCandidate` is set when the path is short enough to be an
+    * environment or package route (`/<env>` or `/<env>/<pkg>`) whose NAME merely
+    * happens to end in a servable extension, which package names may: a package
+    * called `report.html` is legal. The caller turns it back into `spa` if that
+    * name is really an environment it has loaded.
+    */
+   | {
+        kind: "assetNotFound";
+        path: string;
+        environmentCandidate: string | null;
+     }
    /** An unknown endpoint under the API prefix. */
    | { kind: "apiNotFound"; path: string };
 
@@ -132,11 +154,16 @@ export function classifySpaFallback(
       const alreadyStaticForm =
          segments[0] === "environments" && segments[2] === "packages";
       // `.`/`..` would be re-normalized by the client against the new prefix,
-      // quietly pointing the redirect at a different package than was typed.
-      // Percent-encoded forms survive this test and are redirected, which is
-      // safe: the static route resolves them under the package's public/ root
-      // and answers 400 rather than serving anything outside it.
-      const traverses = segments.some((s) => s === "." || s === "..");
+      // quietly pointing the redirect at a different package than was typed. A
+      // backslash is the same hazard by another spelling, since browsers fold it
+      // to `/` before resolving, so `\..\..\x.png` would escape a guard that
+      // only compared whole segments. Percent-encoded forms survive this test and
+      // are redirected, which is safe: the static route resolves them under the
+      // package's public/ root and answers 400 rather than serving anything
+      // outside it.
+      const traverses = segments.some(
+         (s) => s === "." || s === ".." || s.includes("\\"),
+      );
       if (!alreadyStaticForm && !traverses) {
          const [environmentName, packageName, ...rest] = segments;
          // A reader who knows the files live in `public/` guesses that segment,
@@ -153,9 +180,18 @@ export function classifySpaFallback(
             location: `/environments/${environmentName}/packages/${packageName}/${rest.join(
                "/",
             )}`,
+            environmentName,
+            packageName,
          };
       }
    }
 
-   return { kind: "assetNotFound", path: requestPath };
+   // One or two segments can still be `/<env>` or `/<env>/<pkg>`, and a package
+   // name may legally end in a servable extension. Hand the first segment back so
+   // the caller can tell "a package called report.html" from "a missing asset".
+   return {
+      kind: "assetNotFound",
+      path: requestPath,
+      environmentCandidate: segments.length <= 2 ? (segments[0] ?? null) : null,
+   };
 }

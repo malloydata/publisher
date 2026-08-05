@@ -63,8 +63,10 @@ Publisher client.
 
 Note the `/environments/.../packages/...` prefix. The web UI opens a model at the
 shorter `/<env>/<pkg>/<file>.malloy`, so that form is an easy guess for a page
-too, and it is a different route. Publisher redirects it to the URL above rather
-than leaving you on an app page that cannot find the file.
+too, and it is a different route. A server running the built app redirects the
+guess to the URL above rather than leaving you on an app page that cannot find
+the file. Running the Vite dev server instead, every unmatched path is handed to
+Vite, so there you get the app shell and a page naming the URL to use.
 
 A package becomes a data app simply by having a `public/` directory. There is no
 flag to set in `publisher.json`.

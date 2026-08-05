@@ -10,6 +10,13 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  *
  * These assert the status code and the served document rather than what the app
  * renders, because a 200 carrying the shell was the whole defect.
+ *
+ * REQUIRES A SERVER RUNNING THE BUILT APP. The server-side half of this lives
+ * behind `if (!isDevelopment)`, and a dev server hands every unmatched path to
+ * Vite before any of it runs, so against `make dev` the redirect and 404 cases
+ * below fail for a reason that has nothing to do with the code. The config's own
+ * `webServer` runs `start:init`, which is correct; it is running the server
+ * yourself with `PLAYWRIGHT_USE_WEBSERVER=0` that can catch you out.
  */
 test.describe("package asset URLs", () => {
    test("a package file addressed on the app route reaches the file", async ({

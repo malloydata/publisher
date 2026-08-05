@@ -572,16 +572,15 @@ async function serveFromPackage(
  * the way to the right path.
  */
 function withRequestQuery(req: express.Request, target: string): string {
-   const query = new URLSearchParams();
-   for (const [key, value] of Object.entries(req.query)) {
-      if (Array.isArray(value)) {
-         for (const v of value) query.append(key, String(v));
-      } else if (value !== undefined) {
-         query.append(key, String(value));
-      }
-   }
-   const qs = query.toString();
-   return qs ? `${target}?${qs}` : target;
+   // Taken verbatim off the request target rather than rebuilt from the parsed
+   // query. Rebuilding flattens anything the parser turned into a structure:
+   // Express's default `extended` parser reads `?filter[a]=1` as an object, and
+   // `String(value)` then emits `filter=[object Object]`, so a page arrives with
+   // a corrupted parameter rather than an intact one. The path is still built
+   // from validated segments, which is what keeps the Location same-origin;
+   // Express percent-encodes the result on the way into the header.
+   const marker = req.originalUrl.indexOf("?");
+   return marker === -1 ? target : target + req.originalUrl.slice(marker);
 }
 
 app.get(
@@ -1952,27 +1951,55 @@ if (!isDevelopment) {
       // success and then leaves the app blaming the file for a wrong path. See
       // classifySpaFallback for why the decision is by extension.
       let fallback = classifySpaFallback(req.path, API_PREFIX);
-      if (fallback.kind === "redirect") {
-         // The classifier can only see the shape of the path, and
-         // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
-         // Redirecting it would answer with JSON naming an internal resolution
-         // failure ("Environment ... could not be resolved"), which is a worse
-         // answer than the page below AND reflects a user-controlled segment
-         // that the static route's own 404s deliberately avoid echoing. So the
-         // guess only stands if the environment is one this server has loaded.
-         //
-         // Deliberately the in-memory list rather than `getEnvironment`, which
-         // would resolve from storage: this is the last handler before the app
-         // shell and it answers unauthenticated traffic for any path nothing
-         // else claimed, so it must not do I/O that a caller can trigger by
-         // guessing. It also keeps this handler synchronous. An environment
-         // that failed to load is not in the list, and its files are not
-         // servable either, so the explanatory 404 is the right answer there.
-         const first = decodeSegment(req.path.split("/").filter(Boolean)[0]);
-         const loaded = environmentStore
+      // The classifier only sees the shape of a path, and several real things
+      // share a shape with a package asset. Resolve the names against what is
+      // actually loaded before acting on its guess.
+      //
+      // Deliberately the in-memory lists rather than `getEnvironment`, which
+      // resolves from storage: this is the last handler before the app shell and
+      // it answers unauthenticated traffic for any path nothing else claimed, so
+      // it must not do I/O a caller can trigger by guessing. That also keeps this
+      // handler synchronous. The cost is that a lazily-loadable environment which
+      // is not loaded yet, including during a cold start, gets the 404 page
+      // instead of a redirect; the page names the canonical URL, which does load
+      // it, so the conservative answer still leads somewhere that works.
+      const loadedEnvironment = (name: string) =>
+         environmentStore
             .getLoadedEnvironments()
-            .some((environment) => environment.getEnvironmentName() === first);
-         if (!loaded) fallback = { kind: "assetNotFound", path: req.path };
+            .find((environment) => environment.getEnvironmentName() === name);
+      if (fallback.kind === "redirect") {
+         // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
+         // Redirecting it lands on the static route, which answers a name it
+         // cannot resolve with JSON naming an internal failure ("Environment ...
+         // could not be resolved", "Package nope not found", or a 400 for a
+         // malformed name) and echoes the segment back, which the static route's
+         // own 404s deliberately avoid doing. BOTH names have to be real, not
+         // just the environment: a good environment with a bad package reaches
+         // exactly that reflected JSON.
+         const environment = loadedEnvironment(
+            decodeSegment(fallback.environmentName),
+         );
+         const packageName = decodeSegment(fallback.packageName);
+         const known = environment
+            ?.getLoadedPackages()
+            .some((pkg) => pkg.getPackageName() === packageName);
+         if (!known) {
+            fallback = {
+               kind: "assetNotFound",
+               path: req.path,
+               environmentCandidate: null,
+            };
+         }
+      }
+      if (
+         fallback.kind === "assetNotFound" &&
+         fallback.environmentCandidate !== null &&
+         loadedEnvironment(decodeSegment(fallback.environmentCandidate))
+      ) {
+         // `/<env>` or `/<env>/<pkg>` where the name merely ends in a servable
+         // extension, which package names may: `report.html` is a legal package
+         // name. It is an app route after all.
+         fallback = { kind: "spa" };
       }
       if (fallback.kind === "redirect") {
          // 302, not a permanent redirect: this maps a mistaken URL onto the
