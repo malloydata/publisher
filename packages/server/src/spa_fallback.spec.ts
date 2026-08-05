@@ -81,13 +81,23 @@ describe("classifySpaFallback", () => {
          });
       });
 
-      it("redirects the `/public/` guess too, which was the near-miss", () => {
-         // A reader who knows the file lives in `public/` guesses that segment.
-         // The static route strips it, so the redirect target is what serves it.
+      it("drops a guessed `public/` segment so the redirect reaches the file", () => {
+         // The near-miss from the 07-28 run: a reader who knows the files live
+         // in `public/` guesses that segment. The static route does NOT strip
+         // it (it joins the request path onto `<pkg>/public`, so passing it
+         // through resolves to `public/public/...` and 404s), so the redirect
+         // has to drop it. Asserted end to end in package-asset-urls.spec.ts.
          expect(classify("/examples/storefront/public/index.html")).toEqual({
             kind: "redirect",
-            location:
-               "/environments/examples/packages/storefront/public/index.html",
+            location: "/environments/examples/packages/storefront/index.html",
+         });
+      });
+
+      it("keeps a `public` file name, which is not the guessed segment", () => {
+         // Only a leading `public/` with something after it is dropped.
+         expect(classify("/examples/storefront/public.html")).toEqual({
+            kind: "redirect",
+            location: "/environments/examples/packages/storefront/public.html",
          });
       });
 

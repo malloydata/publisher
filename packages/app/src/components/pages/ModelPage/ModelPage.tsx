@@ -2,8 +2,8 @@ import {
    encodeResourceUri,
    Model,
    Notebook,
+   packageFileUrl,
    PageViewer,
-   serverBaseUrl,
    useRouterClickHandler,
    useServer,
 } from "@malloy-publisher/sdk";
@@ -89,10 +89,12 @@ function ModelPage() {
    // usually what is wrong, and blaming the file sent a reader looking for a
    // problem in a file that was fine. Say what was served and what does serve it.
    const looksLikeFile = /\.[^./]+$/.test(modelPath ?? "");
-   const staticUrl =
-      `${serverBaseUrl(server)}/environments/` +
-      `${encodeURIComponent(params.environmentName)}/packages/` +
-      `${encodeURIComponent(params.packageName)}/${modelPath ?? ""}`;
+   const staticUrl = packageFileUrl({
+      server,
+      environmentName: params.environmentName,
+      packageName: params.packageName,
+      path: modelPath ?? "",
+   });
    return (
       <Box sx={wrapperSx}>
          <Typography variant="h6" sx={{ fontWeight: 600 }}>

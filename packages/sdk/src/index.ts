@@ -5,8 +5,8 @@ export * from "./hooks";
 export { useRawQueryData } from "./hooks/useRawQueryData";
 export * from "./theme";
 export * from "./utils/formatting";
-// The data origin a package's static files are served from. Exported because a
-// host that renders its own "this path is not a model" state needs to point at
-// the URL that does serve the file, and this is the one derivation of it.
-export { serverBaseUrl } from "./utils/pageEmbed";
+// How a package's own files are addressed. Exported because a host that renders
+// its own "this path is not a model" state has to point at the URL that does
+// serve the file, and this is the one place that string is built.
+export { packageFileUrl } from "./utils/pageEmbed";
 export * from "./constants/docLinks";

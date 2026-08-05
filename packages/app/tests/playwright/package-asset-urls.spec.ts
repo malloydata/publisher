@@ -57,6 +57,38 @@ test.describe("package asset URLs", () => {
       expect(response.status()).toBe(404);
    });
 
+   test("a guessed `public/` segment reaches the file", async ({ request }) => {
+      // The 07-28 near-miss: the files live in `public/`, so a reader guesses
+      // that segment. The static route does not strip it, so the redirect has
+      // to. Asserted end to end because the unit test can only pin the target.
+      const guess = `/${DEFAULT_ENV}/${PACKAGES.dataApp}/public/index.html`;
+      const redirect = await request.get(guess, { maxRedirects: 0 });
+      expect(redirect.status()).toBe(302);
+      expect(redirect.headers()["location"]).toBe(
+         `/environments/${DEFAULT_ENV}/packages/${PACKAGES.dataApp}/index.html`,
+      );
+      const followed = await request.get(guess);
+      expect(followed.status()).toBe(200);
+      expect(await followed.text()).toContain("<title>");
+   });
+
+   test("a path shaped like a package file but under no environment 404s here", async ({
+      request,
+   }) => {
+      // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
+      // Redirecting it would answer with JSON naming an internal resolution
+      // failure and echo the segment back, so the guess only stands if the
+      // environment is real.
+      const response = await request.get("/assets/foo/bar.js", {
+         maxRedirects: 0,
+      });
+      expect(response.status()).toBe(404);
+      expect(response.headers()["content-type"]).toContain("text/html");
+      const body = await response.text();
+      expect(body).toContain("public/");
+      expect(body).not.toContain("could not be resolved");
+   });
+
    test("an unknown API endpoint answers JSON, not the app shell", async ({
       request,
    }) => {

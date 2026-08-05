@@ -436,10 +436,12 @@ app.get("/sdk/publisher.js", (_req, res) => {
 // nothing can be downloaded around the per-model #(authorize) and query
 // controls. The data stays reachable through the permission-checked query path.
 
-// Body for this route's 404s. Deliberately static: the status codes below
-// reflect no request input, so neither does this, and the same bytes are safe
-// for every miss. An empty 404 is honest but leaves a blank page, and someone
-// arriving here has usually guessed at the URL form, so it names the form.
+// Body for this route's 404s. Static because this route is reached with a
+// resolved environment and package, so echoing the path back would confirm which
+// of them exists; the SPA fallback's own 404 does echo it (escaped), because it
+// is reached before anything has been resolved and the path is all it knows.
+// An empty 404 is honest but leaves a blank page, and someone arriving here has
+// usually guessed at the URL form, so it names the form.
 const PACKAGE_FILE_NOT_FOUND_HTML = `<!doctype html><meta charset="utf-8">
 <title>Not found</title>
 <style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
@@ -1918,12 +1920,27 @@ if (!isDevelopment) {
          /[<>&]/g,
          (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
       );
-   app.get("*", (req, res) => {
+   app.get("*", async (req, res) => {
       // Not everything unmatched is an app route. A request that names a file
       // gets a real answer rather than the app shell with a 200, which reads as
       // success and then leaves the app blaming the file for a wrong path. See
       // classifySpaFallback for why the decision is by extension.
-      const fallback = classifySpaFallback(req.path, API_PREFIX);
+      let fallback = classifySpaFallback(req.path, API_PREFIX);
+      if (fallback.kind === "redirect") {
+         // The classifier can only see the shape of the path, and
+         // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
+         // Redirecting it would answer with JSON naming an internal resolution
+         // failure ("Environment ... could not be resolved"), which is a worse
+         // answer than the page below AND reflects a user-controlled segment
+         // that the static route's own 404s deliberately avoid echoing. So the
+         // guess only stands if the environment is real.
+         const environmentName = req.path.split("/").filter(Boolean)[0] ?? "";
+         try {
+            await environmentStore.getEnvironment(environmentName, false);
+         } catch {
+            fallback = { kind: "assetNotFound", path: req.path };
+         }
+      }
       if (fallback.kind === "redirect") {
          // 302, not a permanent redirect: this maps a mistaken URL onto the
          // right one, and a path the app may later claim as a route of its own
@@ -1936,7 +1953,11 @@ if (!isDevelopment) {
          // there, not the HTML app shell it cannot parse.
          res.status(404).json({
             code: 404,
-            message: `Unknown API endpoint: ${req.method} ${fallback.path}. See /api-doc.yaml for the endpoints this server serves.`,
+            // No method in the message: this handler is registered on app.get, so
+            // it could only ever say GET. Other verbs already 404 through
+            // Express's own default, which is why the 200-plus-shell defect was
+            // GET-only in the first place.
+            message: `Unknown API endpoint: ${fallback.path}. See /api-doc.yaml for the endpoints this server serves.`,
          });
          return;
       }

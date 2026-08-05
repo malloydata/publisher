@@ -5,7 +5,10 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { useServer } from "../ServerProvider";
 import { MONO_FONT_FAMILY } from "../styles";
 import { parseResourceUri } from "../../utils/formatting";
-import { isPublisherResizeMessage, serverBaseUrl } from "../../utils/pageEmbed";
+import {
+   isPublisherResizeMessage,
+   packageFileUrl,
+} from "../../utils/pageEmbed";
 
 interface PageViewerProps {
    resourceUri: string;
@@ -47,11 +50,16 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
    const packageName = parsed?.packageName ?? "";
    const pagePath = parsed?.pagePath ?? "";
 
-   const standaloneUrl = useMemo(() => {
-      return `${serverBaseUrl(server)}/environments/${encodeURIComponent(
-         environmentName,
-      )}/packages/${encodeURIComponent(packageName)}/${pagePath}`;
-   }, [server, environmentName, packageName, pagePath]);
+   const standaloneUrl = useMemo(
+      () =>
+         packageFileUrl({
+            server,
+            environmentName,
+            packageName,
+            path: pagePath,
+         }),
+      [server, environmentName, packageName, pagePath],
+   );
 
    // Use the /pages endpoint to grab the <title> for the header. Any error
    // here (older Publisher without /pages, transient network blip, 5xx) is

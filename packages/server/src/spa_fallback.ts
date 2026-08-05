@@ -3,11 +3,11 @@
  *
  * The catch-all exists so the single-page app can own its client-side routes:
  * any unmatched path returns `index.html` and React Router decides. The cost is
- * that a request for a *file* also gets `index.html`, with HTTP 200 — and a 200
+ * that a request for a *file* also gets `index.html`, with HTTP 200, and a 200
  * carrying HTML is indistinguishable from a working page. That has now misled a
  * reader three times: an unknown `/api/v0/...` answering 200 plus HTML, a
  * `/public/` segment that looked served, and `/<env>/<pkg>/index.html`, which
- * renders the app shell and then reports "Unrecognized file type: index.html" —
+ * renders the app shell and then reports "Unrecognized file type: index.html",
  * a confident error about the wrong thing, since the path was what was wrong.
  *
  * So the shell is served only for paths that can plausibly BE app routes. A file
@@ -16,6 +16,9 @@
  *   - `/<env>/<pkg>/<file.ext>` is the package's own static file addressed on
  *     the app's route instead of the static route, which is the mistake worth
  *     fixing rather than merely reporting: redirect to the URL that serves it.
+ *     A `redirect` is a CANDIDATE, not a verdict: the caller checks that the
+ *     environment exists first, because `/assets/foo/bar.js` matches this shape
+ *     too and redirecting it produces a worse answer than the 404 below.
  *   - anything else that names a file: 404, saying which path was requested.
  *   - an unknown path under the API prefix: 404 as JSON, since a client that
  *     asked the API for something expects JSON either way.
@@ -31,9 +34,16 @@
  * of what a package's `public/` directory actually serves: a name outside it is
  * treated as an app route, so an unusual package name keeps working.
  *
- * `.malloy` and `.malloynb` are absent on purpose — those ARE app routes (the
+ * `.malloy` and `.malloynb` are absent on purpose, because those ARE app routes (the
  * model and notebook viewers), and diverting them would break the product's
  * most-used URLs.
+ *
+ * Also absent, and not an oversight: `yaml`/`yml`, `xml`, `md`, `wasm`,
+ * `webmanifest`. Those fall through to the app, which now names the path and
+ * links to the static URL, so the outcome is already reasonable and the list
+ * stays short. `package-asset-urls.spec.ts` depends on `yaml` being absent to
+ * exercise that app-side page, so adding it here breaks that test rather than
+ * completing anything.
  */
 const ASSET_EXTENSIONS = new Set([
    "avif",
@@ -105,7 +115,7 @@ export function classifySpaFallback(
    const last = segments[segments.length - 1] ?? "";
    if (!ASSET_EXTENSIONS.has(extensionOf(last))) return { kind: "spa" };
 
-   // Names a file from here on — except where the app owns the route anyway, as
+   // Names a file from here on, except where the app owns the route anyway, as
    // `pages/<file>.html` does. Checked before the redirect so those keep
    // reaching the SPA rather than falling through to a 404.
    if (segments.length >= 3 && SPA_OWNED_SEGMENTS.has(segments[2])) {
@@ -129,6 +139,13 @@ export function classifySpaFallback(
       const traverses = segments.some((s) => s === "." || s === "..");
       if (!alreadyStaticForm && !traverses) {
          const [environmentName, packageName, ...rest] = segments;
+         // A reader who knows the files live in `public/` guesses that segment,
+         // but the static route joins the request path onto `<pkg>/public`, so
+         // passing it through would resolve to `public/public/<file>` and 404.
+         // Dropping it is what makes the guess reach the file. A package that
+         // really ships `public/public/<file>` is still reachable by asking for
+         // it on the static route directly.
+         if (rest[0] === "public" && rest.length > 1) rest.shift();
          return {
             kind: "redirect",
             // Built from segments, so it always starts with `/environments/`:

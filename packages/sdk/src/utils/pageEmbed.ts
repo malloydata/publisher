@@ -44,3 +44,30 @@ export function isPublisherResizeMessage(
 export function serverBaseUrl(server: string): string {
    return server.replace(/\/api\/v0\/?$/, "");
 }
+
+/**
+ * Absolute URL of a file inside a package, as Publisher serves it:
+ * `<data origin>/environments/<env>/packages/<pkg>/<path>`.
+ *
+ * The one home for this string. Both the page viewer's iframe and the
+ * "this is not a model" page point at it, and hand-building it in each place is
+ * how the two drift. `path` is already relative to the package's `public/`
+ * directory and is inserted as given, since it may contain slashes.
+ */
+export function packageFileUrl({
+   server,
+   environmentName,
+   packageName,
+   path,
+}: {
+   server: string;
+   environmentName: string;
+   packageName: string;
+   path: string;
+}): string {
+   return (
+      `${serverBaseUrl(server)}/environments/${encodeURIComponent(
+         environmentName,
+      )}/packages/${encodeURIComponent(packageName)}/` + path
+   );
+}
