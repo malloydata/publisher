@@ -170,10 +170,15 @@ async function expectBlocked(model: Model, query: string): Promise<void> {
 }
 
 /**
- * Same assertion as `expectBlocked`, but exercised through the named
- * `sourceName`/`queryName` request shape rather than the free-form `query`
- * field — those identifiers are concatenated into a `run: …` string and so are
- * just as caller-controlled.
+ * Same intent as `expectBlocked` — nothing unpublished comes back — but through
+ * the named `sourceName`/`queryName` request shape.
+ *
+ * Deliberately does NOT require a restricted-construct error. Those fields are
+ * quoted as identifiers when the `run: …` string is built, so a disallowed
+ * construct written into them is refused earlier and on different grounds: it
+ * is now part of a NAME, and the request dies resolving it ("Reference to
+ * undefined object …"). Restricted mode is the second line here, not the first.
+ * What must hold is that it was blocked by some means and returned no rows.
  */
 async function expectNamedBlocked(
    model: Model,
@@ -187,13 +192,12 @@ async function expectNamedBlocked(
          queryName,
       );
       leakedRows = asRows(compactResult).length;
-   } catch (error) {
-      expect(looksRestricted(error)).toBe(true);
+   } catch {
       return;
    }
    throw new Error(
-      `Expected the named-path request to be blocked by restricted mode, but ` +
-         `it succeeded and returned ${leakedRows} rows (escaped the curated surface).`,
+      `Expected the named-path request to be blocked, but it succeeded and ` +
+         `returned ${leakedRows} rows (escaped the curated surface).`,
    );
 }
 
@@ -272,13 +276,15 @@ describe("an untrusted query cannot reach data the model never published", () =>
 });
 
 // ===========================================================================
-// The named `sourceName`/`queryName` request shape reaches the same compiler
-// path as ad-hoc text, so it must inherit the same restriction. A real name is
-// a bare identifier; anything that smuggles in a disallowed construct must be
-// blocked, while legitimate published names keep working.
+// A real name is a bare identifier, and the server now ENFORCES that rather
+// than hoping: `sourceName`/`queryName` are quoted as identifiers when the
+// `run: …` string is built, so anything richer written into them is refused
+// while resolving the name (issue #964). Restricted mode is the second line —
+// the named path reaches the same compiler as ad-hoc text and inherits the
+// same construct restrictions — and legitimate published names keep working.
 // ===========================================================================
 
-describe("the named source/view path is restricted too", () => {
+describe("the named source/view path takes names, and is restricted too", () => {
    it("blocks a disallowed construct supplied through the sourceName/queryName fields", async () => {
       const model = await makeModel("catalog.malloy");
       await expectNamedBlocked(

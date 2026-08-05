@@ -2340,10 +2340,13 @@ export class Model {
          // Before any compile: caller text may not declare an authorize gate (it
          // would override the author's — see the function's doc). Every
          // caller-supplied fragment that reaches the compiler is checked, not
-         // just the ad-hoc `query`: `sourceName`/`queryName` are interpolated
-         // verbatim into the `run:` statement below, so an annotation smuggled
-         // through either one lands in the compiled text exactly as one in
-         // `query` would.
+         // just the ad-hoc `query`. `sourceName`/`queryName` are quoted as
+         // identifiers below, so an annotation smuggled through either one can
+         // no longer become syntax — it is part of a name, and the request dies
+         // as an unresolvable one. Checking them anyway is defence in depth:
+         // it is cheap, it rejects the attempt before compilation rather than
+         // after, and it keeps the guard correct if the builder below ever
+         // changes shape again.
          for (const [field, callerText] of [
             ["query", query],
             ["source_name", sourceName],
@@ -2367,7 +2370,21 @@ export class Model {
          if (!sourceName && !queryName && query) {
             queryString = "\n" + query;
          } else if (queryName && !query) {
-            queryString = `\nrun: ${sourceName ? sourceName + "->" : ""}${queryName}`;
+            // These fields are NAMES, not Malloy text. Quote both as
+            // identifiers so a caller-supplied name can only ever lex as one
+            // identifier: without this a newline (or a space) in either field
+            // opens a SECOND top-level statement and Malloy runs the LAST
+            // `run:`, reading a source this request never named. The gates
+            // above key off the raw strings by exact match, and the two lookups
+            // fail in opposite directions — the curated-source lookup misses
+            // and 404s, but getFilters() misses and returns NO filters, so the
+            // smuggled statement reads its target unfiltered. Quoting also
+            // makes a name that REQUIRES Malloy quoting (hyphen, space,
+            // reserved word, leading digit) work on this path for the first
+            // time. Empty `sourceName` stays falsy-means-absent.
+            queryString = `\nrun: ${
+               sourceName ? `${quoteMalloyIdentifier(sourceName)} -> ` : ""
+            }${quoteMalloyIdentifier(queryName)}`;
          } else {
             const endTime = performance.now();
             const executionTime = endTime - startTime;

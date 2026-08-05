@@ -3295,15 +3295,28 @@ components:
             set, the queryName parameter must be empty.
         sourceName:
           type: string
-          description:
+          description: |
             Name of the source in the model to use for queryName, search, and
             topValue requests.
+
+            A NAME, not Malloy code: a single source name exactly as the model
+            response's `sources` listing returns it. The server quotes it as a
+            Malloy identifier, so a name that needs quoting (a hyphen, a space,
+            a reserved word, a leading digit) works as-is and must be sent bare
+            — do not add backticks of your own. Anything richer than one name
+            (a parameterized source, an inline extension, a second statement)
+            belongs in `query`, and here is refused as an unresolvable name.
         queryName:
           type: string
-          description:
+          description: |
             Name of a query to execute on a source in the model. Requires the
             sourceName parameter is set. If the queryName parameter is set, the
             query parameter must be empty.
+
+            A NAME, not Malloy code, on the same terms as `sourceName`: one
+            view name as the model response lists it, quoted for you, sent
+            bare. A dotted path, a refinement (`by_carrier + { limit: 10 }`),
+            or any additional statement belongs in `query`.
         compactJson:
           type: boolean
           default: false

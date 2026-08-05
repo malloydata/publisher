@@ -38,6 +38,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { NotQueryableError } from "../errors";
+import type { Model } from "./model";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -127,6 +128,38 @@ export { customers }`,
       fs.writeFileSync(
          path.join(tempDir, "report.malloynb"),
          `>>>markdown\n# Report\nAlways public.`,
+      );
+   }
+
+   /**
+    * Assert a named (`sourceName`/`queryName`) request is refused and returns
+    * nothing. Deliberately does NOT pin the error class: these fields are
+    * quoted as identifiers, so an injected statement is refused at the lexer as
+    * an unresolvable/unlexable NAME (a Malloy compile error) rather than by the
+    * boundary (`NotQueryableError`) — and which one fires depends only on which
+    * gate the shape happens to reach first. What must hold is that it threw and
+    * no rows came back. Reports the leaked row count on failure, since a
+    * success here IS the leak.
+    */
+   async function expectNamedRejected(
+      model: Model,
+      sourceName: string | undefined,
+      queryName: string | undefined,
+   ): Promise<void> {
+      let leakedRows: number | undefined;
+      try {
+         const { compactResult } = await model.getQueryResults(
+            sourceName,
+            queryName,
+         );
+         leakedRows = (compactResult as unknown[] | undefined)?.length ?? 0;
+      } catch {
+         return;
+      }
+      throw new Error(
+         `Expected the named request { sourceName: ${JSON.stringify(sourceName)}, ` +
+            `queryName: ${JSON.stringify(queryName)} } to be rejected, but it ` +
+            `succeeded and returned ${leakedRows} rows (INJECTION / LEAK).`,
       );
    }
 
@@ -243,6 +276,99 @@ export { customers }`,
             undefined,
             "run: customers -> { aggregate: total }\nrun: customers -> { group_by: id }",
          );
+         expect(result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a newline in queryName cannot smuggle a second run: statement (issue #964)", async () => {
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // Positive control: the legitimate named request works.
+         const before = await model.getQueryResults("customers", "v");
+         expect(before.result.data).toBeDefined();
+
+         // The reported repro. `sourceName` is curated, so the early gate
+         // returns "cleared" and the compiled backstop is deliberately skipped
+         // — nothing ever re-checks the statement the newline opened, and
+         // Malloy runs the LAST `run:`. Quoting `queryName` is what stops it
+         // becoming a second statement at all.
+         await expectNamedRejected(
+            model,
+            "customers",
+            "v\nrun: helper -> { aggregate: c }",
+         );
+
+         // The reporter's verified variant table. Each of these is already
+         // blocked (an exact-string curated lookup that misses fails closed
+         // with a 404), so these pin the matrix against future drift.
+         //
+         // Injection through `sourceName`, swallowing `queryName` into the
+         // smuggled statement…
+         await expectNamedRejected(model, "customers -> v\nrun: helper", "hv");
+         // …and with the smuggled statement self-contained.
+         await expectNamedRejected(
+            model,
+            "customers\nrun: helper -> { aggregate: c }",
+            "v",
+         );
+         // `queryName` alone (no source prefix): misses the curated-QUERY set.
+         await expectNamedRejected(
+            model,
+            undefined,
+            "v\nrun: helper -> { aggregate: c }",
+         );
+         // The ad-hoc equivalent: settled by the compiled backstop instead.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: customers -> v\nrun: helper -> { aggregate: c }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // The hidden source is still refused when named honestly, i.e. the
+         // boundary itself is intact and the rejections above are the injection
+         // being refused, not the boundary firing twice.
+         await expect(
+            model.getQueryResults("helper", "hv"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // …and the legitimate request still works after all of it.
+         const after = await model.getQueryResults("customers", "v");
+         expect(after.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a name that needs Malloy quoting is queryable on the named path", async () => {
+      // The named path composes `run: <source> -> <view>`; unquoted, a name
+      // that REQUIRES Malloy quoting (here a hyphen) does not even lex, so it
+      // was unreachable through `sourceName`/`queryName`. The caller sends the
+      // bare names the model's `sources` listing returns — quoting is the
+      // server's job.
+      writeManifest({ explores: ["index.malloy"] });
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: \`customer-orders\` is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+  view: \`by-total\` is { aggregate: total }
+}
+export { \`customer-orders\` }`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const { result } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("customer-orders", "by-total");
          expect(result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -463,6 +589,35 @@ export { \`customer-orders\` }`,
             .getModel("index.malloy")!
             .getQueryResults("helper", "hv", undefined);
          expect(helper.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared default + no explores: a newline in queryName still cannot smuggle a statement", async () => {
+      // The default deployment shape: no `explores`, so the boundary is inert
+      // and quoting the caller's names is the only thing holding the line.
+      // Nothing here is about hiding `helper` — it is legitimately queryable in
+      // this mode — it is that a request naming ONE source must not run a
+      // statement naming another.
+      writeManifest(); // no explores → boundary inert
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // Control: with no explores, `helper` really is queryable by name…
+         const helper = await model.getQueryResults("helper", "hv");
+         expect(helper.result.data).toBeDefined();
+
+         // …so these rejections are the injection being refused, not a boundary.
+         await expectNamedRejected(
+            model,
+            "customers",
+            "v\nrun: helper -> { aggregate: c }",
+         );
+         await expectNamedRejected(model, "customers -> v\nrun: helper", "hv");
       } finally {
          await duckdb.close();
       }
