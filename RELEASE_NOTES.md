@@ -8,6 +8,14 @@ The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates 
 
 For releases that warrant narrative — redesigns, breaking changes, migration steps — copy the relevant section below into the GitHub release page after CI publishes it. The future workflow change to read this file directly is documented in #2 of the May 2026 review.
 
+## Packages that version on their own line
+
+`@malloy-publisher/skills` and `@malloy-publisher/create-malloy-package` are not part of the lockstep version above, and their notes do not belong in this file. The release workflow still publishes them: for each one it reads the version from `main` and, when that version is not yet on npm, dispatches that package's own publish workflow (`skills-npm.yml`, `create-malloy-package-npm.yml`). A package whose version is unchanged is skipped, so a release that touched neither is unaffected.
+
+To ship one of them, bump its `package.json` on `main` and run an ordinary release. The bump is what triggers the publish and nothing else in CI requires it, so a change that lands without one is skipped and the release stays green. A prerelease skips both packages outright, since their own versions carry no hyphen and would take over the `latest` tag. Either way the release's job summary says what it skipped and why. Each package can also still be published on its own by dispatching its workflow directly, which is the point of keeping them separate: a skill edit should not need a server release.
+
+One behaviour change to know about: `skills-npm.yml` now publishes only from `main`, matching the guard `create-malloy-package-npm.yml` already had. Dispatching it from a branch still runs `check_pack`, but the publish job is skipped, and a skipped job reports success, so check the job list rather than the run's green tick if you expected a publish. See [.github/workflows/CONTEXT.md](.github/workflows/CONTEXT.md) for the publishing rules that are easy to get wrong.
+
 ---
 
 ## [Unreleased] — DuckDB/DuckLake materialization tier (`storage=`)
