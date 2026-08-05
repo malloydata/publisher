@@ -21,16 +21,19 @@ import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ENV_NAME = "html-pages-test-env";
-const PACKAGE_NAME = "html-pages-test";
+const ENV_NAME = "html-data-apps-test-env";
+const PACKAGE_NAME = "html-data-apps-test";
 // A second package in the same env that ships NO public/ directory, to pin the
 // "package without public/" behavior (file requests 404, /pages returns []).
-const NOPUBLIC_PACKAGE = "html-pages-nopublic";
+const NOPUBLIC_PACKAGE = "html-data-apps-nopublic";
 
-const fixtureDir = path.resolve(__dirname, "../../fixtures/html-pages-test");
+const fixtureDir = path.resolve(
+   __dirname,
+   "../../fixtures/html-data-apps-test",
+);
 const nopublicFixtureDir = path.resolve(
    __dirname,
-   "../../fixtures/html-pages-nopublic",
+   "../../fixtures/html-data-apps-nopublic",
 );
 // The "malicious package" escape class: a symlink inside the served public/
 // directory that points outside it. We plant it in the *served* copy under

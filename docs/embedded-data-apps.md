@@ -1,7 +1,7 @@
 # React SDK (internal / advanced)
 
-> **Heads up:** `@malloy-publisher/sdk` is the React component library the **Publisher App is built
-> from** — it's an internal building block, not a supported path for external integration, and its
+> **Heads up:** `@malloy-publisher/sdk` is the React component library the **Publisher Console is
+> built from** — it's an internal building block, not a supported path for external integration, and its
 > component API can change between releases without notice. For putting analytics in front of users,
 > prefer the two supported paths below. This page is kept for the curious and for advanced users
 > who accept that tradeoff.
@@ -10,7 +10,7 @@
 
 | Path | Use it when | Doc |
 | --- | --- | --- |
-| **Publisher App** | You want zero-code exploration and sharing — the no-code Explorer, notebooks, and dashboards, out of the box. | [publisher-app.md](publisher-app.md) |
+| **Publisher Console** | You want zero-code exploration and sharing — the no-code Explorer, notebooks, and dashboards, out of the box. | [console.md](console.md) |
 | **HTML data apps** | You want a custom dashboard with no build step, shipped inside a package and served by Publisher. | [html-data-apps.md](html-data-apps.md) |
 | **REST / MCP APIs** | You're building your own application or agent against the data programmatically. | [api-overview.md](api-overview.md) · [ai-agents.md](ai-agents.md) |
 | _React SDK (this page)_ | _You specifically need React components and accept the internal/unstable-API tradeoff._ | — |
@@ -19,8 +19,8 @@
 
 A React component library (`ServerProvider`, `QueryResult`, `Notebook`, `Model`, page components, filter
 widgets) that talks to Publisher's REST API and renders results with Malloy Render. The
-[`Publisher App`](../packages/app) is composed entirely from it. Because it's the App's internal
-toolkit, breaking changes ride along with App redesigns.
+[`Publisher Console`](../packages/app) is composed entirely from it. Because it's the Console's
+internal toolkit, breaking changes ride along with Console redesigns.
 
 ## Advanced reference: `examples/data-app`
 

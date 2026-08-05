@@ -17,7 +17,7 @@ user's data authority, so it is worth knowing exactly what you are loading.
 
 > **What this is:** a self-contained dashboard written in plain HTML/CSS/JS, shipped *inside* a
 > package and **served by Publisher** — no build step, no framework, no npm. It's the supported way to
-> ship a custom UI. (For zero-code exploration, use the [Publisher App](./publisher-app.md); to build
+> ship a custom UI. (For zero-code exploration, use the [Publisher Console](./console.md); to build
 > against the data programmatically, see the [REST/MCP APIs](./api-overview.md).)
 
 Reach for an HTML data app when you want a self-contained, custom dashboard that ships with the model
@@ -304,7 +304,7 @@ the stream still connects to hear `mode: disabled`.
 
 ## Full-screen apps in the page viewer
 
-When you open a page from inside the Publisher App (the package's Pages list), it
+When you open a page from inside the Publisher Console (the package's Pages list), it
 is shown in an iframe wrapped in light chrome (a title and an "open standalone"
 link). By default that iframe is sized to the page's content height: the page's
 runtime measures how tall its content actually is and the viewer matches it, so
@@ -330,7 +330,7 @@ affect any other page, and opening a page directly at
 ## Listing a package's pages
 
 `GET /api/v0/environments/<env>/packages/<pkg>/pages` returns the package's HTML
-pages, which the Publisher App uses to show what a package offers. Each entry is:
+pages, which the Publisher Console uses to show what a package offers. Each entry is:
 
 ```json
 {
