@@ -37,6 +37,7 @@ export type CoreConnectionsPojo = {
 export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
+   setupSQL?: string;
    hasAzureAttachment: boolean;
    hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
@@ -51,7 +52,10 @@ export type AssembledEnvironmentConnections = {
    apiConnections: ApiConnection[];
 };
 
-const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>(["attachedDatabases"]);
+const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>([
+   "attachedDatabases",
+   "setupSQL",
+]);
 
 export function normalizeSnowflakePrivateKey(privateKey: string): string {
    let privateKeyContent = privateKey.trim();
@@ -459,9 +463,10 @@ function validateConnectionShape(connection: ApiConnection): void {
          {
             const attached =
                connection.duckdbConnection.attachedDatabases ?? [];
-            if (attached.length === 0) {
+            const hasSetupSQL = !!connection.duckdbConnection.setupSQL;
+            if (attached.length === 0 && !hasSetupSQL) {
                throw new Error(
-                  `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
+                  `DuckDB connection "${connection.name}" must provide either attachedDatabases or setupSQL.`,
                );
             }
          }
@@ -935,6 +940,7 @@ export function assembleEnvironmentConnections(
       metadata.set(connection.name, {
          apiConnection,
          attachedDatabases,
+         setupSQL: connection.duckdbConnection?.setupSQL,
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),

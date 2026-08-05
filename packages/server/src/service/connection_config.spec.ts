@@ -732,3 +732,35 @@ describe("ducklake shape validation", () => {
       }
    });
 });
+
+describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
+   it("accepts a DuckDB connection with setupSQL and no attachedDatabases", () => {
+      const conn: ApiConnection = {
+         name: "my_duckdb",
+         type: "duckdb",
+         duckdbConnection: {
+            setupSQL: "ATTACH 'ducklake:storage/orca.ducklake' AS orca; USE orca.marts;",
+         },
+      };
+
+      const { metadata, pojo } = assembleEnvironmentConnections([conn], "/tmp/env");
+
+      expect(metadata.has("my_duckdb")).toBe(true);
+      const meta = metadata.get("my_duckdb")!;
+      expect(meta.setupSQL).toBe("ATTACH 'ducklake:storage/orca.ducklake' AS orca; USE orca.marts;");
+      expect(pojo.connections["my_duckdb"]).toBeDefined();
+   });
+
+   it("rejects a DuckDB connection with neither attachedDatabases nor setupSQL", () => {
+      const conn: ApiConnection = {
+         name: "empty_duckdb",
+         type: "duckdb",
+         duckdbConnection: {},
+      };
+
+      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
+         /must provide either attachedDatabases or setupSQL/i,
+      );
+   });
+});
+

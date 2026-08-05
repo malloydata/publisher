@@ -4099,6 +4099,11 @@ components:
         environment configs cannot widen deployment policy through low-level
         DuckDB settings.
       properties:
+        setupSQL:
+          type: string
+          description: >
+            Optional initialization SQL script executed against the DuckDB
+            session upon connection (e.g. ATTACH commands for external lakehouses).
         attachedDatabases:
           type: array
           items:

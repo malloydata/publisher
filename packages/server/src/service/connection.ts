@@ -1187,6 +1187,7 @@ async function doesSecretExistInDuckDB(
 async function attachDatabasesToDuckDB(
    duckdbConnection: DuckDBConnection,
    attachedDatabases: AttachedDatabase[],
+   setupSQL?: string,
 ): Promise<void> {
    const attachHandlers = {
       bigquery: attachBigQuery,
@@ -1196,6 +1197,10 @@ async function attachDatabasesToDuckDB(
       s3: attachCloudStorage,
       azure: attachAzureStorage,
    };
+
+   if (setupSQL) {
+      await duckdbConnection.runSQL(setupSQL);
+   }
 
    // Generic (non-tier) attach session: defer to the deployment policy — off
    // under local-only, left at DuckDB's default under on-demand so existing
@@ -1739,7 +1744,7 @@ export function buildEnvironmentMalloyConfig(
       metadata: EnvironmentConnectionMetadata,
    ): Promise<void> {
       if (
-         metadata.attachedDatabases.length === 0 ||
+         (metadata.attachedDatabases.length === 0 && !metadata.setupSQL) ||
          !isDuckDBConnection(connection)
       ) {
          return;
@@ -1751,6 +1756,7 @@ export function buildEnvironmentMalloyConfig(
          attachPromise = attachDatabasesToDuckDB(
             connection,
             metadata.attachedDatabases,
+            metadata.setupSQL,
          );
          attachPromises.set(connection, attachPromise);
       }
