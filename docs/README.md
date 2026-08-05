@@ -28,11 +28,11 @@ every doc below points back to one of them, and each example's README points bac
 
 | Doc                                            | Read it when you want to…                                                              |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| [publisher-app.md](publisher-app.md)           | Navigate the built-in web app and see how the constructs surface.                      |
+| [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.   |
 | [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                   |
 | [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models. |
 | [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.              |
-| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the App is built from.                              |
+| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                          |
 
 ## Model & govern
 

@@ -227,7 +227,7 @@ covers agents in both modes, MCP and REST.
 - **Answer questions with AI.** Connect an agent over MCP and ask in plain English — see above and
   [docs/ai-agents.md](docs/ai-agents.md).
 - **Surface analytics your way.** Explore and share with zero code in the
-  [Publisher App](docs/publisher-app.md), or ship a no-build
+  [Publisher Console](docs/console.md), or ship a no-build
   [HTML data app](docs/html-data-apps.md) that Publisher hosts inside a package.
 - **Build & validate models.** Author Malloy models guided by the bundled [skills](skills/), then
   publish them for serving. Agents get the same loop over MCP: `malloy_compile` checks an edit and
@@ -252,7 +252,7 @@ The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README
 | Architecture & how it fits together                 | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
 | REST & MCP API overview                             | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
 | The package format (`publisher.json`, models, data) | [docs/packages.md](docs/packages.md)                                                                                                                                                     |
-| The Publisher App (navigation & features)           | [docs/publisher-app.md](docs/publisher-app.md)                                                                                                                                           |
+| The Publisher Console (navigation & features)       | [docs/console.md](docs/console.md)                                                                                                                                                       |
 | No-code visual query builder                        | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
 | Connect an AI agent (MCP, or REST when unattended)  | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
 | Build a custom UI (no build step)                   | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
