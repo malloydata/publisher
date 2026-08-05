@@ -109,12 +109,13 @@ describe("assertSupportedNodeVersion", () => {
 });
 
 describe("engines contract", () => {
-   // The floor is declared in five places: MIN_NODE_MAJOR, and `engines.node` in
-   // the server, root, scaffolder and CLI manifests. This is the pin that makes
-   // them one floor, so any of them drifting fails the unit suite instead of
-   // shipping. Silent drift between two declarations of the same requirement is
-   // the class of defect this module exists to prevent, so the module must not
-   // reintroduce it one level up.
+   // Six declarations of one floor: this constant, the scaffolder's, and
+   // `engines.node` in the server, root, scaffolder and CLI manifests. This
+   // block asserts all four manifests against MIN_NODE_MAJOR, and the
+   // scaffolder's own spec pins its constant to its manifest, which closes the
+   // chain: no declaration can drift without a test failing. Silent drift
+   // between two declarations of the same requirement is the class of defect
+   // this module exists to prevent, so it must not reintroduce it one level up.
    //
    // Read from disk rather than imported: a spec-time file read keeps the
    // packages independent at build and run time, which importing a shared

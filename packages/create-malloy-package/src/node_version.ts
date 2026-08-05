@@ -1,8 +1,9 @@
 /**
- * Minimum Node major version Publisher supports. One floor, declared in four
- * places across the repo and pinned to a single value by the "engines contract"
- * block in `packages/server/src/node_version_check.spec.ts`, which reads this
- * package's manifest too.
+ * Minimum Node major version Publisher supports. One floor with six
+ * declarations across the repo: this constant, the server's, and `engines.node`
+ * in four manifests. `node_version.spec.ts` pins this constant to this package's
+ * manifest, and the server's `node_version_check.spec.ts` pins that manifest to
+ * the server's constant, so none of them can drift without a test failing.
  */
 export const MIN_NODE_MAJOR = 20;
 
