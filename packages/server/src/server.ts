@@ -1935,7 +1935,18 @@ if (!isDevelopment) {
          /[<>&]/g,
          (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
       );
-   app.get("*", async (req, res) => {
+   // `req.path` arrives percent-encoded, while environment names are stored
+   // decoded. A malformed escape is not a name we know, so it compares as one
+   // that will not match rather than throwing.
+   const decodeSegment = (segment: string | undefined) => {
+      if (segment === undefined) return "";
+      try {
+         return decodeURIComponent(segment);
+      } catch {
+         return segment;
+      }
+   };
+   app.get("*", (req, res) => {
       // Not everything unmatched is an app route. A request that names a file
       // gets a real answer rather than the app shell with a 200, which reads as
       // success and then leaves the app blaming the file for a wrong path. See
@@ -1948,13 +1959,20 @@ if (!isDevelopment) {
          // failure ("Environment ... could not be resolved"), which is a worse
          // answer than the page below AND reflects a user-controlled segment
          // that the static route's own 404s deliberately avoid echoing. So the
-         // guess only stands if the environment is real.
-         const environmentName = req.path.split("/").filter(Boolean)[0] ?? "";
-         try {
-            await environmentStore.getEnvironment(environmentName, false);
-         } catch {
-            fallback = { kind: "assetNotFound", path: req.path };
-         }
+         // guess only stands if the environment is one this server has loaded.
+         //
+         // Deliberately the in-memory list rather than `getEnvironment`, which
+         // would resolve from storage: this is the last handler before the app
+         // shell and it answers unauthenticated traffic for any path nothing
+         // else claimed, so it must not do I/O that a caller can trigger by
+         // guessing. It also keeps this handler synchronous. An environment
+         // that failed to load is not in the list, and its files are not
+         // servable either, so the explanatory 404 is the right answer there.
+         const first = decodeSegment(req.path.split("/").filter(Boolean)[0]);
+         const loaded = environmentStore
+            .getLoadedEnvironments()
+            .some((environment) => environment.getEnvironmentName() === first);
+         if (!loaded) fallback = { kind: "assetNotFound", path: req.path };
       }
       if (fallback.kind === "redirect") {
          // 302, not a permanent redirect: this maps a mistaken URL onto the
