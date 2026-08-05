@@ -6,6 +6,8 @@ import {
    BadRequestError,
    ModelCompilationError,
    PackageNotFoundError,
+   PayloadTooLargeError,
+   ResponseUnserializableError,
    ServiceUnavailableError,
 } from "../errors";
 
@@ -87,6 +89,37 @@ describe("classifyToolError", () => {
             new BadRequestError("Invalid query request."),
          ).message,
       ).not.toContain("unexpected internal error");
+   });
+
+   it("does not offer a cap raise for a response that cannot be serialized", () => {
+      // The shared oversize branch tells the agent to raise the cap named in
+      // the message. For this subclass that is advice to change a setting and
+      // hit the identical failure, which is the same confidently-wrong answer
+      // the 413 itself was added to remove.
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ResponseUnserializableError(
+            "Query response exceeded 50000000 bytes: the 25356-row result is too large to serialize. Project fewer columns, add a LIMIT, or filter wide values.",
+         ),
+      );
+      expect(details.message).toContain("too large to serialize");
+      const suggestions = JSON.stringify(details.suggestions);
+      expect(suggestions).toContain("will not help");
+      expect(suggestions).toContain("not transient");
+      expect(suggestions).not.toContain("raise the configured cap");
+   });
+
+   it("still offers the cap raise for an ordinary oversize response", () => {
+      // The parent class keeps its advice: there the cap really is the limit
+      // that fired, so raising it is a real remedy.
+      expect(
+         advice(
+            new PayloadTooLargeError(
+               "Query response exceeded 50000000 bytes (was 306326576). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.",
+            ),
+         ),
+      ).toContain("raise the configured cap");
    });
 
    it("reports anything else as internal rather than blaming the Malloy", () => {

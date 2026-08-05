@@ -233,6 +233,26 @@ export class ServiceUnavailableError extends Error {
 export class PayloadTooLargeError extends Error {
    constructor(message: string) {
       super(message);
+      this.name = "PayloadTooLargeError";
+   }
+}
+
+/**
+ * The subset of {@link PayloadTooLargeError} where the response could not be
+ * serialized at all, rather than merely measuring over the cap. Still HTTP 413
+ * by inheritance, because the request was well-formed and the result is too
+ * large; the distinction exists so callers are not told to raise a cap. Raising
+ * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here — there is no cap at which a
+ * response that will not serialize starts serializing — so the only remedies
+ * are the ones that shrink the response.
+ */
+export class ResponseUnserializableError extends PayloadTooLargeError {
+   constructor(message: string) {
+      super(message);
+      // Set explicitly rather than derived, so it survives a bundler that
+      // mangles class names. Without it the subclass logs as its parent, which
+      // defeats the point of a class callers are meant to tell apart.
+      this.name = "ResponseUnserializableError";
    }
 }
 

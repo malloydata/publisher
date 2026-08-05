@@ -8,6 +8,7 @@ import {
    ModelCompilationError,
    NotQueryableError,
    PayloadTooLargeError,
+   ResponseUnserializableError,
    QueryTimeoutError,
    ServiceUnavailableError,
 } from "./errors";
@@ -88,6 +89,26 @@ describe("internalErrorToHttpError", () => {
          message:
             "Query returned more than 100000 rows; refine the query or raise PUBLISHER_MAX_QUERY_ROWS.",
       });
+   });
+
+   it("maps ResponseUnserializableError to 413 as well, by inheritance", () => {
+      // The subclass exists only so the MCP surface can drop the "raise the
+      // cap" suggestion; REST must keep answering 413, not fall through to 500.
+      const { status, json } = internalErrorToHttpError(
+         new ResponseUnserializableError(
+            "Query response exceeded 50000000 bytes: the 25356-row result is too large to serialize. Project fewer columns, add a LIMIT, or filter wide values.",
+         ),
+      );
+      expect(status).toBe(413);
+      expect(json.code).toBe(413);
+   });
+
+   it("names both payload-size classes, so logs can tell them apart", () => {
+      // A subclass that logs as its parent defeats the point of having one.
+      expect(new PayloadTooLargeError("x").name).toBe("PayloadTooLargeError");
+      expect(new ResponseUnserializableError("x").name).toBe(
+         "ResponseUnserializableError",
+      );
    });
 
    it("maps ServiceUnavailableError to 503 (load shedding / back-pressure)", () => {
