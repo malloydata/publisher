@@ -117,7 +117,7 @@ describe("classifySpaFallback", () => {
          ).toEqual({
             kind: "assetNotFound",
             path: "/environments/examples/packages/storefront/index.html",
-            environmentCandidate: null,
+            appRouteCandidate: null,
          });
       });
 
@@ -135,18 +135,21 @@ describe("classifySpaFallback", () => {
 
    describe("answers a file request that nothing serves", () => {
       it("404s a two-segment asset path, with the path it was asked for", () => {
-         // `environmentCandidate` is the first segment for these short paths: the
-         // caller checks whether it is really a loaded environment, because a
-         // package may legally be named `report.html`.
+         // Short paths hand their names back: the caller checks whether they are
+         // really a loaded environment and package, because a package may legally
+         // be named `report.html`. Neither of these is, so both stay 404s.
          expect(classify("/favicon-missing.ico")).toEqual({
             kind: "assetNotFound",
             path: "/favicon-missing.ico",
-            environmentCandidate: "favicon-missing.ico",
+            appRouteCandidate: { environmentName: "favicon-missing.ico" },
          });
          expect(classify("/assets/deleted-chunk.js")).toEqual({
             kind: "assetNotFound",
             path: "/assets/deleted-chunk.js",
-            environmentCandidate: "assets",
+            appRouteCandidate: {
+               environmentName: "assets",
+               packageName: "deleted-chunk.js",
+            },
          });
       });
 
@@ -172,13 +175,31 @@ describe("classifySpaFallback", () => {
 
       it("flags a two-segment path so a package named like a file survives", () => {
          // `report.html` is a legal package name. Classified as an asset by
-         // shape, but with the first segment handed back so the caller can see it
-         // is a loaded environment and serve the app after all.
+         // shape, but with BOTH names handed back: the caller serves the app only
+         // if the environment is loaded AND that package really exists, which is
+         // what keeps `/examples/style.css` a 404 rather than an app shell.
          expect(classify("/examples/report.html")).toEqual({
             kind: "assetNotFound",
             path: "/examples/report.html",
-            environmentCandidate: "examples",
+            appRouteCandidate: {
+               environmentName: "examples",
+               packageName: "report.html",
+            },
          });
+      });
+
+      it("does not redirect percent-encoded dot segments either", () => {
+         // A URL parser treats %2e%2e as a dot segment while resolving the
+         // Location, so it walks out of the package prefix the redirect pins.
+         expect(classify("/examples/storefront/%2e%2e/%2e%2e/x.png").kind).toBe(
+            "assetNotFound",
+         );
+      });
+
+      it("refuses a segment with a malformed escape rather than guessing", () => {
+         expect(classify("/examples/storefront/%zz/x.png").kind).toBe(
+            "assetNotFound",
+         );
       });
 
       it("does not redirect a path with a backslash, which browsers fold to /", () => {

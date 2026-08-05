@@ -104,7 +104,15 @@ function ModelPage() {
             <Box component="span" sx={{ fontFamily: MONO_FONT_FAMILY }}>
                {modelPath}
             </Box>{" "}
-            is not a model or notebook in package{" "}
+            does not name a{" "}
+            <Box component="span" sx={{ fontFamily: MONO_FONT_FAMILY }}>
+               .malloy
+            </Box>{" "}
+            or{" "}
+            <Box component="span" sx={{ fontFamily: MONO_FONT_FAMILY }}>
+               .malloynb
+            </Box>{" "}
+            file in package{" "}
             <Box component="span" sx={{ fontFamily: MONO_FONT_FAMILY }}>
                {params.packageName}
             </Box>

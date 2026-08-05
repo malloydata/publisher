@@ -559,17 +559,23 @@ async function serveFromPackage(
 // matching also catches the trailing-slash form here, so only redirect URLs that
 // don't already end with `/`.
 //
-// Build the target from the validated route params and the parsed query, not
-// from the raw request URL, so it is always this same canonical, same-origin
-// path with a trailing slash. That removes any open-redirect / header-injection
-// surface from user-controlled input, with the slash placed before any query
-// string (e.g. ?embed_token=...).
+// Build the PATH from the validated route params, so it is always this same
+// canonical, same-origin path with a trailing slash, and place the slash before
+// any query string (e.g. ?embed_token=...). That is what removes the
+// open-redirect surface; the query itself is spliced verbatim and percent-encoded
+// by `res.redirect`, which is what removes the header-injection surface. See
+// withRequestQuery.
 /**
- * Re-attach the request's query string to a redirect target. Rebuilt from the
- * parsed query rather than spliced off the raw URL, so nothing user-controlled
- * reaches the Location header verbatim. Shared with the SPA fallback's redirect,
- * where dropping the query would strip an embedded page's `?embed_token=...` on
- * the way to the right path.
+ * Re-attach the request's query string to a redirect target. Spliced verbatim off
+ * the request target rather than rebuilt from the parsed query, because rebuilding
+ * flattens anything the parser turned into a structure and silently corrupts it.
+ *
+ * What keeps this safe is not the rebuild: it is that the PATH is assembled from
+ * validated segments and always starts `/environments/`, so the target cannot
+ * change origin, and that `res.redirect` runs the value through `encodeurl` on the
+ * way into the header, which percent-encodes CR, LF, space and quotes. Shared with
+ * the SPA fallback's redirect, where dropping the query would strip an embedded
+ * page's `?embed_token=...` on the way to the right path.
  */
 function withRequestQuery(req: express.Request, target: string): string {
    // Taken verbatim off the request target rather than rebuilt from the parsed
@@ -579,8 +585,14 @@ function withRequestQuery(req: express.Request, target: string): string {
    // a corrupted parameter rather than an intact one. The path is still built
    // from validated segments, which is what keeps the Location same-origin;
    // Express percent-encodes the result on the way into the header.
-   const marker = req.originalUrl.indexOf("?");
-   return marker === -1 ? target : target + req.originalUrl.slice(marker);
+   // Cut the fragment first: a non-browser client can send `#x?y=1`, and taking
+   // the first `?` in the whole target would promote fragment text into the
+   // redirect's query, handing the page a parameter the caller never put there.
+   const hash = req.originalUrl.indexOf("#");
+   const target_ =
+      hash === -1 ? req.originalUrl : req.originalUrl.slice(0, hash);
+   const marker = target_.indexOf("?");
+   return marker === -1 ? target : target + target_.slice(marker);
 }
 
 app.get(
@@ -1959,10 +1971,15 @@ if (!isDevelopment) {
       // resolves from storage: this is the last handler before the app shell and
       // it answers unauthenticated traffic for any path nothing else claimed, so
       // it must not do I/O a caller can trigger by guessing. That also keeps this
-      // handler synchronous. The cost is that a lazily-loadable environment which
-      // is not loaded yet, including during a cold start, gets the 404 page
-      // instead of a redirect; the page names the canonical URL, which does load
-      // it, so the conservative answer still leads somewhere that works.
+      // handler synchronous. The cost is real and worth stating precisely: an
+      // environment OR package that is not loaded yet gets the 404 page instead
+      // of a redirect. That covers a cold start, and an environment resolved
+      // lazily by the static route (which loads its packages on demand, so they
+      // can be absent here while that URL serves them). In those cases the page
+      // names the canonical URL and following it does load them. The exception is
+      // a package that fails to compile: it is absent here, and the canonical URL
+      // answers 424, so there the page leads somewhere that reports the real
+      // problem rather than somewhere that works.
       const loadedEnvironment = (name: string) =>
          environmentStore
             .getLoadedEnvironments()
@@ -1984,22 +2001,36 @@ if (!isDevelopment) {
             ?.getLoadedPackages()
             .some((pkg) => pkg.getPackageName() === packageName);
          if (!known) {
+            // Null, not the names: a redirect candidate whose names did not
+            // resolve is not an app route either, so it must not be rescued into
+            // the app shell by the branch below.
             fallback = {
                kind: "assetNotFound",
                path: req.path,
-               environmentCandidate: null,
+               appRouteCandidate: null,
             };
          }
       }
-      if (
-         fallback.kind === "assetNotFound" &&
-         fallback.environmentCandidate !== null &&
-         loadedEnvironment(decodeSegment(fallback.environmentCandidate))
-      ) {
-         // `/<env>` or `/<env>/<pkg>` where the name merely ends in a servable
-         // extension, which package names may: `report.html` is a legal package
-         // name. It is an app route after all.
-         fallback = { kind: "spa" };
+      if (fallback.kind === "assetNotFound" && fallback.appRouteCandidate) {
+         // `/<env>` or `/<env>/<pkg>` where a name merely ends in a servable
+         // extension, which names may: `report.html` is a legal package name. It
+         // is an app route after all, but only if these are things this server
+         // actually has. Checking the package too is what keeps
+         // `/examples/style.css` a 404: without it, any asset request under a real
+         // environment went back to answering with the app shell and a 200, which
+         // is the whole defect this handler removes.
+         const { environmentName, packageName } = fallback.appRouteCandidate;
+         const environment = loadedEnvironment(decodeSegment(environmentName));
+         const isAppRoute =
+            environment !== undefined &&
+            (packageName === undefined ||
+               environment
+                  .getLoadedPackages()
+                  .some(
+                     (pkg) =>
+                        pkg.getPackageName() === decodeSegment(packageName),
+                  ));
+         if (isAppRoute) fallback = { kind: "spa" };
       }
       if (fallback.kind === "redirect") {
          // 302, not a permanent redirect: this maps a mistaken URL onto the
@@ -2031,8 +2062,9 @@ if (!isDevelopment) {
 <h1>Not found</h1>
 <p>Nothing is served at <code>${escapeHtml(fallback.path)}</code>.</p>
 <p>A file inside a package is served from that package's <code>public/</code> directory at
-<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>. Models and notebooks open in the
-web UI at <code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code> and <code>.malloynb</code>.</p>
+<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is relative to
+<code>public/</code> and does not include it. Models and notebooks open in the web UI at
+<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code> and <code>.malloynb</code>.</p>
 <p><a href="/">Publisher home</a> lists the environments and packages this server has.</p>`,
             );
          return;

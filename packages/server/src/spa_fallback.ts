@@ -97,16 +97,21 @@ export type SpaFallbackAction =
    /**
     * A file request nothing served. `path` is safe to echo back.
     *
-    * `environmentCandidate` is set when the path is short enough to be an
-    * environment or package route (`/<env>` or `/<env>/<pkg>`) whose NAME merely
-    * happens to end in a servable extension, which package names may: a package
-    * called `report.html` is legal. The caller turns it back into `spa` if that
-    * name is really an environment it has loaded.
+    * `appRouteCandidate` is set when the path is short enough to be an app route
+    * (`/<env>` or `/<env>/<pkg>`) whose NAME merely happens to end in a servable
+    * extension, which names may: a package called `report.html` is legal. The
+    * caller turns it back into `spa` only if those names really are things it has
+    * loaded. Requiring the package too is what keeps `/<env>/style.css` a 404
+    * rather than an app shell with a 200, which is the defect this module exists
+    * to remove.
     */
    | {
         kind: "assetNotFound";
         path: string;
-        environmentCandidate: string | null;
+        appRouteCandidate: {
+           environmentName: string;
+           packageName?: string;
+        } | null;
      }
    /** An unknown endpoint under the API prefix. */
    | { kind: "apiNotFound"; path: string };
@@ -153,17 +158,23 @@ export function classifySpaFallback(
       // reordering degrades to a 404 rather than to a redirect loop.
       const alreadyStaticForm =
          segments[0] === "environments" && segments[2] === "packages";
-      // `.`/`..` would be re-normalized by the client against the new prefix,
-      // quietly pointing the redirect at a different package than was typed. A
-      // backslash is the same hazard by another spelling, since browsers fold it
-      // to `/` before resolving, so `\..\..\x.png` would escape a guard that
-      // only compared whole segments. Percent-encoded forms survive this test and
-      // are redirected, which is safe: the static route resolves them under the
-      // package's public/ root and answers 400 rather than serving anything
-      // outside it.
-      const traverses = segments.some(
-         (s) => s === "." || s === ".." || s.includes("\\"),
-      );
+      // A dot segment gets re-resolved by the client against the new prefix,
+      // pointing the redirect somewhere other than the package that was typed.
+      // Three spellings, all refused: the literal `.`/`..`; `%2e%2e`, which a URL
+      // parser treats as a dot segment while resolving the Location, so it walks
+      // out of the `/environments/<env>/packages/<pkg>/` prefix this redirect
+      // exists to pin; and a backslash, which browsers fold to `/` first. Decode
+      // before comparing, and treat a malformed escape as suspect rather than
+      // assuming it is inert.
+      const traverses = segments.some((segment) => {
+         let decoded: string;
+         try {
+            decoded = decodeURIComponent(segment);
+         } catch {
+            return true;
+         }
+         return decoded === "." || decoded === ".." || decoded.includes("\\");
+      });
       if (!alreadyStaticForm && !traverses) {
          const [environmentName, packageName, ...rest] = segments;
          // A reader who knows the files live in `public/` guesses that segment,
@@ -186,12 +197,17 @@ export function classifySpaFallback(
       }
    }
 
-   // One or two segments can still be `/<env>` or `/<env>/<pkg>`, and a package
-   // name may legally end in a servable extension. Hand the first segment back so
-   // the caller can tell "a package called report.html" from "a missing asset".
+   // One or two segments can still be `/<env>` or `/<env>/<pkg>`, and a name may
+   // legally end in a servable extension. Hand both names back so the caller can
+   // tell "a package called report.html" from "a missing asset".
    return {
       kind: "assetNotFound",
       path: requestPath,
-      environmentCandidate: segments.length <= 2 ? (segments[0] ?? null) : null,
+      appRouteCandidate:
+         segments.length === 1
+            ? { environmentName: segments[0] }
+            : segments.length === 2
+              ? { environmentName: segments[0], packageName: segments[1] }
+              : null,
    };
 }

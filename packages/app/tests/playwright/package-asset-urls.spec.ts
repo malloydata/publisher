@@ -14,9 +14,10 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  * REQUIRES A SERVER RUNNING THE BUILT APP. The server-side half of this lives
  * behind `if (!isDevelopment)`, and a dev server hands every unmatched path to
  * Vite before any of it runs, so against `make dev` the redirect and 404 cases
- * below fail for a reason that has nothing to do with the code. The config's own
- * `webServer` runs `start:init`, which is correct; it is running the server
- * yourself with `PLAYWRIGHT_USE_WEBSERVER=0` that can catch you out.
+ * below fail for a reason that has nothing to do with the code. Note the config
+ * sets `reuseExistingServer`, so a dev server already listening on the port is
+ * adopted whether or not you pass `PLAYWRIGHT_USE_WEBSERVER=0`. If these fail
+ * together, check what is on the port before reading the diff.
  */
 test.describe("package asset URLs", () => {
    test("a package file addressed on the app route reaches the file", async ({
@@ -62,6 +63,63 @@ test.describe("package asset URLs", () => {
          `/${DEFAULT_ENV}/${PACKAGES.dataApp}/no-such-page.html`,
       );
       expect(response.status()).toBe(404);
+      // The body is the point: this route used to answer with an empty 404, so a
+      // status-only assertion would pass against the version this replaced.
+      const body = await response.text();
+      expect(body).toContain("public/");
+      expect(body).toContain("does not include it");
+   });
+
+   test("an asset under a real environment is not rescued into the app shell", async ({
+      request,
+   }) => {
+      // The short-path rescue exists so a package legally named `report.html`
+      // still serves its page. It must not extend to any asset request that
+      // happens to sit under a real environment name, which would put back the
+      // 200-plus-shell answer this whole file is about.
+      const response = await request.get(`/${DEFAULT_ENV}/style.css`, {
+         maxRedirects: 0,
+      });
+      expect(response.status()).toBe(404);
+      expect(await response.text()).not.toContain("<title>Malloy Publisher");
+   });
+
+   test("a real environment with an unknown package does not reflect the name back", async ({
+      request,
+   }) => {
+      // Redirecting this landed on the static route, which answers an
+      // unresolvable name with JSON naming an internal failure and echoing the
+      // segment, which the adjacent route's own 404s deliberately avoid.
+      const response = await request.get(
+         `/${DEFAULT_ENV}/no-such-package/index.html`,
+         { maxRedirects: 0 },
+      );
+      expect(response.status()).toBe(404);
+      expect(response.headers()["content-type"]).toContain("text/html");
+      const body = await response.text();
+      // The explanatory page, not the static route's error JSON. It does echo the
+      // path the caller typed, escaped, which is their own input; what must not
+      // appear is an internal resolution failure naming the package.
+      expect(body).toContain("public/");
+      expect(body).not.toContain("not found");
+      expect(body).not.toContain('"code"');
+   });
+
+   test("a structured query parameter survives the redirect intact", async ({
+      request,
+   }) => {
+      // Rebuilding the query from Express's parsed object turned `filter[a]=1`
+      // into `filter=[object Object]`, so the page got a corrupted parameter
+      // rather than an intact one.
+      const response = await request.get(
+         `/${DEFAULT_ENV}/${PACKAGES.dataApp}/index.html?filter%5Bregion%5D=west`,
+         { maxRedirects: 0 },
+      );
+      expect(response.status()).toBe(302);
+      expect(response.headers()["location"]).toContain(
+         "filter%5Bregion%5D=west",
+      );
+      expect(response.headers()["location"]).not.toContain("object");
    });
 
    test("a guessed `public/` segment reaches the file", async ({ request }) => {
@@ -139,9 +197,11 @@ test.describe("package asset URLs", () => {
       await expect(
          page.getByRole("heading", { name: "Nothing to open at this path" }),
       ).toBeVisible();
-      // Scoped to the message: the path is in the breadcrumb too.
+      // Scoped to the message: the path is in the breadcrumb too. The wording
+      // claims only what the component checked, the extension, rather than
+      // asserting the file does not exist, which it never asked the server.
       await expect(
-         page.getByText(/is not a model or notebook in package/),
+         page.getByText(/does not name a .*file in package/),
       ).toContainText("not-a-model");
       await expect(page.getByText("Unrecognized file type")).toHaveCount(0);
    });
