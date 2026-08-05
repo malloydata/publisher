@@ -9,11 +9,9 @@ import {
 } from "./node_version";
 
 describe("nodeVersionWarning", () => {
-   it("warns on the Node version that produced the original defect", () => {
+   it("names the requirement and what is actually running", () => {
+      // The failure it warns about names neither.
       const warning = nodeVersionWarning({ nodeVersion: "v18.20.8" });
-      expect(warning).toBeDefined();
-      // Names the requirement and what is actually running, which the failure
-      // it is warning about does neither.
       expect(warning).toContain("Node.js");
       expect(warning).toContain(String(MIN_NODE_MAJOR));
       expect(warning).toContain("v18.20.8");
@@ -27,38 +25,28 @@ describe("nodeVersionWarning", () => {
       expect(warning.toLowerCase()).not.toContain("refuse");
    });
 
-   it("stays quiet on a supported Node", () => {
-      expect(nodeVersionWarning({ nodeVersion: "v24.15.0" })).toBeUndefined();
-      expect(
-         nodeVersionWarning({ nodeVersion: `v${MIN_NODE_MAJOR}.0.0` }),
-      ).toBeUndefined();
-   });
-
-   it("warns on the major immediately below the floor", () => {
-      expect(
-         nodeVersionWarning({ nodeVersion: `v${MIN_NODE_MAJOR - 1}.99.99` }),
-      ).toBeDefined();
-   });
-
-   it("stays quiet under Bun", () => {
-      expect(
-         nodeVersionWarning({
-            nodeVersion: "v18.20.8",
-            bunVersion: "1.3.13",
-         }),
-      ).toBeUndefined();
-   });
-
-   it("stays quiet on a version it cannot parse", () => {
-      for (const nodeVersion of ["", "not-a-version", "v"]) {
-         expect(nodeVersionWarning({ nodeVersion })).toBeUndefined();
+   it("warns below the floor only, and never on an unreadable version or Bun", () => {
+      const cases: [string, string | undefined, boolean][] = [
+         [`v${MIN_NODE_MAJOR - 1}.99.99`, undefined, true],
+         [`v${MIN_NODE_MAJOR}.0.0`, undefined, false],
+         ["v24.15.0", undefined, false],
+         ["not-a-version", undefined, false],
+         // Bun reports a Node version that says nothing about what it provides.
+         ["v18.20.8", "1.3.13", false],
+      ];
+      for (const [nodeVersion, bunVersion, warns] of cases) {
+         expect(
+            nodeVersionWarning({ nodeVersion, bunVersion }) !== undefined,
+            `${nodeVersion} bun=${bunVersion}`,
+         ).toBe(warns);
       }
    });
 });
 
 describe("engines contract", () => {
-   // Pins this package's declared floor to the one it warns about, so the two
-   // cannot drift apart silently.
+   // Pins this package's declared floor to the one it warns about. The server's
+   // node_version_check.spec.ts pins this same manifest to the server's floor,
+   // so the two packages cannot drift apart without a test failing.
    const pkg = JSON.parse(
       readFileSync(path.join(import.meta.dir, "..", "package.json"), "utf8"),
    ) as { engines?: { node?: string } };

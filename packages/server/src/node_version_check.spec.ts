@@ -11,69 +11,51 @@ import {
 } from "./node_version_check";
 
 describe("evaluateRuntime", () => {
-   it("rejects the Node version that produced the original defect", () => {
-      const verdict = evaluateRuntime({ nodeVersion: "v18.20.8" });
-      expect(verdict.supported).toBe(false);
-   });
-
-   it("names Node, the requirement, and the detected version", () => {
-      // The entire point of the change: the failure it replaces named none of
-      // these three things.
-      const message = evaluateRuntime({ nodeVersion: "v18.20.8" }).message;
-      expect(message).toBeDefined();
-      expect(message).toContain("Node");
-      expect(message).toContain(REQUIRED_NODE_RANGE);
-      expect(message).toContain("v18.20.8");
-   });
-
-   it("emits a greppable token as the first line, like PUBLISHER_READY", () => {
-      const message =
-         evaluateRuntime({ nodeVersion: "v18.20.8" }).message ?? "";
-      expect(message.split("\n")[0]).toBe(
-         `${UNSUPPORTED_NODE_TOKEN} required=${REQUIRED_NODE_RANGE} detected=v18.20.8`,
-      );
-   });
-
-   it("does not claim the detected version lacks global crypto when it does not", () => {
-      // Node 19 shipped the global Web Crypto API unflagged but is still below
-      // the floor, so a message templated as "<detected> does not provide the
-      // global Web Crypto API" would be false for it. The mechanism has to be
-      // attributed to the versions it actually applies to.
-      const message = evaluateRuntime({ nodeVersion: "v19.9.0" }).message ?? "";
-      expect(message).not.toContain("v19.9.0 does not provide");
-   });
-
-   it("accepts the minimum supported major at its .0.0 boundary", () => {
-      expect(
-         evaluateRuntime({ nodeVersion: `v${MIN_NODE_MAJOR}.0.0` }).supported,
-      ).toBe(true);
-   });
-
-   it("rejects the major immediately below the floor", () => {
-      expect(
-         evaluateRuntime({ nodeVersion: `v${MIN_NODE_MAJOR - 1}.99.99` })
-            .supported,
-      ).toBe(false);
-   });
-
-   it("accepts a current Node", () => {
-      expect(evaluateRuntime({ nodeVersion: "v24.15.0" }).supported).toBe(true);
+   it("supports the floor and above, refuses below it, and never blocks on an unreadable version", () => {
+      const cases: [string, boolean][] = [
+         [`v${MIN_NODE_MAJOR - 1}.99.99`, false],
+         [`v${MIN_NODE_MAJOR}.0.0`, true],
+         ["v24.15.0", true],
+         // Only guard a version we can read: refusing a working runtime over an
+         // odd version string would be worse than the failure this prevents.
+         ["", true],
+         ["not-a-version", true],
+         ["v", true],
+      ];
+      for (const [nodeVersion, supported] of cases) {
+         expect(evaluateRuntime({ nodeVersion }).supported).toBe(supported);
+      }
    });
 
    it("exempts Bun even when it reports an old Node version", () => {
       // Load-bearing: the Docker image runs the bundle under Bun
-      // (CMD ["bun", "run", ...]), and Bun has global crypto regardless of the
-      // Node version it reports. Without this the image would refuse to boot.
+      // (CMD ["bun", "run", ...]), so without this the image refuses to boot.
       expect(
          evaluateRuntime({ nodeVersion: "v18.20.8", bunVersion: "1.3.13" })
             .supported,
       ).toBe(true);
    });
 
-   it("treats an unparseable version as supported rather than blocking boot", () => {
-      for (const nodeVersion of ["", "not-a-version", "v"]) {
-         expect(evaluateRuntime({ nodeVersion }).supported).toBe(true);
-      }
+   it("names the requirement and the detected version, behind a greppable token", () => {
+      // The entire point of the change: the failure it replaces named neither,
+      // and the token lets a script treat this as terminal like PUBLISHER_READY.
+      const message =
+         evaluateRuntime({ nodeVersion: "v18.20.8" }).message ?? "";
+      expect(message.split("\n")[0]).toBe(
+         `${UNSUPPORTED_NODE_TOKEN} required=${REQUIRED_NODE_RANGE} detected=v18.20.8`,
+      );
+      expect(message).toContain("Node");
+      expect(message).toContain("v18.20.8");
+   });
+
+   it("states the floor as policy rather than naming a mechanism", () => {
+      // The crash that exposed the floor (the missing `crypto` global on the
+      // query path) is fixed in service/query_metadata.ts, so text blaming it
+      // would describe something that no longer happens on any Node.
+      const message =
+         evaluateRuntime({ nodeVersion: "v18.20.8" }).message ?? "";
+      expect(message).not.toContain("crypto");
+      expect(message).toContain("declare Node");
    });
 });
 
@@ -127,19 +109,31 @@ describe("assertSupportedNodeVersion", () => {
 });
 
 describe("engines contract", () => {
-   // The published package is what a user installs, so `engines` has to travel
-   // with it. This spec is the pin: deleting the field, or letting it drift
-   // from MIN_NODE_MAJOR, fails the unit suite rather than shipping silently.
-   // That drift is the whole defect, npm had nothing to enforce.
-   const pkg = JSON.parse(
-      readFileSync(path.join(import.meta.dir, "..", "package.json"), "utf8"),
-   ) as { engines?: { node?: string } };
+   // The floor is declared in five places: MIN_NODE_MAJOR, and `engines.node` in
+   // the server, root, scaffolder and CLI manifests. This is the pin that makes
+   // them one floor, so any of them drifting fails the unit suite instead of
+   // shipping. Silent drift between two declarations of the same requirement is
+   // the class of defect this module exists to prevent, so the module must not
+   // reintroduce it one level up.
+   //
+   // Read from disk rather than imported: a spec-time file read keeps the
+   // packages independent at build and run time, which importing a shared
+   // constant across workspace packages would not.
+   const manifests = {
+      "server package": ["package.json"],
+      "repo root": ["..", "..", "package.json"],
+      scaffolder: ["..", "create-malloy-package", "package.json"],
+      cli: ["..", "cli", "package.json"],
+   };
 
-   it("declares engines.node in the published package", () => {
-      expect(pkg.engines?.node).toBeDefined();
-   });
-
-   it("declares the same floor the boot check enforces", () => {
-      expect(pkg.engines?.node).toBe(REQUIRED_NODE_RANGE);
+   it("declares one floor across every published manifest", () => {
+      for (const [name, segments] of Object.entries(manifests)) {
+         const pkg = JSON.parse(
+            readFileSync(path.join(import.meta.dir, "..", ...segments), "utf8"),
+         ) as { engines?: { node?: string } };
+         expect(pkg.engines?.node, `${name} engines.node`).toBe(
+            REQUIRED_NODE_RANGE,
+         );
+      }
    });
 });
