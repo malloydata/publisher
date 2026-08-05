@@ -68,7 +68,7 @@ const SAFE_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 export function assertSafeSqlIdentifier(value: string, what: string): string {
    if (!SAFE_SQL_IDENTIFIER.test(value)) {
       throw new BadRequestError(
-         `Invalid ${what} "${value}": expected a plain identifier (letters, digits, underscore, dollar or hyphen, not starting with a digit).`,
+         `Invalid ${what} "${value}": expected a plain identifier (letters, digits, underscore or dollar, not starting with a digit).`,
       );
    }
    return value;

@@ -1206,3 +1206,32 @@ describe("the identifier guard rejects the SQL comment token", () => {
       expect(() => assertSafeSqlIdentifier("MY-CAT", "catalog name")).toThrow();
    });
 });
+
+describe("the rejection message matches what the guard actually accepts", () => {
+   // The charset lost its hyphen but this message kept advertising one, so an
+   // agent was told its rejected value matched the stated format and had no
+   // repair available: the retry loop, arriving through the error text. Three
+   // times in this feature's history the code changed and what it says about
+   // itself did not, so the two are pinned together here.
+   it("does not offer a character the guard rejects", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      let message = "";
+      try {
+         assertSafeSqlIdentifier("bad value", "catalog name");
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).toContain("plain identifier");
+      // Every character class the message names must genuinely be accepted.
+      for (const [named, sample] of [
+         ["letters", "abc"],
+         ["digits", "a1"],
+         ["underscore", "a_b"],
+         ["dollar", "a$b"],
+      ] as const) {
+         expect(message).toContain(named);
+         expect(assertSafeSqlIdentifier(sample, "x")).toBe(sample);
+      }
+      expect(message).not.toContain("hyphen");
+   });
+});
