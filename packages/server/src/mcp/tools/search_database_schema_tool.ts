@@ -178,7 +178,30 @@ const STRICT_BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function isPastableTablePath(resource: string): boolean {
    if (!resource) return false;
    if (resource.includes("/")) return DUCKDB_FILE_PATH.test(resource);
+   // A bare data-file name has no slash, so it would otherwise take the dotted
+   // branch and pass: `orders.parquet` looks like schema `orders`, table
+   // `parquet`, and that is exactly how DuckDB resolves it, because its
+   // validator tries the identifier grammar before the file grammar. There is
+   // no way to write this one as a bare path, so it is not pastable. The
+   // single-file Azure describe is the producer (db_utils describeRemoteFile
+   // returns the basename), and bareTableName already knew about this shape.
+   if (DATA_FILE_EXTENSION.test(resource)) return false;
    return resource.split(".").every((seg) => STRICT_BARE_IDENT.test(seg));
+}
+
+/**
+ * Whether this table gets a `malloySource`.
+ *
+ * ONE predicate, shared by the field and by the warning that explains its
+ * absence. They were separate, and the field was omitted for two reasons while
+ * the warning counted only one, so a table with no usable name lost the field
+ * in silence: the precise thing the omission exists to avoid.
+ */
+export function canPasteSource(entity: {
+   tableName: string;
+   resource: string;
+}): boolean {
+   return Boolean(entity.tableName) && isPastableTablePath(entity.resource);
 }
 
 /** Data-file suffixes DuckDB addresses directly, as whole file paths. */
@@ -283,7 +306,7 @@ function toResponseTable(
       // A directory-shaped URL with no blobs yields no usable name; emitting
       // `source: `` is ...` would be a line that cannot compile, from a field
       // documented as ready to paste.
-      ...(entity.tableName && isPastableTablePath(entity.resource)
+      ...(canPasteSource(entity)
          ? {
               malloySource: malloySourceSnippet(
                  entity.connectionName,
@@ -356,7 +379,7 @@ export function registerSearchDatabaseSchemaTool(
       const n = entities.filter((e) => !isPastableTablePath(e.resource)).length;
       if (n === 0) return [];
       return [
-         `${n} table(s) have a path that cannot be pasted into a Malloy table() call as-is, so malloySource is omitted for them rather than given as a line that will not compile. Use tablePath and quote the offending segment the way your warehouse's dialect requires (DuckDB and Postgres use double quotes, MySQL uses backticks).`,
+         `${n} table(s) have a path this server will not vouch for across every dialect it serves, so malloySource is omitted for them rather than risk a line that does not compile. Build it from tablePath: on your own dialect the path may work as-is, or may need the offending segment quoted. Double quotes on DuckDB, Postgres, Snowflake and Trino; backticks on MySQL, BigQuery and Databricks.`,
       ];
    };
 

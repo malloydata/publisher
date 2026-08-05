@@ -22,6 +22,7 @@ mock.module("../../controller/connection.controller", () => ({
 import type { EnvironmentStore } from "../../service/environment_store";
 import {
    bareTableName,
+   canPasteSource,
    isPastableTablePath,
    malloySourceSnippet,
    registerSearchDatabaseSchemaTool,
@@ -401,5 +402,64 @@ describe("only pastable table paths get a malloySource", () => {
    it("rejects segments that only some dialects would accept", () => {
       expect(isPastableTablePath("public.my-table")).toBe(false);
       expect(isPastableTablePath("mydb.2024_orders")).toBe(false);
+   });
+
+   // A bare data-file name has no slash, so it took the dotted branch and
+   // passed. DuckDB resolves `orders.parquet` as schema `orders`, table
+   // `parquet`, because its validator tries identifiers before file paths.
+   it("rejects a bare data-file name, which DuckDB reads as schema.table", () => {
+      expect(isPastableTablePath("orders.parquet")).toBe(false);
+      expect(isPastableTablePath("customers.csv")).toBe(false);
+      // With a directory it IS the file grammar, and is fine.
+      expect(isPastableTablePath("data/orders.parquet")).toBe(true);
+   });
+
+   // The field and the warning explaining its absence must share a predicate,
+   // or one reason for omitting it goes unexplained.
+   it("treats a nameless table as unpastable, not just an odd path", () => {
+      expect(canPasteSource({ tableName: "", resource: "a/b/" })).toBe(false);
+      expect(canPasteSource({ tableName: "t", resource: "main.t" })).toBe(true);
+   });
+});
+
+describe("the unpastable warning actually reaches both tiers", () => {
+   // Nothing pinned this firing: the tests covered the predicate in isolation,
+   // so the tier-5 gap would not have been caught by a regression.
+   function storeFor(): Partial<EnvironmentStore> {
+      return {
+         getEnvironment: async () =>
+            ({
+               assertCanAdmitQuery: () => {},
+               listApiConnections: () => CONNECTIONS,
+               listPackages: async () => [{ name: "p" }],
+            }) as never,
+      };
+   }
+   const base = { environmentName: "e", connectionName: "warehouse" };
+
+   it("warns on the listing tier", async () => {
+      tablesResult = [
+         { resource: "sales.odd name", columns: [{ name: "x", type: "int" }] },
+      ];
+      const payload = parse(
+         await captureHandler(storeFor())({ ...base, schemaName: "sales" }),
+      );
+      expect(payload.tables[0].malloySource).toBeUndefined();
+      expect(payload.warnings?.join(" ")).toContain("malloySource is omitted");
+   });
+
+   it("warns on the single-table tier too", async () => {
+      tablesResult = [
+         { resource: "sales.odd name", columns: [{ name: "x", type: "int" }] },
+      ];
+      const payload = parse(
+         await captureHandler(storeFor())({
+            ...base,
+            schemaName: "sales",
+            tableName: "odd name",
+         }),
+      );
+      expect(payload.tables[0].malloySource).toBeUndefined();
+      expect(payload.warnings?.join(" ")).toContain("malloySource is omitted");
    });
 });
