@@ -49,7 +49,7 @@ const COMPILE_DESCRIPTION = `Compile-check Malloy source against a model and ret
 
 ## Parameters
 - environmentName, packageName, modelPath (required): the model whose namespace the source compiles against. The source is appended to that model, so its imports, sources, and queries are in scope, and modelPath is real context, not a label.
-- source (required): the Malloy text to validate.
+- source (required): the Malloy text to validate. An \`#(authorize)\` annotation in it is rejected with a 400 — gates come only from package files; save and reload to validate one.
 - includeSql (optional): also return the generated SQL when the source ends in a runnable query. The query is still not executed and no data is scanned.
 
 ## Checking part of a source

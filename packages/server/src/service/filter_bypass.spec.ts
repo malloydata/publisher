@@ -99,6 +99,29 @@ source: metrics is duckdb.table('events') extend {
 }
 `;
 
+// Protected and unprotected side by side, both named views, for the named-path
+// injection regression: the request names the UNPROTECTED source (so filter
+// lookup finds nothing to inject) while the statement that actually runs reads
+// the PROTECTED one.
+const MIXED_MODEL = `
+#(filter) name=Organization dimension=org_id type=equal implicit required
+source: products is duckdb.table('products') extend {
+   measure: n is count()
+   view: by_org is {
+      group_by: org_id, product_name
+      aggregate: n
+   }
+}
+
+source: metrics is duckdb.table('events') extend {
+   measure: c is count()
+   view: by_kind is {
+      group_by: kind
+      aggregate: c
+   }
+}
+`;
+
 beforeAll(async () => {
    await fs.mkdir(TEST_DB_DIR, { recursive: true });
    await fs.mkdir(TEST_PKG_DIR, { recursive: true });
@@ -119,6 +142,11 @@ beforeAll(async () => {
    await fs.writeFile(
       path.join(TEST_PKG_DIR, "analytics.malloy"),
       ANALYTICS_MODEL,
+      "utf-8",
+   );
+   await fs.writeFile(
+      path.join(TEST_PKG_DIR, "mixed.malloy"),
+      MIXED_MODEL,
       "utf-8",
    );
 });
@@ -387,6 +415,96 @@ describe("alias/extend/chain of a protected source is enforced (not restricted)"
          });
       });
    }
+});
+
+// ===========================================================================
+// Enforced: the named `sourceName`/`queryName` request shape.
+//
+// Issue #964. Filters resolve from the RAW `sourceName` on this path
+// (`getFilters(sourceName)`), and that lookup is a plain map read: a miss
+// returns `[]`, so nothing is injected and the query runs unfiltered. That is
+// the opposite failure direction from the query boundary's identical
+// exact-match miss, which 404s — so a statement smuggled through either field
+// reads the protected source with NO filter clause at all. Nothing here
+// depends on `explores`: `Model.create` leaves the boundary inert, which is
+// exactly the default deployment shape.
+// ===========================================================================
+
+/**
+ * Assert a named-path request is refused and returns no rows, reporting the
+ * leaked count on failure the way `expectFilterRejected` does — a success here
+ * is the bypass. The error class is not pinned: after the fix these fields are
+ * quoted as identifiers, so the request dies as an unresolvable name rather
+ * than as a missing-filter 400.
+ */
+async function expectNamedInjectionRejected(
+   model: Model,
+   sourceName: string | undefined,
+   queryName: string | undefined,
+): Promise<void> {
+   let leaked: Row[] | undefined;
+   try {
+      const { compactResult } = await model.getQueryResults(
+         sourceName,
+         queryName,
+      );
+      leaked = asRows(compactResult);
+   } catch {
+      return;
+   }
+   const orgs = [...new Set(leaked.map((r) => r.org_id))].join(", ");
+   throw new Error(
+      `Expected { sourceName: ${JSON.stringify(sourceName)}, queryName: ` +
+         `${JSON.stringify(queryName)} } to be rejected, but it succeeded and ` +
+         `returned ${leaked.length} rows across orgs [${orgs}] ` +
+         `(FILTER BYPASS / LEAK).`,
+   );
+}
+
+describe("a name field cannot smuggle a statement past filter injection", () => {
+   it("rejects a second run: statement opened through queryName", async () => {
+      const model = await makeModel("mixed.malloy");
+      // The request names the unprotected `metrics`, so `getFilters` finds
+      // nothing to inject — while the statement Malloy actually runs (the last
+      // one) reads the protected `products`.
+      await expectNamedInjectionRejected(
+         model,
+         "metrics",
+         "by_kind\nrun: products -> by_org",
+      );
+   });
+
+   it("rejects a second run: statement opened through sourceName", async () => {
+      const model = await makeModel("mixed.malloy");
+      // Same lookup miss, reached through the other field: the raw string
+      // `products->by_org\nrun: products` matches no source, so no filters.
+      await expectNamedInjectionRejected(
+         model,
+         "products->by_org\nrun: products",
+         "by_org",
+      );
+   });
+
+   it("still enforces and scopes the honest named read of the protected source", async () => {
+      const model = await makeModel("mixed.malloy");
+      let rejected = false;
+      try {
+         await model.getQueryResults("products", "by_org");
+      } catch (error) {
+         rejected = true;
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect((error as Error).message).toContain("Organization");
+      }
+      expect(rejected).toBe(true);
+
+      const { compactResult } = await model.getQueryResults(
+         "products",
+         "by_org",
+         undefined,
+         { Organization: "acme" },
+      );
+      expectAcmeScoped(asRows(compactResult), 2);
+   });
 });
 
 // ===========================================================================
