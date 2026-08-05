@@ -93,6 +93,7 @@ import {
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
+   type OwnAuthorizeSource,
 } from "../service/source_extraction";
 import {
    malloyGivenToApi,
@@ -563,9 +564,18 @@ function appendLocalSourceInfos(
 function extractSources(
    modelDef: ModelDef,
    givens: ApiGivenWire[] | undefined,
-): { sources: ApiSourceWire[]; filterMap: Map<string, FilterDefinition[]> } {
-   const { sources, filterMap } = extractSourcesFromModelDef(modelDef, givens);
-   return { sources: sources as unknown as ApiSourceWire[], filterMap };
+): {
+   sources: ApiSourceWire[];
+   filterMap: Map<string, FilterDefinition[]>;
+   ownAuthorizeSources: OwnAuthorizeSource[];
+} {
+   const { sources, filterMap, ownAuthorizeSources } =
+      extractSourcesFromModelDef(modelDef, givens);
+   return {
+      sources: sources as unknown as ApiSourceWire[],
+      filterMap,
+      ownAuthorizeSources,
+   };
 }
 
 function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
@@ -629,12 +639,16 @@ async function compileMalloyModel(
    );
    appendLocalSourceInfos(modelDef, sourceInfos, importedNames);
 
-   const { sources, filterMap } = extractSources(modelDef, givens);
+   const { sources, filterMap, ownAuthorizeSources } = extractSources(
+      modelDef,
+      givens,
+   );
    const queries = extractQueries(modelDef);
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference; compileOneModel's catch
-   // turns it into this model's compilationError.
-   await validateAuthorizeProbes(mm, sources);
+   // turns it into this model's compilationError. Declared gates only — an
+   // inherited one belongs to the base's namespace (see extractSources).
+   await validateAuthorizeProbes(mm, ownAuthorizeSources);
 
    return {
       modelPath,
@@ -819,7 +833,8 @@ async function compileNotebookModel(
       finalFilterMap = extracted.filterMap;
       finalQueries = extractQueries(finalModelDef);
       // Validate #(authorize) at compile time (shared with Model.create).
-      await validateAuthorizeProbes(mm, finalSources);
+      // Declared gates only — see extractSources.
+      await validateAuthorizeProbes(mm, extracted.ownAuthorizeSources);
    }
 
    return {

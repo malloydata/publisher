@@ -63,10 +63,14 @@ curl -s -X POST \
 
 The query body takes one of two shapes: `query` alone (ad-hoc Malloy, compiled in the model's
 context), or `queryName` without `query` (a named view when `sourceName` is set; a model-level
-named query when it is not). Any other combination returns a 400. The response's `result` field is
-a JSON string, so parse it; with `"compactJson": true` it holds plain row objects, without it the
-full Malloy result envelope with type metadata. `givens` rides on either shape to supply
-model-declared [runtime parameters](givens.md).
+named query when it is not). Any other combination returns a 400. On the named shape, `sourceName`
+and `queryName` are names and not Malloy code: send one name per field, bare, exactly as the model
+response's `sources` listing returns it — the server quotes it, so a name needing quotes works and
+backticks of your own do not. Anything richer than a name goes in `query`.
+
+The response's `result` field is a JSON string, so parse it; with `"compactJson": true` it holds
+plain row objects, without it the full Malloy result envelope with type metadata. `givens` rides on
+either shape to supply model-declared [runtime parameters](givens.md).
 
 ## Live API explorer
 

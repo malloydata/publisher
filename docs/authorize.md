@@ -80,15 +80,78 @@ source: orders is duckdb.table('orders.parquet')
 
 This is the intended admin-override idiom — use it deliberately.
 
-### Run target, plus every joined source (not inherited through extend)
+### The entry point, and only the entry point
 
-Authorize is checked on the source the query directly runs against **and on every source reached transitively via `join_*`** — a gate on a joined source is not bypassed by joining instead of naming it directly. It is still **not** inherited through `extend`:
+Authorize is checked on the source the query **enters through** — the run target. A gate answers "who may query this source", not "who may read everything reachable beneath it".
 
-- **Extend footgun:** a source that extends a locked base is governed *solely by its own* annotations. `source: b is a extend { … }` does **not** inherit `a`'s gate — if `b` declares none, `b` is unrestricted even if `a` is `#(authorize) "false"`.
-- **Joins are enforced.** A gate on a source reached only via `join_*` — including a deep transitive join (A→B→C), a query-local `join_one` inside a `-> { … }` refinement, and a composite source (`compose(a, b)`) resolved to a locked branch — fires the same as a gate on the run target itself. Semantics are AND across sources: any single reachable gate failing denies the whole query.
-- **Query-source derivation doesn't launder the gate away.** `source: laundered is locked_src -> { … }` gates on `locked_src` too — Malloy's compiled `QuerySourceDef` keeps the base reachable via `query.structRef`, so the walk resolves and gates it (recursing through a chained derivation, or through a join to a query-source). This also covers a query-source reached only via `join_*`.
+- **Joins are not gated.** A gate on a source reached only via `join_*` **does not fire** — at any depth (A→B→C), aliased, across files, declared in a query-local `join_one` inside a `-> { … }` refinement, or as a member of a joined composite. `run: joiner -> { … }` where `joiner` joins a base locked with `#(authorize) "false"` returns rows. **This is the rule authors have to design around:** joining sensitive data into an ungated source publishes it. Put the gate on the source callers enter through, and use [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) to control what an extension re-exposes.
+- **Extend: own gate replaces, otherwise the base's carries.** `source: b is a extend { … }` is governed by `b`'s own `#(authorize)` when it declares one — that replacement is the [curated-extension idiom](#recommended-pattern-locked-base-and-curated-extensions). When `b` declares none it is gated by `a`'s. That holds however `b` is decorated: a render tag or doc comment on `b` moves `a`'s annotations off `b`'s own notes (Malloy files them under `annotations.inherits`), so resolution follows both the inherits chain and the source registry to the declaration `b` derives from.
+- **Query-source derivation carries the gate too.** `source: laundered is locked_src -> { … }` is gated by `locked_src`'s gate when it declares none of its own — the compiled `QuerySourceDef` keeps the base reachable via `query.structRef`, and a chained derivation resolves through it as well. Derivation is treated like `extend`; reaching the same derived source via a *join* is still not gated.
+- **A composite run target resolves precisely.** When the run target is `compose(a, b)`, Malloy resolves it to exactly one member branch per query and that branch's gate applies.
+- **Caller-submitted text may not declare a gate at all.** An `#(authorize)` / `##(authorize)` annotation in the `query` text of a query request, or in the `source` text submitted to `/compile`, is rejected with a 400: the override above is the model author's to make. Notebook cells are package content, so an author's gate there works normally.
 
-To keep a locked base's data from leaking through an extension, pair the gate with Malloy [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) so the extension re-exposes only a curated column surface. See the [recommended pattern](#recommended-pattern-locked-base-and-curated-extensions).
+### Worked example
+
+One model, six entry points. The rules above are subtle enough that it is worth reading the verdicts rather than deriving them:
+
+```malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+// Locked: nobody queries this directly.
+#(authorize) "false"
+source: salaries is duckdb.table('salaries')
+
+// (1) No gate of its own → the base's "false" carries. Still locked.
+source: salaries_plain is salaries extend {
+  measure: headcount is count()
+}
+
+// (2) A render tag does NOT change that. Malloy moves the base's annotations
+//     under `annotations.inherits`, and resolution follows the chain.
+# bar_chart
+source: salaries_tagged is salaries extend {
+  measure: headcount is count()
+}
+
+// (3) Its own gate REPLACES the base's — the curated-extension idiom.
+#(authorize) "$ROLE = 'hr'"
+source: salaries_hr is salaries extend {
+  measure: avg_salary is avg(salary)
+}
+
+// (4) Derivation carries the gate, like extend.
+source: salaries_derived is salaries -> { group_by: department }
+
+// (5) A JOIN does not. `headcount_by_dept` has no gate of its own, and the
+//     gate on `salaries` is not traced through the join.
+source: headcount_by_dept is duckdb.table('departments') extend {
+  join_one: salaries on id = salaries.department_id
+  measure: headcount is count()
+}
+```
+
+| Entry point | Verdict | Why |
+| --- | --- | --- |
+| `run: salaries -> …` | **403** always | its own `"false"` |
+| `run: salaries_plain -> …` | **403** always | inherited `"false"` (1) |
+| `run: salaries_tagged -> …` | **403** always | inherited `"false"`; the tag is irrelevant (2) |
+| `run: salaries_hr -> …` | 403 unless `ROLE = 'hr'` | own gate replaced the base's (3) |
+| `run: salaries_derived -> …` | **403** always | derivation carried `"false"` (4) |
+| `run: headcount_by_dept -> …` | **returns rows** | no gate at the entry point; the join is not traced (5) |
+
+Entry point (5) is the one to internalize: `headcount_by_dept` reads salary rows and is queryable by anyone. That is not a bug, it is the rule — **joining sensitive data into an ungated source publishes it.** If `headcount_by_dept` should be restricted, give it its own gate; if it should expose only aggregates, use `include { public: headcount, private: * }` so the join cannot be drilled through.
+
+And the caller cannot mint a gate to escape one:
+
+```jsonc
+// POST /…/models/hr.malloy/query — rejected with 400, not compiled
+{
+  "query": "#(authorize) \"true\"\nsource: mine is salaries extend {}\nrun: mine -> { select: * }"
+}
+```
 
 ## Recommended pattern: locked base and curated extensions
 
@@ -148,10 +211,14 @@ The gate runs, fail-closed, on every query entry point — **before** any filter
 
 Authorize expressions are validated at **model load** (compile-only, no execution). A malformed annotation (missing quotes), an unknown given, or a source-field reference fails the load with **HTTP 424** (`ModelCompilationError`), naming the source and the underlying reason. Fix the model before it serves.
 
+Validation covers the gates each source **declares** — its own `#(authorize)` plus the file-level `##(authorize)` — and deliberately stops there. A gate a source only *inherits* is authored in its base's given namespace, and Malloy merges one level of `import`, so a base two or more hops away can reference a given the extending model cannot see. Probing it from here would fail the load with a 424 blaming an annotation that is perfectly valid where it was written. Inherited gates are still enforced at request time, fail-closed: an expression that cannot be parsed becomes a single unsatisfiable `false`.
+
 ### Error contract & redaction
 
 - **Runtime 403** names only the source — `{"code":403,"message":"Access denied for source \"orders\"."}` — never the authorize expression. Gate logic is not leaked to (potentially untrusted) query callers.
 - **Model-load 424** *keeps* the full expression in its message — it is author-facing at package load and you need it to fix a malformed annotation.
+- **The reported `authorize` list is not always a pure disjunction.** A source's own expressions are OR-ed, but where two *sources* gate one entry point — its own gate plus one carried from the source it derives from — those are AND-ed, and the API reports both sets flattened into a single array. Use the field to decide *that* a source is gated; do not recompute the access decision from it, because reading a two-source list as OR grants where Publisher denies. (Enforcement is unaffected: each source's gate is evaluated as its own disjunction and the results AND-ed.)
+- **Introspection is not redacted, and now shows inherited gates too.** A source's `authorize` list in the API reports the expressions gating it, including one it inherits from a base in another file that is not itself listed. That is deliberate — a list that omitted the inherited case would report a locked source as unrestricted, which is the more dangerous error — but it means gate logic is readable by anyone who can list sources. Same trust assumption as the rest of this page: keep the API behind the trusted tier.
 
 ## Security model
 
@@ -163,12 +230,13 @@ Authorize expressions are validated at **model load** (compile-only, no executio
 
 ## Known limitations
 
-- **Not inherited through extend** (see [above](#run-target-plus-every-joined-source-not-inherited-through-extend)) — pair locked bases with access modifiers. (Joins ARE enforced — see above.)
-- **Joining a composite over-denies conservatively.** When a composite (`compose(a, b)`) is reached via `join_*`, Malloy does not surface which branch resolved, so every member's gate is applied. A query using only an ungated member of a *joined* composite is therefore denied if any sibling member is locked. This fails closed (safe) and affects only the experimental composite-source feature. (A composite used as the run target resolves precisely via `compositeResolvedSourceDef` and does not over-deny.)
+- **A gate does not follow a join** (see [above](#the-entry-point-and-only-the-entry-point)). This is the limitation with the largest practical consequence: any source that joins gated data and is itself ungated hands that data to every caller. Treat "which sources can a caller enter through, and what does each of them reach" as part of modelling, not as something the gate handles for you.
+- **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with access modifiers to keep the re-exposed column surface deliberate. (An extension with no gate of its own carries the base's.)
+- **A source the caller declares in its own query text is gated after compiling, not before.** For a source the package declares — named plainly, or as an expression over the name like `locked extend { … } -> { … }` or a refinement `locked_q + { … }` — the gate runs before compilation, so a denial cannot be used to read the schema. A caller who writes `source: mine is locked_base extend {}` in the `query` text is different: `mine` does not exist until that text compiles, so there is nothing to gate first. The gate still fires — the compiled run target carries the base's gate and the request is denied with a 403, and no rows are ever returned — but a *malformed* probe (`group_by: no_such_field`) gets Malloy's "field is not defined" instead, which confirms whether a column exists on the locked base. Closing it would mean resolving a gate out of untrusted text before compiling it, which is exactly the resolution-from-text this design refuses to do (see [Security model](#security-model)). Behind the trusted tier the exposure is a column name, not data.
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.
 - **No per-request caching.** Each gate runs a fresh probe against bundled DuckDB (microseconds); a security decision is intentionally not memoized.
-- **A joined source's gate only ever sees caller-supplied given values, never the joined source's own `given:` defaults.** The isolated probe (`bindProbeGivens`) declares a given only when the caller actually supplied a value for it; it never falls back to the joined source's own default for a given the caller left unsupplied. This is intentionally conservative: a probe compiled from name-only identity (see [Security model](#security-model)) has no reliable way to attribute a `given:` default to the *specific* joined source it's gating rather than to an ambient/entry-model given of the same name — so an unsupplied given always denies rather than risk resolving someone else's default. Practical effect: to grant access through a joined gate, the caller must supply every given the gate's expression references; declaring a permissive default on the joined source itself does not open it up.
-- **A given-based gate on a source reached through a multi-hop transitive import works, but needs a self-contained probe to get there.** Malloy's own given-namespace merge covers only one level of `import` — a `given:` declared two-or-more imports away from the entry model is not in the entry model's namespace, so a request-scoped `Model.getQueryResults`/`executeNotebookCell` value for it is also dropped before it ever reaches the real query (`filterGivensToModelSurface`, `model.ts`). The gate's own probe is unaffected: it's self-contained (`bindProbeGivens`, `authorize.ts`) — it declares just the given(s) an expression references, inferring type from the supplied value, rather than depending on the entry model's namespace — so the *gate* correctly evaluates a value the real query can't otherwise see. Author-side implication: for a caller to actually reach data behind such a gate, some source or file within one import hop of the entry model must also declare (or import) the same given, so the real query's own given-resolution surfaces it.
+- **A gate inherited from a base in another file only ever sees caller-supplied given values, never that base's own `given:` defaults.** The isolated probe (`bindProbeGivens`) declares a given only when the caller actually supplied a value for it. This is intentionally conservative: a probe compiled from name-only identity (see [Security model](#security-model)) has no reliable way to attribute a `given:` default to the *specific* source it's gating rather than to an ambient/entry-model given of the same name — so an unsupplied given always denies rather than risk resolving someone else's default. Practical effect: to pass such a gate the caller must supply every given the expression references; a permissive default on the base does not open it up.
+- **A given the entry model does not surface is usually refused, not ignored.** Malloy's given-namespace merge covers only one level of `import`, so a value for a given the entry model doesn't surface reaches Malloy's own resolution and errors (`unknown given`) rather than being silently dropped and falling back to a default. The one exception is a name some reachable gate actually references: that value is forwarded to the gate and withheld from the query (`filterGivensToModelSurface`, `model.ts`), which is what lets a gate carried in from a base in another file evaluate at all. Author-side implication: for a caller to supply a given the query itself reads, some source or file within one import hop of the entry model must declare (or import) it.
 
 ## Runnable example
 

@@ -40,7 +40,9 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
   ```
 
   Both compile against the real source, so inherited measures resolve and `private:` fields stay hidden exactly as they would in place. An extension *adds* to a source's namespace rather than overriding it, so a fragment reusing an existing view name reports `Cannot redefine` too; rename it for the check.
-- `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after boot becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. A reload that fails to compile leaves the package's files alone and keeps serving the previously compiled model, returning the compile errors.
+
+  One thing you cannot compile-check: submitted source may not contain an `#(authorize)` / `##(authorize)` annotation, and one is rejected with a 400 rather than compiled. A source's own gate replaces the gate it would otherwise inherit from its base, so accepting one from a request would let a caller relax the author's access gate — see [authorize.md](authorize.md#security-model). There is no way to tell an author checking their own gate from a caller forging one, because the compile door has no caller identity to check. So a gate is validated by saving it and reloading: model load compiles every `#(authorize)` annotation in the package and reports a malformed one as a 424 naming the source. Strip the annotation if you only want to check the rest of the edit.
+- `malloy_reloadPackage`: recompile a package from its on-disk content so a source or view added after boot becomes queryable by name, without restarting the server. This is the other half of the authoring loop: validate with `malloy_compile`, save, reload, then query. A reload that fails to compile leaves the package's files alone and keeps serving the previously compiled model, returning the compile errors — which is also the loop for an edit carrying an `#(authorize)` gate, since those cannot go through `malloy_compile`.
 
 ### Skills as MCP prompts
 

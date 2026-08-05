@@ -14,15 +14,69 @@
  * This module parses, collects, and (at compile time) validates authorize
  * annotations. Evaluating the expression — the actual access gate — lands in a
  * later PR and reuses `buildAuthorizeProbe`. Kept light so it bundles cleanly
- * into the package-load worker (the only non-type import is the shared
- * `ModelCompilationError`).
+ * into the package-load worker (its only non-type import is `../errors`).
  */
 
 import { type GivenValue } from "@malloydata/malloy";
-import { ModelCompilationError } from "../errors";
+import { BadRequestError, ModelCompilationError } from "../errors";
 
-const SOURCE_PREFIX = "#(authorize)";
-const FILE_PREFIX = "##(authorize)";
+/**
+ * An `authorize` annotation's opening tag, source-level (`#`) or file-level
+ * (`##`), tolerant of whitespace inside the parens (`#( authorize )`).
+ *
+ * ONE pattern serves both the parser ({@link parseAuthorizeAnnotation}, anchored
+ * below) and the caller-text rejection ({@link assertNoCallerAuthorizeAnnotation},
+ * unanchored). They MUST accept the same spellings: a spelling the rejecter
+ * catches but the parser ignores is an author-side fail-OPEN — the author reads
+ * their source as locked while it carries no gate at all and loads without
+ * complaint.
+ */
+const AUTHORIZE_TAG = String.raw`##?\(\s*authorize\s*\)`;
+const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG);
+const AUTHORIZE_ANNOTATION_PREFIX = new RegExp(`^${AUTHORIZE_TAG}`);
+
+/**
+ * Reject caller-submitted Malloy text that declares an `authorize` annotation.
+ *
+ * A source's own `#(authorize)` replaces the base's when it derives one
+ * (`source: mine is locked_base extend {}` carrying `#(authorize) "true"` is
+ * gated by "true"). That override is the locked-base + curated-extension idiom,
+ * and it is only safe while the declaration is the model AUTHOR's — so a caller
+ * may not mint one. Restricted mode does not stop it: its construct rejections
+ * cover `##!` compiler-flag annotations, not object annotations.
+ *
+ * This covers only the forged-gate half. A caller annotation that is NOT an
+ * authorize gate still moves the base's annotations off the struct (any
+ * annotation does), which is closed in the gate walk itself — see
+ * `Model.ancestorGateExprs`.
+ *
+ * Text-matching is the right tool for a rejection and the wrong one for
+ * resolution: a false positive is a clear 400, a false negative is a bypass.
+ * Nothing here decides *whose* gate applies — that stays with the compiled IR.
+ *
+ * Apply to EVERY caller-supplied fragment that reaches the compiler, not just
+ * the obvious query body: `sourceName`/`queryName` are interpolated verbatim
+ * into the `run:` statement the query path builds, so either one carries an
+ * annotation into the compiled text just as effectively.
+ *
+ * Because it is a byte match over untrusted text, it also fires on an annotation
+ * the compiler would never read as a gate — inside a string literal, or in a
+ * model an author is compile-checking through `/compile`. That is the intended
+ * direction, so the message has to tell an author what to do instead.
+ */
+export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
+   if (!AUTHORIZE_ANNOTATION_ANYWHERE.test(callerText)) return;
+   // A caller-input rejection, so 400 — not ModelCompilationError's 424, which
+   // reads as "the package is broken".
+   throw new BadRequestError(
+      "An `authorize` annotation is not permitted in caller-submitted Malloy " +
+         "text. Access gates are declared by the model author on the source; a " +
+         "request cannot introduce, replace, or relax one. To validate a gate " +
+         "you are authoring, save it to the package's model file and reload the " +
+         "package — model load validates every `#(authorize)` annotation it " +
+         "declares.",
+   );
+}
 
 /** source name → effective authorize expressions (file-level then source-level). */
 export type AuthorizeMap = Map<string, string[]>;
@@ -265,11 +319,21 @@ export async function evaluateAuthorize(
    exprs: string[],
    givens: Record<string, GivenValue>,
    declaredTypes?: Map<string, string>,
-   options?: { selfContainedFirst?: boolean },
+   options?: { selfContainedFirst?: boolean; ambientPrefix?: number },
 ): Promise<boolean> {
    const selfContainedFirst = options?.selfContainedFirst ?? false;
-   for (const expr of exprs) {
-      if (selfContainedFirst) {
+   // The first `ambientPrefix` expressions are always probed ambient-first, even
+   // in self-contained mode. They are the file-level `##(authorize)` gates, which
+   // are authored in the ENTRY model — the one namespace where ambient resolution
+   // is unambiguously right — while the rest of the list may have been carried in
+   // from another source. Probing the file-level gate self-contained would drop
+   // the entry model's own declared `given:` DEFAULTS, so a model-wide admin
+   // override stopped working as soon as the source it applied to also inherited
+   // a gate. Both live in ONE list because they are OR'd (either grants), so they
+   // cannot be split into separate AND-ed entries.
+   const ambientPrefix = options?.ambientPrefix ?? 0;
+   for (const [index, expr] of exprs.entries()) {
+      if (selfContainedFirst && index >= ambientPrefix) {
          if (
             await evaluateSelfContainedFirst(
                executor,
@@ -383,6 +447,15 @@ interface SourceWithAuthorize {
  * first request. Type mismatches such as `$ROLE = 5` are NOT Malloy compile
  * errors, so they are not caught here — they fail closed at the runtime gate.
  *
+ * Pass the gates DECLARED on each source (`ownAuthorizeSources` from
+ * `extractSourcesFromModelDef`), not its effective list. A gate INHERITED from a
+ * base is authored in the base's own given namespace, and Malloy merges only one
+ * level of import — so a base two or more hops away can reference a given this
+ * model cannot see. Probing it here would fail the load with a 424 that blames a
+ * perfectly good annotation. The inherited case is covered at request time
+ * instead, fail-closed (`Model.gateExprsForOwnAnnotations` maps a parse failure
+ * to a single unsatisfiable `"false"`).
+ *
  * Throws `ModelCompilationError` naming the source on the first invalid
  * annotation. Shared by `Model.create` and the package-load worker so both
  * compile paths validate identically.
@@ -415,21 +488,19 @@ export async function validateAuthorizeProbes(
  * throws if it looks like one but is malformed (missing quotes, mismatched
  * quotes, or an empty body). The throw is what later compile-time validation
  * turns into a model-load error.
+ *
+ * Whether the annotation is source- or file-level is decided by WHERE the note
+ * sits (a struct's `blockNotes` vs the model's own notes), not by the `#`/`##`
+ * count, so one prefix pattern covers both. It matches exactly what
+ * {@link assertNoCallerAuthorizeAnnotation} rejects, including inner whitespace
+ * (`#( authorize )`) — a spelling only one of them recognized would either
+ * silently drop an author's gate or wrongly refuse a caller's query.
  */
 export function parseAuthorizeAnnotation(annotation: string): string | null {
    const trimmed = annotation.trim();
-
-   let body: string;
-   // Check the file-level prefix first — `##(authorize)` also starts with `#`.
-   if (trimmed.startsWith(FILE_PREFIX)) {
-      body = trimmed.slice(FILE_PREFIX.length).trim();
-   } else if (trimmed.startsWith(SOURCE_PREFIX)) {
-      body = trimmed.slice(SOURCE_PREFIX.length).trim();
-   } else {
-      return null;
-   }
-
-   return unwrapQuotedExpression(body);
+   const prefix = AUTHORIZE_ANNOTATION_PREFIX.exec(trimmed);
+   if (!prefix) return null;
+   return unwrapQuotedExpression(trimmed.slice(prefix[0].length).trim());
 }
 
 /**
