@@ -75,7 +75,7 @@ export class QueryController {
       } else {
          const {
             result,
-            serializedResult,
+            serializeResult,
             compactResult,
             rowLimit,
             rowLimitSource,
@@ -130,14 +130,15 @@ export class QueryController {
          );
          const renderLogs = validateRenderTags(result);
          return {
-            // Reuse the JSON the byte guard already built for the full result
-            // rather than stringifying the same object a second time; for a
-            // large response that second pass is the expensive one. The compact
-            // form needs its own pass, since it is a different object and needs
-            // the bigint replacer.
+            // `serializeResult()` rather than stringifying `result` again: when a
+            // byte cap is set the guard has already built these exact bytes, so
+            // this is free, and when the response cannot be serialized at all it
+            // reports the same 413 the cap does instead of throwing a bare 500
+            // out of this expression. Only called on this branch, so a
+            // compactJson request never pays for a payload it does not send.
             result: compactJson
                ? JSON.stringify(compactResult, bigIntReplacer)
-               : serializedResult,
+               : serializeResult(),
             resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
             // The cap the database applied. A caller counting the rows it got

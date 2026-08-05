@@ -2241,10 +2241,15 @@ export class Model {
    ): Promise<{
       result: Malloy.Result;
       /**
-       * `result` as JSON, built once for the byte check. A caller returning the
-       * full result should send this rather than stringify `result` again.
+       * `result` as JSON. A caller that returns the full result should call this
+       * rather than stringify `result` itself: when a byte cap is set the string
+       * has already been built to measure it, so this is free, and when a
+       * response is too large to serialize at all this reports it as the same
+       * HTTP 413 the cap produces instead of a bare 500. Memoized, so calling it
+       * twice costs one pass. Not called for `compactResult`, which is a
+       * different object serialized with a bigint replacer.
        */
-      serializedResult: string;
+      serializeResult: () => string;
       compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
@@ -2787,24 +2792,32 @@ export class Model {
       // prevention. True prevention requires streaming `Result`
       // construction, which is out of scope for this step. The row cap
       // above is the primary OOM defense.
-      // Serialize unconditionally, even with the byte cap disabled. `maxBytes`
-      // of 0 is a supported configuration (see config.ts), and this same payload
-      // has to be serialized to be sent, so skipping it here would only move an
-      // unserializable failure downstream, where it surfaces as the bare 500
-      // this guard exists to replace. Only the *measurement* is conditional:
-      // with no cap there is nothing to compare against.
+      // One guarded serialization, done at most once, and only if somebody needs
+      // it. Both properties matter and they pull in opposite directions:
       //
-      // The string is returned rather than discarded, and the REST caller sends
-      // it instead of building its own. Before, a large response was stringified
-      // twice per request, once to measure and once to send.
-      const serializedResult = stringifyQueryResponse(
-         wrappedResult,
-         queryResults.totalRows,
-         maxBytes,
-         "model_query",
-      );
+      //   - The byte cap has to serialize to measure, so when a cap is set this
+      //     runs here and the string is handed to the caller rather than thrown
+      //     away. Before, a large response was stringified twice per request,
+      //     once to measure and once to send.
+      //   - With the cap disabled (`maxBytes` 0, a supported configuration; see
+      //     config.ts) there is nothing to measure, so serializing here would be
+      //     pure waste for any caller that does not send this object. Two do
+      //     not: a `compactJson` request sends the compact rows instead, and the
+      //     MCP tool builds its own envelope. Serializing eagerly turned those
+      //     into a 413 for a payload they never asked for.
+      //
+      // So the caller that sends it calls this, and the failure lands where the
+      // payload is actually built rather than becoming a bare 500 downstream.
+      let serializedOnce: string | undefined;
+      const serializeResult = () =>
+         (serializedOnce ??= stringifyQueryResponse(
+            wrappedResult,
+            queryResults.totalRows,
+            maxBytes,
+            "model_query",
+         ));
       const serializedBytes =
-         maxBytes > 0 ? Buffer.byteLength(serializedResult, "utf8") : 0;
+         maxBytes > 0 ? Buffer.byteLength(serializeResult(), "utf8") : 0;
       assertWithinModelResponseLimits(
          queryResults.totalRows,
          serializedBytes,
@@ -2829,12 +2842,7 @@ export class Model {
       });
       return {
          result: wrappedResult,
-         // The JSON of `result`, already built for the byte check above. A caller
-         // that sends the full result should use this rather than stringify
-         // `result` again: it is the same bytes, and for a large response the
-         // second pass is the expensive one. `compactResult` has no equivalent
-         // because it is serialized with a bigint replacer, not plain.
-         serializedResult,
+         serializeResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,

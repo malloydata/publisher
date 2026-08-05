@@ -2,7 +2,7 @@
  * Memory guards for the Malloy model-query path (the `runnable.run`
  * flow used by `getQueryResults` and notebook cell execution).
  *
- * Two layered defenses:
+ * Three layered defenses:
  *
  *   1. {@link resolveModelQueryRowLimit} — compute the effective
  *      `rowLimit` to push down to `runnable.run`. The user's Malloy
@@ -34,8 +34,11 @@
  * for this step (the model-query streaming path entangles with
  * Malloy's `Result` schema metadata in non-trivial ways).
  *
- * Both helpers are pure so they can be unit-tested without spinning
- * up a model runtime; the caller injects the env-derived limits.
+ * The first two helpers are pure, so they can be unit-tested without
+ * spinning up a model runtime; the caller injects the env-derived
+ * limits. {@link stringifyQueryResponse} is not: it records a
+ * cap-exceeded metric before throwing, which lazily creates and
+ * caches OpenTelemetry instruments in module state.
  */
 
 import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";

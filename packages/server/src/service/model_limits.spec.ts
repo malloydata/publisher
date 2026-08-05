@@ -275,6 +275,15 @@ describe("stringifyQueryResponse", () => {
       expect(message).toContain("42-row");
    });
 
+   it("is memoization-friendly: two calls on a good value give the same string", () => {
+      // model.ts memoizes this behind a thunk so the byte check and the response
+      // share one pass. Nothing here should make a second call differ.
+      const response = { data: [{ id: 1 }] };
+      const first = stringifyQueryResponse(response, 1, 10_000, "model_query");
+      const second = stringifyQueryResponse(response, 1, 10_000, "model_query");
+      expect(second).toBe(first);
+   });
+
    it("leaves a stack overflow alone: deep nesting is not a size cap", () => {
       const deep = failingToSerialize(
          new RangeError("Maximum call stack size exceeded"),

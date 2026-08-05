@@ -53,6 +53,37 @@ describe("query_cap_metrics", () => {
       ).toBe(1);
    });
 
+   it("counts an unserializable response under its own cap_type, not as bytes", async () => {
+      // The distinction is the point of the label: `bytes` means a response
+      // measured over the configured cap, `unserializable` means it could not be
+      // turned into JSON at all, which may not have exceeded any cap. Folding the
+      // second into the first would mix two failures under one alert. Emitted by
+      // stringifyQueryResponse; not emitted with source connection_sql, which has
+      // no such guard on its own path.
+      recordQueryCapExceeded("unserializable", "model_query");
+      recordQueryCapExceeded("unserializable", "notebook_cell");
+
+      expect(
+         await harness.collectCounter("publisher_query_cap_exceeded_total", {
+            cap_type: "unserializable",
+            source: "model_query",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_query_cap_exceeded_total", {
+            cap_type: "unserializable",
+            source: "notebook_cell",
+         }),
+      ).toBe(1);
+      // And it must not have landed in the bytes series.
+      expect(
+         await harness.collectCounter("publisher_query_cap_exceeded_total", {
+            cap_type: "bytes",
+            source: "model_query",
+         }),
+      ).toBe(0);
+   });
+
    it("publisher_max_query_rows gauge reports the live env-var value", async () => {
       process.env.PUBLISHER_MAX_QUERY_ROWS = "12345";
       // Prime telemetry — the gauges install on the first
