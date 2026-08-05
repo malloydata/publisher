@@ -8,6 +8,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
+   MalloyConfig,
    modelDefToModelInfo,
    Runtime,
 } from "@malloydata/malloy";
@@ -19,7 +20,7 @@ const ROOT = "file:///storage-serve-e2e/";
 const QUERY = "run: X -> { aggregate: t is total.sum() }";
 const BINDING: ServeBinding = {
    sourceName: "X",
-   connectionName: "duckdb",
+   destinationName: "duckdb",
    virtualHandle: "h",
    tablePath: "mz_real",
    schema: [{ name: "total", type: "BIGINT" }],
@@ -74,7 +75,12 @@ async function buildModel(opts?: {
       undefined,
       modelInfo,
    );
-   model.setServeMalloyConfig(connMap);
+   // The serve shape compiles against the destination connections only, so hand
+   // it a config carrying just this one — the same disjointness the Environment
+   // enforces in production, expressed for a single-connection test.
+   const serveConfig = new MalloyConfig({ connections: {} });
+   serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
+   model.setServeDestinationConfig(() => serveConfig);
    return model;
 }
 
@@ -126,9 +132,9 @@ describe("storage= serve routing (end-to-end)", () => {
    it("falls back to live when the serve shape cannot compile (bad connection)", async () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       const model = await buildModel();
-      // A binding on a connection the config doesn't have — the serve-shape
+      // A binding on a destination the config doesn't have — the serve-shape
       // compile throws, and the query must still succeed, served live.
-      model.setServeBindings([{ ...BINDING, connectionName: "missing_conn" }]);
+      model.setServeBindings([{ ...BINDING, destinationName: "missing_dest" }]);
       expect(await runTotal(model)).toBe(0);
    });
 
@@ -144,7 +150,7 @@ describe("storage= serve routing (end-to-end)", () => {
          BINDING,
          {
             sourceName: "OtherModelSource", // not defined in this model
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "h2",
             tablePath: "mz_real",
             schema: [{ name: "total", type: "BIGINT" }],

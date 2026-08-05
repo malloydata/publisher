@@ -4,15 +4,36 @@
 // each mode needs its own server instance.
 
 import path from "path";
-import { existsSync } from "fs";
+import { existsSync, readdirSync, statSync } from "fs";
 import type { Subprocess } from "bun";
 import { log, run, runOrThrow, sleep, waitFor } from "./util";
+
+/** Newest mtime under `dir`, or 0 if it does not exist. Skips build output. */
+function newestMtimeMs(dir: string): number {
+   let newest = 0;
+   const walk = (current: string): void => {
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+         if (entry.name === "node_modules" || entry.name === "dist") continue;
+         const full = path.join(current, entry.name);
+         if (entry.isDirectory()) walk(full);
+         else newest = Math.max(newest, statSync(full).mtimeMs);
+      }
+   };
+   if (!existsSync(dir)) return 0;
+   walk(dir);
+   return newest;
+}
 
 /**
  * Build the server (server-only: API + baked DuckDB extensions, no SPA) so the
  * spawned `dist/server.mjs` has the ducklake/postgres_scanner extensions baked in
- * rather than autoinstalling them at first attach. Skipped when a dist already
- * exists unless `force`.
+ * rather than autoinstalling them at first attach.
+ *
+ * An existing dist is reused only when it is NEWER than every server source file
+ * and the API spec. Reusing on mere existence meant that editing the server and
+ * running the suite silently exercised the previous binary — a green run that
+ * proved nothing about the change under test, which is the worst failure a test
+ * harness can have.
  */
 export async function buildServerIfNeeded(
    repoRoot: string,
@@ -21,8 +42,18 @@ export async function buildServerIfNeeded(
    const serverDir = path.join(repoRoot, "packages", "server");
    const distEntry = path.join(serverDir, "dist", "server.mjs");
    if (!force && existsSync(distEntry)) {
-      log.ok(`reusing existing server build (${distEntry})`);
-      return;
+      const builtAt = statSync(distEntry).mtimeMs;
+      const sourceAt = Math.max(
+         newestMtimeMs(path.join(serverDir, "src")),
+         existsSync(path.join(repoRoot, "api-doc.yaml"))
+            ? statSync(path.join(repoRoot, "api-doc.yaml")).mtimeMs
+            : 0,
+      );
+      if (builtAt >= sourceAt) {
+         log.ok(`reusing existing server build (${distEntry})`);
+         return;
+      }
+      log.step("server build is older than the sources — rebuilding");
    }
    log.step("building server (bun run build:server-only) — one-time, ~1-2 min");
    await runOrThrow(["bun", "run", "build:server-only"], { cwd: serverDir });

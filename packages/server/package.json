@@ -6,6 +6,9 @@
    "bin": {
       "malloy-publisher": "dist/server.mjs"
    },
+   "files": [
+      "dist"
+   ],
    "engines": {
       "node": ">=20"
    },
@@ -38,6 +41,7 @@
       "@azure/identity": "^4.13.0",
       "@azure/storage-blob": "^12.26.0",
       "@duckdb/node-api": "1.5.3-r.2",
+      "@google-cloud/bigquery": "^7.9.4",
       "@google-cloud/storage": "^7.16.0",
       "@malloydata/db-bigquery": "^0.0.427",
       "@malloydata/db-databricks": "^0.0.427",
@@ -58,7 +62,6 @@
       "@opentelemetry/sdk-node": "^0.200.0",
       "@opentelemetry/sdk-trace-node": "^2.0.0",
       "async-mutex": "^0.5.0",
-      "aws-sdk": "^2.1692.0",
       "body-parser": "^1.20.2",
       "chokidar": "^4.0.3",
       "cors": "^2.8.5",

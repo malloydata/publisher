@@ -85,13 +85,20 @@ import { redactPgSecrets } from "../pg_helpers";
 
 /**
  * The narrow environment surface the build path needs to materialize into a
- * `storage=` destination: resolve a connection's config by name (source creds to
- * federate, destination catalog to attach) and the environment root (to derive a
- * plain-DuckDB destination's file path). Kept minimal to avoid coupling the
- * materialization service to the full Environment type.
+ * `storage=` destination, and the environment root (to derive a plain-DuckDB
+ * destination's file path). Kept minimal to avoid coupling the materialization
+ * service to the full Environment type.
+ *
+ * The two lookups are separate on purpose, and which one a call site uses is the
+ * whole security property: `getApiConnection` resolves the SOURCE the data is
+ * read from, a warehouse the package's own model already names, while
+ * `getStorageDestination` resolves where the table is WRITTEN. They read
+ * disjoint lists, so a `storage=` build can never be steered into a connection
+ * by naming it — including one whose name matches a destination.
  */
 interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
+   getStorageDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
 }
 
@@ -182,7 +189,7 @@ export function manifestExcludingStorage(
    // stay canonical for the downstream FROM.
    const quoted = manifest.buildManifest.entries;
    for (const [id, entry] of Object.entries(builtEntries)) {
-      if (!entry.storageConnectionName && quoted[id]) {
+      if (!entry.storageDestinationName && quoted[id]) {
          reduced.update(id, { tableName: quoted[id].tableName });
       }
    }
@@ -636,7 +643,7 @@ export class MaterializationService {
             //      downstream can reuse the upstream's materialized table.
             //   3. This worker's own most-recent local manifest (skip-if-unchanged
             //      cache) — same-worker reuse.
-            // Each fills the storage fields (sourceName, storageConnectionName,
+            // Each fills the storage fields (sourceName, storageDestinationName,
             // schema) a thin reference can't carry — required for a `storage=`
             // upstream's stack-on-the-parent rebind. Higher-precedence
             // fields win; each step is best-effort (a fetch/read failure leaves
@@ -807,7 +814,7 @@ export class MaterializationService {
             if (
                prior &&
                prior.physicalTableName &&
-               (prior.storageConnectionName ?? undefined) === destination
+               (prior.storageDestinationName ?? undefined) === destination
             ) {
                carried[sourceEntityId] = prior;
                continue;
@@ -868,7 +875,7 @@ export class MaterializationService {
     * manifest, keyed by sourceEntityId (the same cache skip-if-unchanged reads).
     * A reference is fundamentally an IDENTITY, not a copy: for each one that
     * matches a locally persisted entry, fill in the fields a thin reference
-    * can't carry (sourceName, storageConnectionName, schema — needed for a
+    * can't carry (sourceName, storageDestinationName, schema — needed for a
     * `storage=` upstream's stack-on-the-parent rebind) from the local entry, while
     * letting any caller-supplied field WIN (the orchestrator is authoritative across a
     * stateless fleet). Mutates `carried` in place. Best-effort: a lookup failure
@@ -916,7 +923,7 @@ export class MaterializationService {
     * Seed upstream reuse from the package's BOUND manifest — the set the
     * orchestrator distributed to this worker via `manifestLocation`. This is the
     * cross-worker path: a worker that never built an upstream still holds its full
-    * entry here (`storageConnectionName` + `schema` + `sourceName`), so a
+    * entry here (`storageDestinationName` + `schema` + `sourceName`), so a
     * downstream can reuse the upstream's materialized table instead of recomputing
     * it from raw. Adds any bound upstream not already carried (so a build needs no
     * explicit reference when the manifest is refreshed), and fills gaps in a
@@ -1032,7 +1039,7 @@ export class MaterializationService {
          // putting one here would make the original model try to substitute the
          // source with a table on its OWN (source) connection, which doesn't
          // exist there. Only colocated entries go into the tableName manifest.
-         if (entry.physicalTableName && !entry.storageConnectionName) {
+         if (entry.physicalTableName && !entry.storageDestinationName) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // Carried so the bind step can quote the physical path for the
@@ -1281,7 +1288,7 @@ export class MaterializationService {
                   buildMetadata,
                );
                entries[sourceEntityId] = entry;
-               if (entry.storageConnectionName) builtThisRun.push(entry);
+               if (entry.storageDestinationName) builtThisRun.push(entry);
             }
          }
       } catch (err) {
@@ -1336,6 +1343,32 @@ export class MaterializationService {
     * overwrites in place and a failure-path DROP there would be a far larger
     * blast radius for no reclaim.
     */
+   /**
+    * The destination's config for a best-effort table drop, or undefined when it
+    * is no longer configured.
+    *
+    * The cleanup sweeps must keep going over the rest of a manifest rather than
+    * abort on the first destination that has since been un-registered: a table
+    * left behind is reclaimable later, whereas an aborted sweep leaves every
+    * table after it behind too, and — in the delete path — throws out of a
+    * sweep documented as best-effort. The build path deliberately does NOT go
+    * through here; there, an unresolvable destination must fail the run.
+    */
+   private destinationForCleanup(
+      environment: BuildEnvironment,
+      destinationName: string,
+   ): ApiConnection | undefined {
+      try {
+         return environment.getStorageDestination(destinationName);
+      } catch (error) {
+         logger.warn(
+            "Skipping a table drop: its storage destination is no longer configured",
+            { destinationName, error: errMessage(error) },
+         );
+         return undefined;
+      }
+   }
+
    private async reclaimStorageTablesFromFailedRun(
       builtThisRun: ManifestEntry[],
       environment: BuildEnvironment,
@@ -1353,7 +1386,7 @@ export class MaterializationService {
          for (const other of others) {
             if (other.status !== "MANIFEST_FILE_READY") continue;
             for (const e of Object.values(other.manifest?.entries ?? {})) {
-               const dest = e.storageConnectionName ?? e.connectionName;
+               const dest = e.storageDestinationName ?? e.connectionName;
                if (dest && e.physicalTableName) {
                   stillReferenced.add(tableKey(dest, e.physicalTableName));
                }
@@ -1361,7 +1394,7 @@ export class MaterializationService {
          }
 
          for (const entry of builtThisRun) {
-            const dest = entry.storageConnectionName;
+            const dest = entry.storageDestinationName;
             const table = entry.physicalTableName;
             if (!dest || !table) continue;
             if (stillReferenced.has(tableKey(dest, table))) {
@@ -1371,10 +1404,15 @@ export class MaterializationService {
                );
                continue;
             }
+            const destinationConnection = this.destinationForCleanup(
+               environment,
+               dest,
+            );
+            if (!destinationConnection) continue;
             try {
                await dropStorageTable({
                   destinationName: dest,
-                  destinationConnection: environment.getApiConnection(dest),
+                  destinationConnection,
                   physicalTableName: table,
                   environmentPath: environment.getEnvironmentPath(),
                });
@@ -1392,7 +1430,7 @@ export class MaterializationService {
                      physicalTableName: table,
                      error: redactConnectionSecrets(
                         errMessage(dropErr),
-                        environment.getApiConnection(dest),
+                        destinationConnection,
                      ),
                   },
                );
@@ -1644,7 +1682,7 @@ export class MaterializationService {
     * schema on the manifest entry so the source can later be served
     * cross-dialect from the destination (the serve transform declares that
     * schema). `connectionName` still names the SOURCE warehouse (where data is
-    * read from); `storageConnectionName` names where the table now lives.
+    * read from); `storageDestinationName` names where the table now lives.
     */
    private async buildOneSourceIntoStorage(
       persistSource: PersistSource,
@@ -1661,8 +1699,12 @@ export class MaterializationService {
       const sourceConnection = environment.getApiConnection(
          persistSource.connectionName,
       );
+      // Resolved from the destination list, never the connection list: a build
+      // naming a destination that is not configured has to fail here rather than
+      // fall through to a same-named connection and write a tenant's own
+      // warehouse. The throw surfaces as a 422 on the run.
       const destinationConnection =
-         environment.getApiConnection(destinationName);
+         environment.getStorageDestination(destinationName);
 
       const startTime = performance.now();
       let result;
@@ -1842,7 +1884,7 @@ export class MaterializationService {
          `Built materialized source ${persistSource.name} into storage`,
          {
             physicalTableName,
-            storageConnectionName: result.storageConnectionName,
+            storageDestinationName: result.storageDestinationName,
             columns: result.schema.length,
             durationMs,
          },
@@ -1854,7 +1896,7 @@ export class MaterializationService {
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
-         storageConnectionName: result.storageConnectionName,
+         storageDestinationName: result.storageDestinationName,
          schema: result.schema,
          realization: instruction.realization,
          rowCount: null,
@@ -1890,7 +1932,7 @@ export class MaterializationService {
       // parent reuse is out of scope for the spike.
       const upstreams: ServeBinding[] = deriveServeBindings(
          builtEntries,
-      ).filter((b) => b.connectionName === destinationName);
+      ).filter((b) => b.destinationName === destinationName);
       if (upstreams.length === 0) {
          throw new MaterializationEligibilityError({
             message:
@@ -2130,7 +2172,7 @@ export class MaterializationService {
          if (other.id === m.id) continue;
          if (other.status !== "MANIFEST_FILE_READY") continue;
          for (const e of Object.values(other.manifest?.entries ?? {})) {
-            const dest = e.storageConnectionName ?? e.connectionName;
+            const dest = e.storageDestinationName ?? e.connectionName;
             if (dest && e.physicalTableName) {
                stillReferenced.add(tableKey(dest, e.physicalTableName));
             }
@@ -2150,7 +2192,7 @@ export class MaterializationService {
 
          // Do not drop a table another live generation still serves (shared
          // physical name — see the method doc).
-         const destForKey = entry.storageConnectionName ?? connectionName;
+         const destForKey = entry.storageDestinationName ?? connectionName;
          if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
             logger.info(
                "Skipping drop: table still referenced by another materialization",
@@ -2163,20 +2205,22 @@ export class MaterializationService {
             continue;
          }
 
-         // A storage= table lives in `storageConnectionName` (a DuckDB/DuckLake
+         // A storage= table lives in `storageDestinationName` (a DuckDB/DuckLake
          // destination), not in `connectionName` (the source warehouse), and
          // dropping it needs a build-scoped READ-WRITE attach — the serve attach
          // is read-only — so it is dropped on its own RW session rather than on
          // the (wrong-engine, read-only) source connection. Best-effort: a
          // failure is logged and the sweep continues, so one unreachable
          // destination never blocks reclaiming the rest.
-         if (entry.storageConnectionName) {
-            const destinationConnection = environment.getApiConnection(
-               entry.storageConnectionName,
+         if (entry.storageDestinationName) {
+            const destinationConnection = this.destinationForCleanup(
+               environment,
+               entry.storageDestinationName,
             );
+            if (!destinationConnection) continue;
             try {
                await dropStorageTable({
-                  destinationName: entry.storageConnectionName,
+                  destinationName: entry.storageDestinationName,
                   destinationConnection,
                   physicalTableName,
                   environmentPath: environment.getEnvironmentPath(),
@@ -2185,14 +2229,14 @@ export class MaterializationService {
                logger.info("Dropped materialized storage table on delete", {
                   materializationId: m.id,
                   physicalTableName,
-                  storageConnectionName: entry.storageConnectionName,
+                  storageDestinationName: entry.storageDestinationName,
                });
             } catch (err) {
                recordDropTables("failure", "storage");
                logger.warn("Failed to drop a storage-materialized table", {
                   materializationId: m.id,
                   physicalTableName,
-                  storageConnectionName: entry.storageConnectionName,
+                  storageDestinationName: entry.storageDestinationName,
                   // The drop attaches read-write, so a failure can echo the
                   // catalog connstring.
                   error: redactConnectionSecrets(

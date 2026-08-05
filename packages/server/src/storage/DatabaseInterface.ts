@@ -53,6 +53,20 @@ export interface ResourceRepository {
    ): Promise<Connection>;
    deleteConnection(id: string): Promise<void>;
 
+   // Storage destinations
+   listStorageDestinations(
+      environmentId: string,
+   ): Promise<StorageDestination[]>;
+   getStorageDestinationByName(
+      environmentId: string,
+      name: string,
+   ): Promise<StorageDestination | null>;
+   upsertStorageDestination(
+      destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,
+   ): Promise<StorageDestination>;
+   deleteStorageDestination(id: string): Promise<void>;
+   deleteStorageDestinationsByEnvironmentId(id: string): Promise<void>;
+
    // Materializations
    listMaterializations(
       environmentId: string,
@@ -111,6 +125,25 @@ export interface Connection {
    environmentId: string;
    name: string;
    type: "bigquery" | "postgres" | "duckdb" | "mysql" | "snowflake" | "trino";
+   config: Record<string, unknown>;
+   createdAt: Date;
+   updatedAt: Date;
+}
+
+/**
+ * A warehouse materialization builds write to and materialized queries are
+ * served from. Stored apart from {@link Connection} because it is not one: it is
+ * never resolvable by name from a model, and its name lives in its own namespace
+ * (so a row here and a connection row may share a name and mean two different
+ * warehouses). `type` is a plain string rather than a union because the set of
+ * warehouses a destination may be is enforced where destinations are validated,
+ * not by the store.
+ */
+export interface StorageDestination {
+   id: string;
+   environmentId: string;
+   name: string;
+   type: string;
    config: Record<string, unknown>;
    createdAt: Date;
    updatedAt: Date;
