@@ -217,6 +217,7 @@ export class ServiceUnavailableError extends Error {
 export class PayloadTooLargeError extends Error {
    constructor(message: string) {
       super(message);
+      this.name = "PayloadTooLargeError";
    }
 }
 
@@ -232,6 +233,10 @@ export class PayloadTooLargeError extends Error {
 export class ResponseUnserializableError extends PayloadTooLargeError {
    constructor(message: string) {
       super(message);
+      // Set explicitly rather than derived, so it survives a bundler that
+      // mangles class names. Without it the subclass logs as its parent, which
+      // defeats the point of a class callers are meant to tell apart.
+      this.name = "ResponseUnserializableError";
    }
 }
 

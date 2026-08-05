@@ -86,7 +86,7 @@ export function classifyToolError(
          message: error.message,
          suggestions: [
             "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
-            "Raising the byte cap will not help: the response cannot be serialized at any cap. Shrink it instead — project fewer columns, add a LIMIT, or filter out the wide values.",
+            "Raising the byte cap will not help, because the response cannot be serialized at any cap. Shrink it instead: project fewer columns, add a LIMIT, or filter out the wide values.",
          ],
       } satisfies ErrorDetails;
    }

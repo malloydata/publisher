@@ -103,6 +103,14 @@ describe("internalErrorToHttpError", () => {
       expect(json.code).toBe(413);
    });
 
+   it("names both payload-size classes, so logs can tell them apart", () => {
+      // A subclass that logs as its parent defeats the point of having one.
+      expect(new PayloadTooLargeError("x").name).toBe("PayloadTooLargeError");
+      expect(new ResponseUnserializableError("x").name).toBe(
+         "ResponseUnserializableError",
+      );
+   });
+
    it("maps ServiceUnavailableError to 503 (load shedding / back-pressure)", () => {
       const { status, json } = internalErrorToHttpError(
          new ServiceUnavailableError(

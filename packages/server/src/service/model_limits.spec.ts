@@ -245,7 +245,12 @@ describe("stringifyQueryResponse", () => {
       } catch (error) {
          message = (error as Error).message;
       }
-      expect(message).toContain("exceeded 50000000 bytes");
+      // Reports the cap as context, not as the limit that fired: on node the
+      // engine gives up at ~512 MB whatever the cap is set to, so "exceeded
+      // <cap> bytes" would be false for any cap above that.
+      expect(message).toContain("could not be serialized");
+      expect(message).toContain("byte cap: 50000000");
+      expect(message).not.toContain("exceeded 50000000 bytes");
       expect(message).toContain("100000-row");
       expect(message).toContain("Project fewer columns");
       expect(message).toContain("add a LIMIT");
@@ -265,8 +270,8 @@ describe("stringifyQueryResponse", () => {
       } catch (error) {
          message = (error as Error).message;
       }
-      expect(message).not.toContain("0 bytes");
-      expect(message).toContain("too large to return");
+      expect(message).not.toContain("byte cap");
+      expect(message).toContain("could not be serialized");
       expect(message).toContain("42-row");
    });
 

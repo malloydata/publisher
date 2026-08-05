@@ -2581,18 +2581,20 @@ export class Model {
       // prevention. True prevention requires streaming `Result`
       // construction, which is out of scope for this step. The row cap
       // above is the primary OOM defense.
+      // Serialize unconditionally, even with the byte cap disabled. `maxBytes`
+      // of 0 is a supported configuration (see config.ts), and the controller
+      // stringifies this same payload to send it, so skipping the guard here
+      // just moves the unserializable failure downstream where it surfaces as
+      // the bare 500 this guard exists to replace. Only the *measurement* is
+      // conditional: with no cap there is nothing to compare against.
+      const serialized = stringifyQueryResponse(
+         wrappedResult,
+         queryResults.totalRows,
+         maxBytes,
+         "model_query",
+      );
       const serializedBytes =
-         maxBytes > 0
-            ? Buffer.byteLength(
-                 stringifyQueryResponse(
-                    wrappedResult,
-                    queryResults.totalRows,
-                    maxBytes,
-                    "model_query",
-                 ),
-                 "utf8",
-              )
-            : 0;
+         maxBytes > 0 ? Buffer.byteLength(serialized, "utf8") : 0;
       assertWithinModelResponseLimits(
          queryResults.totalRows,
          serializedBytes,
