@@ -194,7 +194,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
 
    /**
     * Write a manifest carrying a `storage=` (cross-connection) entry — one that
-    * names a `storageConnectionName` and carries a captured `schema`. Such an
+    * names a `storageDestinationName` and carries a captured `schema`. Such an
     * entry serves through the virtual-source transform, so it must bind as a
     * serve BINDING, never as a same-connection tableName substitution.
     */
@@ -213,7 +213,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   sourceName: "order_summary",
                   physicalTableName: "order_summary",
                   connectionName: "duckdb",
-                  storageConnectionName: "lake",
+                  storageDestinationName: "lake",
                   schema: [{ name: "c", type: "BIGINT" }],
                },
             },
@@ -354,7 +354,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(patched.storageServeBindings).toEqual([
             {
                sourceName: "order_summary",
-               storageConnectionName: "lake",
+               storageDestinationName: "lake",
                tablePath: "lake.order_summary",
             },
          ]);

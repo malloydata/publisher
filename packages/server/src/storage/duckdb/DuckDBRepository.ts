@@ -2,6 +2,7 @@ import {
    Connection,
    Environment,
    Materialization,
+   StorageDestination,
    MaterializationStatus,
    MaterializationUpdate,
    Package,
@@ -10,6 +11,7 @@ import {
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { EnvironmentRepository } from "./EnvironmentRepository";
+import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
 
@@ -17,12 +19,14 @@ export class DuckDBRepository implements ResourceRepository {
    private environmentRepo: EnvironmentRepository;
    private packageRepo: PackageRepository;
    private connectionRepo: ConnectionRepository;
+   private destinationRepo: StorageDestinationRepository;
    private materializationRepo: MaterializationRepository;
 
    constructor(public db: DuckDBConnection) {
       this.environmentRepo = new EnvironmentRepository(db);
       this.packageRepo = new PackageRepository(db);
       this.connectionRepo = new ConnectionRepository(db);
+      this.destinationRepo = new StorageDestinationRepository(db);
       this.materializationRepo = new MaterializationRepository(db);
    }
 
@@ -56,6 +60,7 @@ export class DuckDBRepository implements ResourceRepository {
    async deleteEnvironment(id: string): Promise<void> {
       await this.materializationRepo.deleteByEnvironmentId(id);
       await this.connectionRepo.deleteConnectionsByEnvironmentId(id);
+      await this.destinationRepo.deleteByEnvironmentId(id);
       await this.packageRepo.deletePackagesByEnvironmentId(id);
       await this.environmentRepo.deleteEnvironment(id);
    }
@@ -141,6 +146,35 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deleteConnectionsByEnvironmentId(id: string): Promise<void> {
       return this.connectionRepo.deleteConnectionsByEnvironmentId(id);
+   }
+
+   // ============ STORAGE DESTINATIONS ============
+
+   async listStorageDestinations(
+      environmentId: string,
+   ): Promise<StorageDestination[]> {
+      return this.destinationRepo.list(environmentId);
+   }
+
+   async getStorageDestinationByName(
+      environmentId: string,
+      name: string,
+   ): Promise<StorageDestination | null> {
+      return this.destinationRepo.getByName(environmentId, name);
+   }
+
+   async upsertStorageDestination(
+      destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,
+   ): Promise<StorageDestination> {
+      return this.destinationRepo.upsert(destination);
+   }
+
+   async deleteStorageDestination(id: string): Promise<void> {
+      return this.destinationRepo.deleteById(id);
+   }
+
+   async deleteStorageDestinationsByEnvironmentId(id: string): Promise<void> {
+      return this.destinationRepo.deleteByEnvironmentId(id);
    }
 
    // ==================== MATERIALIZATIONS ====================

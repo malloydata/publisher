@@ -115,6 +115,7 @@ export type Environment = {
    theme?: Theme;
    packages: Package[];
    connections?: Connection[];
+   storageDestinations?: Connection[];
 };
 
 export type PublisherConfig = {
@@ -128,6 +129,13 @@ export type ProcessedEnvironment = {
    theme?: Theme;
    packages: Package[];
    connections: ApiConnection[];
+   /**
+    * Carried through unfiltered: destinations are validated in one place,
+    * `processStorageDestinations`, which every path onto an Environment
+    * goes through. Filtering here too would mean two lists to keep in step, and
+    * the config file is not the only source — a request body is the other.
+    */
+   storageDestinations: ApiConnection[];
 };
 
 export type ProcessedPublisherConfig = {
@@ -1131,6 +1139,9 @@ export const getProcessedPublisherConfig = (
          connections: convertConnectionsToApiConnections(
             environment.connections || [],
          ),
+         storageDestinations: Array.isArray(environment.storageDestinations)
+            ? (environment.storageDestinations as ApiConnection[])
+            : [],
          ...(resolvedTheme ? { theme: resolvedTheme } : {}),
       });
    }

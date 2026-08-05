@@ -103,7 +103,7 @@ Expect:
 | daily          | daily_tbl          | A      |
 | daily_with_avg | daily_with_avg_tbl | A      |
 
-## Connection lake (rows=1)
+## Connection lake_probe (rows=1)
 
 Exactly ONE of the two declared names is physically materialized — the other is
 deduped away. A row count rather than a name, because which one wins depends on

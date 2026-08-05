@@ -540,7 +540,7 @@ describe("service/package", () => {
          sourceEntityId: `eid-${sourceName}`,
          sourceName,
          physicalTableName: table,
-         storageConnectionName: "lake",
+         storageDestinationName: "lake",
          schema: [{ name: "region", type: "VARCHAR" }],
       });
 

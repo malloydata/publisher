@@ -55,16 +55,17 @@ there for the primitive, then follow the application you need.
 | [materialization.md](materialization.md)                   | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior. |
 | [query-metadata.md](query-metadata.md)                     | Tag the statements Publisher sends so the backend's own reporting can attribute them — layers, the contract, and correlating an API call with a backend query. Off unless `PUBLISHER_QUERY_METADATA=on`. |
 | [ducklake.md](ducklake.md)                                 | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped.                                       |
-| [persist-storage-tutorial.md](persist-storage-tutorial.md) | Materialize a `#@ persist` source into a DuckDB/DuckLake store and serve queries from it (the `storage=` tier + the `PERSIST_STORAGE_MODE` switch). |
+| [persist-storage-tutorial.md](persist-storage-tutorial.md) | Materialize a `#@ persist` source into a DuckLake storage destination and serve queries from it (the `storage=` tier + the `PERSIST_STORAGE_MODE` switch). |
 | [theming.md](theming.md)                                   | Customize colors, fonts, and light/dark mode.                                                                                                       |
 | [configuration.md](configuration.md)                       | Look up an env var / CLI flag, or tune the OOM guards.                                                                                              |
 
 ## Develop & contribute
 
-| Doc                              | Read it when you want to…                      |
-| -------------------------------- | ---------------------------------------------- |
-| [development.md](development.md) | Build and hack on Publisher from a clone.      |
-| [agent-skills/](agent-skills/)   | Author or contribute the bundled agent skills. |
+| Doc                              | Read it when you want to…                                  |
+| -------------------------------- | ---------------------------------------------------------- |
+| [development.md](development.md) | Build and hack on Publisher from a clone.                  |
+| [agent-skills/](agent-skills/)   | Author or contribute the bundled agent skills.             |
+| [../SECURITY.md](../SECURITY.md) | Report a security vulnerability, or check what's in scope. |
 
 ## Full public docs
 

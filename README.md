@@ -266,3 +266,5 @@ process and sign-off are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - Join the [Malloy Slack](https://join.slack.com/t/malloy-community/shared_invite/zt-1kgfwgi5g-CrsdaRqs81QY67QW0~t_uw)
 - Report issues on [GitHub](https://github.com/malloydata/publisher/issues)
+- Report a security vulnerability privately — see [SECURITY.md](SECURITY.md) for the reporting form
+  and what's in scope
