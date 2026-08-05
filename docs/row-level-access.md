@@ -95,8 +95,12 @@ curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
 
 ## Locking the base source
 
-`where:`/`#(authorize)` guard the source a query runs against, but neither is inherited through
-`extend` or walked through joins. To keep a base table's rows from leaking through an unguarded
-extension or join, lock the base with `#(authorize) "false"` and re-expose curated, separately-gated
-extensions with [access modifiers](https://docs.malloydata.dev/documentation/experiments/include). See
-[authorize.md § Recommended pattern: locked base and curated extensions](authorize.md#recommended-pattern-locked-base-and-curated-extensions).
+Neither `where:` nor `#(authorize)` is walked through joins — both apply to the source a query
+enters through. `#(authorize)` _is_ carried to an extension that declares no gate of its own, but an
+extension declaring its OWN gate replaces it. So two things are yours to get right: which sources a
+caller can enter through (anything ungated that joins the base hands the base over), and what each
+extension re-exposes. Lock the base with `#(authorize) "false"`, re-expose curated, separately-gated
+extensions with [access modifiers](https://docs.malloydata.dev/documentation/experiments/include),
+and do not rely on a join to carry the lock. See
+[authorize.md § The entry point, and only the entry point](authorize.md#the-entry-point-and-only-the-entry-point)
+and [§ Recommended pattern: locked base and curated extensions](authorize.md#recommended-pattern-locked-base-and-curated-extensions).

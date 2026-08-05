@@ -54,11 +54,28 @@ export interface ExtractedSource {
    givens: unknown;
    /**
     * Effective `#(authorize)` / `##(authorize)` expressions gating this source:
-    * file-level expressions first, then the source's own. Undefined when the
-    * source carries no authorize annotations. Surfaced for introspection;
-    * enforcement happens server-side.
+    * file-level expressions first, then the source's own — or, when it declares
+    * none, the nearest `extend` ancestor's. Undefined only when nothing gates the
+    * source. Surfaced for introspection; enforcement happens server-side.
+    *
+    * "Effective" has to include the inherited case or this understates
+    * protection, and a consumer treating an absent value as "unrestricted" — the
+    * natural reading — gets it wrong for a locked base whose extension carries
+    * any stray annotation.
     */
    authorize: string[] | undefined;
+}
+
+/**
+ * A source paired with the authorize expressions DECLARED on it (file-level ++
+ * its own), which is the input `validateAuthorizeProbes` wants. Deliberately not
+ * part of {@link ExtractedSource}: that object is cast to the wire/API `Source`
+ * shape and serialized, and this is an internal load-time detail, not a field the
+ * API promises.
+ */
+export interface OwnAuthorizeSource {
+   name: string;
+   authorize: string[];
 }
 
 export interface ExtractedQuery {
@@ -83,18 +100,29 @@ export interface ExtractedQuery {
  * they propagate (a malformed gate fails model load) so a security gate is never
  * silently dropped.
  *
- * Authorize (`#(authorize)` / `##(authorize)`) is collected from the source's
- * own `blockNotes` only — we do NOT walk the `inherits` chain. Note Malloy's
- * behavior for `X is Y extend {...}`: if X declares its own `#(authorize)`,
- * X.blockNotes holds only X's gates (Y's are dropped — the intended "curated
- * re-exposure"); if X declares none, Malloy surfaces Y's blockNotes on X, so
- * the base gate carries to the un-annotated extension (a safe default — a
- * locked base stays locked unless an extension explicitly re-exposes itself).
- * This carry happens through `blockNotes`, not the `inherits` chain, so reading
- * own-blockNotes is sufficient. Joins are a separate concern and are not gated.
- * The effective list per source is the file-level `##(authorize)` expressions
- * (from `modelDef.annotations.notes`) followed by the source's own
- * `#(authorize)` expressions, evaluated as one OR disjunction at request time.
+ * Authorize (`#(authorize)` / `##(authorize)`) is collected own-gate-first and
+ * then from the nearest `inherits` ancestor that declares one. For
+ * `X is Y extend {...}`: if X declares its own `#(authorize)`, that replaces
+ * Y's (the intended "curated re-exposure"); if X declares none, Y's gate
+ * carries to X — a locked base stays locked unless an extension explicitly
+ * re-exposes itself.
+ *
+ * Reading X's own `blockNotes` alone is NOT sufficient for that second case, and
+ * used to be all this did. Malloy surfaces Y's blockNotes on X only while X
+ * carries no annotation of its OWN; any annotation — a render tag, a doc
+ * comment, an unrelated `#(filter)` — demotes Y's to `annotations.inherits`, at
+ * which point own-blockNotes reports a locked source as ungated. So the chain is
+ * walked, nearest declaration wins, matching `Model.gateExprsForOwnAnnotations`.
+ * Joins are a separate concern and are not gated.
+ *
+ * Two lists come out of this, and the distinction is load-bearing:
+ *  - `authorize` is the EFFECTIVE gate (file-level `##(authorize)` from
+ *    `modelDef.annotations.notes`, then own-or-inherited), evaluated as one OR
+ *    disjunction at request time. This is what introspection reports, so it must
+ *    not understate what gates a source.
+ *  - `ownAuthorizeSources` is the subset DECLARED here, and is the only thing
+ *    handed to `validateAuthorizeProbes` — see its note on why load-time
+ *    validation deliberately does not widen to inherited gates.
  */
 export function extractSourcesFromModelDef(
    modelDef: ModelDef,
@@ -104,9 +132,11 @@ export function extractSourcesFromModelDef(
    sources: ExtractedSource[];
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
+   ownAuthorizeSources: OwnAuthorizeSource[];
 } {
    const filterMap = new Map<string, FilterDefinition[]>();
    const authorizeMap: AuthorizeMap = new Map();
+   const ownAuthorizeSources: OwnAuthorizeSource[] = [];
 
    // File-level ##(authorize) is collected once and prepended to every source.
    // Unlike filters, a malformed authorize annotation is NOT swallowed: the
@@ -162,22 +192,55 @@ export function extractSourcesFromModelDef(
             }
          }
 
-         // Authorize: the source's OWN #(authorize) annotations only — no
-         // inherits walk. File-level ##(authorize) is prepended so file gates
-         // and source gates form one OR disjunction. A malformed annotation
-         // propagates (model fails to load) rather than silently dropping the
-         // gate — see the file-level note above.
+         // Authorize: own gate if this source declares one, else the nearest
+         // ancestor's (see the header note on why own-blockNotes alone is not
+         // enough). File-level ##(authorize) is prepended either way so file
+         // gates and source gates form one OR disjunction. A malformed
+         // annotation propagates (model fails to load) rather than silently
+         // dropping the gate — see the file-level note above.
          const ownNotes = (struct.annotations?.blockNotes ?? []).map(
             (note) => note.text,
          );
+         const ownGates = collectAuthorizeExprs(ownNotes);
+         let inheritedGates: string[] = [];
+         if (ownGates.length === 0) {
+            for (
+               let cur = struct.annotations?.inherits;
+               cur;
+               cur = cur.inherits
+            ) {
+               const exprs = collectAuthorizeExprs(
+                  (cur.blockNotes ?? []).map((note) => note.text),
+               );
+               if (exprs.length > 0) {
+                  inheritedGates = exprs;
+                  break;
+               }
+            }
+         }
          const effective = [
             ...fileLevelAuthorize,
-            ...collectAuthorizeExprs(ownNotes),
+            ...(ownGates.length > 0 ? ownGates : inheritedGates),
          ];
          let authorize: string[] | undefined;
          if (effective.length > 0) {
             authorizeMap.set(sourceName, effective);
             authorize = effective;
+         }
+         // Validation scope: file-level ++ own only. An inherited gate is NOT
+         // added — it belongs to the base, whose own given namespace may not be
+         // reachable from here (Malloy merges one import level, so a base two or
+         // more hops away can reference a given this model cannot see). Probing
+         // it against THIS model would report a perfectly good annotation as
+         // invalid and fail the load with a 424. It still fails CLOSED at request
+         // time: `Model.gateExprsForOwnAnnotations` turns a parse failure into a
+         // single unsatisfiable `"false"`.
+         const ownEffective = [...fileLevelAuthorize, ...ownGates];
+         if (ownEffective.length > 0) {
+            ownAuthorizeSources.push({
+               name: sourceName,
+               authorize: ownEffective,
+            });
          }
 
          const views: ExtractedView[] = struct.fields
@@ -203,7 +266,7 @@ export function extractSourcesFromModelDef(
          };
       });
 
-   return { sources, filterMap, authorizeMap };
+   return { sources, filterMap, authorizeMap, ownAuthorizeSources };
 }
 
 /** Extract every named query from a compiled model. */
