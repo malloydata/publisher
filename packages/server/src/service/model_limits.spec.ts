@@ -284,6 +284,37 @@ describe("stringifyQueryResponse", () => {
       expect(second).toBe(first);
    });
 
+   it("applies a replacer, which the compact shape needs for bigints", () => {
+      // The compact response is serialized with bigIntReplacer and needs this
+      // same guard, so the helper has to carry the replacer through rather than
+      // leaving the caller to stringify unguarded.
+      const withBigInt = { n: 9007199254740993n };
+      expect(
+         stringifyQueryResponse(
+            withBigInt,
+            1,
+            10_000,
+            "model_query",
+            (_k, v) => (typeof v === "bigint" ? v.toString() : v),
+         ),
+      ).toBe('{"n":"9007199254740993"}');
+   });
+
+   it("converts an overflow on the replacer path too", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      expect(() =>
+         stringifyQueryResponse(
+            tooBig,
+            10,
+            50_000_000,
+            "model_query",
+            (_k, v) => v,
+         ),
+      ).toThrow(ResponseUnserializableError);
+   });
+
    it("leaves a stack overflow alone: deep nesting is not a size cap", () => {
       const deep = failingToSerialize(
          new RangeError("Maximum call stack size exceeded"),

@@ -176,9 +176,15 @@ export function stringifyQueryResponse(
    rowCount: number,
    maxBytes: number,
    source: QueryCapSource,
+   /**
+    * Passed through to `JSON.stringify`. The compact response shape needs
+    * `bigIntReplacer`, and it needs this guard for the same reason the full one
+    * does: it is a payload that can be too large to serialize.
+    */
+   replacer?: (key: string, value: unknown) => unknown,
 ): string {
    try {
-      return JSON.stringify(response);
+      return JSON.stringify(response, replacer);
    } catch (error) {
       if (
          !(error instanceof RangeError) ||

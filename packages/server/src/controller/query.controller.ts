@@ -3,7 +3,6 @@ import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
-import { bigIntReplacer } from "../json_utils";
 import { logger } from "../logger";
 import {
    mintCorrelationId,
@@ -76,7 +75,7 @@ export class QueryController {
          const {
             result,
             serializeResult,
-            compactResult,
+            serializeCompactResult,
             rowLimit,
             rowLimitSource,
             queryCorrelationId,
@@ -130,15 +129,14 @@ export class QueryController {
          );
          const renderLogs = validateRenderTags(result);
          return {
-            // `serializeResult()` rather than stringifying `result` again: when a
-            // byte cap is set the guard has already built these exact bytes, so
-            // this is free, and when the response cannot be serialized at all it
-            // reports the same 413 the cap does instead of throwing a bare 500
-            // out of this expression. Only called on this branch, so a
-            // compactJson request never pays for a payload it does not send.
-            result: compactJson
-               ? JSON.stringify(compactResult, bigIntReplacer)
-               : serializeResult(),
+            // Both shapes go through the model's guarded serializers rather than
+            // being stringified here. Two reasons: when a byte cap is set those
+            // bytes have already been built to measure them, so this is free; and
+            // a payload too large to serialize reports the same 413 the cap does
+            // instead of throwing a bare 500 out of this expression. Each is
+            // called only on the branch that sends it, so neither request pays
+            // for the payload it does not use.
+            result: compactJson ? serializeCompactResult() : serializeResult(),
             resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
             // The cap the database applied. A caller counting the rows it got

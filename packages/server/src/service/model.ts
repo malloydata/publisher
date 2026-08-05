@@ -95,6 +95,7 @@ import {
    resolveModelQueryRowLimit,
    stringifyQueryResponse,
 } from "./model_limits";
+import { bigIntReplacer } from "../json_utils";
 import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
 import {
    mergeQueryMetadata,
@@ -2247,9 +2248,18 @@ export class Model {
        * response is too large to serialize at all this reports it as the same
        * HTTP 413 the cap produces instead of a bare 500. Memoized, so calling it
        * twice costs one pass. Not called for `compactResult`, which is a
-       * different object serialized with a bigint replacer.
+       * different object serialized with a bigint replacer: see
+       * {@link serializeCompactResult}.
        */
       serializeResult: () => string;
+      /**
+       * `compactResult` as JSON, with the bigint replacer applied. Same guard as
+       * {@link serializeResult} and memoized the same way: a `compactJson`
+       * request sends this shape, and it can be too large to serialize too, so
+       * building it here rather than in the caller is what keeps that case a 413
+       * instead of a bare 500.
+       */
+      serializeCompactResult: () => string;
       compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
@@ -2816,6 +2826,20 @@ export class Model {
             maxBytes,
             "model_query",
          ));
+      // The compact shape is a second payload that can also be too large to
+      // serialize, and it is what a `compactJson` request actually sends. Without
+      // its own guarded pass it kept the bare 500 this whole change removes.
+      // Separate memo because it is a different object and needs the bigint
+      // replacer, so it cannot share the string above.
+      let compactSerializedOnce: string | undefined;
+      const serializeCompactResult = () =>
+         (compactSerializedOnce ??= stringifyQueryResponse(
+            queryResults.data.value,
+            queryResults.totalRows,
+            maxBytes,
+            "model_query",
+            bigIntReplacer,
+         ));
       const serializedBytes =
          maxBytes > 0 ? Buffer.byteLength(serializeResult(), "utf8") : 0;
       assertWithinModelResponseLimits(
@@ -2843,6 +2867,7 @@ export class Model {
       return {
          result: wrappedResult,
          serializeResult,
+         serializeCompactResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
