@@ -9,9 +9,9 @@ info:
 
     ## Key Features
 
-    - **Discovery**: List environments, packages, and the models, notebooks, pages, and data a package contains
+    - **Discovery**: List environments, packages, and the models, notebooks, data apps, and data a package contains
     - **Query Execution**: Run queries against models, execute notebooks a cell at a time, and compile-check Malloy without running it
-    - **Pages**: In-package HTML data apps served from a package's `public/` directory
+    - **Data Apps**: In-package HTML data apps served from a package's `public/` directory
     - **Materializations**: Persist Malloy sources as tables, on a schedule or on demand
     - **Connection Management**: Configure and test warehouse connections, and browse their schemas and tables
     - **Watch Mode**: File watching, and a change-event stream for development workflows
@@ -29,7 +29,7 @@ info:
         └── Packages
             ├── Models                query and compile
             ├── Notebooks             execute a cell at a time
-            ├── Pages                 static HTML data apps from public/
+            ├── Data Apps             static HTML data apps from public/
             ├── Databases             embedded data files
             ├── Materializations      persisted sources
             ├── Connections           package-scoped connection access
@@ -64,8 +64,10 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
-  - name: pages
-    description: Static HTML pages (in-package data apps)
+  - name: data-apps
+    description:
+      In-package HTML data apps (static pages served from a package's public/
+      directory)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -1954,21 +1956,22 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/pages:
+  /environments/{environmentName}/packages/{packageName}/data-apps:
     get:
       tags:
-        - pages
-      operationId: list-pages
-      summary: List package pages
+        - data-apps
+      operationId: list-data-apps
+      summary: List package data apps
       description: |
-        Retrieves a list of all static HTML pages (in-package data apps) within
-        the specified package. Each page entry includes the relative path, the
-        package name, a canonical resource URL, and the page title (extracted
-        from the file's <title> tag, falling back to the path). Used by the
-        Publisher SPA to surface a clickable "Pages" section on the package
-        detail view, and by anyone who wants to discover in-package data apps
-        programmatically without scraping the directory. Recursive depth is
-        capped server-side to keep this cheap on large packages.
+        Retrieves a list of all in-package HTML data apps (static pages served
+        from the package's public/ directory) within the specified package. Each
+        entry includes the relative path, the package name, a canonical resource
+        URL, and the title (extracted from the file's <title> tag, falling back
+        to the path). Used by the Publisher SPA to surface a clickable "Data
+        Apps" section on the package detail view, and by anyone who wants to
+        discover a package's data apps programmatically without scraping the
+        directory. Recursive depth is capped server-side to keep this cheap on
+        large packages.
       parameters:
         - name: environmentName
           in: path
@@ -1984,13 +1987,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
-          description: A list of pages in the package
+          description: A list of data apps in the package
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Page"
+                  $ref: "#/components/schemas/DataApp"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3051,19 +3054,21 @@ components:
           type: string
           description: Error message if the notebook failed to compile or load
 
-    Page:
+    DataApp:
       type: object
-      description: Static HTML page (in-package data app) within a Malloy package
+      description:
+        An in-package HTML data app within a Malloy package - a static page
+        served from the package's public/ directory
       properties:
         resource:
           type: string
           description:
-            Canonical URL to the served page. Root-relative and does NOT
-            carry the /api/v0 prefix, because pages are static assets served off
-            the server root rather than API resources.
+            Canonical URL to the served data app. Root-relative and does
+            NOT carry the /api/v0 prefix, because a data app is a static asset
+            served off the server root rather than an API resource.
         packageName:
           type: string
-          description: Name of the package containing this page
+          description: Name of the package containing this data app
         path:
           type: string
           description: Relative path to the HTML file within its package directory
@@ -3078,10 +3083,10 @@ components:
             - viewport
           description:
             Layout hint read from a <meta name="publisher:fit"> tag in the
-            page <head>. "viewport" tells the embedded page viewer to fill the
-            available height instead of auto-sizing to the page's content
-            height, for full-screen apps like slide decks. Omitted for ordinary
-            content pages, which keep content-height auto-sizing.
+            page <head>. "viewport" tells the embedded viewer to fill the
+            available height instead of auto-sizing to the content height, for
+            full-screen apps like slide decks. Omitted for an ordinary
+            content-driven app, which keeps content-height auto-sizing.
 
     RawNotebook:
       type: object

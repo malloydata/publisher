@@ -37,10 +37,11 @@ describe("classifySpaFallback", () => {
          ).toEqual({ kind: "spa" });
       });
 
-      it("keeps the in-app page viewer, which addresses an .html on purpose", () => {
-         // The Pages list in the package view routes clicks to `pages/<file>`,
-         // and ModelPage iframes it. Diverting this would break that list.
-         expect(classify("/examples/storefront/pages/index.html")).toEqual({
+      it("keeps the in-app data app viewer, which addresses an .html on purpose", () => {
+         // The Data Apps list in the package view routes clicks to
+         // `data-apps/<file>`, and ModelPage iframes it. Diverting this would
+         // break that list.
+         expect(classify("/examples/storefront/data-apps/index.html")).toEqual({
             kind: "spa",
          });
       });
@@ -154,10 +155,10 @@ describe("classifySpaFallback", () => {
       });
 
       it("leaves an app-owned segment to the app, traversal and all", () => {
-         // `pages/...` is the in-app viewer's route, so it is the app's to
+         // `data-apps/...` is the in-app viewer's route, so it is the app's to
          // answer; the redirect branch is the only place traversal matters.
          expect(
-            classify("/examples/storefront/pages/../secret.html").kind,
+            classify("/examples/storefront/data-apps/../secret.html").kind,
          ).toBe("spa");
       });
    });

@@ -19,7 +19,7 @@ Environment            e.g. "examples"
     │   ├── Source     a queryable entity (a table or a join graph)
     │   └── View       a saved, reusable query on a source
     ├── Notebook       a .malloynb file: markdown + live query cells
-    └── Pages          an in-package HTML data app (the package's public/ dir)
+    └── Data Apps      an in-package HTML data app (the package's public/ dir)
 ```
 
 The [REST and MCP APIs](api-overview.md) expose this exact hierarchy; the Console is a view onto it.
@@ -28,7 +28,7 @@ The [REST and MCP APIs](api-overview.md) expose this exact hierarchy; the Consol
 
 - **Left sidebar** — **Home**, then an **Environments** list, and a **Settings** section
   (Visualization theme). Pick an environment to see its packages; pick a package to see its models,
-  notebooks, and pages.
+  notebooks, and data apps.
 - **Breadcrumbs** across the top track where you are: `environment › package › file`.
 - **Theme toggle** (top-right) switches light/dark when the deployment allows it (see
   [theming.md](theming.md)).

@@ -35,18 +35,18 @@ function ModelPage() {
 
    const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
 
-   // In-package HTML data app (embedded view). The Pages section in
-   // <Package> routes clicks to `pages/<file>` so this branch picks them
+   // In-package HTML data app (embedded view). The Data Apps section in
+   // <Package> routes clicks to `data-apps/<file>` so this branch picks them
    // up. <DataAppViewer> iframes the standalone Publisher URL and resizes
    // via the publisher.js postMessage protocol. Real models that live under
-   // a `pages/` subdirectory (e.g. `pages/x.malloy`) are excluded so they
-   // still open in the Model/Notebook viewer.
+   // a `data-apps/` subdirectory (e.g. `data-apps/x.malloy`) are excluded so
+   // they still open in the Model/Notebook viewer.
    if (
-      modelPath?.startsWith("pages/") &&
+      modelPath?.startsWith("data-apps/") &&
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
-      const dataAppPath = modelPath.slice("pages/".length);
+      const dataAppPath = modelPath.slice("data-apps/".length);
       const dataAppResourceUri = encodeResourceUri({
          environmentName: params.environmentName,
          packageName: params.packageName,
@@ -84,7 +84,7 @@ function ModelPage() {
       );
    }
    // This route is `/:environmentName/:packageName/*`, so it matches any path
-   // under a package, and everything that is not a model, notebook, or page
+   // under a package, and everything that is not a model, notebook, or data app
    // arrives here. Naming the file's type was the wrong diagnosis: the path is
    // usually what is wrong, and blaming the file sent a reader looking for a
    // problem in a file that was fine. Say what was served and what does serve it.
@@ -143,7 +143,7 @@ function ModelPage() {
             >
                Back to {params.packageName}
             </Link>{" "}
-            lists this package&apos;s models, notebooks, and pages.
+            lists this package&apos;s models, notebooks, and data apps.
          </Typography>
       </Box>
    );
