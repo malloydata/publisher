@@ -2132,6 +2132,11 @@ export class Model {
       queryMetadataInput?: ModelQueryMetadataInput,
    ): Promise<{
       result: Malloy.Result;
+      /**
+       * `result` as JSON, built once for the byte check. A caller returning the
+       * full result should send this rather than stringify `result` again.
+       */
+      serializedResult: string;
       compactResult: QueryData;
       modelInfo: Malloy.ModelInfo;
       dataStyles: DataStyles;
@@ -2615,19 +2620,23 @@ export class Model {
       // construction, which is out of scope for this step. The row cap
       // above is the primary OOM defense.
       // Serialize unconditionally, even with the byte cap disabled. `maxBytes`
-      // of 0 is a supported configuration (see config.ts), and the controller
-      // stringifies this same payload to send it, so skipping the guard here
-      // just moves the unserializable failure downstream where it surfaces as
-      // the bare 500 this guard exists to replace. Only the *measurement* is
-      // conditional: with no cap there is nothing to compare against.
-      const serialized = stringifyQueryResponse(
+      // of 0 is a supported configuration (see config.ts), and this same payload
+      // has to be serialized to be sent, so skipping it here would only move an
+      // unserializable failure downstream, where it surfaces as the bare 500
+      // this guard exists to replace. Only the *measurement* is conditional:
+      // with no cap there is nothing to compare against.
+      //
+      // The string is returned rather than discarded, and the REST caller sends
+      // it instead of building its own. Before, a large response was stringified
+      // twice per request, once to measure and once to send.
+      const serializedResult = stringifyQueryResponse(
          wrappedResult,
          queryResults.totalRows,
          maxBytes,
          "model_query",
       );
       const serializedBytes =
-         maxBytes > 0 ? Buffer.byteLength(serialized, "utf8") : 0;
+         maxBytes > 0 ? Buffer.byteLength(serializedResult, "utf8") : 0;
       assertWithinModelResponseLimits(
          queryResults.totalRows,
          serializedBytes,
@@ -2652,6 +2661,12 @@ export class Model {
       });
       return {
          result: wrappedResult,
+         // The JSON of `result`, already built for the byte check above. A caller
+         // that sends the full result should use this rather than stringify
+         // `result` again: it is the same bytes, and for a large response the
+         // second pass is the expensive one. `compactResult` has no equivalent
+         // because it is serialized with a bigint replacer, not plain.
+         serializedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
          dataStyles: this.dataStyles,
