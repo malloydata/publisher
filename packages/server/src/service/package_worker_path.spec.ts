@@ -323,7 +323,7 @@ source: gated is duckdb.sql("select 1 as id")`,
             responseWarnings.some(
                (w) =>
                   w.model === "bad_render.malloy" &&
-                  w.target === "nums -> card" &&
+                  w.subject === "nums -> card" &&
                   w.severity === "error",
             ),
          ).toBe(true);
@@ -599,7 +599,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(models.has("a.malloy")).toBe(true);
          expect(models.has("b.malloy")).toBe(true);
          expect(models.size).toBe(2);
-         // The message field is carried through, not just model/target/severity.
+         // The message field is carried through, not just model/subject/severity.
          expect(
             responseWarnings.every((w) => (w.message ?? "").length > 0),
          ).toBe(true);

@@ -709,7 +709,7 @@ Everything you need is on the package status and the logs:
   - `storageServeBindings`: the sources bound to serve from a `storage=` store,
     with their destination connection and table. Present once a build has bound
     them.
-  - `warnings`: a `{model, target, message}` entry for any `storage=` source not
+  - `warnings`: a `{model, subject, message}` entry for any `storage=` source not
     served from storage — mode `off` (ignored) or `write-only` (built, served
     live). Empty when everything routes.
 - `GET …/materializations/{id}` → run status and, on success, the manifest entry

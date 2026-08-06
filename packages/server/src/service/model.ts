@@ -202,11 +202,11 @@ function quoteMalloyIdentifier(name: string | undefined): string {
 /**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an
  * error-severity issue that affects only how a field renders, never whether the
- * model compiles or a query runs. `target` is the query or view it sits on
+ * model compiles or a query runs. `subject` is the query or view it sits on
  * (e.g. `by_carrier` or `flights -> by_carrier`).
  */
 export interface RenderTagWarning {
-   target: string;
+   subject: string;
    message: string;
    severity: "error" | "warn";
 }
@@ -1876,7 +1876,7 @@ export class Model {
             );
             for (const e of errors) {
                findings.push({
-                  target: target.label,
+                  subject: target.label,
                   message: e.message,
                   severity: "error",
                });
@@ -2975,7 +2975,13 @@ export class Model {
          ? new Annotations(modelAnnotations(this.modelDef)).texts()
          : [];
 
-      return {
+      // No `as` cast. The literal used to carry `type`, `modelPath`,
+      // `modelInfo`, and `queries`, which `RawNotebook` did not declare, so it
+      // needed one — and a blanket cast over an object literal accepts a stale
+      // field name after a rename in `api-doc.yaml`, typechecking clean while
+      // the client reads undefined. The schema now declares every field this
+      // returns, so the next rename fails here instead.
+      const notebook: ApiRawNotebook = {
          type: "notebook",
          packageName: this.packageName,
          modelPath: this.modelPath,
@@ -2989,7 +2995,8 @@ export class Model {
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,
          notebookCells,
-      } as ApiRawNotebook;
+      };
+      return notebook;
    }
 
    public async executeNotebookCell(

@@ -94,7 +94,7 @@ describe("malloy_reloadPackage tool", () => {
       const warnings = [
          {
             model: "ecommerce.malloy",
-            target: "top_categories",
+            subject: "top_categories",
             severity: "error",
          },
       ];

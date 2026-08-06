@@ -2775,28 +2775,35 @@ components:
           type: array
           readOnly: true
           description: >-
-            Non-fatal render-tag findings collected when the package loaded: a
-            render annotation (e.g. `# big_value` or `# currency`) misconfigured
-            for the field it sits on, so it renders as "[object Object]" or an
-            inline error at query time but does not stop the model compiling or
-            the package loading. Server-computed and read-only: ignored on
-            create/update requests and only returned in responses. Present only
-            when there are such findings.
+            Non-fatal findings collected when the package loaded, none of which
+            stop the model compiling or the package loading. Render-tag
+            findings: a render annotation (e.g. `# big_value` or `# currency`)
+            misconfigured for the field it sits on, so it renders as
+            "[object Object]" or an inline error at query time. Materialization
+            findings: a `storage=` source not served from storage, a `#@ persist`
+            source that was not recognized as materializable, a persist-target
+            collision, and materialization-config problems that degrade
+            attribution. Server-computed and read-only: ignored on create/update
+            requests and only returned in responses. Present only when there are
+            such findings.
           items:
             type: object
             properties:
               model:
                 type: string
                 description: >-
-                  Package-relative path of the model the finding is on.
-              target:
+                  Package-relative path of the model the finding is on. Absent
+                  for a package-wide finding.
+              subject:
                 type: string
                 description: >-
-                  The query or view the finding sits on, e.g. `by_carrier` or
-                  `flights -> by_carrier`.
+                  What the finding is about: the query or view a render finding
+                  sits on (`by_carrier`, `flights -> by_carrier`), or the source
+                  a materialization finding belongs to. Absent when a finding
+                  spans several, in which case the message names them.
               message:
                 type: string
-                description: The render validator's description of the problem.
+                description: A description of the problem.
               severity:
                 type: string
                 enum:
@@ -3054,18 +3061,22 @@ components:
       type: object
       description: Raw Malloy notebook with unexecuted cell contents
       properties:
-        resource:
+        type:
           type: string
-          description: Resource path to the notebook
+          description: Always `notebook`. Distinguishes the payload from the
+            compiled-model shape returned by the model endpoint.
         packageName:
           type: string
           description: Name of the package containing this notebook
-        path:
+        modelPath:
           type: string
           description: Relative path to the notebook file within its package directory
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
+        modelInfo:
+          type: string
+          description: JSON string containing model metadata and structure information
         notebookCells:
           type: array
           description: Array of notebook cells containing raw markdown and code content
@@ -3076,11 +3087,23 @@ components:
           description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Starting values for the notebook's controls, declared at its file
+            level. URL parameters override these, which is why the two share a
+            shape. Omitted when the notebook declares none.
         sources:
           type: array
           description: Sources defined in the notebook's model
           items:
             $ref: "#/components/schemas/Source"
+        queries:
+          type: array
+          description: Named queries defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Query"
 
     CompiledModel:
       type: object
@@ -3193,10 +3216,20 @@ components:
 
     Given:
       type: object
-      description:
+      description: |
         A given (runtime parameter) declared on a Malloy model via the
         `given:` keyword. Surfaced on `CompiledModel.givens` and `Source.givens`
         so callers can introspect what runtime values a model accepts.
+
+        `givens` always names a collection of these declarations. Values keyed
+        by given name are `GivenValues` (or `EncodedGivenValues` in the form
+        that survives a URL), and a bare list of names is spelled `givenNames`.
+
+        It also carries how the given should be presented as an input control
+        (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`), derived from
+        the declaration's own tags. That contract belongs to the given rather
+        than to any one surface, which is what lets a notebook and an SDK host
+        render the same control without restating it.
       properties:
         name:
           type: string
@@ -3217,14 +3250,70 @@ components:
             the model. Omitted when the given declares no default. Consumers
             render or prefill it per the given's `type` (e.g. unquote a string
             literal for a text input).
+        label:
+          type: string
+          description: Display label from the declaration's `# label=` tag
+        control:
+          type: string
+          enum:
+            - select
+            - multiselect
+          description:
+            How the control renders. Omitted means infer from the given's type.
+        rangeMin:
+          type: number
+          description: Slider lower bound from `# range_min=`
+        rangeMax:
+          type: number
+          description: Slider upper bound from `# range_max=`
+        suggest:
+          $ref: "#/components/schemas/GivenSuggest"
 
-    Givens:
+    GivenSuggest:
       type: object
-      description: Per-query given values that override model defaults. Keys are
-        given names declared in the model's `given:` block. Values must match
-        the declared type (string, number, boolean, date, etc.). See Malloy
-        givens documentation for accepted value shapes.
+      description: |
+        Where a select or multiselect control gets its options: a named `query`,
+        a `source` + `dimension` pair, or a `query` with a `dimension` naming
+        which of its columns to read. All three run through the ordinary query
+        endpoint.
+
+        With `query` alone the first column of each row is used, so a
+        single-column `group_by` needs no `dimension`. Give `dimension`
+        alongside `query` when the query returns more than one column.
+      properties:
+        query:
+          type: string
+        source:
+          type: string
+        dimension:
+          type: string
+
+    GivenValues:
+      type: object
+      description: |
+        Given *values* keyed by given name: what a caller sends, as distinct
+        from `Given`, which describes what the model *accepts*. A collection of
+        declarations is a plain array of `Given`, never this.
+
+        Values are decoded and must match the declared type: a `number` given
+        takes a JSON number, a `date` takes a bare `YYYY-MM-DD` string, a
+        `timestamp` an ISO string with no zone, a `timestamptz` a full ISO
+        string. `EncodedGivenValues` is the string-encoded counterpart.
       additionalProperties: true
+
+    EncodedGivenValues:
+      type: object
+      description: |
+        The same values as `GivenValues`, string-encoded: the form that survives
+        a URL. Every value is a string regardless of the given's declared type,
+        and a `filter<…>` value is the filter body rather than the `f'…'`
+        literal.
+
+        This is what a surface's URL parameters carry and what a document
+        declares as its starting values, so the two merge before being decoded
+        once against the declarations and sent as `GivenValues`.
+      additionalProperties:
+        type: string
 
     Source:
       type: object
@@ -3349,7 +3438,7 @@ components:
 
             When true, skip server-side `#(filter)` injection entirely.
         givens:
-          $ref: "#/components/schemas/Givens"
+          $ref: "#/components/schemas/GivenValues"
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -4305,7 +4394,7 @@ components:
             (only available when compilation succeeds and the source contains a
             runnable query).
         givens:
-          $ref: "#/components/schemas/Givens"
+          $ref: "#/components/schemas/GivenValues"
       required:
         - source
 
