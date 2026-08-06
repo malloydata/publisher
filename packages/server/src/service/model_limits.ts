@@ -18,6 +18,12 @@
  *      byte cap, throw `PayloadTooLargeError` so the caller sees a
  *      clean HTTP 413.
  *
+ *   3. {@link stringifyQueryResponse}: serialize the response for
+ *      that byte check. The check measures by stringifying, so a
+ *      result too large to stringify fails *inside* the guard before
+ *      it can compare anything to the cap; this wrapper turns that
+ *      into the same 413 rather than a bare 500.
+ *
  * Caveat on the byte cap: this path runs `runnable.run` (buffered),
  * not `runStream`, so by the time we measure bytes the result has
  * already been materialized in memory. The byte cap here is loud-
@@ -32,7 +38,7 @@
  * up a model runtime; the caller injects the env-derived limits.
  */
 
-import { PayloadTooLargeError } from "../errors";
+import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";
 import {
    recordQueryCapExceeded,
    type QueryCapSource,
@@ -126,6 +132,66 @@ export function assertWithinModelResponseLimits(
       recordQueryCapExceeded("bytes", source);
       throw new PayloadTooLargeError(
          `Query response exceeded ${maxBytes} bytes (was ${serializedBytes}). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.`,
+      );
+   }
+}
+
+/**
+ * JSON-serialize a query response, reporting a payload too large to serialize
+ * at all as the same {@link PayloadTooLargeError} (HTTP 413) the byte cap
+ * produces.
+ *
+ * The byte cap measures by stringifying, so the measurement is the thing that
+ * fails first: past a certain size `JSON.stringify` throws and the guard never
+ * reaches its comparison, leaving the caller a bare 500 that names neither the
+ * cap nor a remedy. One step smaller the same query gets a 413 that names both.
+ *
+ * Both engines Publisher runs on signal this as a `RangeError`, but with
+ * different messages, so the error *class* is the portable signal and the
+ * message is not. Measured: V8 (node) throws "Invalid string length" at ~512 MB;
+ * JSC (bun) serializes 2.1 GB fine and throws "Out of memory" by 2.5 GB. A stack
+ * overflow is also a `RangeError` and is not a size problem, so it is left to
+ * propagate as the 500 it is.
+ *
+ * Where this guard is and is not load-bearing, since the two engines differ by
+ * 4x: on node it fires well inside a normal pod, so a 600 MB response at the
+ * default 50 MB cap gets a 413. Under bun, which runs the Docker image, JSC's
+ * threshold sits above the 1-2 GB budget `constants.ts` sizes for, so the kernel
+ * is liable to OOM-kill the container before JSC throws anything to catch. The
+ * row cap and the byte cap are what protect that configuration; this is the
+ * backstop for when they are raised or the rows are individually huge.
+ *
+ * Raising `PUBLISHER_MAX_RESPONSE_BYTES` is deliberately not offered here: a
+ * response that cannot be serialized will not serialize under a higher cap
+ * either, so the remedies are the ones that shrink the response. For the same
+ * reason the message reports the cap as context rather than claiming the
+ * response exceeded it: past ~512 MB on node the engine's own limit is what
+ * fired, which can be well below a raised cap.
+ */
+export function stringifyQueryResponse(
+   response: unknown,
+   rowCount: number,
+   maxBytes: number,
+   source: QueryCapSource,
+): string {
+   try {
+      return JSON.stringify(response);
+   } catch (error) {
+      if (
+         !(error instanceof RangeError) ||
+         // "Maximum call stack size exceeded": deep nesting, not size.
+         /call stack/i.test(error.message)
+      ) {
+         throw error;
+      }
+      recordQueryCapExceeded("unserializable", source);
+      throw new ResponseUnserializableError(
+         // The cap is reported as context, not as the thing exceeded, and only
+         // when there is one: with the byte cap disabled `maxBytes` is 0 and
+         // "byte cap: 0" would read as a cap of zero bytes.
+         `Query response could not be serialized: the ${rowCount}-row result is too large to turn into JSON${
+            maxBytes > 0 ? ` (byte cap: ${maxBytes})` : ""
+         }. Project fewer columns, add a LIMIT, or filter wide values.`,
       );
    }
 }

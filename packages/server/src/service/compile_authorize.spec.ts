@@ -82,4 +82,35 @@ describe("compile-path authorize gate (compileSource)", () => {
       const { problems } = await compile("run: open_src -> { aggregate: c }");
       expect(problems).toBeDefined();
    });
+
+   it("rejects an authorize annotation in the submitted source", async () => {
+      // /compile appends the text to the model, so a caller-declared gate would
+      // land alongside the author's — and includeSql makes this the door worth
+      // the most to an attacker.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `#(authorize) "true"
+             source: mine is gated extend {}
+             run: mine -> { aggregate: c }`,
+            true,
+         ),
+      ).rejects.toThrow(/authorize` annotation is not permitted/);
+   });
+
+   it("denies a gate laundered through an unrelated annotation, with includeSql", async () => {
+      // No "authorize" byte in the request: the render tag alone used to move
+      // `gated`'s annotations off the struct and hand back its SQL.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `# some_render_tag
+             source: mine is gated extend {}
+             run: mine -> { aggregate: c }`,
+            true,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
 });

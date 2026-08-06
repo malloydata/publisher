@@ -17,6 +17,7 @@ import {
    type PublisherConfig,
 } from "./config";
 import { ScaffoldError } from "./errors";
+import { REQUIRED_NODE_RANGE } from "./node_version";
 import {
    printable,
    toMalloyIdentifier,
@@ -1961,6 +1962,14 @@ function workspacePackageJson(cwd: string, result: ScaffoldResult): string {
             name: toNpmName(path.basename(path.resolve(cwd))),
             version: "0.1.0",
             private: true,
+            // Publisher needs Node 20 or newer. Recorded here so the
+            // requirement travels with the workspace rather than living only in
+            // whatever shell scaffolded it. npm warns on a mismatch rather than
+            // refusing, so this documents the floor; the server's own boot check
+            // is what enforces it.
+            engines: {
+               node: REQUIRED_NODE_RANGE,
+            },
             scripts: {
                start: result.startCommand,
                reset: result.resetCommand,

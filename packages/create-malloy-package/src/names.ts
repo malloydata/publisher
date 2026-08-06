@@ -246,9 +246,12 @@ function describeUnsafeCharacter(name: string): string {
  *   with "Cannot redefine '<word>'". A parse-only sweep does not see these, which
  *   is why they were missing for so long.
  *
- * A derived source name landing on either is suffixed (below) rather than quoted,
- * so the source stays queryable by a plain name through the REST/MCP query API,
- * which composes `run: <source> -> <view>` without quoting.
+ * A derived source name landing on either is suffixed (below) rather than quoted.
+ * The query API no longer requires that — it quotes `sourceName`/`queryName` as
+ * identifiers when it composes `run: <source> -> <view>`, so a name needing
+ * quotes is queryable there — but a quote-requiring name is still hostile to
+ * every place Malloy is written by hand (ad-hoc `query` text, notebooks, the
+ * model's own views), so the generator keeps producing plain names.
  *
  * This list is derived from the installed @malloydata/malloy rather than curated
  * by hand, and names.spec.ts re-derives both sets from that package on every run.
