@@ -1,3 +1,10 @@
+// Refuse to run on an unsupported Node. Imported first, and importing nothing
+// but node:fs itself, so the check pulls no application code into the graph.
+// It does not run before that graph: ESM evaluates every import ahead of this
+// module's body, and the bundler inlines this entry last, so the call below
+// runs after each dependency's top-level code. What it does precede is
+// everything this process chooses to do.
+import { assertSupportedNodeVersion } from "./node_version_check";
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
 import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -72,6 +79,15 @@ import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { classifySpaFallback } from "./spa_fallback";
+
+// The first statement this module runs. On an unsupported Node this exits
+// non-zero here, before any argument parsing, any storage init, and any
+// listener. The floor is a support policy (see node_version_check.ts): the
+// failure that exposed it surfaced only on the first query, as a 500 naming
+// neither Node nor a version, on a server whose boot log read completely
+// healthy. Bun is exempt, or the Docker image and `start:dev` would refuse to
+// boot.
+assertSupportedNodeVersion();
 
 // Parse command line arguments
 function parseArgs() {

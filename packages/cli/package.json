@@ -8,6 +8,9 @@
   "bin": {
     "malloy-pub": "./dist/index.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/api/generated --additional-properties=supportsES6=true,withSeparateModelsAndApi=true,apiPackage=api,modelPackage=models,stringEnums=true",
     "prebuild": "bun run generate-api-types",
