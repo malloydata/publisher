@@ -44,3 +44,38 @@ export function isPublisherResizeMessage(
 export function serverBaseUrl(server: string): string {
    return server.replace(/\/api\/v0\/?$/, "");
 }
+
+/**
+ * Absolute URL of a file inside a package, as Publisher serves it:
+ * `<data origin>/environments/<env>/packages/<pkg>/<path>`.
+ *
+ * The one home for this string. Both the page viewer's iframe and the
+ * "this is not a model" page point at it, and hand-building it in each place is
+ * how the two drift.
+ *
+ * `path` is relative to the package's `public/` directory and is inserted as
+ * given, since it may contain slashes. A leading `public/` is dropped, because
+ * the served path does not include it and a caller passing a path a reader typed
+ * would otherwise produce `public/public/<file>`, which 404s. The server's own
+ * redirect drops it for the same reason.
+ */
+export function packageFileUrl({
+   server,
+   environmentName,
+   packageName,
+   path,
+}: {
+   server: string;
+   environmentName: string;
+   packageName: string;
+   path: string;
+}): string {
+   const relative = path.startsWith("public/")
+      ? path.slice("public/".length)
+      : path;
+   return (
+      `${serverBaseUrl(server)}/environments/${encodeURIComponent(
+         environmentName,
+      )}/packages/${encodeURIComponent(packageName)}/` + relative
+   );
+}

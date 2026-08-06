@@ -29,9 +29,24 @@ import { parseAuthorizeAnnotation } from "./authorize";
  *     is a per-request *who-can-query* gate evaluated at query time. The served
  *     virtual shape of a materialized source carries no gate to evaluate, so a
  *     materialized authorize-gated source would be served to everyone,
- *     bypassing the gate. Fails closed and reaches a gate on a JOINED source too
- *     (a join must not launder an authorize-gated source), mirroring the
- *     transitive `#(authorize)` enforcement on the live serve path (#906).
+ *     bypassing the gate. Fails closed on anything it cannot read.
+ *
+ *     Its join reach is PARTIAL, and the limit is worth knowing before relying on
+ *     it. The scan is a blind deep walk for an authorize annotation anywhere in
+ *     the compiled source def, so it does find a gate on a plainly-joined source
+ *     and one filed under `annotations.inherits`. It does NOT find a gate on a
+ *     source reached through an ANNOTATED join: Malloy replaces an annotated
+ *     `join_*`'s target annotations outright, leaving no `inherits` and no
+ *     authorize byte in the subtree, and the only surviving link is a
+ *     `sourceID` into `ModelDef.sourceRegistry` — which this pass has no modelDef
+ *     to resolve. Measured: `join_one: base_locked` refuses, the same join under
+ *     a `# render_tag` is eligible.
+ *
+ *     No exposure follows from that today: the serve path does not gate joins
+ *     either (a gate is evaluated at the entry point only), so a frozen table
+ *     grants nothing a live query would not. The gap matters if the serve path
+ *     ever starts tracing joins again, or if this scan is treated as the reason
+ *     joined-in gated data is safe to freeze. It is not that reason yet.
  *
  * One further eligibility property from the design — the served source must
  * compile in DuckDB (portability) — is enforced at *build* time against the
@@ -227,18 +242,23 @@ function walkForGiven(
  * on the source itself or on any source reachable through a join. Fail-closed:
  * walks the compiled source definition for annotation notes (`blockNotes` /
  * `notes`) whose text is an authorize annotation. A join embeds the joined
- * SourceDef (with its own blockNotes), so a gate reached only through a join is
- * still found — a join must not launder an authorize-gated source, matching the
- * transitive enforcement on the live serve path (#906). Any introspection or
- * parse failure is treated as "carries a gate" (fail closed).
+ * SourceDef (with its own blockNotes), so a gate reached through a PLAIN join is
+ * found, as is one filed under `annotations.inherits`. An ANNOTATED join is the
+ * hole — Malloy replaces the joined struct's annotations outright, so there is no
+ * authorize byte left in the subtree to find and no `inherits` to follow; see the
+ * join-reach note in this file's header. Any introspection or parse failure is
+ * treated as "carries a gate" (fail closed).
  *
- * Deliberately separate from `Model.collectAllReachableGates`, which answers a
- * different question: that walk collects gates to EVALUATE per request, and needs
- * their expressions and the givens they reference. This one only needs to know
- * whether any gate exists at all, at build time, with no request to evaluate
- * against — so it is a generic fail-closed scan rather than a typed collection.
- * They will not inherit each other's fixes; that is the trade accepted for
- * keeping the build-time refusal independent of the serve-time evaluator.
+ * Deliberately separate from `Model.collectEntryPointGates`, and the two now
+ * answer questions with different SHAPES, not just different return types. That
+ * one collects the gates to EVALUATE for one request, and follows identity edges
+ * only (own annotations, the `inherits`/registry chain, a query-source's
+ * derivation base) — it does not trace joins, because a gate states who may query
+ * the source it is declared on. This one asks whether ANY gate exists anywhere
+ * beneath the source at build time — reaching further than the entry point,
+ * because the output is a frozen table rather than a per-request evaluation. They
+ * are not two spellings of one rule and should not be merged; see the join-reach
+ * note in this file's header for what this one does and does not actually cover.
  */
 function referencesAuthorize(persistSource: PersistSource): boolean {
    try {

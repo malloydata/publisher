@@ -7,6 +7,7 @@ import { Command, Option } from "commander";
 import { ScaffoldError } from "./errors";
 import * as log from "./log";
 import { preview, printable } from "./names";
+import { nodeVersionWarning } from "./node_version";
 import { startVersionCheck, staleScaffolderWarning } from "./registry_check";
 import {
    isSpreadsheet,
@@ -98,6 +99,15 @@ async function run(
       );
       if (warning) {
          process.stdout.write(`\n${log.yellow(warning)}\n`);
+      }
+      // After the stale-version note, so an unusable Node is the last thing on
+      // screen. It is the one warning here that stops Publisher working at all.
+      const nodeWarning = nodeVersionWarning({
+         nodeVersion: process.version,
+         bunVersion: process.versions.bun,
+      });
+      if (nodeWarning) {
+         process.stdout.write(`\n${log.yellow(nodeWarning)}\n`);
       }
    } catch (err) {
       // Nothing will read the answer now, and the request would otherwise hold

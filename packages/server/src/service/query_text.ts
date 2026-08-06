@@ -20,7 +20,18 @@
  */
 export function extractRunTargetSourceName(query?: string): string | undefined {
    if (!query) return undefined;
-   const runMatch = query.match(/run\s*:\s*(?:`([^`]+)`|(\w+))\s*->/);
+   // The `run:` form does NOT require a following `->`. A run target can be an
+   // expression over the name — `run: locked extend { … } -> { … }`, or a
+   // refinement of a named query, `run: locked_q + { … }` — and requiring `->`
+   // right after the identifier missed both. Those were the shapes that skipped
+   // the pre-compile gate and got their compile errors back (a column-name and
+   // column-type oracle on a source the caller is denied on) while the compiled
+   // backstop denied them a moment later. Anchoring on `run:` is what keeps this
+   // safe to widen: the identifier after it is the run target or nothing.
+   const runMatch = query.match(/run\s*:\s*(?:`([^`]+)`|(\w+))/);
+   // The bare leading-`->` form still requires the arrow. Without it this would
+   // match the first word of any statement (`source`, `query`, …) and resolve a
+   // keyword as the run target.
    const arrowMatch = query.match(/^\s*(?:`([^`]+)`|(\w+))\s*->/m);
    return runMatch?.[1] ?? runMatch?.[2] ?? arrowMatch?.[1] ?? arrowMatch?.[2];
 }

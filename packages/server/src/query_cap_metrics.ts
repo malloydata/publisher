@@ -30,7 +30,14 @@ import { publisherMeter } from "./telemetry";
 
 import { getMaxQueryRows, getMaxResponseBytes } from "./config";
 
-export type QueryCapType = "rows" | "bytes";
+/**
+ * `unserializable` is deliberately distinct from `bytes`: the response could
+ * not be turned into JSON at all, which is not the same event as measuring
+ * over the configured cap and may not have exceeded any cap (the engine's own
+ * string limit can be lower than a raised cap). Sharing one label would mix
+ * the two under whatever alerts on it.
+ */
+export type QueryCapType = "rows" | "bytes" | "unserializable";
 export type QueryCapSource = "connection_sql" | "model_query" | "notebook_cell";
 
 let capExceededCounter: Counter | null = null;
@@ -95,7 +102,7 @@ function ensureCapTelemetry(): Counter {
  * payloads rather than letting them bubble to the HTTP error
  * mapper).
  *
- * `cap_type` must be one of `rows` / `bytes`; `source` identifies
+ * `cap_type` must be one of `rows` / `bytes` / `unserializable`; `source` identifies
  * the query surface that detected the overflow.
  */
 export function recordQueryCapExceeded(

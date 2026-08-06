@@ -3271,14 +3271,27 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expressions declared on this source via
-            `#(authorize)` / `##(authorize)` annotations — file-level expressions
-            first, then the source's own. Each is a Malloy boolean expression over
-            declared givens, evaluated as a disjunction (OR) and enforced at query
-            time. A request that reads this source is denied with HTTP 403 unless
-            at least one expression evaluates true for the supplied givens; an
-            empty or absent list means unrestricted. Givens are caller-asserted, so
-            this is a boundary only behind a trusted tier — see docs/authorize.md.
+            Effective authorize expressions gating this source via `#(authorize)`
+            / `##(authorize)` annotations — file-level expressions first, then the
+            source's own, or, when it declares none, the nearest source it extends
+            that does. Each is a Malloy boolean expression over declared givens,
+            evaluated as a disjunction (OR) and enforced at query time. A request
+            that reads this source is denied with HTTP 403 unless at least one
+            expression evaluates true for the supplied givens; an empty or absent
+            list means unrestricted.
+
+            IMPORTANT for anything re-implementing the decision: this flat list
+            cannot always express the predicate. Expressions from one source are
+            OR-ed, but when more than one source gates the entry point (its own
+            gate plus one carried from the source it derives from) those sources
+            are AND-ed, and both sets appear here as one list. So a list of two
+            expressions may mean "either" or "both". Treat it as "at least these
+            constraints apply" — use it to decide THAT a source is gated, not to
+            recompute WHETHER a given caller passes. Reading it as a pure
+            disjunction grants where Publisher denies.
+
+            Givens are caller-asserted, so this is a boundary only behind a
+            trusted tier — see docs/authorize.md.
           items:
             type: string
 
@@ -3293,15 +3306,28 @@ components:
             set, the queryName parameter must be empty.
         sourceName:
           type: string
-          description:
+          description: |
             Name of the source in the model to use for queryName, search, and
             topValue requests.
+
+            A NAME, not Malloy code: a single source name exactly as the model
+            response's `sources` listing returns it. The server quotes it as a
+            Malloy identifier, so a name that needs quoting (a hyphen, a space,
+            a reserved word, a leading digit) works as-is and must be sent bare
+            — do not add backticks of your own. Anything richer than one name
+            (a parameterized source, an inline extension, a second statement)
+            belongs in `query`, and here is refused as an unresolvable name.
         queryName:
           type: string
-          description:
+          description: |
             Name of a query to execute on a source in the model. Requires the
             sourceName parameter is set. If the queryName parameter is set, the
             query parameter must be empty.
+
+            A NAME, not Malloy code, on the same terms as `sourceName`: one
+            view name as the model response lists it, quoted for you, sent
+            bare. A dotted path, a refinement (`by_carrier + { limit: 10 }`),
+            or any additional statement belongs in `query`.
         compactJson:
           type: boolean
           default: false

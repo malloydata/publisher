@@ -26,6 +26,7 @@
  */
 
 import type { QueryMetadata } from "@malloydata/malloy";
+import * as crypto from "node:crypto";
 import { getQueryMetadataMode } from "../config";
 import {
    recordQueryMetadataApplied,
@@ -235,6 +236,14 @@ export interface QueryContext {
  * its own request id in the bag declares it under its own property name.
  */
 export function mintCorrelationId(): string {
+   // Via the imported module, not the `crypto` global. This is hygiene, not the
+   // fix for a supported configuration: `node:crypto.randomUUID` works on every
+   // Node this project supports, while the global arrived unflagged only in Node
+   // 19, so reaching for it raised this line's floor above the module's for no
+   // benefit. It is how the unsupported-Node problem surfaced, though: this line
+   // is on the query-execution path and not the compile path, so on Node 18
+   // every query failed with "crypto is not defined" while inspecting a model
+   // kept working. The support floor itself is enforced in node_version_check.ts.
    return crypto.randomUUID();
 }
 
