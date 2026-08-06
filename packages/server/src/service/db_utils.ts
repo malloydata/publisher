@@ -3,7 +3,7 @@ import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Connection, TableSourceDef } from "@malloydata/malloy";
 import { components } from "../api";
-import { BadRequestError } from "../errors";
+import { BadRequestError, InvalidArgumentError } from "../errors";
 import { logger } from "../logger";
 import {
    CloudStorageCredentials,
@@ -44,9 +44,18 @@ export function sqlInFilter(
  * (`FROM <catalog>.INFORMATION_SCHEMA.COLUMNS`), not inside a string, and the
  * quoting rules differ per dialect. So this REJECTS rather than encodes.
  *
- * It matters because the value is the caller's `schemaName` split on its first
- * dot, and `malloy_searchDatabaseSchema` takes that straight from a
- * model-controlled MCP argument. Left raw, a schemaName of
+ * Two kinds of value reach it. The caller's `schemaName` split on its first dot
+ * is the one that matters, because `malloy_searchDatabaseSchema` takes that
+ * straight from a model-controlled MCP argument. Trino and Databricks catalog
+ * names also pass through it; those come from config or from SHOW CATALOGS, so
+ * they are not attacker-controlled, and validating them is for consistency
+ * rather than safety. In the SHOW CATALOGS loop a rejected name is warned and
+ * skipped, which is what an unquotable name did before anyway: spliced bare it
+ * produced a SQL parse error the same catch swallowed. Hyphenated Trino
+ * catalogs (`hive-prod`) are common and are the case this shuts out; quoting
+ * identifiers per dialect is the real fix whenever someone gets to it.
+ *
+ * Left raw, a schemaName of
  * `(SELECT c1 AS TABLE_NAME, ... FROM customers) x -- .public` comments out the
  * rest of the query and returns real ROW VALUES in the response, from a tool
  * whose documented invariant is that it never returns one.
@@ -67,7 +76,7 @@ const SAFE_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 
 export function assertSafeSqlIdentifier(value: string, what: string): string {
    if (!SAFE_SQL_IDENTIFIER.test(value)) {
-      throw new BadRequestError(
+      throw new InvalidArgumentError(
          `Invalid ${what} "${value}": expected a plain identifier (letters, digits, underscore or dollar, not starting with a digit).`,
       );
    }
@@ -339,7 +348,10 @@ async function getSchemasForTrino(
          const catalog = connection.trinoConnection.catalog;
          const result = await runIntrospectionSQL(
             malloyConnection,
-            `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+            `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+               catalog,
+               "catalog name",
+            )}.information_schema.schemata ORDER BY schema_name`,
          );
          const rows = standardizeRunSQLResult(result);
          allRows = rows.map((row: unknown) => {
@@ -365,7 +377,10 @@ async function getSchemasForTrino(
             try {
                const result = await runIntrospectionSQL(
                   malloyConnection,
-                  `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+                  `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                     catalog,
+                     "catalog name",
+                  )}.information_schema.schemata ORDER BY schema_name`,
                );
                const rows = standardizeRunSQLResult(result);
                for (const row of rows) {
@@ -422,7 +437,10 @@ async function getSchemasForDatabricks(
          const catalog = connection.databricksConnection.defaultCatalog;
          const result = await runIntrospectionSQL(
             malloyConnection,
-            `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+            `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+               catalog,
+               "catalog name",
+            )}.information_schema.schemata ORDER BY schema_name`,
          );
          const rows = standardizeRunSQLResult(result);
          allRows = rows.map((row: unknown) => {
@@ -448,7 +466,10 @@ async function getSchemasForDatabricks(
             try {
                const result = await runIntrospectionSQL(
                   malloyConnection,
-                  `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+                  `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                     catalog,
+                     "catalog name",
+                  )}.information_schema.schemata ORDER BY schema_name`,
                );
                const rows = standardizeRunSQLResult(result);
                for (const row of rows) {
@@ -1505,10 +1526,10 @@ async function listTablesForDuckDB(
    // Regular DuckDB schema — query information_schema.columns
    const dotIdx = schemaName.indexOf(".");
    if (dotIdx < 0) {
-      // BadRequestError, not Error: this is a deterministic bad argument, and
-      // as a plain Error it was classified as an internal fault whose advice
+      // InvalidArgumentError, not Error: this is a deterministic bad argument,
+      // and as a plain Error it was classified as an internal fault whose advice
       // was "try the request again later", which an agent then does forever.
-      throw new BadRequestError(
+      throw new InvalidArgumentError(
          `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}". List this connection's schemas and use one of those names verbatim.`,
       );
    }

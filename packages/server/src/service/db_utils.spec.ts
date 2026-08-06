@@ -1090,7 +1090,7 @@ describe("SQL escaping and identifier validation", () => {
       // From Malloy's own dialect layer (stringLiteralStyle). Getting this set
       // wrong is what left Snowflake and Databricks injectable after the fix
       // that was supposed to close them.
-      for (const dialect of ["mysql", "snowflake", "databricks", "bigquery"]) {
+      for (const dialect of ["mysql", "snowflake", "databricks"]) {
          expect(sqlLiteral("x\\' OR 1=1 #", dialect)).toBe("x\\\\'' OR 1=1 #");
       }
       // Doubled dialects: a backslash is an ordinary character, so doubling it
@@ -1108,6 +1108,19 @@ describe("SQL escaping and identifier validation", () => {
       expect(sqlLiteral("o'brien", "snowflake")).toBe("o''brien");
       expect(sqlLiteral("o'brien")).toBe("o''brien");
       expect(sqlLiteral("plain", "postgres")).toBe("plain");
+   });
+
+   it("refuses to build a BigQuery literal rather than mis-escaping one", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      // GoogleSQL is backslash-only: it does not read '' as an escaped quote,
+      // and it does not concatenate adjacent literals either, so the doubling
+      // this function always applies would not parse. Nothing reaches it today
+      // (BigQuery introspects through its client, building no SQL), so this
+      // pins the failure DIRECTION for whoever adds the first BigQuery SQL
+      // path: throw, rather than inherit an escape rule that does not hold.
+      expect(() => sqlLiteral("o'brien", "bigquery")).toThrow(
+         /Cannot build a SQL literal for "bigquery"/,
+      );
    });
 
    it("rejects an identifier that is not a plain name", async () => {
@@ -1146,9 +1159,11 @@ describe("identifier rejection survives the dialect catch blocks", () => {
    ] as const;
 
    for (const { type, conn } of dialects) {
-      it(`surfaces a BadRequestError, not a wrapped Error, on ${type}`, async () => {
+      it(`surfaces an InvalidArgumentError, not a wrapped Error, on ${type}`, async () => {
          const { listTablesForSchema } = await import("./db_utils");
-         const { BadRequestError } = await import("../errors");
+         const { BadRequestError, InvalidArgumentError } = await import(
+            "../errors"
+         );
          const malloyConnection = {
             runSQL: async () => {
                throw new Error("should not be reached");
@@ -1165,6 +1180,10 @@ describe("identifier rejection survives the dialect catch blocks", () => {
          } catch (error) {
             thrown = error;
          }
+         // The subclass is what keeps the MCP layer from answering a bad
+         // argument with Malloy syntax advice; the base class is what keeps it
+         // an HTTP 400. Both matter, so both are asserted.
+         expect(thrown).toBeInstanceOf(InvalidArgumentError);
          expect(thrown).toBeInstanceOf(BadRequestError);
       });
    }

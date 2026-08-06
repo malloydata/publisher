@@ -355,6 +355,99 @@ describe("tiers 3, 4 and 5 through the handler", () => {
       expect(payload.tables[0].tableName).toBe("customers");
       expect(admitted).toEqual(["examples"]);
    });
+
+   // The filter runs client-side over a listing, so its case sensitivity is
+   // ours, not the warehouse's. Asking for `orders` against `Orders.parquet`
+   // used to 404 on precisely the dialects that ignore the tableNames filter,
+   // which is the branch this filter exists to protect.
+   it("tier 5 matches a table whose name differs only in case", async () => {
+      tablesResult = [
+         {
+            resource: "sales/Orders.parquet",
+            columns: [{ name: "x", type: "int" }],
+         },
+      ];
+      const payload = parse(
+         await captureHandler(store())({
+            ...base,
+            schemaName: "sales",
+            tableName: "orders",
+         }),
+      );
+      expect(payload.tables[0].tableName).toBe("Orders");
+   });
+
+   it("tier 5 prefers the exact match over the case-insensitive one", async () => {
+      tablesResult = [
+         { resource: "sales.Orders", columns: [{ name: "x", type: "int" }] },
+         { resource: "sales.orders", columns: [{ name: "y", type: "int" }] },
+      ];
+      const payload = parse(
+         await captureHandler(store())({
+            ...base,
+            schemaName: "sales",
+            tableName: "orders",
+         }),
+      );
+      expect(payload.tables).toHaveLength(1);
+      expect(payload.tables[0].columns[0].name).toBe("y");
+   });
+});
+
+// Much of this tool's value is in what it tells an agent when the call was not
+// the one it thought it made, and that path had no coverage at all.
+describe("the ignored-argument warning", () => {
+   function store(): Partial<EnvironmentStore> {
+      return {
+         listEnvironments: () => [{ name: "examples" }] as never,
+         getEnvironment: async () =>
+            ({
+               assertCanAdmitQuery: () => {},
+               listApiConnections: () => CONNECTIONS,
+               listPackages: async () => [{ name: "p" }],
+            }) as never,
+      };
+   }
+
+   it("names each ignored argument exactly once", async () => {
+      // The duplicate: with no environmentName the tier-1 rule reports
+      // packageName, and the sandbox rule reported it a second time.
+      const payload = parse(
+         await captureHandler(store())({
+            connectionName: "warehouse",
+            packageName: "p",
+         }),
+      );
+      const warning = (payload.warnings ?? []).join(" ");
+      expect(warning).toContain("Ignored");
+      const named = warning
+         .slice(warning.indexOf("Ignored"), warning.indexOf("."))
+         .split(/,\s*/);
+      expect(named).toEqual([...new Set(named)]);
+      expect(
+         named.filter((n: string) => n.includes("packageName")),
+      ).toHaveLength(1);
+   });
+
+   it("stays silent when every argument was used", async () => {
+      const payload = parse(
+         await captureHandler(store())({ environmentName: "examples" }),
+      );
+      expect(
+         (payload.warnings ?? []).some((w: string) => w.includes("Ignored")),
+      ).toBe(false);
+   });
+
+   it("reports packageName on a connection that is not the sandbox", async () => {
+      const payload = parse(
+         await captureHandler(store())({
+            environmentName: "examples",
+            connectionName: "warehouse",
+            packageName: "p",
+         }),
+      );
+      expect((payload.warnings ?? []).join(" ")).toContain("packageName");
+   });
 });
 
 describe("only pastable table paths get a malloySource", () => {

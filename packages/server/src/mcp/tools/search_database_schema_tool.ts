@@ -442,7 +442,18 @@ export function registerSearchDatabaseSchemaTool(
                entries: readonly (readonly [string, unknown])[],
             ) => {
                for (const [name, value] of entries) {
-                  if (value !== undefined && value !== "") ignored.push(name);
+                  // Deduped: two rules can name the same argument. Called with
+                  // connectionName and packageName but no environmentName, the
+                  // tier-1 rule and the sandbox rule below both fire on
+                  // packageName, and the warning read "Ignored connectionName,
+                  // packageName, ..., packageName".
+                  if (
+                     value !== undefined &&
+                     value !== "" &&
+                     !ignored.includes(name)
+                  ) {
+                     ignored.push(name);
+                  }
                }
             };
             // Paging arguments only mean something on a table listing, so they
@@ -602,9 +613,24 @@ export function registerSearchDatabaseSchemaTool(
                // this, asking for one table on a 200-file prefix returns all 200,
                // each with every column, because the branch below waives the
                // column cap on the assumption that one table was requested.
-               const matching = tables.filter(
+               const exact = tables.filter(
                   (t) => bareTableName(t.resource ?? "") === tableName,
                );
+               // Fall back to a case-insensitive match, but only when nothing
+               // matched exactly, so a warehouse holding both `Orders` and
+               // `orders` still resolves to the one that was asked for. Without
+               // the fallback, asking for `orders` against `Orders.parquet`
+               // returned not-found on exactly the dialects this filter exists
+               // to protect: the ones that ignore the tableNames filter and
+               // hand back a whole directory.
+               const matching =
+                  exact.length > 0
+                     ? exact
+                     : tables.filter(
+                          (t) =>
+                             bareTableName(t.resource ?? "").toLowerCase() ===
+                             tableName.toLowerCase(),
+                       );
                const entities = (matching.length > 0 ? matching : tables).map(
                   (t) => toEntity(t, connectionName, schemaName),
                );

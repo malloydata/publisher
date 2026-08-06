@@ -2,12 +2,14 @@ import { Connection } from "@malloydata/malloy";
 import { logger } from "../logger";
 
 /**
- * Dialects where a backslash escapes inside a single-quoted string.
+ * Dialects where a backslash escapes inside a single-quoted string, AND which
+ * also accept `''` as an escaped quote.
  *
  * Taken from Malloy's own dialect layer (`stringLiteralStyle`, EscapeStyle
  * Backslash vs Doubled), not from memory: BigQuery, Snowflake, MySQL and
  * Databricks are Backslash; Postgres, DuckDB, MotherDuck, DuckLake and Trino
- * are Doubled.
+ * are Doubled. BigQuery is deliberately absent here; see
+ * UNSUPPORTED_LITERAL_DIALECTS below.
  *
  * Session settings do not move these in our deployments. The Malloy Postgres
  * driver never touches standard_conforming_strings (on by default since 9.1),
@@ -15,11 +17,40 @@ import { logger } from "../logger";
  * driver only sets the time zone, and Snowflake has no parameter that disables
  * backslash escapes.
  */
-const BACKSLASH_ESCAPE_DIALECTS = new Set([
-   "bigquery",
-   "databricks",
-   "mysql",
-   "snowflake",
+const BACKSLASH_ESCAPE_DIALECTS = new Set(["databricks", "mysql", "snowflake"]);
+
+/**
+ * Dialects this function cannot produce a correct literal for.
+ *
+ * BigQuery is backslash-only: GoogleSQL does not treat `''` as an escaped
+ * quote, and it does not concatenate adjacent string literals either, so the
+ * doubling applied unconditionally below would not merely be redundant, it
+ * would not parse. Every other escape rule here is additive on top of doubling,
+ * which is why BigQuery cannot be expressed as a member of either set.
+ *
+ * It reaches nothing today: `getSchemasForBigQuery` and `listTablesForBigQuery`
+ * both go through the @google-cloud/bigquery client and never build SQL. This
+ * exists so that if a BigQuery SQL path is ever added, it throws on the first
+ * call instead of silently mis-escaping, and so the gap reads as a decision
+ * rather than an omission somebody closes by adding "bigquery" to the set
+ * above. If you need it, teach sqlLiteral to skip doubling for backslash-only
+ * dialects first.
+ */
+const UNSUPPORTED_LITERAL_DIALECTS = new Map([
+   [
+      "bigquery",
+      "GoogleSQL does not accept '' as an escaped quote, so this function cannot build a correct BigQuery literal. BigQuery introspection goes through the @google-cloud/bigquery client instead of building SQL.",
+   ],
+]);
+
+/** Dialects where `''` is the only escape for a quote. */
+const DOUBLED_ESCAPE_DIALECTS = new Set([
+   "ducklake",
+   "duckdb",
+   "motherduck",
+   "postgres",
+   "publisher",
+   "trino",
 ]);
 
 /**
@@ -34,23 +65,22 @@ const BACKSLASH_ESCAPE_DIALECTS = new Set([
  * site that passes the connection it already has cannot express the wrong
  * answer.
  *
- * Quote-doubling is applied for every dialect; it is valid on the backslash
- * dialects as well, so the backslash handling is purely additive.
+ * Quote-doubling is applied for every dialect it supports; MySQL, Snowflake and
+ * Databricks accept `''` as well as a backslash, so the backslash handling is
+ * purely additive. BigQuery is the one dialect where that is untrue, and it
+ * throws rather than being approximated.
  *
  * Lives here rather than in db_utils because gcs_s3_utils needs it too, and
  * gcs_s3_utils cannot import db_utils: db_utils imports IT, so that is a cycle.
  */
-const DOUBLED_ESCAPE_DIALECTS = new Set([
-   "ducklake",
-   "duckdb",
-   "motherduck",
-   "postgres",
-   "publisher",
-   "trino",
-]);
-
 export function sqlLiteral(value: string, connectionType?: string): string {
    const dialect = (connectionType ?? "").toLowerCase();
+   const unsupported = UNSUPPORTED_LITERAL_DIALECTS.get(dialect);
+   if (unsupported) {
+      throw new Error(
+         `Cannot build a SQL literal for "${dialect}". ${unsupported}`,
+      );
+   }
    const backslash = BACKSLASH_ESCAPE_DIALECTS.has(dialect);
    // No type at all means the caller is not dialect-aware; doubling is the
    // conservative answer and matches the ANSI majority. A type that IS given

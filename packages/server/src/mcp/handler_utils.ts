@@ -4,6 +4,7 @@ import {
    AccessDeniedError,
    BadRequestError,
    ConnectionNotFoundError,
+   InvalidArgumentError,
    PackageNotFoundError,
    ModelNotFoundError,
    ModelCompilationError,
@@ -113,6 +114,29 @@ export function classifyToolError(
          ],
       } satisfies ErrorDetails;
    }
+   // Must precede the Malloy branch: InvalidArgumentError extends
+   // BadRequestError, which that branch matches.
+   if (error instanceof InvalidArgumentError) {
+      // One named argument was malformed, and it is NOT about Malloy. A schema
+      // introspection argument error ("DuckDB schema name must be qualified as
+      // catalog.schema") answered with the Malloy advice came back with four
+      // suggestions about checking `source:` and `view:` keywords in a model
+      // file the caller never mentioned. These messages are already specific;
+      // the suggestions only need to say that retrying unchanged is pointless.
+      //
+      // Deliberately NOT widened to BadRequestError, which the branch below
+      // still handles. That class is also the general wrapper for query-time
+      // failures, including "Model compilation failed: ..." (the fallback for
+      // compile errors that are not ModelCompilationError), and those are
+      // genuine Malloy problems that want the syntax guidance and doc links.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
+            "The message above names what was wrong. If it names an expected format, use that format exactly.",
+         ],
+      } satisfies ErrorDetails;
+   }
    if (
       // A raw engine error: what a bad query throws (syntax, undefined name,
       // field not found). executeQuery's catch sees these, so they must keep
@@ -121,25 +145,12 @@ export function classifyToolError(
       // The same thing wrapped: what a failed compile or reload throws.
       error instanceof ModelCompilationError ||
       // An #(authorize) denial, whose message getMalloyErrorDetails recognizes.
-      error instanceof AccessDeniedError
+      error instanceof AccessDeniedError ||
+      // A malformed request is the caller's to fix, not ours to retry. Covers
+      // model.ts's query-time failures, which are about Malloy.
+      error instanceof BadRequestError
    ) {
       return getMalloyErrorDetails(operation, identifier, error);
-   }
-   if (error instanceof BadRequestError) {
-      // A malformed request is the caller's to fix, and it is NOT necessarily
-      // about Malloy. This used to fall into the branch above, so a schema
-      // introspection argument error ("DuckDB schema name must be qualified as
-      // catalog.schema") came back with four suggestions about checking
-      // `source:` and `view:` keywords in a model file the caller never
-      // mentioned. These messages are already specific; the suggestions only
-      // need to say that retrying unchanged is pointless.
-      return {
-         message: error.message,
-         suggestions: [
-            "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
-            "The message above names what was wrong. If it names an expected format, use that format exactly.",
-         ],
-      } satisfies ErrorDetails;
    }
    // Everything else (a filesystem EACCES, a TypeError, a worker crash, a
    // timeout) is not the caller's Malloy. Telling them to check their syntax
