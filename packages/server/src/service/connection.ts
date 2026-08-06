@@ -1198,15 +1198,16 @@ async function attachDatabasesToDuckDB(
       azure: attachAzureStorage,
    };
 
-   if (setupSQL) {
-      await duckdbConnection.runSQL(setupSQL);
-   }
-
    // Generic (non-tier) attach session: defer to the deployment policy — off
    // under local-only, left at DuckDB's default under on-demand so existing
    // users see no behaviour change. Publisher still installs each attached
    // type's extension explicitly below.
    await applyExtensionSessionSettings(duckdbConnection);
+
+   if (setupSQL) {
+      await duckdbConnection.runSQL(setupSQL);
+      await applyExtensionSessionSettings(duckdbConnection);
+   }
 
    // Pre-load extensions needed by any attached database type, once per connection
    const hasAzure = attachedDatabases.some((db) => db.type === "azure");

@@ -152,7 +152,7 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
       throw new Error(
          `Unsupported DuckDB connection field(s): ${unsupportedFields.join(
             ", ",
-         )}. Publisher only supports attachedDatabases for environment-authored DuckDB connections.`,
+         )}. Publisher only supports attachedDatabases and setupSQL for environment-authored DuckDB connections.`,
       );
    }
 }
@@ -463,10 +463,12 @@ function validateConnectionShape(connection: ApiConnection): void {
          {
             const attached =
                connection.duckdbConnection.attachedDatabases ?? [];
-            const hasSetupSQL = !!connection.duckdbConnection.setupSQL;
+            const setupSQL = connection.duckdbConnection.setupSQL;
+            const hasSetupSQL =
+               typeof setupSQL === "string" && setupSQL.trim().length > 0;
             if (attached.length === 0 && !hasSetupSQL) {
                throw new Error(
-                  `DuckDB connection "${connection.name}" must provide either attachedDatabases or setupSQL.`,
+                  `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
                );
             }
          }

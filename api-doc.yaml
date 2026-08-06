@@ -4092,12 +4092,9 @@ components:
     DuckdbConnection:
       type: object
       description: >
-        DuckDB database connection configuration. Publisher intentionally
-        exposes only data-source intent here. Database files, working
-        directories, filesystem/network policy, extension loading, setup SQL,
-        temp directories, and resource knobs are owned by Publisher so
-        environment configs cannot widen deployment policy through low-level
-        DuckDB settings.
+        DuckDB database connection configuration. Exposes data-source intent,
+        attached foreign databases, and optional setup SQL for initialization
+        (e.g. ATTACH commands for external lakehouses), subject to Publisher policy.
       properties:
         setupSQL:
           type: string
