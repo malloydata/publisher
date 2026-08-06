@@ -87,14 +87,15 @@ export function sqlLiteral(value: string, connectionType?: string): string {
    // but unrecognised is the dangerous case: that is a dialect nobody
    // classified, and it is the one that throws.
    if (dialect && !backslash && !DOUBLED_ESCAPE_DIALECTS.has(dialect)) {
-      // Fail LOUDLY on a dialect nobody classified. Both dispatch switches are
-      // exhaustive today, so this is unreachable; it exists because the next
-      // dialect added would otherwise inherit quote-doubling silently, and
-      // doubling alone on a backslash dialect is exploitable rather than merely
-      // cosmetic. That classification has now been wrong three times in this
-      // file's history, so the failure direction is worth pinning.
+      // Fail LOUDLY on a dialect nobody classified. Every value in the
+      // Connection.type enum is classified today, pinned by a spec that reads
+      // the enum from api-doc.yaml, so this is unreachable; it exists because
+      // the next dialect added would otherwise inherit quote-doubling silently,
+      // and doubling alone on a backslash dialect is exploitable rather than
+      // merely cosmetic. That classification has now been wrong three times in
+      // this file's history, so the failure direction is worth pinning.
       throw new Error(
-         `Unclassified SQL dialect "${connectionType}": add it to BACKSLASH_ESCAPE_DIALECTS or DOUBLED_ESCAPE_DIALECTS in introspection_sql.ts before building SQL for it.`,
+         `Unclassified SQL dialect "${connectionType}": add it to BACKSLASH_ESCAPE_DIALECTS or DOUBLED_ESCAPE_DIALECTS in introspection_sql.ts before building SQL for it, or to UNSUPPORTED_LITERAL_DIALECTS if, like BigQuery, it does not accept '' as an escaped quote.`,
       );
    }
    const escaped = backslash ? value.replace(/\\/g, "\\\\") : value;

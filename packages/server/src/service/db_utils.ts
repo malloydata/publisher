@@ -412,6 +412,11 @@ async function getSchemasForTrino(
          };
       });
    } catch (error) {
+      // A rejected catalog name is the caller's/config's to fix, not an
+      // internal fault. Flattened into a generic Error it classifies as
+      // "unexpected internal error, retry later", which is the retry-forever
+      // loop this PR exists to remove.
+      if (error instanceof BadRequestError) throw error;
       logger.error(
          `Error getting schemas for Trino connection ${connection.name}`,
          { error },
@@ -499,6 +504,11 @@ async function getSchemasForDatabricks(
          };
       });
    } catch (error) {
+      // A rejected catalog name is the caller's/config's to fix, not an
+      // internal fault. Flattened into a generic Error it classifies as
+      // "unexpected internal error, retry later", which is the retry-forever
+      // loop this PR exists to remove.
+      if (error instanceof BadRequestError) throw error;
       logger.error(
          `Error getting schemas for Databricks connection ${connection.name}`,
          { error },

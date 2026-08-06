@@ -1189,6 +1189,51 @@ describe("identifier rejection survives the dialect catch blocks", () => {
    }
 });
 
+describe("catalog names in the schema listings are validated too", () => {
+   // The last instance of the raw-interpolation shape, in getSchemasForTrino
+   // and getSchemasForDatabricks. Config-derived rather than caller-derived, so
+   // not a vulnerability, but an untested fix is how the previous round's
+   // extracted-but-never-wired helper got through: assert runSQL is never
+   // reached, not merely that something threw.
+   const dialects = [
+      {
+         type: "trino",
+         conn: { trinoConnection: { catalog: "evil; DROP TABLE t; --" } },
+      },
+      {
+         type: "databricks",
+         conn: {
+            databricksConnection: { defaultCatalog: "evil; DROP TABLE t; --" },
+         },
+      },
+   ] as const;
+
+   for (const { type, conn } of dialects) {
+      it(`rejects an unsafe configured catalog on ${type} before running SQL`, async () => {
+         const { getSchemasForConnection } = await import("./db_utils");
+         const { InvalidArgumentError } = await import("../errors");
+         let ranSQL = false;
+         const malloyConnection = {
+            runSQL: async () => {
+               ranSQL = true;
+               return { rows: [] };
+            },
+         };
+         let thrown: unknown;
+         try {
+            await getSchemasForConnection(
+               { name: "c", type, ...conn } as never,
+               malloyConnection as never,
+            );
+         } catch (error) {
+            thrown = error;
+         }
+         expect(thrown).toBeInstanceOf(InvalidArgumentError);
+         expect(ranSQL).toBe(false);
+      });
+   }
+});
+
 describe("an unclassified dialect fails loudly", () => {
    // The classification has been wrong three times in this file's history. A
    // dialect added to the dispatch switch but not to either escape set must not
@@ -1204,6 +1249,46 @@ describe("an unclassified dialect fails loudly", () => {
    it("still doubles quotes when no dialect is supplied at all", async () => {
       const { sqlLiteral } = await import("./db_utils");
       expect(sqlLiteral("o'brien")).toBe("o''brien");
+   });
+
+   // Kyle verified this by hand in review, against api-doc.yaml, which is the
+   // right source but the wrong mechanism: the next dialect added to the enum
+   // would inherit quote-doubling silently and nobody would be checking. Read
+   // the enum rather than restating it, so the two cannot drift. Behavioural on
+   // purpose, so it needs no new exports from the module under test.
+   it("classifies every connection type in the api-doc enum", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      const { readFileSync } = await import("node:fs");
+      const apiDoc = readFileSync(
+         new URL("../../../../api-doc.yaml", import.meta.url),
+         "utf8",
+      );
+      const start = apiDoc.indexOf("      description: Database connection");
+      expect(start).toBeGreaterThan(-1);
+      const enumAt = apiDoc.indexOf("enum:", start);
+      const types = [
+         ...apiDoc
+            .slice(enumAt, apiDoc.indexOf("]", enumAt))
+            .matchAll(/^\s+(\w+),$/gm),
+      ].map((m) => m[1]);
+      // Guard the extraction itself: a regex that silently matched nothing
+      // would make this test vacuously pass.
+      expect(types).toContain("postgres");
+      expect(types.length).toBeGreaterThanOrEqual(10);
+
+      for (const type of types) {
+         // Either it produces a literal, or it refuses for a NAMED reason.
+         // "Unclassified" means nobody decided, which is the state this test
+         // exists to prevent.
+         try {
+            expect(typeof sqlLiteral("o'brien", type)).toBe("string");
+         } catch (error) {
+            expect((error as Error).message).toContain(
+               "Cannot build a SQL literal",
+            );
+            expect((error as Error).message).not.toContain("Unclassified");
+         }
+      }
    });
 });
 
