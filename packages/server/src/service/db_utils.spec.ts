@@ -1259,8 +1259,11 @@ describe("an unclassified dialect fails loudly", () => {
    it("classifies every connection type in the api-doc enum", async () => {
       const { sqlLiteral } = await import("./db_utils");
       const { readFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      // Same resolution style as theme_key_parity.spec.ts, the other spec that
+      // reads this file as the shared contract.
       const apiDoc = readFileSync(
-         new URL("../../../../api-doc.yaml", import.meta.url),
+         resolve(import.meta.dir, "../../../../api-doc.yaml"),
          "utf8",
       );
       const start = apiDoc.indexOf("      description: Database connection");
@@ -1274,7 +1277,11 @@ describe("an unclassified dialect fails loudly", () => {
       // Guard the extraction itself: a regex that silently matched nothing
       // would make this test vacuously pass.
       expect(types).toContain("postgres");
-      expect(types.length).toBeGreaterThanOrEqual(10);
+      expect(types).toContain("bigquery");
+      // A loose floor, not the exact count: pinning 10 would fail spuriously
+      // the day a dialect is legitimately removed, and the two names above
+      // already prove the extraction found the right block.
+      expect(types.length).toBeGreaterThan(5);
 
       for (const type of types) {
          // Either it produces a literal, or it refuses for a NAMED reason.
