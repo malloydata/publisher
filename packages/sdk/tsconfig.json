@@ -27,5 +27,17 @@
       "forceConsistentCasingInFileNames": true
    },
    "include": ["src", "k6-tests"], // Specifies the directory to include when searching for TypeScript files.
-   "exclude": ["src/**/__docs__", "src/**/__test__", "**/*.spec.ts"]
+   // Keep test files out of the build: anything left in emits a stray .d.ts
+   // into dist. The `.tsx` globs are not implied by the `.ts` ones, and the
+   // `.test.` spellings are here because `bun test` picks those up too, so a
+   // spec named that way would otherwise ship. tsconfig.spec.json typechecks
+   // exactly this set, so excluding it here does not mean it goes unchecked.
+   "exclude": [
+      "src/**/__docs__",
+      "src/**/__test__",
+      "**/*.spec.ts",
+      "**/*.spec.tsx",
+      "**/*.test.ts",
+      "**/*.test.tsx"
+   ]
 }
