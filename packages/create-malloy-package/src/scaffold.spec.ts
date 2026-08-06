@@ -10,6 +10,7 @@ import {
    type ScaffoldOptions,
    type ScaffoldResult,
 } from "./scaffold";
+import { REQUIRED_NODE_RANGE } from "./node_version";
 import { countSkills } from "./skills";
 import { skillsDir } from "@malloy-publisher/skills";
 
@@ -227,6 +228,14 @@ describe("scaffold: default package", () => {
       expect(pkg.scripts.start).toContain("--config ./publisher.config.json");
       expect(pkg.scripts.start).toContain("--watch-env default");
       expect(pkg.scripts.start).not.toContain("--init");
+   });
+
+   test("generated package.json records the Node floor Publisher needs", () => {
+      run();
+      const pkg = readJson("package.json") as {
+         engines?: { node?: string };
+      };
+      expect(pkg.engines?.node).toBe(REQUIRED_NODE_RANGE);
    });
 
    test(".mcp.json points at the local MCP endpoint", () => {

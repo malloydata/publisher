@@ -1,3 +1,10 @@
+// Refuse to run on an unsupported Node. Imported first, and importing nothing
+// but node:fs itself, so the check pulls no application code into the graph.
+// It does not run before that graph: ESM evaluates every import ahead of this
+// module's body, and the bundler inlines this entry last, so the call below
+// runs after each dependency's top-level code. What it does precede is
+// everything this process chooses to do.
+import { assertSupportedNodeVersion } from "./node_version_check";
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
 import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -71,6 +78,16 @@ import {
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
+import { classifySpaFallback } from "./spa_fallback";
+
+// The first statement this module runs. On an unsupported Node this exits
+// non-zero here, before any argument parsing, any storage init, and any
+// listener. The floor is a support policy (see node_version_check.ts): the
+// failure that exposed it surfaced only on the first query, as a 500 naming
+// neither Node nor a version, on a server whose boot log read completely
+// healthy. Bun is exempt, or the Docker image and `start:dev` would refuse to
+// boot.
+assertSupportedNodeVersion();
 
 // Parse command line arguments
 function parseArgs() {
@@ -436,6 +453,24 @@ app.get("/sdk/publisher.js", (_req, res) => {
 // nothing can be downloaded around the per-model #(authorize) and query
 // controls. The data stays reachable through the permission-checked query path.
 
+// Body for this route's 404s. Static because this route is reached with a
+// resolved environment and package, so echoing the path back would confirm which
+// of them exists; the SPA fallback's own 404 does echo it (escaped), because it
+// is reached before anything has been resolved and the path is all it knows.
+// An empty 404 is honest but leaves a blank page, and someone arriving here has
+// usually guessed at the URL form, so it names the form.
+const PACKAGE_FILE_NOT_FOUND_HTML = `<!doctype html><meta charset="utf-8">
+<title>Not found</title>
+<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
+<h1>Not found</h1>
+<p>This package does not serve that file. Only files inside the package's
+<code>public/</code> directory are web-served, at
+<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is
+relative to <code>public/</code> and does not include it.</p>
+<p>Models and notebooks are not served here; they open in the web UI at
+<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code>. <a href="/">Publisher home</a> lists what
+this server has.</p>`;
+
 async function serveFromPackage(
    req: express.Request,
    res: express.Response,
@@ -486,7 +521,7 @@ async function serveFromPackage(
          if (!res.headersSent) {
             // Generic 404 with no reflected request input (avoids reflecting
             // user-controlled path/package name into the response body).
-            res.status(404).end();
+            res.status(404).type("text/html").send(PACKAGE_FILE_NOT_FOUND_HTML);
          }
          return;
       }
@@ -517,7 +552,9 @@ async function serveFromPackage(
             // catch-all that may error.
             if (!res.headersSent) {
                // Generic 404, no reflected request input (see above).
-               res.status(404).end();
+               res.status(404)
+                  .type("text/html")
+                  .send(PACKAGE_FILE_NOT_FOUND_HTML);
             }
          }
       });
@@ -538,11 +575,42 @@ async function serveFromPackage(
 // matching also catches the trailing-slash form here, so only redirect URLs that
 // don't already end with `/`.
 //
-// Build the target from the validated route params and the parsed query, not
-// from the raw request URL, so it is always this same canonical, same-origin
-// path with a trailing slash. That removes any open-redirect / header-injection
-// surface from user-controlled input, with the slash placed before any query
-// string (e.g. ?embed_token=...).
+// Build the PATH from the validated route params, so it is always this same
+// canonical, same-origin path with a trailing slash, and place the slash before
+// any query string (e.g. ?embed_token=...). That is what removes the
+// open-redirect surface; the query itself is spliced verbatim and percent-encoded
+// by `res.redirect`, which is what removes the header-injection surface. See
+// withRequestQuery.
+/**
+ * Re-attach the request's query string to a redirect target. Spliced verbatim off
+ * the request target rather than rebuilt from the parsed query, because rebuilding
+ * flattens anything the parser turned into a structure and silently corrupts it.
+ *
+ * What keeps this safe is not the rebuild: it is that the PATH is assembled from
+ * validated segments and always starts `/environments/`, so the target cannot
+ * change origin, and that `res.redirect` runs the value through `encodeurl` on the
+ * way into the header, which percent-encodes CR, LF, space and quotes. Shared with
+ * the SPA fallback's redirect, where dropping the query would strip an embedded
+ * page's `?embed_token=...` on the way to the right path.
+ */
+function withRequestQuery(req: express.Request, target: string): string {
+   // Taken verbatim off the request target rather than rebuilt from the parsed
+   // query. Rebuilding flattens anything the parser turned into a structure:
+   // Express's default `extended` parser reads `?filter[a]=1` as an object, and
+   // `String(value)` then emits `filter=[object Object]`, so a page arrives with
+   // a corrupted parameter rather than an intact one. The path is still built
+   // from validated segments, which is what keeps the Location same-origin;
+   // Express percent-encodes the result on the way into the header.
+   // Cut the fragment first: a non-browser client can send `#x?y=1`, and taking
+   // the first `?` in the whole target would promote fragment text into the
+   // redirect's query, handing the page a parameter the caller never put there.
+   const hash = req.originalUrl.indexOf("#");
+   const target_ =
+      hash === -1 ? req.originalUrl : req.originalUrl.slice(0, hash);
+   const marker = target_.indexOf("?");
+   return marker === -1 ? target : target + target_.slice(marker);
+}
+
 app.get(
    "/environments/:environmentName/packages/:packageName",
    (req, res, next) => {
@@ -550,16 +618,7 @@ app.get(
       const canonical =
          `/environments/${encodeURIComponent(req.params.environmentName)}` +
          `/packages/${encodeURIComponent(req.params.packageName)}/`;
-      const query = new URLSearchParams();
-      for (const [key, value] of Object.entries(req.query)) {
-         if (Array.isArray(value)) {
-            for (const v of value) query.append(key, String(v));
-         } else if (value !== undefined) {
-            query.append(key, String(value));
-         }
-      }
-      const qs = query.toString();
-      res.redirect(308, qs ? `${canonical}?${qs}` : canonical);
+      res.redirect(308, withRequestQuery(req, canonical));
    },
 );
 
@@ -1898,7 +1957,134 @@ registerLegacyRoutes(app, {
 // Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
    const SPA_INDEX = path.resolve(ROOT, "index.html");
+   const escapeHtml = (value: string) =>
+      value.replace(
+         /[<>&]/g,
+         (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
+      );
+   // `req.path` arrives percent-encoded, while environment names are stored
+   // decoded. A malformed escape is not a name we know, so it compares as one
+   // that will not match rather than throwing.
+   const decodeSegment = (segment: string | undefined) => {
+      if (segment === undefined) return "";
+      try {
+         return decodeURIComponent(segment);
+      } catch {
+         return segment;
+      }
+   };
    app.get("*", (req, res) => {
+      // Not everything unmatched is an app route. A request that names a file
+      // gets a real answer rather than the app shell with a 200, which reads as
+      // success and then leaves the app blaming the file for a wrong path. See
+      // classifySpaFallback for why the decision is by extension.
+      let fallback = classifySpaFallback(req.path, API_PREFIX);
+      // The classifier only sees the shape of a path, and several real things
+      // share a shape with a package asset. Resolve the names against what is
+      // actually loaded before acting on its guess.
+      //
+      // Deliberately the in-memory lists rather than `getEnvironment`, which
+      // resolves from storage: this is the last handler before the app shell and
+      // it answers unauthenticated traffic for any path nothing else claimed, so
+      // it must not do I/O a caller can trigger by guessing. That also keeps this
+      // handler synchronous. The cost is real and worth stating precisely: an
+      // environment OR package that is not loaded yet gets the 404 page instead
+      // of a redirect. That covers a cold start, and an environment resolved
+      // lazily by the static route (which loads its packages on demand, so they
+      // can be absent here while that URL serves them). In those cases the page
+      // names the canonical URL and following it does load them. The exception is
+      // a package that fails to compile: it is absent here, and the canonical URL
+      // answers 424, so there the page leads somewhere that reports the real
+      // problem rather than somewhere that works.
+      const loadedEnvironment = (name: string) =>
+         environmentStore
+            .getLoadedEnvironments()
+            .find((environment) => environment.getEnvironmentName() === name);
+      if (fallback.kind === "redirect") {
+         // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
+         // Redirecting it lands on the static route, which answers a name it
+         // cannot resolve with JSON naming an internal failure ("Environment ...
+         // could not be resolved", "Package nope not found", or a 400 for a
+         // malformed name) and echoes the segment back, which the static route's
+         // own 404s deliberately avoid doing. BOTH names have to be real, not
+         // just the environment: a good environment with a bad package reaches
+         // exactly that reflected JSON.
+         const environment = loadedEnvironment(
+            decodeSegment(fallback.environmentName),
+         );
+         const packageName = decodeSegment(fallback.packageName);
+         const known = environment
+            ?.getLoadedPackages()
+            .some((pkg) => pkg.getPackageName() === packageName);
+         if (!known) {
+            // Null, not the names: a redirect candidate whose names did not
+            // resolve is not an app route either, so it must not be rescued into
+            // the app shell by the branch below.
+            fallback = {
+               kind: "assetNotFound",
+               path: req.path,
+               appRouteCandidate: null,
+            };
+         }
+      }
+      if (fallback.kind === "assetNotFound" && fallback.appRouteCandidate) {
+         // `/<env>` or `/<env>/<pkg>` where a name merely ends in a servable
+         // extension, which names may: `report.html` is a legal package name. It
+         // is an app route after all, but only if these are things this server
+         // actually has. Checking the package too is what keeps
+         // `/examples/style.css` a 404: without it, any asset request under a real
+         // environment went back to answering with the app shell and a 200, which
+         // is the whole defect this handler removes.
+         const { environmentName, packageName } = fallback.appRouteCandidate;
+         const environment = loadedEnvironment(decodeSegment(environmentName));
+         const isAppRoute =
+            environment !== undefined &&
+            (packageName === undefined ||
+               environment
+                  .getLoadedPackages()
+                  .some(
+                     (pkg) =>
+                        pkg.getPackageName() === decodeSegment(packageName),
+                  ));
+         if (isAppRoute) fallback = { kind: "spa" };
+      }
+      if (fallback.kind === "redirect") {
+         // 302, not a permanent redirect: this maps a mistaken URL onto the
+         // right one, and a path the app may later claim as a route of its own
+         // must not be cached against it in every browser that guessed once.
+         res.redirect(302, withRequestQuery(req, fallback.location));
+         return;
+      }
+      if (fallback.kind === "apiNotFound") {
+         // A caller that asked the API for something gets JSON when it is not
+         // there, not the HTML app shell it cannot parse.
+         res.status(404).json({
+            code: 404,
+            // No method in the message: this handler is registered on app.get, so
+            // it could only ever say GET. Other verbs already 404 through
+            // Express's own default, which is why the 200-plus-shell defect was
+            // GET-only in the first place.
+            message: `Unknown API endpoint: ${fallback.path}. See /api-doc.yaml for the endpoints this server serves.`,
+         });
+         return;
+      }
+      if (fallback.kind === "assetNotFound") {
+         res.status(404)
+            .type("text/html")
+            .send(
+               `<!doctype html><meta charset="utf-8">
+<title>Not found</title>
+<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
+<h1>Not found</h1>
+<p>Nothing is served at <code>${escapeHtml(fallback.path)}</code>.</p>
+<p>A file inside a package is served from that package's <code>public/</code> directory at
+<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is relative to
+<code>public/</code> and does not include it. Models and notebooks open in the web UI at
+<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code> and <code>.malloynb</code>.</p>
+<p><a href="/">Publisher home</a> lists the environments and packages this server has.</p>`,
+            );
+         return;
+      }
       res.sendFile(SPA_INDEX, (err) => {
          if (!err) return;
          // The SPA bundle isn't built. This happens when running directly
