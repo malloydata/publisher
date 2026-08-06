@@ -100,10 +100,15 @@ Open http://localhost:4000.
 ## Tests and quality gates
 
 ```bash
-make test                # unit + integration server tests
+make test                # SDK, server (unit + integration), skills, scaffolder, hammer
 make lint && make format # eslint + prettier
 make typecheck           # tsc --noEmit across sdk/app/server
 ```
+
+The SDK's tests include React components and hooks, which run against a DOM
+registered in a Bun preload. Run them from that package (`cd packages/sdk &&
+bun test`) rather than from the repo root, since Bun reads `bunfig.toml` from
+the working directory. `packages/sdk/test/README.md` covers the patterns.
 
 `make typecheck` (and the underlying `bun run typecheck`) depends on the SDK's emitted `.d.ts` files,
 which in turn depend on the OpenAPI codegen. On a fresh clone, build first — either with `make build`
