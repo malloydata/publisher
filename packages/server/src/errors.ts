@@ -44,6 +44,12 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(413, error.message);
    } else if (error instanceof QueryTimeoutError) {
       return httpError(504, error.message);
+   } else if (error instanceof NotImplementedError) {
+      // 501, not the 500 default. Asking for a feature the server does not have
+      // (today: a `versionId`, which every route declaring it rejects) is not an
+      // internal failure, and the OpenAPI spec has documented 501 on those
+      // routes all along.
+      return httpError(501, error.message);
    } else {
       return httpError(500, error.message);
    }
@@ -70,6 +76,22 @@ export class BadRequestError extends Error {
       super(message);
    }
 }
+
+/**
+ * A specific argument was malformed, and the message says which and what shape
+ * was expected.
+ *
+ * A subclass rather than a plain BadRequestError because the two want different
+ * agent-facing advice. BadRequestError is this codebase's general wrapper for
+ * query-time failures too ("Model compilation failed: ...", filter validation),
+ * which are Malloy problems and should keep the Malloy syntax guidance. These
+ * are not about Malloy at all: a schema-introspection argument error answered
+ * with four suggestions about `source:` and `view:` keywords sends the caller
+ * to edit a model they never mentioned.
+ *
+ * Still a BadRequestError, so it still maps to HTTP 400.
+ */
+export class InvalidArgumentError extends BadRequestError {}
 
 export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
@@ -242,9 +264,9 @@ export class PayloadTooLargeError extends Error {
  * serialized at all, rather than merely measuring over the cap. Still HTTP 413
  * by inheritance, because the request was well-formed and the result is too
  * large; the distinction exists so callers are not told to raise a cap. Raising
- * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here — there is no cap at which a
- * response that will not serialize starts serializing — so the only remedies
- * are the ones that shrink the response.
+ * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here, because there is no cap at
+ * which a response that will not serialize starts serializing, so the only
+ * remedies are the ones that shrink the response.
  */
 export class ResponseUnserializableError extends PayloadTooLargeError {
    constructor(message: string) {

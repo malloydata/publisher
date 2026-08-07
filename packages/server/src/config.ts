@@ -338,6 +338,24 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
 };
 
 /**
+ * Whether `malloy_searchDatabaseSchema` may send a connection's table and
+ * column names to the configured embedding provider. Off unless set.
+ *
+ * Deliberately a SECOND switch on top of `EMBEDDING_API_KEY` rather than
+ * riding on it, for the same reason that key is not inferred from an ambient
+ * `OPENAI_API_KEY`: the two authorise different disclosures. `EMBEDDING_API_KEY`
+ * covers the operator's own model text (entity names and `#(doc)`), which is
+ * already on their disk; a warehouse's table and column names are the
+ * customer's, and turning on semantic `malloy_getContext` must not silently
+ * start shipping them to a third party.
+ *
+ * With this off (the default) schema search still works: it ranks lexically,
+ * which needs no network at all.
+ */
+export const schemaEmbeddingEnabled = (): boolean =>
+   parseBoolEnv("EMBEDDING_INDEX_CONNECTION_SCHEMA") ?? false;
+
+/**
  * Tunables for the standalone {@link MaterializationScheduler}. Sourced from
  * environment variables at startup; see {@link getMaterializationSchedulerConfig}.
  *

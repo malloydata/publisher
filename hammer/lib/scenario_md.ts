@@ -2086,7 +2086,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                const pkg = (await rest.getPackage(step.pkg)) as {
                   warnings?: {
                      model?: string;
-                     target?: string;
+                     subject?: string;
                      message?: string;
                   }[];
                };

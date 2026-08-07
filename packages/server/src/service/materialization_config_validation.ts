@@ -49,14 +49,14 @@ export interface MaterializationConfigInput {
 /** One finding, in the shape the wire package's operator warnings array uses. */
 export interface MaterializationConfigWarning {
    /** The persist source the finding belongs to, absent for a package-level one. */
-   target?: string;
+   subject?: string;
    message: string;
 }
 
 function metadataWarnings(
    level: string,
    metadata: QueryMetadata | null | undefined,
-   target?: string,
+   subject?: string,
 ): MaterializationConfigWarning[] {
    if (!metadata) return [];
    const budget = queryMetadataBudgetWarning(Object.keys(metadata).length);
@@ -68,7 +68,7 @@ function metadataWarnings(
       // The level is in the message because a reader needs to know WHICH
       // declaration to edit, and an inherited property has more than one.
       message: `${level}: ${message}`,
-      ...(target ? { target } : {}),
+      ...(subject ? { subject } : {}),
    }));
 }
 
@@ -112,7 +112,7 @@ export function materializationConfigWarnings(
    // property produce one message each, not one per level per source).
    const seen = new Set<string>();
    return warnings.filter((warning) => {
-      const key = `${warning.target ?? ""}\u0000${warning.message}`;
+      const key = `${warning.subject ?? ""}\u0000${warning.message}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

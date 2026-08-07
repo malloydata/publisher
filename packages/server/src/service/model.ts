@@ -1,5 +1,4 @@
 import {
-   Annotations,
    API,
    Connection,
    FixedConnectionMap,
@@ -72,7 +71,7 @@ import type {
 } from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
-import { modelAnnotations } from "./annotations";
+import { modelAnnotations, ownModelNotes } from "./annotations";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -89,12 +88,14 @@ import {
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
-   assertWithinModelResponseLimits,
+   assertWithinModelByteLimit,
+   assertWithinModelRowLimit,
    type QueryRowLimitSource,
    queryRowLimitSource,
    resolveModelQueryRowLimit,
    stringifyQueryResponse,
 } from "./model_limits";
+import { bigIntReplacer } from "../json_utils";
 import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
 import {
    mergeQueryMetadata,
@@ -202,11 +203,11 @@ function quoteMalloyIdentifier(name: string | undefined): string {
 /**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an
  * error-severity issue that affects only how a field renders, never whether the
- * model compiles or a query runs. `target` is the query or view it sits on
+ * model compiles or a query runs. `subject` is the query or view it sits on
  * (e.g. `by_carrier` or `flights -> by_carrier`).
  */
 export interface RenderTagWarning {
-   target: string;
+   subject: string;
    message: string;
    severity: "error" | "warn";
 }
@@ -1876,7 +1877,7 @@ export class Model {
             );
             for (const e of errors) {
                findings.push({
-                  target: target.label,
+                  subject: target.label,
                   message: e.message,
                   severity: "error",
                });
@@ -2238,11 +2239,25 @@ export class Model {
        * connection default, and the correlation id.
        */
       queryMetadataInput?: ModelQueryMetadataInput,
+      /**
+       * Which shape the caller is going to send, so exactly that one is built and
+       * measured. `"compact"` is the `compactJson` response (the rows, with the
+       * bigint replacer); `"full"` is the wrapped result. Every caller declares
+       * one: REST from its `compactJson` flag, and the MCP tool as `"compact"`,
+       * because its envelope is built from the compact rows even though it does
+       * not send this string verbatim. The default covers the spec call sites,
+       * which predate the parameter; no production caller omits it.
+       */
+      responseShape: "full" | "compact" = "full",
    ): Promise<{
       result: Malloy.Result;
       /**
-       * `result` as JSON, built once for the byte check. A caller returning the
-       * full result should send this rather than stringify `result` again.
+       * The JSON of whichever shape `responseShape` asked for, built once. A
+       * caller that sends that shape should send this string rather than
+       * stringify the object itself: it is the same bytes the byte cap measured,
+       * and a payload too large to serialize is reported here as the same HTTP
+       * 413 the cap produces instead of escaping as a bare 500 from the caller's
+       * own `JSON.stringify`.
        */
       serializedResult: string;
       compactResult: QueryData;
@@ -2779,6 +2794,14 @@ export class Model {
          // wraps and returns it exactly as a live query would.
       }
 
+      // Rows first, and above `wrapResult` rather than merely above the
+      // serialize. A row overflow is a `maxRows + 1`-row result by construction,
+      // and `wrapResult` deep-converts every row into Cell objects, an object
+      // graph larger than the JSON string built from it. Checking here means the
+      // process does neither for a response it is about to refuse, and the caller
+      // is told it exceeded PUBLISHER_MAX_QUERY_ROWS rather than that the response
+      // could not be serialized. The notebook path below has the same ordering.
+      assertWithinModelRowLimit(queryResults.totalRows, maxRows, "model_query");
       const wrappedResult = API.util.wrapResult(queryResults);
       // Best-effort byte check: we've already buffered `queryResults` and
       // built `wrappedResult` by the time we get here, so this surfaces
@@ -2787,30 +2810,37 @@ export class Model {
       // prevention. True prevention requires streaming `Result`
       // construction, which is out of scope for this step. The row cap
       // above is the primary OOM defense.
-      // Serialize unconditionally, even with the byte cap disabled. `maxBytes`
-      // of 0 is a supported configuration (see config.ts), and this same payload
-      // has to be serialized to be sent, so skipping it here would only move an
-      // unserializable failure downstream, where it surfaces as the bare 500
-      // this guard exists to replace. Only the *measurement* is conditional:
-      // with no cap there is nothing to compare against.
+      // One serialization, of the shape this caller asked for, measured here and
+      // returned so nothing stringifies it again. `stringifyQueryResponse` runs
+      // whether or not `maxBytes` is set: the unserializable case is a 413
+      // regardless, and `maxBytes` decides only whether the size is compared and
+      // whether the message names a cap.
       //
-      // The string is returned rather than discarded, and the REST caller sends
-      // it instead of building its own. Before, a large response was stringified
-      // twice per request, once to measure and once to send.
+      // Both neighbouring choices were wrong for opposite reasons. Leaving the
+      // caller to stringify is what let an unserializable response escape as the
+      // bare 500 this guard replaces. Measuring a shape the caller did not ask
+      // for refuses a `compactJson` request on the wrapped result's bytes, which
+      // it never receives.
+      //
+      // `wrapResult` above is NOT conditional, so a `compactJson` request still
+      // builds the wrapped object graph; only the second JSON pass is saved.
+      // Callers need `result` itself (render-tag validation reads the schema
+      // annotations that flat rows drop), so skipping the wrap is a bigger change
+      // than this one.
+      //
+      // MCP asks for `"compact"` and then builds its own envelope from those rows
+      // (mcp/query_envelope.ts), serializing them with an unguarded
+      // `JSON.stringify` at indent 2 and truncating to 90k characters. Compact
+      // rows that serialize while that indented envelope does not still throw a
+      // raw RangeError there. Guarding it belongs with that budget; follow-up.
       const serializedResult = stringifyQueryResponse(
-         wrappedResult,
+         responseShape === "compact" ? queryResults.data.value : wrappedResult,
          queryResults.totalRows,
          maxBytes,
          "model_query",
+         responseShape === "compact" ? bigIntReplacer : undefined,
       );
-      const serializedBytes =
-         maxBytes > 0 ? Buffer.byteLength(serializedResult, "utf8") : 0;
-      assertWithinModelResponseLimits(
-         queryResults.totalRows,
-         serializedBytes,
-         { maxRows, maxBytes },
-         "model_query",
-      );
+      assertWithinModelByteLimit(serializedResult, maxBytes, "model_query");
       this.queryExecutionHistogram.record(executionTime, {
          "malloy.model.path": this.modelPath,
          "malloy.model.query.name": queryName,
@@ -2829,11 +2859,6 @@ export class Model {
       });
       return {
          result: wrappedResult,
-         // The JSON of `result`, already built for the byte check above. A caller
-         // that sends the full result should use this rather than stringify
-         // `result` again: it is the same bytes, and for a large response the
-         // second pass is the expensive one. `compactResult` has no equivalent
-         // because it is serialized with a bigint replacer, not plain.
          serializedResult,
          compactResult: queryResults.data.value,
          modelInfo: this.modelInfo,
@@ -2841,7 +2866,7 @@ export class Model {
          // The cap actually pushed into the SQL. A caller cannot otherwise tell
          // a complete result from one the row limit cut off: with no LIMIT of
          // its own a query silently gets DEFAULT_QUERY_ROW_LIMIT rows, and that
-         // is under maxRows, so assertWithinModelResponseLimits raises nothing.
+         // is under maxRows, so assertWithinModelRowLimit raises nothing.
          // Returning the number lets a caller compare it against the row count
          // and say so, with no extra query.
          rowLimit,
@@ -2971,11 +2996,19 @@ export class Model {
          } as ApiNotebookCell;
       });
 
-      const allAnnotations = this.modelDef
-         ? new Annotations(modelAnnotations(this.modelDef)).texts()
-         : [];
+      // A notebook's own `##` tags, not its imports'. `modelAnnotations` folds
+      // the import lineage, which file-level `##(authorize)` needs and this
+      // does not: a shared include carrying `##(filters)` would otherwise
+      // configure the filter panel of every notebook that imports it.
+      const allAnnotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
 
-      return {
+      // No `as` cast. The literal used to carry `type`, `modelPath`,
+      // `modelInfo`, and `queries`, which `RawNotebook` did not declare, so it
+      // needed one — and a blanket cast over an object literal accepts a stale
+      // field name after a rename in `api-doc.yaml`, typechecking clean while
+      // the client reads undefined. The schema now declares every field this
+      // returns, so the next rename fails here instead.
+      const notebook: ApiRawNotebook = {
          type: "notebook",
          packageName: this.packageName,
          modelPath: this.modelPath,
@@ -2989,7 +3022,8 @@ export class Model {
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,
          notebookCells,
-      } as ApiRawNotebook;
+      };
+      return notebook;
    }
 
    public async executeNotebookCell(
@@ -3107,12 +3141,22 @@ export class Model {
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
+            // Same ordering as getQueryResults: rows first, so a row overflow is
+            // not reported as an unserializable response.
+            if (result?._queryResult) {
+               assertWithinModelRowLimit(
+                  result.totalRows,
+                  cellMaxRows,
+                  "notebook_cell",
+               );
+            }
             queryResult =
                result?._queryResult &&
                this.modelInfo &&
-               // Same guard as getQueryResults: here the string IS the payload,
-               // not just the measurement, so a cell whose result cannot be
-               // serialized would otherwise return the same bare 500.
+               // Same guard as getQueryResults, and here too the string is the
+               // payload rather than a throwaway measurement: a cell whose
+               // result cannot be serialized would otherwise return the same
+               // bare 500.
                stringifyQueryResponse(
                   API.util.wrapResult(result),
                   result.totalRows,
@@ -3125,10 +3169,9 @@ export class Model {
             // partial transmission), not OOM prevention. The row cap above
             // is the primary defense.
             if (result?._queryResult && queryResult) {
-               assertWithinModelResponseLimits(
-                  result.totalRows,
-                  Buffer.byteLength(queryResult, "utf8"),
-                  { maxRows: cellMaxRows, maxBytes: cellMaxBytes },
+               assertWithinModelByteLimit(
+                  queryResult,
+                  cellMaxBytes,
                   "notebook_cell",
                );
             }

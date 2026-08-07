@@ -64,7 +64,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | --- | --- | --- | --- |
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
 | `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
-| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the five MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`) and the agent skills as MCP prompts. |
+| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the six MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`, `malloy_searchDatabaseSchema`) and the agent skills as MCP prompts. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | _unset_ | Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes). |
 | `PUBLISHER_USE_BUNDLED_DEFAULT` | — | _unset_ | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
@@ -83,7 +83,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PACKAGE_LOAD_JOB_TIMEOUT_MS` | — | `120000` (2 min) | Timeout per package-load job before the worker is recycled. |
 | `EXTENSION_FETCH_POLICY` | — | `on-demand` | Whether the server may fetch DuckDB extensions from the network at runtime. `on-demand`: a missing extension is installed on first use (unchanged prior behavior). `local-only`: never install, and disable DuckDB's implicit auto-install — a locally-present (e.g. image-baked) extension still loads, but a missing one fails with an actionable error naming the extension. Use `local-only` for air-gapped / pinned-image deployments. See [ducklake.md](ducklake.md#duckdb-extension-provisioning). |
 | `PUBLISHER_MAX_QUERY_ROWS` | — | `100000` | Maximum rows returned per query on every query surface (`/connections/.../sqlQuery`, model query, notebook cell, MCP `executeQuery`). Forwarded to the connector / Malloy `runnable.run` as the effective row limit; queries that exceed the cap fail with HTTP 413. Set to `0` to disable. A caller-supplied `rowLimit` smaller than the cap is preserved. |
-| `PUBLISHER_MAX_RESPONSE_BYTES` | — | `50000000` (50 MB) | Maximum JSON-serialized response size for ad-hoc SQL and model queries. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. |
+| `PUBLISHER_MAX_RESPONSE_BYTES` | — | `50000000` (50 MB) | Maximum JSON-serialized response size, for ad-hoc SQL, model queries and notebook cells. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. See the note below the table. |
 | `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT` | — | `1000` | Default `LIMIT` applied to model queries that don't include their own. Always ≤ `PUBLISHER_MAX_QUERY_ROWS`. `0` is rejected. |
 | `PUBLISHER_QUERY_TIMEOUT_MS` | — | `300000` (5 min) | Wall-clock timeout per query (all surfaces). Wired to the underlying SDK via `AbortSignal`; queries that exceed the budget are aborted and return HTTP 504. Set to `0` to disable. |
 | `PUBLISHER_MAX_CONCURRENT_QUERIES` | — | `32` | Per-pod cap on simultaneous in-flight queries (HTTP + MCP share the same slot pool). When the cap is reached, new queries fail fast with HTTP 503 (or the MCP-error equivalent). Tune higher under load; set to `0` to disable. |
@@ -100,7 +100,14 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. |
 | `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). |
 | `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. |
+| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `malloy_searchDatabaseSchema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for malloy_searchDatabaseSchema" below. |
 | — | `--help`, `-h` | — | Print the full flag list. |
+
+`PUBLISHER_MAX_RESPONSE_BYTES` measures the shape the caller asked for, not one fixed shape.
+On the model-query endpoint that means two requests differing only in `compactJson` reach the
+cap at different result sizes. Over MCP it measures the compact rows the tool's envelope is
+built from, which is not what the agent receives: the envelope is capped separately at 90k
+characters by its own budget.
 
 PostgreSQL and other database-specific connections may also honor their respective driver env vars
 (e.g. `PGSSLMODE`).
@@ -174,6 +181,46 @@ What to know before turning it on:
 - To measure the difference on your own models, see the eval script header in
   `packages/server/src/mcp/tools/get_context_eval.ts`.
 
+## Semantic ranking for `malloy_searchDatabaseSchema`
+
+`malloy_searchDatabaseSchema` searches a configured connection's schema, so an agent can find the
+right tables in a database it has never seen and start a model from them. Its ranking is lexical by
+default and needs no configuration, no API key, and no network.
+
+Semantic ranking is opt-in and needs **two** variables set, not one: `EMBEDDING_API_KEY` **and**
+`EMBEDDING_INDEX_CONNECTION_SCHEMA=true`. That is deliberate. The API key on its own authorises
+embedding your own model text, which is already on your disk. A database's table and column names are
+your customer's, and turning on semantic `malloy_getContext` should not quietly start sending them to
+a third party. Setting the second variable is how you say you meant to.
+
+What to know before turning it on:
+
+- What leaves the machine: the schema (or dataset) name, table names, column names, column types,
+  and the query strings agents pass to the tool. **Never any row values**: no value from a row is
+  returned, logged or embedded. (One nuance, since this section is the one an auditor quotes: for a
+  DuckDB connection over CSV or JSON files, DuckDB's own type sniffer reads the head of the file to
+  infer column types. That inference happens in your warehouse and only its column names and types
+  leave; no cell value is returned or sent anywhere.) Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server
+  (Ollama, vLLM) to keep even the names on-machine.
+- What it buys you: lexical ranking only matches tables that share words with the question, so
+  "website visits" does not find `web_session_events` and "newsletter blasts" does not find
+  `marketing_email_campaigns`. Embedding similarity matches those by meaning. On the eval fixture,
+  lexical scores 6/10 at recall@3, missing exactly the four questions that share no words with
+  their table.
+- Storage: schema vectors are held **in memory only**, keyed per connection and schema and
+  invalidated by a fingerprint over the tables and their columns. The key is the environment,
+  connection and schema (plus the package, for the per-package `duckdb` sandbox). At most a few
+  schemas are held at once, least-recently-used evicted. They are not written to
+  `publisher.db`, so a restart re-embeds a schema the first time it is searched again.
+- Failure behavior: if the endpoint is down, times out, or rejects the key, ranking falls back to
+  lexical (with a warning in the server log) and retries after a cool-down. A schema with more than
+  5,000 tables is not embedded and stays lexical; lexical is not the cheaper branch, it just
+  needs no provider. Its index is built once per schema and cached, so the cost lands on the first
+  search after a schema changes rather than on every search. A search response carries a `ranking` field (`"semantic"` or `"lexical"`) so you can tell which
+  one answered; a plain listing does no ranking and carries none.
+- To measure the difference yourself, including the A/B against the lexical baseline, see the eval
+  script header in `packages/server/src/mcp/tools/schema_search_eval.ts`.
+
 ## Operational tuning: OOM guards
 
 The publisher exports OpenTelemetry metrics (under the `publisher` meter) so the OOM guardrails above
@@ -181,7 +228,7 @@ can be observed and tuned in production. The most useful series for this work:
 
 | Metric                                                                                        | Type           | Use                                                                                                             |
 | --------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------- |
-| `publisher_query_cap_exceeded_total{cap_type,source}`                                         | Counter        | Per-cap 413 firings. Pivot by `cap_type` (`rows`/`bytes`) to know which knob to raise; by `source` for surface. |
+| `publisher_query_cap_exceeded_total{cap_type,source}`                                         | Counter        | 413 firings for an oversized response. Pivot by `cap_type` and `source`; see the note below. |
 | `publisher_max_query_rows`, `publisher_max_response_bytes`                                    | Gauges         | Live values of the corresponding env vars (and `-1` on misconfig).                                              |
 | `publisher_query_admission_rejections_total{environment}`                                     | Counter        | 503s from the memory governor at the query layer. Hot environments stand out via the label.                     |
 | `publisher_package_admission_rejections_total{environment,reason}`                            | Counter        | 503s from the memory governor at the package-load layer.                                                        |
@@ -191,6 +238,11 @@ can be observed and tuned in production. The most useful series for this work:
 | `publisher_process_rss_bytes`, `publisher_heap_size_limit_bytes`, `publisher_heap_used_bytes` | Gauges         | Process RSS, V8 heap ceiling (`--max-old-space-size`), V8 used heap.                                            |
 | `publisher_memory_backpressure_active`, `_activations_total`                                  | Gauge, counter | Current governor state and historical activations.                                                              |
 | `http_server_requests_total{http.status_code}`                                                | Counter        | Coarse 413/503/504 totals — pair with the dedicated counters above for per-cause breakdown.                     |
+
+`cap_type` says what to do about a 413: `rows` and `bytes` mean that cap was exceeded, so
+raising it is an option, while `unserializable` means the response could not be turned into JSON
+at all and no cap raise fixes it. `unserializable` is never emitted for `source: connection_sql`,
+which has no such guard on its own path.
 
 ## Theming
 

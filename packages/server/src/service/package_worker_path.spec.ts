@@ -323,7 +323,7 @@ source: gated is duckdb.sql("select 1 as id")`,
             responseWarnings.some(
                (w) =>
                   w.model === "bad_render.malloy" &&
-                  w.target === "nums -> card" &&
+                  w.subject === "nums -> card" &&
                   w.severity === "error",
             ),
          ).toBe(true);
@@ -520,11 +520,19 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(
             warnings.some((m) => m.includes("Invalid renderer configuration")),
          ).toBe(true);
-         // Reload refreshes the response-level warnings too.
+         // Reload refreshes the response-level warnings too. Assert `subject`
+         // as well as `model`: the reload path builds the wire entry at its own
+         // call site, so asserting only `model` would pass even if that site
+         // put the wrong value in the field the rename is about.
          const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
-         expect(responseWarnings.some((w) => w.model === "m.malloy")).toBe(
-            true,
-         );
+         expect(
+            responseWarnings.some(
+               (w) =>
+                  w.model === "m.malloy" &&
+                  w.subject === "nums -> card" &&
+                  w.severity === "error",
+            ),
+         ).toBe(true);
       } finally {
          warnSpy.mockRestore();
          await duckdb.close();
@@ -599,7 +607,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(models.has("a.malloy")).toBe(true);
          expect(models.has("b.malloy")).toBe(true);
          expect(models.size).toBe(2);
-         // The message field is carried through, not just model/target/severity.
+         // The message field is carried through, not just model/subject/severity.
          expect(
             responseWarnings.every((w) => (w.message ?? "").length > 0),
          ).toBe(true);

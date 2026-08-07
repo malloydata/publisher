@@ -6,6 +6,7 @@ import {
 import { Connection } from "@malloydata/malloy";
 import { components } from "../api";
 import { logger } from "../logger";
+import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
 type ApiTable = components["schemas"]["Table"];
 type CloudStorageType = "gcs" | "s3";
@@ -221,23 +222,26 @@ async function getTableSchema(
 
       switch (fileType) {
          case "csv":
-            describeQuery = `DESCRIBE SELECT * FROM read_csv('${uri}', auto_detect=true) LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_csv('${sqlLiteral(uri, "duckdb")}', auto_detect=true) LIMIT 1`;
             break;
          case "parquet":
-            describeQuery = `DESCRIBE SELECT * FROM read_parquet('${uri}') LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_parquet('${sqlLiteral(uri, "duckdb")}') LIMIT 1`;
             break;
          case "json":
-            describeQuery = `DESCRIBE SELECT * FROM read_json('${uri}', auto_detect=true) LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(uri, "duckdb")}', auto_detect=true) LIMIT 1`;
             break;
          case "jsonl":
-            describeQuery = `DESCRIBE SELECT * FROM read_json('${uri}', format='newline_delimited', auto_detect=true) LIMIT 1`;
+            describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(uri, "duckdb")}', format='newline_delimited', auto_detect=true) LIMIT 1`;
             break;
          default:
             logger.warn(`Unsupported file type for ${fileKey}`);
             return { resource: uri, columns: [] };
       }
 
-      const result = await malloyConnection.runSQL(describeQuery);
+      // DESCRIBE returns one row per COLUMN, so the driver's small default
+      // row limit caps a cloud file's schema at ten columns and silently drops
+      // the rest. listTablesForDuckDB routes every cloud schema through here.
+      const result = await runIntrospectionSQL(malloyConnection, describeQuery);
       const rows = standardizeRunSQLResult(result);
       const columns = rows.map((row: unknown) => {
          const typedRow = row as Record<string, unknown>;
