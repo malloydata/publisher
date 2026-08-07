@@ -143,7 +143,9 @@ against the model, so it takes the snippet as a required `source` argument; it r
 the model file's own errors too),
 `malloy_reloadPackage` (pick up on-disk model edits with no restart, and surface a
 watch-mode recompile that failed), and
-`malloy_searchDocs`. {{mcpNote}}
+`malloy_searchDocs`, and `malloy_searchDatabaseSchema` (find the tables in a database
+connection by plain-English description, for modelling data that is not in this package
+yet; it returns each table's columns and the `source:` line to start from). {{mcpNote}}
 
 REST, for a script or a check that does not need an agent: every model is queryable at
 `POST /api/v0/environments/<env>/packages/<package>/models/<model>/query`, and after a

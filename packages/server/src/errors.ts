@@ -71,6 +71,22 @@ export class BadRequestError extends Error {
    }
 }
 
+/**
+ * A specific argument was malformed, and the message says which and what shape
+ * was expected.
+ *
+ * A subclass rather than a plain BadRequestError because the two want different
+ * agent-facing advice. BadRequestError is this codebase's general wrapper for
+ * query-time failures too ("Model compilation failed: ...", filter validation),
+ * which are Malloy problems and should keep the Malloy syntax guidance. These
+ * are not about Malloy at all: a schema-introspection argument error answered
+ * with four suggestions about `source:` and `view:` keywords sends the caller
+ * to edit a model they never mentioned.
+ *
+ * Still a BadRequestError, so it still maps to HTTP 400.
+ */
+export class InvalidArgumentError extends BadRequestError {}
+
 export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
       super(message);
