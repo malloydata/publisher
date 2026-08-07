@@ -83,7 +83,7 @@
     },
     "packages/create-malloy-package": {
       "name": "@malloy-publisher/create-malloy-package",
-      "version": "0.0.5",
+      "version": "0.0.6",
       "bin": {
         "create-malloy-package": "./dist/index.js",
       },
@@ -186,6 +186,7 @@
         "@malloydata/db-trino": "^0.0.427",
         "@malloydata/malloy": "^0.0.427",
         "@malloydata/malloy-sql": "^0.0.427",
+        "@malloydata/malloy-tag": "^0.0.427",
         "@malloydata/render-validator": "^0.0.427",
         "@modelcontextprotocol/sdk": "^1.13.2",
         "@opentelemetry/api": "^1.9.0",
@@ -242,7 +243,7 @@
     },
     "packages/skills": {
       "name": "@malloy-publisher/skills",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "devDependencies": {
         "@eslint/js": "^8.57.0",
         "@types/bun": "^1.2.21",

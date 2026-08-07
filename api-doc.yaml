@@ -3347,12 +3347,12 @@ components:
         that survives a URL), and a bare list of names is spelled `givenNames`.
 
         It also carries how the given should be presented as an input control
-        (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`), derived from
-        the declaration's own tags. That contract belongs to the given rather
-        than to any one surface, which is what lets a notebook and an SDK host
-        render the same control without restating it. Those five fields describe
-        the contract a renderer implements; no endpoint populates them yet, so
-        they are absent from every response today.
+        (`label`, `description`, `control`, `rangeMin`, `rangeMax`, `suggest`),
+        derived from the declaration's own tags. That contract belongs to the
+        given rather than to any one surface, which is what lets a notebook and
+        an SDK host render the same control without restating it. Each of those
+        six is present only when the declaration carries the tag it reads, so a
+        given tagged with none of them carries none of them.
       properties:
         name:
           type: string
@@ -3376,6 +3376,15 @@ components:
         label:
           type: string
           description: Display label from the declaration's `# label=` tag
+        description:
+          type: string
+          description:
+            Helper text from the declaration's `# description=` tag. Distinct
+            from the older `#(description="…")` annotation, which is not derived
+            into this field and instead stays on `annotations` for the client
+            that already parses it. The tag form is also the one that compiles
+            without a `malformed-route` warning, because Malloy reads an
+            annotation's route up to the first whitespace.
         control:
           type: string
           enum:
