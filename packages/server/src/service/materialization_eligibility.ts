@@ -300,8 +300,12 @@ function walkForAuthorize(
 
    const record = node as Record<string, unknown>;
 
-   // Annotation notes live under `blockNotes` (source/statement) or `notes`
-   // (model/file), as either bare strings or `{ text }` objects.
+   // Annotation notes live under `blockNotes` (the `#(tag)\nsource: x is ...`
+   // statement form, and a model's `##`) or `notes` (the same source-level slot
+   // for the multi-definition `source:` block form, and after-`is` placement),
+   // as either bare strings or `{ text }` objects. Both keys are read: `notes`
+   // is NOT model/file-only, and treating it that way is what let a block-form
+   // `#(authorize)` be dropped elsewhere.
    for (const key of ["blockNotes", "notes"]) {
       const arr = record[key];
       if (!Array.isArray(arr)) continue;

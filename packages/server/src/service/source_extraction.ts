@@ -124,9 +124,11 @@ export interface ExtractedQuery {
  * files its declarations under `notes` instead of `blockNotes` — same slot,
  * different key depending only on which syntax the author used. The authorize
  * reads below use {@link ownLevelNoteTexts}, which covers both. The `#(filter)`
- * walk deliberately still reads `blockNotes` only: it has the same gap, but
- * `#(filter)` is deprecated, so closing it would newly enforce a `required`
- * filter that a live model has been running without.
+ * walk deliberately still reads `blockNotes` only: it has the same live gap —
+ * a block-form `#(filter) ... required` is dropped, and `buildFilterClause`
+ * then never raises the "required filter not provided" error the author asked
+ * for — but closing it would start rejecting requests against models that have
+ * been serving them, so it is left for a change that can carry that break.
  *
  * Two lists come out of this, and the distinction is load-bearing:
  *  - `authorize` is the EFFECTIVE gate (file-level `##(authorize)` from

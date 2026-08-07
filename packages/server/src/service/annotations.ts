@@ -128,12 +128,7 @@ export function ownModelNotes(modelDef: ModelDef): string[] {
       // Ancestral-first, matching `Annotations.texts()`, so a later cell's tag
       // wins over an earlier one the way a later line does within a file.
       for (const dep of entry.inheritsFrom) visit(dep);
-      for (const note of [
-         ...(entry.ownNotes.blockNotes ?? []),
-         ...(entry.ownNotes.notes ?? []),
-      ]) {
-         texts.push(note.text);
-      }
+      texts.push(...ownLevelNoteTexts(entry.ownNotes));
    };
    visit(modelDef.modelID);
    return texts;
@@ -156,10 +151,12 @@ export function annotationTexts(
  * The annotation texts declared directly on ONE node of an `AnnotationsDef`
  * chain — not its `inherits` ancestors. Malloy files a source-level
  * annotation under `blockNotes` for `#(tag)\nsource: name is ...` but under
- * `notes` for the multi-definition block form (`source:\n  #(tag)\n  name is
- * ...`): same declaration slot, different key depending only on which of the
- * two syntaxes the author used (confirmed by compiling both against a
- * `duckdb.sql` source and inspecting the resulting `SourceDef.annotations`).
+ * `notes` for every other source-level placement — the multi-definition block
+ * form (`source:\n  #(tag)\n  name is ...`) and either side of the `is`
+ * (`source: name is\n  #(tag)\n  base`, malloy's `getIsNotes`). Same
+ * declaration slot, different key depending only on which syntax the author
+ * used (confirmed by compiling each form and inspecting the resulting
+ * `SourceDef.annotations`).
  * A caller walking `inherits` by hand to find the nearest declaring level —
  * rather than flattening the whole chain via {@link annotationTexts} — needs
  * this at each link so a block-form declaration is not silently skipped.
