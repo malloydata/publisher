@@ -1160,6 +1160,130 @@ describe("deriveSelfInstructions", () => {
       }
    });
 
+   // An incremental source is the one case where an unchanged content address
+   // does NOT mean there is nothing to do: its data moves while its SQL stays
+   // put. Carrying it forward here would strand the delta path behind a check it
+   // can never pass, so it is exempt — but only when the delta path could
+   // actually act on the declaration.
+   const INCREMENTAL_DECLARATION = {
+      refresh: "incremental",
+      incremental: true,
+      declaredWatermark: true,
+      declaredMergeKey: false,
+      watermark: {
+         name: "order_date",
+         kind: "dimension" as const,
+         malloyType: "date",
+      },
+      watermarkOrderable: true,
+      mergeKeys: [],
+      watermarkInMergeKeys: false,
+      strategy: "range_replace" as const,
+      malformed: [],
+      unknownKeys: [],
+      calculateFields: [],
+      outputColumns: ["order_date", "revenue"],
+   };
+
+   /** deriveSelfInstructions with an incremental context for source `s1`. */
+   function selfInstructions(
+      compiled: unknown,
+      priorEntries: unknown,
+   ): { instructions: BuildInstruction[]; carried: Record<string, unknown> } {
+      return (
+         ctx.service as unknown as {
+            deriveSelfInstructions: (
+               c: unknown,
+               n: string[] | undefined,
+               p: unknown,
+               i: unknown,
+            ) => {
+               instructions: BuildInstruction[];
+               carried: Record<string, unknown>;
+            };
+         }
+      ).deriveSelfInstructions(compiled, undefined, priorEntries, {
+         environmentId: "env-1",
+         packageName: "pkg",
+         materializationId: "run-1",
+         forceRefresh: false,
+         now: new Date("2024-07-01T00:00:00Z"),
+         declarations: { s1: INCREMENTAL_DECLARATION },
+         materializers: {},
+         ledger: {},
+      });
+   }
+
+   it("does NOT carry an incremental source forward, even at an unchanged address", () => {
+      const compiled = compiledWith(
+         {
+            s1: fakeSource({
+               name: "s1",
+               sourceEntityId: "b1aaaaaaaaaaaaaa",
+               connectionName: "wh",
+               dialectName: "postgres",
+               annotationFields: {
+                  refresh: "incremental",
+                  watermark: "order_date",
+               },
+            }),
+         },
+         [["s1"]],
+      );
+      const priorEntries = {
+         b1aaaaaaaaaaaaaa: {
+            sourceEntityId: "b1aaaaaaaaaaaaaa",
+            physicalTableName: "s1",
+            connectionName: "wh",
+         },
+      };
+
+      const { instructions, carried } = selfInstructions(
+         compiled,
+         priorEntries,
+      );
+
+      // Instructed, so the build reaches the dispatch and the ledger decides.
+      expect(instructions).toHaveLength(1);
+      expect(instructions[0].sourceEntityId).toBe("b1aaaaaaaaaaaaaa");
+      expect(Object.keys(carried)).toHaveLength(0);
+   });
+
+   it("still carries forward an incremental source the delta path cannot act on", () => {
+      // Same declaration on DuckDB, which is off the incremental dialect
+      // allowlist. The delta will not run, so exempting it would rebuild the
+      // table in full on every run in the name of an incremental refresh that
+      // never happens.
+      const compiled = compiledWith(
+         {
+            s1: fakeSource({
+               name: "s1",
+               sourceEntityId: "b1aaaaaaaaaaaaaa",
+               annotationFields: {
+                  refresh: "incremental",
+                  watermark: "order_date",
+               },
+            }),
+         },
+         [["s1"]],
+      );
+      const priorEntries = {
+         b1aaaaaaaaaaaaaa: {
+            sourceEntityId: "b1aaaaaaaaaaaaaa",
+            physicalTableName: "s1",
+            connectionName: "duckdb",
+         },
+      };
+
+      const { instructions, carried } = selfInstructions(
+         compiled,
+         priorEntries,
+      );
+
+      expect(instructions).toHaveLength(0);
+      expect(carried["b1aaaaaaaaaaaaaa"]).toBeDefined();
+   });
+
    it("honors the sourceNames filter (excluded sources are neither built nor carried)", () => {
       const compiled = compiledWith(
          {

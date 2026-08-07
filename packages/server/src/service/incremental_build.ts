@@ -77,6 +77,31 @@ export interface IncrementalRunContext {
 }
 
 /**
+ * Whether this run's `forceRefresh` should send an incremental source all the way
+ * back to a full SEED, as opposed to merely getting it built.
+ *
+ * The two meanings have to be separated because `forceRefresh` on the wire says
+ * only "build even though the content address is unchanged". A SCHEDULER fire
+ * sets it for exactly that reason and no other — without it a schedule could
+ * never pick up new source rows, since the address does not move when data does.
+ * An incremental source is already exempt from skip-if-unchanged (see
+ * MaterializationService.deriveSelfInstructions), so a scheduled force carries no
+ * further instruction for it, and reading it as "and re-seed from scratch" would
+ * make every scheduled run a full rebuild — the schedule could never drive a
+ * delta, which is the one thing an incremental source is scheduled to do.
+ *
+ * An ON_DEMAND force is a person or a host asking, with a source in hand, for the
+ * table to be rebuilt. That still means full: it is the escape hatch for a
+ * boundary or a table that is no longer trusted.
+ */
+export function forcesFullSeed(run: {
+   forceRefresh: boolean;
+   trigger?: "ON_DEMAND" | "SCHEDULER";
+}): boolean {
+   return run.forceRefresh && run.trigger !== "SCHEDULER";
+}
+
+/**
  * The lineage a source's declaration implies, or undefined when this source is
  * not a candidate for a delta at all.
  *

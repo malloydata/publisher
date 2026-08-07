@@ -54,6 +54,7 @@ import {
 import {
    advanceLedger,
    advanceLedgerAfterSeed,
+   forcesFullSeed,
    incrementalLineage,
    planSourceRefresh,
    reportIncrementalStep,
@@ -641,6 +642,19 @@ export class MaterializationService {
             });
          }
 
+         // Assembled BEFORE the instructions because skip-if-unchanged consults
+         // it: an incremental source is exempt from the carry-forward below.
+         const incremental = this.incrementalRunContext(compiled, {
+            environmentId,
+            packageName,
+            materializationId: id,
+            // NOT `opts.forceRefresh` verbatim: a scheduled force means "build
+            // even though the address is unchanged", not "re-seed" — see
+            // forcesFullSeed.
+            forceRefresh: forcesFullSeed(opts),
+            now: new Date(startedAt),
+         });
+
          let instructions: BuildInstruction[];
          let carried: Record<string, ManifestEntry>;
          if (orchestrated) {
@@ -691,16 +705,9 @@ export class MaterializationService {
                compiled,
                opts.sourceNames,
                priorEntries,
+               incremental,
             ));
          }
-
-         const incremental = this.incrementalRunContext(compiled, {
-            environmentId,
-            packageName,
-            materializationId: id,
-            forceRefresh: opts.forceRefresh,
-            now: new Date(startedAt),
-         });
 
          const entries = await this.executeInstructedBuild(
             compiled,
@@ -777,11 +784,21 @@ export class MaterializationService {
     * physical table name and COPY realization, unless its sourceEntityId is unchanged
     * since `priorEntries` — those are carried forward (reused) instead of
     * rebuilt.
+    *
+    * An INCREMENTAL source is exempt from that carry-forward. Skip-if-unchanged
+    * reuses a table because the SQL is unchanged, which is precisely the wrong
+    * inference for a source whose whole premise is that the DATA moved while the
+    * SQL stayed put — left in, an incremental source would be carried forward on
+    * every non-forced run and its delta would never be reached. The exemption
+    * costs nothing when there is no work: the ledger, not the content address,
+    * decides, and planIncrementalStep answers "nothing new" with a skip that is
+    * cheaper than the rebuild the carry was avoiding.
     */
    private deriveSelfInstructions(
       compiled: CompiledBuildPlan,
       sourceNames: string[] | undefined,
       priorEntries: Record<string, ManifestEntry>,
+      incremental?: IncrementalRunContext,
    ): {
       instructions: BuildInstruction[];
       carried: Record<string, ManifestEntry>;
@@ -832,6 +849,32 @@ export class MaterializationService {
             if (seen.has(sourceEntityId)) continue;
             seen.add(sourceEntityId);
 
+            // Self-assign the physical name from `name=` (or the source name)
+            // verbatim for BOTH the colocated and storage destinations — the only
+            // difference between the two is which connection the table lands in. A
+            // storage build replaces the table atomically (`CREATE OR REPLACE`),
+            // so no generational decoration is needed to make a rebuild safe. An
+            // orchestrated build ignores this and trusts the host-supplied
+            // `physicalTableName`; the host owns any generational,
+            // ownership-scoped naming.
+            const logicalName = selfAssignTableName(persistSource);
+
+            // Gated on the SAME predicate the build's dispatch uses, so the two
+            // can never disagree about which sources are incremental. A
+            // declaration the delta path cannot act on — an unsupported dialect,
+            // an unusable watermark — returns undefined and keeps today's
+            // skip-if-unchanged behavior rather than rebuilding fully on every
+            // run in the name of an incremental refresh it will not perform.
+            const deltaEligible =
+               incremental !== undefined &&
+               incrementalLineage({
+                  declaration: incremental.declarations[persistSource.sourceID],
+                  dialect: persistSource.dialectName,
+                  physicalTableName: logicalName,
+                  connectionName: persistSource.connectionName,
+                  isStorageBuild: destination !== undefined,
+               }) !== undefined;
+
             const prior = priorEntries[sourceEntityId];
             // Destination-scoped reuse: carry a prior table forward only when it
             // landed in the SAME destination. sourceEntityId is a pure content
@@ -840,6 +883,7 @@ export class MaterializationService {
             // warehouse-landed (colocated) table would be silently reused for a
             // DuckLake serve that cannot resolve it.
             if (
+               !deltaEligible &&
                prior &&
                prior.physicalTableName &&
                (prior.storageDestinationName ?? undefined) === destination
@@ -848,15 +892,6 @@ export class MaterializationService {
                continue;
             }
 
-            // Self-assign the physical name from `name=` (or the source name)
-            // verbatim for BOTH the colocated and storage
-            // destinations — the only difference between the two is which
-            // connection the table lands in. A storage build replaces the table
-            // atomically (`CREATE OR REPLACE`), so no generational decoration is
-            // needed to make a rebuild safe. An orchestrated build ignores this
-            // and trusts the host-supplied `physicalTableName`; the host owns any
-            // generational, ownership-scoped naming.
-            const logicalName = selfAssignTableName(persistSource);
             instructions.push({
                sourceEntityId,
                materializedTableId: `local-${sourceEntityId.substring(
