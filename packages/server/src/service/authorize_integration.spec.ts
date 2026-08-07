@@ -2768,3 +2768,273 @@ source: fl_tagged is fl_locked extend {}
       }
    });
 });
+
+// A gate written above a standalone `source:` lands in `annotations.blockNotes`.
+// The SAME gate written inside a multi-definition `source:` block
+// (`source:\n  #(authorize)\n  name is ...`) lands in `annotations.notes`
+// instead — same declaration slot, different key depending only on which
+// syntax the author used (confirmed by compiling both and inspecting the
+// resulting SourceDef). Reading `blockNotes` only reported the block form as
+// ungated and served every query against it — a real access-control bypass an
+// author could not detect from Publisher's own introspection response.
+describe("a gate declared in a multi-definition source: block is not silently dropped", () => {
+   it("gates a source declared with its own #(authorize) inside a source: block", async () => {
+      await writeModel(
+         "block.malloy",
+         `source:
+  #(authorize) "false"
+  bf_locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block.malloy",
+         getConnections(),
+      );
+      expect(sourceNamed(model, "bf_locked")?.authorize).toEqual(["false"]);
+      expect(model.getAuthorize("bf_locked")).toEqual(["false"]);
+      await expect(
+         runGated("block.malloy", "run: bf_locked -> { aggregate: c }", {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("still gates the line-above form the same block-form model also uses", async () => {
+      // Guards against a fix that special-cases the block form and stops
+      // reading `blockNotes` — both forms must keep working side by side.
+      await writeModel(
+         "block_mixed.malloy",
+         `#(authorize) "false"
+source: bf_above is duckdb.table('customers') extend { measure: c is count() }
+
+source:
+  #(authorize) "false"
+  bf_block is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block_mixed.malloy",
+         getConnections(),
+      );
+      expect(model.getAuthorize("bf_above")).toEqual(["false"]);
+      expect(model.getAuthorize("bf_block")).toEqual(["false"]);
+   });
+
+   it("does not over-gate a sibling in the same block that declares no annotation", async () => {
+      // The narrowest-safe-reading control: `notes` only ever carries the
+      // annotation directly above ONE block item, never a sibling's, so an
+      // undecorated definition in the same block must stay unrestricted.
+      await writeModel(
+         "block_sibling.malloy",
+         `source:
+  bf_open is duckdb.table('customers') extend { measure: c is count() }
+  #(authorize) "false"
+  bf_sibling_locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block_sibling.malloy",
+         getConnections(),
+      );
+      expect(sourceNamed(model, "bf_open")?.authorize).toBeUndefined();
+      expect(model.getAuthorize("bf_open")).toEqual([]);
+      // Positive half of the control: the gate has to have landed on the item
+      // it precedes. Without this, an off-by-one that attributed a block item's
+      // note to the PREVIOUS definition would still satisfy the assertions
+      // above while leaving nothing gated at all.
+      expect(model.getAuthorize("bf_sibling_locked")).toEqual(["false"]);
+      const { result } = await runGated(
+         "block_sibling.malloy",
+         "run: bf_open -> { aggregate: c }",
+         {},
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("does not over-gate a field/view-level annotation that merely mentions authorize-shaped text", async () => {
+      // `notes`/`blockNotes` are populated only by SOURCE-level (block-item)
+      // annotations. A dimension- or view-level annotation never lands on the
+      // source struct's own annotations at all, so it cannot be mistaken for a
+      // source gate by the wider read.
+      await writeModel(
+         "block_field_level.malloy",
+         `source: bf_field is duckdb.table('customers') extend {
+  #(authorize) "false"
+  dimension: region_copy is region
+  measure: c is count()
+}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block_field_level.malloy",
+         getConnections(),
+      );
+      expect(model.getAuthorize("bf_field")).toEqual([]);
+      const { result } = await runGated(
+         "block_field_level.malloy",
+         "run: bf_field -> { aggregate: c }",
+         {},
+      );
+      expect(result.data).toBeDefined();
+   });
+
+   it("carries a block-form base's gate to an extension through annotations.inherits", async () => {
+      // The base's gate is filed under `annotations.inherits.notes` once the
+      // extension adds its own (unrelated) annotation — the same demotion
+      // `ancestorGateExprs` already follows for the line-above form.
+      await writeModel(
+         "block_inherit.malloy",
+         `source:
+  #(authorize) "false"
+  bf_base is duckdb.table('customers') extend { measure: c is count() }
+
+# bar_chart
+source: bf_ext is bf_base extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block_inherit.malloy",
+         getConnections(),
+      );
+      expect(model.getAuthorize("bf_ext")).toEqual(["false"]);
+      await expect(
+         runGated(
+            "block_inherit.malloy",
+            "run: bf_ext -> { aggregate: c }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("carries a block-form base's gate through a query-source derivation", async () => {
+      // `collectEntryPointGates` resolves a `query_source`'s base through
+      // `query.structRef`, so the gate has to be readable off the BASE's own
+      // block-form notes. (This does not reach `ancestorGateExprs`'s
+      // `resolveDeclaredSource` branch — that one is only entered when no
+      // `inherits` link survives, and no fixture here produces a declared
+      // source that both carries notes and is reached that way, so the
+      // sourceRegistry read stays defensive rather than covered.)
+      await writeModel(
+         "block_registry.malloy",
+         `source:
+  #(authorize) "false"
+  bf_reg_base is duckdb.table('customers') extend {
+    measure: c is count()
+    dimension: secret is name
+  }
+
+source: bf_reg_derived is bf_reg_base -> { select: id, secret }
+`,
+      );
+      await expect(
+         runGated(
+            "block_registry.malloy",
+            "run: bf_reg_derived -> { select: id, secret }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("evaluates a block-form gate that references a given", async () => {
+      // Every other test here uses a constant gate, which never reaches
+      // `bindProbeGivens`/`validateAuthorizeProbes` with a real `$NAME`. The
+      // realistic block-form gate does, so pin both directions of the probe.
+      await writeModel(
+         "block_given.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+source:
+  #(authorize) "$ROLE = 'analyst'"
+  bf_given is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block_given.malloy",
+         getConnections(),
+      );
+      expect(model.getAuthorize("bf_given")).toEqual(["$ROLE = 'analyst'"]);
+      const { result } = await runGated(
+         "block_given.malloy",
+         "run: bf_given -> { aggregate: c }",
+         { ROLE: "analyst" },
+      );
+      expect(result.data).toBeDefined();
+      await expect(
+         runGated("block_given.malloy", "run: bf_given -> { aggregate: c }", {
+            ROLE: "intern",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("gates a source whose #(authorize) sits after the `is`", async () => {
+      // The third producer of source-level `notes`: malloy's `getIsNotes`
+      // collects annotations on either side of the `is`, so this placement was
+      // dropped by the `blockNotes`-only read exactly like the block form.
+      await writeModel(
+         "block_afteris.malloy",
+         `source: bf_afteris is
+  #(authorize) "false"
+  duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block_afteris.malloy",
+         getConnections(),
+      );
+      expect(model.getAuthorize("bf_afteris")).toEqual(["false"]);
+      await expect(
+         runGated(
+            "block_afteris.malloy",
+            "run: bf_afteris -> { aggregate: c }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("fails model load for a block-form gate naming an undeclared given", async () => {
+      // The `source_extraction.ts` half of the read, isolated. `ownAuthorizeSources`
+      // is the ONLY consumer of the extractor's own-gate answer that survives the
+      // Model constructor (which overwrites `sources[].authorize` from the
+      // enforcement walk in model.ts), so this is what pins the reporting half:
+      // with a `blockNotes`-only extractor the bad gate is invisible at load and
+      // the model compiles clean.
+      await writeModel(
+         "block_validate.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+source:
+  #(authorize) "$NO_SUCH_GIVEN = 'x'"
+  bf_validate is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "block_validate.malloy",
+         getConnections(),
+      );
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      expect(err?.message).toContain(
+         'Invalid #(authorize) annotation on source "bf_validate"',
+      );
+   });
+});

@@ -128,12 +128,7 @@ export function ownModelNotes(modelDef: ModelDef): string[] {
       // Ancestral-first, matching `Annotations.texts()`, so a later cell's tag
       // wins over an earlier one the way a later line does within a file.
       for (const dep of entry.inheritsFrom) visit(dep);
-      for (const note of [
-         ...(entry.ownNotes.blockNotes ?? []),
-         ...(entry.ownNotes.notes ?? []),
-      ]) {
-         texts.push(note.text);
-      }
+      texts.push(...ownLevelNoteTexts(entry.ownNotes));
    };
    visit(modelDef.modelID);
    return texts;
@@ -150,4 +145,36 @@ export function annotationTexts(
 ): string[] | undefined {
    const texts = new Annotations(annote).texts();
    return texts.length > 0 ? texts : undefined;
+}
+
+/**
+ * The annotation texts declared directly on ONE node of an `AnnotationsDef`
+ * chain — not its `inherits` ancestors.
+ *
+ * A source-level annotation lands under one of two keys, decided purely by
+ * which syntax the author used:
+ *
+ *     blockNotes    #(tag)                 statement form
+ *                   source: name is ...
+ *
+ *     notes         source:                multi-definition block form
+ *                     #(tag)
+ *                     name is ...
+ *
+ *     notes         source: name is        after `is` (malloy's getIsNotes)
+ *                     #(tag)
+ *                     base
+ *
+ * It is the same declaration slot in all three — confirmed by compiling each
+ * form and inspecting the resulting `SourceDef.annotations`. So a caller that
+ * walks `inherits` by hand for the nearest declaring level, rather than
+ * flattening the whole chain via {@link annotationTexts}, has to read both keys
+ * at each link, or it silently skips the latter two forms.
+ */
+export function ownLevelNoteTexts(
+   annote: AnnotationsDef | undefined,
+): string[] {
+   return [...(annote?.blockNotes ?? []), ...(annote?.notes ?? [])].map(
+      (note) => note.text,
+   );
 }
