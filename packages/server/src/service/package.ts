@@ -50,6 +50,11 @@ import { errMessage, ignoreDotfiles } from "../utils";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
 import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
+import {
+   incrementalPolicyAdvisories,
+   incrementalPolicyRejections,
+   type IncrementalPolicySource,
+} from "./incremental_policy";
 import { materializationConfigWarnings } from "./materialization_config_validation";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
@@ -176,6 +181,15 @@ export class Package {
    // anyway. Distinct from "nothing is eligible", and refused the same way: an
    // unknown answer must not read as consent. See bindStorageServeBindings.
    private sourceEligibility: SourceEligibility | undefined = undefined;
+   // Per-source incremental-refresh gate inputs (the resolved `refresh=` /
+   // `watermark=` / `merge_key=` declaration, and the publish-time trial compile
+   // of the delta query), keyed by sourceID to match the wire plan. Resolved at
+   // compile for the same reason as sourceEligibility: the rules read the
+   // compiled output schema and the query definition's field kinds, neither of
+   // which the wire plan carries. Empty when the plan compute failed, which
+   // leaves the gate silent — safe, because the build path dispatches a delta
+   // only for a declaration it can read.
+   private incrementalPolicySources: IncrementalPolicySource[] = [];
    // Non-fatal render-tag findings aggregated across the package's models (each
    // tagged with its model path), surfaced read-only on
    // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
@@ -582,11 +596,25 @@ export class Package {
       // one; admitting an unexamined binding would be a wrong one.
       try {
          const buildPlanStart = Date.now();
-         const { plan, droppedPersistSources, sourceEligibility } =
-            await computePackageBuildPlan(pkg);
+         const {
+            plan,
+            droppedPersistSources,
+            sourceEligibility,
+            incrementalDeclarations,
+            incrementalTrialCompileErrors,
+         } = await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
          pkg.sourceEligibility = sourceEligibility;
+         pkg.incrementalPolicySources = Object.entries(plan?.sources ?? {})
+            .filter(([sourceID]) => incrementalDeclarations[sourceID])
+            .map(([sourceID, source]) => ({
+               sourceName: source.name,
+               modelPath: source.modelPath,
+               dialect: source.dialect,
+               declaration: incrementalDeclarations[sourceID],
+               trialCompileError: incrementalTrialCompileErrors[sourceID],
+            }));
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
          logger.warn(
@@ -620,6 +648,22 @@ export class Package {
             {
                packageName,
                detail: invalidPolicy,
+            },
+         );
+      }
+      // Same split again for the incremental-refresh gate. This one has extra
+      // weight: `refresh=` was inert metadata until now, so a package published
+      // earlier may already say refresh="incremental" with nothing else
+      // declared. Warning at load keeps such a package serving (it just never
+      // dispatches a delta, since the build path requires a coherent
+      // declaration), while a publish of it is rejected.
+      const invalidIncremental = pkg.formatInvalidIncrementalPolicy();
+      if (invalidIncremental) {
+         logger.warn(
+            `Package ${packageName} has an invalid incremental refresh policy`,
+            {
+               packageName,
+               detail: invalidIncremental,
             },
          );
       }
@@ -702,6 +746,11 @@ export class Package {
          // (alongside the load-path log) so an operator can see it on the status
          // API like the other persist warnings — see persistenceCollisionWarnings.
          ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+         // Incremental declarations that are LEGAL but probably not what the
+         // author meant: an unrecognized persist key (the only guard against a
+         // typo'd merge_key=, which degrades silently), and the keyless-delta
+         // advisory. Never rejections — see incrementalPolicyAdvisories.
+         ...incrementalPolicyAdvisories(this.incrementalPolicySources),
          // Materialization-config findings: a queryMetadata property that will
          // not do what it says, and manifest shapes that still parse but are
          // deprecated. Advisory by design — none of these blocks a publish.
@@ -1199,6 +1248,29 @@ export class Package {
     */
    public formatInvalidPersistencePolicy(): string {
       return this.persistencePolicyWarnings().join("\n");
+   }
+
+   /**
+    * REJECTION messages for the sources' incremental-refresh declarations
+    * (`refresh="incremental"` with `watermark=` / `merge_key=`): an incoherent
+    * declaration chain, a malformed key value, a name that is not a materialized
+    * output column, an unsupported dialect, a window function, or a delta query
+    * that does not compile. See incremental_policy for the rules.
+    *
+    * Kept SEPARATE from {@link persistencePolicyWarnings} — which is about the
+    * manifest's scope/schedule/freshness policy — so the two gates stay
+    * independently readable; both are joined into the same publish 400.
+    */
+   public incrementalPolicyWarnings(): string[] {
+      return incrementalPolicyRejections(this.incrementalPolicySources);
+   }
+
+   /**
+    * The {@link incrementalPolicyWarnings} joined into one string, or "" when
+    * every source's incremental declaration is valid.
+    */
+   public formatInvalidIncrementalPolicy(): string {
+      return this.incrementalPolicyWarnings().join("\n");
    }
 
    /**

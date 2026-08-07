@@ -17,6 +17,7 @@ import {
    recordEligibilityRefused,
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
+import { trialCompileDeltaQuery } from "./incremental_apply";
 import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
@@ -768,9 +769,13 @@ export async function computePackageBuildPlan(
    droppedPersistSources: { name: string; modelPath: string }[];
    sourceEligibility: SourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
+   incrementalTrialCompileErrors: Record<string, string>;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
+   const incrementalDeclarations = collectIncrementalDeclarations(
+      compiled.sources,
+   );
    const plan =
       compiled.graphs.length === 0
          ? null
@@ -786,8 +791,58 @@ export async function computePackageBuildPlan(
       plan,
       droppedPersistSources,
       sourceEligibility: collectSourceEligibility(compiled.sources),
-      incrementalDeclarations: collectIncrementalDeclarations(compiled.sources),
+      incrementalDeclarations,
+      // Runs here, while the materializers are alive, and they are dropped with
+      // `compiled` when this returns.
+      incrementalTrialCompileErrors: await trialCompileIncrementalDeltas(
+         compiled,
+         incrementalDeclarations,
+      ),
    };
+}
+
+/**
+ * Compile — never run — the delta query of every source whose declaration is
+ * coherent enough to have one, returning sourceID -> compile error for the ones
+ * that failed.
+ *
+ * The static gates are necessary but not sufficient: they prove the watermark is
+ * a real, orderable, non-aggregate output column, not that a range predicate over
+ * it type-checks or that the source admits a query stage at all. Proving that
+ * costs one compile per incremental source at publish, and saves a run that
+ * would fail after being dispatched as a delta.
+ *
+ * Sources with an incoherent declaration are skipped: a rule already rejects
+ * them, and a second message about a query we would never have generated adds
+ * noise, not information.
+ */
+async function trialCompileIncrementalDeltas(
+   compiled: CompiledBuildPlan,
+   declarations: Record<string, IncrementalDeclaration>,
+): Promise<Record<string, string>> {
+   const errors: Record<string, string> = {};
+   for (const [sourceID, declaration] of Object.entries(declarations)) {
+      const watermark = declaration.watermark;
+      if (
+         !declaration.incremental ||
+         watermark === undefined ||
+         watermark.kind !== "dimension" ||
+         !declaration.watermarkOrderable
+      ) {
+         continue;
+      }
+      const materializer = compiled.sourceMaterializers?.[sourceID];
+      const source = compiled.sources[sourceID];
+      if (!materializer || !source) continue;
+      const error = await trialCompileDeltaQuery({
+         materializer,
+         sourceName: source.name,
+         watermarkName: watermark.name,
+         watermarkType: watermark.malloyType,
+      });
+      if (error !== undefined) errors[sourceID] = error;
+   }
+   return errors;
 }
 
 /**

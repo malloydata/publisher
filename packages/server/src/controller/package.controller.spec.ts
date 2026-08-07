@@ -19,6 +19,7 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -57,6 +58,7 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       // installPackage mimics the real contract: invoke the validator and, if it
@@ -107,6 +109,7 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -146,6 +149,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -176,6 +180,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
@@ -214,6 +219,77 @@ describe("PackageController.addPackage persistence policy validation", () => {
    });
 });
 
+describe("PackageController.addPackage incremental policy validation", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   it("joins the incremental gate into the same 400 as the other publish gates", async () => {
+      // The incremental-refresh gate is the fourth strict-at-publish check. A
+      // publish that trips two gates must report BOTH — the author fixes one
+      // round-trip, not one message at a time.
+      const cronMsg =
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
+      const incrementalMsg =
+         '#@ persist source "daily_revenue" declares refresh="incremental" but ' +
+         "no watermark=.";
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => incrementalMsg,
+         formatPersistenceCollisionRejections: () => "",
+      };
+      const unloadPackage = sinon.stub().resolves(undefined);
+      const addPackage = sinon.stub().resolves(mockPackage);
+      const getEnvironment = sinon
+         .stub()
+         .resolves({ addPackage, unloadPackage });
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      const error = await controller
+         .addPackage("env", { name: "pkg", description: "test" })
+         .then(
+            () => undefined,
+            (err: unknown) => err as Error,
+         );
+
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error!.message).toBe(`${cronMsg}\n${incrementalMsg}`);
+      expect(unloadPackage.calledOnceWith("pkg")).toBe(true);
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+
+   it("publishes when the incremental declaration is the only thing declared and it is valid", async () => {
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      };
+      const addPackage = sinon.stub().resolves(mockPackage);
+      const getEnvironment = sinon.stub().resolves({ addPackage });
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+      await controller.addPackage("env", { name: "pkg", description: "test" });
+
+      expect(addPackageToDatabase.calledOnceWith("env", "pkg")).toBe(true);
+   });
+});
+
 describe("PackageController.updatePackage explores validation", () => {
    afterEach(() => {
       sinon.restore();
@@ -231,6 +307,7 @@ describe("PackageController.updatePackage explores validation", () => {
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
