@@ -188,6 +188,24 @@ describe("MaterializationController.createMaterialization validation", () => {
       expect("reseed" in (parsed.buildInstructions?.[1] as object)).toBe(false);
    });
 
+   it("passes through a run-level `reseed`, separately from forceRefresh", async () => {
+      // Two flags, two questions: forceRefresh decides whether an unchanged table
+      // is reused, reseed decides whether an incremental source rebuilds. Folding
+      // them together would make every scheduled fire a full rebuild.
+      expect(await parse({ reseed: true })).toEqual({ reseed: true });
+      expect(await parse({ forceRefresh: true, reseed: false })).toEqual({
+         forceRefresh: true,
+         reseed: false,
+      });
+   });
+
+   it("rejects a non-boolean run-level `reseed`", async () => {
+      const { controller } = build();
+      await expect(
+         controller.createMaterialization("env", "pkg", { reseed: "yes" }),
+      ).rejects.toThrow("reseed must be a boolean");
+   });
+
    it("rejects a non-boolean `reseed`", async () => {
       const { controller } = build();
       await expect(

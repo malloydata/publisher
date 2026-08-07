@@ -124,6 +124,7 @@ export async function materialize(
   packageName: string,
   options: {
     forceRefresh?: boolean;
+    reseed?: boolean;
     wait?: boolean;
     pollIntervalMs?: number;
     timeoutMs?: number;
@@ -134,6 +135,7 @@ export async function materialize(
     packageName,
     {
       forceRefresh: options.forceRefresh,
+      reseed: options.reseed,
     },
   );
   const id = created.id as string | undefined;

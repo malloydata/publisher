@@ -4510,7 +4510,36 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description: Build a new table even when a source's sourceEntityId is unchanged.
+          description: >-
+            Build a new table even when a source's sourceEntityId is unchanged —
+            that is, defeat skip-if-unchanged, which would otherwise carry the
+            existing table forward and run no SQL for that source.
+
+            It means ONLY that. It never re-seeds a source declaring
+            `refresh="incremental"`: such a source is exempt from
+            skip-if-unchanged anyway (its content address does not move when its
+            data does), so there is nothing here for the flag to change, and
+            reading it as "rebuild from scratch" would make a forced run — which
+            is every scheduled fire — a full rebuild that no delta could ever
+            follow. Ask for a rebuild with `reseed`.
+
+            Has no effect at all on an orchestrated build: the host decides what
+            gets built by instructing it, so no carry-forward runs.
+        reseed:
+          type: boolean
+          default: false
+          description: >-
+            Rebuild every in-scope source declaring `refresh="incremental"` from
+            scratch, ignoring its recorded `covered_through` boundary, and
+            re-derive the boundary from the table each rebuild writes. The escape
+            hatch for a boundary or a table that is no longer trusted. Narrow it
+            with `sourceNames`.
+
+            Unlike `forceRefresh` this is about HOW an incremental source is
+            built, not whether it is built at all, which is why the two are
+            separate flags rather than one. An orchestrated caller can instead
+            set `reseed` per source on each BuildInstruction, and the two are
+            OR-ed: either asks for that source to rebuild.
         sourceNames:
           type: array
           items:
@@ -4868,6 +4897,9 @@ components:
             for that destination (the source computes; only results cross), and
             the manifest records the destination + captured schema so
             the source can later be served cross-dialect from it.
+            The name resolves generically against registered connections; any
+            managed-tier alias is resolved by the host upstream and never
+            reaches the publisher.
         reseed:
           type: boolean
           default: false
@@ -4878,21 +4910,16 @@ components:
             re-derived from the table it writes. The escape hatch for a boundary
             or a table that is no longer trusted.
 
-            Per-instruction rather than per-request because re-seeding is a
+            Per-source rather than only per-request because re-seeding is a
             per-source decision: a host may want one source rebuilt while the
-            rest advance by delta in the same run. Ignored for a source that is
-            not incremental (such a source is always built in full).
+            rest advance by delta in the same run. OR-ed with the request-level
+            `reseed`, so either asks for this source to rebuild. Ignored for a
+            source that is not incremental (such a source is always built in
+            full).
 
-            This is the ONLY way an orchestrated caller asks for a re-seed.
-            Request-level `forceRefresh` does NOT mean re-seed here: it defeats
-            skip-if-unchanged, which is an auto-run concept with no orchestrated
-            effect, since the host decides what to build by instructing it. An
-            incremental source's sourceEntityId never moves when its data
-            changes, so reading `forceRefresh` as "re-seed" would make every
-            orchestrated refresh a full rebuild and no delta could ever run.
-            The name resolves generically against registered connections; any
-            managed-tier alias is resolved by the host upstream and never
-            reaches the publisher.
+            Note `forceRefresh` is NOT how you ask for this, in any mode: it
+            only defeats skip-if-unchanged, which does not even run for an
+            orchestrated build.
 
     BuildManifest:
       type: object

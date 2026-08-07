@@ -599,6 +599,9 @@ describe("MaterializationService", () => {
             "PENDING",
             {
                forceRefresh: true,
+               // Recorded alongside forceRefresh, not folded into it: the history
+               // has to show whether an incremental source rebuilt or advanced.
+               reseed: false,
                sourceNames: ["orders"],
                mode: "auto",
                trigger: "ON_DEMAND",
@@ -617,6 +620,7 @@ describe("MaterializationService", () => {
          expect(ctx.repository.createMaterialization.firstCall.args[3]).toEqual(
             {
                forceRefresh: false,
+               reseed: false,
                sourceNames: null,
                mode: "auto",
                trigger: "ON_DEMAND",
@@ -2383,12 +2387,18 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
    });
 
-   // The forceRefresh handed to the incremental context is forcesFullSeed(opts),
-   // not opts.forceRefresh verbatim. This is the wiring that lets a schedule
-   // drive deltas: the scheduler always sets forceRefresh (to defeat
-   // skip-if-unchanged), and reading that as "re-seed" would rebuild every
-   // incremental source in full on every scheduled run.
-   it("does not read a SCHEDULER force as a re-seed for incremental sources", async () => {
+   // What the incremental context is told to do comes from `reseed` ALONE.
+   // forceRefresh is a different question — whether skip-if-unchanged is
+   // defeated — and an incremental source is exempt from that anyway, so it has
+   // nothing to say about how one is built.
+   async function contextArgsFor(
+      opts: Partial<{
+         forceRefresh: boolean;
+         reseed: boolean;
+         trigger: "ON_DEMAND" | "SCHEDULER";
+         buildInstructions: unknown[];
+      }>,
+   ): Promise<{ forceRefresh: boolean }> {
       const svc = stubEngine();
       const contextSpy = sinon.stub().returns(undefined);
       (
@@ -2401,42 +2411,49 @@ describe("runBuild (branch behavior)", () => {
          "pkg",
          {
             sourceNames: undefined,
-            forceRefresh: true,
+            forceRefresh: false,
+            reseed: false,
             buildInstructions: undefined,
-            trigger: "SCHEDULER",
+            trigger: "ON_DEMAND",
+            ...opts,
          } as unknown as Parameters<typeof svc.runBuild>[3],
          new AbortController().signal,
       );
 
       expect(contextSpy.calledOnce).toBe(true);
-      expect(contextSpy.firstCall.args[1]).toMatchObject({
-         forceRefresh: false,
-      });
+      return contextSpy.firstCall.args[1] as { forceRefresh: boolean };
+   }
+
+   it("NEVER reads a force as a re-seed, whoever asked", async () => {
+      // Including an ON_DEMAND API caller, which is the case that used to
+      // re-seed. A force says "do not reuse an unchanged table"; for an
+      // incremental source, which is never reused, that is not a request at all.
+      for (const trigger of ["ON_DEMAND", "SCHEDULER"] as const) {
+         expect(
+            await contextArgsFor({ forceRefresh: true, trigger }),
+         ).toMatchObject({ forceRefresh: false });
+      }
+      // And the same for an orchestrated run, where no carry-forward even runs.
+      expect(
+         await contextArgsFor({
+            forceRefresh: true,
+            buildInstructions: [{}],
+         }),
+      ).toMatchObject({ forceRefresh: false });
    });
 
-   it("does read an ON_DEMAND force as a re-seed for incremental sources", async () => {
-      const svc = stubEngine();
-      const contextSpy = sinon.stub().returns(undefined);
-      (
-         ctx.service as unknown as { incrementalRunContext: sinon.SinonStub }
-      ).incrementalRunContext = contextSpy;
-
-      await svc.runBuild(
-         "mat-1",
-         "my-env",
-         "pkg",
-         {
-            sourceNames: undefined,
-            forceRefresh: true,
-            buildInstructions: undefined,
-            trigger: "ON_DEMAND",
-         } as unknown as Parameters<typeof svc.runBuild>[3],
-         new AbortController().signal,
-      );
-
-      expect(contextSpy.firstCall.args[1]).toMatchObject({
+   it("reads `reseed` as the re-seed, whatever the force says", async () => {
+      expect(await contextArgsFor({ reseed: true })).toMatchObject({
          forceRefresh: true,
       });
+      // Not conditioned on the trigger: a scheduled run that explicitly asks to
+      // rebuild gets a rebuild.
+      expect(
+         await contextArgsFor({ reseed: true, trigger: "SCHEDULER" }),
+      ).toMatchObject({ forceRefresh: true });
+      expect(
+         await contextArgsFor({ reseed: false, forceRefresh: true }),
+      ).toMatchObject({ forceRefresh: false });
    });
 });
 
@@ -2970,8 +2987,8 @@ describe("buildOneSource: incremental refresh", () => {
    });
 
    it("re-seeds the ONE source whose instruction says so", async () => {
-      // The escape hatch an orchestrated host has, and the only one: the request
-      // flag deliberately does not mean re-seed for it (see forcesFullSeed).
+      // Per-source, so a host can rebuild one while the rest advance by delta.
+      // forceRefresh is never how this is asked for, in any mode.
       const runSQL = probeAwareRunSQL();
       const { context, upsert } = incrementalContext({});
       const entry = await callBuildOneSource({ runSQL, context, reseed: true });

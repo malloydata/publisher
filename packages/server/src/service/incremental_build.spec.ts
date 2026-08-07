@@ -1,10 +1,10 @@
-// The two run-level predicates that decide whether a build touches the delta path
-// at all. Both are read from more than one place — `incrementalLineage` gates the
+// The run-level predicate that decides whether a build touches the delta path at
+// all. `incrementalLineage` is read from more than one place — it gates the
 // skip-if-unchanged exemption in deriveSelfInstructions AND the dispatch in
-// buildOneSource, and the two must never disagree — so they are pinned here
-// rather than only through the callers.
+// buildOneSource, and the two must never disagree — so it is pinned here rather
+// than only through the callers.
 import { describe, expect, it } from "bun:test";
-import { forcesFullSeed, incrementalLineage } from "./incremental_build";
+import { incrementalLineage } from "./incremental_build";
 import type { IncrementalDeclaration } from "./incremental_declaration";
 
 const DIMENSION = { kind: "dimension" as const, malloyType: "date" };
@@ -136,51 +136,5 @@ describe("incrementalLineage", () => {
             }),
          }),
       ).toBeUndefined();
-   });
-});
-
-describe("forcesFullSeed", () => {
-   it("treats an explicit force as a request to re-seed", () => {
-      expect(forcesFullSeed({ forceRefresh: true, trigger: "ON_DEMAND" })).toBe(
-         true,
-      );
-      // An unlabeled caller is still a caller, not the scheduler.
-      expect(forcesFullSeed({ forceRefresh: true })).toBe(true);
-   });
-
-   it("does NOT treat a SCHEDULED force as a request to re-seed", () => {
-      // The scheduler forces on every fire, to defeat skip-if-unchanged. Reading
-      // that as "re-seed" would make every scheduled run a full rebuild, so a
-      // schedule could never drive the delta it exists to drive.
-      expect(forcesFullSeed({ forceRefresh: true, trigger: "SCHEDULER" })).toBe(
-         false,
-      );
-   });
-
-   it("is false when nothing was forced", () => {
-      expect(
-         forcesFullSeed({ forceRefresh: false, trigger: "ON_DEMAND" }),
-      ).toBe(false);
-      expect(
-         forcesFullSeed({ forceRefresh: false, trigger: "SCHEDULER" }),
-      ).toBe(false);
-   });
-
-   it("never re-seeds an ORCHESTRATED run on the request flag", () => {
-      // The control plane's whole use of the feature depends on this. It cannot
-      // send trigger=SCHEDULER (the controller strips it so SCHEDULER cannot be
-      // forged), and skip-if-unchanged never runs for an orchestrated build, so
-      // reading forceRefresh as "re-seed" would make every control-plane refresh
-      // a full rebuild with no way to ask for a delta.
-      expect(
-         forcesFullSeed({
-            forceRefresh: true,
-            trigger: "ON_DEMAND",
-            orchestrated: true,
-         }),
-      ).toBe(false);
-      expect(forcesFullSeed({ forceRefresh: true, orchestrated: true })).toBe(
-         false,
-      );
    });
 });

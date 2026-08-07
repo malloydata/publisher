@@ -56,7 +56,6 @@ import {
 import {
    advanceLedger,
    advanceLedgerAfterSeed,
-   forcesFullSeed,
    incrementalLineage,
    planSourceRefresh,
    reportDeltaApplied,
@@ -493,6 +492,12 @@ export class MaterializationService {
       packageName: string,
       options: {
          forceRefresh?: boolean;
+         /**
+          * Rebuild the in-scope incremental sources from scratch, ignoring their
+          * recorded boundaries. Distinct from `forceRefresh`, which only defeats
+          * skip-if-unchanged and never re-seeds.
+          */
+         reseed?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
@@ -537,9 +542,14 @@ export class MaterializationService {
       }
 
       const forceRefresh = options.forceRefresh ?? false;
+      const reseed = options.reseed ?? false;
       const trigger = options.trigger ?? "ON_DEMAND";
       const metadata = {
          forceRefresh,
+         // Recorded separately from forceRefresh because it answers a different
+         // question about the run — whether an incremental source rebuilt or
+         // advanced — and the history is where that is read back.
+         reseed,
          sourceNames: options.sourceNames ?? null,
          mode: orchestrated ? "orchestrated" : "auto",
          trigger,
@@ -572,6 +582,7 @@ export class MaterializationService {
             {
                sourceNames: options.sourceNames,
                forceRefresh,
+               reseed,
                buildInstructions,
                referenceManifest: options.referenceManifest,
                strictUpstreams: options.strictUpstreams,
@@ -600,6 +611,7 @@ export class MaterializationService {
       opts: {
          sourceNames: string[] | undefined;
          forceRefresh: boolean;
+         reseed: boolean;
          buildInstructions: BuildInstruction[] | undefined;
          referenceManifest: ManifestReference[] | undefined;
          strictUpstreams: boolean | undefined;
@@ -664,11 +676,12 @@ export class MaterializationService {
             environmentId,
             packageName,
             materializationId: id,
-            // NOT `opts.forceRefresh` verbatim: a scheduled force means "build
-            // even though the address is unchanged", not "re-seed", and an
-            // orchestrated run never re-seeds on this flag at all — it says so
-            // per source, with BuildInstruction.reseed. See forcesFullSeed.
-            forceRefresh: forcesFullSeed({ ...opts, orchestrated }),
+            // `reseed`, never `forceRefresh`. The latter only defeats
+            // skip-if-unchanged, which an incremental source is exempt from
+            // anyway, so it has nothing to say about how one is built — and every
+            // scheduled fire sets it, which would make a schedule a series of
+            // full rebuilds that no delta could ever follow.
+            forceRefresh: opts.reseed ?? false,
             now: new Date(startedAt),
          });
 
