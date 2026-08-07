@@ -10,6 +10,7 @@ import {
    registerReloadPackageTool,
    RELOAD_FAILURE_IS_SAFE,
 } from "./tools/reload_package_tool";
+import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import skillsBundle from "./skills/skills_bundle.json";
 
 export const testServerInfo = {
@@ -42,6 +43,8 @@ const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-mo
 
 Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE}
 
+To build a model from a database rather than from an existing package, start with malloy_searchDatabaseSchema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
+
 Task-specific guidance is served as prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
@@ -61,6 +64,7 @@ export function initializeMcpServer(
    registerDocsSearchTool(mcpServer, environmentStore);
    registerCompileTool(mcpServer, environmentStore);
    registerReloadPackageTool(mcpServer, environmentStore);
+   registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the

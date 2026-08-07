@@ -63,6 +63,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("malloy_executeQuery")).toBe(true);
       expect(names.has("malloy_compile")).toBe(true);
       expect(names.has("malloy_reloadPackage")).toBe(true);
+      expect(names.has("malloy_searchDatabaseSchema")).toBe(true);
    });
 
    /**
