@@ -141,6 +141,12 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
 
    if (type === "number") {
       const num = typeof value === "number" ? value : "";
+      // Track whether a value is OVERRIDDEN, the way the string branch below
+      // does, rather than whether the box happens to render non-empty. A value
+      // that isn't a number renders blank whatever we pass, because
+      // input[type=number] discards a non-numeric value, and keying the revert
+      // off that blank left the user no way to clear it.
+      const isOverridden = value !== undefined && value !== null;
       return (
          <TextField
             label={label}
@@ -154,7 +160,7 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
             helperText={helperNode}
             slotProps={{
                input: {
-                  endAdornment: num !== "" && (
+                  endAdornment: isOverridden && (
                      <ClearAdornment onClear={() => onChange(null)} />
                   ),
                },

@@ -93,10 +93,15 @@
       "dayjs": "^1.11.13"
    },
    "devDependencies": {
+      "@happy-dom/global-registrator": "^20.11.1",
       "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
       "@malloydata/malloy-query-builder": "^0.0.427",
       "@malloydata/malloy-tag": "^0.0.427",
       "@openapitools/openapi-generator-cli": "^2.20.2",
+      "@shikijs/langs": "^1.16.3",
+      "@shikijs/themes": "^1.16.3",
+      "@testing-library/dom": "^10.4.1",
+      "@testing-library/react": "^16.3.2",
       "@types/bun": "^1.2.21",
       "@types/k6": "^1.0.2",
       "@types/react": "^19.1.7",
@@ -112,8 +117,6 @@
       "eslint-plugin-react-hooks": "5.0.0",
       "eslint-plugin-storybook": "^0.11.4",
       "shiki": "^1.16.3",
-      "@shikijs/langs": "^1.16.3",
-      "@shikijs/themes": "^1.16.3",
       "vite": "^6.3.2",
       "vite-plugin-dts": "^4.5.3",
       "vite-plugin-svgr": "^4.3.0"

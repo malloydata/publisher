@@ -36,8 +36,10 @@ export interface UseGivensFormResult {
  * are model-level, not per-source).
  *
  * When `givens` (the introspected list) changes (e.g., after the notebook
- * loads), existing user overrides are preserved for matching names and new
- * givens are added as empty.
+ * loads), existing user overrides are preserved for matching names and
+ * overrides for names that are no longer declared are dropped. A newly
+ * declared given gets no entry: the map holds overrides only, and a missing
+ * key already means "use the model default".
  */
 export function useGivensForm(givens: Given[]): UseGivensFormResult {
    const [givenValues, setGivenValues] = useState<Map<string, GivenValue>>(
@@ -56,7 +58,12 @@ export function useGivensForm(givens: Given[]): UseGivensFormResult {
          prev.forEach((value, name) => {
             if (declared.has(name)) next.set(name, value);
          });
-         return next;
+         // `next` is `prev` minus undeclared names, so equal sizes means
+         // nothing was dropped. Return `prev` itself in that case: handing back
+         // a fresh Map every time changes state identity on every run, and a
+         // caller passing an unmemoized `givens` array then re-renders, which
+         // re-fires this effect, until React gives up.
+         return next.size === prev.size ? prev : next;
       });
    }, [givens]);
 
