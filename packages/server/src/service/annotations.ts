@@ -78,6 +78,68 @@ export function modelAnnotations(modelDef: ModelDef): AnnotationsDef {
 }
 
 /**
+ * The `##` tags a model file declares **itself**, ignoring everything it
+ * imports.
+ *
+ * This is the counterpart to {@link modelAnnotations}, and the difference is
+ * not a detail. That function folds the import lineage on purpose, because
+ * file-level `##(authorize)` has to flow into an importing file: a gate an
+ * import could shed would be no gate at all. Every *other* model-level tag
+ * describes one document, so folding it lets a shared include configure every
+ * file that imports it. The one such tag a consumer reads today is
+ * `##(filters)`, which the SDK's `parseNotebookFilterAnnotation` matches on the
+ * notebook response: an include carrying it configured the filter panel of
+ * every notebook that imported the include. Read through here unless the tag is
+ * a policy gate.
+ *
+ * Precondition: `modelID` names either a URL-loaded file or an all-inline
+ * compile chain, which is what the loader builds for a `.malloy` and a
+ * `.malloynb` respectively. A URL-loaded model that was then `extendModel`ed
+ * would leave its tags on the `file://` node while `modelID` is `internal://`,
+ * so this returns nothing for that shape. Nothing builds it today, and the
+ * failure drops a document's own tags rather than folding an import's in.
+ */
+export function ownModelNotes(modelDef: ModelDef): string[] {
+   const registry = modelDef.modelAnnotations ?? {};
+
+   // One document can span several compilation nodes. A `.malloynb` is compiled
+   // a cell at a time, so its `##` tags land on an `internal://loadModel` node
+   // that an `internal://extendModel` node (the one `modelID` names) inherits
+   // from, with empty notes of its own. Reading only `modelID` would therefore
+   // find nothing on every notebook.
+   //
+   // So this is an allowlist, not a denylist: a node counts as more of this
+   // document only if it is the document itself or one of malloy's synthetic
+   // URL-less compiles. Every import resolves to a real URL, so excluding
+   // everything else keeps a `gs://` or `https://` import out for the same
+   // reason a `file://` one is out. `internal://` is malloy's own
+   // `isInternalURL` predicate (`api/foundation/readers.ts`), and a scheme it
+   // renamed would fall on the safe side here: tags dropped, not folded in.
+   const isSameDocument = (id: string) =>
+      id === modelDef.modelID || id.startsWith("internal://");
+
+   const seen = new Set<string>();
+   const texts: string[] = [];
+   const visit = (id: string): void => {
+      if (seen.has(id) || !isSameDocument(id)) return;
+      seen.add(id);
+      const entry = registry[id];
+      if (!entry) return;
+      // Ancestral-first, matching `Annotations.texts()`, so a later cell's tag
+      // wins over an earlier one the way a later line does within a file.
+      for (const dep of entry.inheritsFrom) visit(dep);
+      for (const note of [
+         ...(entry.ownNotes.blockNotes ?? []),
+         ...(entry.ownNotes.notes ?? []),
+      ]) {
+         texts.push(note.text);
+      }
+   };
+   visit(modelDef.modelID);
+   return texts;
+}
+
+/**
  * Every annotation text on an entity — its own `notes` and `blockNotes`
  * plus everything inherited from its ancestors. All of an entity's
  * annotations apply; none are dropped by source location. Returns
