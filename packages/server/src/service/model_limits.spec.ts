@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 
 import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";
 import {
@@ -168,11 +168,19 @@ describe("assertWithinModelByteLimit", () => {
    });
 
    it("is disabled by a cap of 0, without measuring the response", () => {
-      // The early return matters: with the cap off, a caller must not pay a
-      // length scan over a response that can be hundreds of megabytes.
-      expect(() =>
-         assertWithinModelByteLimit("x".repeat(1000), 0, "model_query"),
-      ).not.toThrow();
+      // Asserting the early return, not just the absence of a throw: with the
+      // cap off a caller must not pay a UTF-8 length scan over a response that
+      // can be hundreds of megabytes, and returning after measuring would pass
+      // a `not.toThrow()` check just as well.
+      const measure = spyOn(Buffer, "byteLength");
+      try {
+         expect(() =>
+            assertWithinModelByteLimit("x".repeat(1000), 0, "model_query"),
+         ).not.toThrow();
+         expect(measure).not.toHaveBeenCalled();
+      } finally {
+         measure.mockRestore();
+      }
    });
 });
 

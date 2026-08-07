@@ -542,7 +542,11 @@ describe("service/model", () => {
                 * which is the whole point of `responseShape`.
                 */
                compactRows?: unknown[];
-            }): { model: Model; runStub: sinon.SinonStub } {
+            }): {
+               model: Model;
+               runStub: sinon.SinonStub;
+               wrapStub: sinon.SinonStub;
+            } {
                const preparedResultStub = sinon
                   .stub()
                   .resolves({ resultExplore: { limit: opts.userLimit ?? 0 } });
@@ -553,7 +557,7 @@ describe("service/model", () => {
                   connectionName: "fake",
                };
                const runStub = sinon.stub().resolves(fakeResult);
-               sinon
+               const wrapStub = sinon
                   .stub(API.util, "wrapResult")
                   .returns(
                      opts.wrappedJson as unknown as ReturnType<
@@ -583,7 +587,7 @@ describe("service/model", () => {
                   undefined,
                   undefined,
                );
-               return { model, runStub };
+               return { model, runStub, wrapStub };
             }
 
             it("clamps user LIMIT to maxRows + 1 when the user requested more than the cap", async () => {
@@ -782,6 +786,66 @@ describe("service/model", () => {
                expect(error).toBeInstanceOf(PayloadTooLargeError);
                expect(error).not.toBeInstanceOf(ResponseUnserializableError);
                expect((error as Error).message).toContain("more than 10 rows");
+            });
+
+            it("refuses a row overflow before wrapping the result at all", async () => {
+               // The test above pins WHICH error a row overflow reports; this one
+               // pins where the check sits. `wrapResult` deep-converts every row
+               // into Cell objects, an object graph larger than the JSON built
+               // from it, and a row overflow is a maxRows + 1 row result by
+               // construction. Asserting the stub never ran is the only thing
+               // that catches the check drifting below the wrap: the 413 and its
+               // message are identical either way.
+               process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "10000";
+               const { model, wrapStub } = buildModelWithFakeRun({
+                  userLimit: 100,
+                  totalRows: 11,
+                  wrappedJson: { rows: [] },
+               });
+
+               await expect(
+                  model.getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: orders -> summary",
+                  ),
+               ).rejects.toBeInstanceOf(PayloadTooLargeError);
+               expect(wrapStub.called).toBe(false);
+            });
+
+            it("applies the bigint replacer to the compact shape", async () => {
+               // `queryResults.data.value` is raw driver output and DuckDB returns
+               // count() as a BigInt, so serializing it without the replacer
+               // throws a TypeError, not a RangeError, and escapes as the bare
+               // 500 this whole path exists to remove. No other test in the
+               // suite fails if the replacer argument is dropped.
+               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
+               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "10000";
+               const { model } = buildModelWithFakeRun({
+                  userLimit: 10,
+                  totalRows: 1,
+                  wrappedJson: { rows: [] },
+                  // Both branches of the replacer: a count inside the safe
+                  // integer range stays a JSON number, one past it becomes a
+                  // string so its digits survive.
+                  compactRows: [{ n: 42n, big: 9007199254740993n }],
+               });
+
+               const { serializedResult } = await model.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: orders -> summary",
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  "compact",
+               );
+               expect(serializedResult).toBe(
+                  '[{"n":42,"big":"9007199254740993"}]',
+               );
             });
 
             it("does not throw when both counts are within their caps", async () => {

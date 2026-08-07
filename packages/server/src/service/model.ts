@@ -2245,8 +2245,8 @@ export class Model {
        * bigint replacer); `"full"` is the wrapped result. Every caller declares
        * one: REST from its `compactJson` flag, and the MCP tool as `"compact"`,
        * because its envelope is built from the compact rows even though it does
-       * not send this string verbatim. The default exists for a caller that has
-       * no opinion, not because anything relies on it.
+       * not send this string verbatim. The default covers the spec call sites,
+       * which predate the parameter; no production caller omits it.
        */
       responseShape: "full" | "compact" = "full",
    ): Promise<{
@@ -2810,41 +2810,29 @@ export class Model {
       // prevention. True prevention requires streaming `Result`
       // construction, which is out of scope for this step. The row cap
       // above is the primary OOM defense.
-      // One serialization: the shape the caller is going to send, built once here,
-      // measured here, and returned. Doing it any other way has been wrong twice.
+      // One serialization, of the shape this caller asked for, measured here and
+      // returned so nothing stringifies it again. `stringifyQueryResponse` runs
+      // whether or not `maxBytes` is set: the unserializable case is a 413
+      // regardless, and `maxBytes` decides only whether the size is compared and
+      // whether the message names a cap.
       //
-      // Building BOTH shapes, or building the full one regardless, makes a
-      // `compactJson` request pay for a payload it never sends, and worse, fail
-      // on it: a result whose wrapped JSON will not serialize but whose compact
-      // rows would returned 413 for the shape the client did not ask for.
-      // Building NEITHER here, and leaving the caller to stringify, is what let
-      // the failure escape as the bare 500 this guard exists to replace.
+      // Both neighbouring choices were wrong for opposite reasons. Leaving the
+      // caller to stringify is what let an unserializable response escape as the
+      // bare 500 this guard replaces. Measuring a shape the caller did not ask
+      // for refuses a `compactJson` request on the wrapped result's bytes, which
+      // it never receives.
       //
-      // So the byte cap now measures the payload that is actually transmitted.
-      // For a `compactJson` request that is a change: the cap used to be enforced
-      // against the larger wrapped shape, so such a request could be refused on
-      // bytes the client would never receive. Capping what is sent is the
-      // defensible reading, and the row cap is unchanged and applies to both.
+      // `wrapResult` above is NOT conditional, so a `compactJson` request still
+      // builds the wrapped object graph; only the second JSON pass is saved.
+      // Callers need `result` itself (render-tag validation reads the schema
+      // annotations that flat rows drop), so skipping the wrap is a bigger change
+      // than this one.
       //
-      // Two things this does NOT cover, both on the MCP surface. It asks for
-      // `"compact"`, the shape its envelope is built from, but it then serializes
-      // that envelope itself (mcp/query_envelope.ts) with an unguarded
-      // `JSON.stringify` at indent 2. Compact rows that serialize while the
-      // indented envelope does not still throw a raw RangeError there, and the
-      // agent gets an internal error; guarding it belongs with that envelope's own
-      // truncation budget. And measuring the compact shape means the byte cap no
-      // longer stands between a large result and the work MCP does downstream of
-      // it: `validateRenderTags` traverses the full wrapped result, and the
-      // envelope build then serializes every compact row, repeatedly, as
-      // `fitToBudget` binary-searches the row count down. The cap used to refuse
-      // such a result before either ran. The 90k-character budget bounds what MCP
-      // SENDS, not what it builds on the way there. Both are worth a follow-up;
-      // neither is a reason to keep capping a payload the caller never receives.
-      //
-      // Note the unserializable guard itself does not depend on a cap being set:
-      // `stringifyQueryResponse` runs unconditionally and maps the engine's
-      // RangeError to a 413 whether or not `maxBytes` is configured. `maxBytes`
-      // only decides whether the message names a cap.
+      // MCP asks for `"compact"` and then builds its own envelope from those rows
+      // (mcp/query_envelope.ts), serializing them with an unguarded
+      // `JSON.stringify` at indent 2 and truncating to 90k characters. Compact
+      // rows that serialize while that indented envelope does not still throw a
+      // raw RangeError there. Guarding it belongs with that budget; follow-up.
       const serializedResult = stringifyQueryResponse(
          responseShape === "compact" ? queryResults.data.value : wrappedResult,
          queryResults.totalRows,
@@ -3158,9 +3146,10 @@ export class Model {
             queryResult =
                result?._queryResult &&
                this.modelInfo &&
-               // Same guard as getQueryResults: here the string IS the payload,
-               // not just the measurement, so a cell whose result cannot be
-               // serialized would otherwise return the same bare 500.
+               // Same guard as getQueryResults, and here too the string is the
+               // payload rather than a throwaway measurement: a cell whose
+               // result cannot be serialized would otherwise return the same
+               // bare 500.
                stringifyQueryResponse(
                   API.util.wrapResult(result),
                   result.totalRows,

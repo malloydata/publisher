@@ -2430,8 +2430,9 @@ components:
           * PUBLISHER_MAX_QUERY_ROWS (default 100000) exceeded: too many rows.
           * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) exceeded: the
             JSON-serialized response measured over the cap. What is measured is
-            the shape the request asked for, so two requests differing only in
-            compactJson reach this cap at different result sizes.
+            the shape the request asked for, so on the model-query endpoint two
+            requests differing only in compactJson reach this cap at different
+            result sizes.
           * The response could not be serialized at all, past the JavaScript
             engine's own limit (V8 refuses the string; JSC fails the
             allocation). No cap was necessarily exceeded here, and raising one

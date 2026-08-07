@@ -4,7 +4,7 @@
  *
  * Four guards, numbered in the order a caller runs them:
  *
- *   1. {@link resolveModelQueryRowLimit} — compute the effective
+ *   1. {@link resolveModelQueryRowLimit}: compute the effective
  *      `rowLimit` to push down to `runnable.run`. The user's Malloy
  *      `LIMIT` clause wins when present; otherwise the operator-
  *      tunable default ({@link getDefaultQueryRowLimit}) fills in.
@@ -12,22 +12,24 @@
  *      database itself stops producing rows when a user-supplied
  *      `LIMIT 1_000_000` would otherwise blow up the process.
  *
- *   2. {@link assertWithinModelRowLimit} — post-run row overflow
+ *   2. {@link assertWithinModelRowLimit}: post-run row overflow
  *      detection. If the connector returned `maxRows + 1` rows (the
  *      sentinel), throw `PayloadTooLargeError` for a clean HTTP 413.
  *      Runs before the response is built at all, so an overflow costs
  *      neither the wrap nor the serialize.
  *
- *   3. {@link stringifyQueryResponse} — serialize the response. It
- *      produces both the bytes item 4 measures AND the bytes the
- *      caller transmits, which is the point: the check measures by
- *      stringifying, so a result too large to stringify fails *inside*
- *      the guard before it can compare anything to the cap, and a
- *      caller that stringified its own copy would hit the same wall
- *      unguarded. Either way this reports it as the same 413 rather
- *      than a bare 500.
+ *   3. {@link stringifyQueryResponse}: serialize the response. This
+ *      produces the bytes item 4 measures, and for the REST caller the
+ *      bytes it transmits as well, which is the point. The check
+ *      measures by stringifying, so a result too large to stringify
+ *      fails *inside* the guard before it can compare anything to the
+ *      cap, and a caller that stringified its own copy would hit the
+ *      same wall unguarded. Either way this reports it as the same 413
+ *      rather than a bare 500. The MCP caller is the exception: it asks
+ *      for the compact shape so the cap measures what its envelope is
+ *      built from, then builds and serializes that envelope itself.
  *
- *   4. {@link assertWithinModelByteLimit} — the byte cap. Necessarily
+ *   4. {@link assertWithinModelByteLimit}: the byte cap. Necessarily
  *      after item 3, because the serialized length IS the measurement.
  *
  * Caveat on the byte cap: this path runs `runnable.run` (buffered),
@@ -106,32 +108,16 @@ export function queryRowLimitSource(
    return userLimit && userLimit > 0 ? "query" : "server_default";
 }
 
-export interface ModelResponseLimitsConfig {
-   /** Result of {@link getMaxQueryRows}. `0` disables the row cap. */
-   maxRows: number;
-   /** Result of {@link getMaxResponseBytes}. `0` disables the byte cap. */
-   maxBytes: number;
-}
-
-/**
- * Throw {@link PayloadTooLargeError} (HTTP 413) when a model-query
- * response exceeds either configured cap. `rowCount` should be the
- * raw row count Malloy actually fetched (typically
- * `result._queryResult.data.rawData.length`); `serializedBytes`
- * should be the byte length of the JSON-stringified response that
- * would otherwise be returned to the client.
- *
- * Row check uses the `> maxRows` sentinel (not `>= maxRows`), since
- * {@link resolveModelQueryRowLimit} asked the connector for
- * `maxRows + 1` and we want to fail only when that sentinel fires.
- */
 /**
  * The row check, deliberately separate from the byte check so a caller can run it
  * BEFORE building the response at all.
  *
- * That ordering matters for more than tidiness. `resolveModelQueryRowLimit` asks
- * the connector for `maxRows + 1`, so a row overflow is a `maxRows + 1`-row result
- * sitting in memory. Serializing it first makes the largest single allocation on
+ * `rowCount` is the count Malloy actually fetched, and the comparison is
+ * `> maxRows` rather than `>= maxRows`, so only the sentinel row fires it.
+ *
+ * That ordering matters for more than tidiness. {@link resolveModelQueryRowLimit}
+ * asks the connector for `maxRows + 1`, so a row overflow is a `maxRows + 1`-row
+ * result sitting in memory. Serializing it first makes the largest single allocation on
  * the path for a response that is about to be refused anyway, and if that
  * serialization is what hits the engine's limit the caller is told the response
  * could not be serialized, and the counter ticks `unserializable`, when the true
@@ -155,7 +141,8 @@ export function assertWithinModelRowLimit(
 }
 
 /**
- * The byte half. Takes the serialized response rather than its length so that a
+ * The byte cap, checked after the response is serialized because the serialized
+ * length is the measurement. Takes the response rather than its length so that a
  * deployment with the cap disabled (`maxBytes` 0, documented) pays no UTF-8 length
  * scan over a response that could be hundreds of megabytes.
  */
