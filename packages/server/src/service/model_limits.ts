@@ -2,7 +2,7 @@
  * Memory guards for the Malloy model-query path (the `runnable.run`
  * flow used by `getQueryResults` and notebook cell execution).
  *
- * Three layered defenses:
+ * Four guards, numbered in the order a caller runs them:
  *
  *   1. {@link resolveModelQueryRowLimit} — compute the effective
  *      `rowLimit` to push down to `runnable.run`. The user's Malloy
@@ -15,21 +15,20 @@
  *   2. {@link assertWithinModelRowLimit} — post-run row overflow
  *      detection. If the connector returned `maxRows + 1` rows (the
  *      sentinel), throw `PayloadTooLargeError` for a clean HTTP 413.
- *      Deliberately callable before the response is built, so an
- *      overflow costs neither the wrap nor the serialize.
+ *      Runs before the response is built at all, so an overflow costs
+ *      neither the wrap nor the serialize.
  *
- *   4. {@link assertWithinModelByteLimit} — the same for the byte
- *      cap, which necessarily runs after the serialize in item 3,
- *      because the serialized length IS the measurement.
- *
- *   3. {@link stringifyQueryResponse}: serialize the response. It
- *      produces both the bytes the byte check measures AND the bytes
- *      the caller transmits, which is the point: the check measures by
+ *   3. {@link stringifyQueryResponse} — serialize the response. It
+ *      produces both the bytes item 4 measures AND the bytes the
+ *      caller transmits, which is the point: the check measures by
  *      stringifying, so a result too large to stringify fails *inside*
  *      the guard before it can compare anything to the cap, and a
  *      caller that stringified its own copy would hit the same wall
  *      unguarded. Either way this reports it as the same 413 rather
  *      than a bare 500.
+ *
+ *   4. {@link assertWithinModelByteLimit} — the byte cap. Necessarily
+ *      after item 3, because the serialized length IS the measurement.
  *
  * Caveat on the byte cap: this path runs `runnable.run` (buffered),
  * not `runStream`, so by the time we measure bytes the result has
@@ -41,17 +40,14 @@
  * for this step (the model-query streaming path entangles with
  * Malloy's `Result` schema metadata in non-trivial ways).
  *
- * Numbered by the order a caller runs them, which is why item 3 sits
- * between the two halves of the overflow check rather than after both.
- *
- * {@link resolveModelQueryRowLimit} and {@link queryRowLimitSource}
- * are pure. The other two exports are not: each records a
- * cap-exceeded metric before throwing, which lazily creates and
- * caches OpenTelemetry instruments in module state, so a unit test
- * that drives them without the metrics harness binds instruments to
- * whatever provider happens to be installed. All of them take their
- * limits as arguments, which is what lets them be tested without
- * spinning up a model runtime.
+ * Two of the five exports are pure: {@link resolveModelQueryRowLimit}
+ * and {@link queryRowLimitSource}. The other three, items 2, 3 and 4
+ * above, each record a cap-exceeded metric before throwing, which
+ * lazily creates and caches OpenTelemetry instruments in module state,
+ * so a unit test that drives them without the metrics harness binds
+ * instruments to whatever provider happens to be installed. All of
+ * them take their limits as arguments, which is what lets them be
+ * tested without spinning up a model runtime.
  */
 
 import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";

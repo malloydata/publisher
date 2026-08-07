@@ -2834,11 +2834,12 @@ export class Model {
       // agent gets an internal error; guarding it belongs with that envelope's own
       // truncation budget. And measuring the compact shape means the byte cap no
       // longer stands between a large result and the work MCP does downstream of
-      // it: `validateRenderTags` and the envelope build both traverse the FULL
-      // wrapped result, which the cap used to refuse first. That work is bounded
-      // by the envelope's 90k-character budget for what it SENDS, not for what it
-      // builds. Both are worth a follow-up; neither is a reason to keep capping a
-      // payload the caller never receives.
+      // it: `validateRenderTags` traverses the full wrapped result, and the
+      // envelope build then serializes every compact row, repeatedly, as
+      // `fitToBudget` binary-searches the row count down. The cap used to refuse
+      // such a result before either ran. The 90k-character budget bounds what MCP
+      // SENDS, not what it builds on the way there. Both are worth a follow-up;
+      // neither is a reason to keep capping a payload the caller never receives.
       //
       // Note the unserializable guard itself does not depend on a cap being set:
       // `stringifyQueryResponse` runs unconditionally and maps the engine's
