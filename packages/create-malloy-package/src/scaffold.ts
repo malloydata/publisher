@@ -276,7 +276,7 @@ const BIND_HOST = "127.0.0.1";
  * and confirm the new version still honours --host. A generated workspace can
  * move itself off it by editing the scripts in its own package.json.
  */
-export const SERVER_VERSION = "0.0.234";
+export const SERVER_VERSION = "0.0.237";
 
 function startCommandFor(envName: string): string {
    return (

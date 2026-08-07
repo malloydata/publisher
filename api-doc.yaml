@@ -1872,7 +1872,12 @@ paths:
               - "false"
         - name: givens
           in: query
-          description: JSON-encoded given values keyed by given name
+          description:
+            A `GivenValues` object, JSON-encoded so it can travel in a query
+            string. Values are typed as `GivenValues` describes them, not
+            string-encoded as `EncodedGivenValues` would be. The parameter keeps
+            its name for compatibility; the schema it carries is the one named
+            here.
           required: false
           schema:
             type: string
@@ -2436,16 +2441,26 @@ components:
             $ref: "#/components/schemas/Error"
     PayloadTooLarge:
       description: |
-        The request was well-formed but the response exceeds a server-side
-        size cap. Two caps can fire:
-          * PUBLISHER_MAX_QUERY_ROWS (default 100000) — too many rows.
-          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) — JSON-serialized
-            response too large.
-        The error message identifies which cap fired. Refine the query (add
-        a LIMIT, more selective WHERE, project fewer columns) or raise the
-        relevant cap; retrying without changes will not succeed. The
-        per-cap rejection counter is exported as
-        publisher_query_cap_exceeded_total{cap_type, source}.
+        The request was well-formed but the response is too large to return.
+        Three cases, and the message says which:
+          * PUBLISHER_MAX_QUERY_ROWS (default 100000) exceeded: too many rows.
+          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) exceeded: the
+            JSON-serialized response measured over the cap. What is measured is
+            the shape the request asked for, so on the model-query endpoint two
+            requests differing only in compactJson reach this cap at different
+            result sizes.
+          * The response could not be serialized at all, past the JavaScript
+            engine's own limit (V8 refuses the string; JSC fails the
+            allocation). No cap was necessarily exceeded here, and raising one
+            does not help. This third case applies to the model-query and
+            notebook-cell endpoints; the connection SQL endpoints have no such
+            guard and answer 500.
+        In every case, refine the query (add a LIMIT, a more selective WHERE,
+        project fewer columns, or filter out wide values); retrying unchanged
+        will not succeed. Raising the relevant cap is an option for the first
+        two only. The rejection counter is exported as
+        publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
+        rows, bytes, or unserializable.
       content:
         application/json:
           schema:
@@ -2786,28 +2801,35 @@ components:
           type: array
           readOnly: true
           description: >-
-            Non-fatal render-tag findings collected when the package loaded: a
-            render annotation (e.g. `# big_value` or `# currency`) misconfigured
-            for the field it sits on, so it renders as "[object Object]" or an
-            inline error at query time but does not stop the model compiling or
-            the package loading. Server-computed and read-only: ignored on
-            create/update requests and only returned in responses. Present only
-            when there are such findings.
+            Non-fatal findings collected when the package loaded, none of which
+            stop the model compiling or the package loading. Render-tag
+            findings: a render annotation (e.g. `# big_value` or `# currency`)
+            misconfigured for the field it sits on, so it renders as
+            "[object Object]" or an inline error at query time. Materialization
+            findings: a `storage=` source not served from storage, a `#@ persist`
+            source that was not recognized as materializable, a persist-target
+            collision, and materialization-config problems that degrade
+            attribution. Server-computed and read-only: ignored on create/update
+            requests and only returned in responses. Present only when there are
+            such findings.
           items:
             type: object
             properties:
               model:
                 type: string
                 description: >-
-                  Package-relative path of the model the finding is on.
-              target:
+                  Package-relative path of the model the finding is on. Absent
+                  for a package-wide finding.
+              subject:
                 type: string
                 description: >-
-                  The query or view the finding sits on, e.g. `by_carrier` or
-                  `flights -> by_carrier`.
+                  What the finding is about: the query or view a render finding
+                  sits on (`by_carrier`, `flights -> by_carrier`), or the source
+                  a materialization finding belongs to. Absent when a finding
+                  spans several, in which case the message names them.
               message:
                 type: string
-                description: The render validator's description of the problem.
+                description: A description of the problem.
               severity:
                 type: string
                 enum:
@@ -3065,18 +3087,22 @@ components:
       type: object
       description: Raw Malloy notebook with unexecuted cell contents
       properties:
-        resource:
+        type:
           type: string
-          description: Resource path to the notebook
+          description: Always `notebook`. Distinguishes the payload from the
+            compiled-model shape returned by the model endpoint.
         packageName:
           type: string
           description: Name of the package containing this notebook
-        path:
+        modelPath:
           type: string
           description: Relative path to the notebook file within its package directory
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
+        modelInfo:
+          type: string
+          description: JSON string containing model metadata and structure information
         notebookCells:
           type: array
           description: Array of notebook cells containing raw markdown and code content
@@ -3087,11 +3113,23 @@ components:
           description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Starting values for the notebook's controls, declared at its file
+            level. URL parameters override these, which is why the two share a
+            shape. Omitted when the notebook declares none.
         sources:
           type: array
           description: Sources defined in the notebook's model
           items:
             $ref: "#/components/schemas/Source"
+        queries:
+          type: array
+          description: Named queries defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Query"
 
     CompiledModel:
       type: object
@@ -3204,10 +3242,22 @@ components:
 
     Given:
       type: object
-      description:
+      description: |
         A given (runtime parameter) declared on a Malloy model via the
         `given:` keyword. Surfaced on `CompiledModel.givens` and `Source.givens`
         so callers can introspect what runtime values a model accepts.
+
+        `givens` always names a collection of these declarations. Values keyed
+        by given name are `GivenValues` (or `EncodedGivenValues` in the form
+        that survives a URL), and a bare list of names is spelled `givenNames`.
+
+        It also carries how the given should be presented as an input control
+        (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`), derived from
+        the declaration's own tags. That contract belongs to the given rather
+        than to any one surface, which is what lets a notebook and an SDK host
+        render the same control without restating it. Those five fields describe
+        the contract a renderer implements; no endpoint populates them yet, so
+        they are absent from every response today.
       properties:
         name:
           type: string
@@ -3228,14 +3278,84 @@ components:
             the model. Omitted when the given declares no default. Consumers
             render or prefill it per the given's `type` (e.g. unquote a string
             literal for a text input).
+        label:
+          type: string
+          description: Display label from the declaration's `# label=` tag
+        control:
+          type: string
+          enum:
+            - select
+            - multiselect
+          description:
+            How the control renders when the choice is between a single-pick and
+            a multi-pick list. Omitted means infer from the given's type. A
+            slider is not one of these values; it is signalled by `rangeMin` and
+            `rangeMax` instead, per the rule on those fields.
+        rangeMin:
+          type: number
+          description:
+            Slider lower bound from `# range_min=`. The two bounds are what
+            signal a slider, so a `number` or `filter<number>` given renders as
+            one when BOTH are present and as a plain number input otherwise, so
+            a lone bound changes nothing about the control.
+        rangeMax:
+          type: number
+          description:
+            Slider upper bound from `# range_max=`. See `rangeMin` for the rule
+            that turns the pair into a slider.
+        suggest:
+          $ref: "#/components/schemas/GivenSuggest"
 
-    Givens:
+    GivenSuggest:
       type: object
-      description: Per-query given values that override model defaults. Keys are
-        given names declared in the model's `given:` block. Values must match
-        the declared type (string, number, boolean, date, etc.). See Malloy
-        givens documentation for accepted value shapes.
+      description: |
+        Where a select or multiselect control gets its options: a named `query`,
+        a `source` + `dimension` pair, or a `query` with a `dimension` naming
+        which of its columns to read. All three run through the ordinary query
+        endpoint.
+
+        With `query` alone the first column of each row is used, so a
+        single-column `group_by` needs no `dimension`. Give `dimension`
+        alongside `query` when the query returns more than one column.
+      properties:
+        query:
+          type: string
+        source:
+          type: string
+        dimension:
+          type: string
+
+    GivenValues:
+      type: object
+      description: |
+        Given *values* keyed by given name: what a caller sends, as distinct
+        from `Given`, which describes what the model *accepts*. A collection of
+        declarations is a plain array of `Given`, never this.
+
+        Values are decoded and must match the declared type: a `number` given
+        takes a JSON number, a `date` takes a bare `YYYY-MM-DD` string, a
+        `timestamp` an ISO string with no zone, a `timestamptz` a full ISO
+        string. `EncodedGivenValues` is the string-encoded counterpart.
       additionalProperties: true
+
+    EncodedGivenValues:
+      type: object
+      description: |
+        The same values as `GivenValues`, string-encoded: the form that survives
+        a URL. Every value is a string regardless of the given's declared type,
+        and a `filter<…>` value is the filter body rather than the `f'…'`
+        literal.
+
+        The role it names: a surface's URL parameters and the starting values a
+        document declares share this shape, so the two can merge and then be
+        decoded once against the declarations and sent as `GivenValues`. No
+        endpoint returns it yet. `RawNotebook.startingGivens` is the first field
+        typed as it, and nothing populates that field so far, so today this
+        schema documents the contract rather than describing live traffic. The
+        `givens` query parameter is not an instance of it: that carries a
+        JSON-encoded `GivenValues`, with values typed rather than stringified.
+      additionalProperties:
+        type: string
 
     Source:
       type: object
@@ -3360,7 +3480,7 @@ components:
 
             When true, skip server-side `#(filter)` injection entirely.
         givens:
-          $ref: "#/components/schemas/Givens"
+          $ref: "#/components/schemas/GivenValues"
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -4316,7 +4436,7 @@ components:
             (only available when compilation succeeds and the source contains a
             runnable query).
         givens:
-          $ref: "#/components/schemas/Givens"
+          $ref: "#/components/schemas/GivenValues"
       required:
         - source
 

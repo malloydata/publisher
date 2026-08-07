@@ -170,7 +170,7 @@ export function buildQueryEnvelope(
  * report "no rows matched" for what is really one row too large to send. It is
  * reachable, because the hard ceiling upstream is maxBytes (50MB by default), so
  * a single row carrying a large text or JSON column passes
- * assertWithinModelResponseLimits and arrives here. Both wordings are measured,
+ * assertWithinModelByteLimit and arrives here. Both wordings are measured,
  * and the search uses whichever is longer, so swapping one for the other after
  * the fact cannot push the payload back over the cap.
  *

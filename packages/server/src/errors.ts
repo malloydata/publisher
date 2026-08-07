@@ -44,6 +44,12 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(413, error.message);
    } else if (error instanceof QueryTimeoutError) {
       return httpError(504, error.message);
+   } else if (error instanceof NotImplementedError) {
+      // 501, not the 500 default. Asking for a feature the server does not have
+      // (today: a `versionId`, which every route declaring it rejects) is not an
+      // internal failure, and the OpenAPI spec has documented 501 on those
+      // routes all along.
+      return httpError(501, error.message);
    } else {
       return httpError(500, error.message);
    }
@@ -258,9 +264,9 @@ export class PayloadTooLargeError extends Error {
  * serialized at all, rather than merely measuring over the cap. Still HTTP 413
  * by inheritance, because the request was well-formed and the result is too
  * large; the distinction exists so callers are not told to raise a cap. Raising
- * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here — there is no cap at which a
- * response that will not serialize starts serializing — so the only remedies
- * are the ones that shrink the response.
+ * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here, because there is no cap at
+ * which a response that will not serialize starts serializing, so the only
+ * remedies are the ones that shrink the response.
  */
 export class ResponseUnserializableError extends PayloadTooLargeError {
    constructor(message: string) {
