@@ -774,15 +774,37 @@ export function ledgerLineageMismatch(
    return undefined;
 }
 
+/**
+ * Why a refresh seeded or skipped, as a BOUNDED code for the step metric's
+ * `reason` label — the free-text `reason` names specifics (columns, versions,
+ * boundary values) that a metric label cannot carry.
+ */
+export type IncrementalStepReasonCode =
+   // Seeds.
+   | "forced"
+   | "no_boundary"
+   | "lineage_changed"
+   | "merge_unsupported"
+   | "table_unreadable"
+   | "table_emptied"
+   | "shape_mismatch"
+   | "ledger_unreadable"
+   | "plan_error"
+   // Skips.
+   | "frontier_unreadable"
+   | "not_advanced";
+
 /** What one source's refresh should do. */
 export type IncrementalStep =
    | {
         mode: "seed";
-        /** Why a full rebuild, for the log and the metric label. */
+        reasonCode: IncrementalStepReasonCode;
+        /** Why a full rebuild, for the log. */
         reason: string;
      }
    | {
         mode: "skip";
+        reasonCode: IncrementalStepReasonCode;
         reason: string;
      }
    | {
@@ -861,16 +883,23 @@ export async function planIncrementalStep(inputs: {
    const { runner, dialect, lineage, ledgerEntry } = inputs;
 
    if (inputs.forceRefresh) {
-      return { mode: "seed", reason: "a full refresh was requested" };
+      return {
+         mode: "seed",
+         reasonCode: "forced",
+         reason: "a full refresh was requested",
+      };
    }
    if (!ledgerEntry) {
       return {
          mode: "seed",
+         reasonCode: "no_boundary",
          reason: "no covered_through boundary is recorded for this source yet",
       };
    }
    const mismatch = ledgerLineageMismatch(ledgerEntry, lineage);
-   if (mismatch) return { mode: "seed", reason: mismatch };
+   if (mismatch) {
+      return { mode: "seed", reasonCode: "lineage_changed", reason: mismatch };
+   }
 
    if (
       lineage.strategy === "merge" &&
@@ -881,6 +910,7 @@ export async function planIncrementalStep(inputs: {
       // guarantee, and merge_key= says the author needs the stronger one.
       return {
          mode: "seed",
+         reasonCode: "merge_unsupported",
          reason:
             `merge_key= needs MERGE, which this Postgres server ` +
             `(server_version_num ${inputs.postgresVersionNum ?? "unknown"}) ` +
@@ -896,6 +926,7 @@ export async function planIncrementalStep(inputs: {
    if (probe.columns.length === 0) {
       return {
          mode: "seed",
+         reasonCode: "table_unreadable",
          reason:
             `the target table could not be described` +
             (probe.error
@@ -917,6 +948,7 @@ export async function planIncrementalStep(inputs: {
    if (!rows.nonEmpty) {
       return {
          mode: "seed",
+         reasonCode: "table_emptied",
          reason:
             `the target table is empty while a covered_through boundary of ` +
             `${ledgerEntry.coveredThroughValue} is recorded, so its rows were ` +
@@ -939,6 +971,7 @@ export async function planIncrementalStep(inputs: {
    if (!end.bound) {
       return {
          mode: "skip",
+         reasonCode: end.error ? "frontier_unreadable" : "not_advanced",
          reason: end.error
             ? `the watermark frontier could not be read (${end.error})`
             : "the source has no rows with a non-null watermark",
@@ -947,6 +980,7 @@ export async function planIncrementalStep(inputs: {
    if (compareBounds(end.bound, start) <= 0) {
       return {
          mode: "skip",
+         reasonCode: "not_advanced",
          reason:
             `the watermark has not advanced past ${start.value} ` +
             `(frontier: ${end.bound.value})`,
@@ -962,6 +996,7 @@ export async function planIncrementalStep(inputs: {
       // incremental declaration.
       return {
          mode: "seed",
+         reasonCode: "shape_mismatch",
          reason:
             `the delta's columns do not match the target table's (${shape}), ` +
             `so a delta would write a different shape than the table holds`,

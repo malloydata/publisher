@@ -1916,10 +1916,16 @@ export class MaterializationService {
             sourceEntityId: params.ledgerKey,
             coveredThrough: step.coveredThrough,
          });
-         recordSourceBuildDuration(
-            Math.round(performance.now() - startTime),
-            "in_warehouse",
-         );
+         const durationMs = Math.round(performance.now() - startTime);
+         recordSourceBuildDuration(durationMs, "delta");
+         logger.info("Applied an incremental delta", {
+            packageName: context.packageName,
+            sourceName: persistSource.name,
+            physicalTableName: lineage.physicalTableName,
+            rangeStart: step.start.value,
+            rangeEnd: step.end.value,
+            durationMs,
+         });
       }
 
       // Both a delta and a skip leave the existing table serving, so it still has

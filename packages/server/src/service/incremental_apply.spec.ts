@@ -681,6 +681,7 @@ describe("planIncrementalStep", () => {
       const step = await plan({ ledgerEntry: null });
       expect(step.mode).toBe("seed");
       if (step.mode !== "seed") return;
+      expect(step.reasonCode).toBe("no_boundary");
       expect(step.reason).toContain("no covered_through boundary");
    });
 
@@ -715,6 +716,7 @@ describe("planIncrementalStep", () => {
       });
       expect(step.mode).toBe("seed");
       if (step.mode !== "seed") return;
+      expect(step.reasonCode).toBe("shape_mismatch");
       expect(step.reason).toContain(`absent from the table: "revenue_total"`);
    });
 
@@ -741,6 +743,7 @@ describe("planIncrementalStep", () => {
       });
       expect(step.mode).toBe("skip");
       if (step.mode !== "skip") return;
+      expect(step.reasonCode).toBe("not_advanced");
       expect(step.reason).toContain("has not advanced");
    });
 

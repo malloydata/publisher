@@ -187,6 +187,7 @@ export async function planSourceRefresh(params: {
    } catch (err) {
       return {
          mode: "seed",
+         reasonCode: "ledger_unreadable",
          reason: `the covered_through ledger could not be read (${errMessage(err)})`,
       };
    }
@@ -214,6 +215,7 @@ export async function planSourceRefresh(params: {
    } catch (err) {
       return {
          mode: "seed",
+         reasonCode: "plan_error",
          reason: `the delta could not be planned (${errMessage(err)})`,
       };
    }
@@ -322,7 +324,13 @@ export async function advanceLedgerAfterSeed(params: {
    });
 }
 
-/** Log and count a step, so a silent downgrade to a full rebuild is visible. */
+/**
+ * Log and count a step, so a silent downgrade to a full rebuild is visible.
+ * A delta is only counted here; its one log line is emitted on COMPLETION with
+ * the duration (see MaterializationService.refreshOneSourceIncrementally),
+ * because an "applying" line with no matching "applied" is exactly the failed
+ * case, which already surfaces as the run's failure.
+ */
 export function reportIncrementalStep(params: {
    step: IncrementalStep;
    sourceName: string;
@@ -330,17 +338,11 @@ export function reportIncrementalStep(params: {
    physicalTableName: string;
 }): void {
    const { step, sourceName, packageName, physicalTableName } = params;
-   recordIncrementalStep(step.mode);
    if (step.mode === "delta") {
-      logger.info("Applying an incremental delta", {
-         packageName,
-         sourceName,
-         physicalTableName,
-         rangeStart: step.start.value,
-         rangeEnd: step.end.value,
-      });
+      recordIncrementalStep(step.mode);
       return;
    }
+   recordIncrementalStep(step.mode, step.reasonCode);
    // A seed is the fallback for everything the delta path cannot prove, so its
    // reason is the only signal that a source declared incremental is quietly
    // being rebuilt in full every run. Logged at warn for that reason.
@@ -348,6 +350,12 @@ export function reportIncrementalStep(params: {
       step.mode === "seed"
          ? "Rebuilding an incremental source in full"
          : "Skipping an incremental source's refresh",
-      { packageName, sourceName, physicalTableName, reason: step.reason },
+      {
+         packageName,
+         sourceName,
+         physicalTableName,
+         reasonCode: step.reasonCode,
+         reason: step.reason,
+      },
    );
 }
