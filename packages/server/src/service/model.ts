@@ -1,5 +1,4 @@
 import {
-   Annotations,
    API,
    Connection,
    FixedConnectionMap,
@@ -72,7 +71,7 @@ import type {
 } from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
-import { modelAnnotations } from "./annotations";
+import { modelAnnotations, ownModelNotes } from "./annotations";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -2971,9 +2970,11 @@ export class Model {
          } as ApiNotebookCell;
       });
 
-      const allAnnotations = this.modelDef
-         ? new Annotations(modelAnnotations(this.modelDef)).texts()
-         : [];
+      // A notebook's own `##` tags, not its imports'. `modelAnnotations` folds
+      // the import lineage, which file-level `##(authorize)` needs and this
+      // does not: a shared include carrying `##(filters)` would otherwise
+      // configure the filter panel of every notebook that imports it.
+      const allAnnotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
 
       // No `as` cast. The literal used to carry `type`, `modelPath`,
       // `modelInfo`, and `queries`, which `RawNotebook` did not declare, so it

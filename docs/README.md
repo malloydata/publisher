@@ -45,6 +45,7 @@ there for the primitive, then follow the application you need.
 | [row-level-access.md](row-level-access.md)         | Restrict _which rows_ a caller sees (given-scoped `where:` + `#(authorize)`).                          |
 | [authorize.md](authorize.md)                       | Gate _who_ can query a whole source with `#(authorize)`.                                               |
 | [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`explores` / `queryableSources`) — the visibility axis.  |
+| [security-posture.md](security-posture.md)         | Understand what Publisher does and does not defend against, before deploying it or adding a feature.   |
 
 ## Deploy & operate
 
@@ -61,11 +62,12 @@ there for the primitive, then follow the application you need.
 
 ## Develop & contribute
 
-| Doc                              | Read it when you want to…                                  |
-| -------------------------------- | ---------------------------------------------------------- |
-| [development.md](development.md) | Build and hack on Publisher from a clone.                  |
-| [agent-skills/](agent-skills/)   | Author or contribute the bundled agent skills.             |
-| [../SECURITY.md](../SECURITY.md) | Report a security vulnerability, or check what's in scope. |
+| Doc                                                            | Read it when you want to…                                                                     |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                     |
+| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                |
+| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                    |
+| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.       |
 
 ## Full public docs
 
