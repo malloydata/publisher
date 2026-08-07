@@ -1,3 +1,4 @@
+import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
@@ -297,9 +298,13 @@ export class PackageController {
          );
       }
 
-      if (packageLocation.startsWith("/")) {
+      if (packageLocation.startsWith("/") || path.isAbsolute(packageLocation)) {
          // Absolute paths from the publisher.config could be placed outside of /etc/publisher,
-         // so we need to mount them on the right place.
+         // so we need to mount them on the right place. `path.isAbsolute` is
+         // what catches a Windows drive-letter path (`D:\pkgs\sales`), which no
+         // other branch here claims either — without it the install stages
+         // nothing and the swap fails with a bare ENOENT rename. Same pairing
+         // as environment_store's isLocalPath.
          await this.environmentStore.mountLocalDirectory(
             packageLocation,
             targetPath,
