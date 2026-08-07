@@ -2242,10 +2242,11 @@ export class Model {
       /**
        * Which shape the caller is going to send, so exactly that one is built and
        * measured. `"compact"` is the `compactJson` response (the rows, with the
-       * bigint replacer); `"full"` is the wrapped result. A caller that sends
-       * neither verbatim, like the MCP tool, leaves it at the default: the byte
-       * cap still has to measure something, and the full shape is what it has
-       * always measured.
+       * bigint replacer); `"full"` is the wrapped result. Every caller declares
+       * one: REST from its `compactJson` flag, and the MCP tool as `"compact"`,
+       * because its envelope is built from the compact rows even though it does
+       * not send this string verbatim. The default exists for a caller that has
+       * no opinion, not because anything relies on it.
        */
       responseShape: "full" | "compact" = "full",
    ): Promise<{
@@ -2793,6 +2794,14 @@ export class Model {
          // wraps and returns it exactly as a live query would.
       }
 
+      // Rows first, and above `wrapResult` rather than merely above the
+      // serialize. A row overflow is a `maxRows + 1`-row result by construction,
+      // and `wrapResult` deep-converts every row into Cell objects, an object
+      // graph larger than the JSON string built from it. Checking here means the
+      // process does neither for a response it is about to refuse, and the caller
+      // is told it exceeded PUBLISHER_MAX_QUERY_ROWS rather than that the response
+      // could not be serialized. The notebook path below has the same ordering.
+      assertWithinModelRowLimit(queryResults.totalRows, maxRows, "model_query");
       const wrappedResult = API.util.wrapResult(queryResults);
       // Best-effort byte check: we've already buffered `queryResults` and
       // built `wrappedResult` by the time we get here, so this surfaces
@@ -2817,20 +2826,24 @@ export class Model {
       // bytes the client would never receive. Capping what is sent is the
       // defensible reading, and the row cap is unchanged and applies to both.
       //
-      // What this does NOT cover: the MCP tool leaves `responseShape` at its
-      // default, so the full shape is measured as it always was, but the tool
-      // then builds its own envelope (mcp/query_envelope.ts) with an unguarded
-      // `JSON.stringify`. An unserializable result reaches the 413 there only via
-      // this measurement, which means only when a byte cap is set; with the cap
-      // disabled that envelope build still throws a raw RangeError and the agent
-      // gets an internal error. Guarding it belongs with the envelope's own
-      // truncation budget, not here.
-      // Rows BEFORE serializing. A row overflow is a `maxRows + 1`-row result, so
-      // serializing first builds the largest payload on the path for a response
-      // that is about to be refused, and if that serialization is what hits the
-      // engine limit the caller is told the wrong thing: "could not be
-      // serialized" instead of "you exceeded PUBLISHER_MAX_QUERY_ROWS".
-      assertWithinModelRowLimit(queryResults.totalRows, maxRows, "model_query");
+      // Two things this does NOT cover, both on the MCP surface. It asks for
+      // `"compact"`, the shape its envelope is built from, but it then serializes
+      // that envelope itself (mcp/query_envelope.ts) with an unguarded
+      // `JSON.stringify` at indent 2. Compact rows that serialize while the
+      // indented envelope does not still throw a raw RangeError there, and the
+      // agent gets an internal error; guarding it belongs with that envelope's own
+      // truncation budget. And measuring the compact shape means the byte cap no
+      // longer stands between a large result and the work MCP does downstream of
+      // it: `validateRenderTags` and the envelope build both traverse the FULL
+      // wrapped result, which the cap used to refuse first. That work is bounded
+      // by the envelope's 90k-character budget for what it SENDS, not for what it
+      // builds. Both are worth a follow-up; neither is a reason to keep capping a
+      // payload the caller never receives.
+      //
+      // Note the unserializable guard itself does not depend on a cap being set:
+      // `stringifyQueryResponse` runs unconditionally and maps the engine's
+      // RangeError to a 413 whether or not `maxBytes` is configured. `maxBytes`
+      // only decides whether the message names a cap.
       const serializedResult = stringifyQueryResponse(
          responseShape === "compact" ? queryResults.data.value : wrappedResult,
          queryResults.totalRows,
@@ -2838,11 +2851,7 @@ export class Model {
          "model_query",
          responseShape === "compact" ? bigIntReplacer : undefined,
       );
-      assertWithinModelByteLimit(
-         Buffer.byteLength(serializedResult, "utf8"),
-         maxBytes,
-         "model_query",
-      );
+      assertWithinModelByteLimit(serializedResult, maxBytes, "model_query");
       this.queryExecutionHistogram.record(executionTime, {
          "malloy.model.path": this.modelPath,
          "malloy.model.query.name": queryName,
@@ -2868,7 +2877,7 @@ export class Model {
          // The cap actually pushed into the SQL. A caller cannot otherwise tell
          // a complete result from one the row limit cut off: with no LIMIT of
          // its own a query silently gets DEFAULT_QUERY_ROW_LIMIT rows, and that
-         // is under maxRows, so assertWithinModelResponseLimits raises nothing.
+         // is under maxRows, so assertWithinModelRowLimit raises nothing.
          // Returning the number lets a caller compare it against the row count
          // and say so, with no extra query.
          rowLimit,
@@ -3164,7 +3173,7 @@ export class Model {
             // is the primary defense.
             if (result?._queryResult && queryResult) {
                assertWithinModelByteLimit(
-                  Buffer.byteLength(queryResult, "utf8"),
+                  queryResult,
                   cellMaxBytes,
                   "notebook_cell",
                );

@@ -12,11 +12,15 @@
  *      database itself stops producing rows when a user-supplied
  *      `LIMIT 1_000_000` would otherwise blow up the process.
  *
- *   2. {@link assertWithinModelResponseLimits} — post-run overflow
- *      detection. If the connector returned `maxRows + 1` rows
- *      (the sentinel) or the JSON-serialized response exceeds the
- *      byte cap, throw `PayloadTooLargeError` so the caller sees a
- *      clean HTTP 413.
+ *   2. {@link assertWithinModelRowLimit} — post-run row overflow
+ *      detection. If the connector returned `maxRows + 1` rows (the
+ *      sentinel), throw `PayloadTooLargeError` for a clean HTTP 413.
+ *      Deliberately callable before the response is built, so an
+ *      overflow costs neither the wrap nor the serialize.
+ *
+ *   4. {@link assertWithinModelByteLimit} — the same for the byte
+ *      cap, which necessarily runs after the serialize in item 3,
+ *      because the serialized length IS the measurement.
  *
  *   3. {@link stringifyQueryResponse}: serialize the response. It
  *      produces both the bytes the byte check measures AND the bytes
@@ -37,8 +41,11 @@
  * for this step (the model-query streaming path entangles with
  * Malloy's `Result` schema metadata in non-trivial ways).
  *
- * Only {@link resolveModelQueryRowLimit} and
- * {@link queryRowLimitSource} are pure. Both of the others record a
+ * Numbered by the order a caller runs them, which is why item 3 sits
+ * between the two halves of the overflow check rather than after both.
+ *
+ * {@link resolveModelQueryRowLimit} and {@link queryRowLimitSource}
+ * are pure. The other two exports are not: each records a
  * cap-exceeded metric before throwing, which lazily creates and
  * caches OpenTelemetry instruments in module state, so a unit test
  * that drives them without the metrics harness binds instruments to
@@ -122,19 +129,9 @@ export interface ModelResponseLimitsConfig {
  * {@link resolveModelQueryRowLimit} asked the connector for
  * `maxRows + 1` and we want to fail only when that sentinel fires.
  */
-export function assertWithinModelResponseLimits(
-   rowCount: number,
-   serializedBytes: number,
-   { maxRows, maxBytes }: ModelResponseLimitsConfig,
-   source: QueryCapSource,
-): void {
-   assertWithinModelRowLimit(rowCount, maxRows, source);
-   assertWithinModelByteLimit(serializedBytes, maxBytes, source);
-}
-
 /**
- * The row half of {@link assertWithinModelResponseLimits}, callable on its own so
- * a caller can check rows BEFORE serializing.
+ * The row check, deliberately separate from the byte check so a caller can run it
+ * BEFORE building the response at all.
  *
  * That ordering matters for more than tidiness. `resolveModelQueryRowLimit` asks
  * the connector for `maxRows + 1`, so a row overflow is a `maxRows + 1`-row result
@@ -161,13 +158,19 @@ export function assertWithinModelRowLimit(
    }
 }
 
-/** The byte half of {@link assertWithinModelResponseLimits}. */
+/**
+ * The byte half. Takes the serialized response rather than its length so that a
+ * deployment with the cap disabled (`maxBytes` 0, documented) pays no UTF-8 length
+ * scan over a response that could be hundreds of megabytes.
+ */
 export function assertWithinModelByteLimit(
-   serializedBytes: number,
+   serialized: string,
    maxBytes: number,
    source: QueryCapSource,
 ): void {
-   if (maxBytes > 0 && serializedBytes > maxBytes) {
+   if (maxBytes <= 0) return;
+   const serializedBytes = Buffer.byteLength(serialized, "utf8");
+   if (serializedBytes > maxBytes) {
       recordQueryCapExceeded("bytes", source);
       throw new PayloadTooLargeError(
          `Query response exceeded ${maxBytes} bytes (was ${serializedBytes}). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.`,

@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";
 import {
-   assertWithinModelResponseLimits,
+   assertWithinModelByteLimit,
+   assertWithinModelRowLimit,
    queryRowLimitSource,
    resolveModelQueryRowLimit,
    stringifyQueryResponse,
@@ -101,97 +102,76 @@ describe("resolveModelQueryRowLimit", () => {
    });
 });
 
-describe("assertWithinModelResponseLimits", () => {
-   it("does not throw when both counts are below their caps", () => {
+describe("assertWithinModelRowLimit", () => {
+   it("does not throw below the cap", () => {
       expect(() =>
-         assertWithinModelResponseLimits(
-            500,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(500, 1000, "model_query"),
       ).not.toThrow();
    });
 
-   it("does not throw when row count equals the cap exactly (sentinel hasn't fired)", () => {
+   it("does not throw when the count equals the cap (the sentinel has not fired)", () => {
+      // resolveModelQueryRowLimit asks the connector for maxRows + 1, so equality
+      // means the query ran right up to the cap and is complete.
       expect(() =>
-         assertWithinModelResponseLimits(
-            1000,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(1000, 1000, "model_query"),
       ).not.toThrow();
    });
 
-   it("throws PayloadTooLargeError with the row-cap message on row overflow", () => {
+   it("throws PayloadTooLargeError naming the row cap on overflow", () => {
       expect(() =>
-         assertWithinModelResponseLimits(
-            1001,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(1001, 1000, "model_query"),
       ).toThrow(PayloadTooLargeError);
       expect(() =>
-         assertWithinModelResponseLimits(
-            1001,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(1001, 1000, "model_query"),
       ).toThrow("more than 1000 rows");
+      // Raising the cap IS a remedy here, unlike the unserializable case.
+      expect(() =>
+         assertWithinModelRowLimit(1001, 1000, "model_query"),
+      ).toThrow("PUBLISHER_MAX_QUERY_ROWS");
    });
 
-   it("throws PayloadTooLargeError with the byte-cap message on byte overflow", () => {
+   it("is disabled by a cap of 0", () => {
       expect(() =>
-         assertWithinModelResponseLimits(
-            10,
-            50_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
-      ).toThrow(PayloadTooLargeError);
-      expect(() =>
-         assertWithinModelResponseLimits(
-            10,
-            50_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
-      ).toThrow("exceeded 10000 bytes");
+         assertWithinModelRowLimit(1_000_000, 0, "model_query"),
+      ).not.toThrow();
    });
+});
 
-   it("prefers the row-cap message when both caps would have fired (row check runs first)", () => {
+describe("assertWithinModelByteLimit", () => {
+   it("does not throw below the cap", () => {
       expect(() =>
-         assertWithinModelResponseLimits(
-            2000,
-            50_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
-      ).toThrow("more than 1000 rows");
-   });
-
-   it("disables row cap when maxRows is 0", () => {
-      expect(() =>
-         assertWithinModelResponseLimits(
-            1_000_000,
-            1_000,
-            { maxRows: 0, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelByteLimit("x".repeat(100), 10_000, "model_query"),
       ).not.toThrow();
    });
 
-   it("disables byte cap when maxBytes is 0", () => {
+   it("throws PayloadTooLargeError naming the byte cap and the measured size", () => {
+      const body = "x".repeat(500);
       expect(() =>
-         assertWithinModelResponseLimits(
-            10,
-            1_000_000_000,
-            { maxRows: 1000, maxBytes: 0 },
-            "model_query",
-         ),
+         assertWithinModelByteLimit(body, 100, "model_query"),
+      ).toThrow(PayloadTooLargeError);
+      expect(() =>
+         assertWithinModelByteLimit(body, 100, "model_query"),
+      ).toThrow("exceeded 100 bytes");
+      expect(() =>
+         assertWithinModelByteLimit(body, 100, "model_query"),
+      ).toThrow("was 500");
+   });
+
+   it("measures UTF-8 bytes, not characters", () => {
+      // Three bytes each, so 40 of them clear a 100-byte cap by count and not by
+      // size. Measuring characters would let a payload through at 3x the cap.
+      const multibyte = "€".repeat(40);
+      expect(multibyte.length).toBeLessThan(100);
+      expect(() =>
+         assertWithinModelByteLimit(multibyte, 100, "model_query"),
+      ).toThrow("exceeded 100 bytes");
+   });
+
+   it("is disabled by a cap of 0, without measuring the response", () => {
+      // The early return matters: with the cap off, a caller must not pay a
+      // length scan over a response that can be hundreds of megabytes.
+      expect(() =>
+         assertWithinModelByteLimit("x".repeat(1000), 0, "model_query"),
       ).not.toThrow();
    });
 });
