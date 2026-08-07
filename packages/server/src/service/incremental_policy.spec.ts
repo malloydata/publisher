@@ -288,7 +288,7 @@ describe("incrementalPolicyRejections", () => {
       const messages = rejections({ dialect: "duckdb", declaration: COHERENT });
       expect(messages).toHaveLength(1);
       expect(messages[0]).toContain('dialect "duckdb"');
-      expect(messages[0]).toContain("bigquery, postgres");
+      expect(messages[0]).toContain("postgres, standardsql (BigQuery)");
       expect(messages[0]).toContain('refresh="full"');
    });
 
@@ -319,9 +319,21 @@ describe("incrementalPolicyRejections", () => {
    });
 
    it("both dialects on the allowlist accept a coherent declaration", () => {
-      for (const dialect of ["postgres", "bigquery"]) {
+      // Keyed by Malloy's own `dialectName`, so BigQuery is "standardsql". A
+      // test that asserted "bigquery" here would pass while every real BigQuery
+      // source failed the gate.
+      for (const dialect of ["postgres", "standardsql"]) {
          expect(rejections({ dialect, declaration: COHERENT })).toEqual([]);
       }
+   });
+
+   it("rule 13: refuses incremental into a storage= destination", () => {
+      const [message] = rejections({
+         declaration: COHERENT,
+         storageDestination: "lake",
+      });
+      expect(message).toContain('storage="lake"');
+      expect(message).toContain("source warehouse");
    });
 
    // ── Rules 8 to 11: what the names resolved to ─────────────────────────

@@ -612,6 +612,7 @@ export class Package {
                sourceName: source.name,
                modelPath: source.modelPath,
                dialect: source.dialect,
+               storageDestination: source.annotationFields?.storage,
                declaration: incrementalDeclarations[sourceID],
                trialCompileError: incrementalTrialCompileErrors[sourceID],
             }));

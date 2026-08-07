@@ -1,4 +1,5 @@
 import type {
+   BuildManifest,
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
@@ -45,6 +46,24 @@ import {
    iterGraphSources,
    resolveQueryMetadata,
 } from "./build_plan";
+import {
+   applyDeltaScript,
+   type IncrementalLineage,
+   type SqlRunner,
+} from "./incremental_apply";
+import {
+   advanceLedger,
+   advanceLedgerAfterSeed,
+   incrementalLineage,
+   planSourceRefresh,
+   reportIncrementalStep,
+   resetLedger,
+   type IncrementalRunContext,
+} from "./incremental_build";
+import {
+   resolveIncrementalDeclaration,
+   type IncrementalDeclaration,
+} from "./incremental_declaration";
 import {
    mergeQueryMetadata,
    type QueryContext,
@@ -675,6 +694,14 @@ export class MaterializationService {
             ));
          }
 
+         const incremental = this.incrementalRunContext(compiled, {
+            environmentId,
+            packageName,
+            materializationId: id,
+            forceRefresh: opts.forceRefresh,
+            now: new Date(startedAt),
+         });
+
          const entries = await this.executeInstructedBuild(
             compiled,
             environment,
@@ -704,6 +731,7 @@ export class MaterializationService {
                   runId: opts.runContext?.runId ?? id,
                },
             },
+            incremental,
          );
 
          const sourcesBuilt = instructions.length;
@@ -1151,6 +1179,54 @@ export class MaterializationService {
    }
 
    /**
+    * The run's incremental context, or undefined when no source in the package
+    * asked for an incremental refresh — which is the common case, and which keeps
+    * the build path byte-for-byte what it was.
+    *
+    * Resolved from the compiled plan rather than the wire plan because the
+    * declaration is read off the compiled source (its output schema and query
+    * definition), and because the delta query is compiled through the same
+    * materializers, which are alive only for this compile.
+    */
+   private incrementalRunContext(
+      compiled: CompiledBuildPlan,
+      run: {
+         environmentId: string;
+         packageName: string;
+         materializationId: string;
+         forceRefresh: boolean;
+         now: Date;
+      },
+   ): IncrementalRunContext | undefined {
+      const declarations: Record<string, IncrementalDeclaration> = {};
+      for (const [sourceID, source] of Object.entries(compiled.sources)) {
+         let declaration: IncrementalDeclaration;
+         try {
+            declaration = resolveIncrementalDeclaration(
+               source,
+               deriveAnnotationFields(source),
+            );
+         } catch (err) {
+            // An unreadable declaration builds full, like every other source
+            // whose declaration the delta path cannot act on.
+            logger.warn(
+               "Failed to resolve an incremental declaration during a build",
+               { sourceID, error: errMessage(err) },
+            );
+            continue;
+         }
+         if (declaration.incremental) declarations[sourceID] = declaration;
+      }
+      if (Object.keys(declarations).length === 0) return undefined;
+      return {
+         ...run,
+         declarations,
+         materializers: compiled.sourceMaterializers ?? {},
+         ledger: this.repository,
+      };
+   }
+
+   /**
     * Shared build loop for both auto-run and orchestrated builds. Seeds the
     * manifest with carried-forward (reused) upstream entries so downstream
     * references resolve, then builds each instructed source in dependency
@@ -1168,6 +1244,9 @@ export class MaterializationService {
       // if it fails part-way (see reclaimStorageTablesFromFailedRun).
       owner?: { environmentId: string; packageName: string },
       buildMetadata?: BuildQueryMetadata,
+      // The run's incremental context, when any source declared incremental
+      // refresh. Undefined leaves every source on the full-rebuild path.
+      incremental?: IncrementalRunContext,
    ): Promise<Record<string, ManifestEntry>> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
@@ -1286,6 +1365,11 @@ export class MaterializationService {
                   environment,
                   entries,
                   buildMetadata,
+                  incremental,
+                  // The CONTENT address, distinct from the instruction's
+                  // caller-assigned identity: the ledger is keyed by it so a
+                  // boundary can never be read against different SQL.
+                  sourceEntityId,
                );
                entries[sourceEntityId] = entry;
                if (entry.storageDestinationName) builtThisRun.push(entry);
@@ -1528,6 +1612,16 @@ export class MaterializationService {
       environment: BuildEnvironment,
       builtEntries: Record<string, ManifestEntry>,
       buildMetadata?: BuildQueryMetadata,
+      // Present only when the run resolved at least one incremental declaration;
+      // absent leaves this method exactly the full-rebuild path it was.
+      incremental?: IncrementalRunContext,
+      // The source's content address, which is what the covered_through ledger is
+      // keyed by — NOT `instruction.sourceEntityId`, which is caller-assigned and
+      // opaque (see the index comment in executeInstructedBuild). Keying on
+      // content is what guarantees a boundary is never read against SQL other
+      // than the SQL it was computed from: different SQL is a different key, so a
+      // changed source seeds instead of deltaing onto a stale table.
+      contentSourceEntityId?: string,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -1601,16 +1695,58 @@ export class MaterializationService {
          buildMetadata,
       );
 
+      // Incremental refresh: a source that declares `refresh="incremental"` and a
+      // usable watermark can advance its serving table by a bounded delta instead
+      // of being rebuilt below. Every source that declares nothing — and every
+      // one whose declaration the delta path cannot act on — gets `undefined`
+      // here and falls straight through to the CTAS, unchanged.
+      const dialect = persistSource.dialectName;
+      const quotedPhysicalPath = quoteTablePath(physicalTableName, dialect);
+      const lineage =
+         incremental && contentSourceEntityId
+            ? incrementalLineage({
+                 declaration: incremental.declarations[persistSource.sourceID],
+                 dialect,
+                 physicalTableName,
+                 connectionName: persistSource.connectionName,
+                 isStorageBuild,
+              })
+            : undefined;
+      if (incremental && lineage && contentSourceEntityId) {
+         const applied = await this.refreshOneSourceIncrementally({
+            context: incremental,
+            lineage,
+            persistSource,
+            instruction,
+            ledgerKey: contentSourceEntityId,
+            connection,
+            connectionDigests,
+            buildManifest,
+            buildSQL,
+            quotedTablePath: quotedPhysicalPath,
+            runOptions,
+            manifest,
+         });
+         if (applied) return applied;
+      }
+
       const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
       // The control plane sends the logical (unquoted) physical name; dialect-
       // quote each identifier here so a container path or quote-requiring name
       // (e.g. a hyphenated BigQuery project id) produces valid DDL. The manifest
       // echoes the logical name (below) so the CP stays in logical-name space.
-      const dialect = persistSource.dialectName;
       const quotedStaging = quoteTablePath(stagingTableName, dialect);
-      const quotedPhysical = quoteTablePath(physicalTableName, dialect);
+      const quotedPhysical = quotedPhysicalPath;
       const quotedBareName = quoteIdentifier(bareName, dialect);
+
+      // The rebuild below replaces the table the boundary describes, so the
+      // boundary is dropped BEFORE it starts rather than overwritten after: a
+      // crash mid-rebuild would otherwise leave a boundary pointing at data that
+      // no longer exists, and the next run would apply a delta on top of it.
+      if (incremental && lineage && contentSourceEntityId) {
+         await resetLedger(incremental, contentSourceEntityId);
+      }
 
       const startTime = performance.now();
       await connection.runSQL(
@@ -1664,11 +1800,116 @@ export class MaterializationService {
          durationMs,
       });
 
+      // The table now holds a full snapshot, so record where that snapshot
+      // reaches: this is what turns the NEXT refresh into a delta.
+      if (incremental && lineage && contentSourceEntityId) {
+         await advanceLedgerAfterSeed({
+            context: incremental,
+            lineage,
+            sourceEntityId: contentSourceEntityId,
+            quotedTablePath: quotedPhysical,
+            dialect,
+            runner: (sql) => connection.runSQL(sql, runOptions),
+         });
+      }
+
       return {
          sourceEntityId,
          sourceName: persistSource.name,
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
+         connectionName: persistSource.connectionName,
+         realization: instruction.realization,
+         rowCount: null,
+      };
+   }
+
+   /**
+    * Advance one source's serving table by a bounded delta, if that is what this
+    * refresh should do.
+    *
+    * Returns the source's manifest entry when the table was advanced in place (or
+    * needed nothing), and `undefined` to mean "rebuild it" — in which case the
+    * caller falls through to the CTAS below, which is the ordinary full build.
+    * Every reason for that fallback is logged and counted by
+    * {@link reportIncrementalStep}.
+    *
+    * The DML runs on the SOURCE connection with the same run options as the rest
+    * of the build, so a delta shows up in the warehouse's query history as part of
+    * the same attributable unit of work as the seed it replaces.
+    */
+   private async refreshOneSourceIncrementally(params: {
+      context: IncrementalRunContext;
+      lineage: IncrementalLineage;
+      persistSource: PersistSource;
+      instruction: BuildInstruction;
+      /** The source's content address: the covered_through ledger's key. */
+      ledgerKey: string;
+      connection: MalloyConnection;
+      connectionDigests: Record<string, string>;
+      buildManifest: BuildManifest;
+      buildSQL: string;
+      quotedTablePath: string;
+      runOptions: { queryMetadata?: QueryMetadata };
+      manifest: Manifest;
+   }): Promise<ManifestEntry | undefined> {
+      const { context, lineage, persistSource, instruction } = params;
+      const sourceEntityId = instruction.sourceEntityId;
+      const dialect = persistSource.dialectName;
+      const runner: SqlRunner = (sql) =>
+         params.connection.runSQL(sql, params.runOptions);
+
+      const step = await planSourceRefresh({
+         context,
+         lineage,
+         persistSource,
+         sourceID: persistSource.sourceID,
+         sourceEntityId: params.ledgerKey,
+         quotedTablePath: params.quotedTablePath,
+         sourceSQL: params.buildSQL,
+         runner,
+         buildManifest: params.buildManifest,
+         connectionDigests: params.connectionDigests,
+      });
+      reportIncrementalStep({
+         step,
+         sourceName: persistSource.name,
+         packageName: context.packageName,
+         physicalTableName: lineage.physicalTableName,
+      });
+      if (step.mode === "seed") return undefined;
+
+      const startTime = performance.now();
+      if (step.mode === "delta") {
+         // One call, because the range replace's DELETE and INSERT have to commit
+         // or roll back together — see deltaScript. A failure here leaves the
+         // table as it was and does NOT advance the boundary, so the next run
+         // recomputes the same range.
+         await applyDeltaScript(runner, dialect, step.statements);
+         await advanceLedger({
+            context,
+            lineage,
+            sourceEntityId: params.ledgerKey,
+            coveredThrough: step.coveredThrough,
+         });
+         recordSourceBuildDuration(
+            Math.round(performance.now() - startTime),
+            "in_warehouse",
+         );
+      }
+
+      // Both a delta and a skip leave the existing table serving, so it still has
+      // to appear in the build manifest: a downstream source built later in this
+      // run resolves its upstream through here, and an absent entry would make it
+      // recompute the upstream from raw instead.
+      params.manifest.update(sourceEntityId, {
+         tableName: params.quotedTablePath,
+      });
+      return {
+         sourceEntityId,
+         sourceName: persistSource.name,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName: lineage.physicalTableName,
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
          rowCount: null,

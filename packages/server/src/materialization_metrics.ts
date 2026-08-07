@@ -95,6 +95,12 @@ const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
    "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
 );
+const incrementalStepCounter = lazyCounter(
+   "publisher_materialization_incremental_step_total",
+   'Refreshes of a source declared refresh="incremental". Label: step ' +
+      "('delta'|'seed'|'skip'). A 'seed' is a full rebuild the delta path " +
+      "declined, so a rising seed rate means the feature is not engaging.",
+);
 const buildPlanComputeDuration = lazyHistogram(
    "publisher_materialization_build_plan_compute_duration_ms",
    "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
@@ -199,6 +205,17 @@ export function recordSourcesOutcome(
 ): void {
    if (count <= 0) return;
    sourcesCounter().add(count, { outcome });
+}
+
+/**
+ * Record what one incremental source's refresh actually did. The delta:seed
+ * ratio is the health signal for the feature: a source that declares incremental
+ * refresh but keeps seeding is being rebuilt in full every run, which is correct
+ * but costs exactly what the declaration was meant to save (the reason is in the
+ * accompanying warn log).
+ */
+export function recordIncrementalStep(step: "delta" | "seed" | "skip"): void {
+   incrementalStepCounter().add(1, { step });
 }
 
 /**

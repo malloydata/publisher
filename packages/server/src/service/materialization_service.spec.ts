@@ -2585,3 +2585,307 @@ describe("reclaimStorageTablesFromFailedRun", () => {
       expect(said(infoLog, /Keeping a table from a failed run/)).toBe(false);
    });
 });
+
+// ── Incremental dispatch inside buildOneSource ────────────────────────────
+//
+// The planner's decisions are unit-tested against fakes in
+// incremental_apply.spec.ts, and the DML's semantics are executed in
+// incremental_dml_semantics.spec.ts. What is left, and what these cover, is the
+// WIRING: that a delta replaces the CTAS rather than joining it, that a seed is
+// still byte-for-byte the old build, and that the boundary is written and cleared
+// at the right moments.
+describe("buildOneSource: incremental refresh", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   const DECLARATION = {
+      refresh: "incremental",
+      incremental: true,
+      declaredWatermark: true,
+      declaredMergeKey: false,
+      watermark: {
+         name: "order_date",
+         kind: "dimension" as const,
+         malloyType: "date",
+      },
+      watermarkOrderable: true,
+      mergeKeys: [],
+      watermarkInMergeKeys: false,
+      strategy: "range_replace" as const,
+      malformed: [],
+      unknownKeys: [],
+      calculateFields: [],
+      outputColumns: ["order_date", "revenue"],
+   };
+
+   const LEDGER_ROW = {
+      environmentId: "env-1",
+      packageName: "pkg",
+      sourceEntityId: "abcdef1234567890",
+      coveredThroughValue: "2024-06-01",
+      coveredThroughType: "date",
+      watermarkDimension: "order_date",
+      mergeKeyDimensions: [] as string[],
+      derivedStrategy: "range_replace" as const,
+      physicalTableName: "orders_v1",
+      connectionName: "wh",
+      advancedByMaterializationId: "run-0",
+      advancedAt: new Date("2024-06-01T00:00:00Z"),
+      createdAt: new Date("2024-05-01T00:00:00Z"),
+   };
+
+   /** A runSQL stub that answers the probes and records every statement. */
+   function probeAwareRunSQL(nonEmpty = true): sinon.SinonStub {
+      const stub = sinon.stub();
+      stub.callsFake(async (sql: string) => {
+         if (sql.includes("information_schema")) {
+            return {
+               rows: [
+                  { column_name: "order_date" },
+                  { column_name: "revenue" },
+               ],
+            };
+         }
+         if (sql.includes("LIMIT 1")) {
+            return { rows: nonEmpty ? [{ present: 1 }] : [] };
+         }
+         if (sql.includes("watermark_max")) {
+            return { rows: [{ watermark_max: "2024-06-20" }] };
+         }
+         return { rows: [] };
+      });
+      return stub;
+   }
+
+   /** A materializer whose delta compiles to a fixed SQL and shape. */
+   const materializer = {
+      loadQuery: () => ({
+         getPreparedResult: async () => ({
+            sql: "SELECT order_date, revenue FROM base WHERE 1=1",
+            resultExplore: {
+               allFields: [{ name: "order_date" }, { name: "revenue" }],
+            },
+         }),
+      }),
+   };
+
+   function incrementalContext(overrides: {
+      ledgerEntry?: typeof LEDGER_ROW | null;
+      forceRefresh?: boolean;
+   }) {
+      const upsert = sinon.stub().resolves();
+      const remove = sinon.stub().resolves();
+      const context = {
+         environmentId: "env-1",
+         packageName: "pkg",
+         materializationId: "run-1",
+         forceRefresh: overrides.forceRefresh ?? false,
+         now: new Date("2024-07-01T00:00:00Z"),
+         declarations: { orders: DECLARATION },
+         materializers: { orders: materializer },
+         ledger: {
+            getIncrementalLedgerEntry: sinon
+               .stub()
+               .resolves(
+                  overrides.ledgerEntry === undefined
+                     ? LEDGER_ROW
+                     : overrides.ledgerEntry,
+               ),
+            upsertIncrementalLedgerEntry: upsert,
+            deleteIncrementalLedgerEntry: remove,
+         },
+      };
+      return { context, upsert, remove };
+   }
+
+   function callBuildOneSource(params: {
+      runSQL: sinon.SinonStub;
+      context?: unknown;
+      annotationFields?: Record<string, string>;
+   }): Promise<{ sourceEntityId: string; physicalTableName: string }> {
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "abcdef1234567890",
+         sql: "SELECT * FROM t",
+         connectionName: "wh",
+         dialectName: "postgres",
+         annotationFields: params.annotationFields,
+      });
+      const instruction: BuildInstruction = {
+         sourceEntityId: "abcdef1234567890",
+         materializedTableId: "mt-1",
+         physicalTableName: "orders_v1",
+         realization: "COPY",
+      };
+      return (
+         ctx.service as unknown as {
+            buildOneSource: (...args: unknown[]) => Promise<{
+               sourceEntityId: string;
+               physicalTableName: string;
+            }>;
+         }
+      ).buildOneSource(
+         source,
+         instruction,
+         { runSQL: params.runSQL },
+         { wh: "dig" },
+         new Manifest(),
+         {
+            getApiConnection: () => {
+               throw new Error("no connection config in this test");
+            },
+            getEnvironmentPath: () => "/tmp/env",
+         },
+         {},
+         undefined,
+         params.context,
+         // The content address, which is the ledger's key.
+         "abcdef1234567890",
+      );
+   }
+
+   it("applies the delta INSTEAD of the CTAS, and advances the boundary", async () => {
+      const runSQL = probeAwareRunSQL();
+      const { context, upsert } = incrementalContext({});
+      const entry = await callBuildOneSource({ runSQL, context });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      // The delta went out as ONE call: the DELETE and the INSERT have to commit
+      // together.
+      const script = statements.find((s) => s.startsWith("BEGIN;"));
+      expect(script).toBeDefined();
+      expect(script).toContain(`DELETE FROM "orders_v1" WHERE "order_date" >=`);
+      expect(script).toContain(
+         `INSERT INTO "orders_v1" ("order_date", "revenue")`,
+      );
+      expect(script).toContain("COMMIT;");
+      // And nothing rebuilt the table.
+      expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(false);
+      expect(statements.some((s) => s.includes("RENAME TO"))).toBe(false);
+
+      expect(upsert.calledOnce).toBe(true);
+      expect(upsert.firstCall.args[0]).toMatchObject({
+         sourceEntityId: "abcdef1234567890",
+         // The run's snapshot, for a date watermark.
+         coveredThroughValue: "2024-07-01",
+         coveredThroughType: "date",
+         watermarkDimension: "order_date",
+         derivedStrategy: "range_replace",
+         physicalTableName: "orders_v1",
+         advancedByMaterializationId: "run-1",
+      });
+      // The entry still names the same table: a delta advances in place.
+      expect(entry.physicalTableName).toBe("orders_v1");
+   });
+
+   it("rebuilds and re-records the boundary when none is recorded", async () => {
+      const runSQL = probeAwareRunSQL();
+      const { context, upsert, remove } = incrementalContext({
+         ledgerEntry: null,
+      });
+      await callBuildOneSource({ runSQL, context });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      // The full build, unchanged.
+      expect(statements).toContain(
+         'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
+      );
+      expect(statements).toContain(
+         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
+      );
+      // Cleared before the rebuild starts, then set from the table it wrote.
+      expect(remove.calledOnce).toBe(true);
+      expect(upsert.calledOnce).toBe(true);
+      expect(upsert.firstCall.args[0]).toMatchObject({
+         coveredThroughValue: "2024-07-01",
+      });
+   });
+
+   it("routes forceRefresh to a full rebuild and resets the boundary", async () => {
+      const runSQL = probeAwareRunSQL();
+      const { context, remove } = incrementalContext({ forceRefresh: true });
+      await callBuildOneSource({ runSQL, context });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(true);
+      expect(statements.some((s) => s.startsWith("BEGIN;"))).toBe(false);
+      expect(remove.calledOnce).toBe(true);
+   });
+
+   it("records nothing when the rebuilt table has no watermark values", async () => {
+      // An empty seed sets no boundary on purpose: one taken from an empty table
+      // would exclude every historical row that arrives later.
+      const runSQL = sinon.stub().callsFake(async (sql: string) => {
+         if (sql.includes("watermark_max")) {
+            return { rows: [{ watermark_max: null }] };
+         }
+         return { rows: [] };
+      });
+      const { context, upsert } = incrementalContext({ ledgerEntry: null });
+      await callBuildOneSource({ runSQL, context });
+      expect(upsert.called).toBe(false);
+   });
+
+   it("leaves a non-incremental source's build exactly as it was", async () => {
+      // The context is present (another source in the package declared it), so
+      // this proves the branch is keyed on the SOURCE, not on the run.
+      const runSQL = sinon.stub().resolves({ rows: [] });
+      const { context, upsert, remove } = incrementalContext({});
+      context.declarations = {} as typeof context.declarations;
+      await callBuildOneSource({ runSQL, context });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(statements).toEqual([
+         'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
+         'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
+         'DROP TABLE IF EXISTS "orders_v1"',
+         'ALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1"',
+      ]);
+      expect(upsert.called).toBe(false);
+      expect(remove.called).toBe(false);
+   });
+
+   it("leaves the build alone on a dialect the delta path does not support", async () => {
+      // Same declaration, DuckDB instead of Postgres: no probe, no delta, no
+      // ledger write — the gate rejects this at publish, and a package that
+      // predates the gate simply builds full.
+      const runSQL = sinon.stub().resolves({ rows: [] });
+      const { context, upsert } = incrementalContext({});
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "abcdef1234567890",
+         sql: "SELECT * FROM t",
+         dialectName: "duckdb",
+      });
+      await (
+         ctx.service as unknown as {
+            buildOneSource: (...args: unknown[]) => Promise<unknown>;
+         }
+      ).buildOneSource(
+         source,
+         {
+            sourceEntityId: "abcdef1234567890",
+            materializedTableId: "mt-1",
+            physicalTableName: "orders_v1",
+            realization: "COPY",
+         } as BuildInstruction,
+         { runSQL },
+         { duckdb: "dig" },
+         new Manifest(),
+         {
+            getApiConnection: () => {
+               throw new Error("no connection config in this test");
+            },
+            getEnvironmentPath: () => "/tmp/env",
+         },
+         {},
+         undefined,
+         context,
+         "abcdef1234567890",
+      );
+      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
+      expect(upsert.called).toBe(false);
+   });
+});

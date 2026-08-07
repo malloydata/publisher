@@ -495,6 +495,14 @@ export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
 ): string {
+   // The no-options `getSQL()` is load-bearing, and incremental refresh is what
+   // makes it so: this address is the key the covered_through ledger is stored
+   // under (see incremental_build.ts), so it must describe WHAT the source
+   // computes and never HOW FAR a run got. A boundary value reaching this SQL —
+   // via a buildManifest, a given, or a range predicate — would re-address the
+   // table on every refresh, orphaning the data and the boundary together and
+   // re-seeding forever. A declaration alone must not move it either, which is
+   // pinned as fact 1 in incremental_compiler_contract.spec.ts.
    return source.makeBuildId(
       connectionDigests[source.connectionName],
       source.getSQL(),

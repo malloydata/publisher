@@ -352,4 +352,70 @@ source: mz is raw -> { group_by: order_date, ts, region, amount }`,
       expect(await sqlFor("region >= 'us-east'")).toContain("'us-east'");
       expect(await sqlFor("amount >= 42")).toContain("42");
    });
+
+   // ── What the delta WRITES: no row cap, and a shape that can diverge ────
+
+   it("the generated delta query carries NO row limit", async () => {
+      // The delta's SQL is inlined into an INSERT ... SELECT. A default row cap
+      // in it would not fail anything — it would silently write a truncated
+      // range into a serving table and then record the full range as covered.
+      // Nothing in the publisher can detect that afterwards, so it is pinned
+      // here.
+      const { materializer } = await compile(
+         `${RAW}#@ persist name="t"\n${ROLLUP}`,
+      );
+      const sql = await materializer
+         .loadQuery(
+            `run: mz -> {
+               where: order_date >= @2024-06-01 and order_date < @2024-07-01
+               select: *
+            }`,
+         )
+         .getSQL();
+      expect(sql.toUpperCase()).not.toContain("LIMIT");
+   });
+
+   it("a rename makes the source's OWN SQL and a query stage disagree on column names", async () => {
+      // The seed CTAS materializes the source's own getSQL(), while a delta is a
+      // query stage over the source — and on a table-backed source those two
+      // produce different column NAMES: the table keeps the underlying name, the
+      // query emits the renamed one. So the two shapes are compared before any
+      // DML runs (incremental_apply's shapeMismatch), and a source like this is
+      // rebuilt in full rather than deltaed into a table whose columns do not
+      // match.
+      const { sources, materializer } = await compile(
+         `${RAW}#@ persist name="t"
+source: mz is raw extend {
+  rename: order_day is order_date
+  except: flag, tags, rec
+}`,
+      );
+      // The seed's SQL still projects the underlying name...
+      expect(sources.mz.getSQL()).toContain("order_date");
+      expect(sources.mz.getSQL()).not.toContain("order_day");
+      // ...while the delta's output column is the renamed one.
+      const prepared = await materializer
+         .loadQuery(`run: mz -> { where: order_day >= @2024-06-01; select: * }`)
+         .getPreparedResult();
+      const columns = prepared.resultExplore.allFields.map((f) => f.name);
+      expect(columns).toContain("order_day");
+      expect(columns).not.toContain("order_date");
+   });
+
+   it("a query source's own SQL and its delta agree on column names", async () => {
+      // The common case, and why the shape check is a fallback rather than a
+      // blanket refusal: an aggregating source's output columns ARE its SQL's
+      // columns, so a delta writes exactly the shape the seed wrote.
+      const { sources, materializer } = await compile(
+         `${RAW}#@ persist name="t"\n${ROLLUP}`,
+      );
+      const prepared = await materializer
+         .loadQuery(
+            `run: mz -> { where: order_date >= @2024-06-01; select: * }`,
+         )
+         .getPreparedResult();
+      expect(prepared.resultExplore.allFields.map((f) => f.name)).toEqual(
+         deriveColumns(sources.mz).map((c) => String(c.name)),
+      );
+   });
 });

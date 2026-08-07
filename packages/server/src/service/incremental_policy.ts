@@ -1,5 +1,6 @@
 import { components } from "../api";
 import {
+   describeDialects,
    INCREMENTAL_DIALECT_ALLOWLIST,
    MERGE_CAPABLE_DIALECTS,
 } from "./incremental_apply";
@@ -42,8 +43,10 @@ export interface IncrementalPolicySource {
    sourceName: string;
    /** Package-relative model path, for the warning's `model` field. */
    modelPath?: string;
-   /** The source's dialect name (`postgres`, `bigquery`, …). */
+   /** The source's Malloy dialect name (`postgres`, `standardsql`, …). */
    dialect?: string;
+   /** The source's `#@ persist storage=` destination, when it declares one. */
+   storageDestination?: string;
    declaration: IncrementalDeclaration;
    /**
     * The publish-time trial compile's error, when the generated delta query for
@@ -216,7 +219,7 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
             `"${dialect || "unknown"}". Incremental refresh applies its delta to ` +
             `the live serving table, so it is enabled only where the publisher ` +
             `has proven transactional multi-statement DML: ` +
-            `${[...INCREMENTAL_DIALECT_ALLOWLIST].sort().join(", ")}. Use ` +
+            `${describeDialects(INCREMENTAL_DIALECT_ALLOWLIST)}. Use ` +
             `refresh="full" here; the supported set widens in a later release.`,
       );
    } else if (d.declaredMergeKey && !MERGE_CAPABLE_DIALECTS.has(dialect)) {
@@ -227,6 +230,23 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
          `${where} declares merge_key=, which needs a MERGE statement that ` +
             `dialect "${dialect}" does not have. Remove merge_key= to replace ` +
             `the watermark range instead of merging by row identity.`,
+      );
+   }
+
+   // Rule 13: `storage=` sends the table to a DuckDB/DuckLake destination, built
+   // through a separate build session on a different engine than the one the
+   // dialect rule above just cleared. The delta path applies its DML on the
+   // SOURCE connection, so pairing the two would aim a Postgres or BigQuery
+   // statement at a table that does not live there.
+   if (source.storageDestination) {
+      out.push(
+         `${where} declares ${MODE} together with ` +
+            `storage="${source.storageDestination}". A stored source is ` +
+            `materialized into the storage destination's own engine, while an ` +
+            `incremental delta is applied on the source warehouse — so the two ` +
+            `cannot be combined yet. Drop one: refresh="full" keeps the storage ` +
+            `destination, removing storage= keeps the incremental refresh in the ` +
+            `source warehouse.`,
       );
    }
 
