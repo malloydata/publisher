@@ -2,13 +2,7 @@
 // compiler (in-memory DuckDB, the pattern of materialization_eligibility.spec.ts).
 // The behaviors this module depends on are pinned separately in
 // incremental_compiler_contract.spec.ts; these tests cover the resolution itself.
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { PersistSource } from "@malloydata/malloy";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
-} from "@malloydata/malloy";
+import type { FixedConnectionMap, PersistSource } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { deriveAnnotationFields } from "./build_plan";
 import {
@@ -16,33 +10,21 @@ import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
 } from "./incremental_declaration";
+import {
+   compilePersistSources,
+   duckdbTestConnections,
+} from "./incremental_test_harness";
 
-const ROOT = "file:///decl/";
 let connections: FixedConnectionMap;
 
 beforeAll(() => {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   connections = new FixedConnectionMap(
-      new Map([["duckdb", duckdb]]),
-      "duckdb",
-   );
+   ({ connections } = duckdbTestConnections());
 });
 
 async function persistSources(
    model: string,
 ): Promise<Record<string, PersistSource>> {
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, model]]),
-   );
-   const runtime = new Runtime({ urlReader, connections });
-   const compiled = await runtime
-      .loadModel(new URL(`${ROOT}m.malloy`), { importBaseURL: new URL(ROOT) })
-      .getModel();
-   const byName: Record<string, PersistSource> = {};
-   for (const source of Object.values(compiled.getBuildPlan().sources)) {
-      byName[source.name] = source;
-   }
-   return byName;
+   return (await compilePersistSources(connections, model)).sources;
 }
 
 /** Resolve one named source of a compiled model. */

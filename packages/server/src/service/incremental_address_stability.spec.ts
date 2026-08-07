@@ -18,45 +18,26 @@
 //
 // Same real-compile harness as incremental_compiler_contract.spec.ts (in-memory
 // DuckDB is the compile target only; the delta is never run here).
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { ModelMaterializer, PersistSource } from "@malloydata/malloy";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
-} from "@malloydata/malloy";
+import type { FixedConnectionMap, PersistSource } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { computeSourceEntityId } from "./build_plan";
 import { deltaSelect, type WatermarkBound } from "./incremental_apply";
+import {
+   compilePersistSources,
+   duckdbTestConnections,
+} from "./incremental_test_harness";
 
-const ROOT = "file:///addr/";
 const DIGESTS = { duckdb: "digest-1" };
 let connections: FixedConnectionMap;
 
 beforeAll(() => {
-   connections = new FixedConnectionMap(
-      new Map([["duckdb", new DuckDBConnection("duckdb", ":memory:")]]),
-      "duckdb",
-   );
+   ({ connections } = duckdbTestConnections());
 });
 
-async function compile(model: string): Promise<{
-   sources: Record<string, PersistSource>;
-   materializer: ModelMaterializer;
-}> {
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, model]]),
-   );
-   const runtime = new Runtime({ urlReader, connections });
-   const materializer = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
-      importBaseURL: new URL(ROOT),
-   });
-   const compiled = await materializer.getModel();
-   const sources: Record<string, PersistSource> = {};
-   for (const source of Object.values(compiled.getBuildPlan().sources)) {
-      sources[source.name] = source;
-   }
-   return { sources, materializer };
+async function compile(
+   model: string,
+): Promise<{ sources: Record<string, PersistSource> }> {
+   return compilePersistSources(connections, model);
 }
 
 const RAW = `##! experimental.persistence

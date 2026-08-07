@@ -2382,6 +2382,62 @@ describe("runBuild (branch behavior)", () => {
       // Auto-run owns distribution: it loads the fresh manifest into the models.
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
    });
+
+   // The forceRefresh handed to the incremental context is forcesFullSeed(opts),
+   // not opts.forceRefresh verbatim. This is the wiring that lets a schedule
+   // drive deltas: the scheduler always sets forceRefresh (to defeat
+   // skip-if-unchanged), and reading that as "re-seed" would rebuild every
+   // incremental source in full on every scheduled run.
+   it("does not read a SCHEDULER force as a re-seed for incremental sources", async () => {
+      const svc = stubEngine();
+      const contextSpy = sinon.stub().returns(undefined);
+      (
+         ctx.service as unknown as { incrementalRunContext: sinon.SinonStub }
+      ).incrementalRunContext = contextSpy;
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+            trigger: "SCHEDULER",
+         } as unknown as Parameters<typeof svc.runBuild>[3],
+         new AbortController().signal,
+      );
+
+      expect(contextSpy.calledOnce).toBe(true);
+      expect(contextSpy.firstCall.args[1]).toMatchObject({
+         forceRefresh: false,
+      });
+   });
+
+   it("does read an ON_DEMAND force as a re-seed for incremental sources", async () => {
+      const svc = stubEngine();
+      const contextSpy = sinon.stub().returns(undefined);
+      (
+         ctx.service as unknown as { incrementalRunContext: sinon.SinonStub }
+      ).incrementalRunContext = contextSpy;
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+            trigger: "ON_DEMAND",
+         } as unknown as Parameters<typeof svc.runBuild>[3],
+         new AbortController().signal,
+      );
+
+      expect(contextSpy.firstCall.args[1]).toMatchObject({
+         forceRefresh: true,
+      });
+   });
 });
 
 describe("autoLoadManifest", () => {
@@ -2815,6 +2871,7 @@ describe("buildOneSource: incremental refresh", () => {
       runSQL: sinon.SinonStub;
       context?: unknown;
       annotationFields?: Record<string, string>;
+      manifest?: Manifest;
    }): Promise<{ sourceEntityId: string; physicalTableName: string }> {
       const source = fakeSource({
          name: "orders",
@@ -2845,7 +2902,7 @@ describe("buildOneSource: incremental refresh", () => {
          instruction,
          { runSQL: params.runSQL },
          { wh: "dig" },
-         new Manifest(),
+         params.manifest ?? new Manifest(),
          {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
@@ -2896,6 +2953,50 @@ describe("buildOneSource: incremental refresh", () => {
       });
       // The entry still names the same table: a delta advances in place.
       expect(entry.physicalTableName).toBe("orders_v1");
+   });
+
+   it("skips when nothing advanced: no DML, no ledger write, entry still emitted", async () => {
+      // The boundary already sits at the run's snapshot, so there is no range to
+      // compute. The table keeps serving as-is — but the manifest entry must
+      // still appear, or a downstream source built later in this run would
+      // recompute this upstream from raw.
+      const runSQL = probeAwareRunSQL();
+      const { context, upsert, remove } = incrementalContext({
+         ledgerEntry: { ...LEDGER_ROW, coveredThroughValue: "2024-07-01" },
+      });
+      const manifest = new Manifest();
+      const entry = await callBuildOneSource({ runSQL, context, manifest });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(statements.some((s) => s.startsWith("BEGIN;"))).toBe(false);
+      expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(false);
+      expect(upsert.called).toBe(false);
+      expect(remove.called).toBe(false);
+      expect(entry.physicalTableName).toBe("orders_v1");
+      // Downstream resolution: the QUOTED serving table is in the build manifest.
+      expect(
+         manifest.buildManifest.entries["abcdef1234567890"]?.tableName,
+      ).toBe('"orders_v1"');
+   });
+
+   it("fails the build and leaves the boundary alone when the delta's DML fails", async () => {
+      // The crash-safety property: an unadvanced boundary makes the next run
+      // recompute the same (idempotent) range. Advancing it past a failed write
+      // would skip those rows forever.
+      const runSQL = probeAwareRunSQL();
+      runSQL
+         .withArgs(sinon.match((sql: string) => sql.startsWith("BEGIN;")))
+         .rejects(new Error("deadlock detected"));
+      const { context, upsert } = incrementalContext({});
+
+      await expect(callBuildOneSource({ runSQL, context })).rejects.toThrow(
+         "deadlock detected",
+      );
+      expect(upsert.called).toBe(false);
+      // The session was rolled back so a pooled connection is not returned
+      // inside an aborted transaction.
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(statements).toContain("ROLLBACK");
    });
 
    it("rebuilds and re-records the boundary when none is recorded", async () => {

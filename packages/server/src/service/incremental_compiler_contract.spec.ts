@@ -10,16 +10,17 @@
 // in-memory DuckDB + Runtime + getBuildPlan(). DuckDB is only the compile
 // target; the dialect allowlist for actually RUNNING a delta is bigquery +
 // postgres (see the publish gates).
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { ModelMaterializer, PersistSource } from "@malloydata/malloy";
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import type {
+   FixedConnectionMap,
+   ModelMaterializer,
+   PersistSource,
+} from "@malloydata/malloy";
 import {
    DatabricksDialect,
    DuckDBDialect,
-   FixedConnectionMap,
-   InMemoryURLReader,
    MySQLDialect,
    PostgresDialect,
-   Runtime,
    SnowflakeDialect,
    StandardSQLDialect,
    TrinoDialect,
@@ -27,17 +28,16 @@ import {
 import { beforeAll, describe, expect, it } from "bun:test";
 import { deriveAnnotationFields, deriveColumns } from "./build_plan";
 import { renderSqlBound } from "./incremental_apply";
+import {
+   compilePersistSources,
+   duckdbTestConnections,
+} from "./incremental_test_harness";
 
-const ROOT = "file:///incr/";
 let connections: FixedConnectionMap;
 let duckdb: DuckDBConnection;
 
 beforeAll(() => {
-   duckdb = new DuckDBConnection("duckdb", ":memory:");
-   connections = new FixedConnectionMap(
-      new Map([["duckdb", duckdb]]),
-      "duckdb",
-   );
+   ({ duckdb, connections } = duckdbTestConnections());
 });
 
 /**
@@ -46,23 +46,11 @@ beforeAll(() => {
  * (fact 3); the materializer is here to pin what a compiled QUERY would do
  * instead, which is what the facts below are contrasted against.
  */
-async function compile(model: string): Promise<{
+function compile(model: string): Promise<{
    sources: Record<string, PersistSource>;
    materializer: ModelMaterializer;
 }> {
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, model]]),
-   );
-   const runtime = new Runtime({ urlReader, connections });
-   const materializer = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
-      importBaseURL: new URL(ROOT),
-   });
-   const compiled = await materializer.getModel();
-   const sources: Record<string, PersistSource> = {};
-   for (const source of Object.values(compiled.getBuildPlan().sources)) {
-      sources[source.name] = source;
-   }
-   return { sources, materializer };
+   return compilePersistSources(connections, model);
 }
 
 const RAW = `##! experimental.persistence

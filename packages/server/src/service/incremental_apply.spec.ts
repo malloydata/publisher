@@ -3,14 +3,13 @@
 // the table's columns from the source's schema) are pinned in
 // incremental_compiler_contract.spec.ts; here we check the SQL we compose, and
 // that it really runs.
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   Runtime,
-   type ModelMaterializer,
-} from "@malloydata/malloy";
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { FixedConnectionMap, ModelMaterializer } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
+import {
+   duckdbTestConnections,
+   loadTestModel,
+} from "./incremental_test_harness";
 import {
    canonicalBoundValue,
    compareBounds,
@@ -30,26 +29,15 @@ import {
    type SqlRunner,
 } from "./incremental_apply";
 
-const ROOT = "file:///apply/";
 let connections: FixedConnectionMap;
 let duckdb: DuckDBConnection;
 
 beforeAll(() => {
-   duckdb = new DuckDBConnection("duckdb", ":memory:");
-   connections = new FixedConnectionMap(
-      new Map([["duckdb", duckdb]]),
-      "duckdb",
-   );
+   ({ duckdb, connections } = duckdbTestConnections());
 });
 
 function materialize(model: string): ModelMaterializer {
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, model]]),
-   );
-   const runtime = new Runtime({ urlReader, connections });
-   return runtime.loadModel(new URL(`${ROOT}m.malloy`), {
-      importBaseURL: new URL(ROOT),
-   });
+   return loadTestModel(connections, model);
 }
 
 const MODEL = `##! experimental.persistence
