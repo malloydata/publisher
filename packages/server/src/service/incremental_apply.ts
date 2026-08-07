@@ -13,14 +13,14 @@ import { quoteIdentifier } from "./quoting";
  * source that a refresh writes into the already-serving table, instead of
  * rebuilding the whole table.
  *
- * The delta is always a QUERY STAGE over the author's own source:
- *
- *   run: `daily_revenue` -> { where: `order_date` >= @start and `order_date` < @end; select: * }
- *
- * It is never a generated source extension. `source: __d is base extend { where: … }`
- * compiles clean and silently DROPS the predicate (pinned as a canary in
- * incremental_compiler_contract.spec.ts), which would turn a delta that reports a
- * bounded range into one that rewrites every row.
+ * The delta is composed SQL, never a compiled Malloy query: the source's own
+ * build SQL (`PersistSource.getSQL()`, the string the seed's CTAS runs) wrapped
+ * in a `WHERE` on the watermark. Why not a query is load-bearing and pinned in
+ * incremental_compiler_contract.spec.ts — a compiled query's SQL arrives
+ * FINALIZED (on Postgres, wrapped in `row_to_json`, which breaks a columnar
+ * INSERT; see {@link deltaSelect}), and a generated source extension silently
+ * DROPS its `where:`, which would turn a delta that reports a bounded range into
+ * one that rewrites every row.
  *
  * The range is HALF-OPEN, `[start, end)`. That is what makes a run idempotent:
  * re-running the same range deletes and re-inserts (or re-merges) exactly the
@@ -211,12 +211,10 @@ export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
  * a compiled delta query yields ONE json column named `row` and an
  * `INSERT INTO … SELECT "col", …` off it fails with `column "col" does not
  * exist`. `PersistSource.getSQL()` is the same expression compiled UNfinalized,
- * which is why the seed's CTAS materializes real columns. Publisher #867 fixed
- * the CTAS by patching Malloy to that effect and upstream
- * malloydata/malloy#2964 shipped it, so the fix arrives here for free — but only
- * through `getSQL()`. There is no supported way to ask a QUERY for its
- * unfinalized SQL, hence this composition. See docs/materialization.md,
- * "Materializing on Postgres".
+ * which is why the seed's CTAS materializes real columns — and there is no
+ * supported way to ask a QUERY for its unfinalized SQL, hence this composition.
+ * Pinned as the TRIPWIRE in incremental_compiler_contract.spec.ts; see
+ * docs/materialization.md, "Materializing on Postgres".
  *
  * Two things follow from reusing the seed's own SQL, both worth having: the
  * delta writes the same shape the seed wrote BY CONSTRUCTION, and the delta
@@ -990,10 +988,10 @@ export async function planIncrementalStep(inputs: {
    const shape = shapeMismatch(inputs.columns, probe.columns);
    if (shape) {
       // Legitimate, and unfixable from here: a table-backed source that renames
-      // or hides a column materializes its OWN column names while a query stage
-      // over it emits the source's names. The rebuild keeps the table correct,
-      // and the reason names the columns so the author can drop the rename or the
-      // incremental declaration.
+      // or hides a column materializes getSQL()'s column names while the DML
+      // names the source's compiled schema (see shapeMismatch). The rebuild
+      // keeps the table correct, and the reason names the columns so the author
+      // can drop the rename or the incremental declaration.
       return {
          mode: "seed",
          reasonCode: "shape_mismatch",

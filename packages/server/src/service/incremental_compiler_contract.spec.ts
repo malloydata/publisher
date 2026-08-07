@@ -137,10 +137,10 @@ source: mz_ext is mz extend { where: order_date >= @2024-06-01 }`,
       // wherever hasFinalStage is true. Postgres is the only such dialect, and its
       // final stage collapses the result into a single json column named `row` —
       // so `INSERT INTO t ("batch", …) SELECT "batch", … FROM (<query sql>)` fails
-      // with `column "batch" does not exist`. This bit Publisher twice: once in
-      // the seed's CTAS (#867, fixed upstream by malloydata/malloy#2964 forcing
-      // PersistSource.getSQL() to compile unfinalized) and once in this delta.
-      // getSQL() carries that fix; a query's SQL cannot.
+      // with `column "batch" does not exist`. PersistSource.getSQL() compiles the
+      // same expression UNFINALIZED (guaranteed upstream by
+      // malloydata/malloy#2964, after the finalized form broke the seed's CTAS
+      // the same way); a query's SQL has no unfinalized form to ask for.
       //
       // Two ways this goes red, both of which need a decision before shipping:
       // another dialect gains a final stage (check it before adding it to
