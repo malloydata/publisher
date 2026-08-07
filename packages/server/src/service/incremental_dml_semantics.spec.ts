@@ -7,12 +7,14 @@
 // the only way to hold it is to execute against one.
 //
 // Executed on DuckDB, which is NOT on the dialect allowlist: it is a stand-in
-// here for the transactional multi-statement DML the allowlisted dialects
-// provide, and it accepts the Postgres spelling verbatim (double-quoted
-// identifiers, `BEGIN`/`COMMIT`, `MERGE INTO … WHEN MATCHED`). That makes these
-// semantics checkable in a unit test; it does NOT make DuckDB supported, and it
-// is not a substitute for running the real dialects (see the Postgres
-// integration path in the docs).
+// here for the transactional DML the allowlisted dialects provide, and it
+// accepts the Postgres spelling verbatim (double-quoted identifiers,
+// `BEGIN`/`COMMIT`, `MERGE INTO … WHEN MATCHED`). That makes these semantics
+// checkable in a unit test; it does NOT make DuckDB supported, and it is not a
+// substitute for running the real dialects (see the Postgres integration path
+// in the docs). Snowflake's range replace — a Snowflake Scripting block — has
+// no local stand-in at all: its text is pinned in incremental_apply.spec.ts and
+// its semantics are provable only against a real Snowflake account.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { applyDeltaScript, deltaStatements } from "./incremental_apply";

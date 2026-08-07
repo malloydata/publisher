@@ -2872,13 +2872,14 @@ describe("buildOneSource: incremental refresh", () => {
       context?: unknown;
       annotationFields?: Record<string, string>;
       manifest?: Manifest;
+      dialectName?: string;
    }): Promise<{ sourceEntityId: string; physicalTableName: string }> {
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "abcdef1234567890",
          sql: "SELECT * FROM t",
          connectionName: "wh",
-         dialectName: "postgres",
+         dialectName: params.dialectName ?? "postgres",
          annotationFields: params.annotationFields,
          // What the delta's DML names, and what the seed's CTAS would have given
          // the table its columns from.
@@ -2953,6 +2954,30 @@ describe("buildOneSource: incremental refresh", () => {
       });
       // The entry still names the same table: a delta advances in place.
       expect(entry.physicalTableName).toBe("orders_v1");
+   });
+
+   it("carries the Snowflake delta as ONE scripting block, not a script", async () => {
+      // Snowflake's driver executes exactly one statement per call, each on a
+      // possibly different pooled session — a BEGIN;…;COMMIT; script is refused
+      // and a statement-per-call loop would autocommit the DELETE alone. The
+      // whole transaction has to arrive inside a single Snowflake Scripting
+      // statement.
+      const runSQL = probeAwareRunSQL();
+      const { context, upsert } = incrementalContext({});
+      await callBuildOneSource({ runSQL, context, dialectName: "snowflake" });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      const block = statements.find((s) =>
+         s.startsWith("EXECUTE IMMEDIATE $$"),
+      );
+      expect(block).toBeDefined();
+      expect(block).toContain(`DELETE FROM "orders_v1" WHERE "order_date" >=`);
+      expect(block).toContain(
+         `INSERT INTO "orders_v1" ("order_date", "revenue")`,
+      );
+      expect(statements.some((s) => s.startsWith("BEGIN"))).toBe(false);
+      expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(false);
+      expect(upsert.calledOnce).toBe(true);
    });
 
    it("skips when nothing advanced: no DML, no ledger write, entry still emitted", async () => {

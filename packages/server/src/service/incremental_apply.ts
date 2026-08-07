@@ -29,22 +29,30 @@ import { quoteIdentifier } from "./quoting";
  */
 
 /**
- * Dialects whose transactional multi-statement DML the delta apply relies on.
+ * Dialects whose transactional delta apply the publisher has proven.
  *
  * Keyed by Malloy's `dialectName`, which is why BigQuery appears as
  * `standardsql` — the same key `quoting.ts` uses for its backtick set. Keying
  * these by the friendly name instead is a silent no-op: no source's
  * `dialectName` is ever "bigquery", so every BigQuery source would fail the
  * allowlist while the message claimed BigQuery was supported.
+ *
+ * Postgres and BigQuery accept the range replace as a multi-statement
+ * transactional script in one driver call. Snowflake does NOT — its driver
+ * executes exactly one statement per call, each on a possibly different pooled
+ * session — so its range replace is a single Snowflake Scripting block instead
+ * (see {@link deltaStatements}).
  */
 export const INCREMENTAL_DIALECT_ALLOWLIST: ReadonlySet<string> = new Set([
    "postgres",
+   "snowflake",
    "standardsql",
 ]);
 
 /** Dialects with a `MERGE INTO` statement, required by `merge_key=`. */
 export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> = new Set([
    "postgres",
+   "snowflake",
    "standardsql",
 ]);
 
@@ -82,9 +90,21 @@ export function isRenderableWatermarkType(malloyType: string): boolean {
    return RENDERABLE_TYPES.has(malloyType);
 }
 
-/** Escape a string for a single-quoted SQL literal (doubling the quote). */
-function escapeSqlString(value: string): string {
-   return value.replace(/'/g, "''");
+/**
+ * Escape a string for a single-quoted SQL literal (doubling the quote).
+ *
+ * Backslash handling is the dialect-sensitive part: Snowflake and BigQuery read
+ * `\` in a single-quoted string as an ESCAPE character, so a value ending in a
+ * backslash would swallow the closing quote — the literal has to double it.
+ * Postgres (with standard_conforming_strings, its modern default) reads the
+ * same doubled backslash as two literal characters, so this cannot be one
+ * spelling for all three.
+ */
+function escapeSqlString(value: string, dialect?: string): string {
+   const quoted = value.replace(/'/g, "''");
+   return dialect === "snowflake" || dialect === "standardsql"
+      ? quoted.replace(/\\/g, "\\\\")
+      : quoted;
 }
 
 /**
@@ -124,8 +144,17 @@ function datePrecision(value: string): string {
  * Type-matching is not cosmetic: on a strict dialect, comparing a `date` column
  * to a timestamp literal is an error rather than a coercion, so a single
  * all-timestamps renderer would fail every date-watermarked source at build time.
+ *
+ * The timestamp spelling is timezone-naive on purpose, and every bound is UTC
+ * text (see canonicalBoundValue). Postgres and BigQuery read it as UTC outright;
+ * Snowflake reads it as session time and its Malloy driver pins every session to
+ * `TIMEZONE = 'UTC'`, so a comparison against a TIMESTAMP_LTZ column lands on
+ * the same instant.
  */
-export function renderSqlBound(bound: WatermarkBound): string {
+export function renderSqlBound(
+   bound: WatermarkBound,
+   dialect?: string,
+): string {
    switch (bound.malloyType) {
       case "date":
          return `DATE '${datePrecision(bound.value)}'`;
@@ -134,7 +163,7 @@ export function renderSqlBound(bound: WatermarkBound): string {
       case "number":
          return renderNumber(bound.value);
       case "string":
-         return `'${escapeSqlString(bound.value)}'`;
+         return `'${escapeSqlString(bound.value, dialect)}'`;
       default:
          throw new Error(
             `watermark type '${bound.malloyType}' has no literal rendering`,
@@ -234,8 +263,8 @@ export function deltaSelect(params: {
    const watermark = quoteIdentifier(params.watermarkName, params.dialect);
    return (
       `SELECT * FROM (${params.sourceSQL}) AS __d ` +
-      `WHERE ${watermark} >= ${renderSqlBound(params.start)} ` +
-      `AND ${watermark} < ${renderSqlBound(params.end)}`
+      `WHERE ${watermark} >= ${renderSqlBound(params.start, params.dialect)} ` +
+      `AND ${watermark} < ${renderSqlBound(params.end, params.dialect)}`
    );
 }
 
@@ -261,12 +290,12 @@ export function deltaSelect(params: {
 export type SqlRunner = (sql: string) => Promise<{ rows: unknown[] }>;
 
 /**
- * Per-dialect table-path decoding, for the two dialects on the allowlist. The
+ * Per-dialect table-path decoding, for the dialects on the allowlist. The
  * physical name arrives as canonical SQL — bare segments or quoted ones — and an
  * `information_schema` lookup compares against the RAW identifier text, so the
  * surface form has to be decoded first. Postgres folds a bare segment to lower
- * case; BigQuery leaves it alone (its dataset and table names are
- * case-sensitive).
+ * case, Snowflake folds it to UPPER case, and BigQuery leaves it alone (its
+ * dataset and table names are case-sensitive).
  */
 const TABLE_PATH_OPTIONS: Record<
    string,
@@ -274,20 +303,25 @@ const TABLE_PATH_OPTIONS: Record<
       quoteChar: string;
       escapeStyle: "doubled";
       bareIdentRegex: RegExp;
-      foldsCase: boolean;
+      foldCase?: "lower" | "upper";
    }
 > = {
    postgres: {
       quoteChar: '"',
       escapeStyle: "doubled",
       bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$]*/,
-      foldsCase: true,
+      foldCase: "lower",
+   },
+   snowflake: {
+      quoteChar: '"',
+      escapeStyle: "doubled",
+      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$]*/,
+      foldCase: "upper",
    },
    standardsql: {
       quoteChar: "`",
       escapeStyle: "doubled",
       bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_-]*/,
-      foldsCase: false,
    },
 };
 
@@ -310,9 +344,12 @@ export function decodeTablePathSegments(
       dialectName: dialect,
    });
    if (!decoded.ok) return undefined;
-   return decoded.segments.map((s) =>
-      s.quoted || !opts.foldsCase ? s.value : s.value.toLowerCase(),
-   );
+   return decoded.segments.map((s) => {
+      if (s.quoted || !opts.foldCase) return s.value;
+      return opts.foldCase === "lower"
+         ? s.value.toLowerCase()
+         : s.value.toUpperCase();
+   });
 }
 
 /**
@@ -324,7 +361,9 @@ export function decodeTablePathSegments(
  * Malloy's own queries always project a single `row` JSON column. A plain
  * `SELECT max(x) AS m` therefore comes back as `[undefined]`, not as `[{m: …}]`.
  * Wrapping in `row_to_json` gives the driver the column it expects to unwrap, so
- * both dialects yield plain row objects. Pinned in incremental_apply.spec.ts.
+ * every allowlisted dialect yields plain row objects. Pinned in
+ * incremental_apply.spec.ts. (Snowflake's case hazard is the alias's, not the
+ * row shape's — see {@link probeAlias}.)
  */
 export function probeSelect(dialect: string, innerSelect: string): string {
    return dialect === "postgres"
@@ -337,6 +376,16 @@ function probeRows(rows: unknown[]): Record<string, unknown>[] {
    return rows.filter(
       (r): r is Record<string, unknown> => typeof r === "object" && r !== null,
    );
+}
+
+/**
+ * A probe's output alias, dialect-quoted. Quoting is what pins the KEY the
+ * probe reads back: Snowflake folds a bare alias to UPPERCASE (`AS
+ * watermark_max` comes back as `WATERMARK_MAX`), so an unquoted alias would
+ * make every probe read `undefined` there while working everywhere else.
+ */
+function probeAlias(name: string, dialect: string): string {
+   return quoteIdentifier(name, dialect);
 }
 
 /**
@@ -358,22 +407,29 @@ export async function probeTargetColumns(
       };
    }
    let sql: string;
-   if (dialect === "postgres") {
+   if (dialect === "postgres" || dialect === "snowflake") {
       const table = segments[segments.length - 1];
-      // A Postgres physical name is often unqualified, and `current_schema()` is
-      // then the schema the CTAS created it in — the same session default. Do not
-      // widen this to "any schema on the search_path": two schemas can hold the
-      // same table name, and probing the wrong one would describe a table this
-      // build never writes.
+      // An unqualified physical name lives in the session's default schema —
+      // the same one the CTAS created it in. Do not widen this to "any schema
+      // on the search path": two schemas can hold the same table name, and
+      // probing the wrong one would describe a table this build never writes.
       const schema =
          segments.length >= 2
-            ? `'${escapeSqlString(segments[segments.length - 2])}'`
+            ? `'${escapeSqlString(segments[segments.length - 2], dialect)}'`
             : "current_schema()";
+      // Snowflake's information_schema is per-DATABASE, so a database-qualified
+      // name must probe that database's view; Postgres cannot cross databases,
+      // so any leading segment is the current one by construction.
+      const infoSchema =
+         dialect === "snowflake" && segments.length >= 3
+            ? `${quoteIdentifier(segments[segments.length - 3], dialect)}.information_schema.columns`
+            : "information_schema.columns";
       sql = probeSelect(
          dialect,
-         `SELECT column_name FROM information_schema.columns
+         `SELECT column_name AS ${probeAlias("column_name", dialect)}
+           FROM ${infoSchema}
            WHERE table_schema = ${schema}
-             AND table_name = '${escapeSqlString(table)}'
+             AND table_name = '${escapeSqlString(table, dialect)}'
            ORDER BY ordinal_position`,
       );
    } else {
@@ -393,8 +449,9 @@ export async function probeTargetColumns(
          .slice(0, -1)
          .map((s) => quoteIdentifier(s, dialect))
          .join(".");
-      sql = `SELECT column_name FROM ${container}.INFORMATION_SCHEMA.COLUMNS
-              WHERE table_name = '${escapeSqlString(table)}'
+      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
+              FROM ${container}.INFORMATION_SCHEMA.COLUMNS
+              WHERE table_name = '${escapeSqlString(table, dialect)}'
               ORDER BY ordinal_position`;
    }
    try {
@@ -444,7 +501,8 @@ export async function probeMaxWatermark(
    const column = quoteIdentifier(watermarkName, dialect);
    const sql = probeSelect(
       dialect,
-      `SELECT MAX(${column}) AS watermark_max FROM (${innerSelect}) AS __w`,
+      `SELECT MAX(${column}) AS ${probeAlias("watermark_max", dialect)} ` +
+         `FROM (${innerSelect}) AS __w`,
    );
    try {
       const result = await runner(sql);
@@ -554,10 +612,14 @@ export function shapeMismatch(
  * DML and the ledger advance survivable: the retry recomputes the same range and
  * converges to the same rows.
  *
- * The range replace is TWO statements, so it is wrapped in an explicit
- * transaction — without one, a failure between the delete and the insert would
- * leave the range empty in a table that is already serving. That transaction is
- * the whole reason for the dialect allowlist.
+ * The range replace is TWO statements, so it must be one transaction — without
+ * one, a failure between the delete and the insert would leave the range empty
+ * in a table that is already serving. That transaction is the whole reason for
+ * the dialect allowlist, and each dialect provides it the one way its driver
+ * can carry it: Postgres and BigQuery as a BEGIN…COMMIT multi-statement script
+ * in one call, Snowflake as a single Snowflake Scripting block (its driver runs
+ * exactly one statement per call, each on a possibly different pooled session,
+ * so a script or a statement-per-call loop would both silently autocommit).
  */
 export function deltaStatements(params: {
    dialect: string;
@@ -618,15 +680,46 @@ export function deltaStatements(params: {
 
    const watermark = q(watermarkName);
    const range =
-      `${watermark} >= ${renderSqlBound(params.start)} AND ` +
-      `${watermark} < ${renderSqlBound(params.end)}`;
+      `${watermark} >= ${renderSqlBound(params.start, dialect)} AND ` +
+      `${watermark} < ${renderSqlBound(params.end, dialect)}`;
    const body = [
       `DELETE FROM ${quotedTablePath} WHERE ${range}`,
       `INSERT INTO ${quotedTablePath} (${columnList}) ` +
          `SELECT ${columnList} FROM (${deltaSQL}) AS __s`,
    ];
+   if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
    const transaction = transactionKeywords(dialect);
    return [transaction.begin, ...body, transaction.commit];
+}
+
+/**
+ * The range replace as ONE statement for Snowflake: a Snowflake Scripting
+ * anonymous block, wrapped in `EXECUTE IMMEDIATE $$…$$` because that is the form
+ * drivers accept (a bare block is a console-only surface).
+ *
+ * The EXCEPTION handler is this dialect's version of {@link applyDeltaScript}'s
+ * rollback, moved INSIDE the statement because outside is too late: a follow-up
+ * `ROLLBACK` call would go to whatever pooled session the driver picks next,
+ * not the one holding the open transaction. A failure without the handler would
+ * park an open transaction on a pooled session, holding its locks until the
+ * session dies. RAISE re-throws, so the build still fails loudly and the
+ * boundary is not advanced.
+ */
+export function snowflakeScriptingBlock(statements: string[]): string {
+   const body = statements.map((s) => `  ${s};`).join("\n");
+   // `$$` is the block's own delimiter; SQL that contains it would end the
+   // block early and execute the remainder as separate statements. No generated
+   // delta contains one (Malloy renders string literals with backslash escaping
+   // on Snowflake), so refuse loudly rather than escape: the throw lands in
+   // planSourceRefresh's catch and the source seeds (reasonCode plan_error).
+   const block = `BEGIN\n  BEGIN TRANSACTION;\n${body}\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND`;
+   if (block.includes("$$")) {
+      throw new Error(
+         "the delta SQL contains '$$', which cannot be carried inside a " +
+            "Snowflake Scripting block",
+      );
+   }
+   return `EXECUTE IMMEDIATE $$\n${block}\n$$`;
 }
 
 function transactionKeywords(dialect: string): {

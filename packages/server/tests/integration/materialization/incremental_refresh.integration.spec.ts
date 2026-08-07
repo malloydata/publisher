@@ -144,7 +144,9 @@ describe("Incremental refresh over REST", () => {
       const body = (await res.json()) as { message?: string };
       expect(body.message).toContain('refresh="incremental"');
       expect(body.message).toContain('dialect "duckdb"');
-      expect(body.message).toContain("postgres, standardsql (BigQuery)");
+      expect(body.message).toContain(
+         "postgres, snowflake, standardsql (BigQuery)",
+      );
    });
 
    it(

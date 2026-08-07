@@ -26,6 +26,7 @@ import {
    seedCoveredThrough,
    shapeMismatch,
    snapshotBound,
+   snowflakeScriptingBlock,
    type SqlRunner,
 } from "./incremental_apply";
 
@@ -64,6 +65,16 @@ describe("renderSqlBound", () => {
          }),
       ).toBe("TIMESTAMP '2024-06-01 12:30:00'");
       expect(renderSqlBound({ malloyType: "number", value: "42" })).toBe("42");
+   });
+
+   it("doubles a backslash only where it is an escape character", () => {
+      // Snowflake and BigQuery read `\` in a single-quoted string as an escape,
+      // so a value ending in one would swallow the closing quote. Postgres
+      // reads it literally, so doubling there would change the value.
+      const bound = { malloyType: "string", value: "acme\\" };
+      expect(renderSqlBound(bound, "snowflake")).toBe(`'acme\\\\'`);
+      expect(renderSqlBound(bound, "standardsql")).toBe(`'acme\\\\'`);
+      expect(renderSqlBound(bound, "postgres")).toBe(`'acme\\'`);
    });
 
    it("doubles a quote in a string bound rather than letting it break out", () => {
@@ -243,6 +254,19 @@ describe("decodeTablePathSegments", () => {
       ).toEqual(["proj-x", "MyDataset", "MyTable"]);
    });
 
+   it("folds a bare Snowflake segment to UPPER case and preserves a quoted one", () => {
+      // Snowflake folds the opposite way from Postgres, and information_schema
+      // stores the folded form — lowercase folding here would probe a table
+      // that does not exist.
+      expect(decodeTablePathSegments("snowflake", "MySchema.MyTable")).toEqual([
+         "MYSCHEMA",
+         "MYTABLE",
+      ]);
+      expect(
+         decodeTablePathSegments("snowflake", '"MySchema"."MyTable"'),
+      ).toEqual(["MySchema", "MyTable"]);
+   });
+
    it("returns undefined for a path it cannot decode, rather than guessing", () => {
       expect(
          decodeTablePathSegments("postgres", "proj-x.ds.tbl"),
@@ -299,6 +323,43 @@ describe("probeTargetColumns", () => {
       expect(sql).not.toContain("row_to_json");
    });
 
+   it("probes Snowflake with a quoted alias, in the named database", async () => {
+      // The quoted alias is what keeps the read key exact: Snowflake folds a
+      // bare `AS column_name` to COLUMN_NAME, and the probe would then read
+      // undefined from every row. The database qualifier matters because
+      // Snowflake's information_schema is per-database.
+      const seen: string[] = [];
+      const result = await probeTargetColumns(
+         async (sql) => {
+            seen.push(sql);
+            return { rows: [{ column_name: "a" }] };
+         },
+         "snowflake",
+         "analytics.reporting.daily",
+      );
+      expect(result.columns).toEqual(["a"]);
+      expect(seen[0]).toContain(`"ANALYTICS".information_schema.columns`);
+      expect(seen[0]).toContain(`AS "column_name"`);
+      expect(seen[0]).toContain("table_schema = 'REPORTING'");
+      expect(seen[0]).toContain("table_name = 'DAILY'");
+      expect(seen[0]).not.toContain("row_to_json");
+   });
+
+   it("falls back to current_schema() for an unqualified Snowflake name", async () => {
+      let sql = "";
+      await probeTargetColumns(
+         async (s) => {
+            sql = s;
+            return { rows: [] };
+         },
+         "snowflake",
+         "daily",
+      );
+      expect(sql).toContain("information_schema.columns");
+      expect(sql).toContain("table_schema = current_schema()");
+      expect(sql).toContain("table_name = 'DAILY'");
+   });
+
    it("refuses an unqualified BigQuery name, which has no dataset to look in", async () => {
       const result = await probeTargetColumns(
          async () => ({ rows: [] }),
@@ -351,6 +412,9 @@ describe("probeMaxWatermark", () => {
       expect(result.bound).toEqual({ malloyType: "date", value: "2024-06-01" });
       expect(sql).toContain(`MAX("order_date")`);
       expect(sql).toContain("FROM (SELECT * FROM base) AS __w");
+      // Quoted so the read key stays exact on a case-folding dialect: Snowflake
+      // returns a bare `AS watermark_max` as WATERMARK_MAX.
+      expect(sql).toContain(`AS "watermark_max"`);
    });
 
    it("reports no bound for a NULL maximum, which is an empty input", async () => {
@@ -451,6 +515,41 @@ describe("deltaStatements: range replace", () => {
       expect(script.split(";\n")).toHaveLength(4);
       expect(script.endsWith("COMMIT;")).toBe(true);
    });
+
+   it("is ONE Snowflake Scripting block on Snowflake, not a script", () => {
+      // The Snowflake driver executes exactly one statement per call, each on a
+      // possibly different pooled session — a multi-statement script is refused
+      // outright and a statement-per-call loop would autocommit the DELETE on
+      // its own. The block is the one form that carries the transaction.
+      const all = statements("snowflake");
+      expect(all).toHaveLength(1);
+      const [block] = all;
+      expect(block.startsWith("EXECUTE IMMEDIATE $$")).toBe(true);
+      expect(block).toContain("BEGIN TRANSACTION;");
+      expect(block).toContain(
+         `DELETE FROM "analytics"."daily" WHERE "order_date" >= DATE '2024-06-01' AND "order_date" < DATE '2024-07-01';`,
+      );
+      expect(block).toContain(
+         `INSERT INTO "analytics"."daily" ("order_date", "region", "revenue") SELECT "order_date", "region", "revenue" FROM (SELECT 1) AS __s;`,
+      );
+      expect(block).toContain("COMMIT;");
+      // The rollback lives INSIDE the statement: a separate ROLLBACK call would
+      // go to whichever pooled session the driver picks next, not the one
+      // holding the open transaction.
+      expect(block).toContain("EXCEPTION");
+      expect(block).toContain("ROLLBACK;");
+      expect(block).toContain("RAISE;");
+   });
+
+   it("refuses delta SQL containing the block's own $$ delimiter", () => {
+      // Loud, not escaped: the throw lands in planSourceRefresh's catch and the
+      // source seeds. No Malloy-generated SQL contains $$ (string literals are
+      // backslash-escaped on Snowflake), so this only fires on something that
+      // is not the SQL we meant to run anyway.
+      expect(() => snowflakeScriptingBlock(["SELECT '$$'"])).toThrow(
+         "Snowflake Scripting block",
+      );
+   });
 });
 
 describe("deltaStatements: merge", () => {
@@ -502,6 +601,20 @@ describe("deltaStatements: merge", () => {
    it("does not delete the range: a merge is the strategy that need not", () => {
       const [sql] = merge(["order_id", "revenue"], ["order_id"]);
       expect(sql).not.toContain("DELETE");
+   });
+
+   it("stays a bare MERGE on Snowflake: one statement needs no block", () => {
+      const [sql] = deltaStatements({
+         dialect: "snowflake",
+         quotedTablePath: `"daily"`,
+         deltaSQL: "SELECT 1",
+         columns: ["order_id", "revenue"],
+         mergeKeys: ["order_id"],
+         watermarkName: "order_date",
+         ...RANGE,
+      });
+      expect(sql.startsWith("MERGE INTO")).toBe(true);
+      expect(sql).not.toContain("EXECUTE IMMEDIATE");
    });
 });
 

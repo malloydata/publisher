@@ -110,7 +110,9 @@ Details that decide whether a run advances or rebuilds:
 - **It is exempt from skip-if-unchanged.** A content address does not move when data does, so an incremental source is instructed on every run and its `covered_through` boundary — not its address — decides whether there is work to do.
 - **`forceRefresh` on an API build re-seeds**; a `forceRefresh` from the scheduler does not. A scheduled fire needs to defeat skip-if-unchanged, which is not the same as asking for a full rebuild.
 - **Anything unproven falls back to a full rebuild**, which is always correct and merely expensive: no recorded boundary, a boundary describing a different table or watermark, a table whose columns no longer match what the source computes, or `MERGE` asked for on Postgres 14 or older (it requires 15).
-- **Postgres and BigQuery only**, and not in combination with `storage=`. Declaring it elsewhere is a publish rejection rather than a silent full refresh, so it never looks like it is advancing when it is not.
+- **Postgres, BigQuery, and Snowflake only**, and not in combination with `storage=`. Declaring it elsewhere is a publish rejection rather than a silent full refresh, so it never looks like it is advancing when it is not.
+
+One Snowflake-specific mechanic: its driver executes exactly **one statement per call**, each on a possibly different pooled session, so the range-replace's delete-then-insert cannot travel as a `BEGIN;…;COMMIT;` script the way it does on Postgres and BigQuery. On Snowflake the same transaction is carried as a single [Snowflake Scripting](https://docs.snowflake.com/en/developer-guide/snowflake-scripting/blocks) anonymous block (`EXECUTE IMMEDIATE $$…$$`) whose `EXCEPTION` handler rolls back — inside the statement, because a follow-up `ROLLBACK` call would reach a different pooled session than the one holding the open transaction. Snowflake also folds bare identifiers to **UPPERCASE** (Postgres folds to lowercase), which is why the warehouse probes quote their output aliases and why table-path decoding folds per dialect.
 
 ### Materializing on Postgres
 

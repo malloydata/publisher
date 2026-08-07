@@ -288,7 +288,9 @@ describe("incrementalPolicyRejections", () => {
       const messages = rejections({ dialect: "duckdb", declaration: COHERENT });
       expect(messages).toHaveLength(1);
       expect(messages[0]).toContain('dialect "duckdb"');
-      expect(messages[0]).toContain("postgres, standardsql (BigQuery)");
+      expect(messages[0]).toContain(
+         "postgres, snowflake, standardsql (BigQuery)",
+      );
       expect(messages[0]).toContain('refresh="full"');
    });
 
@@ -315,14 +317,14 @@ describe("incrementalPolicyRejections", () => {
          }),
       });
       expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain("transactional multi-statement DML");
+      expect(messages[0]).toContain("transactional DML");
    });
 
-   it("both dialects on the allowlist accept a coherent declaration", () => {
+   it("every dialect on the allowlist accepts a coherent declaration", () => {
       // Keyed by Malloy's own `dialectName`, so BigQuery is "standardsql". A
       // test that asserted "bigquery" here would pass while every real BigQuery
       // source failed the gate.
-      for (const dialect of ["postgres", "standardsql"]) {
+      for (const dialect of ["postgres", "snowflake", "standardsql"]) {
          expect(rejections({ dialect, declaration: COHERENT })).toEqual([]);
       }
    });

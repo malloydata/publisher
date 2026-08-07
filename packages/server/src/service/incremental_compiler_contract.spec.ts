@@ -164,6 +164,17 @@ source: mz_ext is mz extend { where: order_date >= @2024-06-01 }`,
       );
    });
 
+   it("TRIPWIRE: Snowflake's identifier quoting is what the table-path decoder assumes", () => {
+      // incremental_apply's TABLE_PATH_OPTIONS decodes a Snowflake physical name
+      // as double-quoted segments with doubled-quote escaping, and probeAlias
+      // relies on `"` to pin a probe's output key against UPPERCASE folding. If
+      // the dialect ever changed either fact, the decoder would silently
+      // misread every physical name — this pins them to the source of truth.
+      const snowflake = new SnowflakeDialect();
+      expect(snowflake.identifierQuoteChar).toBe('"');
+      expect(snowflake.sqlQuoteIdentifier('a"b')).toBe('"a""b"');
+   });
+
    it("a query stage would apply the range above the source — the road not taken", async () => {
       // Kept because it is the fact that makes the composed WHERE correct: a
       // predicate on the watermark filters the source's OUTPUT rows (above its

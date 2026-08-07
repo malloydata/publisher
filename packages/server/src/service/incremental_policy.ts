@@ -202,17 +202,17 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // has already named the real problem, and piling on would bury it.
    if (!d.incremental) return out;
 
-   // Rule 6: a dialect whose transactional multi-statement DML the apply needs.
-   // An allowlist rather than a capability probe for this phase: a delta writes
-   // into a table that is already serving, so "we have not proven this engine"
-   // must read as no.
+   // Rule 6: a dialect whose transactional delta apply the publisher has
+   // proven. An allowlist rather than a capability probe for this phase: a
+   // delta writes into a table that is already serving, so "we have not proven
+   // this engine" must read as no.
    const dialect = source.dialect ?? "";
    if (!INCREMENTAL_DIALECT_ALLOWLIST.has(dialect)) {
       out.push(
          `${where} declares ${MODE}, which is not supported on dialect ` +
             `"${dialect || "unknown"}". Incremental refresh applies its delta to ` +
             `the live serving table, so it is enabled only where the publisher ` +
-            `has proven transactional multi-statement DML: ` +
+            `has proven transactional DML: ` +
             `${describeDialects(INCREMENTAL_DIALECT_ALLOWLIST)}. Use ` +
             `refresh="full" here; the supported set widens in a later release.`,
       );
