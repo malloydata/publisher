@@ -338,7 +338,7 @@ export function incrementalPolicyAdvisories(
    const warnings: ApiPackageWarning[] = [];
    for (const source of sources) {
       const { declaration: d } = source;
-      const at = { model: source.modelPath ?? "", target: source.sourceName };
+      const at = { model: source.modelPath ?? "", subject: source.sourceName };
 
       // An unknown key is passed through by design (a new persist directive must
       // not need a publisher change), which means a typo is passed through too.

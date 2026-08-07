@@ -479,7 +479,7 @@ describe("incrementalPolicyAdvisories", () => {
          }),
       ]);
       expect(warnings).toHaveLength(1);
-      expect(warnings[0].target).toBe("daily_revenue");
+      expect(warnings[0].subject).toBe("daily_revenue");
       expect(warnings[0].model).toBe("revenue.malloy");
       expect(warnings[0].message).toContain('"mergekey"');
       expect(warnings[0].message).toContain("merge_key=");

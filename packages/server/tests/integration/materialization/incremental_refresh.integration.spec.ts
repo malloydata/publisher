@@ -107,13 +107,13 @@ describe("Incremental refresh over REST", () => {
       const pkg = await getPackage();
       const warnings = (pkg.warnings ?? []) as {
          message: string;
-         target?: string;
+         subject?: string;
       }[];
       const advisory = warnings.find((w) =>
          w.message.includes("no merge_key="),
       );
       expect(advisory).toBeDefined();
-      expect(advisory?.target).toBe("daily_orders");
+      expect(advisory?.subject).toBe("daily_orders");
       // The advisory's job is to name the consequence, not just the fact.
       expect(advisory?.message).toContain("appears twice");
    });
