@@ -650,36 +650,46 @@ describe("ledgerLineageMismatch", () => {
       expect(ledgerLineageMismatch(LEDGER, LINEAGE)).toBeUndefined();
    });
 
-   it("rejects a boundary belonging to another table or connection", () => {
+   it("reports a renamed table under its OWN reason code", () => {
+      // Distinct from lineage_changed because the cause and the remedy differ: a
+      // host assigning a generational physical name per run re-seeds forever, and
+      // that has to be tellable from an author changing the model.
       expect(
          ledgerLineageMismatch(
             { ...LEDGER, physicalTableName: "analytics.other" },
             LINEAGE,
          ),
-      ).toContain("analytics.other");
-      expect(
-         ledgerLineageMismatch({ ...LEDGER, connectionName: "other" }, LINEAGE),
-      ).toContain("connection");
+      ).toEqual({
+         reasonCode: "table_renamed",
+         reason: expect.stringContaining(
+            "analytics.other",
+         ) as unknown as string,
+      });
+   });
+
+   it("rejects a boundary advanced on another connection", () => {
+      const mismatch = ledgerLineageMismatch(
+         { ...LEDGER, connectionName: "other" },
+         LINEAGE,
+      );
+      expect(mismatch?.reasonCode).toBe("lineage_changed");
+      expect(mismatch?.reason).toContain("connection");
    });
 
    it("rejects a changed watermark, type or strategy", () => {
       expect(
-         ledgerLineageMismatch(
-            { ...LEDGER, watermarkDimension: "ts" },
-            LINEAGE,
-         ),
+         ledgerLineageMismatch({ ...LEDGER, watermarkDimension: "ts" }, LINEAGE)
+            ?.reason,
       ).toContain("different column");
       expect(
          ledgerLineageMismatch(
             { ...LEDGER, coveredThroughType: "timestamp" },
             LINEAGE,
-         ),
+         )?.reason,
       ).toContain("type changed");
       expect(
-         ledgerLineageMismatch(
-            { ...LEDGER, derivedStrategy: "merge" },
-            LINEAGE,
-         ),
+         ledgerLineageMismatch({ ...LEDGER, derivedStrategy: "merge" }, LINEAGE)
+            ?.reason,
       ).toContain("strategy changed");
    });
 
@@ -690,14 +700,28 @@ describe("ledgerLineageMismatch", () => {
          ledgerLineageMismatch(
             { ...LEDGER, mergeKeyDimensions: ["a"] },
             LINEAGE,
-         ),
+         )?.reason,
       ).toContain("merge_key=");
       expect(
          ledgerLineageMismatch(
             { ...LEDGER, mergeKeyDimensions: ["a", "b"] },
             { ...LINEAGE, mergeKeys: ["b", "a"] },
-         ),
+         )?.reason,
       ).toContain("merge_key=");
+   });
+
+   it("reports every non-rename mismatch as lineage_changed", () => {
+      for (const entry of [
+         { ...LEDGER, connectionName: "other" },
+         { ...LEDGER, watermarkDimension: "ts" },
+         { ...LEDGER, coveredThroughType: "timestamp" },
+         { ...LEDGER, derivedStrategy: "merge" as const },
+         { ...LEDGER, mergeKeyDimensions: ["a"] },
+      ]) {
+         expect(ledgerLineageMismatch(entry, LINEAGE)?.reasonCode).toBe(
+            "lineage_changed",
+         );
+      }
    });
 });
 

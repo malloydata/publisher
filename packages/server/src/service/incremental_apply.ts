@@ -817,36 +817,49 @@ export interface IncrementalLineage {
 export function ledgerLineageMismatch(
    entry: IncrementalLedgerEntry,
    lineage: IncrementalLineage,
-): string | undefined {
+): { reasonCode: IncrementalStepReasonCode; reason: string } | undefined {
+   // Carries its own reason code, separate from every other mismatch below,
+   // because its usual cause is different in kind and so is its remedy. The
+   // others mean the author changed the model; this one usually means the TABLE
+   // was renamed under a stable model — an orchestrated host assigning a
+   // generational physical name per run, which makes every run re-seed. Seeding
+   // is still the only sound answer (the newly named table is empty, so a delta
+   // into it would drop everything the old one held), but an operator has to be
+   // able to tell "your naming defeats incremental" from "the model changed"
+   // without reading the free text. See docs/materialization.md.
    if (entry.physicalTableName !== lineage.physicalTableName) {
-      return (
-         `the recorded boundary belongs to table ` +
-         `"${entry.physicalTableName}", not "${lineage.physicalTableName}"`
-      );
+      return {
+         reasonCode: "table_renamed",
+         reason:
+            `the recorded boundary belongs to table ` +
+            `"${entry.physicalTableName}", not "${lineage.physicalTableName}"`,
+      };
    }
+   const changed = (reason: string) =>
+      ({ reasonCode: "lineage_changed", reason }) as const;
    if (entry.connectionName !== lineage.connectionName) {
-      return (
+      return changed(
          `the recorded boundary was advanced on connection ` +
-         `"${entry.connectionName}", not "${lineage.connectionName}"`
+            `"${entry.connectionName}", not "${lineage.connectionName}"`,
       );
    }
    if (entry.watermarkDimension !== lineage.watermarkName) {
-      return (
+      return changed(
          `the watermark changed from "${entry.watermarkDimension}" to ` +
-         `"${lineage.watermarkName}", so the recorded value measures a ` +
-         `different column`
+            `"${lineage.watermarkName}", so the recorded value measures a ` +
+            `different column`,
       );
    }
    if (entry.coveredThroughType !== lineage.watermarkType) {
-      return (
+      return changed(
          `the watermark's type changed from "${entry.coveredThroughType}" to ` +
-         `"${lineage.watermarkType}"`
+            `"${lineage.watermarkType}"`,
       );
    }
    if (entry.derivedStrategy !== lineage.strategy) {
-      return (
+      return changed(
          `the strategy changed from ${entry.derivedStrategy} to ` +
-         `${lineage.strategy}`
+            `${lineage.strategy}`,
       );
    }
    // Order-sensitive, and that is not pedantry: the merge keys are recorded so a
@@ -857,9 +870,9 @@ export function ledgerLineageMismatch(
       recorded.length !== lineage.mergeKeys.length ||
       recorded.some((k, i) => k !== lineage.mergeKeys[i])
    ) {
-      return (
+      return changed(
          `merge_key= changed from [${recorded.join(", ")}] to ` +
-         `[${lineage.mergeKeys.join(", ")}]`
+            `[${lineage.mergeKeys.join(", ")}]`,
       );
    }
    return undefined;
@@ -875,6 +888,7 @@ export type IncrementalStepReasonCode =
    | "forced"
    | "no_boundary"
    | "lineage_changed"
+   | "table_renamed"
    | "merge_unsupported"
    | "table_unreadable"
    | "table_emptied"
@@ -897,6 +911,13 @@ export type IncrementalStep =
         mode: "skip";
         reasonCode: IncrementalStepReasonCode;
         reason: string;
+        /**
+         * The recorded boundary, which stays in force because nothing was
+         * applied. Reported on the manifest entry so a caller sees the same
+         * coverage for a skipped source as for one that advanced, rather than a
+         * gap it has to interpret.
+         */
+        coveredThrough?: WatermarkBound;
      }
    | {
         mode: "delta";
@@ -989,7 +1010,7 @@ export async function planIncrementalStep(inputs: {
    }
    const mismatch = ledgerLineageMismatch(ledgerEntry, lineage);
    if (mismatch) {
-      return { mode: "seed", reasonCode: "lineage_changed", reason: mismatch };
+      return { mode: "seed", ...mismatch };
    }
 
    if (
@@ -1066,6 +1087,7 @@ export async function planIncrementalStep(inputs: {
          reason: end.error
             ? `the watermark frontier could not be read (${end.error})`
             : "the source has no rows with a non-null watermark",
+         coveredThrough: start,
       };
    }
    if (compareBounds(end.bound, start) <= 0) {
@@ -1075,6 +1097,7 @@ export async function planIncrementalStep(inputs: {
          reason:
             `the watermark has not advanced past ${start.value} ` +
             `(frontier: ${end.bound.value})`,
+         coveredThrough: start,
       };
    }
 
