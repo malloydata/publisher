@@ -1,0 +1,14 @@
+##! experimental.persistence
+
+source: raw_orders is duckdb.table('data/orders.csv')
+
+// A coherent incremental declaration: the watermark names a real output
+// dimension of an orderable type. No merge_key=, so the strategy is range
+// replace — which is what the load-time advisory warns about.
+#@ persist name="daily_orders" refresh="incremental" watermark="order_date"
+source: daily_orders is raw_orders -> {
+  group_by: order_date, category
+  aggregate:
+    total_orders is count()
+    total_revenue is amount.sum()
+}

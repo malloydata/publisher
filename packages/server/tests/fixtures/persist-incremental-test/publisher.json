@@ -1,0 +1,5 @@
+{
+   "name": "persist-incremental-test",
+   "version": "1.0.0",
+   "description": "DuckDB persist fixture declaring refresh=\"incremental\" with a watermark. The declaration is coherent, so it exercises the gates and the build dispatch; DuckDB is off the incremental dialect allowlist, so the publish gate refuses it and a build falls back to a full rebuild."
+}
