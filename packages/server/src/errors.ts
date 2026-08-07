@@ -264,9 +264,9 @@ export class PayloadTooLargeError extends Error {
  * serialized at all, rather than merely measuring over the cap. Still HTTP 413
  * by inheritance, because the request was well-formed and the result is too
  * large; the distinction exists so callers are not told to raise a cap. Raising
- * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here — there is no cap at which a
- * response that will not serialize starts serializing — so the only remedies
- * are the ones that shrink the response.
+ * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here, because there is no cap at
+ * which a response that will not serialize starts serializing, so the only
+ * remedies are the ones that shrink the response.
  */
 export class ResponseUnserializableError extends PayloadTooLargeError {
    constructor(message: string) {

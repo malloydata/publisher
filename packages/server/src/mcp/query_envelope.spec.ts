@@ -159,7 +159,7 @@ describe("buildQueryEnvelope", () => {
 
       /**
        * Reachable because the hard ceiling is maxBytes (50MB), so one row with a
-       * large text column passes assertWithinModelResponseLimits and lands here.
+       * large text column passes assertWithinModelByteLimit and lands here.
        * "Showing 0 of N rows" reads as an empty result set, and an agent will
        * report "no rows matched" for a row that was merely too big to send.
        */

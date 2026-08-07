@@ -5,7 +5,7 @@
  * {@link PUBLISHER_MAX_RESPONSE_BYTES} can only see undifferentiated
  * `http_server_requests_total{status_code="413"}` — they can't tell
  * which cap is firing or which query surface is hottest. The counter
- * here carries `cap_type` (`rows` / `bytes`) and `source`
+ * here carries `cap_type` (`rows` / `bytes` / `unserializable`) and `source`
  * (`connection_sql` / `model_query` / `notebook_cell`) so a single
  * dashboard panel can answer "what should I tune and on which
  * endpoint?".
@@ -53,7 +53,7 @@ function ensureCapTelemetry(): Counter {
          "publisher_query_cap_exceeded_total",
          {
             description:
-               "Queries rejected with 413 because the row or byte cap was exceeded. Labels: cap_type ('rows'|'bytes'), source ('connection_sql'|'model_query'|'notebook_cell').",
+               "413s for an oversized response. cap_type: rows|bytes exceeded that cap; unserializable could not be turned into JSON at all, so no cap need have been exceeded. source: connection_sql|model_query|notebook_cell.",
          },
       );
    }

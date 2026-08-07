@@ -81,8 +81,10 @@ function storeCapturingMetadata(
 ): {
    store: Partial<EnvironmentStore>;
    captured: () => ModelQueryMetadataInput | undefined;
+   capturedShape: () => string | undefined;
 } {
    let captured: ModelQueryMetadataInput | undefined;
+   let capturedShape: string | undefined;
    const store: Partial<EnvironmentStore> = {
       getEnvironment: async () =>
          ({
@@ -96,15 +98,14 @@ function storeCapturingMetadata(
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
-                  getQueryResults: async (
-                     ..._args: [
-                        ...unknown[],
-                        ModelQueryMetadataInput | undefined,
-                     ]
-                  ) => {
-                     // The 8th argument: sourceName, queryName, query,
-                     // filterParams, bypassFilters, givens, abortSignal, input.
+                  getQueryResults: async (..._args: unknown[]) => {
+                     // Positional: sourceName, queryName, query, filterParams,
+                     // bypassFilters, givens, abortSignal, metadata input,
+                     // responseShape. Indexed rather than destructured off the
+                     // end, because the argument list has grown twice and a
+                     // trailing-element type went stale both times.
                      captured = _args[7] as ModelQueryMetadataInput | undefined;
+                     capturedShape = _args[8] as string | undefined;
                      return {
                         result: {
                            schema: { fields: [] },
@@ -120,7 +121,11 @@ function storeCapturingMetadata(
             }),
          }) as never,
    };
-   return { store, captured: () => captured };
+   return {
+      store,
+      captured: () => captured,
+      capturedShape: () => capturedShape,
+   };
 }
 
 const args = {
@@ -252,6 +257,30 @@ describe("malloy_executeQuery per-query metadata", () => {
 
       expect(captured()?.environment).toBe("env");
       expect(captured()?.correlationId).toMatch(/^[0-9a-f-]{36}$/);
+   });
+
+   it("asks the model for the compact shape, which its envelope is built from", async () => {
+      // Left at the default, the byte cap measured the full wrapped result and the
+      // string was discarded, so a query could be refused on bytes the agent would
+      // never receive: this envelope is built from the compact rows and truncated
+      // to MAX_RESULT_CHARS regardless. Reverting the argument breaks nothing else,
+      // so this is the only thing holding it.
+      const { store, capturedShape } = storeCapturingMetadata();
+      const handler = captureHandler(store);
+      await handler(args);
+      expect(capturedShape()).toBe("compact");
+   });
+
+   it("asks for the compact shape on the named-view path too", async () => {
+      const { store, capturedShape } = storeCapturingMetadata();
+      const handler = captureHandler(store);
+      await handler({
+         ...args,
+         query: undefined,
+         sourceName: "orders",
+         queryName: "summary",
+      });
+      expect(capturedShape()).toBe("compact");
    });
 
    it("returns the id the statements carried, so an agent can find its query", async () => {

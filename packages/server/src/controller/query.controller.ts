@@ -3,7 +3,6 @@ import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
-import { bigIntReplacer } from "../json_utils";
 import { logger } from "../logger";
 import {
    mintCorrelationId,
@@ -76,7 +75,6 @@ export class QueryController {
          const {
             result,
             serializedResult,
-            compactResult,
             rowLimit,
             rowLimitSource,
             queryCorrelationId,
@@ -125,19 +123,22 @@ export class QueryController {
                         }
                      },
                   },
+                  // Tell the model which shape this request sends, so exactly
+                  // that one is serialized and measured. Sending `compactJson`
+                  // while the model built and capped the full result was how a
+                  // request came to be refused on bytes it would never receive.
+                  compactJson ? "compact" : "full",
                ),
             getQueryTimeoutMs(),
          );
          const renderLogs = validateRenderTags(result);
          return {
-            // Reuse the JSON the byte guard already built for the full result
-            // rather than stringifying the same object a second time; for a
-            // large response that second pass is the expensive one. The compact
-            // form needs its own pass, since it is a different object and needs
-            // the bigint replacer.
-            result: compactJson
-               ? JSON.stringify(compactResult, bigIntReplacer)
-               : serializedResult,
+            // Already serialized by the model, which was told which shape this
+            // request sends. Stringifying here instead would build a second copy
+            // of the same payload, and a payload too large to serialize would
+            // escape this expression as a bare 500 rather than the 413 the byte
+            // cap produces.
+            result: serializedResult,
             resource: `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/models/${modelPath}/query`,
             renderLogs: renderLogs.length > 0 ? renderLogs : undefined,
             // The cap the database applied. A caller counting the rows it got
