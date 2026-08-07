@@ -238,6 +238,14 @@ export class MaterializationController {
             "Build instruction 'realization' must be COPY or SNAPSHOT",
          );
       }
+      if (
+         instruction.reseed !== undefined &&
+         typeof instruction.reseed !== "boolean"
+      ) {
+         throw new BadRequestError(
+            "Build instruction 'reseed' must be a boolean",
+         );
+      }
       return {
          sourceEntityId: instruction.sourceEntityId as string,
          sourceID:
@@ -253,6 +261,15 @@ export class MaterializationController {
          // never materializes into the storage destination.
          ...(typeof instruction.destination === "string"
             ? { destination: instruction.destination }
+            : {}),
+         // The per-source ask for a full rebuild, and the ONLY way an orchestrated
+         // caller has to ask for one (request-level forceRefresh deliberately does
+         // not mean re-seed — see forcesFullSeed). Must be carried through for the
+         // same reason as `destination` above: dropping it here would leave the
+         // host's escape hatch silently inert, and an incremental source it no
+         // longer trusts would keep advancing by delta.
+         ...(typeof instruction.reseed === "boolean"
+            ? { reseed: instruction.reseed }
             : {}),
       };
    }

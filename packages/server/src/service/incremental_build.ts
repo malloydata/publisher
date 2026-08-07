@@ -83,14 +83,26 @@ export interface IncrementalRunContext {
  * make every scheduled run a full rebuild — the schedule could never drive a
  * delta, which is the one thing an incremental source is scheduled to do.
  *
- * An ON_DEMAND force is a person or a host asking, with a source in hand, for the
- * table to be rebuilt. That still means full: it is the escape hatch for a
- * boundary or a table that is no longer trusted.
+ * An ON_DEMAND force is a person asking, with a source in hand, for the table to
+ * be rebuilt. That still means full: it is the escape hatch for a boundary or a
+ * table that is no longer trusted.
+ *
+ * An ORCHESTRATED run is never a full seed on this flag, whatever the trigger
+ * says. Skip-if-unchanged does not run for one at all (the host supplies the
+ * instructions, so there is nothing to defeat), which leaves `forceRefresh` with
+ * no orchestrated meaning to carry — while the trigger carve-out above is
+ * unreachable for a host, because the controller strips a client-supplied
+ * `trigger` so SCHEDULER cannot be forged. Reading the flag as "re-seed" here
+ * would therefore make every control-plane refresh a full rebuild, with no way
+ * for the host to ask for anything else. A host asks per source instead, with
+ * `BuildInstruction.reseed`.
  */
 export function forcesFullSeed(run: {
    forceRefresh: boolean;
    trigger?: "ON_DEMAND" | "SCHEDULER";
+   orchestrated?: boolean;
 }): boolean {
+   if (run.orchestrated) return false;
    return run.forceRefresh && run.trigger !== "SCHEDULER";
 }
 
@@ -174,6 +186,13 @@ export async function planSourceRefresh(params: {
     * both sides of the INSERT (see deltaStatements).
     */
    columns: string[];
+   /**
+    * This source's `BuildInstruction.reseed`: the per-source ask for a full
+    * rebuild. Separate from the run's `forceRefresh` because it is the only form
+    * an orchestrated host has (see {@link forcesFullSeed}), and because it is
+    * per source — one source can re-seed while the rest advance by delta.
+    */
+   reseed?: boolean;
    runner: SqlRunner;
 }): Promise<IncrementalStep> {
    const { context, lineage } = params;
@@ -206,7 +225,7 @@ export async function planSourceRefresh(params: {
          quotedTablePath: params.quotedTablePath,
          lineage,
          ledgerEntry,
-         forceRefresh: context.forceRefresh,
+         forceRefresh: context.forceRefresh || params.reseed === true,
          now: context.now,
          sourceSQL: params.sourceSQL,
          columns: params.columns,
@@ -286,6 +305,9 @@ export async function resetLedger(
  * Record the boundary a completed SEED reached, having just rebuilt the table.
  * Probes the table it wrote (see {@link seedCoveredThrough}); a source with no
  * rows to bound records nothing, leaving the next run to seed again.
+ *
+ * Returns the boundary it recorded (undefined when there was none to record) so
+ * the caller can report it on the manifest entry.
  */
 export async function advanceLedgerAfterSeed(params: {
    context: IncrementalRunContext;
@@ -294,7 +316,7 @@ export async function advanceLedgerAfterSeed(params: {
    quotedTablePath: string;
    runner: SqlRunner;
    dialect: string;
-}): Promise<void> {
+}): Promise<WatermarkBound | undefined> {
    const boundary = await seedCoveredThrough(
       params.runner,
       params.dialect,
@@ -314,7 +336,7 @@ export async function advanceLedgerAfterSeed(params: {
             },
          );
       }
-      return;
+      return undefined;
    }
    await advanceLedger({
       context: params.context,
@@ -322,26 +344,27 @@ export async function advanceLedgerAfterSeed(params: {
       sourceEntityId: params.sourceEntityId,
       coveredThrough: boundary.bound,
    });
+   return boundary.bound;
 }
 
 /**
- * Log and count a step, so a silent downgrade to a full rebuild is visible.
- * A delta is only counted here; its one log line is emitted on COMPLETION with
- * the duration (see MaterializationService.refreshOneSourceIncrementally),
- * because an "applying" line with no matching "applied" is exactly the failed
- * case, which already surfaces as the run's failure.
+ * Log and count a SEED or a SKIP, so a silent downgrade to a full rebuild is
+ * visible. Both are terminal decisions, so reporting them where they are decided
+ * is reporting what happened.
+ *
+ * A delta is NOT reported here, because at this point it has only been planned.
+ * Its metric and its one log line are emitted on COMPLETION, with the duration
+ * (see {@link reportDeltaApplied}): a planned delta that then fails would
+ * otherwise be counted as work the table received, and the delta:seed ratio the
+ * counter exists for would read high exactly when the feature is failing.
  */
 export function reportIncrementalStep(params: {
-   step: IncrementalStep;
+   step: Extract<IncrementalStep, { mode: "seed" | "skip" }>;
    sourceName: string;
    packageName: string;
    physicalTableName: string;
 }): void {
    const { step, sourceName, packageName, physicalTableName } = params;
-   if (step.mode === "delta") {
-      recordIncrementalStep(step.mode);
-      return;
-   }
    recordIncrementalStep(step.mode, step.reasonCode);
    // A seed is the fallback for everything the delta path cannot prove, so its
    // reason is the only signal that a source declared incremental is quietly
@@ -358,4 +381,21 @@ export function reportIncrementalStep(params: {
          reason: step.reason,
       },
    );
+}
+
+/**
+ * Count and log a delta that COMMITTED. Paired with {@link reportIncrementalStep}
+ * so every step is reported exactly once, and a `step="delta"` count always means
+ * a table that actually received one.
+ */
+export function reportDeltaApplied(params: {
+   sourceName: string;
+   packageName: string;
+   physicalTableName: string;
+   rangeStart: string;
+   rangeEnd: string;
+   durationMs: number;
+}): void {
+   recordIncrementalStep("delta");
+   logger.info("Applied an incremental delta", params);
 }

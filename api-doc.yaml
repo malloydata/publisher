@@ -4868,6 +4868,28 @@ components:
             for that destination (the source computes; only results cross), and
             the manifest records the destination + captured schema so
             the source can later be served cross-dialect from it.
+        reseed:
+          type: boolean
+          default: false
+          description: >-
+            Rebuild this source from scratch even if it declares
+            `refresh="incremental"` and has a recorded `covered_through`
+            boundary: the build runs the ordinary full CTAS and the boundary is
+            re-derived from the table it writes. The escape hatch for a boundary
+            or a table that is no longer trusted.
+
+            Per-instruction rather than per-request because re-seeding is a
+            per-source decision: a host may want one source rebuilt while the
+            rest advance by delta in the same run. Ignored for a source that is
+            not incremental (such a source is always built in full).
+
+            This is the ONLY way an orchestrated caller asks for a re-seed.
+            Request-level `forceRefresh` does NOT mean re-seed here: it defeats
+            skip-if-unchanged, which is an auto-run concept with no orchestrated
+            effect, since the host decides what to build by instructing it. An
+            incremental source's sourceEntityId never moves when its data
+            changes, so reading `forceRefresh` as "re-seed" would make every
+            orchestrated refresh a full rebuild and no delta could ever run.
             The name resolves generically against registered connections; any
             managed-tier alias is resolved by the host upstream and never
             reaches the publisher.
@@ -4956,6 +4978,26 @@ components:
           description: >-
             Per-version read-time policy when the entry is stale. Never combined
             across versions; each version's entries carry its own declared fallback.
+        coveredThrough:
+          type: string
+          description: >-
+            For a source declaring `refresh="incremental"`, the EXCLUSIVE upper
+            end of the watermark range this table is now known to contain — the
+            boundary the next refresh will start from. Canonical scalar text
+            (`2024-07-01`, `2024-07-01 12:00:00`, `41`), interpreted per
+            `coveredThroughType`.
+
+            Reported so a caller can observe and verify incremental progress
+            rather than infer it: a value that advanced between runs is a delta
+            that applied. Absent for a non-incremental source, and for an
+            incremental one whose source is empty (no boundary is derivable, so
+            none is recorded).
+        coveredThroughType:
+          type: string
+          description: >-
+            The Malloy type of `coveredThrough` (`date`, `timestamp`, `number`,
+            `string`), which decides how its text is compared and rendered.
+            Present exactly when `coveredThrough` is.
 
   parameters:
     environmentName:

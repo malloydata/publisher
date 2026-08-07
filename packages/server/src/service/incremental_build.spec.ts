@@ -165,4 +165,22 @@ describe("forcesFullSeed", () => {
          forcesFullSeed({ forceRefresh: false, trigger: "SCHEDULER" }),
       ).toBe(false);
    });
+
+   it("never re-seeds an ORCHESTRATED run on the request flag", () => {
+      // The control plane's whole use of the feature depends on this. It cannot
+      // send trigger=SCHEDULER (the controller strips it so SCHEDULER cannot be
+      // forged), and skip-if-unchanged never runs for an orchestrated build, so
+      // reading forceRefresh as "re-seed" would make every control-plane refresh
+      // a full rebuild with no way to ask for a delta.
+      expect(
+         forcesFullSeed({
+            forceRefresh: true,
+            trigger: "ON_DEMAND",
+            orchestrated: true,
+         }),
+      ).toBe(false);
+      expect(forcesFullSeed({ forceRefresh: true, orchestrated: true })).toBe(
+         false,
+      );
+   });
 });

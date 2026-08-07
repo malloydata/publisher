@@ -2873,7 +2873,13 @@ describe("buildOneSource: incremental refresh", () => {
       annotationFields?: Record<string, string>;
       manifest?: Manifest;
       dialectName?: string;
-   }): Promise<{ sourceEntityId: string; physicalTableName: string }> {
+      reseed?: boolean;
+   }): Promise<{
+      sourceEntityId: string;
+      physicalTableName: string;
+      coveredThrough?: string;
+      coveredThroughType?: string;
+   }> {
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "abcdef1234567890",
@@ -2890,12 +2896,15 @@ describe("buildOneSource: incremental refresh", () => {
          materializedTableId: "mt-1",
          physicalTableName: "orders_v1",
          realization: "COPY",
+         ...(params.reseed === undefined ? {} : { reseed: params.reseed }),
       };
       return (
          ctx.service as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                sourceEntityId: string;
                physicalTableName: string;
+               coveredThrough?: string;
+               coveredThroughType?: string;
             }>;
          }
       ).buildOneSource(
@@ -2954,6 +2963,39 @@ describe("buildOneSource: incremental refresh", () => {
       });
       // The entry still names the same table: a delta advances in place.
       expect(entry.physicalTableName).toBe("orders_v1");
+      // And it reports the coverage it reached, so an orchestrating caller can
+      // verify the delta advanced instead of inferring it from the run's outcome.
+      expect(entry.coveredThrough).toBe("2024-07-01");
+      expect(entry.coveredThroughType).toBe("date");
+   });
+
+   it("re-seeds the ONE source whose instruction says so", async () => {
+      // The escape hatch an orchestrated host has, and the only one: the request
+      // flag deliberately does not mean re-seed for it (see forcesFullSeed).
+      const runSQL = probeAwareRunSQL();
+      const { context, upsert } = incrementalContext({});
+      const entry = await callBuildOneSource({ runSQL, context, reseed: true });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(true);
+      expect(statements.some((s) => s.startsWith("BEGIN;"))).toBe(false);
+      // A rebuild still leaves a boundary behind — probed from the table it just
+      // wrote — so the NEXT refresh is a delta again rather than another rebuild.
+      expect(upsert.calledOnce).toBe(true);
+      expect(entry.coveredThrough).toBe("2024-07-01");
+   });
+
+   it("reports the boundary a SEED reached on the manifest entry", async () => {
+      // Same field as the delta case, so a caller reads coverage one way whatever
+      // the step did.
+      const runSQL = probeAwareRunSQL();
+      const { context } = incrementalContext({ ledgerEntry: null });
+      const entry = await callBuildOneSource({ runSQL, context });
+
+      const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(true);
+      expect(entry.coveredThrough).toBe("2024-07-01");
+      expect(entry.coveredThroughType).toBe("date");
    });
 
    it("carries the Snowflake delta as ONE scripting block, not a script", async () => {
@@ -3002,6 +3044,9 @@ describe("buildOneSource: incremental refresh", () => {
       expect(
          manifest.buildManifest.entries["abcdef1234567890"]?.tableName,
       ).toBe('"orders_v1"');
+      // A skip reports the boundary that STAYS in force, so a caller does not
+      // read a gap where coverage is simply unchanged.
+      expect(entry.coveredThrough).toBe("2024-07-01");
    });
 
    it("fails the build and leaves the boundary alone when the delta's DML fails", async () => {

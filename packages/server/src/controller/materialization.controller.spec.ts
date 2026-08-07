@@ -157,6 +157,56 @@ describe("MaterializationController.createMaterialization validation", () => {
       ]);
    });
 
+   it("preserves `reseed` on a build instruction, per source", async () => {
+      // Regression, and the same drift as `destination` above: reseed is the ONLY
+      // way an orchestrated caller can ask for a full rebuild (request-level
+      // forceRefresh deliberately does not mean re-seed), so dropping it here
+      // would leave the host's escape hatch inert — an incremental source it no
+      // longer trusts would keep advancing by delta. Per source, so one can
+      // rebuild while the rest advance in the same run.
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b1",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "orders_v1",
+                  realization: "COPY",
+                  reseed: true,
+               },
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "events_v1",
+                  realization: "COPY",
+               },
+            ],
+         },
+      });
+      expect(parsed.buildInstructions?.[0]).toMatchObject({ reseed: true });
+      // Absent stays absent rather than becoming an explicit false.
+      expect("reseed" in (parsed.buildInstructions?.[1] as object)).toBe(false);
+   });
+
+   it("rejects a non-boolean `reseed`", async () => {
+      const { controller } = build();
+      await expect(
+         controller.createMaterialization("env", "pkg", {
+            buildInstructions: {
+               sources: [
+                  {
+                     sourceEntityId: "b1",
+                     materializedTableId: "mt-1",
+                     physicalTableName: "orders_v1",
+                     realization: "COPY",
+                     reseed: "yes",
+                  },
+               ],
+            },
+         }),
+      ).rejects.toThrow("'reseed' must be a boolean");
+   });
+
    it("preserves the optional `connectionName` on a manifest reference", async () => {
       // Regression: `connectionName` (added by #904) lets the seed loop dialect-
       // quote the referenced upstream for a case-folding engine. Dropping it here

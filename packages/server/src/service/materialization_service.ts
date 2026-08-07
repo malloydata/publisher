@@ -51,6 +51,7 @@ import {
    applyDeltaScript,
    type IncrementalLineage,
    type SqlRunner,
+   type WatermarkBound,
 } from "./incremental_apply";
 import {
    advanceLedger,
@@ -58,6 +59,7 @@ import {
    forcesFullSeed,
    incrementalLineage,
    planSourceRefresh,
+   reportDeltaApplied,
    reportIncrementalStep,
    resetLedger,
    type IncrementalRunContext,
@@ -100,6 +102,22 @@ import {
 } from "./quoting";
 import { resolveEnvironmentId } from "./resolve_environment";
 import { redactPgSecrets } from "../pg_helpers";
+
+/**
+ * A boundary as the manifest entry's two reported fields, or nothing when there
+ * is no boundary — an ordinary (non-incremental) source, or an incremental one
+ * whose source is empty. Spread into the entry so the absent case adds no keys
+ * at all rather than explicit undefineds.
+ */
+function boundaryFields(
+   bound: WatermarkBound | undefined,
+):
+   | { coveredThrough: string; coveredThroughType: string }
+   | Record<never, never> {
+   return bound
+      ? { coveredThrough: bound.value, coveredThroughType: bound.malloyType }
+      : {};
+}
 
 /**
  * The narrow environment surface the build path needs to materialize into a
@@ -647,9 +665,10 @@ export class MaterializationService {
             packageName,
             materializationId: id,
             // NOT `opts.forceRefresh` verbatim: a scheduled force means "build
-            // even though the address is unchanged", not "re-seed" — see
-            // forcesFullSeed.
-            forceRefresh: forcesFullSeed(opts),
+            // even though the address is unchanged", not "re-seed", and an
+            // orchestrated run never re-seeds on this flag at all — it says so
+            // per source, with BuildInstruction.reseed. See forcesFullSeed.
+            forceRefresh: forcesFullSeed({ ...opts, orchestrated }),
             now: new Date(startedAt),
          });
 
@@ -1828,16 +1847,16 @@ export class MaterializationService {
 
       // The table now holds a full snapshot, so record where that snapshot
       // reaches: this is what turns the NEXT refresh into a delta.
-      if (incrementalRefresh) {
-         await advanceLedgerAfterSeed({
-            context: incrementalRefresh.context,
-            lineage: incrementalRefresh.lineage,
-            sourceEntityId: incrementalRefresh.ledgerKey,
-            quotedTablePath: quotedPhysical,
-            dialect,
-            runner: (sql) => connection.runSQL(sql, runOptions),
-         });
-      }
+      const seededThrough = incrementalRefresh
+         ? await advanceLedgerAfterSeed({
+              context: incrementalRefresh.context,
+              lineage: incrementalRefresh.lineage,
+              sourceEntityId: incrementalRefresh.ledgerKey,
+              quotedTablePath: quotedPhysical,
+              dialect,
+              runner: (sql) => connection.runSQL(sql, runOptions),
+           })
+         : undefined;
 
       return {
          sourceEntityId,
@@ -1846,6 +1865,7 @@ export class MaterializationService {
          physicalTableName,
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
+         ...boundaryFields(seededThrough),
          rowCount: null,
       };
    }
@@ -1893,14 +1913,17 @@ export class MaterializationService {
          // string, so it computes what a rebuild would — see deltaSelect.
          sourceSQL: params.buildSQL,
          columns: deriveColumns(persistSource).map((c) => String(c.name)),
+         reseed: instruction.reseed,
          runner,
       });
-      reportIncrementalStep({
-         step,
-         sourceName: persistSource.name,
-         packageName: context.packageName,
-         physicalTableName: lineage.physicalTableName,
-      });
+      if (step.mode !== "delta") {
+         reportIncrementalStep({
+            step,
+            sourceName: persistSource.name,
+            packageName: context.packageName,
+            physicalTableName: lineage.physicalTableName,
+         });
+      }
       if (step.mode === "seed") return undefined;
 
       const startTime = performance.now();
@@ -1918,7 +1941,7 @@ export class MaterializationService {
          });
          const durationMs = Math.round(performance.now() - startTime);
          recordSourceBuildDuration(durationMs, "delta");
-         logger.info("Applied an incremental delta", {
+         reportDeltaApplied({
             packageName: context.packageName,
             sourceName: persistSource.name,
             physicalTableName: lineage.physicalTableName,
@@ -1943,6 +1966,10 @@ export class MaterializationService {
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
          rowCount: null,
+         // A delta reports where it advanced to; a skip reports the boundary
+         // that stays in force. Either way the caller reads coverage from the
+         // entry rather than inferring it from the run's outcome.
+         ...boundaryFields(step.coveredThrough),
       };
    }
 
