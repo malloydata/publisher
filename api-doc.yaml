@@ -2745,7 +2745,7 @@ components:
           default: package
           description: >-
             Package-level Malloy Persistence scope mode, declared once at the
-            malloy-publisher.json root and applied uniformly to every persist
+            publisher.json root and applied uniformly to every persist
             source and index in the package. `package` (the default) =
             persisted artifacts are package-scoped: reused across the package's
             published versions whenever they still satisfy freshness. `version`
@@ -2846,7 +2846,7 @@ components:
             - type: "null"
           description: |
             Package-level Malloy Persistence policy declared in
-            malloy-publisher.json. The control plane reads it to drive scheduled
+            publisher.json. The control plane reads it to drive scheduled
             re-materialization. The object is present whenever the package has
             loaded — with `schedule: null` when the manifest declares no
             schedule — so the caller can treat object-present as the
@@ -2932,7 +2932,7 @@ components:
     PackageMaterializationConfig:
       type: object
       description: >-
-        Package-level Malloy Persistence policy from malloy-publisher.json's
+        Package-level Malloy Persistence policy from publisher.json's
         `materialization` block. Surfaced verbatim so the control plane can drive
         scheduled version-level re-materialization without re-reading the package
         files. The object is emitted whenever the package is loaded, even when no
@@ -2978,7 +2978,7 @@ components:
     Freshness:
       type: object
       description: >-
-        Freshness policy declared in malloy-publisher.json's
+        Freshness policy declared in publisher.json's
         `materialization.freshness` block. Fields are surfaced verbatim;
         invalid values are dropped (reported as absent), never defaulted.
       properties:
