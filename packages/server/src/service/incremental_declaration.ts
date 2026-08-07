@@ -1,7 +1,12 @@
 import type { PersistSource } from "@malloydata/malloy";
 import type { Tag } from "@malloydata/malloy-tag";
 
+import type { IncrementalStrategy } from "../storage/DatabaseInterface";
 import { deriveColumns } from "./build_plan";
+
+// The strategy a declaration implies is also what the ledger records, so the
+// type is shared with the store rather than restated here.
+export type { IncrementalStrategy };
 
 /**
  * Resolution of a persist source's INCREMENTAL declaration — the `refresh=`,
@@ -90,9 +95,6 @@ export interface MalformedValue {
    /** The offending name, when one name of several is at fault. */
    detail?: string;
 }
-
-/** How a delta advances the serving table. */
-export type IncrementalStrategy = "merge" | "range_replace";
 
 export interface IncrementalDeclaration {
    /** The effective `refresh=` value verbatim; undefined when unset. */

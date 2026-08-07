@@ -97,6 +97,25 @@ export interface ResourceRepository {
       updates: MaterializationUpdate,
    ): Promise<Materialization>;
    deleteMaterialization(id: string): Promise<void>;
+
+   // Incremental ledger
+   getIncrementalLedgerEntry(
+      environmentId: string,
+      packageName: string,
+      sourceEntityId: string,
+   ): Promise<IncrementalLedgerEntry | null>;
+   listIncrementalLedgerEntries(
+      environmentId: string,
+      packageName: string,
+   ): Promise<IncrementalLedgerEntry[]>;
+   upsertIncrementalLedgerEntry(
+      entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
+   ): Promise<IncrementalLedgerEntry>;
+   deleteIncrementalLedgerEntry(
+      environmentId: string,
+      packageName: string,
+      sourceEntityId: string,
+   ): Promise<void>;
 }
 
 export interface Environment {
@@ -174,6 +193,50 @@ export interface Materialization {
    createdAt: Date;
    updatedAt: Date;
 }
+
+/**
+ * The durable boundary of one incrementally-refreshed source lineage: the
+ * EXCLUSIVE upper end of the watermark range its serving table is known to
+ * contain. A delta run starts exactly here and advances it only after its DML
+ * commits, so a crash in between costs a repeated (idempotent) range rather than
+ * a gap.
+ *
+ * The declarations are recorded, not merely described. A change to `watermark=`
+ * or `merge_key=` changes the DML the publisher would issue WITHOUT moving the
+ * source's content address, so the address cannot detect it; comparing these
+ * against the plan's current declaration is what forces a re-seed instead of a
+ * delta computed under one set of rules being applied under another.
+ */
+export interface IncrementalLedgerEntry {
+   environmentId: string;
+   packageName: string;
+   /** The source's content address; the lineage this boundary belongs to. */
+   sourceEntityId: string;
+   /**
+    * Canonical scalar text of the boundary (ISO-8601 for temporal types,
+    * decimal for numbers, the value itself for strings) — NOT a pre-rendered
+    * literal, because the Malloy delta query and the SQL range DELETE need
+    * different spellings of the same value.
+    */
+   coveredThroughValue: string;
+   /** The watermark's Malloy type, which decides how the value is rendered. */
+   coveredThroughType: string;
+   /** The `watermark=` dimension the boundary was computed over. */
+   watermarkDimension: string;
+   /** The `merge_key=` dimensions, in declared order; empty for range replace. */
+   mergeKeyDimensions: string[];
+   derivedStrategy: IncrementalStrategy;
+   /** Lineage identity, so a boundary is never read against another table. */
+   physicalTableName: string;
+   connectionName: string;
+   /** Audit: which run last advanced this boundary, and when. */
+   advancedByMaterializationId: string | null;
+   advancedAt: Date;
+   createdAt: Date;
+}
+
+/** How a delta advances the serving table. */
+export type IncrementalStrategy = "merge" | "range_replace";
 
 export interface MaterializationUpdate {
    status?: MaterializationStatus;
