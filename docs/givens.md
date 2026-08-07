@@ -98,7 +98,15 @@ against the compiler:
 | `#(description) Earliest report date to include` | clean | renders as `description) Earliest report date to include` |
 | `# description="Earliest report date to include"` (a tag, note the space) | clean | nothing renders: plain `#` tags are Malloy's reserved namespace and are filtered out before the annotation list reaches a client |
 
-So keep `#(description="…")`.
+So for helper text in the notebook UI today, keep `#(description="…")`.
+
+The last row is about *rendering*, and it is narrowing. The server now reads a `# description="…"`
+tag off the declaration and returns it as `Given.description`, alongside the other control fields
+(`label`, `control`, `rangeMin`, `rangeMax`, `suggest`) it derives from the same plain `#` tags. That
+field is not what the notebook UI renders yet, so the row's "nothing renders" still holds for helper
+text, but the tag form is no longer invisible to a client and it is the form that compiles without
+the warning above. A model that wants both can carry both; they are read independently and neither
+overwrites the other.
 
 ## How It Works
 
