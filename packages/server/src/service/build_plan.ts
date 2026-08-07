@@ -4,7 +4,6 @@ import type {
    BuildNode,
    MalloyConfig,
    Connection as MalloyConnection,
-   ModelMaterializer,
    PersistSource,
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
@@ -17,7 +16,6 @@ import {
    recordEligibilityRefused,
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
-import { trialCompileDeltaQuery } from "./incremental_apply";
 import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
@@ -94,22 +92,6 @@ export interface CompiledBuildPlan {
     * Optional so existing fixtures/callers that don't track it still typecheck.
     */
    sourceModelPaths?: Record<string, string>;
-   /**
-    * sourceID -> the `ModelMaterializer` of the model that declares the source,
-    * the only handle from which a query can be compiled AGAINST that model.
-    *
-    * Incremental materialization needs it: the delta is a query stage over the
-    * author's source (`run: <source> -> { where: <range>; select: * }`), and a
-    * query stage is reachable only through a materializer. It must not be read
-    * off a generated source extension, which silently drops the predicate — the
-    * canary in incremental_compiler_contract.spec.ts.
-    *
-    * Holding these keeps each compiled model alive, so callers use them within
-    * the call that produced them and do not retain them (see
-    * {@link computePackageBuildPlan}, which trial-compiles and then drops them).
-    * Optional so existing fixtures/callers that don't track it still typecheck.
-    */
-   sourceMaterializers?: Record<string, ModelMaterializer>;
    /**
     * Sources carrying a `#@ persist` annotation that Malloy's getBuildPlan() did
     * NOT recognize as a materializable build root, so they produced no plan entry
@@ -598,7 +580,6 @@ export async function compilePackageBuildPlan(
    const allGraphs: MalloyBuildGraph[] = [];
    const allSources: Record<string, PersistSource> = {};
    const sourceModelPaths: Record<string, string> = {};
-   const sourceMaterializers: Record<string, ModelMaterializer> = {};
    const droppedPersistSources: { name: string; modelPath: string }[] = [];
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -614,11 +595,9 @@ export async function compilePackageBuildPlan(
          modelPath,
          pkg.getMalloyConfig(),
       );
-      // Keep the materializer, not just the compiled model: it is the only
-      // handle that can compile a query against this model, which the
-      // incremental delta needs (see CompiledBuildPlan.sourceMaterializers).
-      const materializer = runtime.loadModel(modelURL, { importBaseURL });
-      const malloyModel = await materializer.getModel();
+      const malloyModel = await runtime
+         .loadModel(modelURL, { importBaseURL })
+         .getModel();
 
       // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
       // on any model that lacks the flag — it does NOT return empty. So a
@@ -660,7 +639,6 @@ export async function compilePackageBuildPlan(
       for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
          allSources[sourceID] = source;
          sourceModelPaths[sourceID] = modelPath;
-         sourceMaterializers[sourceID] = materializer;
       }
    }
 
@@ -696,7 +674,6 @@ export async function compilePackageBuildPlan(
       connectionDigests,
       connections,
       sourceModelPaths,
-      sourceMaterializers,
       droppedPersistSources,
    };
 }
@@ -777,7 +754,6 @@ export async function computePackageBuildPlan(
    droppedPersistSources: { name: string; modelPath: string }[];
    sourceEligibility: SourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
-   incrementalTrialCompileErrors: Record<string, string>;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
@@ -800,57 +776,7 @@ export async function computePackageBuildPlan(
       droppedPersistSources,
       sourceEligibility: collectSourceEligibility(compiled.sources),
       incrementalDeclarations,
-      // Runs here, while the materializers are alive, and they are dropped with
-      // `compiled` when this returns.
-      incrementalTrialCompileErrors: await trialCompileIncrementalDeltas(
-         compiled,
-         incrementalDeclarations,
-      ),
    };
-}
-
-/**
- * Compile — never run — the delta query of every source whose declaration is
- * coherent enough to have one, returning sourceID -> compile error for the ones
- * that failed.
- *
- * The static gates are necessary but not sufficient: they prove the watermark is
- * a real, orderable, non-aggregate output column, not that a range predicate over
- * it type-checks or that the source admits a query stage at all. Proving that
- * costs one compile per incremental source at publish, and saves a run that
- * would fail after being dispatched as a delta.
- *
- * Sources with an incoherent declaration are skipped: a rule already rejects
- * them, and a second message about a query we would never have generated adds
- * noise, not information.
- */
-async function trialCompileIncrementalDeltas(
-   compiled: CompiledBuildPlan,
-   declarations: Record<string, IncrementalDeclaration>,
-): Promise<Record<string, string>> {
-   const errors: Record<string, string> = {};
-   for (const [sourceID, declaration] of Object.entries(declarations)) {
-      const watermark = declaration.watermark;
-      if (
-         !declaration.incremental ||
-         watermark === undefined ||
-         watermark.kind !== "dimension" ||
-         !declaration.watermarkOrderable
-      ) {
-         continue;
-      }
-      const materializer = compiled.sourceMaterializers?.[sourceID];
-      const source = compiled.sources[sourceID];
-      if (!materializer || !source) continue;
-      const error = await trialCompileDeltaQuery({
-         materializer,
-         sourceName: source.name,
-         watermarkName: watermark.name,
-         watermarkType: watermark.malloyType,
-      });
-      if (error !== undefined) errors[sourceID] = error;
-   }
-   return errors;
 }
 
 /**

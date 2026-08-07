@@ -182,8 +182,8 @@ export class Package {
    // unknown answer must not read as consent. See bindStorageServeBindings.
    private sourceEligibility: SourceEligibility | undefined = undefined;
    // Per-source incremental-refresh gate inputs (the resolved `refresh=` /
-   // `watermark=` / `merge_key=` declaration, and the publish-time trial compile
-   // of the delta query), keyed by sourceID to match the wire plan. Resolved at
+   // `watermark=` / `merge_key=` declaration), keyed by sourceID to match the
+   // wire plan. Resolved at
    // compile for the same reason as sourceEligibility: the rules read the
    // compiled output schema and the query definition's field kinds, neither of
    // which the wire plan carries. Empty when the plan compute failed, which
@@ -601,7 +601,6 @@ export class Package {
             droppedPersistSources,
             sourceEligibility,
             incrementalDeclarations,
-            incrementalTrialCompileErrors,
          } = await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
@@ -614,7 +613,6 @@ export class Package {
                dialect: source.dialect,
                storageDestination: source.annotationFields?.storage,
                declaration: incrementalDeclarations[sourceID],
-               trialCompileError: incrementalTrialCompileErrors[sourceID],
             }));
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
@@ -1255,8 +1253,8 @@ export class Package {
     * REJECTION messages for the sources' incremental-refresh declarations
     * (`refresh="incremental"` with `watermark=` / `merge_key=`): an incoherent
     * declaration chain, a malformed key value, a name that is not a materialized
-    * output column, an unsupported dialect, a window function, or a delta query
-    * that does not compile. See incremental_policy for the rules.
+    * output column, an unsupported dialect, or a window function. See
+    * incremental_policy for the rules.
     *
     * Kept SEPARATE from {@link persistencePolicyWarnings} — which is about the
     * manifest's scope/schedule/freshness policy — so the two gates stay

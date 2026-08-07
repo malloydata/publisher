@@ -1,8 +1,4 @@
-import type {
-   ModelMaterializer,
-   PersistSource,
-   BuildManifest,
-} from "@malloydata/malloy";
+import type { PersistSource } from "@malloydata/malloy";
 
 import { logger } from "../logger";
 import { recordIncrementalStep } from "../materialization_metrics";
@@ -12,7 +8,7 @@ import type {
 } from "../storage/DatabaseInterface";
 import { errMessage } from "../utils";
 import {
-   deltaQueryText,
+   deltaSelect,
    INCREMENTAL_DIALECT_ALLOWLIST,
    isRenderableWatermarkType,
    planIncrementalStep,
@@ -71,8 +67,6 @@ export interface IncrementalRunContext {
    now: Date;
    /** sourceID -> the source's resolved declaration. */
    declarations: Record<string, IncrementalDeclaration>;
-   /** sourceID -> the materializer that compiles its delta query. */
-   materializers: Record<string, ModelMaterializer>;
    ledger: IncrementalLedgerStore;
 }
 
@@ -151,48 +145,43 @@ export function incrementalLineage(params: {
 }
 
 /**
- * Compile the delta query for a range into SQL plus its output column names.
+ * Bind a source to the range-to-delta function the planner asks for.
  *
- * Compiled WITH the build's manifest, which is not optional: a delta over a
- * chained source has to read its upstream's materialized table for exactly the
- * reason the seed does, and a manifest-less compile would silently recompute the
- * upstream from raw — a correct-looking delta over the wrong input.
+ * The `sourceSQL` handed in is the build's own — `PersistSource.getSQL()`
+ * resolved against the build manifest, the exact string the seed's CTAS runs.
+ * Passing the manifest-resolved form is not optional: a delta over a chained
+ * source has to read its upstream's MATERIALIZED table for the same reason the
+ * seed does, and the raw form would silently recompute the upstream — a
+ * correct-looking delta over the wrong input.
  *
- * The column names come from the prepared result rather than from the source's
- * field list, because they are what the DML has to name, and the two can differ
- * in ORDER (the field list is declaration order, the SQL is projection order).
+ * `columns` is likewise the source's compiled output schema, which is what the
+ * seed's CTAS gives the table its columns from, so the two agree by
+ * construction. Order does not matter: the DML names the same list on both sides
+ * of the INSERT (see deltaStatements).
+ *
+ * Still a function rather than a value so the planner keeps deciding the range
+ * and never has to know how a delta is spelled — and so a dialect that must ask
+ * the warehouse something to build one can slot in here unchanged.
  */
-export function compileDeltaFor(params: {
-   materializer: ModelMaterializer;
-   sourceName: string;
+export function deltaSelectFor(params: {
+   dialect: string;
+   sourceSQL: string;
+   columns: string[];
    watermarkName: string;
-   buildManifest: BuildManifest;
-   connectionDigests: Record<string, string>;
 }): (
    start: WatermarkBound,
    end: WatermarkBound,
 ) => Promise<{ sql: string; columns: string[] }> {
-   return async (start, end) => {
-      const prepared = await params.materializer
-         .loadQuery(
-            deltaQueryText({
-               sourceName: params.sourceName,
-               watermarkName: params.watermarkName,
-               start,
-               end,
-            }),
-         )
-         .getPreparedResult({
-            buildManifest: params.buildManifest,
-            connectionDigests: params.connectionDigests,
-         });
-      return {
-         sql: prepared.sql,
-         columns: prepared.resultExplore.allFields
-            .map((f) => f.name)
-            .filter((n): n is string => typeof n === "string" && n.length > 0),
-      };
-   };
+   return async (start, end) => ({
+      sql: deltaSelect({
+         dialect: params.dialect,
+         sourceSQL: params.sourceSQL,
+         watermarkName: params.watermarkName,
+         start,
+         end,
+      }),
+      columns: params.columns,
+   });
 }
 
 /**
@@ -207,23 +196,15 @@ export async function planSourceRefresh(params: {
    context: IncrementalRunContext;
    lineage: IncrementalLineage;
    persistSource: PersistSource;
-   sourceID: string;
    sourceEntityId: string;
    quotedTablePath: string;
+   /** The build's own SQL for this source, which the delta filters. */
    sourceSQL: string;
+   /** The source's compiled output columns, which the delta's DML names. */
+   columns: string[];
    runner: SqlRunner;
-   buildManifest: BuildManifest;
-   connectionDigests: Record<string, string>;
 }): Promise<IncrementalStep> {
    const { context, lineage } = params;
-   const materializer = context.materializers[params.sourceID];
-   if (!materializer) {
-      return {
-         mode: "seed",
-         reason:
-            "the source's compiled model is not available to build a delta",
-      };
-   }
    let ledgerEntry: IncrementalLedgerEntry | null = null;
    try {
       ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
@@ -256,12 +237,11 @@ export async function planSourceRefresh(params: {
          now: context.now,
          sourceSQL: params.sourceSQL,
          postgresVersionNum,
-         compileDelta: compileDeltaFor({
-            materializer,
-            sourceName: params.persistSource.name,
+         deltaFor: deltaSelectFor({
+            dialect: params.persistSource.dialectName,
+            sourceSQL: params.sourceSQL,
+            columns: params.columns,
             watermarkName: lineage.watermarkName,
-            buildManifest: params.buildManifest,
-            connectionDigests: params.connectionDigests,
          }),
       });
    } catch (err) {

@@ -42,6 +42,7 @@ import {
    compilePackageBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
+   deriveColumns,
    projectToPublicColumns,
    iterGraphSources,
    resolveQueryMetadata,
@@ -1220,8 +1221,7 @@ export class MaterializationService {
     *
     * Resolved from the compiled plan rather than the wire plan because the
     * declaration is read off the compiled source (its output schema and query
-    * definition), and because the delta query is compiled through the same
-    * materializers, which are alive only for this compile.
+    * definition), neither of which the wire plan carries.
     */
    private incrementalRunContext(
       compiled: CompiledBuildPlan,
@@ -1253,12 +1253,7 @@ export class MaterializationService {
          if (declaration.incremental) declarations[sourceID] = declaration;
       }
       if (Object.keys(declarations).length === 0) return undefined;
-      return {
-         ...run,
-         declarations,
-         materializers: compiled.sourceMaterializers ?? {},
-         ledger: this.repository,
-      };
+      return { ...run, declarations, ledger: this.repository };
    }
 
    /**
@@ -1898,13 +1893,13 @@ export class MaterializationService {
          context,
          lineage,
          persistSource,
-         sourceID: persistSource.sourceID,
          sourceEntityId: params.ledgerKey,
          quotedTablePath: params.quotedTablePath,
+         // The CTAS's own SQL, manifest-resolved. The delta filters this exact
+         // string, so it computes what a rebuild would — see deltaSelect.
          sourceSQL: params.buildSQL,
+         columns: deriveColumns(persistSource).map((c) => String(c.name)),
          runner,
-         buildManifest: params.buildManifest,
-         connectionDigests: params.connectionDigests,
       });
       reportIncrementalStep({
          step,

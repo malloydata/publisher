@@ -11,9 +11,9 @@
 //     two definitions' rows in one table.
 //
 // The dangerous direction is the first one, because the run itself is what could
-// break it: a delta run compiles a range-filtered query off the same materializer
-// the address is derived from, so anything that leaked the range into the source's
-// own SQL would re-address the table on every refresh. These tests compile real
+// break it: a delta derives its SELECT from the same `PersistSource.getSQL()` the
+// address is computed over, so anything that leaked the range into the source's
+// own SQL would re-address the table on every refresh. These tests build real
 // deltas at real ranges and assert the address does not budge.
 //
 // Same real-compile harness as incremental_compiler_contract.spec.ts (in-memory
@@ -27,7 +27,7 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { computeSourceEntityId } from "./build_plan";
-import { compileDeltaFor } from "./incremental_build";
+import { deltaSelectFor } from "./incremental_build";
 import type { WatermarkBound } from "./incremental_apply";
 
 const ROOT = "file:///addr/";
@@ -86,23 +86,23 @@ async function address(model: string): Promise<string> {
 describe("incremental refresh: content-address stability", () => {
    it("survives a seed and two deltas at different ranges", async () => {
       // The whole lifecycle in one compile session: address it as the seed
-      // would, compile two deltas at different ranges as two later runs would,
+      // would, build two deltas at different ranges as two later runs would,
       // then address it again. The ledger key must be byte-identical throughout.
-      const { sources, materializer } = await compile(MODEL);
+      const { sources } = await compile(MODEL);
       const seedAddress = computeSourceEntityId(sources.mz, DIGESTS);
 
-      const compileDelta = compileDeltaFor({
-         materializer,
-         sourceName: "mz",
+      const deltaFor = deltaSelectFor({
+         dialect: "duckdb",
+         // The seed's own SQL, which is also what the address is computed over.
+         sourceSQL: sources.mz.getSQL({ buildManifest: { entries: {} } }),
+         columns: ["order_date", "region", "revenue"],
          watermarkName: "order_date",
-         buildManifest: { entries: {} },
-         connectionDigests: DIGESTS,
       });
 
-      const first = await compileDelta(date("2024-01-01"), date("2024-02-01"));
+      const first = await deltaFor(date("2024-01-01"), date("2024-02-01"));
       expect(computeSourceEntityId(sources.mz, DIGESTS)).toBe(seedAddress);
 
-      const second = await compileDelta(date("2024-02-01"), date("2024-03-01"));
+      const second = await deltaFor(date("2024-02-01"), date("2024-03-01"));
       expect(computeSourceEntityId(sources.mz, DIGESTS)).toBe(seedAddress);
 
       // Not vacuous: the ranges did reach the delta SQL, they just did not reach

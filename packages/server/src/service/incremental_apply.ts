@@ -1,7 +1,4 @@
-import {
-   decodeDottedTablePath,
-   type ModelMaterializer,
-} from "@malloydata/malloy";
+import { decodeDottedTablePath } from "@malloydata/malloy";
 
 import { logger } from "../logger";
 import type {
@@ -69,10 +66,9 @@ export function describeDialects(dialects: ReadonlySet<string>): string {
  * type — ISO-8601 for a date/timestamp, decimal text for a number, the value
  * itself for a string.
  *
- * Deliberately not a pre-rendered literal: the same boundary has to appear both
- * as a Malloy literal (in the delta query) and as a SQL literal (in the range
- * DELETE), and those spellings differ. Storing the canonical text keeps one
- * value in the ledger that both renderers read.
+ * Deliberately not a pre-rendered literal: the ledger holds one value that
+ * outlives any one statement's spelling of it, and comparing two boundaries
+ * (compareBounds) needs the value, not its rendering.
  */
 export interface WatermarkBound {
    malloyType: string;
@@ -86,19 +82,9 @@ export function isRenderableWatermarkType(malloyType: string): boolean {
    return RENDERABLE_TYPES.has(malloyType);
 }
 
-/** Escape a string for a single-quoted Malloy literal (mirrors filter.ts). */
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
 /** Escape a string for a single-quoted SQL literal (doubling the quote). */
 function escapeSqlString(value: string): string {
    return value.replace(/'/g, "''");
-}
-
-/** Quote a Malloy identifier so a reserved word or odd name still parses. */
-export function quoteMalloyIdentifier(name: string): string {
-   return "`" + name.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
 }
 
 /**
@@ -133,31 +119,12 @@ function datePrecision(value: string): string {
 }
 
 /**
- * The bound as a Malloy literal, spelled for the watermark's own type.
+ * The bound as a SQL literal, spelled for the watermark's own type.
  *
- * Type-matching is not cosmetic: comparing a `date` column to a timestamp
- * literal is a Malloy COMPILE ERROR ("Cannot compare a date to a timestamp"),
- * pinned in the contract spec. A single all-timestamps renderer would fail every
- * date-watermarked source, and only at build time.
+ * Type-matching is not cosmetic: on a strict dialect, comparing a `date` column
+ * to a timestamp literal is an error rather than a coercion, so a single
+ * all-timestamps renderer would fail every date-watermarked source at build time.
  */
-export function renderMalloyBound(bound: WatermarkBound): string {
-   switch (bound.malloyType) {
-      case "date":
-         return `@${datePrecision(bound.value)}`;
-      case "timestamp":
-         return `@${secondsPrecision(bound.value)}`;
-      case "number":
-         return renderNumber(bound.value);
-      case "string":
-         return `'${escapeMalloyString(bound.value)}'`;
-      default:
-         throw new Error(
-            `watermark type '${bound.malloyType}' has no literal rendering`,
-         );
-   }
-}
-
-/** The bound as a SQL literal for the range DELETE. */
 export function renderSqlBound(bound: WatermarkBound): string {
    switch (bound.malloyType) {
       case "date":
@@ -231,100 +198,47 @@ export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
 }
 
 /**
- * The delta query for one source and range: a query stage that filters the
- * source's OUTPUT rows by the watermark and selects them all.
+ * The delta's SELECT for one source and range: the source's OWN build SQL,
+ * wrapped and filtered on the watermark.
  *
- * `select: *` rather than a named projection on purpose. The delta has to write
- * the shape the seed CTAS wrote, and the seed writes whatever the source's own
- * SQL produces — so anything enumerated here would be this module's guess at
- * that shape rather than the compiler's own answer. The two shapes are still
- * COMPARED before any DML runs, because they can legitimately differ (see
- * {@link shapeMismatch}).
+ * Built from `PersistSource.getSQL()` — the exact string the seed's `CREATE TABLE
+ * AS` runs — rather than by compiling a Malloy query stage over the source, and
+ * that is the load-bearing choice here.
+ *
+ * A query's SQL is FINALIZED: Malloy appends the dialect's `sqlFinalStage`
+ * wherever `Dialect.hasFinalStage` is true, and Postgres is the only such
+ * dialect. Its final stage is `SELECT row_to_json(finalStage) as row FROM …`, so
+ * a compiled delta query yields ONE json column named `row` and an
+ * `INSERT INTO … SELECT "col", …` off it fails with `column "col" does not
+ * exist`. `PersistSource.getSQL()` is the same expression compiled UNfinalized,
+ * which is why the seed's CTAS materializes real columns. Publisher #867 fixed
+ * the CTAS by patching Malloy to that effect and upstream
+ * malloydata/malloy#2964 shipped it, so the fix arrives here for free — but only
+ * through `getSQL()`. There is no supported way to ask a QUERY for its
+ * unfinalized SQL, hence this composition. See docs/materialization.md,
+ * "Materializing on Postgres".
+ *
+ * Two things follow from reusing the seed's own SQL, both worth having: the
+ * delta writes the same shape the seed wrote BY CONSTRUCTION, and the delta
+ * cannot disagree with the seed about what the source computes.
+ *
+ * `SELECT *` because the caller's DML projects by name (see
+ * {@link deltaStatements}), so this only has to narrow the rows.
  */
-export function deltaQueryText(params: {
-   sourceName: string;
+export function deltaSelect(params: {
+   dialect: string;
+   /** `PersistSource.getSQL(...)`, resolved against the build's manifest. */
+   sourceSQL: string;
    watermarkName: string;
    start: WatermarkBound;
    end: WatermarkBound;
 }): string {
-   const source = quoteMalloyIdentifier(params.sourceName);
-   const watermark = quoteMalloyIdentifier(params.watermarkName);
-   const start = renderMalloyBound(params.start);
-   const end = renderMalloyBound(params.end);
+   const watermark = quoteIdentifier(params.watermarkName, params.dialect);
    return (
-      `run: ${source} -> {\n` +
-      `  where: ${watermark} >= ${start} and ${watermark} < ${end}\n` +
-      `  select: *\n` +
-      `}`
+      `SELECT * FROM (${params.sourceSQL}) AS __d ` +
+      `WHERE ${watermark} >= ${renderSqlBound(params.start)} ` +
+      `AND ${watermark} < ${renderSqlBound(params.end)}`
    );
-}
-
-/**
- * Bounds used only to prove a delta query COMPILES. Never executed, and never
- * written to the ledger — a real run derives its own range.
- */
-export function placeholderBounds(malloyType: string): {
-   start: WatermarkBound;
-   end: WatermarkBound;
-} {
-   switch (malloyType) {
-      case "date":
-         return {
-            start: { malloyType, value: "2000-01-01" },
-            end: { malloyType, value: "2000-01-02" },
-         };
-      case "timestamp":
-         return {
-            start: { malloyType, value: "2000-01-01 00:00:00" },
-            end: { malloyType, value: "2000-01-02 00:00:00" },
-         };
-      case "number":
-         return {
-            start: { malloyType, value: "0" },
-            end: { malloyType, value: "1" },
-         };
-      default:
-         return {
-            start: { malloyType, value: "" },
-            end: { malloyType, value: "\uffff" },
-         };
-   }
-}
-
-/**
- * Compile — never run — the delta query for a source, returning the compile
- * error if there is one and undefined if it compiles.
- *
- * This is the publish-time proof that a source declared incremental can actually
- * produce a delta. Everything the static gates check is necessary but not
- * sufficient: the range predicate has to type-check against the watermark, and
- * the source has to admit a query stage at all. Failing that here costs a
- * compile at publish; failing it later costs a run that cannot advance.
- */
-export async function trialCompileDeltaQuery(params: {
-   materializer: ModelMaterializer;
-   sourceName: string;
-   watermarkName: string;
-   watermarkType: string;
-}): Promise<string | undefined> {
-   const bounds = placeholderBounds(params.watermarkType);
-   let query: string;
-   try {
-      query = deltaQueryText({
-         sourceName: params.sourceName,
-         watermarkName: params.watermarkName,
-         start: bounds.start,
-         end: bounds.end,
-      });
-   } catch (err) {
-      return errMessage(err);
-   }
-   try {
-      await params.materializer.loadQuery(query).getSQL();
-      return undefined;
-   } catch (err) {
-      return errMessage(err);
-   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -592,11 +506,14 @@ export function compareBounds(a: WatermarkBound, b: WatermarkBound): number {
  *
  * Order is ignored on purpose (the DML names every column explicitly, so ordinal
  * position never matters), but membership is not — and it can legitimately
- * differ. The seed CTAS materializes the source's OWN SQL, while the delta is a
- * query stage over the source, and a table-backed source that renames or hides a
- * column produces different column NAMES in the two: `rename: order_date is
- * ord_dt` writes `ord_dt` in the table and emits `order_date` from the query.
- * Pinned in incremental_compiler_contract.spec.ts.
+ * differ. The delta SELECTS the same SQL the seed's CTAS ran, so the ROWS always
+ * match by construction; what can diverge is the column list the DML names it
+ * with, which is the source's compiled output schema. `getSQL()` projects columns
+ * that schema does not describe — ones the source renames or hides (`rename:`,
+ * `except:`, non-public access modifiers) — and those land in the table the seed
+ * built. Pinned in incremental_compiler_contract.spec.ts. Every such source falls
+ * back to a seed, which is the safe direction: naming a subset would rewrite the
+ * unnamed columns to NULL.
  */
 export function shapeMismatch(
    deltaColumns: string[],
@@ -933,8 +850,8 @@ export async function planIncrementalStep(inputs: {
    now: Date;
    /** The source's own build SQL, for the frontier probe (non-time watermarks). */
    sourceSQL: string;
-   /** Compile the delta query for a range into SQL plus its output columns. */
-   compileDelta: (
+   /** The delta SELECT for a range, plus the columns its DML names. */
+   deltaFor: (
       start: WatermarkBound,
       end: WatermarkBound,
    ) => Promise<{ sql: string; columns: string[] }>;
@@ -1036,7 +953,7 @@ export async function planIncrementalStep(inputs: {
       };
    }
 
-   const delta = await inputs.compileDelta(start, end.bound);
+   const delta = await inputs.deltaFor(start, end.bound);
    const shape = shapeMismatch(delta.columns, probe.columns);
    if (shape) {
       // Legitimate, and unfixable from here: a table-backed source that renames

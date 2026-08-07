@@ -215,8 +215,8 @@ export interface IncrementalLedgerEntry {
    /**
     * Canonical scalar text of the boundary (ISO-8601 for temporal types,
     * decimal for numbers, the value itself for strings) — NOT a pre-rendered
-    * literal, because the Malloy delta query and the SQL range DELETE need
-    * different spellings of the same value.
+    * literal, because a boundary outlives any one statement's spelling of it and
+    * has to be COMPARED to the next run's frontier, not just pasted into SQL.
     */
    coveredThroughValue: string;
    /** The watermark's Malloy type, which decides how the value is rendered. */

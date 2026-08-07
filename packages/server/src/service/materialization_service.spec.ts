@@ -2783,18 +2783,6 @@ describe("buildOneSource: incremental refresh", () => {
       return stub;
    }
 
-   /** A materializer whose delta compiles to a fixed SQL and shape. */
-   const materializer = {
-      loadQuery: () => ({
-         getPreparedResult: async () => ({
-            sql: "SELECT order_date, revenue FROM base WHERE 1=1",
-            resultExplore: {
-               allFields: [{ name: "order_date" }, { name: "revenue" }],
-            },
-         }),
-      }),
-   };
-
    function incrementalContext(overrides: {
       ledgerEntry?: typeof LEDGER_ROW | null;
       forceRefresh?: boolean;
@@ -2808,7 +2796,6 @@ describe("buildOneSource: incremental refresh", () => {
          forceRefresh: overrides.forceRefresh ?? false,
          now: new Date("2024-07-01T00:00:00Z"),
          declarations: { orders: DECLARATION },
-         materializers: { orders: materializer },
          ledger: {
             getIncrementalLedgerEntry: sinon
                .stub()
@@ -2836,6 +2823,9 @@ describe("buildOneSource: incremental refresh", () => {
          connectionName: "wh",
          dialectName: "postgres",
          annotationFields: params.annotationFields,
+         // What the delta's DML names, and what the seed's CTAS would have given
+         // the table its columns from.
+         columns: ["order_date", "revenue"],
       });
       const instruction: BuildInstruction = {
          sourceEntityId: "abcdef1234567890",
@@ -2884,6 +2874,10 @@ describe("buildOneSource: incremental refresh", () => {
       expect(script).toContain(
          `INSERT INTO "orders_v1" ("order_date", "revenue")`,
       );
+      // The INSERT reads the SEED's own SQL, filtered. Not a compiled query's
+      // SQL, which on Postgres would arrive wrapped in row_to_json and make this
+      // INSERT fail on the first column it names — see deltaSelect.
+      expect(script).toContain(`FROM (SELECT * FROM (SELECT * FROM t) AS __d`);
       expect(script).toContain("COMMIT;");
       // And nothing rebuilt the table.
       expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(false);

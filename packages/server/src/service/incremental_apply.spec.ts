@@ -1,7 +1,8 @@
-// The delta query generator and its literal rendering. The compiler behaviors
-// these encode (a query stage applies the range; a date column cannot be compared
-// to a timestamp literal) are pinned in incremental_compiler_contract.spec.ts;
-// here we check the text we generate, and that it really compiles.
+// The delta SELECT composer and its literal rendering. The compiler behaviors
+// these rest on (getSQL() returns the source's unfinalized SQL; a rename diverges
+// the table's columns from the source's schema) are pinned in
+// incremental_compiler_contract.spec.ts; here we check the SQL we compose, and
+// that it really runs.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -14,29 +15,27 @@ import {
    canonicalBoundValue,
    compareBounds,
    decodeTablePathSegments,
-   deltaQueryText,
    deltaScript,
    deltaStatements,
    ledgerLineageMismatch,
-   placeholderBounds,
+   deltaSelect,
    planIncrementalStep,
    probeMaxWatermark,
    probeSelect,
    probeTargetColumns,
-   renderMalloyBound,
    renderSqlBound,
    seedCoveredThrough,
    shapeMismatch,
    snapshotBound,
-   trialCompileDeltaQuery,
    type SqlRunner,
 } from "./incremental_apply";
 
 const ROOT = "file:///apply/";
 let connections: FixedConnectionMap;
+let duckdb: DuckDBConnection;
 
 beforeAll(() => {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   duckdb = new DuckDBConnection("duckdb", ":memory:");
    connections = new FixedConnectionMap(
       new Map([["duckdb", duckdb]]),
       "duckdb",
@@ -65,59 +64,6 @@ source: daily is raw -> {
   aggregate: revenue is amount.sum()
 }`;
 
-describe("renderMalloyBound", () => {
-   it("spells each type as its own Malloy literal", () => {
-      expect(
-         renderMalloyBound({ malloyType: "date", value: "2024-06-01" }),
-      ).toBe("@2024-06-01");
-      expect(
-         renderMalloyBound({
-            malloyType: "timestamp",
-            value: "2024-06-01 12:30:00",
-         }),
-      ).toBe("@2024-06-01 12:30:00");
-      expect(renderMalloyBound({ malloyType: "number", value: "42" })).toBe(
-         "42",
-      );
-      expect(
-         renderMalloyBound({ malloyType: "string", value: "us-east" }),
-      ).toBe("'us-east'");
-   });
-
-   it("truncates a timestamp to whole seconds", () => {
-      // Safe because the range is half-open and the ledger records the value
-      // used: the trailing sub-second rows are picked up by the next run, which
-      // starts exactly where this one ended.
-      expect(
-         renderMalloyBound({
-            malloyType: "timestamp",
-            value: "2024-06-01T12:30:00.512Z",
-         }),
-      ).toBe("@2024-06-01 12:30:00");
-   });
-
-   it("escapes a string bound rather than letting it break out of the literal", () => {
-      expect(
-         renderMalloyBound({ malloyType: "string", value: "o'brien\\x" }),
-      ).toBe("'o\\'brien\\\\x'");
-   });
-
-   it("refuses a type it cannot render, instead of guessing", () => {
-      expect(() =>
-         renderMalloyBound({ malloyType: "boolean", value: "true" }),
-      ).toThrow(/no literal rendering/);
-   });
-
-   it("refuses a malformed value rather than pasting it into a query", () => {
-      expect(() =>
-         renderMalloyBound({ malloyType: "date", value: "yesterday" }),
-      ).toThrow(/ISO-8601/);
-      expect(() =>
-         renderMalloyBound({ malloyType: "number", value: "1; DROP TABLE t" }),
-      ).toThrow(/finite number/);
-   });
-});
-
 describe("renderSqlBound", () => {
    it("spells each type as its own SQL literal", () => {
       expect(renderSqlBound({ malloyType: "date", value: "2024-06-01" })).toBe(
@@ -132,10 +78,37 @@ describe("renderSqlBound", () => {
       expect(renderSqlBound({ malloyType: "number", value: "42" })).toBe("42");
    });
 
-   it("doubles a quote in a string bound (SQL escaping, not Malloy's)", () => {
+   it("doubles a quote in a string bound rather than letting it break out", () => {
       expect(renderSqlBound({ malloyType: "string", value: "o'brien" })).toBe(
          "'o''brien'",
       );
+   });
+
+   it("truncates a timestamp to whole seconds", () => {
+      // Safe because the range is half-open and the ledger records the value
+      // used: the trailing sub-second rows are picked up by the next run, which
+      // starts exactly where this one ended.
+      expect(
+         renderSqlBound({
+            malloyType: "timestamp",
+            value: "2024-06-01T12:30:00.512Z",
+         }),
+      ).toBe("TIMESTAMP '2024-06-01 12:30:00'");
+   });
+
+   it("refuses a type it cannot render, instead of guessing", () => {
+      expect(() =>
+         renderSqlBound({ malloyType: "boolean", value: "true" }),
+      ).toThrow(/no literal rendering/);
+   });
+
+   it("refuses a malformed value rather than pasting it into a statement", () => {
+      expect(() =>
+         renderSqlBound({ malloyType: "date", value: "yesterday" }),
+      ).toThrow(/ISO-8601/);
+      expect(() =>
+         renderSqlBound({ malloyType: "number", value: "1; DROP TABLE t" }),
+      ).toThrow(/finite number/);
    });
 });
 
@@ -174,87 +147,76 @@ describe("canonicalBoundValue", () => {
          "timestamp",
          new Date("2024-06-01T12:30:00Z"),
       );
-      expect(renderMalloyBound(bound)).toBe("@2024-06-01 12:30:00");
+      expect(renderSqlBound(bound)).toBe("TIMESTAMP '2024-06-01 12:30:00'");
    });
 });
 
-describe("deltaQueryText", () => {
-   it("generates a half-open range over a query stage, with quoted identifiers", () => {
-      const query = deltaQueryText({
-         sourceName: "daily",
-         watermarkName: "order_date",
-         start: { malloyType: "date", value: "2024-06-01" },
-         end: { malloyType: "date", value: "2024-07-01" },
-      });
-      expect(query).toBe(
-         "run: `daily` -> {\n" +
-            "  where: `order_date` >= @2024-06-01 and `order_date` < @2024-07-01\n" +
-            "  select: *\n" +
-            "}",
+describe("deltaSelect", () => {
+   it("wraps the source's own SQL in a half-open range, quoted for the dialect", () => {
+      expect(
+         deltaSelect({
+            dialect: "postgres",
+            sourceSQL: "SELECT 1 AS amount, DATE '2024-01-01' AS order_date",
+            watermarkName: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         }),
+      ).toBe(
+         `SELECT * FROM (SELECT 1 AS amount, DATE '2024-01-01' AS order_date) ` +
+            `AS __d WHERE "order_date" >= DATE '2024-06-01' ` +
+            `AND "order_date" < DATE '2024-07-01'`,
       );
    });
 
-   it("compiles, and the compiled SQL carries both bounds", async () => {
-      const sql = await materialize(MODEL)
-         .loadQuery(
-            deltaQueryText({
-               sourceName: "daily",
-               watermarkName: "order_date",
-               start: { malloyType: "date", value: "2024-06-01" },
-               end: { malloyType: "date", value: "2024-07-01" },
-            }),
-         )
-         .getSQL();
-      expect(sql).toContain("DATE '2024-06-01'");
-      expect(sql).toContain("DATE '2024-07-01'");
-      // The range filters the source's OUTPUT rows, above its GROUP BY.
+   it("filters the source's OUTPUT rows, and returns real columns", async () => {
+      // The regression this composition exists for, end to end on a dialect that
+      // can run it. The delta is built from PersistSource.getSQL(), so it selects
+      // the seed's own columns; a delta built from a compiled QUERY's SQL would
+      // return a single json `row` column on Postgres (Dialect.hasFinalStage) and
+      // the INSERT would fail on the first column it named. Pinned in
+      // incremental_compiler_contract.spec.ts.
+      const compiled = await materialize(MODEL).getModel();
+      const source = Object.values(compiled.getBuildPlan().sources).find(
+         (s) => s.name === "daily",
+      );
+      const sql = deltaSelect({
+         dialect: "duckdb",
+         sourceSQL: source!.getSQL({ buildManifest: { entries: {} } }),
+         watermarkName: "order_date",
+         start: { malloyType: "date", value: "2023-12-31" },
+         end: { malloyType: "date", value: "2024-01-02" },
+      });
+      const result = await duckdb.runSQL(sql);
+      expect(result.rows).toHaveLength(1);
+      // The columns the seed's CTAS materializes, each on its own — the shape the
+      // DML names. A finalized query's SQL would return one column here.
+      expect(Object.keys(result.rows[0])).toEqual([
+         "order_date",
+         "ts",
+         "region",
+         "revenue",
+      ]);
+      expect(result.rows[0].region).toBe("US");
+      // Not vacuous: the range is what excluded everything else, and it applied
+      // ABOVE the source's GROUP BY, to its aggregated output rows.
       expect(sql.indexOf("WHERE")).toBeGreaterThan(sql.indexOf("GROUP BY"));
    });
-});
 
-describe("trialCompileDeltaQuery", () => {
-   it("returns undefined for a source that can produce a delta", async () => {
-      expect(
-         await trialCompileDeltaQuery({
-            materializer: materialize(MODEL),
-            sourceName: "daily",
+   it("selects nothing for a range the source has no rows in", async () => {
+      const compiled = await materialize(MODEL).getModel();
+      const source = Object.values(compiled.getBuildPlan().sources).find(
+         (s) => s.name === "daily",
+      );
+      const result = await duckdb.runSQL(
+         deltaSelect({
+            dialect: "duckdb",
+            sourceSQL: source!.getSQL({ buildManifest: { entries: {} } }),
             watermarkName: "order_date",
-            watermarkType: "date",
+            start: { malloyType: "date", value: "2030-01-01" },
+            end: { malloyType: "date", value: "2030-02-01" },
          }),
-      ).toBeUndefined();
-   });
-
-   it("returns the compiler's message when the bound type does not match", async () => {
-      // The publish-time value of the trial compile in one case: everything
-      // static about `order_date` checks out (a real, orderable, non-aggregate
-      // output column), and only a compile catches a bound spelled for the wrong
-      // type. Note the asymmetry — a timestamp column accepts a date bound, but
-      // not the reverse — which is why the renderer follows the column's type
-      // rather than picking one temporal spelling.
-      const error = await trialCompileDeltaQuery({
-         materializer: materialize(MODEL),
-         sourceName: "daily",
-         watermarkName: "order_date",
-         watermarkType: "timestamp",
-      });
-      expect(error).toMatch(/compare a date to a timestamp/i);
-   });
-
-   it("returns a message for a source name that does not exist", async () => {
-      const error = await trialCompileDeltaQuery({
-         materializer: materialize(MODEL),
-         sourceName: "not_a_source",
-         watermarkName: "order_date",
-         watermarkType: "date",
-      });
-      expect(error).toBeDefined();
-   });
-
-   it("never executes anything: placeholder bounds are outside any real data", () => {
-      expect(placeholderBounds("date")).toEqual({
-         start: { malloyType: "date", value: "2000-01-01" },
-         end: { malloyType: "date", value: "2000-01-02" },
-      });
+      );
+      expect(result.rows).toEqual([]);
    });
 });
 
@@ -687,7 +649,7 @@ describe("planIncrementalStep", () => {
          forceRefresh: false,
          now: NOW,
          sourceSQL: "SELECT * FROM base",
-         compileDelta: async () => ({
+         deltaFor: async () => ({
             sql: "SELECT 1",
             columns: ["order_date", "region", "revenue"],
          }),
@@ -719,7 +681,7 @@ describe("planIncrementalStep", () => {
          forceRefresh: true,
          now: NOW,
          sourceSQL: "SELECT * FROM base",
-         compileDelta: async () => {
+         deltaFor: async () => {
             throw new Error("must not compile a delta for a forced refresh");
          },
       });
@@ -759,7 +721,7 @@ describe("planIncrementalStep", () => {
 
    it("seeds when the delta's shape does not match the table's", async () => {
       const step = await plan({
-         compileDelta: async () => ({
+         deltaFor: async () => ({
             sql: "SELECT 1",
             // What a `rename:` on a table-backed source produces: the query emits
             // the logical name, the table holds the physical one.
@@ -821,7 +783,7 @@ describe("planIncrementalStep", () => {
          forceRefresh: false,
          now: NOW,
          sourceSQL: "SELECT * FROM base",
-         compileDelta: async () => ({
+         deltaFor: async () => ({
             sql: "SELECT 1",
             columns: ["seq", "region"],
          }),

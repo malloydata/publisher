@@ -443,18 +443,6 @@ describe("incrementalPolicyRejections", () => {
       );
    });
 
-   // ── The trial compile ─────────────────────────────────────────────────
-
-   it("reports a delta query that does not compile, quoting the compiler", () => {
-      const messages = rejections({
-         declaration: COHERENT,
-         trialCompileError: "Cannot compare a date to a timestamp",
-      });
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain("Cannot compare a date to a timestamp");
-      expect(messages[0]).toContain("query stage over the source");
-   });
-
    // ── Multiple sources ──────────────────────────────────────────────────
 
    it("reports every source's problems, in source order", () => {

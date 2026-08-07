@@ -13,18 +13,27 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { ModelMaterializer, PersistSource } from "@malloydata/malloy";
 import {
+   DatabricksDialect,
+   DuckDBDialect,
    FixedConnectionMap,
    InMemoryURLReader,
+   MySQLDialect,
+   PostgresDialect,
    Runtime,
+   SnowflakeDialect,
+   StandardSQLDialect,
+   TrinoDialect,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { deriveAnnotationFields, deriveColumns } from "./build_plan";
+import { renderSqlBound } from "./incremental_apply";
 
 const ROOT = "file:///incr/";
 let connections: FixedConnectionMap;
+let duckdb: DuckDBConnection;
 
 beforeAll(() => {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   duckdb = new DuckDBConnection("duckdb", ":memory:");
    connections = new FixedConnectionMap(
       new Map([["duckdb", duckdb]]),
       "duckdb",
@@ -33,8 +42,9 @@ beforeAll(() => {
 
 /**
  * Compile a single-file model, returning both its persist sources by name and
- * the ModelMaterializer — the delta query is compiled through the materializer's
- * query path (fact 3), never off a source extension (fact 2).
+ * the ModelMaterializer. The delta itself is composed from a source's getSQL()
+ * (fact 3); the materializer is here to pin what a compiled QUERY would do
+ * instead, which is what the facts below are contrasted against.
  */
 async function compile(model: string): Promise<{
    sources: Record<string, PersistSource>;
@@ -101,6 +111,10 @@ describe("incremental materialization: compiler contract", () => {
       // This asserts behavior that is broken FOR US. If a compiler upgrade fixes
       // it, this test goes red: that is the point. Read the failure as "the
       // extension form is now safe", not as a regression to work around.
+      //
+      // Still pinned even though the delta no longer compiles Malloy at all (see
+      // fact 3): the extension form is the obvious-looking way to reintroduce
+      // one, and it fails silently.
       const { sources } = await compile(
          `${RAW}#@ persist name="t"\n${ROLLUP}\n
 #@ persist name="d"
@@ -111,13 +125,63 @@ source: mz_ext is mz extend { where: order_date >= @2024-06-01 }`,
       expect(sources.mz_ext.getSQL()).not.toContain("2024-06-01");
    });
 
-   // ── Fact 3: the query stage applies the range ─────────────────────────
+   // ── Fact 3: getSQL() is the unfinalized SELECT the delta wraps ────────
 
-   it("a query stage applies where: ABOVE the compiled source", async () => {
-      // The generated delta query's shape. The predicate lands in the outer
-      // SELECT over the source's own SQL (a __stage0 CTE), i.e. AFTER the
-      // source's GROUP BY — so the range filters the source's OUTPUT rows by the
-      // watermark dimension, which is exactly the semantics the ledger records.
+   it("getSQL() returns a bare SELECT, wrappable as a subquery", async () => {
+      // The delta is `SELECT * FROM (getSQL()) AS __d WHERE <range>`, so getSQL()
+      // has to be ONE self-contained SELECT: no trailing semicolon, no second
+      // statement, nothing that a subquery position rejects. Run here, not just
+      // parsed, because "wrappable" is the property that matters.
+      const { sources } = await compile(`${RAW}#@ persist name="t"\n${ROLLUP}`);
+      const sourceSQL = sources.mz.getSQL();
+      expect(sourceSQL.trim()).not.toEndWith(";");
+      const wrapped = await duckdb.runSQL(
+         `SELECT * FROM (${sourceSQL}) AS __d WHERE "order_date" >= DATE '2024-01-01'`,
+      );
+      expect(wrapped.rows).toHaveLength(1);
+   });
+
+   it("TRIPWIRE: Postgres is the only dialect that finalizes with row_to_json", () => {
+      // The single most expensive fact in this file, and the reason the delta is
+      // composed from getSQL() instead of from a compiled query's SQL.
+      //
+      // A QUERY's SQL is FINALIZED: Malloy appends the dialect's sqlFinalStage
+      // wherever hasFinalStage is true. Postgres is the only such dialect, and its
+      // final stage collapses the result into a single json column named `row` —
+      // so `INSERT INTO t ("batch", …) SELECT "batch", … FROM (<query sql>)` fails
+      // with `column "batch" does not exist`. This bit Publisher twice: once in
+      // the seed's CTAS (#867, fixed upstream by malloydata/malloy#2964 forcing
+      // PersistSource.getSQL() to compile unfinalized) and once in this delta.
+      // getSQL() carries that fix; a query's SQL cannot.
+      //
+      // Two ways this goes red, both of which need a decision before shipping:
+      // another dialect gains a final stage (check it before adding it to
+      // INCREMENTAL_DIALECT_ALLOWLIST), or Postgres's wrapper changes shape.
+      const dialects = {
+         postgres: new PostgresDialect(),
+         standardsql: new StandardSQLDialect(),
+         duckdb: new DuckDBDialect(),
+         snowflake: new SnowflakeDialect(),
+         trino: new TrinoDialect(),
+         mysql: new MySQLDialect(),
+         databricks: new DatabricksDialect(),
+      };
+      expect(
+         Object.entries(dialects)
+            .filter(([, d]) => d.hasFinalStage)
+            .map(([name]) => name),
+      ).toEqual(["postgres"]);
+      expect(dialects.postgres.sqlFinalStage("s", ["a"])).toContain(
+         "row_to_json",
+      );
+   });
+
+   it("a query stage would apply the range above the source — the road not taken", async () => {
+      // Kept because it is the fact that makes the composed WHERE correct: a
+      // predicate on the watermark filters the source's OUTPUT rows (above its
+      // GROUP BY), which is the semantics the ledger records. The compiler agrees
+      // with the wrap, so switching between them can never change WHICH rows a
+      // delta covers — only whether the result has usable columns.
       const { materializer } = await compile(
          `${RAW}#@ persist name="t"\n${ROLLUP}`,
       );
@@ -315,12 +379,29 @@ source: mz is raw -> { group_by: order_date, ts, region, amount, flag }`,
 
    // ── Literal rendering must match the watermark's type ─────────────────
 
+   it("a date column and a timestamp literal are not interchangeable", () => {
+      // Why renderSqlBound is type-directed rather than emitting one temporal
+      // spelling: the compiler refuses the cross-type comparison outright, and the
+      // strict dialects on the allowlist refuse it in SQL too (BigQuery has no
+      // implicit DATE/TIMESTAMP coercion in a comparison). The delta composes its
+      // predicate in SQL now, so this is the compiler standing in for warehouses
+      // this suite cannot reach — a renderer that ignored the column's type would
+      // fail every date-watermarked source, at build time.
+      const dateBound = renderSqlBound({
+         malloyType: "date",
+         value: "2024-06-01",
+      });
+      const timestampBound = renderSqlBound({
+         malloyType: "timestamp",
+         value: "2024-06-01 00:00:00",
+      });
+      expect(dateBound).toBe("DATE '2024-06-01'");
+      expect(timestampBound).toBe("TIMESTAMP '2024-06-01 00:00:00'");
+   });
+
    it("a date watermark compared to a TIMESTAMP literal fails to compile", async () => {
-      // Malloy refuses the cross-type comparison, so the bound literal must be
-      // rendered for the watermark's declared type — a single "just emit a
-      // timestamp" renderer would fail every date-watermarked source, and only
-      // at build time. This is also why the trial compile at publish is worth
-      // its cost: it catches the mismatch before a run.
+      // The compiler's own refusal, pinned as the upstream evidence for the rule
+      // above.
       const { materializer } = await compile(
          `${RAW}#@ persist name="t"\n${ROLLUP}`,
       );
@@ -333,88 +414,49 @@ source: mz is raw -> { group_by: order_date, ts, region, amount, flag }`,
       ).rejects.toThrow(/compare a date to a timestamp/i);
    });
 
-   it("date, timestamp, string and number bounds each render as their own literal", async () => {
-      const { materializer } = await compile(
-         `${RAW}#@ persist name="t"
-source: mz is raw -> { group_by: order_date, ts, region, amount }`,
-      );
-      const sqlFor = (predicate: string) =>
-         materializer
-            .loadQuery(`run: mz -> { where: ${predicate}; select: * }`)
-            .getSQL();
-
-      expect(await sqlFor("order_date >= @2024-06-01")).toContain(
-         "DATE '2024-06-01'",
-      );
-      expect(await sqlFor("ts >= @2024-06-01 12:30:00")).toContain(
-         "TIMESTAMP '2024-06-01 12:30:00'",
-      );
-      expect(await sqlFor("region >= 'us-east'")).toContain("'us-east'");
-      expect(await sqlFor("amount >= 42")).toContain("42");
-   });
-
    // ── What the delta WRITES: no row cap, and a shape that can diverge ────
 
-   it("the generated delta query carries NO row limit", async () => {
-      // The delta's SQL is inlined into an INSERT ... SELECT. A default row cap
-      // in it would not fail anything — it would silently write a truncated
-      // range into a serving table and then record the full range as covered.
-      // Nothing in the publisher can detect that afterwards, so it is pinned
-      // here.
-      const { materializer } = await compile(
-         `${RAW}#@ persist name="t"\n${ROLLUP}`,
-      );
-      const sql = await materializer
-         .loadQuery(
-            `run: mz -> {
-               where: order_date >= @2024-06-01 and order_date < @2024-07-01
-               select: *
-            }`,
-         )
-         .getSQL();
-      expect(sql.toUpperCase()).not.toContain("LIMIT");
+   it("getSQL() carries NO row limit", async () => {
+      // The delta wraps this SQL and inlines it into an INSERT ... SELECT. A
+      // default row cap in it would not fail anything — it would silently write a
+      // truncated range into a serving table and then record the full range as
+      // covered. Nothing in the publisher can detect that afterwards, so it is
+      // pinned here. (The seed's CTAS rests on the same fact.)
+      const { sources } = await compile(`${RAW}#@ persist name="t"\n${ROLLUP}`);
+      expect(sources.mz.getSQL().toUpperCase()).not.toContain("LIMIT");
    });
 
-   it("a rename makes the source's OWN SQL and a query stage disagree on column names", async () => {
-      // The seed CTAS materializes the source's own getSQL(), while a delta is a
-      // query stage over the source — and on a table-backed source those two
-      // produce different column NAMES: the table keeps the underlying name, the
-      // query emits the renamed one. So the two shapes are compared before any
-      // DML runs (incremental_apply's shapeMismatch), and a source like this is
-      // rebuilt in full rather than deltaed into a table whose columns do not
-      // match.
-      const { sources, materializer } = await compile(
+   it("a rename makes getSQL()'s columns and the source's SCHEMA disagree", async () => {
+      // The delta and the seed both run getSQL(), so they always agree on rows and
+      // on columns. What can still disagree is the column list the DML NAMES —
+      // deriveColumns, the source's compiled output schema — because a rename
+      // leaves the underlying name in the SQL (and therefore in the table the seed
+      // built) while the schema reports the renamed one. Hence shapeMismatch runs
+      // before any DML, and a source like this is rebuilt in full rather than
+      // deltaed with a column list the table does not have.
+      const { sources } = await compile(
          `${RAW}#@ persist name="t"
 source: mz is raw extend {
   rename: order_day is order_date
   except: flag, tags, rec
 }`,
       );
-      // The seed's SQL still projects the underlying name...
-      expect(sources.mz.getSQL()).toContain("order_date");
-      expect(sources.mz.getSQL()).not.toContain("order_day");
-      // ...while the delta's output column is the renamed one.
-      const prepared = await materializer
-         .loadQuery(`run: mz -> { where: order_day >= @2024-06-01; select: * }`)
-         .getPreparedResult();
-      const columns = prepared.resultExplore.allFields.map((f) => f.name);
-      expect(columns).toContain("order_day");
-      expect(columns).not.toContain("order_date");
+      const built = await duckdb.runSQL(sources.mz.getSQL());
+      expect(Object.keys(built.rows[0])).toContain("order_date");
+      expect(Object.keys(built.rows[0])).not.toContain("order_day");
+      // ...while the schema the DML would name reports the renamed one.
+      const schema = deriveColumns(sources.mz).map((c) => String(c.name));
+      expect(schema).toContain("order_day");
+      expect(schema).not.toContain("order_date");
    });
 
-   it("a query source's own SQL and its delta agree on column names", async () => {
+   it("a query source's SQL and its schema agree on column names", async () => {
       // The common case, and why the shape check is a fallback rather than a
-      // blanket refusal: an aggregating source's output columns ARE its SQL's
-      // columns, so a delta writes exactly the shape the seed wrote.
-      const { sources, materializer } = await compile(
-         `${RAW}#@ persist name="t"\n${ROLLUP}`,
-      );
-      const prepared = await materializer
-         .loadQuery(
-            `run: mz -> { where: order_date >= @2024-06-01; select: * }`,
-         )
-         .getPreparedResult();
-      expect(prepared.resultExplore.allFields.map((f) => f.name)).toEqual(
+      // blanket refusal: an aggregating source's schema columns ARE its SQL's
+      // columns, so the DML can name them and a delta writes the seed's shape.
+      const { sources } = await compile(`${RAW}#@ persist name="t"\n${ROLLUP}`);
+      const built = await duckdb.runSQL(sources.mz.getSQL());
+      expect(Object.keys(built.rows[0])).toEqual(
          deriveColumns(sources.mz).map((c) => String(c.name)),
       );
    });

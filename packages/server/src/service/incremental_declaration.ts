@@ -185,7 +185,7 @@ function queryDefinitionFieldKinds(source: PersistSource): {
    } catch {
       // Fail open on an IR shape we don't recognize: the aggregate and window
       // gates then don't fire. Everything that protects the TABLE (name
-      // resolution, the dialect allowlist, the trial compile) is independent of
+      // resolution, the dialect allowlist, the shape check) is independent of
       // this read, so a compiler IR change degrades these two advisory-grade
       // gates rather than admitting a delta against an unproven table.
    }

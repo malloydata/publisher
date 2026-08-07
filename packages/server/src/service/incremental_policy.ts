@@ -48,12 +48,6 @@ export interface IncrementalPolicySource {
    /** The source's `#@ persist storage=` destination, when it declares one. */
    storageDestination?: string;
    declaration: IncrementalDeclaration;
-   /**
-    * The publish-time trial compile's error, when the generated delta query for
-    * this source failed to compile. Undefined when it compiled or was not
-    * attempted (an incoherent declaration is rejected by a rule above instead).
-    */
-   trialCompileError?: string;
 }
 
 const MODE = `refresh="incremental"`;
@@ -327,20 +321,6 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
             `reads this source. (Plain non-additive aggregates like ` +
             `count_distinct are fine — a delta recomputes whole output rows from ` +
             `full input and never merges partial aggregates.)`,
-      );
-   }
-
-   // The trial compile: the generated delta query is compiled at publish, never
-   // run, so a source that cannot produce a valid delta fails here rather than in
-   // a run that then cannot advance.
-   if (source.trialCompileError) {
-      out.push(
-         `${where} declares ${MODE}, but the delta query the publisher would ` +
-            `generate for it does not compile: ${source.trialCompileError}. The ` +
-            `delta is a query stage over the source — ` +
-            `run: ${sourceName} -> { where: <watermark> range; select: * } — so ` +
-            `this usually means the watermark cannot be compared to a bound of ` +
-            `its own type, or the source does not admit a query stage.`,
       );
    }
 

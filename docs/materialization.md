@@ -87,6 +87,41 @@ On demand, via the CLI:
 malloy-pub materialize --environment <env> --package <pkg> --wait
 ```
 
+## Incremental refresh
+
+By default a refresh rebuilds a persisted source's whole table. A source that only ever gains rows at one end can instead declare that a refresh applies a **bounded delta**:
+
+```malloy
+#@ persist name="daily_orders" refresh="incremental" watermark="order_date"
+source: daily_orders is orders -> {
+  group_by: order_date
+  aggregate: revenue is amount.sum()
+}
+```
+
+`watermark=` names one of the source's own output columns, and it has to be a real, orderable, non-aggregate one — the column a new row's position along is decided by. Publisher records how far the table is materialized (`covered_through`) and each refresh recomputes only `[covered_through, frontier)`. The range is **half-open**, so the frontier value itself is left for the next run on the grounds that rows at the frontier may still be arriving.
+
+Where the frontier comes from depends on the watermark's type: a `date` or `timestamp` watermark takes the run's own start time, while a numeric or string watermark is read from the source (`max(watermark)`). One consequence worth knowing before you test it: two refreshes of a date-watermarked source within the same day produce an empty range and skip, which is correct but looks like nothing happened.
+
+Add `merge_key="col,…"` when a row can be **restated** with a new watermark value — an order that moves to a later day. Publisher then applies the delta as a `MERGE` on the declared identity columns instead of deleting the watermark range and re-inserting it, which is the only strategy that tolerates a row changing which range it belongs to. Without it, a refresh replaces the range wholesale, which is correct exactly when a row's watermark value never changes.
+
+Details that decide whether a run advances or rebuilds:
+
+- **It is exempt from skip-if-unchanged.** A content address does not move when data does, so an incremental source is instructed on every run and its `covered_through` boundary — not its address — decides whether there is work to do.
+- **`forceRefresh` on an API build re-seeds**; a `forceRefresh` from the scheduler does not. A scheduled fire needs to defeat skip-if-unchanged, which is not the same as asking for a full rebuild.
+- **Anything unproven falls back to a full rebuild**, which is always correct and merely expensive: no recorded boundary, a boundary describing a different table or watermark, a table whose columns no longer match what the source computes, or `MERGE` asked for on Postgres 14 or older (it requires 15).
+- **Postgres and BigQuery only**, and not in combination with `storage=`. Declaring it elsewhere is a publish rejection rather than a silent full refresh, so it never looks like it is advancing when it is not.
+
+### Materializing on Postgres
+
+One Postgres-specific invariant to know if you touch the build path, because it has bitten twice and both times the symptom was far from the cause.
+
+Malloy compiles a query's SQL in a **finalized** form: it appends the dialect's `sqlFinalStage` wherever `Dialect.hasFinalStage` is true. Postgres is the only such dialect, and its final stage is `SELECT row_to_json(finalStage) as row FROM …` — the whole result collapsed into a single JSON column named `row`, which is the shape Malloy's own Postgres driver expects to unwrap.
+
+Anything that **materializes** SQL needs the opposite: the bare `SELECT`, projecting real columns. `PersistSource.getSQL()` is that form ([malloydata/malloy#2964](https://github.com/malloydata/malloy/pull/2964) made it compile unfinalized, after the finalized version made `CREATE TABLE AS` produce a one-JSON-column table), and a compiled query's SQL is not — there is no supported way to ask a query for its unfinalized SQL. So **every build path takes its SQL from `PersistSource.getSQL()`**, never from a `PreparedResult`. The incremental delta follows the same rule: it wraps the seed's own SQL in a range predicate rather than compiling a filtered query, which also makes the delta write the seed's shape by construction.
+
+The reverse direction applies when you hand-write SQL for Postgres to run through a Malloy connection: `runSQL` unwraps each row as `row.row`, so a raw `SELECT max(x) AS m` comes back as `[undefined]` and has to be wrapped in `row_to_json` yourself. Both directions are pinned in `incremental_compiler_contract.spec.ts`.
+
 ## The standalone scheduler
 
 A self-hosted Publisher can rebuild packages on their cron cadence with no control plane. The scheduler is **opt-in and off by default**:
