@@ -8,8 +8,8 @@ package: iv
 
 `refresh="incremental" watermark="…"` lets a refresh apply a bounded delta in
 place instead of rebuilding the whole table. This is the end-to-end proof on
-Postgres: seed, add upstream rows, refresh (a DELTA, not a rebuild), then force a
-full rebuild.
+Postgres: seed, add upstream rows, refresh (a DELTA, not a rebuild), then ask for
+a full rebuild with `reseed`.
 
 Two things make the delta OBSERVABLE rather than something you have to take on
 faith, and both are the point of the scenario:
@@ -133,13 +133,17 @@ Expect:
 | 1     | 2           | 150          |
 | 2     | 3           | 1225         |
 
-## Publish (forceRefresh)
+## Publish (reseed)
 
-Build 4 with `forceRefresh` — the escape hatch for a boundary or a table that is
-no longer trusted. An incremental source takes the full CTAS rebuild and its
-ledger row is reset, so the whole source is recomputed from scratch.
+Build 4 with `reseed` — the escape hatch for a boundary or a table that is no
+longer trusted. An incremental source takes the full CTAS rebuild and its ledger
+row is reset, so the whole source is recomputed from scratch.
 
-## SQL a forced rebuild recomputes everything
+`reseed` and not `forceRefresh`: the latter only defeats skip-if-unchanged, which
+an incremental source is exempt from anyway, so it would leave this build
+advancing by delta like any other. Asking for a rebuild is a separate request.
+
+## SQL a re-seed recomputes everything
 
 Batch 3 appears ⇒ the whole source was recomputed rather than advanced.
 

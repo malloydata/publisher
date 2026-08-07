@@ -103,6 +103,7 @@ type Step =
         mode: PersistStorageMode;
         bindings: { source: string; conn: string }[];
         forceRefresh: boolean;
+        reseed: boolean;
         sourceNames?: string[];
         async: boolean;
         label?: string;
@@ -283,7 +284,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    data: {},
    mutate: {},
    model: {},
-   publish: { attrs: ["sources", "forcerefresh", "async", "label"] },
+   publish: { attrs: ["sources", "forcerefresh", "reseed", "async", "label"] },
    await: { attrs: ["label"] },
    delete: {},
    reclaim: {},
@@ -576,6 +577,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                mode,
                bindings,
                forceRefresh: !!attrs.forcerefresh,
+               reseed: !!attrs.reseed,
                sourceNames,
                async: !!attrs.async,
                label: attrs.label as string | undefined,
@@ -1690,6 +1692,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                const rest = await serverFor(step.pub, step.env);
                const buildBody = {
                   ...(step.forceRefresh ? { forceRefresh: true } : {}),
+                  // Distinct from forceRefresh, which never re-seeds: this is the
+                  // only way to send an incremental source back to a full rebuild.
+                  ...(step.reseed ? { reseed: true } : {}),
                   ...(step.sourceNames
                      ? { sourceNames: step.sourceNames }
                      : {}),
