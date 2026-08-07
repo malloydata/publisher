@@ -61,8 +61,9 @@ describe("DuckLake Connection Tests", () => {
          // Ignore cleanup errors
       }
 
-      // Clean up DuckLake database files from process.cwd() (created by testConnectionConfig)
-      // testConnectionConfig creates files in process.cwd() instead of testProjectPath
+      // Legacy safety net: testConnectionConfig now isolates its throwaway
+      // files in a temp directory, so it no longer leaves *_ducklake.duckdb in
+      // process.cwd(); this sweep only guards against an older/regressed path.
       try {
          const cwdFiles = await fs.readdir(process.cwd());
          for (const file of cwdFiles) {
