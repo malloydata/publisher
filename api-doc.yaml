@@ -2436,16 +2436,26 @@ components:
             $ref: "#/components/schemas/Error"
     PayloadTooLarge:
       description: |
-        The request was well-formed but the response exceeds a server-side
-        size cap. Two caps can fire:
-          * PUBLISHER_MAX_QUERY_ROWS (default 100000) — too many rows.
-          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) — JSON-serialized
-            response too large.
-        The error message identifies which cap fired. Refine the query (add
-        a LIMIT, more selective WHERE, project fewer columns) or raise the
-        relevant cap; retrying without changes will not succeed. The
-        per-cap rejection counter is exported as
-        publisher_query_cap_exceeded_total{cap_type, source}.
+        The request was well-formed but the response is too large to return.
+        Three cases, and the message says which:
+          * PUBLISHER_MAX_QUERY_ROWS (default 100000) exceeded: too many rows.
+          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) exceeded: the
+            JSON-serialized response measured over the cap. What is measured is
+            the shape the request asked for, so on the model-query endpoint two
+            requests differing only in compactJson reach this cap at different
+            result sizes.
+          * The response could not be serialized at all, past the JavaScript
+            engine's own limit (V8 refuses the string; JSC fails the
+            allocation). No cap was necessarily exceeded here, and raising one
+            does not help. This third case applies to the model-query and
+            notebook-cell endpoints; the connection SQL endpoints have no such
+            guard and answer 500.
+        In every case, refine the query (add a LIMIT, a more selective WHERE,
+        project fewer columns, or filter out wide values); retrying unchanged
+        will not succeed. Raising the relevant cap is an option for the first
+        two only. The rejection counter is exported as
+        publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
+        rows, bytes, or unserializable.
       content:
         application/json:
           schema:

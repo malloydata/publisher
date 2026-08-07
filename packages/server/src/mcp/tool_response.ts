@@ -86,7 +86,7 @@ export function formatErrorText(details: ErrorDetails): string {
  * block alongside it.
  *
  * `text` is deliberately opt-in rather than automatic on success: a query result
- * is already size-capped (assertWithinModelResponseLimits), and duplicating it
+ * is already size-capped (assertWithinModelByteLimit), and duplicating it
  * as prose would double the payload for no gain. Success paths that have
  * something short and useful to say (render-tag warnings) pass it explicitly.
  *
