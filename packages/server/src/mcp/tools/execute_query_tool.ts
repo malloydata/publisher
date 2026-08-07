@@ -224,6 +224,15 @@ export function registerExecuteQueryTool(
                           givens as Record<string, GivenValue> | undefined,
                           abortSignal,
                           queryMetadataInput,
+                          // The envelope below is built from `compactResult`, so
+                          // that is the shape to cap and to guard. Left at the
+                          // default this measured the full wrapped result and
+                          // threw the string away, which meant a query could be
+                          // refused on bytes the agent would never receive: the
+                          // envelope is truncated to MAX_RESULT_CHARS anyway, so
+                          // a wrapped result measuring over the cap was a 413 for
+                          // a payload that would have arrived at 90k characters.
+                          "compact",
                        )
                      : model.getQueryResults(
                           sourceName,
@@ -234,6 +243,7 @@ export function registerExecuteQueryTool(
                           givens as Record<string, GivenValue> | undefined,
                           abortSignal,
                           queryMetadataInput,
+                          "compact",
                        ),
                getQueryTimeoutMs(),
             );

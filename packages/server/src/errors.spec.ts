@@ -97,7 +97,7 @@ describe("internalErrorToHttpError", () => {
       // cap" suggestion; REST must keep answering 413, not fall through to 500.
       const { status, json } = internalErrorToHttpError(
          new ResponseUnserializableError(
-            "Query response exceeded 50000000 bytes: the 25356-row result is too large to serialize. Project fewer columns, add a LIMIT, or filter wide values.",
+            "Query response could not be serialized: the 25356-row result is too large to turn into JSON (byte cap: 50000000). Project fewer columns, add a LIMIT, or filter wide values.",
          ),
       );
       expect(status).toBe(413);
