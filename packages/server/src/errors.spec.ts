@@ -6,6 +6,7 @@ import {
    ConnectionError,
    internalErrorToHttpError,
    ModelCompilationError,
+   NotImplementedError,
    NotQueryableError,
    PayloadTooLargeError,
    ResponseUnserializableError,
@@ -121,6 +122,20 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({
          code: 503,
          message: "Pod at max concurrent queries (32); retry later.",
+      });
+   });
+
+   it("maps NotImplementedError to 501, not the 500 default", () => {
+      // The only thrower is the versionId guard, and every route declaring that
+      // parameter documents 501. Without a branch here it fell through to 500,
+      // reporting an unbuilt feature as an internal failure.
+      const { status, json } = internalErrorToHttpError(
+         new NotImplementedError("Version IDs not implemented."),
+      );
+      expect(status).toBe(501);
+      expect(json).toEqual({
+         code: 501,
+         message: "Version IDs not implemented.",
       });
    });
 

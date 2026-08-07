@@ -513,7 +513,16 @@ export class Package {
             // does not fail the load. The findings also ride the package
             // response as non-fatal `warnings`.
             for (const w of await model.validateRenderTags()) {
-               renderTagWarnings.push({ model: sm.modelPath, ...w });
+               renderTagWarnings.push({
+                  model: sm.modelPath,
+                  // Spelled out rather than spread. A spread is exempt from
+                  // excess-property checking exactly like a named interface, so
+                  // `...w` would carry a stale field name through a rename in
+                  // `api-doc.yaml` without the compiler noticing.
+                  subject: w.subject,
+                  message: w.message,
+                  severity: w.severity,
+               });
             }
             // Reject unquoted `#@ persist name=` annotations the same way: an
             // unquoted name is dropped from the build plan, so the source would
@@ -1511,7 +1520,14 @@ export class Package {
             // compilationError rather than aborting the whole reload.
             try {
                for (const w of await model.validateRenderTags()) {
-                  renderTagWarnings.push({ model: sm.modelPath, ...w });
+                  renderTagWarnings.push({
+                     model: sm.modelPath,
+                     // Spelled out rather than spread, for the reason given at
+                     // the sibling call site on the load path.
+                     subject: w.subject,
+                     message: w.message,
+                     severity: w.severity,
+                  });
                }
                nextModels.set(sm.modelPath, model);
             } catch (renderErr) {

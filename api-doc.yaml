@@ -1861,7 +1861,12 @@ paths:
               - "false"
         - name: givens
           in: query
-          description: JSON-encoded given values keyed by given name
+          description:
+            A `GivenValues` object, JSON-encoded so it can travel in a query
+            string. Values are typed as `GivenValues` describes them, not
+            string-encoded as `EncodedGivenValues` would be. The parameter keeps
+            its name for compatibility; the schema it carries is the one named
+            here.
           required: false
           schema:
             type: string
@@ -3229,7 +3234,9 @@ components:
         (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`), derived from
         the declaration's own tags. That contract belongs to the given rather
         than to any one surface, which is what lets a notebook and an SDK host
-        render the same control without restating it.
+        render the same control without restating it. Those five fields describe
+        the contract a renderer implements; no endpoint populates them yet, so
+        they are absent from every response today.
       properties:
         name:
           type: string
@@ -3259,13 +3266,22 @@ components:
             - select
             - multiselect
           description:
-            How the control renders. Omitted means infer from the given's type.
+            How the control renders when the choice is between a single-pick and
+            a multi-pick list. Omitted means infer from the given's type. A
+            slider is not one of these values; it is signalled by `rangeMin` and
+            `rangeMax` instead, per the rule on those fields.
         rangeMin:
           type: number
-          description: Slider lower bound from `# range_min=`
+          description:
+            Slider lower bound from `# range_min=`. The two bounds are what
+            signal a slider, so a `number` or `filter<number>` given renders as
+            one when BOTH are present and as a plain number input otherwise, so
+            a lone bound changes nothing about the control.
         rangeMax:
           type: number
-          description: Slider upper bound from `# range_max=`
+          description:
+            Slider upper bound from `# range_max=`. See `rangeMin` for the rule
+            that turns the pair into a slider.
         suggest:
           $ref: "#/components/schemas/GivenSuggest"
 
@@ -3309,9 +3325,14 @@ components:
         and a `filter<…>` value is the filter body rather than the `f'…'`
         literal.
 
-        This is what a surface's URL parameters carry and what a document
-        declares as its starting values, so the two merge before being decoded
-        once against the declarations and sent as `GivenValues`.
+        The role it names: a surface's URL parameters and the starting values a
+        document declares share this shape, so the two can merge and then be
+        decoded once against the declarations and sent as `GivenValues`. No
+        endpoint returns it yet. `RawNotebook.startingGivens` is the first field
+        typed as it, and nothing populates that field so far, so today this
+        schema documents the contract rather than describing live traffic. The
+        `givens` query parameter is not an instance of it: that carries a
+        JSON-encoded `GivenValues`, with values typed rather than stringified.
       additionalProperties:
         type: string
 
