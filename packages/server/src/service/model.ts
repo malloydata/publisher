@@ -71,7 +71,11 @@ import type {
 } from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
-import { modelAnnotations, ownModelNotes } from "./annotations";
+import {
+   modelAnnotations,
+   ownLevelNoteTexts,
+   ownModelNotes,
+} from "./annotations";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -870,9 +874,11 @@ export class Model {
       struct: SourceDef,
       modelDef?: ModelDef,
    ): { exprs: string[]; fromAncestor: boolean; ambientPrefix: number } {
-      const ownNotes = (struct.annotations?.blockNotes ?? []).map(
-         (note) => note.text,
-      );
+      // `blockNotes` covers `#(tag)\nsource: name is ...`; the multi-definition
+      // `source:` block form files the same declaration under `notes` instead
+      // (see {@link ownLevelNoteTexts}) — reading only the former let a
+      // block-form `#(authorize)` compile and report as an ungated source.
+      const ownNotes = ownLevelNoteTexts(struct.annotations);
       try {
          const own = collectAuthorizeExprs(ownNotes);
          if (own.length > 0) {
@@ -909,6 +915,11 @@ export class Model {
     * render tag or doc comment, whoever wrote it. Both links are followed here,
     * nearest first, and the first ancestor that declares a gate wins.
     *
+    * Each level is read with {@link ownLevelNoteTexts}, not `blockNotes`
+    * alone: a base declared with the multi-definition `source:` block form
+    * files its gate under `notes` instead, and `blockNotes`-only would lose
+    * that gate the moment it moves onto `annotations.inherits`.
+    *
     * "Own wins over ancestor" is what keeps the documented locked-base +
     * curated-extension idiom working (an extension declaring its own gate
     * replaces the base's). That is only safe because the declaration is the
@@ -932,9 +943,7 @@ export class Model {
          inherited && depth < ANCESTOR_WALK_MAX_DEPTH;
          depth++
       ) {
-         const exprs = collectAuthorizeExprs(
-            (inherited.blockNotes ?? []).map((note) => note.text),
-         );
+         const exprs = collectAuthorizeExprs(ownLevelNoteTexts(inherited));
          if (exprs.length > 0) return exprs;
          inherited = inherited.inherits;
       }
@@ -951,9 +960,7 @@ export class Model {
       if (declared.kind === "unresolvable") return ["false"];
       if (declared.kind === "none" || seen.has(declared.source)) return [];
       const exprs = collectAuthorizeExprs(
-         (declared.source.annotations?.blockNotes ?? []).map(
-            (note) => note.text,
-         ),
+         ownLevelNoteTexts(declared.source.annotations),
       );
       return exprs.length > 0
          ? exprs

@@ -22,7 +22,11 @@ import {
    StructDef,
    TurtleDef,
 } from "@malloydata/malloy";
-import { annotationTexts, modelAnnotations } from "./annotations";
+import {
+   annotationTexts,
+   modelAnnotations,
+   ownLevelNoteTexts,
+} from "./annotations";
 import { collectAuthorizeExprs, type AuthorizeMap } from "./authorize";
 import { parseFilters, type FilterDefinition } from "./filter";
 
@@ -115,6 +119,15 @@ export interface ExtractedQuery {
  * walked, nearest declaration wins, matching `Model.gateExprsForOwnAnnotations`.
  * Joins are a separate concern and are not gated.
  *
+ * `blockNotes` alone is also not sufficient WITHIN one level: the
+ * multi-definition `source:` block form (`source:\n  #(tag)\n  name is ...`)
+ * files its declarations under `notes` instead of `blockNotes` — same slot,
+ * different key depending only on which syntax the author used. The authorize
+ * reads below use {@link ownLevelNoteTexts}, which covers both. The `#(filter)`
+ * walk deliberately still reads `blockNotes` only: it has the same gap, but
+ * `#(filter)` is deprecated, so closing it would newly enforce a `required`
+ * filter that a live model has been running without.
+ *
  * Two lists come out of this, and the distinction is load-bearing:
  *  - `authorize` is the EFFECTIVE gate (file-level `##(authorize)` from
  *    `modelDef.annotations.notes`, then own-or-inherited), evaluated as one OR
@@ -198,9 +211,7 @@ export function extractSourcesFromModelDef(
          // gates and source gates form one OR disjunction. A malformed
          // annotation propagates (model fails to load) rather than silently
          // dropping the gate — see the file-level note above.
-         const ownNotes = (struct.annotations?.blockNotes ?? []).map(
-            (note) => note.text,
-         );
+         const ownNotes = ownLevelNoteTexts(struct.annotations);
          const ownGates = collectAuthorizeExprs(ownNotes);
          let inheritedGates: string[] = [];
          if (ownGates.length === 0) {
@@ -209,9 +220,7 @@ export function extractSourcesFromModelDef(
                cur;
                cur = cur.inherits
             ) {
-               const exprs = collectAuthorizeExprs(
-                  (cur.blockNotes ?? []).map((note) => note.text),
-               );
+               const exprs = collectAuthorizeExprs(ownLevelNoteTexts(cur));
                if (exprs.length > 0) {
                   inheritedGates = exprs;
                   break;
