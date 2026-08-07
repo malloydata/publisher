@@ -242,8 +242,13 @@ export class ConnectionController {
             return await pkg.getMalloyConnection(connectionName);
          }
          throw new BadRequestError(
-            `Ambiguous "duckdb" connection lookup: environment "${environmentName}" has multiple packages. ` +
-               `Use /environments/${environmentName}/packages/{packageName}/connections/duckdb/... to disambiguate.`,
+            `Ambiguous "duckdb" connection lookup: environment "${environmentName}" has multiple packages, ` +
+               `and the "duckdb" sandbox exists once per package. Name one of: ${packages
+                  .map((p) => p.name)
+                  .filter(Boolean)
+                  .join(", ")}. ` +
+               `Over MCP pass it as the packageName argument; over REST use ` +
+               `/environments/${environmentName}/packages/{packageName}/connections/duckdb/...`,
          );
       } else {
          return await environment.getMalloyConnection(connectionName);

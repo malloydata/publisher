@@ -9,7 +9,10 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 
 ## Pre-Flight Checklist
 
-1. **Discover first**: ground yourself with `malloy_getContext` before writing ANY code. It returns the package's sources, views, and fields (with their docs), so you build on what actually exists. Never guess field names.
+1. **Discover first**: ground yourself before writing ANY code, with the tool that matches what you are modelling.
+   - Modelling data **already in a package**: `malloy_getContext` returns that package's sources, views, and fields (with their docs).
+   - Modelling **a database with no package yet**: `malloy_getContext` has nothing to return, so use `malloy_searchDatabaseSchema` instead. It walks the connection's schemas and tables, ranks them against a plain-English description, and gives you each table's columns plus the `source:` line to start from. Take those names verbatim into step 5.
+   Never guess field names either way.
 2. **Search docs proactively**: call `malloy_searchDocs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
 3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
@@ -43,7 +46,7 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 
 | Step | Skill | What Happens |
 |------|-------|-------------|
-| 1. Discover | `skill:malloy-discover` | Read the model and data; scan sources, fields, distributions; detect prior art |
+| 1. Discover | `skill:malloy-discover` | Read the model and data; scan sources, fields, distributions; detect prior art. With no package yet, start from `malloy_searchDatabaseSchema` to find the tables in the connection |
 | 2. Propose Scope | `skill:malloy-scope` | Present findings, user selects focus |
 | 3. Propose Sources | `skill:malloy-define` | Propose source plan, user confirms architecture |
 | 4. Propose Definitions | `skill:malloy-define` | Propose fields per base source, user confirms logic |
@@ -102,6 +105,7 @@ Ensure the Publisher MCP tools are configured before modeling.
 | `malloy_compile` | Compile-check a change and get diagnostics back without running a query |
 | `malloy_reloadPackage` | Recompile a package from disk so a saved edit becomes queryable by name |
 | `malloy_searchDocs` | Search Malloy docs (call BEFORE unfamiliar patterns) |
+| `malloy_searchDatabaseSchema` | Find the tables in a database connection by plain-English description, when modelling data that is not in a package yet. Returns each table's columns and the `source:` line to start from. Names and types only: no row value is returned |
 
 Never guess field names. Ground yourself with `malloy_getContext` to see the sources and fields a package defines.
 
