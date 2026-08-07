@@ -119,16 +119,16 @@ export interface ExtractedQuery {
  * walked, nearest declaration wins, matching `Model.gateExprsForOwnAnnotations`.
  * Joins are a separate concern and are not gated.
  *
- * `blockNotes` alone is also not sufficient WITHIN one level: the
- * multi-definition `source:` block form (`source:\n  #(tag)\n  name is ...`)
- * files its declarations under `notes` instead of `blockNotes` — same slot,
- * different key depending only on which syntax the author used. The authorize
- * reads below use {@link ownLevelNoteTexts}, which covers both. The `#(filter)`
- * walk deliberately still reads `blockNotes` only: it has the same live gap —
- * a block-form `#(filter) ... required` is dropped, and `buildFilterClause`
- * then never raises the "required filter not provided" error the author asked
- * for — but closing it would start rejecting requests against models that have
- * been serving them, so it is left for a change that can carry that break.
+ * `blockNotes` alone is also not sufficient WITHIN one level, because which
+ * note key a declaration lands in is decided by the author's syntax. The
+ * authorize reads below therefore go through {@link ownLevelNoteTexts}, which
+ * covers both keys.
+ *
+ * The `#(filter)` walk deliberately still reads `blockNotes` only. It has the
+ * same live gap: a block-form `#(filter) ... required` is dropped, so
+ * `buildFilterClause` never raises the "required filter not provided" error the
+ * author asked for. Closing it would start rejecting requests that live models
+ * have been serving, so it is left for a change that can carry that break.
  *
  * Two lists come out of this, and the distinction is load-bearing:
  *  - `authorize` is the EFFECTIVE gate (file-level `##(authorize)` from

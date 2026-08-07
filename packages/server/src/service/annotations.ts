@@ -149,17 +149,27 @@ export function annotationTexts(
 
 /**
  * The annotation texts declared directly on ONE node of an `AnnotationsDef`
- * chain — not its `inherits` ancestors. Malloy files a source-level
- * annotation under `blockNotes` for `#(tag)\nsource: name is ...` but under
- * `notes` for every other source-level placement — the multi-definition block
- * form (`source:\n  #(tag)\n  name is ...`) and either side of the `is`
- * (`source: name is\n  #(tag)\n  base`, malloy's `getIsNotes`). Same
- * declaration slot, different key depending only on which syntax the author
- * used (confirmed by compiling each form and inspecting the resulting
- * `SourceDef.annotations`).
- * A caller walking `inherits` by hand to find the nearest declaring level —
- * rather than flattening the whole chain via {@link annotationTexts} — needs
- * this at each link so a block-form declaration is not silently skipped.
+ * chain — not its `inherits` ancestors.
+ *
+ * A source-level annotation lands under one of two keys, decided purely by
+ * which syntax the author used:
+ *
+ *     blockNotes    #(tag)                 statement form
+ *                   source: name is ...
+ *
+ *     notes         source:                multi-definition block form
+ *                     #(tag)
+ *                     name is ...
+ *
+ *     notes         source: name is        after `is` (malloy's getIsNotes)
+ *                     #(tag)
+ *                     base
+ *
+ * It is the same declaration slot in all three — confirmed by compiling each
+ * form and inspecting the resulting `SourceDef.annotations`. So a caller that
+ * walks `inherits` by hand for the nearest declaring level, rather than
+ * flattening the whole chain via {@link annotationTexts}, has to read both keys
+ * at each link, or it silently skips the latter two forms.
  */
 export function ownLevelNoteTexts(
    annote: AnnotationsDef | undefined,
