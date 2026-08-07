@@ -2,32 +2,43 @@ openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
   description: |
-    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources.
-    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases
-    (.parquet, .csv, and .xlsx files) with a malloy-publisher.json manifest at the package's root directory.
+    The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
+    A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
+    notebooks (`.malloynb` files), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    under `public/`.
 
     ## Key Features
 
-    - **Environment Management**: Create and manage environments with their associated packages and connections
-    - **Package Lifecycle**: Full CRUD operations for Malloy packages and their versions
-    - **Model & Notebook Access**: Retrieve and execute Malloy models and notebooks
-    - **Connection Management**: Secure database connection configuration and testing
-    - **Query Execution**: Execute queries against models and retrieve results
-    - **Watch Mode**: Real-time file watching for development workflows
+    - **Discovery**: List environments, packages, and the models, notebooks, pages, and data a package contains
+    - **Query Execution**: Run queries against models, execute notebooks a cell at a time, and compile-check Malloy without running it
+    - **Pages**: In-package HTML data apps served from a package's `public/` directory
+    - **Materializations**: Persist Malloy sources as tables, on a schedule or on demand
+    - **Connection Management**: Configure and test warehouse connections, and browse their schemas and tables
+    - **Watch Mode**: File watching, and a change-event stream for development workflows
 
     ## Resource Hierarchy
 
     The API follows a hierarchical resource structure:
     ```
-    Environments
-    ├── Connections
-    └── Packages
-        ├── Models
-        ├── Notebooks
-        └── Databases
+    Server
+    ├── /status, /theme               server state, and the UI theme
+    ├── /connections/test             validate a connection config
+    ├── /watch-mode/…                 development file watching
+    └── Environments
+        ├── Connections               schemas, tables, and ad-hoc SQL
+        └── Packages
+            ├── Models                query and compile
+            ├── Notebooks             execute a cell at a time
+            ├── Pages                 static HTML data apps from public/
+            ├── Databases             embedded data files
+            ├── Materializations      persisted sources
+            ├── Connections           package-scoped connection access
+            └── Events                SSE stream of file changes
     ```
 
-    For examples, see the Malloy samples packages (https://github.com/malloydata/malloy-samples) repository.
+    For worked examples, see the packages this server bundles
+    (https://github.com/malloydata/publisher/tree/main/examples); the package format is documented in
+    docs/packages.md (https://github.com/malloydata/publisher/blob/main/docs/packages.md).
   version: v0
 
 servers:
@@ -2734,7 +2745,7 @@ components:
           default: package
           description: >-
             Package-level Malloy Persistence scope mode, declared once at the
-            malloy-publisher.json root and applied uniformly to every persist
+            publisher.json root and applied uniformly to every persist
             source and index in the package. `package` (the default) =
             persisted artifacts are package-scoped: reused across the package's
             published versions whenever they still satisfy freshness. `version`
@@ -2835,7 +2846,7 @@ components:
             - type: "null"
           description: |
             Package-level Malloy Persistence policy declared in
-            malloy-publisher.json. The control plane reads it to drive scheduled
+            publisher.json. The control plane reads it to drive scheduled
             re-materialization. The object is present whenever the package has
             loaded — with `schedule: null` when the manifest declares no
             schedule — so the caller can treat object-present as the
@@ -2921,7 +2932,7 @@ components:
     PackageMaterializationConfig:
       type: object
       description: >-
-        Package-level Malloy Persistence policy from malloy-publisher.json's
+        Package-level Malloy Persistence policy from publisher.json's
         `materialization` block. Surfaced verbatim so the control plane can drive
         scheduled version-level re-materialization without re-reading the package
         files. The object is emitted whenever the package is loaded, even when no
@@ -2967,7 +2978,7 @@ components:
     Freshness:
       type: object
       description: >-
-        Freshness policy declared in malloy-publisher.json's
+        Freshness policy declared in publisher.json's
         `materialization.freshness` block. Fields are surfaced verbatim;
         invalid values are dropped (reported as absent), never defaulted.
       properties:

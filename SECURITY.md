@@ -81,3 +81,7 @@ Running Publisher where it can be reached? The deployment posture is in
 [README.md § Point your agent at it](README.md#point-your-agent-at-it), and the trust models behind
 givens are in [docs/authorize.md § Security model](docs/authorize.md#security-model) and
 [docs/discovery-and-access.md](docs/discovery-and-access.md).
+
+[docs/security-posture.md](docs/security-posture.md) states the whole trust boundary in one place,
+including the known gaps in it. Read it before deploying Publisher somewhere reachable, or before
+adding a feature that has to be judged against the boundary.
