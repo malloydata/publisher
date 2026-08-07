@@ -128,6 +128,28 @@ export function assertWithinModelResponseLimits(
    { maxRows, maxBytes }: ModelResponseLimitsConfig,
    source: QueryCapSource,
 ): void {
+   assertWithinModelRowLimit(rowCount, maxRows, source);
+   assertWithinModelByteLimit(serializedBytes, maxBytes, source);
+}
+
+/**
+ * The row half of {@link assertWithinModelResponseLimits}, callable on its own so
+ * a caller can check rows BEFORE serializing.
+ *
+ * That ordering matters for more than tidiness. `resolveModelQueryRowLimit` asks
+ * the connector for `maxRows + 1`, so a row overflow is a `maxRows + 1`-row result
+ * sitting in memory. Serializing it first makes the largest single allocation on
+ * the path for a response that is about to be refused anyway, and if that
+ * serialization is what hits the engine's limit the caller is told the response
+ * could not be serialized, and the counter ticks `unserializable`, when the true
+ * answer was that it exceeded `PUBLISHER_MAX_QUERY_ROWS`. That is exactly the
+ * dashboard confusion the separate label exists to prevent.
+ */
+export function assertWithinModelRowLimit(
+   rowCount: number,
+   maxRows: number,
+   source: QueryCapSource,
+): void {
    if (maxRows > 0 && rowCount > maxRows) {
       // Tick the counter *before* throwing so it reflects the
       // event even if a downstream `catch` swallows the error
@@ -137,6 +159,14 @@ export function assertWithinModelResponseLimits(
          `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
       );
    }
+}
+
+/** The byte half of {@link assertWithinModelResponseLimits}. */
+export function assertWithinModelByteLimit(
+   serializedBytes: number,
+   maxBytes: number,
+   source: QueryCapSource,
+): void {
    if (maxBytes > 0 && serializedBytes > maxBytes) {
       recordQueryCapExceeded("bytes", source);
       throw new PayloadTooLargeError(

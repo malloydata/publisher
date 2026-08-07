@@ -53,7 +53,7 @@ function ensureCapTelemetry(): Counter {
          "publisher_query_cap_exceeded_total",
          {
             description:
-               "Queries rejected with 413 because a response was too large. Labels: cap_type ('rows'|'bytes' exceeded the configured cap; 'unserializable' could not be turned into JSON at all, so no cap need have been exceeded), source ('connection_sql'|'model_query'|'notebook_cell'). Note 'unserializable' is not emitted with source 'connection_sql', which has no such guard on its own path.",
+               "413s for an oversized response. cap_type: rows|bytes exceeded that cap; unserializable could not be turned into JSON at all, so no cap need have been exceeded. source: connection_sql|model_query|notebook_cell.",
          },
       );
    }

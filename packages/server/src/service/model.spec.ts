@@ -7,6 +7,7 @@ import {
    BadRequestError,
    ModelNotFoundError,
    PayloadTooLargeError,
+   ResponseUnserializableError,
 } from "../errors";
 import { Model, ModelType } from "./model";
 
@@ -535,6 +536,12 @@ describe("service/model", () => {
                userLimit?: number;
                totalRows: number;
                wrappedJson: object;
+               /**
+                * The compact rows, i.e. what a `compactJson` request sends. Left
+                * empty by default; set it to make the two shapes differ in size,
+                * which is the whole point of `responseShape`.
+                */
+               compactRows?: unknown[];
             }): { model: Model; runStub: sinon.SinonStub } {
                const preparedResultStub = sinon
                   .stub()
@@ -542,7 +549,7 @@ describe("service/model", () => {
                const fakeResult = {
                   _queryResult: { data: { rawData: [] } },
                   totalRows: opts.totalRows,
-                  data: { value: [] },
+                  data: { value: opts.compactRows ?? [] },
                   connectionName: "fake",
                };
                const runStub = sinon.stub().resolves(fakeResult);
@@ -665,6 +672,116 @@ describe("service/model", () => {
                      "run: orders -> summary",
                   ),
                ).rejects.toBeInstanceOf(PayloadTooLargeError);
+            });
+
+            it("caps the shape the caller declared, not always the wrapped one", async () => {
+               // The regression this plumbing exists to remove: a `compactJson`
+               // request was measured against the WRAPPED result, so it could be
+               // refused on bytes it would never receive. Wrapped JSON is far over
+               // the cap here; the compact rows are far under it.
+               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
+               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "100";
+               const huge = "x".repeat(500);
+               const build = () =>
+                  buildModelWithFakeRun({
+                     userLimit: 10,
+                     totalRows: 10,
+                     wrappedJson: { rows: [{ s: huge }] },
+                     compactRows: [{ a: 1 }],
+                  });
+
+               const compact = await build().model.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: orders -> summary",
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  "compact",
+               );
+               expect(compact.serializedResult).toBe(
+                  JSON.stringify([{ a: 1 }]),
+               );
+
+               sinon.restore();
+               await expect(
+                  build().model.getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: orders -> summary",
+                     undefined,
+                     undefined,
+                     undefined,
+                     undefined,
+                     undefined,
+                     "full",
+                  ),
+               ).rejects.toBeInstanceOf(PayloadTooLargeError);
+            });
+
+            it("guards the compact payload too, not just the wrapped one", async () => {
+               // The second half: a compact shape that cannot be serialized must
+               // report the same 413, rather than escaping as a bare 500 from
+               // whoever stringifies it next.
+               process.env.PUBLISHER_MAX_QUERY_ROWS = "1000";
+               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+               const unserializable = [
+                  {
+                     toJSON() {
+                        throw new RangeError("Invalid string length");
+                     },
+                  },
+               ];
+               const { model } = buildModelWithFakeRun({
+                  userLimit: 10,
+                  totalRows: 10,
+                  wrappedJson: { rows: [{ a: 1 }] },
+                  compactRows: unserializable,
+               });
+
+               await expect(
+                  model.getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: orders -> summary",
+                     undefined,
+                     undefined,
+                     undefined,
+                     undefined,
+                     undefined,
+                     "compact",
+                  ),
+               ).rejects.toBeInstanceOf(ResponseUnserializableError);
+            });
+
+            it("reports a row overflow as rows, even when serializing would fail", async () => {
+               // Ordering: rows are checked before the payload is built, so the
+               // caller is told to raise PUBLISHER_MAX_QUERY_ROWS rather than that
+               // the response could not be serialized.
+               process.env.PUBLISHER_MAX_QUERY_ROWS = "10";
+               process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+               const { model } = buildModelWithFakeRun({
+                  userLimit: 100,
+                  totalRows: 11,
+                  wrappedJson: {
+                     toJSON() {
+                        throw new RangeError("Invalid string length");
+                     },
+                  },
+               });
+
+               const error = await model
+                  .getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: orders -> summary",
+                  )
+                  .catch((e: unknown) => e);
+               expect(error).toBeInstanceOf(PayloadTooLargeError);
+               expect(error).not.toBeInstanceOf(ResponseUnserializableError);
+               expect((error as Error).message).toContain("more than 10 rows");
             });
 
             it("does not throw when both counts are within their caps", async () => {

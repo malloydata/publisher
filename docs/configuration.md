@@ -83,7 +83,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PACKAGE_LOAD_JOB_TIMEOUT_MS` | — | `120000` (2 min) | Timeout per package-load job before the worker is recycled. |
 | `EXTENSION_FETCH_POLICY` | — | `on-demand` | Whether the server may fetch DuckDB extensions from the network at runtime. `on-demand`: a missing extension is installed on first use (unchanged prior behavior). `local-only`: never install, and disable DuckDB's implicit auto-install — a locally-present (e.g. image-baked) extension still loads, but a missing one fails with an actionable error naming the extension. Use `local-only` for air-gapped / pinned-image deployments. See [ducklake.md](ducklake.md#duckdb-extension-provisioning). |
 | `PUBLISHER_MAX_QUERY_ROWS` | — | `100000` | Maximum rows returned per query on every query surface (`/connections/.../sqlQuery`, model query, notebook cell, MCP `executeQuery`). Forwarded to the connector / Malloy `runnable.run` as the effective row limit; queries that exceed the cap fail with HTTP 413. Set to `0` to disable. A caller-supplied `rowLimit` smaller than the cap is preserved. |
-| `PUBLISHER_MAX_RESPONSE_BYTES` | — | `50000000` (50 MB) | Maximum JSON-serialized response size for ad-hoc SQL and model queries. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. |
+| `PUBLISHER_MAX_RESPONSE_BYTES` | — | `50000000` (50 MB) | Maximum JSON-serialized size of the response **that is actually sent**, for ad-hoc SQL and model queries. Two model-query clients differing only in `compactJson` therefore hit this cap at different result sizes, because the compact rows are smaller than the wrapped result. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. |
 | `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT` | — | `1000` | Default `LIMIT` applied to model queries that don't include their own. Always ≤ `PUBLISHER_MAX_QUERY_ROWS`. `0` is rejected. |
 | `PUBLISHER_QUERY_TIMEOUT_MS` | — | `300000` (5 min) | Wall-clock timeout per query (all surfaces). Wired to the underlying SDK via `AbortSignal`; queries that exceed the budget are aborted and return HTTP 504. Set to `0` to disable. |
 | `PUBLISHER_MAX_CONCURRENT_QUERIES` | — | `32` | Per-pod cap on simultaneous in-flight queries (HTTP + MCP share the same slot pool). When the cap is reached, new queries fail fast with HTTP 503 (or the MCP-error equivalent). Tune higher under load; set to `0` to disable. |
@@ -181,7 +181,7 @@ can be observed and tuned in production. The most useful series for this work:
 
 | Metric                                                                                        | Type           | Use                                                                                                             |
 | --------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------- |
-| `publisher_query_cap_exceeded_total{cap_type,source}`                                         | Counter        | 413 firings for an oversized response. Pivot by `cap_type` to know what to do: `rows`/`bytes` exceeded that cap, so raising it is an option; `unserializable` means the response could not be turned into JSON at all, which no cap raise fixes (and is not emitted for `source: connection_sql`, which has no such guard). Pivot by `source` for surface. |
+| `publisher_query_cap_exceeded_total{cap_type,source}`                                         | Counter        | 413 firings for an oversized response. Pivot by `cap_type` and `source`; see the note below. |
 | `publisher_max_query_rows`, `publisher_max_response_bytes`                                    | Gauges         | Live values of the corresponding env vars (and `-1` on misconfig).                                              |
 | `publisher_query_admission_rejections_total{environment}`                                     | Counter        | 503s from the memory governor at the query layer. Hot environments stand out via the label.                     |
 | `publisher_package_admission_rejections_total{environment,reason}`                            | Counter        | 503s from the memory governor at the package-load layer.                                                        |
@@ -191,6 +191,11 @@ can be observed and tuned in production. The most useful series for this work:
 | `publisher_process_rss_bytes`, `publisher_heap_size_limit_bytes`, `publisher_heap_used_bytes` | Gauges         | Process RSS, V8 heap ceiling (`--max-old-space-size`), V8 used heap.                                            |
 | `publisher_memory_backpressure_active`, `_activations_total`                                  | Gauge, counter | Current governor state and historical activations.                                                              |
 | `http_server_requests_total{http.status_code}`                                                | Counter        | Coarse 413/503/504 totals — pair with the dedicated counters above for per-cause breakdown.                     |
+
+`cap_type` says what to do about a 413: `rows` and `bytes` mean that cap was exceeded, so
+raising it is an option, while `unserializable` means the response could not be turned into JSON
+at all and no cap raise fixes it. `unserializable` is never emitted for `source: connection_sql`,
+which has no such guard on its own path.
 
 ## Theming
 

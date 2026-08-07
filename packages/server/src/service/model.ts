@@ -89,7 +89,8 @@ import {
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
-   assertWithinModelResponseLimits,
+   assertWithinModelByteLimit,
+   assertWithinModelRowLimit,
    type QueryRowLimitSource,
    queryRowLimitSource,
    resolveModelQueryRowLimit,
@@ -2825,6 +2826,12 @@ export class Model {
       // disabled that envelope build still throws a raw RangeError and the agent
       // gets an internal error. Guarding it belongs with the envelope's own
       // truncation budget, not here.
+      // Rows BEFORE serializing. A row overflow is a `maxRows + 1`-row result, so
+      // serializing first builds the largest payload on the path for a response
+      // that is about to be refused, and if that serialization is what hits the
+      // engine limit the caller is told the wrong thing: "could not be
+      // serialized" instead of "you exceeded PUBLISHER_MAX_QUERY_ROWS".
+      assertWithinModelRowLimit(queryResults.totalRows, maxRows, "model_query");
       const serializedResult = stringifyQueryResponse(
          responseShape === "compact" ? queryResults.data.value : wrappedResult,
          queryResults.totalRows,
@@ -2832,12 +2839,9 @@ export class Model {
          "model_query",
          responseShape === "compact" ? bigIntReplacer : undefined,
       );
-      const serializedBytes =
-         maxBytes > 0 ? Buffer.byteLength(serializedResult, "utf8") : 0;
-      assertWithinModelResponseLimits(
-         queryResults.totalRows,
-         serializedBytes,
-         { maxRows, maxBytes },
+      assertWithinModelByteLimit(
+         Buffer.byteLength(serializedResult, "utf8"),
+         maxBytes,
          "model_query",
       );
       this.queryExecutionHistogram.record(executionTime, {
@@ -3131,6 +3135,15 @@ export class Model {
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
+            // Same ordering as getQueryResults: rows first, so a row overflow is
+            // not reported as an unserializable response.
+            if (result?._queryResult) {
+               assertWithinModelRowLimit(
+                  result.totalRows,
+                  cellMaxRows,
+                  "notebook_cell",
+               );
+            }
             queryResult =
                result?._queryResult &&
                this.modelInfo &&
@@ -3149,10 +3162,9 @@ export class Model {
             // partial transmission), not OOM prevention. The row cap above
             // is the primary defense.
             if (result?._queryResult && queryResult) {
-               assertWithinModelResponseLimits(
-                  result.totalRows,
+               assertWithinModelByteLimit(
                   Buffer.byteLength(queryResult, "utf8"),
-                  { maxRows: cellMaxRows, maxBytes: cellMaxBytes },
+                  cellMaxBytes,
                   "notebook_cell",
                );
             }
