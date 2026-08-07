@@ -263,13 +263,6 @@ export class DuckDBRepository implements ResourceRepository {
       );
    }
 
-   async listIncrementalLedgerEntries(
-      environmentId: string,
-      packageName: string,
-   ): Promise<IncrementalLedgerEntry[]> {
-      return this.incrementalLedgerRepo.list(environmentId, packageName);
-   }
-
    async upsertIncrementalLedgerEntry(
       entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
    ): Promise<IncrementalLedgerEntry> {

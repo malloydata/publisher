@@ -792,8 +792,6 @@ export type IncrementalStep =
         /** The boundary to record once the DML commits (always `end`). */
         coveredThrough: WatermarkBound;
         statements: string[];
-        script: string;
-        columns: string[];
      };
 
 /**
@@ -848,13 +846,15 @@ export async function planIncrementalStep(inputs: {
    forceRefresh: boolean;
    /** The run's start time, used as the range end for a time watermark. */
    now: Date;
-   /** The source's own build SQL, for the frontier probe (non-time watermarks). */
+   /**
+    * The source's own build SQL — `PersistSource.getSQL()` resolved against the
+    * build manifest, the exact string the seed's CTAS runs. The delta wraps and
+    * filters it (see {@link deltaSelect}), and the frontier probe for a non-time
+    * watermark reads it.
+    */
    sourceSQL: string;
-   /** The delta SELECT for a range, plus the columns its DML names. */
-   deltaFor: (
-      start: WatermarkBound,
-      end: WatermarkBound,
-   ) => Promise<{ sql: string; columns: string[] }>;
+   /** The source's compiled output columns, which the delta's DML names. */
+   columns: string[];
    /** Postgres only: the server version, for the MERGE floor. */
    postgresVersionNum?: number;
 }): Promise<IncrementalStep> {
@@ -953,8 +953,7 @@ export async function planIncrementalStep(inputs: {
       };
    }
 
-   const delta = await inputs.deltaFor(start, end.bound);
-   const shape = shapeMismatch(delta.columns, probe.columns);
+   const shape = shapeMismatch(inputs.columns, probe.columns);
    if (shape) {
       // Legitimate, and unfixable from here: a table-backed source that renames
       // or hides a column materializes its OWN column names while a query stage
@@ -972,8 +971,14 @@ export async function planIncrementalStep(inputs: {
    const statements = deltaStatements({
       dialect,
       quotedTablePath: inputs.quotedTablePath,
-      deltaSQL: delta.sql,
-      columns: delta.columns,
+      deltaSQL: deltaSelect({
+         dialect,
+         sourceSQL: inputs.sourceSQL,
+         watermarkName: lineage.watermarkName,
+         start,
+         end: end.bound,
+      }),
+      columns: inputs.columns,
       mergeKeys: lineage.mergeKeys,
       watermarkName: lineage.watermarkName,
       start,
@@ -985,8 +990,6 @@ export async function planIncrementalStep(inputs: {
       end: end.bound,
       coveredThrough: end.bound,
       statements,
-      script: deltaScript(statements),
-      columns: delta.columns,
    };
 }
 

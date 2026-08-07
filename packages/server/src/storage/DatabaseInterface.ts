@@ -104,10 +104,6 @@ export interface ResourceRepository {
       packageName: string,
       sourceEntityId: string,
    ): Promise<IncrementalLedgerEntry | null>;
-   listIncrementalLedgerEntries(
-      environmentId: string,
-      packageName: string,
-   ): Promise<IncrementalLedgerEntry[]>;
    upsertIncrementalLedgerEntry(
       entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
    ): Promise<IncrementalLedgerEntry>;

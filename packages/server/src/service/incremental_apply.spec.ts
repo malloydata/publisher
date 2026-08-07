@@ -649,10 +649,7 @@ describe("planIncrementalStep", () => {
          forceRefresh: false,
          now: NOW,
          sourceSQL: "SELECT * FROM base",
-         deltaFor: async () => ({
-            sql: "SELECT 1",
-            columns: ["order_date", "region", "revenue"],
-         }),
+         columns: ["order_date", "region", "revenue"],
          ...overrides,
       });
    };
@@ -666,8 +663,13 @@ describe("planIncrementalStep", () => {
       // its frontier.
       expect(step.end.value).toBe("2024-07-01");
       expect(step.coveredThrough).toEqual(step.end);
-      expect(step.script).toContain("DELETE FROM");
-      expect(step.script).toContain("INSERT INTO");
+      const script = step.statements.join(";\n");
+      expect(script).toContain("DELETE FROM");
+      expect(script).toContain("INSERT INTO");
+      // The delta filters the source's OWN build SQL at the planned range.
+      expect(script).toContain("FROM (SELECT * FROM base)");
+      expect(script).toContain("2024-06-01");
+      expect(script).toContain("2024-07-01");
    });
 
    it("seeds on forceRefresh, before touching the warehouse", async () => {
@@ -681,9 +683,7 @@ describe("planIncrementalStep", () => {
          forceRefresh: true,
          now: NOW,
          sourceSQL: "SELECT * FROM base",
-         deltaFor: async () => {
-            throw new Error("must not compile a delta for a forced refresh");
-         },
+         columns: ["order_date", "region", "revenue"],
       });
       expect(step.mode).toBe("seed");
       expect(seen).toEqual([]);
@@ -721,12 +721,9 @@ describe("planIncrementalStep", () => {
 
    it("seeds when the delta's shape does not match the table's", async () => {
       const step = await plan({
-         deltaFor: async () => ({
-            sql: "SELECT 1",
-            // What a `rename:` on a table-backed source produces: the query emits
-            // the logical name, the table holds the physical one.
-            columns: ["order_date", "region", "revenue_total"],
-         }),
+         // What a `rename:` on a table-backed source produces: the source's
+         // schema names the logical column, the table holds the physical one.
+         columns: ["order_date", "region", "revenue_total"],
       });
       expect(step.mode).toBe("seed");
       if (step.mode !== "seed") return;
@@ -783,10 +780,7 @@ describe("planIncrementalStep", () => {
          forceRefresh: false,
          now: NOW,
          sourceSQL: "SELECT * FROM base",
-         deltaFor: async () => ({
-            sql: "SELECT 1",
-            columns: ["seq", "region"],
-         }),
+         columns: ["seq", "region"],
       });
       expect(step.mode).toBe("delta");
       if (step.mode !== "delta") return;

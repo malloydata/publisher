@@ -20,12 +20,15 @@ describe("IncrementalLedgerRepository", () => {
       while (dbs.length) await dbs.pop()!.close();
    });
 
-   async function freshRepo(): Promise<IncrementalLedgerRepository> {
+   async function freshRepo(): Promise<{
+      repo: IncrementalLedgerRepository;
+      db: DuckDBConnection;
+   }> {
       const db = new DuckDBConnection(":memory:");
       dbs.push(db);
       await db.initialize();
       await initializeSchema(db);
-      return new IncrementalLedgerRepository(db);
+      return { repo: new IncrementalLedgerRepository(db), db };
    }
 
    function entry(
@@ -48,12 +51,12 @@ describe("IncrementalLedgerRepository", () => {
    }
 
    it("returns null for a lineage with no boundary yet (which means SEED)", async () => {
-      const repo = await freshRepo();
+      const { repo } = await freshRepo();
       expect(await repo.get(ENV, PKG, SOURCE)).toBeNull();
    });
 
    it("round-trips a boundary, its declarations and its lineage identity", async () => {
-      const repo = await freshRepo();
+      const { repo } = await freshRepo();
       const written = await repo.upsert(
          entry({
             mergeKeyDimensions: ["order_id", "region"],
@@ -77,7 +80,7 @@ describe("IncrementalLedgerRepository", () => {
 
    it("advances in place: one row per lineage, never a second boundary", async () => {
       // The property that makes a retried advance a no-op instead of ambiguity.
-      const repo = await freshRepo();
+      const { repo, db } = await freshRepo();
       await repo.upsert(entry());
       await repo.upsert(
          entry({
@@ -86,14 +89,17 @@ describe("IncrementalLedgerRepository", () => {
          }),
       );
 
-      const rows = await repo.list(ENV, PKG);
-      expect(rows).toHaveLength(1);
-      expect(rows[0].coveredThroughValue).toBe("2024-07-01");
-      expect(rows[0].advancedByMaterializationId).toBe("run-2");
+      const count = await db.all<{ n: unknown }>(
+         "SELECT count(*) AS n FROM incremental_ledger",
+      );
+      expect(Number(count[0].n)).toBe(1);
+      const read = await repo.get(ENV, PKG, SOURCE);
+      expect(read!.coveredThroughValue).toBe("2024-07-01");
+      expect(read!.advancedByMaterializationId).toBe("run-2");
    });
 
    it("keeps created_at across an advance while advanced_at moves", async () => {
-      const repo = await freshRepo();
+      const { repo } = await freshRepo();
       const seeded = await repo.upsert(entry());
       await Bun.sleep(5);
       const advanced = await repo.upsert(
@@ -108,7 +114,7 @@ describe("IncrementalLedgerRepository", () => {
    it("keys by (environment, package, source): neighbours never collide", async () => {
       // A BuildID carries no environment input, so two environments can address
       // the same source identically. Their boundaries must not be the same row.
-      const repo = await freshRepo();
+      const { repo } = await freshRepo();
       await repo.upsert(entry({ coveredThroughValue: "2024-06-01" }));
       await repo.upsert(
          entry({ environmentId: "env-2", coveredThroughValue: "2024-01-01" }),
@@ -129,14 +135,16 @@ describe("IncrementalLedgerRepository", () => {
       expect((await repo.get("env-2", PKG, SOURCE))!.coveredThroughValue).toBe(
          "2024-01-01",
       );
-      expect((await repo.list(ENV, PKG)).map((r) => r.sourceEntityId)).toEqual([
-         "sha-daily-revenue",
-         "sha-other",
-      ]);
+      expect((await repo.get(ENV, "pkg-b", SOURCE))!.coveredThroughValue).toBe(
+         "2024-02-01",
+      );
+      expect((await repo.get(ENV, PKG, "sha-other"))!.coveredThroughValue).toBe(
+         "2024-03-01",
+      );
    });
 
    it("preserves a numeric and a string boundary as text, unrounded", async () => {
-      const repo = await freshRepo();
+      const { repo } = await freshRepo();
       await repo.upsert(
          entry({
             coveredThroughType: "number",
@@ -159,7 +167,7 @@ describe("IncrementalLedgerRepository", () => {
    });
 
    it("deletes one lineage's boundary, so the next run re-seeds it", async () => {
-      const repo = await freshRepo();
+      const { repo } = await freshRepo();
       await repo.upsert(entry());
       await repo.upsert(entry({ sourceEntityId: "sha-other" }));
 
@@ -170,18 +178,18 @@ describe("IncrementalLedgerRepository", () => {
    });
 
    it("cascades by package and by environment", async () => {
-      const repo = await freshRepo();
+      const { repo } = await freshRepo();
       await repo.upsert(entry());
       await repo.upsert(entry({ packageName: "pkg-b" }));
       await repo.upsert(entry({ environmentId: "env-2" }));
 
       await repo.deleteByPackage(ENV, PKG);
-      expect(await repo.list(ENV, PKG)).toEqual([]);
-      expect(await repo.list(ENV, "pkg-b")).toHaveLength(1);
+      expect(await repo.get(ENV, PKG, SOURCE)).toBeNull();
+      expect(await repo.get(ENV, "pkg-b", SOURCE)).not.toBeNull();
 
       await repo.deleteByEnvironmentId(ENV);
-      expect(await repo.list(ENV, "pkg-b")).toEqual([]);
-      expect(await repo.list("env-2", PKG)).toHaveLength(1);
+      expect(await repo.get(ENV, "pkg-b", SOURCE)).toBeNull();
+      expect(await repo.get("env-2", PKG, SOURCE)).not.toBeNull();
    });
 
    it("reads an unparseable merge-key list as empty, which forces a re-seed", async () => {

@@ -27,8 +27,7 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { computeSourceEntityId } from "./build_plan";
-import { deltaSelectFor } from "./incremental_build";
-import type { WatermarkBound } from "./incremental_apply";
+import { deltaSelect, type WatermarkBound } from "./incremental_apply";
 
 const ROOT = "file:///addr/";
 const DIGESTS = { duckdb: "digest-1" };
@@ -91,28 +90,27 @@ describe("incremental refresh: content-address stability", () => {
       const { sources } = await compile(MODEL);
       const seedAddress = computeSourceEntityId(sources.mz, DIGESTS);
 
-      const deltaFor = deltaSelectFor({
-         dialect: "duckdb",
-         // The seed's own SQL, which is also what the address is computed over.
-         sourceSQL: sources.mz.getSQL({ buildManifest: { entries: {} } }),
-         columns: ["order_date", "region", "revenue"],
-         watermarkName: "order_date",
-      });
+      const deltaFor = (start: WatermarkBound, end: WatermarkBound) =>
+         deltaSelect({
+            dialect: "duckdb",
+            // The seed's own SQL, which is also what the address is computed over.
+            sourceSQL: sources.mz.getSQL({ buildManifest: { entries: {} } }),
+            watermarkName: "order_date",
+            start,
+            end,
+         });
 
-      const first = await deltaFor(date("2024-01-01"), date("2024-02-01"));
+      const first = deltaFor(date("2024-01-01"), date("2024-02-01"));
       expect(computeSourceEntityId(sources.mz, DIGESTS)).toBe(seedAddress);
 
-      const second = await deltaFor(date("2024-02-01"), date("2024-03-01"));
+      const second = deltaFor(date("2024-02-01"), date("2024-03-01"));
       expect(computeSourceEntityId(sources.mz, DIGESTS)).toBe(seedAddress);
 
       // Not vacuous: the ranges did reach the delta SQL, they just did not reach
       // the address.
-      expect(first.sql).not.toBe(second.sql);
-      expect(first.sql).toContain("2024-01-01");
-      expect(second.sql).toContain("2024-02-01");
-      // And both deltas produce the shape the seed wrote.
-      expect(first.columns).toEqual(second.columns);
-      expect(first.columns).toEqual(["order_date", "region", "revenue"]);
+      expect(first).not.toBe(second);
+      expect(first).toContain("2024-01-01");
+      expect(second).toContain("2024-02-01");
    });
 
    it("is identical across a fresh compile of the same model", async () => {

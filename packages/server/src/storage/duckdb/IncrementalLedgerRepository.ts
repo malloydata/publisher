@@ -37,19 +37,6 @@ export class IncrementalLedgerRepository {
       return row ? mapRow(row) : null;
    }
 
-   async list(
-      environmentId: string,
-      packageName: string,
-   ): Promise<IncrementalLedgerEntry[]> {
-      const rows = await this.db.all<Record<string, unknown>>(
-         `SELECT * FROM incremental_ledger
-           WHERE environment_id = ? AND package_name = ?
-           ORDER BY source_entity_id`,
-         [environmentId, packageName],
-      );
-      return rows.map(mapRow);
-   }
-
    /**
     * Record a boundary, replacing whatever this lineage had before. `created_at`
     * survives a replace (it dates the lineage's first seed, which is the useful

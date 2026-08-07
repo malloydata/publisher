@@ -1,5 +1,4 @@
 import type {
-   BuildManifest,
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
@@ -38,6 +37,7 @@ import {
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import { errMessage } from "../utils";
 import {
+   collectIncrementalDeclarations,
    CompiledBuildPlan,
    compilePackageBuildPlan,
    computeSourceEntityId,
@@ -62,10 +62,7 @@ import {
    resetLedger,
    type IncrementalRunContext,
 } from "./incremental_build";
-import {
-   resolveIncrementalDeclaration,
-   type IncrementalDeclaration,
-} from "./incremental_declaration";
+import type { IncrementalDeclaration } from "./incremental_declaration";
 import {
    mergeQueryMetadata,
    type QueryContext,
@@ -1233,23 +1230,13 @@ export class MaterializationService {
          now: Date;
       },
    ): IncrementalRunContext | undefined {
+      // An unreadable declaration is dropped by collectIncrementalDeclarations
+      // (with a warn), so that source builds full, like every other source whose
+      // declaration the delta path cannot act on.
       const declarations: Record<string, IncrementalDeclaration> = {};
-      for (const [sourceID, source] of Object.entries(compiled.sources)) {
-         let declaration: IncrementalDeclaration;
-         try {
-            declaration = resolveIncrementalDeclaration(
-               source,
-               deriveAnnotationFields(source),
-            );
-         } catch (err) {
-            // An unreadable declaration builds full, like every other source
-            // whose declaration the delta path cannot act on.
-            logger.warn(
-               "Failed to resolve an incremental declaration during a build",
-               { sourceID, error: errMessage(err) },
-            );
-            continue;
-         }
+      for (const [sourceID, declaration] of Object.entries(
+         collectIncrementalDeclarations(compiled.sources),
+      )) {
          if (declaration.incremental) declarations[sourceID] = declaration;
       }
       if (Object.keys(declarations).length === 0) return undefined;
@@ -1742,16 +1729,22 @@ export class MaterializationService {
                  isStorageBuild,
               })
             : undefined;
-      if (incremental && lineage && contentSourceEntityId) {
+      // One narrowing for the three incremental touchpoints below, so they can
+      // never disagree about whether this source is on the delta path.
+      const incrementalRefresh =
+         incremental && lineage && contentSourceEntityId
+            ? {
+                 context: incremental,
+                 lineage,
+                 ledgerKey: contentSourceEntityId,
+              }
+            : undefined;
+      if (incrementalRefresh) {
          const applied = await this.refreshOneSourceIncrementally({
-            context: incremental,
-            lineage,
+            ...incrementalRefresh,
             persistSource,
             instruction,
-            ledgerKey: contentSourceEntityId,
             connection,
-            connectionDigests,
-            buildManifest,
             buildSQL,
             quotedTablePath: quotedPhysicalPath,
             runOptions,
@@ -1774,8 +1767,11 @@ export class MaterializationService {
       // boundary is dropped BEFORE it starts rather than overwritten after: a
       // crash mid-rebuild would otherwise leave a boundary pointing at data that
       // no longer exists, and the next run would apply a delta on top of it.
-      if (incremental && lineage && contentSourceEntityId) {
-         await resetLedger(incremental, contentSourceEntityId);
+      if (incrementalRefresh) {
+         await resetLedger(
+            incrementalRefresh.context,
+            incrementalRefresh.ledgerKey,
+         );
       }
 
       const startTime = performance.now();
@@ -1832,11 +1828,11 @@ export class MaterializationService {
 
       // The table now holds a full snapshot, so record where that snapshot
       // reaches: this is what turns the NEXT refresh into a delta.
-      if (incremental && lineage && contentSourceEntityId) {
+      if (incrementalRefresh) {
          await advanceLedgerAfterSeed({
-            context: incremental,
-            lineage,
-            sourceEntityId: contentSourceEntityId,
+            context: incrementalRefresh.context,
+            lineage: incrementalRefresh.lineage,
+            sourceEntityId: incrementalRefresh.ledgerKey,
             quotedTablePath: quotedPhysical,
             dialect,
             runner: (sql) => connection.runSQL(sql, runOptions),
@@ -1876,8 +1872,6 @@ export class MaterializationService {
       /** The source's content address: the covered_through ledger's key. */
       ledgerKey: string;
       connection: MalloyConnection;
-      connectionDigests: Record<string, string>;
-      buildManifest: BuildManifest;
       buildSQL: string;
       quotedTablePath: string;
       runOptions: { queryMetadata?: QueryMetadata };

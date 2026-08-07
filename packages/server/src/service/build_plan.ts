@@ -788,8 +788,11 @@ export async function computePackageBuildPlan(
  * schema and the query definition's field kinds, neither of which a wire
  * `PersistSourcePlan` carries — and deliberately so, since the control plane's
  * contract gains no typed fields in this phase.
+ *
+ * Exported for the build path, which resolves the same declarations off its own
+ * compile (see MaterializationService.incrementalRunContext).
  */
-function collectIncrementalDeclarations(
+export function collectIncrementalDeclarations(
    sources: Record<string, PersistSource>,
 ): Record<string, IncrementalDeclaration> {
    const declarations: Record<string, IncrementalDeclaration> = {};
