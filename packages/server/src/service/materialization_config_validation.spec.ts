@@ -48,7 +48,7 @@ describe("materializationConfigWarnings", () => {
       expect(warnings).toHaveLength(1);
       expect(warnings[0].message).toContain("materialization.queryMetadata");
       expect(warnings[0].message).toContain("team.name");
-      expect(warnings[0].target).toBeUndefined();
+      expect(warnings[0].subject).toBeUndefined();
    });
 
    it("reports the offending property at the source that resolves it", () => {
@@ -56,7 +56,7 @@ describe("materializationConfigWarnings", () => {
          sources: [source("orders", { "team.name": "finance" })],
       });
       expect(warnings).toHaveLength(1);
-      expect(warnings[0].target).toBe("orders");
+      expect(warnings[0].subject).toBe("orders");
       expect(warnings[0].message).toContain("#@ persist queryMetadata");
    });
 
@@ -84,7 +84,7 @@ describe("materializationConfigWarnings", () => {
          ],
       });
       expect(warnings).toHaveLength(3);
-      expect(warnings.map((w) => w.target)).toEqual([
+      expect(warnings.map((w) => w.subject)).toEqual([
          undefined,
          "orders",
          "returns",

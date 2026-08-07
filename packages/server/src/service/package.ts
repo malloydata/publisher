@@ -509,11 +509,20 @@ export class Package {
             );
             // Validate renderer tags on the main thread (the renderer is too
             // heavy to load inside the pure-CPU package-load worker). A
-            // misconfigured tag is logged as a warning naming the target; it
+            // misconfigured tag is logged as a warning naming the subject; it
             // does not fail the load. The findings also ride the package
             // response as non-fatal `warnings`.
             for (const w of await model.validateRenderTags()) {
-               renderTagWarnings.push({ model: sm.modelPath, ...w });
+               renderTagWarnings.push({
+                  model: sm.modelPath,
+                  // Spelled out rather than spread. A spread is exempt from
+                  // excess-property checking exactly like a named interface, so
+                  // `...w` would carry a stale field name through a rename in
+                  // `api-doc.yaml` without the compiler noticing.
+                  subject: w.subject,
+                  message: w.message,
+                  severity: w.severity,
+               });
             }
             // Reject unquoted `#@ persist name=` annotations the same way: an
             // unquoted name is dropped from the build plan, so the source would
@@ -692,13 +701,13 @@ export class Package {
          metadata.exploresWarnings = warnings;
       }
       // Render-tag findings and storage= warnings share the one operator-facing
-      // warnings array (the {model, target, message} shape carries both).
+      // warnings array (the {model, subject, message} shape carries both).
       const allWarnings = [
          ...this.renderTagWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A within-package persist-target collision spans two or more sources, so
-         // there is no single target field; the message names them. Surfaced here
+         // there is no single subject field; the message names them. Surfaced here
          // (alongside the load-path log) so an operator can see it on the status
          // API like the other persist warnings — see persistenceCollisionWarnings.
          ...this.persistenceCollisionWarnings().map((message) => ({ message })),
@@ -1081,7 +1090,7 @@ export class Package {
    private droppedPersistWarnings(): ApiPackageWarning[] {
       return this.droppedPersistSources.map((d) => ({
          model: d.modelPath,
-         target: d.name,
+         subject: d.name,
          message:
             `is annotated '#@ persist' but was not recognized as a ` +
             `materializable source, so nothing is materialized and it is served ` +
@@ -1108,7 +1117,7 @@ export class Package {
                  `routed to the materialized table (served live).`;
          warnings.push({
             model: source.modelPath ?? "",
-            target: source.name,
+            subject: source.name,
             message,
          });
       }
@@ -1511,7 +1520,14 @@ export class Package {
             // compilationError rather than aborting the whole reload.
             try {
                for (const w of await model.validateRenderTags()) {
-                  renderTagWarnings.push({ model: sm.modelPath, ...w });
+                  renderTagWarnings.push({
+                     model: sm.modelPath,
+                     // Spelled out rather than spread, for the reason given at
+                     // the sibling call site on the load path.
+                     subject: w.subject,
+                     message: w.message,
+                     severity: w.severity,
+                  });
                }
                nextModels.set(sm.modelPath, model);
             } catch (renderErr) {
