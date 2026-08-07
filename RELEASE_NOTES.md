@@ -18,7 +18,9 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — DuckDB/DuckLake materialization tier (`storage=`)
+## [0.0.236] — DuckDB/DuckLake materialization tier (`storage=`)
+
+This section describes the tier as it stands at 0.0.236. It first shipped in 0.0.232; the disjoint-set semantics between `storageDestinations` and `connections` landed in 0.0.236.
 
 A `#@ persist` source can now be materialized into a **storage destination** — a DuckLake declared in the environment's `storageDestinations`, a disjoint set from `connections` — instead of its own warehouse, and served back from that materialized table cross-dialect, with no model change. Off by default; see [docs/persist-storage-tutorial.md](docs/persist-storage-tutorial.md).
 
@@ -82,7 +84,7 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - **SDK UI:** the materialization detail dialog drops the "Mode" field and now renders its build-plan view from `Package.buildPlan`.
 - Regenerate any SDK/Python/k6 clients against the updated `api-doc.yaml`.
 
-## [Unreleased] — Package locations: `~/` expands, and relative paths anchor at the config
+## [0.0.229] — Package locations: `~/` expands, and relative paths anchor at the config
 
 **A relative package `location` now resolves against the directory holding the config it appears in, not the server root.** Those are the same directory whenever the config is found at `<SERVER_ROOT>/publisher.config.json`, which covers the bundled samples, every Docker recipe in [docs/deployment.md](docs/deployment.md), and any setup that `cd`s to the config before starting. Nothing changes for them. Two cases keep the server root as the anchor: the config bundled inside the published package (a zero-arg `npx @malloy-publisher/server`), and a `--config` naming a directory rather than a file.
 
@@ -94,19 +96,19 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 
 See [docs/configuration.md](docs/configuration.md) for the rule and the recommended layout.
 
-## [Unreleased] — Source access gates (`#(authorize)`)
+## [0.0.205] — Source access gates (`#(authorize)`)
 
 **Sources can now gate query access on givens.** A `#(authorize) "<bool expr>"` annotation (source-level) or `##(authorize)` (file-level) is evaluated against the request's [givens](docs/givens.md) before any query that reads the source runs; access is denied with **HTTP 403** unless at least one in-scope expression is `true` (OR semantics). Enforced on `POST /…/query`, the notebook-cell `GET`, `POST /…/compile`, and the MCP `malloy_executeQuery` tool. Malformed or invalid annotations fail model load with **424**.
 
 **Important — this is a trusted-tier boundary, not end-user authn.** Givens are caller-asserted, so `#(authorize)` enforces policy only when Publisher sits behind a trusted tier that sets givens from verified context and the query API is network-isolated from untrusted callers. See [docs/authorize.md](docs/authorize.md) (Security model) for the deployment contract, the locked-base + curated-extension pattern, and known limitations.
 
-## [Unreleased] — planned (post-givens-migration)
+## [0.0.201] — Givens
 
 **Givens are now the recommended way to supply runtime parameters.** Models declare `given:` blocks (per [Malloy's experimental givens feature](https://docs.malloydata.dev/documentation/experiments/givens)); callers send values via the new `givens` body field on `POST /…/query` and `POST /…/compile`, the `givens` query parameter on the notebook-cell GET, or the `givens` argument on the MCP `malloy_executeQuery` tool. The notebook UI automatically renders a Parameters panel for any model that declares givens.
 
 `filterParams`, `bypassFilters`, the matching `filter_params` / `bypass_filters` query parameters, and `#(filter)` annotations are **deprecated** and will be removed in a future release after a coordinated migration with current users. Models that use `#(filter)` will continue to work unchanged during the deprecation window; affected responses now carry a `Deprecation: true` header (per RFC 8594) pointing at `docs/givens.md`, and the server logs a one-time migration notice when such a model is loaded. See [docs/givens.md](docs/givens.md) for the migration recipe.
 
-## [Unreleased] — planned 0.0.195
+## [0.0.197] — SDK and app UI redesign
 
 UI redesign of the SDK's pages and shell. Type-level public APIs are unchanged; rendered DOM, CSS, and visual treatment have changed across `Home`, `Project`, `Package`, `AddPackageDialog`, and the per-cell wrappers used by `Notebook` and `Model`. External embedders should review side-by-side before upgrading.
 
