@@ -47,6 +47,12 @@ export interface IncrementalPolicySource {
    dialect?: string;
    /** The source's `#@ persist storage=` destination, when it declares one. */
    storageDestination?: string;
+   /**
+    * The source's content address. Two sources can share one, which is what
+    * {@link sharedAddressAdvisories} is for; absent when the plan could not
+    * report it, which simply leaves that check silent.
+    */
+   sourceEntityId?: string;
    declaration: IncrementalDeclaration;
 }
 
@@ -328,14 +334,103 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
 }
 
 /**
+ * The declaration facts the covered_through ledger RECORDS, as one comparable
+ * string. Two sources sharing a content address share the ledger row keyed by
+ * it, so if these differ the row cannot describe both.
+ *
+ * Deliberately the recorded set and not the whole declaration: an advisory that
+ * fired on a difference the ledger does not store would name a conflict that
+ * costs nothing.
+ */
+function recordedLineage(d: IncrementalDeclaration): string {
+   const watermark = d.watermark;
+   return [
+      d.incremental ? "incremental" : "full",
+      watermark?.name ?? "",
+      watermark && watermark.kind !== "unresolved" ? watermark.malloyType : "",
+      d.strategy ?? "",
+      d.mergeKeys.map((k) => k.name).join("+"),
+   ].join("|");
+}
+
+/**
+ * Sources that resolve to ONE content address, when at least one of them declares
+ * incremental refresh.
+ *
+ * The address is a hash of the connection and the canonical SQL — not the source
+ * name, not `name=`, not the model file, and deliberately not the declarations.
+ * So two sources whose bodies compile to identical SQL share it, which a rename
+ * or a copy-paste into a second model file produces without any other change.
+ * Everything downstream is keyed by that address: one manifest entry, and one
+ * covered_through row.
+ *
+ * For an ordinary source this merely wastes a definition. For an incremental one
+ * it is worse, and worse silently:
+ *
+ *   - Declarations that DIFFER cannot both be described by one ledger row, so
+ *     each build finds the other's lineage recorded and re-seeds — forever,
+ *     advancing nothing, while the logs report a rebuild each time.
+ *   - Declarations that AGREE fare better but still collapse: one table is built
+ *     and the other `name=` never exists.
+ *
+ * Neither is visible from the model text, which is why it is worth a warning
+ * even though the build path handles both safely.
+ */
+function sharedAddressAdvisories(
+   sources: IncrementalPolicySource[],
+): ApiPackageWarning[] {
+   const byAddress = new Map<string, IncrementalPolicySource[]>();
+   for (const source of sources) {
+      if (!source.sourceEntityId) continue;
+      const group = byAddress.get(source.sourceEntityId);
+      if (group) group.push(source);
+      else byAddress.set(source.sourceEntityId, [source]);
+   }
+
+   const warnings: ApiPackageWarning[] = [];
+   for (const group of byAddress.values()) {
+      if (group.length < 2) continue;
+      if (!group.some((s) => s.declaration.incremental)) continue;
+
+      const conflicting =
+         new Set(group.map((s) => recordedLineage(s.declaration))).size > 1;
+      // Reported on EVERY source in the group, not just the first: the author has
+      // to be able to find the collision from whichever one they are looking at,
+      // and there is no basis for calling one of them the original.
+      for (const source of group) {
+         const others = group
+            .filter((s) => s !== source)
+            .map((s) => s.sourceName);
+         warnings.push({
+            model: source.modelPath ?? "",
+            subject: source.sourceName,
+            message:
+               `compiles to the same SQL as ${quoteList(others)} on the same ` +
+               `connection, so they share ONE content address — and therefore ` +
+               `one materialized table and one covered_through boundary. ` +
+               (conflicting
+                  ? `Their incremental declarations DISAGREE, so that single ` +
+                    `boundary cannot describe both: each refresh finds the ` +
+                    `other's lineage recorded and rebuilds in full instead of ` +
+                    `advancing, indefinitely. Give them different definitions ` +
+                    `or keep only one.`
+                  : `Only one is materialized; the other's name= table is never ` +
+                    `built. Keep one, unless the duplication is intentional.`),
+         });
+      }
+   }
+   return warnings;
+}
+
+/**
  * Advisory findings: surfaced on the package's warnings array, never blocking.
- * Both are cases where the declaration is legal and does something the author
+ * Each is a case where the declaration is legal and does something the author
  * probably did not intend.
  */
 export function incrementalPolicyAdvisories(
    sources: IncrementalPolicySource[],
 ): ApiPackageWarning[] {
-   const warnings: ApiPackageWarning[] = [];
+   const warnings: ApiPackageWarning[] = sharedAddressAdvisories(sources);
    for (const source of sources) {
       const { declaration: d } = source;
       const at = { model: source.modelPath ?? "", subject: source.sourceName };

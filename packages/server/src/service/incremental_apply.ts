@@ -819,20 +819,25 @@ export function ledgerLineageMismatch(
    lineage: IncrementalLineage,
 ): { reasonCode: IncrementalStepReasonCode; reason: string } | undefined {
    // Carries its own reason code, separate from every other mismatch below,
-   // because its usual cause is different in kind and so is its remedy. The
-   // others mean the author changed the model; this one usually means the TABLE
-   // was renamed under a stable model — an orchestrated host assigning a
-   // generational physical name per run, which makes every run re-seed. Seeding
-   // is still the only sound answer (the newly named table is empty, so a delta
-   // into it would drop everything the old one held), but an operator has to be
-   // able to tell "your naming defeats incremental" from "the model changed"
-   // without reading the free text. See docs/materialization.md.
+   // because its causes are different in kind from theirs and so are its
+   // remedies. The others mean the author changed the model; this one means the
+   // boundary was measured on a different TABLE under a model that may not have
+   // changed at all. Two ways that happens, and the reason names both because an
+   // operator cannot tell them apart from the code alone: an orchestrated host
+   // assigning a generational physical name per run, or two sources sharing one
+   // content address and so fighting over one ledger row (which the publish gate
+   // now advises on — see sharedAddressAdvisories). Seeding is still the only
+   // sound answer either way: the other table is not this one, and a delta
+   // measured against it would write the wrong rows here.
    if (entry.physicalTableName !== lineage.physicalTableName) {
       return {
          reasonCode: "table_renamed",
          reason:
             `the recorded boundary belongs to table ` +
-            `"${entry.physicalTableName}", not "${lineage.physicalTableName}"`,
+            `"${entry.physicalTableName}", not "${lineage.physicalTableName}" — ` +
+            `either this table was renamed between runs, or another source ` +
+            `shares this source's content address and advanced the boundary ` +
+            `against its own table`,
       };
    }
    const changed = (reason: string) =>

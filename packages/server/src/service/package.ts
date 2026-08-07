@@ -621,6 +621,9 @@ export class Package {
                modelPath: source.modelPath,
                dialect: source.dialect,
                storageDestination: source.annotationFields?.storage,
+               // Carried so the gate can spot two sources resolving to ONE
+               // address, which collapses them onto one table and one boundary.
+               sourceEntityId: source.sourceEntityId,
                declaration: incrementalDeclarations[sourceID],
             }));
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);

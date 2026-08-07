@@ -527,6 +527,136 @@ describe("incrementalPolicyAdvisories", () => {
    it("does not warn for a non-incremental source", () => {
       expect(incrementalPolicyAdvisories([source({})])).toEqual([]);
    });
+
+   describe("two sources sharing one content address", () => {
+      const INCREMENTAL = {
+         refresh: "incremental",
+         incremental: true,
+         declaredWatermark: true,
+         watermark: DATE_WATERMARK,
+         watermarkOrderable: true,
+         declaredMergeKey: true,
+         strategy: "merge" as const,
+         mergeKeys: [
+            {
+               name: "order_id",
+               kind: "dimension" as const,
+               malloyType: "string",
+            },
+         ],
+      };
+
+      /** Two sources at the same address; `b` overrides the second's fields. */
+      function pair(
+         b: Partial<IncrementalPolicySource> = {},
+      ): IncrementalPolicySource[] {
+         return [
+            source({
+               sourceName: "daily_a",
+               sourceEntityId: "addr-1",
+               declaration: declaration(INCREMENTAL),
+            }),
+            source({
+               sourceName: "daily_b",
+               sourceEntityId: "addr-1",
+               declaration: declaration(INCREMENTAL),
+               ...b,
+            }),
+         ];
+      }
+
+      /** Only the shared-address advisory, which is all these tests assert on. */
+      function collisionMessages(sources: IncrementalPolicySource[]) {
+         return incrementalPolicyAdvisories(sources)
+            .filter((w) => (w.message ?? "").includes("content address"))
+            .map((w) => ({ subject: w.subject, message: w.message ?? "" }));
+      }
+
+      it("warns BOTH sources when their declarations disagree", () => {
+         // The flip-flop: one ledger row cannot describe both lineages, so each
+         // build finds the other's recorded and rebuilds, forever. Reported on
+         // both because there is no basis for calling either the original.
+         const warnings = collisionMessages(
+            pair({
+               declaration: declaration({
+                  ...INCREMENTAL,
+                  declaredMergeKey: false,
+                  strategy: "range_replace",
+                  mergeKeys: [],
+               }),
+            }),
+         );
+         expect(warnings).toHaveLength(2);
+         expect(warnings[0].subject).toBe("daily_a");
+         expect(warnings[0].message).toContain('"daily_b"');
+         expect(warnings[1].subject).toBe("daily_b");
+         expect(warnings[1].message).toContain('"daily_a"');
+         for (const w of warnings) {
+            expect(w.message).toContain("DISAGREE");
+            expect(w.message).toContain("rebuilds in full");
+         }
+      });
+
+      it("warns more mildly when the declarations agree", () => {
+         // Still worth saying: one table is built and the other name= never
+         // exists, which the model text does not show.
+         const warnings = collisionMessages(pair());
+         expect(warnings).toHaveLength(2);
+         for (const w of warnings) {
+            expect(w.message).toContain("Only one is materialized");
+            expect(w.message).not.toContain("DISAGREE");
+         }
+      });
+
+      it("ignores a difference the ledger does not record", () => {
+         // outputColumns is not part of the recorded lineage, so a difference
+         // there conflicts with nothing and must not read as a disagreement.
+         const warnings = collisionMessages(
+            pair({
+               declaration: declaration({
+                  ...INCREMENTAL,
+                  outputColumns: ["order_date", "revenue"],
+               }),
+            }),
+         );
+         expect(warnings).toHaveLength(2);
+         for (const w of warnings) {
+            expect(w.message).not.toContain("DISAGREE");
+         }
+      });
+
+      it("stays quiet for distinct addresses, and for a missing one", () => {
+         expect(
+            collisionMessages(pair({ sourceEntityId: "addr-2" })),
+         ).toHaveLength(0);
+         // An unreported address cannot be compared; the check goes silent rather
+         // than treating "absent" as a shared value.
+         expect(
+            collisionMessages([
+               source({
+                  sourceName: "a",
+                  declaration: declaration(INCREMENTAL),
+               }),
+               source({
+                  sourceName: "b",
+                  declaration: declaration(INCREMENTAL),
+               }),
+            ]),
+         ).toHaveLength(0);
+      });
+
+      it("stays quiet when NEITHER source is incremental", () => {
+         // The collapse is pre-existing, pinned behavior for ordinary sources.
+         // This gate speaks only where it makes an incremental source silently
+         // stop advancing.
+         expect(
+            collisionMessages([
+               source({ sourceName: "a", sourceEntityId: "addr-1" }),
+               source({ sourceName: "b", sourceEntityId: "addr-1" }),
+            ]),
+         ).toHaveLength(0);
+      });
+   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -677,6 +807,44 @@ source: daily is raw -> {
          );
          expect(messages.some((m) => m.includes('"mergekey"'))).toBe(true);
          expect(messages.some((m) => m.includes("no merge_key="))).toBe(true);
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "advises on two sources that really do compile to one address",
+      async () => {
+         // The unit tests above hand the gate a shared address; this proves the
+         // collision is reachable from ordinary Malloy. Nothing here says
+         // "duplicate" — two names, two name= tables, differing declarations —
+         // and yet the compiler emits byte-identical SQL, so one address.
+         const pkg = await loadPackage(
+            `${RAW}` +
+               `#@ persist name="t_a" refresh="incremental" watermark="order_date"\n` +
+               `source: daily_a is raw -> {
+  group_by: order_date, region, order_id
+  aggregate: revenue is amount.sum()
+}\n\n` +
+               `#@ persist name="t_b" refresh="incremental" watermark="order_date" merge_key="order_id"\n` +
+               `source: daily_b is raw -> {
+  group_by: order_date, region, order_id
+  aggregate: revenue is amount.sum()
+}\n`,
+         );
+         const collisions = (pkg.getPackageMetadata().warnings ?? []).filter(
+            (w) => (w.message ?? "").includes("content address"),
+         );
+         // One per source, each naming the other.
+         expect(collisions).toHaveLength(2);
+         expect(collisions.map((w) => w.subject).sort()).toEqual([
+            "daily_a",
+            "daily_b",
+         ]);
+         // merge_key= on one and not the other is a recorded-lineage difference,
+         // so this is the non-advancing case, not the merely-redundant one.
+         for (const w of collisions) {
+            expect(w.message).toContain("DISAGREE");
+         }
       },
       { timeout: 30000 },
    );
