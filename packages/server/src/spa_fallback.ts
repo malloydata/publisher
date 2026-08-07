@@ -74,10 +74,10 @@ const ASSET_EXTENSIONS = new Set([
 /**
  * Third segments that belong to the app rather than to a package's `public/`
  * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
- * the path ends in an asset extension. `pages/<file>.html` is the in-app
- * embedded page viewer and `workbook/...` is the workbook route.
+ * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
+ * embedded data app viewer and `workbook/...` is the workbook route.
  */
-const SPA_OWNED_SEGMENTS = new Set(["pages", "workbook"]);
+const SPA_OWNED_SEGMENTS = new Set(["data-apps", "workbook"]);
 
 export type SpaFallbackAction =
    /** Serve the app shell, as before. */
@@ -143,7 +143,7 @@ export function classifySpaFallback(
    if (!ASSET_EXTENSIONS.has(extensionOf(last))) return { kind: "spa" };
 
    // Names a file from here on, except where the app owns the route anyway, as
-   // `pages/<file>.html` does. Checked before the redirect so those keep
+   // `data-apps/<file>.html` does. Checked before the redirect so those keep
    // reaching the SPA rather than falling through to a 404.
    if (segments.length >= 3 && SPA_OWNED_SEGMENTS.has(segments[2])) {
       return { kind: "spa" };

@@ -39,7 +39,7 @@ function parseDataAppResource(resourceUri: string) {
  *
  * Full-screen apps (e.g. slide decks) can opt out of content-height sizing
  * with `<meta name="publisher:fit" content="viewport">`, surfaced as
- * `Page.fit === "viewport"`. The iframe then fills the available viewport
+ * `DataApp.fit === "viewport"`. The iframe then fills the available viewport
  * height (matching the standalone view) instead of collapsing to the app's
  * near-zero reported content height.
  */
@@ -61,22 +61,23 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
       [server, environmentName, packageName, dataAppPath],
    );
 
-   // Use the /pages endpoint to grab the <title> for the header. Any error
-   // here (older Publisher without /pages, transient network blip, 5xx) is
+   // Use the /data-apps endpoint to grab the <title> for the header. Any error
+   // here (older Publisher without /data-apps, transient network blip, 5xx) is
    // non-fatal — `title` falls back to `dataAppPath` and the iframe still
    // renders. The app itself is loaded via the iframe `src`, not from this
    // query, so blocking the viewer on a metadata lookup would be wrong.
-   const pagesQuery = useQueryWithApiError({
-      queryKey: ["pages", environmentName, packageName],
-      queryFn: () => apiClients.pages.listPages(environmentName, packageName),
+   const dataAppsQuery = useQueryWithApiError({
+      queryKey: ["data-apps", environmentName, packageName],
+      queryFn: () =>
+         apiClients.dataApps.listDataApps(environmentName, packageName),
       enabled: !!parsed,
    });
-   const dataAppMeta = pagesQuery.data?.data?.find(
+   const dataAppMeta = dataAppsQuery.data?.data?.find(
       (a) => a.path === dataAppPath,
    );
    const title = dataAppMeta?.title ?? dataAppPath;
    // Full-screen apps opt in via <meta name="publisher:fit" content="viewport">
-   // (surfaced as Page.fit by the /pages listing). In fill mode the
+   // (surfaced as DataApp.fit by the /data-apps listing). In fill mode the
    // iframe fills the available viewport height instead of being sized to the
    // app's reported content height: a viewport-filling deck has ~no content
    // height to report, so the default auto-size would clip it. An ordinary
