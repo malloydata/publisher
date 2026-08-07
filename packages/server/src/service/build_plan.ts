@@ -4,6 +4,7 @@ import type {
    BuildNode,
    MalloyConfig,
    Connection as MalloyConnection,
+   ModelMaterializer,
    PersistSource,
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
@@ -16,6 +17,10 @@ import {
    recordEligibilityRefused,
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
+import {
+   resolveIncrementalDeclaration,
+   type IncrementalDeclaration,
+} from "./incremental_declaration";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import { Model } from "./model";
 import { quoteIdentifier } from "./quoting";
@@ -88,6 +93,22 @@ export interface CompiledBuildPlan {
     * Optional so existing fixtures/callers that don't track it still typecheck.
     */
    sourceModelPaths?: Record<string, string>;
+   /**
+    * sourceID -> the `ModelMaterializer` of the model that declares the source,
+    * the only handle from which a query can be compiled AGAINST that model.
+    *
+    * Incremental materialization needs it: the delta is a query stage over the
+    * author's source (`run: <source> -> { where: <range>; select: * }`), and a
+    * query stage is reachable only through a materializer. It must not be read
+    * off a generated source extension, which silently drops the predicate — the
+    * canary in incremental_compiler_contract.spec.ts.
+    *
+    * Holding these keeps each compiled model alive, so callers use them within
+    * the call that produced them and do not retain them (see
+    * {@link computePackageBuildPlan}, which trial-compiles and then drops them).
+    * Optional so existing fixtures/callers that don't track it still typecheck.
+    */
+   sourceMaterializers?: Record<string, ModelMaterializer>;
    /**
     * Sources carrying a `#@ persist` annotation that Malloy's getBuildPlan() did
     * NOT recognize as a materializable build root, so they produced no plan entry
@@ -568,6 +589,7 @@ export async function compilePackageBuildPlan(
    const allGraphs: MalloyBuildGraph[] = [];
    const allSources: Record<string, PersistSource> = {};
    const sourceModelPaths: Record<string, string> = {};
+   const sourceMaterializers: Record<string, ModelMaterializer> = {};
    const droppedPersistSources: { name: string; modelPath: string }[] = [];
 
    for (const modelPath of pkg.getModelPaths()) {
@@ -583,9 +605,11 @@ export async function compilePackageBuildPlan(
          modelPath,
          pkg.getMalloyConfig(),
       );
-      const malloyModel = await runtime
-         .loadModel(modelURL, { importBaseURL })
-         .getModel();
+      // Keep the materializer, not just the compiled model: it is the only
+      // handle that can compile a query against this model, which the
+      // incremental delta needs (see CompiledBuildPlan.sourceMaterializers).
+      const materializer = runtime.loadModel(modelURL, { importBaseURL });
+      const malloyModel = await materializer.getModel();
 
       // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
       // on any model that lacks the flag — it does NOT return empty. So a
@@ -627,6 +651,7 @@ export async function compilePackageBuildPlan(
       for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
          allSources[sourceID] = source;
          sourceModelPaths[sourceID] = modelPath;
+         sourceMaterializers[sourceID] = materializer;
       }
    }
 
@@ -662,6 +687,7 @@ export async function compilePackageBuildPlan(
       connectionDigests,
       connections,
       sourceModelPaths,
+      sourceMaterializers,
       droppedPersistSources,
    };
 }
@@ -706,6 +732,11 @@ export function deriveBuildPlan(
          dialect: source.dialectName,
          sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
+         // Reported verbatim, and no longer inert: the mode is resolved and
+         // validated alongside `watermark=`/`merge_key=` (see
+         // resolveIncrementalDeclaration, collected per source in
+         // computePackageBuildPlan). The resolution itself is deliberately NOT a
+         // wire field — the control plane reads the free-form annotationFields.
          refresh: annotationFields.refresh ?? null,
          freshness: resolveFreshness(source, packageMaterialization),
          // EFFECTIVE per-source query metadata, resolved per property across the
@@ -736,6 +767,7 @@ export async function computePackageBuildPlan(
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
    sourceEligibility: SourceEligibility;
+   incrementalDeclarations: Record<string, IncrementalDeclaration>;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
@@ -754,7 +786,42 @@ export async function computePackageBuildPlan(
       plan,
       droppedPersistSources,
       sourceEligibility: collectSourceEligibility(compiled.sources),
+      incrementalDeclarations: collectIncrementalDeclarations(compiled.sources),
    };
+}
+
+/**
+ * Each source's resolved incremental declaration, keyed by sourceID to match the
+ * wire plan (two models in one package may declare same-named sources).
+ *
+ * Computed HERE, next to {@link collectSourceEligibility}, for the same reason:
+ * this is where the compiled sources exist. The publish gates need the output
+ * schema and the query definition's field kinds, neither of which a wire
+ * `PersistSourcePlan` carries — and deliberately so, since the control plane's
+ * contract gains no typed fields in this phase.
+ */
+function collectIncrementalDeclarations(
+   sources: Record<string, PersistSource>,
+): Record<string, IncrementalDeclaration> {
+   const declarations: Record<string, IncrementalDeclaration> = {};
+   for (const [sourceID, source] of Object.entries(sources)) {
+      try {
+         declarations[sourceID] = resolveIncrementalDeclaration(
+            source,
+            deriveAnnotationFields(source),
+         );
+      } catch (err) {
+         // One unreadable source must not cost the package its plan. The gates
+         // then see no declaration for it, which reads as "declares nothing" —
+         // conservative in the direction that matters, since the build path
+         // dispatches a delta only for a declaration it can read.
+         logger.warn("Failed to resolve a source's incremental declaration", {
+            sourceID,
+            error: errMessage(err),
+         });
+      }
+   }
+   return declarations;
 }
 
 /**
