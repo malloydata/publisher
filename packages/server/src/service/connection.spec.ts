@@ -1774,11 +1774,11 @@ describe("connection integration tests", () => {
                createEnvironmentConnections(
                   [
                      {
-                        name: "duckdb_with_setup_sql",
+                        name: "duckdb_with_unsupported_field",
                         type: "duckdb",
                         duckdbConnection: {
                            attachedDatabases: [],
-                           setupSQL: "INSTALL httpfs",
+                           customUnsupportedField: "invalid",
                         },
                      } as unknown as ApiConnection,
                   ],

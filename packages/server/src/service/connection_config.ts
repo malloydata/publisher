@@ -37,6 +37,7 @@ export type CoreConnectionsPojo = {
 export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
+   setupSQL?: string;
    hasAzureAttachment: boolean;
    hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
@@ -51,7 +52,10 @@ export type AssembledEnvironmentConnections = {
    apiConnections: ApiConnection[];
 };
 
-const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>(["attachedDatabases"]);
+const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>([
+   "attachedDatabases",
+   "setupSQL",
+]);
 
 export function normalizeSnowflakePrivateKey(privateKey: string): string {
    let privateKeyContent = privateKey.trim();
@@ -148,7 +152,7 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
       throw new Error(
          `Unsupported DuckDB connection field(s): ${unsupportedFields.join(
             ", ",
-         )}. Publisher only supports attachedDatabases for environment-authored DuckDB connections.`,
+         )}. Publisher only supports attachedDatabases and setupSQL for environment-authored DuckDB connections.`,
       );
    }
 }
@@ -459,9 +463,12 @@ function validateConnectionShape(connection: ApiConnection): void {
          {
             const attached =
                connection.duckdbConnection.attachedDatabases ?? [];
-            if (attached.length === 0) {
+            const setupSQL = connection.duckdbConnection.setupSQL;
+            const hasSetupSQL =
+               typeof setupSQL === "string" && setupSQL.trim().length > 0;
+            if (attached.length === 0 && !hasSetupSQL) {
                throw new Error(
-                  `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
+                  `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
                );
             }
          }
@@ -935,6 +942,7 @@ export function assembleEnvironmentConnections(
       metadata.set(connection.name, {
          apiConnection,
          attachedDatabases,
+         setupSQL: connection.duckdbConnection?.setupSQL,
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),

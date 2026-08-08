@@ -1187,6 +1187,7 @@ async function doesSecretExistInDuckDB(
 async function attachDatabasesToDuckDB(
    duckdbConnection: DuckDBConnection,
    attachedDatabases: AttachedDatabase[],
+   setupSQL?: string,
 ): Promise<void> {
    const attachHandlers = {
       bigquery: attachBigQuery,
@@ -1202,6 +1203,11 @@ async function attachDatabasesToDuckDB(
    // users see no behaviour change. Publisher still installs each attached
    // type's extension explicitly below.
    await applyExtensionSessionSettings(duckdbConnection);
+
+   if (setupSQL) {
+      await duckdbConnection.runSQL(setupSQL);
+      await applyExtensionSessionSettings(duckdbConnection);
+   }
 
    // Pre-load extensions needed by any attached database type, once per connection
    const hasAzure = attachedDatabases.some((db) => db.type === "azure");
@@ -1739,7 +1745,7 @@ export function buildEnvironmentMalloyConfig(
       metadata: EnvironmentConnectionMetadata,
    ): Promise<void> {
       if (
-         metadata.attachedDatabases.length === 0 ||
+         (metadata.attachedDatabases.length === 0 && !metadata.setupSQL) ||
          !isDuckDBConnection(connection)
       ) {
          return;
@@ -1751,6 +1757,7 @@ export function buildEnvironmentMalloyConfig(
          attachPromise = attachDatabasesToDuckDB(
             connection,
             metadata.attachedDatabases,
+            metadata.setupSQL,
          );
          attachPromises.set(connection, attachPromise);
       }
