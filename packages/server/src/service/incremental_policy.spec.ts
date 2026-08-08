@@ -1,20 +1,23 @@
-// The incremental-refresh publish gate. Two layers, deliberately:
+// The incremental-refresh gate. Two layers, deliberately:
 //
 //  - Rule tests over constructed declarations, which can name a SUPPORTED
 //    dialect (postgres) and so exercise every rule in isolation.
 //  - Real-package tests (Environment + Package.create over temp dirs, the
 //    pattern of persistence_policy.spec.ts), which prove the compile → resolve →
-//    gate wiring, the load-tolerant/publish-strict split, and that the advisories
-//    reach the package's warnings array.
+//    gate wiring, that a rejection FAILS THE LOAD as a 400, and that the
+//    advisories reach the package's warnings array without failing anything.
 //
 // The real-package layer runs on DuckDB, which the dialect allowlist EXCLUDES —
-// so every incremental fixture there also trips the dialect rule. That is itself
-// worth asserting, and the other assertions use `toContain` accordingly.
+// so every incremental fixture there also trips the dialect rule, and therefore
+// cannot load at all. That is itself worth asserting, and it is why the findings
+// that need a LOADED incremental source (the keyless-delta and shared-address
+// advisories) are only reachable from the unit layer.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
+import { BadRequestError, internalErrorToHttpError } from "../errors";
 import { Environment } from "./environment";
 import type { IncrementalDeclaration } from "./incremental_declaration";
 import {
@@ -528,6 +531,30 @@ describe("incrementalPolicyAdvisories", () => {
       expect(incrementalPolicyAdvisories([source({})])).toEqual([]);
    });
 
+   it("keeps every advisory OUT of the rejections, which is what fails a load", () => {
+      // The regression risk in making rejections fatal: an advisory that leaked
+      // into the rejection list would stop a legal package from serving. Both
+      // advisories are on declarations the gate must find coherent.
+      const keylessDelta = {
+         declaration: declaration({
+            refresh: "incremental",
+            incremental: true,
+            declaredWatermark: true,
+            watermark: DATE_WATERMARK,
+            watermarkOrderable: true,
+         }),
+      };
+      const unknownKey = {
+         declaration: declaration({ unknownKeys: ["mergekey"] }),
+      };
+      for (const overrides of [keylessDelta, unknownKey]) {
+         expect(
+            incrementalPolicyAdvisories([source(overrides)]).length,
+         ).toBeGreaterThan(0);
+         expect(rejections(overrides)).toEqual([]);
+      }
+   });
+
    describe("two sources sharing one content address", () => {
       const INCREMENTAL = {
          refresh: "incremental",
@@ -667,7 +694,8 @@ describe("incremental policy gate over a real package", () => {
    let rootDir: string;
    let envPath: string;
 
-   async function loadPackage(model: string): Promise<Package> {
+   /** Write the package tree, and the environment that will load it. */
+   async function stage(model: string): Promise<Environment> {
       const dir = path.join(envPath, "pkg");
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(
@@ -675,9 +703,28 @@ describe("incremental policy gate over a real package", () => {
          JSON.stringify({ name: "pkg", description: "fixture" }),
       );
       await fs.writeFile(path.join(dir, "model.malloy"), model);
-      const env = await Environment.create("testEnv", envPath, []);
+      return Environment.create("testEnv", envPath, []);
+   }
+
+   async function loadPackage(model: string): Promise<Package> {
+      const env = await stage(model);
       await env.addPackage("pkg");
       return env.getPackage("pkg", false);
+   }
+
+   /**
+    * The gate's messages, read off the load they now FAIL. A rejected package
+    * never becomes a `Package`, so this is how a real-package test sees them —
+    * one message per line, in source order.
+    */
+   async function loadRejection(model: string): Promise<string[]> {
+      try {
+         await loadPackage(model);
+      } catch (error) {
+         expect(error).toBeInstanceOf(BadRequestError);
+         return (error as Error).message.split("\n");
+      }
+      throw new Error("expected the load to fail, but the package loaded");
    }
 
    beforeEach(async () => {
@@ -712,30 +759,46 @@ source: raw is duckdb.sql("""
    );
 
    it(
-      "rejects a declaration that only names the mode",
+      "FAILS the load of a declaration that only names the mode, as a 400",
       async () => {
-         const pkg = await loadPackage(
-            `${RAW}#@ persist name="t" refresh="incremental"\n${ROLLUP}`,
-         );
-         const joined = pkg.formatInvalidIncrementalPolicy();
-         expect(joined).toContain('"daily"');
-         expect(joined).toContain("no watermark=");
+         // The severity, end to end: the status the author's client resolves and
+         // the text it shows. A 400 and not the 424 a control plane defaults to,
+         // because this is an authoring error, not a dependency failure.
+         const model = `${RAW}#@ persist name="t" refresh="incremental"\n${ROLLUP}`;
+         let error: unknown;
+         try {
+            await loadPackage(model);
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(BadRequestError);
+         const http = internalErrorToHttpError(error as Error);
+         expect(http.status).toBe(400);
+         expect(http.json.message).toContain('"daily"');
+         expect(http.json.message).toContain("no watermark=");
       },
       { timeout: 30000 },
    );
 
    it(
-      "LOADS a package it would refuse to publish (warn-only at load)",
+      "leaves a rejected package unserved, not serving with a warning",
       async () => {
-         // The load-tolerant half of the split, and the reason it matters:
-         // `refresh=` used to be inert, so a package already published with
-         // refresh="incremental" and nothing else must keep serving.
-         const pkg = await loadPackage(
+         // What this replaced: the same package used to load, serve, and rebuild
+         // in full forever with the rejection sitting in a log nobody reads.
+         // `refresh=` was inert metadata before these rules, so a bare
+         // refresh="incremental" is the one rejection a package published earlier
+         // can carry — accepted, since it is an authoring error either way.
+         const env = await stage(
             `${RAW}#@ persist name="t" refresh="incremental"\n${ROLLUP}`,
          );
-         expect(pkg.getPackageMetadata().name).toBe("pkg");
-         expect((await pkg.listModels()).length).toBeGreaterThan(0);
-         expect(pkg.formatInvalidIncrementalPolicy()).not.toBe("");
+         await expect(env.addPackage("pkg")).rejects.toBeInstanceOf(
+            BadRequestError,
+         );
+         // And a read does not quietly succeed on a second attempt: the lazy
+         // reload runs the same gate.
+         await expect(env.getPackage("pkg", false)).rejects.toBeInstanceOf(
+            BadRequestError,
+         );
       },
       { timeout: 30000 },
    );
@@ -743,13 +806,13 @@ source: raw is duckdb.sql("""
    it(
       "resolves a watermark against the compiled output schema and refuses DuckDB",
       async () => {
-         const pkg = await loadPackage(
+         const messages = await loadRejection(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"\n${ROLLUP}`,
          );
-         // The declaration itself is coherent; only the dialect stands in the way.
-         const warnings = pkg.incrementalPolicyWarnings();
-         expect(warnings).toHaveLength(1);
-         expect(warnings[0]).toContain('dialect "duckdb"');
+         // The declaration itself is coherent; only the dialect stands in the
+         // way — which on this dialect means the package cannot be served at all.
+         expect(messages).toHaveLength(1);
+         expect(messages[0]).toContain('dialect "duckdb"');
       },
       { timeout: 30000 },
    );
@@ -757,10 +820,10 @@ source: raw is duckdb.sql("""
    it(
       "rejects a watermark that names no materialized column",
       async () => {
-         const pkg = await loadPackage(
+         const messages = await loadRejection(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="ordr_date"\n${ROLLUP}`,
          );
-         const joined = pkg.formatInvalidIncrementalPolicy();
+         const joined = messages.join("\n");
          expect(joined).toContain('"ordr_date"');
          expect(joined).toContain('"order_date"');
       },
@@ -770,7 +833,7 @@ source: raw is duckdb.sql("""
    it(
       "rejects a calculate: field while accepting count_distinct beside it",
       async () => {
-         const gated = await loadPackage(
+         const gated = await loadRejection(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"
 source: daily is raw -> {
   group_by: order_date
@@ -778,9 +841,9 @@ source: daily is raw -> {
   calculate: prev is lag(revenue)
 }`,
          );
-         expect(gated.formatInvalidIncrementalPolicy()).toContain("calculate:");
+         expect(gated.join("\n")).toContain("calculate:");
 
-         const allowed = await loadPackage(
+         const allowed = await loadRejection(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"
 source: daily is raw -> {
   group_by: order_date
@@ -788,94 +851,83 @@ source: daily is raw -> {
 }`,
          );
          // Only the dialect refusal — the non-additive aggregate is fine.
-         expect(allowed.incrementalPolicyWarnings()).toHaveLength(1);
-         expect(allowed.formatInvalidIncrementalPolicy()).not.toContain(
-            "calculate:",
-         );
+         expect(allowed).toHaveLength(1);
+         expect(allowed[0]).not.toContain("calculate:");
       },
       { timeout: 60000 },
    );
 
    it(
-      "surfaces the keyless and unknown-key advisories on the package warnings",
+      "surfaces the unknown-key advisory on the warnings WITHOUT failing the load",
       async () => {
+         // The other half of the severity split, over a real package: an
+         // unrecognized key is legal, so the package loads and the finding rides
+         // `warnings`. (Its sibling, the keyless-delta advisory, needs an
+         // incremental source — which on DuckDB the dialect rule rejects, so it
+         // is only reachable from the unit tests above.)
          const pkg = await loadPackage(
-            `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date" mergekey="order_id"\n${ROLLUP}`,
+            `${RAW}#@ persist name="t" mergekey="order_id"\n${ROLLUP}`,
          );
          const messages = (pkg.getPackageMetadata().warnings ?? []).map(
             (w) => w.message ?? "",
          );
          expect(messages.some((m) => m.includes('"mergekey"'))).toBe(true);
-         expect(messages.some((m) => m.includes("no merge_key="))).toBe(true);
+         expect(pkg.formatInvalidIncrementalPolicy()).toBe("");
       },
       { timeout: 30000 },
    );
 
    it(
-      "advises on two sources that really do compile to one address",
+      "really does compile two differently named sources to ONE address",
       async () => {
-         // The unit tests above hand the gate a shared address; this proves the
-         // collision is reachable from ordinary Malloy. Nothing here says
-         // "duplicate" — two names, two name= tables, differing declarations —
-         // and yet the compiler emits byte-identical SQL, so one address.
+         // What makes the shared-address advisory worth having: nothing here says
+         // "duplicate" — two names, two name= tables — and yet the compiler emits
+         // byte-identical SQL, so one content address, one table, one boundary.
+         // The advisory's own wording is covered by the unit tests above, which
+         // can name a dialect that accepts an incremental declaration; here the
+         // sources stay plain so the package loads and the plan can be read.
          const pkg = await loadPackage(
             `${RAW}` +
-               `#@ persist name="t_a" refresh="incremental" watermark="order_date"\n` +
+               `#@ persist name="t_a"\n` +
                `source: daily_a is raw -> {
   group_by: order_date, region, order_id
   aggregate: revenue is amount.sum()
 }\n\n` +
-               `#@ persist name="t_b" refresh="incremental" watermark="order_date" merge_key="order_id"\n` +
+               `#@ persist name="t_b"\n` +
                `source: daily_b is raw -> {
   group_by: order_date, region, order_id
   aggregate: revenue is amount.sum()
 }\n`,
          );
-         const collisions = (pkg.getPackageMetadata().warnings ?? []).filter(
-            (w) => (w.message ?? "").includes("content address"),
-         );
-         // One per source, each naming the other.
-         expect(collisions).toHaveLength(2);
-         expect(collisions.map((w) => w.subject).sort()).toEqual([
+         const sources = Object.values(pkg.getBuildPlan()?.sources ?? {});
+         expect(sources.map((s) => s.name).sort()).toEqual([
             "daily_a",
             "daily_b",
          ]);
-         // merge_key= on one and not the other is a recorded-lineage difference,
-         // so this is the non-advancing case, not the merely-redundant one.
-         for (const w of collisions) {
-            expect(w.message).toContain("DISAGREE");
-         }
+         expect(new Set(sources.map((s) => s.sourceEntityId)).size).toBe(1);
       },
       { timeout: 30000 },
    );
 
    it(
-      "does not advise a source that declares merge_key=",
+      "gates an extending child on the declaration it INHERITED, and reports BOTH",
       async () => {
-         const pkg = await loadPackage(
-            `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date" merge_key="order_id"\n${ROLLUP}`,
-         );
-         const messages = (pkg.getPackageMetadata().warnings ?? []).map(
-            (w) => w.message ?? "",
-         );
-         expect(messages.some((m) => m.includes("no merge_key="))).toBe(false);
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "gates an extending child on the declaration it INHERITED",
-      async () => {
-         // The child declares nothing at all, so every rule has to read the
-         // effective merged tag to see it at all.
-         const pkg = await loadPackage(
+         // Two things at once. The child declares nothing at all, so every rule
+         // has to read the effective merged tag to see it — and both rejections
+         // travel in the one thrown message, so a model with two broken
+         // declarations takes one republish to fix rather than two.
+         const messages = await loadRejection(
             `${RAW}#@ persist name="t" refresh="incremental"\n${ROLLUP}
 
 source: child is daily extend { }`,
          );
-         const joined = pkg.formatInvalidIncrementalPolicy();
-         expect(joined).toContain('"daily"');
-         expect(joined).toContain('"child"');
+         // Two sources, two rules each (no watermark=, and the dialect): all
+         // four rejections travel, none is dropped for being the fifth thing
+         // wrong with the package.
+         expect(messages).toHaveLength(4);
+         for (const name of ['"daily"', '"child"']) {
+            expect(messages.filter((m) => m.includes(name))).toHaveLength(2);
+         }
       },
       { timeout: 30000 },
    );
@@ -883,16 +935,15 @@ source: child is daily extend { }`,
    it(
       "lets a child opt out of an inherited incremental declaration",
       async () => {
-         const pkg = await loadPackage(
+         const messages = await loadRejection(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"\n${ROLLUP}
 
 #@ persist name="child_t" refresh="full" -watermark
 source: child is daily extend { }`,
          );
-         const warnings = pkg.incrementalPolicyWarnings();
          // Only the parent's dialect refusal remains; the child is out entirely.
-         expect(warnings).toHaveLength(1);
-         expect(warnings[0]).toContain('"daily"');
+         expect(messages).toHaveLength(1);
+         expect(messages[0]).toContain('"daily"');
       },
       { timeout: 30000 },
    );

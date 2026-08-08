@@ -13,14 +13,17 @@ type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /**
- * The publish gate for a source's INCREMENTAL declaration, plus its advisory
+ * The gate for a source's INCREMENTAL declaration, plus its advisory
  * (non-blocking) findings.
  *
- * Split the same way the persistence-policy gate is split: STRICT at
- * publish/PATCH (a 400 whose body is these messages joined) and LOG-ONLY at
- * load, so a package published before these rules existed still loads and
- * serves. The advisories never block anything and ride the package's operator
- * warnings array.
+ * STRICT everywhere a package is admitted: publish/PATCH answer a 400 whose body
+ * is these messages joined, and a package LOAD fails the same way (see
+ * Package.loadViaWorker). Load is not the lenient half here, unlike the
+ * persistence-policy gate, because a package can be admitted without ever
+ * touching the publish endpoint — a control plane uploads it to storage and a
+ * worker loads it — and a rejection nobody sees means the author asked for
+ * incremental refresh and silently gets a full rebuild forever. The advisories
+ * never block anything and ride the package's operator warnings array.
  *
  * Why a gate at all, rather than letting the build path cope: `refresh=` is
  * ALREADY populated on published packages that nobody ever validated, because it

@@ -44,12 +44,18 @@ const SCHEMA_FETCH_COUNT_BUCKETS = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500];
  * Terminal status of a package load, mirroring the `status` label on the
  * existing `malloy_package_load_duration` histogram so the phase metrics slice
  * the same way. In practice the phase histograms only ever carry `success`,
- * `compilation_error`, or `error` — a `pool_unavailable` failure happens before
- * the worker returns any timings, so there is nothing to record for it.
+ * `compilation_error`, `policy_rejected`, or `error` — a `pool_unavailable`
+ * failure happens before the worker returns any timings, so there is nothing to
+ * record for it.
+ *
+ * `policy_rejected` is kept out of the generic `error` bucket because it is the
+ * author's problem, not the server's: the models compiled, and a gate refused
+ * what they declared (today, an invalid `#@ persist` incremental declaration).
  */
 export type PackageLoadStatus =
    | "success"
    | "compilation_error"
+   | "policy_rejected"
    | "pool_unavailable"
    | "error";
 

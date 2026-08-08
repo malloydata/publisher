@@ -26,7 +26,10 @@ export type PackageReloadMode = "in-place" | "reinstalled";
  * collisions ONLY when `PERSIST_COLLISION_ENFORCE` is set (otherwise those are
  * surfaced warn-only so a pre-existing latent collision doesn't block a routine
  * re-publish — see Package.formatPersistenceCollisionRejections). At
- * startup/reload all are warn-only instead (fail-safe; see Package.loadViaWorker).
+ * startup/reload these are warn-only instead (fail-safe; see
+ * Package.loadViaWorker) — except the incremental-refresh gate, which fails the
+ * load there too, so a package that never passes through this endpoint still
+ * gets its rejection.
  */
 function formatPublishRejections(
    pkg: {

@@ -10,44 +10,53 @@ const __dirname = path.dirname(__filename);
 
 const PROJECT_NAME = "incremental-refresh-project";
 // The publish gate unloads (or rolls back) the package it rejects, so the
-// rejection test gets its own environment rather than tearing down the one the
-// load and build tests are reading.
+// publish test gets its own environment rather than tearing down the one the
+// load tests are reading.
 const PUBLISH_PROJECT_NAME = "incremental-publish-project";
-const PACKAGE_NAME = "persist-incremental-test";
-const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
+const REJECTED_PACKAGE = "persist-incremental-test";
+const ADVISORY_PACKAGE = "persist-advisory-test";
 
-// Incremental refresh over the real REST surface: the load-time advisory, the
-// publish gate, and the build dispatch.
+// The incremental gate's SEVERITY over the real REST surface: a rejected
+// declaration fails the load and a publish of it, while an advisory rides the
+// package's warnings and fails nothing.
 //
-// The fixture runs on DuckDB, which the incremental dialect allowlist EXCLUDES,
-// and that is what makes it the right fixture at this level. It proves the two
-// things a wrong wiring would break for every deployment — that a package
-// declaring incremental refresh is REFUSED at publish where the delta cannot be
-// applied, and that it still LOADS and still BUILDS in full where it was already
-// published — without needing a live Postgres or BigQuery to reach them. The
-// delta DML's own behavior is executed against a real engine in
+// Both fixtures run on DuckDB, which the incremental dialect allowlist EXCLUDES,
+// and that is what makes them the right fixtures at this level: they reach a
+// rejection without needing a live Postgres or BigQuery. The two paths matter
+// separately because a package can arrive by either — `POST /packages` for a
+// publish, and environment creation (as here) for the load a control plane's
+// worker performs, which never passes through the publish endpoint.
+//
+// The delta DML's own behavior is executed against a real engine in
 // incremental_dml_semantics.spec.ts, and the SEED/DELTA/SKIP decisions are
 // covered in incremental_apply.spec.ts and materialization_service.spec.ts.
 describe("Incremental refresh over REST", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
-   const fixtureDir = path.resolve(
-      __dirname,
-      "../../fixtures/persist-incremental-test",
-   );
+   const fixtureDir = (pkg: string) =>
+      path.resolve(__dirname, "../../fixtures", pkg);
 
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
 
       // Added through environment creation, which does not run the publish gate
-      // — the same way a package published before these rules existed arrives.
+      // — the same way a package uploaded to a control plane's storage arrives.
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
             name: PROJECT_NAME,
-            packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
+            packages: [
+               {
+                  name: REJECTED_PACKAGE,
+                  location: fixtureDir(REJECTED_PACKAGE),
+               },
+               {
+                  name: ADVISORY_PACKAGE,
+                  location: fixtureDir(ADVISORY_PACKAGE),
+               },
+            ],
             connections: [],
          }),
       });
@@ -59,7 +68,9 @@ describe("Incremental refresh over REST", () => {
 
       const deadline = Date.now() + 30_000;
       while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}`);
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${ADVISORY_PACKAGE}`,
+         );
          if (res.ok) break;
          await new Promise((r) => setTimeout(r, 500));
       }
@@ -79,48 +90,41 @@ describe("Incremental refresh over REST", () => {
       env = null;
    });
 
-   async function getPackage(): Promise<Record<string, unknown>> {
-      const res = await fetch(`${baseUrl}${API}`);
-      expect(res.status).toBe(200);
-      return (await res.json()) as Record<string, unknown>;
-   }
-
-   it("loads the package and reports the declaration on the build plan", async () => {
-      // A load-tolerated declaration: serving must not depend on a refresh mode,
-      // even one this dialect cannot honor.
-      const pkg = await getPackage();
-      const plan = pkg.buildPlan as Record<string, unknown>;
-      const sources = plan?.sources as Record<string, Record<string, unknown>>;
-      const source = Object.values(sources ?? {})[0];
-      expect(source?.name).toBe("daily_orders");
-      expect(source?.refresh).toBe("incremental");
-      // watermark= and merge_key= ride annotationFields; the wire contract gains
-      // no typed fields in this phase.
-      expect(source?.annotationFields).toMatchObject({
-         name: "daily_orders",
-         refresh: "incremental",
-         watermark: "order_date",
-      });
+   it("REFUSES to serve a package whose declaration the gate rejects", async () => {
+      // The change this fixture exists for: the package used to load, serve, and
+      // rebuild in full forever with the rejection in a worker log. A read now
+      // answers the gate's own text, as a 400 — an authoring error, not the 424 a
+      // dependency failure would map to.
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${REJECTED_PACKAGE}`,
+      );
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { message?: string };
+      expect(body.message).toContain('refresh="incremental"');
+      expect(body.message).toContain('dialect "duckdb"');
    });
 
-   it("warns that a keyless incremental source REPLACES its watermark range", async () => {
-      const pkg = await getPackage();
-      const warnings = (pkg.warnings ?? []) as {
-         message: string;
-         subject?: string;
-      }[];
-      const advisory = warnings.find((w) =>
-         w.message.includes("no merge_key="),
+   it("names the failed package, and why, in /status loadErrors", async () => {
+      // The operator's half. A package that does not load is skipped rather than
+      // fatal, so this is the one place the reason is reported server-wide.
+      const res = await fetch(`${baseUrl}/api/v0/status`);
+      expect(res.status).toBe(200);
+      const status = (await res.json()) as {
+         loadErrors?: {
+            environment: string;
+            package?: string;
+            message: string;
+         }[];
+      };
+      const failure = (status.loadErrors ?? []).find(
+         (e) => e.package === REJECTED_PACKAGE,
       );
-      expect(advisory).toBeDefined();
-      expect(advisory?.subject).toBe("daily_orders");
-      // The advisory's job is to name the consequence, not just the fact.
-      expect(advisory?.message).toContain("appears twice");
+      expect(failure).toBeDefined();
+      expect(failure?.environment).toBe(PROJECT_NAME);
+      expect(failure?.message).toContain('dialect "duckdb"');
    });
 
    it("REJECTS a publish of the same package, naming the dialect", async () => {
-      // The gate is strict at publish and log-only at load, so a publish is the
-      // one place the refusal is visible to a caller.
       const createEnv = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -137,7 +141,10 @@ describe("Incremental refresh over REST", () => {
          {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: PACKAGE_NAME, location: fixtureDir }),
+            body: JSON.stringify({
+               name: REJECTED_PACKAGE,
+               location: fixtureDir(REJECTED_PACKAGE),
+            }),
          },
       );
       expect(res.status).toBe(400);
@@ -149,50 +156,26 @@ describe("Incremental refresh over REST", () => {
       );
    });
 
-   it(
-      "still builds the source, in full, on an unsupported dialect",
-      async () => {
-         // The fallback that keeps an already-published package working: the
-         // delta path declines, and the ordinary CTAS + rename runs instead.
-         const createRes = await fetch(`${baseUrl}${API}/materializations`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-         });
-         expect(createRes.status).toBe(201);
-         const { id } = (await createRes.json()) as { id: string };
-
-         const deadline = Date.now() + 60_000;
-         let record: Record<string, unknown> = {};
-         while (Date.now() < deadline) {
-            const res = await fetch(`${baseUrl}${API}/materializations/${id}`);
-            record = (await res.json()) as Record<string, unknown>;
-            const status = record.status as string;
-            if (
-               ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(status)
-            ) {
-               break;
-            }
-            await new Promise((r) => setTimeout(r, 250));
-         }
-         expect(record.status).toBe("MANIFEST_FILE_READY");
-         const manifest = record.manifest as Record<string, unknown>;
-         const entries = Object.values(
-            (manifest?.entries ?? {}) as Record<
-               string,
-               Record<string, unknown>
-            >,
-         );
-         expect(entries.length).toBe(1);
-         expect(entries[0].physicalTableName).toBe("daily_orders");
-
-         await fetch(
-            `${baseUrl}${API}/materializations/${id}?dropTables=true`,
-            {
-               method: "DELETE",
-            },
-         );
-      },
-      { timeout: 120_000 },
-   );
+   it("LOADS a package whose only finding is an advisory, and warns on it", async () => {
+      // The other side of the split, which a severity change is exactly what
+      // would break: an unrecognized #@ persist key is legal, so the package
+      // serves and the finding rides `warnings`.
+      const res = await fetch(
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${ADVISORY_PACKAGE}`,
+      );
+      expect(res.status).toBe(200);
+      const pkg = (await res.json()) as {
+         warnings?: { message: string; subject?: string }[];
+         buildPlan?: { sources?: Record<string, { name?: string }> };
+      };
+      const advisory = (pkg.warnings ?? []).find((w) =>
+         w.message.includes('"mergekey"'),
+      );
+      expect(advisory).toBeDefined();
+      expect(advisory?.subject).toBe("daily_orders");
+      // And the package really is serving: the source is on its build plan.
+      expect(
+         Object.values(pkg.buildPlan?.sources ?? {}).map((s) => s.name),
+      ).toEqual(["daily_orders"]);
+   });
 });

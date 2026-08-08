@@ -1,0 +1,18 @@
+##! experimental.persistence
+
+source: raw_orders is duckdb.sql("""
+  SELECT DATE '2024-05-01' AS order_date, 'electronics' AS category,
+         100 AS amount, 'o-1' AS order_id
+""")
+
+// `mergekey` is not a #@ persist key. The publisher passes an unknown key
+// through by design, so this is legal — and a typo of `merge_key=` is the one
+// thing that makes it worth a warning. No refresh= at all, so nothing here is a
+// rejection: the package must load and serve, carrying the advisory.
+#@ persist name="daily_orders" mergekey="order_id"
+source: daily_orders is raw_orders -> {
+  group_by: order_date, category
+  aggregate:
+    total_orders is count()
+    total_revenue is amount.sum()
+}

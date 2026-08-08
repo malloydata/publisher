@@ -248,8 +248,8 @@ function readKey(
 /**
  * Turn a source's persist-tag strings into a gate-ready declaration. Pure and
  * synchronous: it reads the compiled source only, runs no query, and never
- * decides anything — every rejection message is composed by the publish gate
- * from what this returns (see `incrementalPolicyWarnings`).
+ * decides anything — every rejection message is composed by the gate from what
+ * this returns (see `incrementalPolicyWarnings`).
  */
 export function resolveIncrementalDeclaration(
    source: PersistSource,
