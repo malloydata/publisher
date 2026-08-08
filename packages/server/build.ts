@@ -41,7 +41,28 @@ await build({
    ],
 });
 
-fs.cpSync("../app/dist", "./dist/app", { recursive: true });
+// `dist/app` is what the server actually serves the SPA from at runtime (see
+// ROOT in server.ts) — nothing reads ../app/dist directly. So this copy is
+// load-bearing for the shipped image, not a convenience.
+//
+// The SPA is built by a separate step, which `build:server-only` does not run.
+// That does NOT mean its callers don't need the UI: the Dockerfile builds the
+// app in its own cache layer and then relies on this copy to place it. Absent a
+// bundle we therefore fail loudly by default, so an app build that stops
+// happening breaks the build instead of quietly publishing a UI-less server.
+//
+// SKIP_APP_BUNDLE only declares that absence is acceptable — the harness builds
+// on checkouts with no SPA and drives the REST API. Note the flag does not
+// suppress the copy: `dist` is wiped above, so skipping whenever it was merely
+// requested would strip an already-built SPA out of an existing bundle and leave
+// the next `bun run start` serving a UI that 404s for no visible reason.
+if (process.env.SKIP_APP_BUNDLE === "1" && !fs.existsSync("../app/dist")) {
+   console.log(
+      "SKIP_APP_BUNDLE=1 and ../app/dist is absent: building the server without the app bundle",
+   );
+} else {
+   fs.cpSync("../app/dist", "./dist/app", { recursive: true });
+}
 
 // Copy hand-authored vanilla-JS runtime served at /sdk/publisher.js.
 fs.cpSync("./src/runtime", "./dist/runtime", { recursive: true });
