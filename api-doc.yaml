@@ -4510,7 +4510,36 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description: Build a new table even when a source's sourceEntityId is unchanged.
+          description: >-
+            Build a new table even when a source's sourceEntityId is unchanged —
+            that is, defeat skip-if-unchanged, which would otherwise carry the
+            existing table forward and run no SQL for that source.
+
+            It means ONLY that. It never re-seeds a source declaring
+            `refresh="incremental"`: such a source is exempt from
+            skip-if-unchanged anyway (its content address does not move when its
+            data does), so there is nothing here for the flag to change, and
+            reading it as "rebuild from scratch" would make a forced run — which
+            is every scheduled fire — a full rebuild that no delta could ever
+            follow. Ask for a rebuild with `reseed`.
+
+            Has no effect at all on an orchestrated build: the host decides what
+            gets built by instructing it, so no carry-forward runs.
+        reseed:
+          type: boolean
+          default: false
+          description: >-
+            Rebuild every in-scope source declaring `refresh="incremental"` from
+            scratch, ignoring its recorded `covered_through` boundary, and
+            re-derive the boundary from the table each rebuild writes. The escape
+            hatch for a boundary or a table that is no longer trusted. Narrow it
+            with `sourceNames`.
+
+            Unlike `forceRefresh` this is about HOW an incremental source is
+            built, not whether it is built at all, which is why the two are
+            separate flags rather than one. An orchestrated caller can instead
+            set `reseed` per source on each BuildInstruction, and the two are
+            OR-ed: either asks for that source to rebuild.
         sourceNames:
           type: array
           items:
@@ -4679,9 +4708,15 @@ components:
         refresh:
           type: ["string", "null"]
           description: >-
-            The source's declared `#@ persist ... refresh=...` value
-            ("full" | "incremental"), reported verbatim; null = unset.
-            Metadata pass-through — inert to the publisher today.
+            The source's declared `#@ persist ... refresh=...` value, reported
+            verbatim; null = unset (which means "full"). Read and VALIDATED by
+            the publisher, no longer an inert pass-through: a value outside
+            {"full", "incremental"} is a publish rejection, and
+            `refresh="incremental"` additionally requires a `watermark=` naming
+            one output dimension (see `annotationFields`). An incremental source
+            advances its serving table by a bounded delta in place instead of
+            being rebuilt, so the mode also governs the build path — which is why
+            it is validated rather than passed through.
         freshness:
           oneOf:
             - $ref: "#/components/schemas/Freshness"
@@ -4717,12 +4752,37 @@ components:
           type: object
           additionalProperties:
             type: string
-          description:
+          description: >-
             All key=value fields of the source's `#@ persist` annotation (e.g.
             `name`, `realization`). The control plane uses `name` as the
             materialized table name (it may carry a dialect container path like
             `dataset.table`). Returned as the full set so new persist directives
-            need no publisher change.
+            need no publisher change; an unrecognized key rides through here and
+            is reported as a package warning, never a rejection.
+
+
+            Recognized keys beyond `name`/`realization`/`storage`, both read from
+            the EFFECTIVE merged tag (a source extending a persisted parent
+            inherits the parent's keys, and its own keys merge over them per key):
+
+
+            * `watermark` — one output dimension name, monotone non-decreasing.
+            Required by `refresh="incremental"`; the platform derives each
+            refresh's half-open range from it. Must be a single quoted string
+            naming a column of `columns`.
+
+
+            * `merge_key` — comma-separated output dimension names, none of them
+            the watermark. Declares row identity for a source whose rows are
+            restated with a LATER watermark value, which selects a MERGE apply;
+            omitted, the delta replaces the range instead. Compound keys go in one
+            quoted string (`merge_key="order_id, region"`).
+
+
+            Both are validated at publish against the compiled output schema, so
+            a dangling or stale name is rejected rather than deferred to a build.
+            Neither participates in `sourceEntityId`: adding a watermark to an
+            existing source must not re-address its table.
         modelPath:
           type: string
           description:
@@ -4840,6 +4900,26 @@ components:
             The name resolves generically against registered connections; any
             managed-tier alias is resolved by the host upstream and never
             reaches the publisher.
+        reseed:
+          type: boolean
+          default: false
+          description: >-
+            Rebuild this source from scratch even if it declares
+            `refresh="incremental"` and has a recorded `covered_through`
+            boundary: the build runs the ordinary full CTAS and the boundary is
+            re-derived from the table it writes. The escape hatch for a boundary
+            or a table that is no longer trusted.
+
+            Per-source rather than only per-request because re-seeding is a
+            per-source decision: a host may want one source rebuilt while the
+            rest advance by delta in the same run. OR-ed with the request-level
+            `reseed`, so either asks for this source to rebuild. Ignored for a
+            source that is not incremental (such a source is always built in
+            full).
+
+            Note `forceRefresh` is NOT how you ask for this, in any mode: it
+            only defeats skip-if-unchanged, which does not even run for an
+            orchestrated build.
 
     BuildManifest:
       type: object
@@ -4925,6 +5005,26 @@ components:
           description: >-
             Per-version read-time policy when the entry is stale. Never combined
             across versions; each version's entries carry its own declared fallback.
+        coveredThrough:
+          type: string
+          description: >-
+            For a source declaring `refresh="incremental"`, the EXCLUSIVE upper
+            end of the watermark range this table is now known to contain — the
+            boundary the next refresh will start from. Canonical scalar text
+            (`2024-07-01`, `2024-07-01 12:00:00`, `41`), interpreted per
+            `coveredThroughType`.
+
+            Reported so a caller can observe and verify incremental progress
+            rather than infer it: a value that advanced between runs is a delta
+            that applied. Absent for a non-incremental source, and for an
+            incremental one whose source is empty (no boundary is derivable, so
+            none is recorded).
+        coveredThroughType:
+          type: string
+          description: >-
+            The Malloy type of `coveredThrough` (`date`, `timestamp`, `number`,
+            `string`), which decides how its text is compared and rendered.
+            Present exactly when `coveredThrough` is.
 
   parameters:
     environmentName:

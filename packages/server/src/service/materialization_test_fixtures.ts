@@ -185,6 +185,12 @@ export function fakeSource(opts: {
     * runs for `storage=` sources, so colocated fakes never touch it.
     */
    sourceDef?: unknown;
+   /**
+    * The source's compiled output columns, which deriveColumns reads off
+    * `_explore.intrinsicFields`. An incremental delta names these in its DML, so
+    * a test exercising that path has to declare them.
+    */
+   columns?: string[];
 }): PersistSource {
    const fields = opts.annotationFields;
    return {
@@ -193,6 +199,13 @@ export function fakeSource(opts: {
       connectionName: opts.connectionName ?? "duckdb",
       dialectName: opts.dialectName ?? "duckdb",
       _sourceDef: opts.sourceDef ?? {},
+      _explore: {
+         intrinsicFields: (opts.columns ?? []).map((name) => ({
+            name,
+            type: "string",
+            isAtomicField: () => true,
+         })),
+      },
       makeBuildId: () => opts.sourceEntityId,
       getSQL: (sqlOpts?: unknown) => {
          opts.onGetSQL?.(sqlOpts);

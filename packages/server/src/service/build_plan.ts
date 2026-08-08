@@ -16,6 +16,10 @@ import {
    recordEligibilityRefused,
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
+import {
+   resolveIncrementalDeclaration,
+   type IncrementalDeclaration,
+} from "./incremental_declaration";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import { Model } from "./model";
 import { quoteIdentifier } from "./quoting";
@@ -473,6 +477,14 @@ export function computeSourceEntityId(
    source: PersistSource,
    connectionDigests: Record<string, string>,
 ): string {
+   // The no-options `getSQL()` is load-bearing, and incremental refresh is what
+   // makes it so: this address is the key the covered_through ledger is stored
+   // under (see incremental_build.ts), so it must describe WHAT the source
+   // computes and never HOW FAR a run got. A boundary value reaching this SQL —
+   // via a buildManifest, a given, or a range predicate — would re-address the
+   // table on every refresh, orphaning the data and the boundary together and
+   // re-seeding forever. A declaration alone must not move it either, which is
+   // pinned as fact 1 in incremental_compiler_contract.spec.ts.
    return source.makeBuildId(
       connectionDigests[source.connectionName],
       source.getSQL(),
@@ -706,6 +718,11 @@ export function deriveBuildPlan(
          dialect: source.dialectName,
          sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
+         // Reported verbatim, and no longer inert: the mode is resolved and
+         // validated alongside `watermark=`/`merge_key=` (see
+         // resolveIncrementalDeclaration, collected per source in
+         // computePackageBuildPlan). The resolution itself is deliberately NOT a
+         // wire field — the control plane reads the free-form annotationFields.
          refresh: annotationFields.refresh ?? null,
          freshness: resolveFreshness(source, packageMaterialization),
          // EFFECTIVE per-source query metadata, resolved per property across the
@@ -736,9 +753,13 @@ export async function computePackageBuildPlan(
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
    sourceEligibility: SourceEligibility;
+   incrementalDeclarations: Record<string, IncrementalDeclaration>;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
+   const incrementalDeclarations = collectIncrementalDeclarations(
+      compiled.sources,
+   );
    const plan =
       compiled.graphs.length === 0
          ? null
@@ -754,7 +775,45 @@ export async function computePackageBuildPlan(
       plan,
       droppedPersistSources,
       sourceEligibility: collectSourceEligibility(compiled.sources),
+      incrementalDeclarations,
    };
+}
+
+/**
+ * Each source's resolved incremental declaration, keyed by sourceID to match the
+ * wire plan (two models in one package may declare same-named sources).
+ *
+ * Computed HERE, next to {@link collectSourceEligibility}, for the same reason:
+ * this is where the compiled sources exist. The publish gates need the output
+ * schema and the query definition's field kinds, neither of which a wire
+ * `PersistSourcePlan` carries — and deliberately so, since the control plane's
+ * contract gains no typed fields in this phase.
+ *
+ * Exported for the build path, which resolves the same declarations off its own
+ * compile (see MaterializationService.incrementalRunContext).
+ */
+export function collectIncrementalDeclarations(
+   sources: Record<string, PersistSource>,
+): Record<string, IncrementalDeclaration> {
+   const declarations: Record<string, IncrementalDeclaration> = {};
+   for (const [sourceID, source] of Object.entries(sources)) {
+      try {
+         declarations[sourceID] = resolveIncrementalDeclaration(
+            source,
+            deriveAnnotationFields(source),
+         );
+      } catch (err) {
+         // One unreadable source must not cost the package its plan. The gates
+         // then see no declaration for it, which reads as "declares nothing" —
+         // conservative in the direction that matters, since the build path
+         // dispatches a delta only for a declaration it can read.
+         logger.warn("Failed to resolve a source's incremental declaration", {
+            sourceID,
+            error: errMessage(err),
+         });
+      }
+   }
+   return declarations;
 }
 
 /**

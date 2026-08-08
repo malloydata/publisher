@@ -24,9 +24,11 @@ export type ManifestBindOutcome = "success" | "failure" | "timeout";
  * warehouse (colocated, in-warehouse CTAS) or a DuckDB/DuckLake `storage=`
  * destination (federated passthrough CTAS). The two have very different latency
  * and failure profiles, so build/drop metrics are labeled with it rather than
- * pooling the two into one series.
+ * pooling the two into one series. `delta` is an incremental refresh advancing
+ * an in-warehouse table in place — typically far cheaper than a CTAS, which is
+ * why it gets its own series instead of skewing `in_warehouse`.
  */
-export type StorageBuildEngine = "storage" | "in_warehouse";
+export type StorageBuildEngine = "storage" | "in_warehouse" | "delta";
 /** Why a source was refused materialization into a storage destination. */
 export type EligibilityRefusalReason =
    | "free_parameter"
@@ -94,6 +96,14 @@ const runDuration = lazyHistogram(
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
    "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
+);
+const incrementalStepCounter = lazyCounter(
+   "publisher_materialization_incremental_step_total",
+   'Refreshes of a source declared refresh="incremental". Labels: step ' +
+      "('delta'|'seed'|'skip'), and for seed/skip a bounded reason code " +
+      "(IncrementalStepReasonCode). A 'seed' is a full rebuild the delta path " +
+      "declined, so a rising seed rate means the feature is not engaging — and " +
+      "the reason label says why without a log dive.",
 );
 const buildPlanComputeDuration = lazyHistogram(
    "publisher_materialization_build_plan_compute_duration_ms",
@@ -199,6 +209,21 @@ export function recordSourcesOutcome(
 ): void {
    if (count <= 0) return;
    sourcesCounter().add(count, { outcome });
+}
+
+/**
+ * Record what one incremental source's refresh actually did. The delta:seed
+ * ratio is the health signal for the feature: a source that declares incremental
+ * refresh but keeps seeding is being rebuilt in full every run, which is correct
+ * but costs exactly what the declaration was meant to save. The `reason` label
+ * (seed/skip only) is the bounded code for why; the free-text specifics stay in
+ * the accompanying warn log.
+ */
+export function recordIncrementalStep(
+   step: "delta" | "seed" | "skip",
+   reason?: string,
+): void {
+   incrementalStepCounter().add(1, reason ? { step, reason } : { step });
 }
 
 /**

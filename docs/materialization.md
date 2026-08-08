@@ -87,6 +87,56 @@ On demand, via the CLI:
 malloy-pub materialize --environment <env> --package <pkg> --wait
 ```
 
+## Incremental refresh
+
+By default a refresh rebuilds a persisted source's whole table. A source that only ever gains rows at one end can instead declare that a refresh applies a **bounded delta**:
+
+```malloy
+#@ persist name="daily_orders" refresh="incremental" watermark="order_date"
+source: daily_orders is orders -> {
+  group_by: order_date
+  aggregate: revenue is amount.sum()
+}
+```
+
+`watermark=` names one of the source's own output columns, and it has to be a real, orderable, non-aggregate one — the column a new row's position along is decided by. Publisher records how far the table is materialized (`covered_through`) and each refresh recomputes only `[covered_through, frontier)`. The range is **half-open**, so the frontier value itself is left for the next run on the grounds that rows at the frontier may still be arriving.
+
+Where the frontier comes from depends on the watermark's type: a `date` or `timestamp` watermark takes the run's own start time, while a numeric or string watermark is read from the source (`max(watermark)`). One consequence worth knowing before you test it: two refreshes of a date-watermarked source within the same day produce an empty range and skip, which is correct but looks like nothing happened.
+
+Add `merge_key="col,…"` when a row can be **restated** with a new watermark value — an order that moves to a later day. Publisher then applies the delta as a `MERGE` on the declared identity columns instead of deleting the watermark range and re-inserting it, which is the only strategy that tolerates a row changing which range it belongs to. Without it, a refresh replaces the range wholesale, which is correct exactly when a row's watermark value never changes.
+
+**An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, an unsupported dialect, or `storage=` alongside it. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
+
+Details that decide whether a run advances or rebuilds:
+
+- **It is exempt from skip-if-unchanged.** A content address does not move when data does, so an incremental source is instructed on every run and its `covered_through` boundary — not its address — decides whether there is work to do.
+- **`forceRefresh` never re-seeds.** It means one thing — build even though the content address is unchanged — and an incremental source is exempt from that carry-forward anyway, so the flag has nothing to say about how one is built. Ask for a full rebuild with `reseed` (`malloy-pub materialize --reseed`, or per source with `BuildInstruction.reseed`). Keeping them separate is what lets a schedule drive deltas at all, since the scheduler forces on every single fire.
+- **Two sources that compile to identical SQL share everything.** The content address that keys the boundary is a hash of the connection and the canonical SQL — not the source name, not `name=`, not the model file — so a copy-pasted source body collapses onto one table and one boundary however you name it. If their declarations also differ, neither can ever advance: each refresh finds the other's lineage recorded and rebuilds. Publisher warns when this happens and names both sources, since nothing in the model text shows it.
+- **Anything unproven falls back to a full rebuild**, which is always correct and merely expensive: no recorded boundary, a boundary describing a different table or watermark, a table whose columns no longer match what the source computes, or `MERGE` asked for on Postgres 14 or older (it requires 15).
+- **Postgres, BigQuery, and Snowflake only**, and not in combination with `storage=`. Declaring it elsewhere is a rejection rather than a silent full refresh, so it never looks like it is advancing when it is not — which does mean a DuckDB source has to say `refresh="full"` to be served at all.
+
+### Driving it from a control plane
+
+An orchestrated build works the same way, but the host, not the publisher, decides what gets built, so three things are the host's responsibility. Each of the first two fails _quietly_ if you get it wrong — a full rebuild every run, which succeeds and looks like a refresh.
+
+- **Give an incremental source a STABLE physical table name.** The boundary is recorded against the table it was measured on, so a generational name (a fresh one per run) makes every run re-seed. That fallback is not a bug: the newly named table is empty, so applying a delta to it would drop everything the old one held. It is reported under its own reason code, `table_renamed`, to distinguish it from a model change (`lineage_changed`).
+- **Do not expect `forceRefresh` to do anything.** On an orchestrated build it means nothing at all: it exists to defeat skip-if-unchanged, which never runs when the host supplies the instructions. It does not re-seed — nothing does, in any mode.
+- **Ask for a rebuild with `reseed`.** Per source on the instruction, or run-wide in the request body; the two are OR-ed. That is the escape hatch for a boundary or a table you no longer trust, and the per-source form means one source can rebuild while the rest advance by delta in the same run.
+
+Each manifest entry reports the coverage its source reached, as `coveredThrough` plus `coveredThroughType`, so progress is something you read rather than infer: a value that advanced between runs is a delta that applied. A skipped source reports the boundary that stays in force, and a seeded one reports the boundary probed from the table it just wrote, so the field means the same thing whatever the step did.
+
+One Snowflake-specific mechanic: its driver executes exactly **one statement per call**, each on a possibly different pooled session, so the range-replace's delete-then-insert cannot travel as a `BEGIN;…;COMMIT;` script the way it does on Postgres and BigQuery. On Snowflake the same transaction is carried as a single [Snowflake Scripting](https://docs.snowflake.com/en/developer-guide/snowflake-scripting/blocks) anonymous block (`EXECUTE IMMEDIATE $$…$$`) whose `EXCEPTION` handler rolls back — inside the statement, because a follow-up `ROLLBACK` call would reach a different pooled session than the one holding the open transaction. Snowflake also folds bare identifiers to **UPPERCASE** (Postgres folds to lowercase), which is why the warehouse probes quote their output aliases and why table-path decoding folds per dialect.
+
+### Materializing on Postgres
+
+One Postgres-specific invariant to know if you touch the build path, because it has bitten twice and both times the symptom was far from the cause.
+
+Malloy compiles a query's SQL in a **finalized** form: it appends the dialect's `sqlFinalStage` wherever `Dialect.hasFinalStage` is true. Postgres is the only such dialect, and its final stage is `SELECT row_to_json(finalStage) as row FROM …` — the whole result collapsed into a single JSON column named `row`, which is the shape Malloy's own Postgres driver expects to unwrap.
+
+Anything that **materializes** SQL needs the opposite: the bare `SELECT`, projecting real columns. `PersistSource.getSQL()` is that form ([malloydata/malloy#2964](https://github.com/malloydata/malloy/pull/2964) made it compile unfinalized, after the finalized version made `CREATE TABLE AS` produce a one-JSON-column table), and a compiled query's SQL is not — there is no supported way to ask a query for its unfinalized SQL. So **every build path takes its SQL from `PersistSource.getSQL()`**, never from a `PreparedResult`. The incremental delta follows the same rule: it wraps the seed's own SQL in a range predicate rather than compiling a filtered query, which also makes the delta write the seed's shape by construction.
+
+The reverse direction applies when you hand-write SQL for Postgres to run through a Malloy connection: `runSQL` unwraps each row as `row.row`, so a raw `SELECT max(x) AS m` comes back as `[undefined]` and has to be wrapped in `row_to_json` yourself. Both directions are pinned in `incremental_compiler_contract.spec.ts`.
+
 ## The standalone scheduler
 
 A self-hosted Publisher can rebuild packages on their cron cadence with no control plane. The scheduler is **opt-in and off by default**:
@@ -140,6 +190,7 @@ The same package definition behaves differently depending on who drives material
 - **Who refreshes.** Standalone: the opt-in scheduler above. Hosted: the control plane drives refresh; the standalone scheduler stays off and skips control-plane-driven packages.
 - **Tables-only vs. two-phase.** A standalone fire is a single-phase build that materializes persist sources into **tables**. A hosted deployment runs a two-phase job — tables, then a second pass over indexed dimensions — so index behavior is a hosted-only concern and can't be exercised locally.
 - **Per-version tables.** `scope: version` is a policy contract. In the current standalone auto-run, a materialized table's identity is a content address derived from its connection and the source's canonical SQL (the `sourceEntityId`) — not the `#@ persist name` (that is the physical table name) and not the package version; true per-version tables are produced when the control plane assigns versioned build targets. Standalone is the right place to exercise the _policy_ (scope/schedule rules) and single-version builds, not per-version fan-out.
+- **Incremental refresh.** Available to both, with the same declarations and the same delta. Standalone, the scheduler drives it; hosted, the control plane does, subject to the three host responsibilities in [Driving it from a control plane](#driving-it-from-a-control-plane) — a stable physical name per incremental source, `reseed` rather than `forceRefresh` to ask for a rebuild, and the boundary read back from each manifest entry.
 - **Physical-table GC.** Deleting a materialization with `--drop-tables` drops its tables. Deleting an environment or package removes the materialization **records only** — physical tables are intentionally left in place (physical-table GC is the caller's responsibility), so clean up tables you no longer want explicitly.
 
 ## Attribute a build's cost

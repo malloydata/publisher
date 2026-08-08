@@ -33,6 +33,7 @@ export class MaterializationController {
    // `trigger` to this parser, or an API caller could forge a scheduled run.
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
+      reseed?: boolean;
       sourceNames?: string[];
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
@@ -41,6 +42,7 @@ export class MaterializationController {
    } {
       const result: {
          forceRefresh?: boolean;
+         reseed?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
@@ -68,6 +70,16 @@ export class MaterializationController {
             throw new BadRequestError("forceRefresh must be a boolean");
          }
          result.forceRefresh = body.forceRefresh;
+      }
+      // The run-level ask for a full rebuild of the in-scope incremental sources,
+      // and a SEPARATE flag from forceRefresh on purpose: that one only defeats
+      // skip-if-unchanged, and conflating the two would make every scheduled fire
+      // (which forces on every tick) a full rebuild.
+      if (body.reseed !== undefined) {
+         if (typeof body.reseed !== "boolean") {
+            throw new BadRequestError("reseed must be a boolean");
+         }
+         result.reseed = body.reseed;
       }
       if (body.sourceNames !== undefined) {
          if (
@@ -238,6 +250,14 @@ export class MaterializationController {
             "Build instruction 'realization' must be COPY or SNAPSHOT",
          );
       }
+      if (
+         instruction.reseed !== undefined &&
+         typeof instruction.reseed !== "boolean"
+      ) {
+         throw new BadRequestError(
+            "Build instruction 'reseed' must be a boolean",
+         );
+      }
       return {
          sourceEntityId: instruction.sourceEntityId as string,
          sourceID:
@@ -253,6 +273,13 @@ export class MaterializationController {
          // never materializes into the storage destination.
          ...(typeof instruction.destination === "string"
             ? { destination: instruction.destination }
+            : {}),
+         // The per-source ask for a full rebuild, OR-ed with the request-level
+         // `reseed`. Must be carried through for the same reason as `destination`
+         // above: dropping it here would leave a host unable to rebuild one source
+         // without rebuilding all of them.
+         ...(typeof instruction.reseed === "boolean"
+            ? { reseed: instruction.reseed }
             : {}),
       };
    }

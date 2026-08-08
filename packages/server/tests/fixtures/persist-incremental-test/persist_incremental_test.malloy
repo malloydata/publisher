@@ -1,0 +1,15 @@
+##! experimental.persistence
+
+source: raw_orders is duckdb.table('data/orders.csv')
+
+// A coherent incremental declaration: the watermark names a real output
+// dimension of an orderable type. The dialect is what the gate refuses — DuckDB
+// has no proven transactional delta apply — and that refusal is fatal, so this
+// package is here to NOT load and to NOT publish.
+#@ persist name="daily_orders" refresh="incremental" watermark="order_date"
+source: daily_orders is raw_orders -> {
+  group_by: order_date, category
+  aggregate:
+    total_orders is count()
+    total_revenue is amount.sum()
+}

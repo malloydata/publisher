@@ -124,6 +124,45 @@ export async function initializeSchema(
     )
   `);
 
+   // Incremental ledger.
+   //
+   // One row per persisted source lineage that refreshes incrementally, holding
+   // the durable `covered_through` boundary: the exclusive upper end of the
+   // watermark range the serving table is known to contain. A delta run reads it
+   // as the range's start, and advances it only after the DML commits, which is
+   // what makes a crash between the two a repeat rather than a gap.
+   //
+   // The declaration columns are not bookkeeping. Changing `watermark=` or
+   // `merge_key=` changes the DML WITHOUT moving the source's content address
+   // (proven in incremental_compiler_contract.spec.ts), so the address alone
+   // cannot tell a delta that the rules changed under it. Recording what the
+   // boundary was computed under lets the build path detect the mismatch and
+   // re-seed instead of applying a delta whose semantics no longer match the
+   // table.
+   //
+   // No claim/lease column: the single writer is already guaranteed by the
+   // `active_key` unique index on `materializations` (at most one active run per
+   // environment+package), so a second claim here would only add a way to
+   // disagree with it.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS incremental_ledger (
+      environment_id VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      source_entity_id VARCHAR NOT NULL,
+      covered_through_value VARCHAR NOT NULL,
+      covered_through_type VARCHAR NOT NULL,
+      watermark_dimension VARCHAR NOT NULL,
+      merge_key_dimensions JSON NOT NULL,
+      derived_strategy VARCHAR NOT NULL,
+      physical_table_name VARCHAR NOT NULL,
+      connection_name VARCHAR NOT NULL,
+      advanced_by_materialization_id VARCHAR,
+      advanced_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_id, package_name, source_entity_id)
+    )
+  `);
+
    // Themes table.
    //
    // Singleton storage for the instance-wide theme edited by the in-app
@@ -160,6 +199,9 @@ export async function initializeSchema(
    );
    await db.run(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_incremental_ledger_environment_package ON incremental_ledger(environment_id, package_name)",
    );
 }
 
@@ -232,6 +274,7 @@ async function dropLegacyProjectSchema(db: DuckDBConnection): Promise<void> {
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = [
       "build_manifests",
+      "incremental_ledger",
       "materializations",
       "packages",
       "connections",

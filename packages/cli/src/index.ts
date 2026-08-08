@@ -454,6 +454,10 @@ program
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
   .option("--force-refresh", "Rebuild all sources, ignoring existing build IDs")
+  .option(
+    "--reseed",
+    "Rebuild incremental sources from scratch, discarding their covered_through boundary (--force-refresh does NOT do this)",
+  )
   .option("--wait", "Poll until the run settles (build complete or failed)")
   .option(
     "--timeout <seconds>",
@@ -477,6 +481,7 @@ program
         options.package,
         {
           forceRefresh: options.forceRefresh,
+          reseed: options.reseed,
           wait: options.wait,
           timeoutMs: timeoutSec !== undefined ? timeoutSec * 1000 : undefined,
           pollIntervalMs: pollSec !== undefined ? pollSec * 1000 : undefined,

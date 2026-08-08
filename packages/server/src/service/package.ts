@@ -24,6 +24,7 @@ import {
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
 import {
+   BadRequestError,
    ModelCompilationError,
    PackageNotFoundError,
    ServiceUnavailableError,
@@ -50,6 +51,11 @@ import { errMessage, ignoreDotfiles } from "../utils";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
 import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
+import {
+   incrementalPolicyAdvisories,
+   incrementalPolicyRejections,
+   type IncrementalPolicySource,
+} from "./incremental_policy";
 import { materializationConfigWarnings } from "./materialization_config_validation";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
@@ -93,12 +99,16 @@ function toTableNameManifest(
  * Classify a failed package load into the `status` label shared by the
  * `malloy_package_load_duration` histogram and the per-phase load metrics, so
  * both slice failures identically. A real Malloy/model compile error is a 4xx
- * `compilation_error`; a rewrapped pool-infrastructure failure is a transient
+ * `compilation_error`; a gate refusing what the package declares is a 4xx
+ * `policy_rejected`; a rewrapped pool-infrastructure failure is a transient
  * `pool_unavailable`; anything else is a generic `error`.
  */
 function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
    if (error instanceof ModelCompilationError || error instanceof MalloyError) {
       return "compilation_error";
+   }
+   if (error instanceof BadRequestError) {
+      return "policy_rejected";
    }
    if (error instanceof ServiceUnavailableError) {
       return "pool_unavailable";
@@ -176,6 +186,15 @@ export class Package {
    // anyway. Distinct from "nothing is eligible", and refused the same way: an
    // unknown answer must not read as consent. See bindStorageServeBindings.
    private sourceEligibility: SourceEligibility | undefined = undefined;
+   // Per-source incremental-refresh gate inputs (the resolved `refresh=` /
+   // `watermark=` / `merge_key=` declaration), keyed by sourceID to match the
+   // wire plan. Resolved at
+   // compile for the same reason as sourceEligibility: the rules read the
+   // compiled output schema and the query definition's field kinds, neither of
+   // which the wire plan carries. Empty when the plan compute failed, which
+   // leaves the gate silent — safe, because the build path dispatches a delta
+   // only for a declaration it can read.
+   private incrementalPolicySources: IncrementalPolicySource[] = [];
    // Non-fatal render-tag findings aggregated across the package's models (each
    // tagged with its model path), surfaced read-only on
    // getPackageMetadata().warnings. Refreshed on load and reload. A bad render
@@ -591,11 +610,27 @@ export class Package {
       // one; admitting an unexamined binding would be a wrong one.
       try {
          const buildPlanStart = Date.now();
-         const { plan, droppedPersistSources, sourceEligibility } =
-            await computePackageBuildPlan(pkg);
+         const {
+            plan,
+            droppedPersistSources,
+            sourceEligibility,
+            incrementalDeclarations,
+         } = await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
          pkg.sourceEligibility = sourceEligibility;
+         pkg.incrementalPolicySources = Object.entries(plan?.sources ?? {})
+            .filter(([sourceID]) => incrementalDeclarations[sourceID])
+            .map(([sourceID, source]) => ({
+               sourceName: source.name,
+               modelPath: source.modelPath,
+               dialect: source.dialect,
+               storageDestination: source.annotationFields?.storage,
+               // Carried so the gate can spot two sources resolving to ONE
+               // address, which collapses them onto one table and one boundary.
+               sourceEntityId: source.sourceEntityId,
+               declaration: incrementalDeclarations[sourceID],
+            }));
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
          logger.warn(
@@ -631,6 +666,42 @@ export class Package {
                detail: invalidPolicy,
             },
          );
+      }
+      // The incremental-refresh gate does NOT get that fail-safe split: an
+      // invalid `#@ persist` declaration fails the load, the way a model that
+      // does not compile fails it.
+      //
+      // Publish cannot be the only strict point, because a package can arrive
+      // without one: uploaded to a control plane's storage and loaded by a
+      // worker, it never passes through POST/PATCH /packages. Warning here left
+      // the rejection in a worker log while the author — the only person who can
+      // fix the declaration — saw a clean publish and a source that quietly
+      // rebuilt in full forever.
+      //
+      // BadRequestError, for the 400: a control plane resolves the status off
+      // the error and otherwise defaults to 424, which would describe an
+      // authoring error as a dependency failure. The message carries EVERY
+      // rejection, so two broken declarations take one republish to fix.
+      //
+      // The accepted cost: `refresh=` was inert metadata before these rules, so
+      // a package published earlier saying refresh="incremental" and nothing
+      // else now stops serving until it is fixed. That is the one rule with any
+      // legacy exposure (watermark= and merge_key= did not exist as keys), the
+      // feature is gated behind `##! experimental.persistence`, and a bare
+      // refresh="incremental" is an authoring error worth surfacing rather than
+      // carrying — so every rule keeps the same severity, with no special cases.
+      const invalidIncremental = pkg.formatInvalidIncrementalPolicy();
+      if (invalidIncremental) {
+         // Logged as well as thrown: the throw is what the author reads, the log
+         // is the operator's copy.
+         logger.error(
+            `Package ${packageName} has an invalid incremental refresh policy`,
+            {
+               packageName,
+               detail: invalidIncremental,
+            },
+         );
+         throw new BadRequestError(invalidIncremental);
       }
       // Persist-target collisions are ALWAYS warn-only at load (never fail an
       // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
@@ -711,6 +782,11 @@ export class Package {
          // (alongside the load-path log) so an operator can see it on the status
          // API like the other persist warnings — see persistenceCollisionWarnings.
          ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+         // Incremental declarations that are LEGAL but probably not what the
+         // author meant: an unrecognized persist key (the only guard against a
+         // typo'd merge_key=, which degrades silently), and the keyless-delta
+         // advisory. Never rejections — see incrementalPolicyAdvisories.
+         ...incrementalPolicyAdvisories(this.incrementalPolicySources),
          // Materialization-config findings: a queryMetadata property that will
          // not do what it says, and manifest shapes that still parse but are
          // deprecated. Advisory by design — none of these blocks a publish.
@@ -1208,6 +1284,31 @@ export class Package {
     */
    public formatInvalidPersistencePolicy(): string {
       return this.persistencePolicyWarnings().join("\n");
+   }
+
+   /**
+    * REJECTION messages for the sources' incremental-refresh declarations
+    * (`refresh="incremental"` with `watermark=` / `merge_key=`): an incoherent
+    * declaration chain, a malformed key value, a name that is not a materialized
+    * output column, an unsupported dialect, or a window function. See
+    * incremental_policy for the rules.
+    *
+    * Kept SEPARATE from {@link persistencePolicyWarnings} — which is about the
+    * manifest's scope/schedule/freshness policy — so the two gates stay
+    * independently readable; both are joined into the same publish 400. Unlike
+    * that one, a non-empty result here also fails the LOAD (see loadViaWorker),
+    * so a package is never served with a declaration this rejected.
+    */
+   public incrementalPolicyWarnings(): string[] {
+      return incrementalPolicyRejections(this.incrementalPolicySources);
+   }
+
+   /**
+    * The {@link incrementalPolicyWarnings} joined into one string, or "" when
+    * every source's incremental declaration is valid.
+    */
+   public formatInvalidIncrementalPolicy(): string {
+      return this.incrementalPolicyWarnings().join("\n");
    }
 
    /**
