@@ -1374,8 +1374,7 @@ export class MaterializationService {
                // Enforce the eligibility gate for any storage-targeted build,
                // including orchestrated (host-supplied) instructions — the publisher
                // refuses an ineligible source into the tier itself, not on trust.
-               // Skipped when the mode is off: the kill switch ignores a
-               // host-supplied destination too and does a colocated build.
+               // Skipped when the mode is off: the refusal below owns that case.
                if (
                   orchestratedInstruction?.destination &&
                   getPersistStorageMode() !== "off"
@@ -1394,6 +1393,36 @@ export class MaterializationService {
                   orchestratedInstruction ??
                   bySourceEntityId.get(sourceEntityId);
                if (!instruction) continue;
+
+               // A caller-instructed destination that cannot be honored REFUSES; it
+               // never falls through to a colocated build. Auto-run already applies
+               // this rule, by skipping a `storage=` source while the tier is off
+               // (see deriveSelfInstructions), for the reason given there: a
+               // colocated build CTASes into the source's OWN warehouse, which the
+               // author asked this data not to be written to. An instructed build
+               // needs the rule more, not less — the caller named a destination AND
+               // a physical name, so falling through writes that name into the
+               // warehouse and answers success, and the caller can only detect it by
+               // comparing the echoed destination against the one it sent.
+               //
+               // Refused rather than skipped because the caller asked for a specific
+               // table: silence reads as "built". Stepping the mode down is a
+               // rollback, so it has to stay safe on a loaded package — declining a
+               // write is safe, redirecting one is not. Auto-run cannot reach this:
+               // resolveStorageDestination returns undefined while off, so an
+               // instruction still carrying a destination here is caller-supplied.
+               if (
+                  instruction.destination &&
+                  getPersistStorageMode() === "off"
+               ) {
+                  throw new BadRequestError(
+                     `Source '${persistSource.name}' was instructed to build into ` +
+                        `storage destination '${instruction.destination}', but ` +
+                        `PERSIST_STORAGE_MODE is off, so no destination can be ` +
+                        `written. Refusing rather than building the table into the ` +
+                        `source warehouse instead.`,
+                  );
+               }
 
                // Auto-run already gated pre-getSQL in deriveSelfInstructions;
                // re-assert (idempotent) so no path into a storage build is ungated.
@@ -1690,7 +1719,20 @@ export class MaterializationService {
       // recompute). A stack-on-the-parent build reads the parent's lake table
       // instead, but via a separate DuckDB recompile that does NOT use this
       // warehouse buildSQL — this remains its recompute-from-raw fallback.
-      const buildManifest = manifestExcludingStorage(manifest, builtEntries);
+      //
+      // Which is why a storage build generates it permissively. For that build this
+      // SQL is only the fallback, so refusing to GENERATE it refuses the source
+      // before the parent-reuse attempt below can run: the strict-miss fires on SQL
+      // nothing was going to execute, and a chained storage source becomes
+      // unbuildable under `strictUpstreams` even though reading the parent needs no
+      // recompute at all. Strict is enforced where a recompute would really happen —
+      // buildOneSourceIntoStorage refuses if stacking on the parent proves
+      // impossible. A colocated build keeps strict here: its buildSQL IS what runs,
+      // and it has no parent to stack on.
+      const reducedManifest = manifestExcludingStorage(manifest, builtEntries);
+      const buildManifest = isStorageBuild
+         ? { ...reducedManifest, strict: false }
+         : reducedManifest;
       const buildSQL = persistSource.getSQL({
          buildManifest,
          connectionDigests,

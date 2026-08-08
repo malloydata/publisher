@@ -300,8 +300,10 @@ function walkForAuthorize(
 
    const record = node as Record<string, unknown>;
 
-   // Annotation notes live under `blockNotes` (source/statement) or `notes`
-   // (model/file), as either bare strings or `{ text }` objects.
+   // Annotation notes live under `blockNotes` or `notes` — both are per-item
+   // slots at the same level, keyed by the author's syntax rather than by scope
+   // (see `ownLevelNoteTexts`), so both have to be read. Each entry is either a
+   // bare string or a `{ text }` object.
    for (const key of ["blockNotes", "notes"]) {
       const arr = record[key];
       if (!Array.isArray(arr)) continue;

@@ -71,7 +71,11 @@ import type {
 } from "../package_load/protocol";
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
-import { modelAnnotations, ownModelNotes } from "./annotations";
+import {
+   modelAnnotations,
+   ownLevelNoteTexts,
+   ownModelNotes,
+} from "./annotations";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -870,9 +874,9 @@ export class Model {
       struct: SourceDef,
       modelDef?: ModelDef,
    ): { exprs: string[]; fromAncestor: boolean; ambientPrefix: number } {
-      const ownNotes = (struct.annotations?.blockNotes ?? []).map(
-         (note) => note.text,
-      );
+      // Both note keys: which one a gate lands in is decided by the author's
+      // syntax, not by scope. See {@link ownLevelNoteTexts}.
+      const ownNotes = ownLevelNoteTexts(struct.annotations);
       try {
          const own = collectAuthorizeExprs(ownNotes);
          if (own.length > 0) {
@@ -909,6 +913,9 @@ export class Model {
     * render tag or doc comment, whoever wrote it. Both links are followed here,
     * nearest first, and the first ancestor that declares a gate wins.
     *
+    * Each level is read with {@link ownLevelNoteTexts} rather than `blockNotes`,
+    * so a base whose gate landed under `notes` is still found on every link.
+    *
     * "Own wins over ancestor" is what keeps the documented locked-base +
     * curated-extension idiom working (an extension declaring its own gate
     * replaces the base's). That is only safe because the declaration is the
@@ -932,9 +939,7 @@ export class Model {
          inherited && depth < ANCESTOR_WALK_MAX_DEPTH;
          depth++
       ) {
-         const exprs = collectAuthorizeExprs(
-            (inherited.blockNotes ?? []).map((note) => note.text),
-         );
+         const exprs = collectAuthorizeExprs(ownLevelNoteTexts(inherited));
          if (exprs.length > 0) return exprs;
          inherited = inherited.inherits;
       }
@@ -951,9 +956,7 @@ export class Model {
       if (declared.kind === "unresolvable") return ["false"];
       if (declared.kind === "none" || seen.has(declared.source)) return [];
       const exprs = collectAuthorizeExprs(
-         (declared.source.annotations?.blockNotes ?? []).map(
-            (note) => note.text,
-         ),
+         ownLevelNoteTexts(declared.source.annotations),
       );
       return exprs.length > 0
          ? exprs
