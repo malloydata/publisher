@@ -1,5 +1,5 @@
 {
-  "name": "html-pages-nopublic",
+  "name": "html-data-apps-nopublic",
   "version": "0.0.1",
   "description": "Package with no public/ directory; static file requests return 404."
 }

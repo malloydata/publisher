@@ -2,7 +2,7 @@
 
 > What this is: the shape of Publisher's programmatic surfaces — the resource hierarchy, the REST and
 > MCP APIs, and where to find the live, interactive API explorer. For connecting an AI agent, see
-> [ai-agents.md](ai-agents.md); for the App, see [publisher-app.md](publisher-app.md).
+> [ai-agents.md](ai-agents.md); for the Console, see [console.md](console.md).
 
 ## Two surfaces
 
@@ -81,7 +81,7 @@ The running server hosts the full, interactive **Swagger UI** and the OpenAPI 3.
 | **http://localhost:4000/api-doc.html** | Interactive Swagger UI — browse every endpoint, see schemas, try requests. |
 | **http://localhost:4000/api-doc.yaml** | The raw OpenAPI 3.1 spec (feed it to codegen or Postman). |
 
-The App's footer **Publisher API** link opens the same explorer.
+The Console's footer **Publisher API** link opens the same explorer.
 
 The spec file ships inside the npm package, so every running server serves `/api-doc.yaml` even
 with no internet access. `/api-doc.html` loads the Swagger UI assets from a CDN, so in a sandbox

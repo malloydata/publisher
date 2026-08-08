@@ -61,6 +61,23 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - `RawNotebook.path` becomes `RawNotebook.modelPath`. `path` was declared but never populated, so anything reading it was already getting `undefined`; `modelPath` is the value it wanted.
 - A caller that treated a `versionId` request's 500 as a server fault should expect 501.
 
+## [Unreleased] — `PageViewer` is now `DataAppViewer`
+
+The SDK component that embeds an in-package HTML data app is renamed, along with the docs page for the built-in web UI. No behavior changes.
+
+### What changed
+
+- **`PageViewer` → `DataAppViewer`**, exported from `components/DataAppViewer`. Props are unchanged (`resourceUri`). There is no alias, so an external consumer importing `PageViewer` will fail to build.
+- **`utils/pageEmbed` → `utils/dataAppEmbed`**, same contents (`PUBLISHER_RESIZE_MESSAGE_TYPE`, `PublisherResizeMessage`, `isPublisherResizeMessage`, `serverBaseUrl`, `packageFileUrl`). The move itself is invisible to consumers: the module has no `./utils/*` subpath in `exports`, so it can only be reached through the package root, and the one symbol the root re-exports, `packageFileUrl`, keeps its name and its root export. Only the path behind it changed.
+- **The package view's "Governed Reports" section is now labelled "Notebooks."** Label only; the same `.malloynb` files are listed, and no prop or route changed.
+- **`docs/publisher-app.md` is now [docs/console.md](docs/console.md)**, and the built-in web UI is called the **Publisher Console** throughout the docs. The `packages/app` package name is unchanged.
+
+### Migration
+
+- Rename the import: `import { DataAppViewer } from "@malloy-publisher/sdk"`. That is the only change an embedder needs. `packageFileUrl` is the other symbol in this area reachable from the package root, and it is untouched.
+
+The REST `/pages` endpoint is untouched by this change and still answers at its existing path. Renaming it to `/data-apps` is a separate, breaking change with its own release note.
+
 ## [0.0.208] — Single-call materialization (plan-as-artifact)
 
 **Breaking change to the materialization API.** Materialization moves from the two-round (compile-then-build) protocol to a single call. The build plan is now a compile-time property of the package, and a build is requested in one request.

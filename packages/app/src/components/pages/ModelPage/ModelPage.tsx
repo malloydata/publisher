@@ -1,9 +1,9 @@
 import {
+   DataAppViewer,
    encodeResourceUri,
    Model,
    Notebook,
    packageFileUrl,
-   PageViewer,
    useRouterClickHandler,
    useServer,
 } from "@malloy-publisher/sdk";
@@ -35,9 +35,9 @@ function ModelPage() {
 
    const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
 
-   // In-package HTML page (embedded view). The Pages section in
+   // In-package HTML data app (embedded view). The Pages section in
    // <Package> routes clicks to `pages/<file>` so this branch picks them
-   // up. <PageViewer> iframes the standalone Publisher URL and resizes
+   // up. <DataAppViewer> iframes the standalone Publisher URL and resizes
    // via the publisher.js postMessage protocol. Real models that live under
    // a `pages/` subdirectory (e.g. `pages/x.malloy`) are excluded so they
    // still open in the Model/Notebook viewer.
@@ -46,13 +46,13 @@ function ModelPage() {
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
-      const pagePath = modelPath.slice("pages/".length);
-      const pageResourceUri = encodeResourceUri({
+      const dataAppPath = modelPath.slice("pages/".length);
+      const dataAppResourceUri = encodeResourceUri({
          environmentName: params.environmentName,
          packageName: params.packageName,
-         modelPath: pagePath,
+         modelPath: dataAppPath,
       });
-      return <PageViewer resourceUri={pageResourceUri} />;
+      return <DataAppViewer resourceUri={dataAppResourceUri} />;
    }
 
    const resourceUri = encodeResourceUri({
