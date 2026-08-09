@@ -734,32 +734,89 @@ describe("ducklake shape validation", () => {
 });
 
 describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
-   it("accepts a DuckDB connection with setupSQL and no attachedDatabases", () => {
+   const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
+
+   afterEach(() => {
+      if (originalPolicy === undefined) {
+         delete process.env.EXTENSION_FETCH_POLICY;
+      } else {
+         process.env.EXTENSION_FETCH_POLICY = originalPolicy;
+      }
+   });
+
+   it("accepts a DuckDB connection with setupSQL, sets metadata, and passes setupSQL to POJO", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
       const conn: ApiConnection = {
          name: "my_duckdb",
          type: "duckdb",
          duckdbConnection: {
-            setupSQL: "ATTACH 'ducklake:storage/orca.ducklake' AS orca; USE orca.marts;",
+            setupSQL:
+               "ATTACH 'ducklake:storage/orca.ducklake' AS orca;\nUSE orca.marts;",
          },
       };
 
-      const { metadata, pojo } = assembleEnvironmentConnections([conn], "/tmp/env");
+      const { metadata, pojo } = assembleEnvironmentConnections(
+         [conn],
+         "/tmp/env",
+      );
 
       expect(metadata.has("my_duckdb")).toBe(true);
       const meta = metadata.get("my_duckdb")!;
-      expect(meta.setupSQL).toBe("ATTACH 'ducklake:storage/orca.ducklake' AS orca; USE orca.marts;");
+      expect(meta.setupSQL).toBe(
+         "ATTACH 'ducklake:storage/orca.ducklake' AS orca;\nUSE orca.marts;",
+      );
       expect(pojo.connections["my_duckdb"]).toBeDefined();
+      expect(pojo.connections["my_duckdb"].setupSQL).toBe(
+         "ATTACH 'ducklake:storage/orca.ducklake' AS orca;\nUSE orca.marts;",
+      );
+   });
+
+   it("refuses setupSQL when EXTENSION_FETCH_POLICY is local-only", () => {
+      process.env.EXTENSION_FETCH_POLICY = "local-only";
+      const conn: ApiConnection = {
+         name: "my_duckdb",
+         type: "duckdb",
+         duckdbConnection: {
+            setupSQL: "ATTACH 'ducklake:storage/orca.ducklake' AS orca;",
+         },
+      };
+
+      expect(() =>
+         assembleEnvironmentConnections([conn], "/tmp/env"),
+      ).toThrow(
+         /setupSQL is not allowed on DuckDB connection "my_duckdb" when EXTENSION_FETCH_POLICY is "local-only"/i,
+      );
+   });
+
+   it("rejects a DuckDB connection with whitespace-only setupSQL", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      const conn: ApiConnection = {
+         name: "empty_duckdb",
+         type: "duckdb",
+         duckdbConnection: {
+            setupSQL: "   \n  ",
+         },
+      };
+
+      expect(() =>
+         assembleEnvironmentConnections([conn], "/tmp/env"),
+      ).toThrow(
+         /must provide either attachedDatabases or non-empty setupSQL/i,
+      );
    });
 
    it("rejects a DuckDB connection with neither attachedDatabases nor setupSQL", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
       const conn: ApiConnection = {
          name: "empty_duckdb",
          type: "duckdb",
          duckdbConnection: {},
       };
 
-      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
-         /must provide either attachedDatabases or setupSQL/i,
+      expect(() =>
+         assembleEnvironmentConnections([conn], "/tmp/env"),
+      ).toThrow(
+         /must provide either attachedDatabases or non-empty setupSQL/i,
       );
    });
 });

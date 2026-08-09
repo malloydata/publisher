@@ -1766,7 +1766,7 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(/has no attached databases/);
+            ).rejects.toThrow(/must provide either attachedDatabases or non-empty setupSQL/);
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {

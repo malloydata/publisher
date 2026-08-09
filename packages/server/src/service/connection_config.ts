@@ -2,6 +2,7 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { getExtensionFetchPolicy } from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import { parseHostKeys } from "./proxy";
@@ -155,6 +156,15 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
          )}. Publisher only supports attachedDatabases and setupSQL for environment-authored DuckDB connections.`,
       );
    }
+
+   const setupSQL = connection.duckdbConnection.setupSQL;
+   const hasSetupSQL =
+      typeof setupSQL === "string" && setupSQL.trim().length > 0;
+   if (hasSetupSQL && getExtensionFetchPolicy() === "local-only") {
+      throw new Error(
+         `setupSQL is not allowed on DuckDB connection "${connection.name}" when EXTENSION_FETCH_POLICY is "local-only".`,
+      );
+   }
 }
 
 function cloneApiConnection(connection: ApiConnection): ApiConnection {
@@ -275,11 +285,16 @@ function buildDuckdbEntry(
    name: string,
    environmentPath: string,
    databaseFilename = `${name}.duckdb`,
+   setupSQL?: string,
 ): CoreConnectionEntry {
-   return {
+   const entry: CoreConnectionEntry = {
       is: "duckdb",
       databasePath: path.join(environmentPath, databaseFilename),
    };
+   if (typeof setupSQL === "string" && setupSQL.trim().length > 0) {
+      entry.setupSQL = setupSQL;
+   }
+   return entry;
 }
 
 /**
@@ -1072,6 +1087,7 @@ export function assembleEnvironmentConnections(
                connection.name,
                environmentPath,
                `${connection.name}.duckdb`,
+               connection.duckdbConnection?.setupSQL,
             );
             break;
          }
