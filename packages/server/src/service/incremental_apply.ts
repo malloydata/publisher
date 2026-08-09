@@ -791,14 +791,28 @@ export async function applyDeltaScript(
 
 /**
  * Everything the ledger has to agree with before a delta may run: which table,
- * on which connection, advanced by which declaration. A change to any of them
- * means the recorded boundary describes a different table or a different meaning
- * of "covered", so it cannot be built on.
+ * on which connection, computed from which SQL, advanced by which declaration. A
+ * change to any of them means the recorded boundary describes a different table or
+ * a different meaning of "covered", so it cannot be built on.
  */
 export interface IncrementalLineage {
-   /** Logical (unquoted) physical table name, as the manifest records it. */
+   /**
+    * Logical (unquoted) physical table name, as the manifest records it. With
+    * `connectionName`, the ledger row's key.
+    */
    physicalTableName: string;
    connectionName: string;
+   /**
+    * The source's CONTENT address — a fingerprint of the build SQL, not the
+    * caller-assigned `BuildInstruction.sourceEntityId`. Compared rather than keyed
+    * on, and the comparison is what guarantees a boundary is never read against SQL
+    * other than the SQL it was computed from: an edited source seeds instead of
+    * deltaing onto a table its definition no longer describes. That used to be the
+    * ledger's key and so was true for free; now it is checked, because a table's
+    * name does not have to change when its definition does (a standalone
+    * publisher's names carry no content token).
+    */
+   sourceEntityId: string;
    watermarkName: string;
    /** The watermark's Malloy type (`date`, `timestamp`, `number`, `string`). */
    watermarkType: string;
@@ -842,6 +856,18 @@ export function ledgerLineageMismatch(
    }
    const changed = (reason: string) =>
       ({ reasonCode: "lineage_changed", reason }) as const;
+   // Checked before the individual declarations because it subsumes them: a
+   // different content address means different build SQL, and the boundary was
+   // measured over rows that SQL may no longer produce. The declaration checks
+   // below catch the narrower case of a model edit that moves `watermark=` or
+   // `merge_key=` — those do NOT move the address (proven in
+   // incremental_compiler_contract.spec.ts), which is why both layers exist.
+   if (entry.sourceEntityId !== lineage.sourceEntityId) {
+      return changed(
+         `the source's content address changed, so the recorded boundary was ` +
+            `measured over different SQL than this refresh would apply a delta to`,
+      );
+   }
    if (entry.connectionName !== lineage.connectionName) {
       return changed(
          `the recorded boundary was advanced on connection ` +

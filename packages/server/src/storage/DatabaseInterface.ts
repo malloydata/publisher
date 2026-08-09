@@ -101,16 +101,16 @@ export interface ResourceRepository {
    // Incremental ledger
    getIncrementalLedgerEntry(
       environmentId: string,
-      packageName: string,
-      sourceEntityId: string,
+      connectionName: string,
+      physicalTableName: string,
    ): Promise<IncrementalLedgerEntry | null>;
    upsertIncrementalLedgerEntry(
       entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
    ): Promise<IncrementalLedgerEntry>;
    deleteIncrementalLedgerEntry(
       environmentId: string,
-      packageName: string,
-      sourceEntityId: string,
+      connectionName: string,
+      physicalTableName: string,
    ): Promise<void>;
 }
 
@@ -205,8 +205,15 @@ export interface Materialization {
  */
 export interface IncrementalLedgerEntry {
    environmentId: string;
+   /** Whoever last advanced this boundary. Recorded, not part of the key. */
    packageName: string;
-   /** The source's content address; the lineage this boundary belongs to. */
+   /**
+    * The source's content address, as of the build that last advanced this
+    * boundary. Recorded, not part of the key — and therefore COMPARED on read
+    * (see ledgerLineageMismatch), because a table whose definition changed keeps
+    * its name in a standalone publisher and a delta must not be applied across
+    * that change.
+    */
    sourceEntityId: string;
    /**
     * Canonical scalar text of the boundary (ISO-8601 for temporal types,
@@ -222,7 +229,12 @@ export interface IncrementalLedgerEntry {
    /** The `merge_key=` dimensions, in declared order; empty for range replace. */
    mergeKeyDimensions: string[];
    derivedStrategy: IncrementalStrategy;
-   /** Lineage identity, so a boundary is never read against another table. */
+   /**
+    * The table the boundary is a fact about. With `environmentId` and
+    * `connectionName` this is the row's KEY, which is what makes a boundary
+    * survive a package being presented under a different (version-qualified)
+    * name between refreshes.
+    */
    physicalTableName: string;
    connectionName: string;
    /** Audit: which run last advanced this boundary, and when. */

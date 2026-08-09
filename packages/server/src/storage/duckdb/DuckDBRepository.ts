@@ -253,13 +253,13 @@ export class DuckDBRepository implements ResourceRepository {
 
    async getIncrementalLedgerEntry(
       environmentId: string,
-      packageName: string,
-      sourceEntityId: string,
+      connectionName: string,
+      physicalTableName: string,
    ): Promise<IncrementalLedgerEntry | null> {
       return this.incrementalLedgerRepo.get(
          environmentId,
-         packageName,
-         sourceEntityId,
+         connectionName,
+         physicalTableName,
       );
    }
 
@@ -271,13 +271,13 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deleteIncrementalLedgerEntry(
       environmentId: string,
-      packageName: string,
-      sourceEntityId: string,
+      connectionName: string,
+      physicalTableName: string,
    ): Promise<void> {
       return this.incrementalLedgerRepo.deleteEntry(
          environmentId,
-         packageName,
-         sourceEntityId,
+         connectionName,
+         physicalTableName,
       );
    }
 }

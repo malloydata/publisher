@@ -902,6 +902,7 @@ export class MaterializationService {
                   dialect: persistSource.dialectName,
                   physicalTableName: logicalName,
                   connectionName: persistSource.connectionName,
+                  sourceEntityId,
                   isStorageBuild: destination !== undefined,
                }) !== undefined;
 
@@ -1693,12 +1694,14 @@ export class MaterializationService {
       // Present only when the run resolved at least one incremental declaration;
       // absent leaves this method exactly the full-rebuild path it was.
       incremental?: IncrementalRunContext,
-      // The source's content address, which is what the covered_through ledger is
-      // keyed by — NOT `instruction.sourceEntityId`, which is caller-assigned and
-      // opaque (see the index comment in executeInstructedBuild). Keying on
-      // content is what guarantees a boundary is never read against SQL other
-      // than the SQL it was computed from: different SQL is a different key, so a
-      // changed source seeds instead of deltaing onto a stale table.
+      // The source's content address — NOT `instruction.sourceEntityId`, which is
+      // caller-assigned and opaque (see the index comment in
+      // executeInstructedBuild). Recorded on the covered_through ledger and
+      // COMPARED on every read, which is what guarantees a boundary is never read
+      // against SQL other than the SQL it was computed from: different SQL is a
+      // mismatch, so a changed source seeds instead of deltaing onto a stale table.
+      // (It used to be part of the ledger's key, which gave the same guarantee for
+      // free but made a boundary un-findable across a package's versions.)
       contentSourceEntityId?: string,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
@@ -1800,6 +1803,7 @@ export class MaterializationService {
                  dialect,
                  physicalTableName,
                  connectionName: persistSource.connectionName,
+                 sourceEntityId: contentSourceEntityId,
                  isStorageBuild,
               })
             : undefined;
@@ -1810,7 +1814,6 @@ export class MaterializationService {
             ? {
                  context: incremental,
                  lineage,
-                 ledgerKey: contentSourceEntityId,
               }
             : undefined;
       if (incrementalRefresh) {
@@ -1844,7 +1847,7 @@ export class MaterializationService {
       if (incrementalRefresh) {
          await resetLedger(
             incrementalRefresh.context,
-            incrementalRefresh.ledgerKey,
+            incrementalRefresh.lineage,
          );
       }
 
@@ -1906,7 +1909,6 @@ export class MaterializationService {
          ? await advanceLedgerAfterSeed({
               context: incrementalRefresh.context,
               lineage: incrementalRefresh.lineage,
-              sourceEntityId: incrementalRefresh.ledgerKey,
               quotedTablePath: quotedPhysical,
               dialect,
               runner: (sql) => connection.runSQL(sql, runOptions),
@@ -1944,8 +1946,6 @@ export class MaterializationService {
       lineage: IncrementalLineage;
       persistSource: PersistSource;
       instruction: BuildInstruction;
-      /** The source's content address: the covered_through ledger's key. */
-      ledgerKey: string;
       connection: MalloyConnection;
       buildSQL: string;
       quotedTablePath: string;
@@ -1962,7 +1962,6 @@ export class MaterializationService {
          context,
          lineage,
          persistSource,
-         sourceEntityId: params.ledgerKey,
          quotedTablePath: params.quotedTablePath,
          // The CTAS's own SQL, manifest-resolved. The delta filters this exact
          // string, so it computes what a rebuild would — see deltaSelect.
@@ -1991,7 +1990,6 @@ export class MaterializationService {
          await advanceLedger({
             context,
             lineage,
-            sourceEntityId: params.ledgerKey,
             coveredThrough: step.coveredThrough,
          });
          const durationMs = Math.round(performance.now() - startTime);

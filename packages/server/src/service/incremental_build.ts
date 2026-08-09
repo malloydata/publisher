@@ -32,20 +32,27 @@ import type { IncrementalDeclaration } from "./incremental_declaration";
  * testable against fakes and keeps the build loop free of ledger bookkeeping.
  */
 
-/** The ledger surface a build needs; a narrowing of ResourceRepository. */
+/**
+ * The ledger surface a build needs; a narrowing of ResourceRepository.
+ *
+ * Keyed on (environment, connection, physical table): a boundary is a fact about a
+ * TABLE, so every accessor here is addressed the way the lineage already is. The
+ * three functions below therefore never need a source address to find a row —
+ * they pass `lineage`, which carries both halves of the table key.
+ */
 export interface IncrementalLedgerStore {
    getIncrementalLedgerEntry(
       environmentId: string,
-      packageName: string,
-      sourceEntityId: string,
+      connectionName: string,
+      physicalTableName: string,
    ): Promise<IncrementalLedgerEntry | null>;
    upsertIncrementalLedgerEntry(
       entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
    ): Promise<IncrementalLedgerEntry>;
    deleteIncrementalLedgerEntry(
       environmentId: string,
-      packageName: string,
-      sourceEntityId: string,
+      connectionName: string,
+      physicalTableName: string,
    ): Promise<void>;
 }
 
@@ -84,6 +91,8 @@ export function incrementalLineage(params: {
    dialect: string;
    physicalTableName: string;
    connectionName: string;
+   /** The source's content address — see IncrementalLineage.sourceEntityId. */
+   sourceEntityId: string;
    isStorageBuild: boolean;
 }): IncrementalLineage | undefined {
    const d = params.declaration;
@@ -111,6 +120,7 @@ export function incrementalLineage(params: {
    return {
       physicalTableName: params.physicalTableName,
       connectionName: params.connectionName,
+      sourceEntityId: params.sourceEntityId,
       watermarkName: watermark.name,
       watermarkType: watermark.malloyType,
       mergeKeys,
@@ -130,7 +140,6 @@ export async function planSourceRefresh(params: {
    context: IncrementalRunContext;
    lineage: IncrementalLineage;
    persistSource: PersistSource;
-   sourceEntityId: string;
    quotedTablePath: string;
    /**
     * The build's own SQL for this source — `PersistSource.getSQL()` resolved
@@ -163,8 +172,8 @@ export async function planSourceRefresh(params: {
    try {
       ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
          context.environmentId,
-         context.packageName,
-         params.sourceEntityId,
+         lineage.connectionName,
+         lineage.physicalTableName,
       );
    } catch (err) {
       return {
@@ -212,7 +221,6 @@ export async function planSourceRefresh(params: {
 export async function advanceLedger(params: {
    context: IncrementalRunContext;
    lineage: IncrementalLineage;
-   sourceEntityId: string;
    coveredThrough: WatermarkBound;
 }): Promise<void> {
    const { context, lineage } = params;
@@ -220,7 +228,7 @@ export async function advanceLedger(params: {
       await context.ledger.upsertIncrementalLedgerEntry({
          environmentId: context.environmentId,
          packageName: context.packageName,
-         sourceEntityId: params.sourceEntityId,
+         sourceEntityId: lineage.sourceEntityId,
          coveredThroughValue: params.coveredThrough.value,
          coveredThroughType: params.coveredThrough.malloyType,
          watermarkDimension: lineage.watermarkName,
@@ -233,7 +241,8 @@ export async function advanceLedger(params: {
    } catch (err) {
       logger.warn("Failed to advance the covered_through boundary", {
          packageName: context.packageName,
-         sourceEntityId: params.sourceEntityId,
+         physicalTableName: lineage.physicalTableName,
+         sourceEntityId: lineage.sourceEntityId,
          error: errMessage(err),
       });
    }
@@ -247,18 +256,18 @@ export async function advanceLedger(params: {
  */
 export async function resetLedger(
    context: IncrementalRunContext,
-   sourceEntityId: string,
+   lineage: IncrementalLineage,
 ): Promise<void> {
    try {
       await context.ledger.deleteIncrementalLedgerEntry(
          context.environmentId,
-         context.packageName,
-         sourceEntityId,
+         lineage.connectionName,
+         lineage.physicalTableName,
       );
    } catch (err) {
       logger.warn("Failed to clear the covered_through boundary", {
          packageName: context.packageName,
-         sourceEntityId,
+         physicalTableName: lineage.physicalTableName,
          error: errMessage(err),
       });
    }
@@ -275,7 +284,6 @@ export async function resetLedger(
 export async function advanceLedgerAfterSeed(params: {
    context: IncrementalRunContext;
    lineage: IncrementalLineage;
-   sourceEntityId: string;
    quotedTablePath: string;
    runner: SqlRunner;
    dialect: string;
@@ -294,7 +302,7 @@ export async function advanceLedgerAfterSeed(params: {
                "the next refresh will rebuild again",
             {
                packageName: params.context.packageName,
-               sourceEntityId: params.sourceEntityId,
+               physicalTableName: params.lineage.physicalTableName,
                error: boundary.error,
             },
          );
@@ -304,7 +312,6 @@ export async function advanceLedgerAfterSeed(params: {
    await advanceLedger({
       context: params.context,
       lineage: params.lineage,
-      sourceEntityId: params.sourceEntityId,
       coveredThrough: boundary.bound,
    });
    return boundary.bound;
