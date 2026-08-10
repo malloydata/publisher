@@ -60,7 +60,7 @@
       "build": "bun generate-api-types && bunx vite build",
       "postbuild": "cp ../../node_modules/@malloydata/malloy-explorer/dist/malloy-explorer.css ./dist/malloy-explorer.css && cp ../../node_modules/@uiw/react-md-editor/markdown-editor.css ./dist/markdown-editor.css && echo '/* SDK Styles */\n@import \"./malloy-explorer.css\";\n@import \"./markdown-editor.css\";' > ./dist/styles.css",
       "test": "bun test",
-      "lint": "bunx eslint ./src --fix",
+      "lint": "bunx eslint ./src ./test --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
       "analyze": "bunx vite-bundle-visualizer",
       "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/client/"
@@ -93,10 +93,15 @@
       "dayjs": "^1.11.13"
    },
    "devDependencies": {
+      "@happy-dom/global-registrator": "^20.11.1",
       "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
       "@malloydata/malloy-query-builder": "^0.0.427",
       "@malloydata/malloy-tag": "^0.0.427",
       "@openapitools/openapi-generator-cli": "^2.20.2",
+      "@shikijs/langs": "^1.16.3",
+      "@shikijs/themes": "^1.16.3",
+      "@testing-library/dom": "^10.4.1",
+      "@testing-library/react": "^16.3.2",
       "@types/bun": "^1.2.21",
       "@types/k6": "^1.0.2",
       "@types/react": "^19.1.7",
@@ -112,8 +117,6 @@
       "eslint-plugin-react-hooks": "5.0.0",
       "eslint-plugin-storybook": "^0.11.4",
       "shiki": "^1.16.3",
-      "@shikijs/langs": "^1.16.3",
-      "@shikijs/themes": "^1.16.3",
       "vite": "^6.3.2",
       "vite-plugin-dts": "^4.5.3",
       "vite-plugin-svgr": "^4.3.0"
