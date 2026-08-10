@@ -1,23 +1,49 @@
 # Design: Malloyyo dashboards in Publisher
 
-**Status: designed and implemented, not yet on `main`.** The implementation this describes was
-built and reviewed on the dashboards branch
+**Status: a design being landed incrementally. Check before you trust it.** The implementation this
+describes was built and reviewed on the dashboards branch
 ([#935](https://github.com/malloydata/publisher/pull/935)), which is a handoff rather than a merge
-candidate. It is being landed as a sequence of smaller pull requests, and this document goes first
+candidate. It is being landed as a sequence of smaller pull requests, and this document went first
 so the later ones have a single reference to build against.
 
-Read every "shipped", "is in", and "Have" below as **true of that branch, not of `main`**. Nothing
-here has landed yet: there is no `dashboards/` discovery, no `Dashboard` component, and no
-dashboard REST surface in a release. Phases 1 to 3 (discovery and REST, the tag-only viewer,
-`# drill`) and phase 5 (the `storefront` dashboards, `docs/dashboards.md`, the skill) were built;
-phase 4 (custom JSX components) was built and then **cut**, and that cut is a real decision that
-survives the split. Per-item detail is in [Phasing](#phasing).
+Read every "shipped", "is in", and "Have" below as **true of that branch, not necessarily of
+`main`**. This page deliberately does not say which parts have merged. Such a list is wrong within
+days of being written and wrong in the most expensive direction, because it still reads as
+authoritative. The authority is the pull requests themselves.
 
-Paths, component names, and UI section labels describe the **end state** of the sequence. Several
-differ from `main` today because a rename lands separately: what this document calls Data Apps,
-`DataAppViewer`, and `dataAppEmbed.ts` are still Pages, `PageViewer`, and `pageEmbed.ts` on `main`,
-and what it calls Notebooks is still labelled Governed Reports in the Console. Written July 2026,
-revised against the implementation.
+The design also lands **by halves** in places, so "has it merged" is often not a yes or no, and you
+have to check both halves rather than one. The given control contract is the clearest case: the
+control fields it puts on `Given` in the spec and the server code that derives them from a
+declaration's tags are separate changes that need not arrive together. The dashboard REST surface is
+the other, being two endpoints. Before building on any part of this design, read the open and merged
+dashboard pull requests and look in the tree, rather than trusting a sentence here. These are the
+files and symbols each part lives in, which is what makes that check quick, and the table splits the
+halves so neither can be mistaken for the whole:
+
+| Part of the design                       | Lives in                                                        |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| Given control contract, wire half        | the control fields on `Given` in `api-doc.yaml`                 |
+| Given control contract, derived from tags | `readGivenControlSpec` in `packages/server/src/service/given.ts` |
+| `dashboards/` discovery and the manifest | `packages/server/src/service/dashboard.ts`                      |
+| The artifact / MOTLY tag primitives      | `packages/server/src/service/motly.ts`                          |
+| The dashboard REST surface               | the `dashboards` paths in `api-doc.yaml` (a list and a get)      |
+| The viewer                               | `packages/sdk/src/components/Dashboard/`                        |
+
+Phases 1 to 3 (discovery and REST, the tag-only viewer, `# drill`) and phase 5 (the `storefront`
+dashboards, `docs/dashboards.md`, the skill) were built on that branch; phase 4 (custom JSX
+components) was built and then **cut**, and that cut is a real decision that survives the split.
+Per-item detail is in [Phasing](#phasing).
+
+Paths, component names, and UI section labels describe the **end state** of the sequence. A rename
+lands as its own slice, in two parts, and they do not divide the way you would guess. The first
+renames the files and components (`PageViewer` to `DataAppViewer`, `pageEmbed.ts` to
+`dataAppEmbed.ts`) and relabels Governed Reports to Notebooks. The second renames the `/pages` REST
+endpoint and the generated client that follows from it, **and carries the Pages to Data Apps section
+label with it**, because that label names the endpoint's feature. So there is a window in which the
+files have been renamed and both the endpoint and the Data Apps label have not. Check the tree for
+the names you need rather than assuming either set.
+
+Written July 2026, revised against the implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
 and, once they land, `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or

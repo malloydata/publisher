@@ -734,7 +734,7 @@ export class Package {
    }
 
    /**
-    * The package-level `materialization` config (from malloy-publisher.json),
+    * The package-level `materialization` config (from publisher.json),
     * the least-specific layer for resolving per-source freshness/schedule in the
     * build plan. Null when the package declares no policy.
     */
