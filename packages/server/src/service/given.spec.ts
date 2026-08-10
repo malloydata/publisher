@@ -157,9 +157,12 @@ describe("readGivenControlSpec", () => {
    it("never parses an annotation that could declare __proto__", () => {
       // The tag parser's property bag is a plain object, so a `__proto__`
       // property assigns through Object.prototype. `# __proto__ { a=b }` pollutes
-      // and then throws RangeError; `# __proto__=x` pollutes silently. Both have
-      // to be refused BEFORE parsing, so a try/catch would not do: in one shape
-      // there is nothing to catch and in the other the damage precedes the throw.
+      // and then throws RangeError; `# __proto__=x` pollutes silently with an
+      // empty log. Catching the throw is not enough on its own, since one shape
+      // does not throw and the other has already done the damage by the time it
+      // does, so the guard snapshots Object.prototype and deletes whatever the
+      // parse added, which measurably restores both the prototype and later
+      // parses.
       //
       // The blast radius is the whole process, not the offending model: once
       // Object.prototype is polluted every later parse throws, so one tenant's
@@ -177,6 +180,15 @@ describe("readGivenControlSpec", () => {
          `# suggest { __proto__=q }`,
          `# artifact { __proto__ { a=b } }`,
          `# label="Region" __proto__=x`,
+         // These spell the same property with NO literal `__proto__` anywhere in
+         // the text, because MOTLY decodes escapes inside a backtick-quoted
+         // identifier. The first version of this guard was a substring denylist
+         // and these defeated it, which is why the guard now observes the effect
+         // on Object.prototype rather than trying to recognise the input.
+         "# `__prot\\o__` { a=b }",
+         "# `__prot\\o__`=x",
+         "# suggest { `__prot\\o__` { a=b } }",
+         "# `\\u005f\\u005fproto__` { a=b }",
       ]) {
          expect(() => readGivenControlSpec([hostile])).not.toThrow();
          expect(readGivenControlSpec([hostile])).toEqual({});

@@ -43,9 +43,7 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
       // keeps its `control` and silently loses its `label`. Malloy classifies
       // that line `malformed-route` and drops it, so dropping it here agrees.
       const onMotlyRoute = afterSigil === "" || /^[ \t\r\n]/.test(afterSigil);
-      return (
-         onMotlyRoute && !hasEnvReference(text) && !hasPrototypeProperty(text)
-      );
+      return onMotlyRoute && !hasEnvReference(text);
    });
 }
 
@@ -88,40 +86,72 @@ export function hasEnvReference(annotation: string): boolean {
 }
 
 /**
- * Whether an annotation could declare a `__proto__` property.
- *
- * The tag parser builds its property bag as a plain object, so a MOTLY property
- * named `__proto__` assigns through `Object.prototype` instead of into the bag.
- * Two shapes, both reachable from a given's own tags and both verified:
- *
- * - `# __proto__ { a=b }` pollutes and then throws `RangeError: Maximum call
- *   stack size exceeded`.
- * - `# __proto__=x` pollutes **silently**, no throw at all.
- *
- * Which is why this has to happen BEFORE the parse and cannot be a `try/catch`:
- * in the scalar form there is nothing to catch, and in the block form the damage
- * is already done by the time it throws. It also reaches from nested positions
- * (`givens { __proto__=x }`, `suggest { __proto__=q }`), so the whole annotation
- * is checked rather than its top level.
- *
- * The cost of missing it is not confined to the offending model. `Object.prototype`
- * stays polluted for the life of the process, so every later parse throws too,
- * including a perfectly ordinary `# label="ok"` on somebody else's package. On a
- * shared multi-tenant worker that is one tenant's five characters disabling tag
- * parsing for every package on the pod until it restarts.
- *
- * `__proto__` is the only vector: `constructor`, `prototype`, `toString`,
- * `valueOf` and `hasOwnProperty` were each checked in a fresh process and none of
- * them pollutes. Blunt on purpose, like {@link hasEnvReference}: a quoted
- * `# label="__proto__"` is harmless and is dropped anyway, because a guard that is
- * trivial to reason about beats one that is precise.
- *
- * The real fix belongs upstream, where that bag should be a `Map` or an
- * `Object.create(null)`. This guard is what keeps the defect unreachable from the
- * path this slice opens, and it should be removed once upstream lands.
+ * Message used when an annotation cannot be parsed without collateral damage.
+ * Surfaced through {@link motlyParseErrors} so the reader a later slice builds
+ * has something to report rather than a silent empty tag.
  */
-export function hasPrototypeProperty(annotation: string): boolean {
-   return annotation.includes("__proto__");
+const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
+
+/**
+ * `parseAnnotation`, with any damage it does to `Object.prototype` undone.
+ *
+ * The tag parser writes tag properties into a plain object, so a MOTLY property
+ * named `__proto__` lands on the prototype instead of in the bag. Two shapes,
+ * both reachable from a given's own tags: `# __proto__ { a=b }` adds `location`
+ * and `properties` and then throws `RangeError`, after which every later parse
+ * throws as well, and `# __proto__=x` adds `eq` and `location` silently, parsing
+ * clean with an empty log. Left alone on a shared worker, the first is one
+ * tenant's annotation disabling tag parsing for every package on the pod, and the
+ * second corrupts `Object.prototype` for all code in the process, so an ordinary
+ * `if (obj.location)` starts answering true.
+ *
+ * **This deliberately does NOT try to recognise the hostile input.** An earlier
+ * version of this guard refused any annotation containing the substring
+ * `__proto__`, and that was defeated in review: MOTLY decodes escapes inside a
+ * backtick-quoted identifier, so `` # `__prot\o__` { a=b } `` spells the same
+ * property with no such substring anywhere in the text. Any denylist of spellings
+ * invites that, and it is also the wrong shape for the upstream fix.
+ *
+ * So the effect is observed instead of the cause. `Object.prototype` is snapshotted,
+ * the parse runs, and any own property it gained is deleted, which measurably
+ * restores both the prototype and later parses. That is sound whatever the
+ * spelling, because it does not depend on predicting one. Safe to do because
+ * `parseAnnotation` is synchronous, so nothing else can run in between and the
+ * only keys removed are the ones this call added.
+ *
+ * An annotation that trips it is reported as unparseable rather than returned,
+ * since its properties are exactly the ones that went astray.
+ *
+ * A repair, not a fix. The fix is upstream, where that bag wants a `Map` or an
+ * `Object.create(null)`; this keeps the defect harmless on the one path this
+ * module opens, and should be deleted once that lands.
+ */
+function parseGuarded(texts: readonly string[]): {
+   tag: Tag | undefined;
+   messages: string[];
+} {
+   const before = Object.getOwnPropertyNames(Object.prototype);
+   const undoPollution = (): boolean => {
+      const gained = Object.getOwnPropertyNames(Object.prototype).filter(
+         (key) => !before.includes(key),
+      );
+      for (const key of gained) {
+         delete (Object.prototype as unknown as Record<string, unknown>)[key];
+      }
+      return gained.length > 0;
+   };
+   try {
+      const result = parseAnnotation([...texts]);
+      if (undoPollution())
+         return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
+      return {
+         tag: result.tag,
+         messages: result.log.map((error) => error.message),
+      };
+   } catch {
+      undoPollution();
+      return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
+   }
 }
 
 /**
@@ -344,16 +374,16 @@ function parseMotly(texts: readonly string[]): {
    // The common case is one parse of the whole set. Only a failure pays for the
    // per-line rescue below, so an entity whose annotations are all well formed
    // is not charged for a workaround it does not need.
-   const direct = parseAnnotation(motly);
-   if (direct.log.length === 0) return { tag: direct.tag, errors: [] };
+   const direct = parseGuarded(motly);
+   if (direct.messages.length === 0) return { tag: direct.tag, errors: [] };
 
    const rescued = motly.map((text) => {
-      if (parseAnnotation([text]).log.length === 0) return text;
+      if (parseGuarded([text]).messages.length === 0) return text;
       const rewritten = quoteFilterLiterals(text);
-      return parseAnnotation([rewritten]).log.length === 0 ? rewritten : text;
+      return parseGuarded([rewritten]).messages.length === 0 ? rewritten : text;
    });
-   const after = parseAnnotation(rescued);
-   return { tag: after.tag, errors: after.log.map((error) => error.message) };
+   const after = parseGuarded(rescued);
+   return { tag: after.tag, errors: after.messages };
 }
 
 /**
