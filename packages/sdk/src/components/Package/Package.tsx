@@ -27,7 +27,7 @@ import { Loading } from "../Loading";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
-import { serverBaseUrl } from "../../utils/pageEmbed";
+import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon from "./ContentTypeIcon";
 
@@ -99,7 +99,7 @@ export default function Package({
    // every other endpoint.
    // No versionId in the key: /pages serves static files, which aren't
    // versioned (listPages takes only env + package), so keying on
-   // versionId would fragment the cache and prevent PageViewer's identical
+   // versionId would fragment the cache and prevent DataAppViewer's identical
    // query from deduping.
    const pagesQuery = useQueryWithApiError({
       queryKey: ["pages", environmentName, packageName],
@@ -205,10 +205,7 @@ export default function Package({
 
          {!isLoading && (
             <>
-               <PackageSection
-                  title="Governed Reports"
-                  count={notebooks.length}
-               >
+               <PackageSection title="Notebooks" count={notebooks.length}>
                   {notebooks.map((notebook) => (
                      <PackageItemRow
                         key={notebook.path}
@@ -249,7 +246,8 @@ export default function Package({
                               onClick={(event) => {
                                  if (onClickPackageFile) {
                                     // Host app routes within SPA to an embedded
-                                    // <PageViewer> that iframes the standalone URL.
+                                    // <DataAppViewer> that iframes the standalone
+                                    // URL.
                                     // The `pages/` prefix lets the router branch
                                     // off the existing model-path catch-all.
                                     onClickPackageFile(

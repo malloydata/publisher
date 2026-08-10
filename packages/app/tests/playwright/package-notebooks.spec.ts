@@ -8,6 +8,18 @@ test.describe("package-notebooks", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
+      // The section label is the only user-visible string the Pages/Console
+      // rename changes, and no other test reads it, so a relabel that misses a
+      // surface leaves the suite green. Assert the heading before the absence
+      // check: toHaveCount(0) is already satisfied while the page is blank, so
+      // on its own it would pin nothing.
+      await expect(
+         page.getByRole("heading", { name: "Notebooks" }),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("heading", { name: "Governed Reports" }),
+      ).toHaveCount(0);
+
       await expect(
          page.getByText("storefront.malloynb", { exact: true }),
       ).toBeVisible();

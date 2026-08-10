@@ -21,7 +21,7 @@
 //
 // The "publisher:resize" postMessage protocol below is the SAME contract the
 // SPA host consumes. Its canonical definition lives in
-// packages/sdk/src/utils/pageEmbed.ts (PUBLISHER_RESIZE_MESSAGE_TYPE /
+// packages/sdk/src/utils/dataAppEmbed.ts (PUBLISHER_RESIZE_MESSAGE_TYPE /
 // PublisherResizeMessage). This file is build-step-free vanilla JS and can't
 // import it, so keep the message type/shape here in sync with that module.
 

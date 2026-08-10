@@ -1,19 +1,19 @@
-// Shared contract for serving and embedding in-package HTML pages.
+// Shared contract for serving and embedding in-package HTML data apps.
 //
-// Both the Publisher SPA host (PageViewer.tsx, Package.tsx) and the
+// Both the Publisher SPA host (DataAppViewer.tsx, Package.tsx) and the
 // build-step-free browser runtime (packages/server/src/runtime/publisher.js)
 // speak this protocol. publisher.js cannot import from here — it ships as
 // standalone vanilla JS — so it carries a cross-reference comment pointing at
 // this file as the single source of truth. Keep the two in sync.
 
 /**
- * postMessage `type` an embedded page emits to its host frame as its content
- * height changes, so the host can resize the iframe to avoid nested scrollbars.
- * Payload shape is {@link PublisherResizeMessage}.
+ * postMessage `type` an embedded data app emits to its host frame as its
+ * content height changes, so the host can resize the iframe to avoid nested
+ * scrollbars. Payload shape is {@link PublisherResizeMessage}.
  */
 export const PUBLISHER_RESIZE_MESSAGE_TYPE = "publisher:resize";
 
-/** Resize message posted by an embedded page's publisher.js runtime. */
+/** Resize message posted by an embedded data app's publisher.js runtime. */
 export interface PublisherResizeMessage {
    type: typeof PUBLISHER_RESIZE_MESSAGE_TYPE;
    /** Content height in CSS pixels. */
@@ -38,8 +38,8 @@ export function isPublisherResizeMessage(
  *
  * The static-file routes live off the server root, not under the API prefix,
  * and the data origin can differ from the SPA origin in multi-host
- * deployments — so a page's standalone URL is `serverBaseUrl(server)` joined
- * with the page's root-relative `resource`.
+ * deployments — so a data app's standalone URL is `serverBaseUrl(server)`
+ * joined with its root-relative `resource`.
  */
 export function serverBaseUrl(server: string): string {
    return server.replace(/\/api\/v0\/?$/, "");
@@ -49,7 +49,7 @@ export function serverBaseUrl(server: string): string {
  * Absolute URL of a file inside a package, as Publisher serves it:
  * `<data origin>/environments/<env>/packages/<pkg>/<path>`.
  *
- * The one home for this string. Both the page viewer's iframe and the
+ * The one home for this string. Both the data app viewer's iframe and the
  * "this is not a model" page point at it, and hand-building it in each place is
  * how the two drift.
  *
