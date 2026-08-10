@@ -2,9 +2,7 @@ import {
    DataAppViewer,
    encodeResourceUri,
    Model,
-   Notebook,
    packageFileUrl,
-   useRouterClickHandler,
    useServer,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
@@ -12,12 +10,12 @@ import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
 import { Navigate, useLocation, useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
+import NotebookPage from "../NotebookPage/NotebookPage";
 
 function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
    const { search, hash } = useLocation();
-   const navigate = useRouterClickHandler();
    const { server } = useServer();
    if (!params.environmentName) {
       return (
@@ -114,14 +112,15 @@ function ModelPage() {
       );
    }
    if (modelPath?.endsWith(".malloynb")) {
+      // Handed to a host of its own rather than rendered inline, because a
+      // notebook's parameters live in the URL now and this component reads
+      // nothing from the router beyond its path params.
       return (
-         <Box sx={wrapperSx}>
-            <Notebook
-               resourceUri={resourceUri}
-               maxResultSize={1024 * 1024}
-               onNavigate={navigate}
-            />
-         </Box>
+         <NotebookPage
+            environmentName={params.environmentName}
+            packageName={params.packageName}
+            notebookPath={modelPath}
+         />
       );
    }
    // This route is `/:environmentName/:packageName/*`, so it matches any path

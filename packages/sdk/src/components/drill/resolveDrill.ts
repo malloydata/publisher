@@ -1,0 +1,285 @@
+/**
+ * Resolving a renderer click into a `# drill` intent.
+ *
+ * `# drill { to=[…] given=… }` is written on a source *dimension*, and Malloy
+ * carries a dimension's annotations through to the query result's output field.
+ * So everything a click needs is already on the clicked field, and drill needs
+ * no endpoint of its own: the same resolution works for a dashboard tile and a
+ * notebook cell, which is the "one drill implementation" the design asks for.
+ *
+ * That propagation is the premise the whole design rests on, and NOTHING IN THIS
+ * PR pins it: the specs here drive a hand-built tag stub, deliberately, because
+ * what they test is the grammar. It is pinned against the real compiler by
+ * `packages/server/src/service/drill_probe.spec.ts`, which arrives with the
+ * dashboard slice of this split rather than here. If a Malloy upgrade stopped
+ * propagating dimension annotations, drill would go quiet everywhere at once and
+ * this slice's tests would all still pass.
+ *
+ * This module answers only *what* was asked for, which dashboards, seeding
+ * which given to which value. Navigating is the host's job.
+ */
+
+import { encodeFilterList, isFilterType } from "../given/filterValue";
+
+/**
+ * The parsed-tag surface this module reads, structurally typed.
+ *
+ * The renderer hands over an already-parsed `Tag` from `@malloydata/malloy-tag`,
+ * so naming the shape rather than importing the class keeps that package a
+ * render-time detail: SDK consumers can bundle without it, the same allowance
+ * `RenderedResult` makes for its theme annotations.
+ */
+export interface DrillTagReader {
+   tag(...at: string[]): DrillTagReader | undefined;
+   text(...at: string[]): string | undefined;
+   textArray(...at: string[]): string[] | undefined;
+}
+
+/** The clicked field, as much of it as drill reads. */
+export interface DrillField {
+   name: string;
+   tag?: DrillTagReader;
+   /**
+    * Whether the field was grouped rather than aggregated. Only dimensions
+    * drill: a measure's cell has no dimension value to seed a filter with even
+    * when the tag reaches it, so filtering by one would filter by something
+    * other than what was clicked. Optional because the renderer's click payload
+    * and its field metadata are the two callers and only one is guaranteed to
+    * carry the method; absent, the field is taken at its word.
+    */
+   wasDimension?: () => boolean;
+}
+
+/**
+ * A click from `@malloydata/render`'s `onClick`, narrowed to what drill needs.
+ * Mirrors its `MalloyClickEventPayload` without importing it, since the renderer
+ * is a lazily-imported dependency here.
+ */
+export interface DrillClickPayload {
+   field?: DrillField;
+   value?: unknown;
+   isHeader?: boolean;
+   /**
+    * The originating click, which the host needs for two things a resolved
+    * intent cannot express, where to anchor a menu of destinations, and whether
+    * a modifier was held (cmd/ctrl to open in a new tab).
+    */
+   event?: MouseEvent;
+}
+
+/** The literal `to=self`: filter the current view instead of leaving it. */
+export const DRILL_SELF = "self";
+
+/**
+ * The `to=` destinations a field's `# drill` declares, empty when it declares
+ * none or the field cannot drill.
+ *
+ * Read separately from {@link resolveDrill} because two callers need it: the
+ * click, which also needs the clicked value, and the *affordance*, which runs
+ * over the result's field metadata before any click to decide which columns read
+ * as clickable. Sharing this is what keeps the two honest: a cell that looks
+ * clickable is one whose click resolves, because both answers come from here.
+ */
+export function drillDestinations(field: DrillField | undefined): string[] {
+   if (!field) return [];
+   // `wasDimension` is only consulted when the field answers; see DrillField.
+   if (field.wasDimension && !field.wasDimension()) return [];
+   const drill = field.tag?.tag("drill");
+   if (!drill) return [];
+   // Malloyyo accepts a lone destination unbracketed (`to=overview`) as well as
+   // the list form. The server grows the same leniency in `readDrillTag`
+   // (`service/dashboard.ts`) with the dashboard slice of this split; it is not
+   // in the tree yet, so keep the two in step when it lands.
+   return (
+      drill.textArray("to") ?? [drill.text("to")].filter(isNonEmpty)
+   ).filter(isNonEmpty);
+}
+
+/**
+ * A destination slug as a menu label: `category_detail` → `Category detail`.
+ *
+ * Ported from Malloyyo so the same drill reads the same way in both, rather than
+ * naming the file on one and a sentence on the other.
+ */
+export function humanizeSlug(slug: string): string {
+   const words = slug.replace(/[-_]+/g, " ").trim();
+   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * The given a `# drill` on this field would set: `given=` when the tag names
+ * one, otherwise the dimension name upper-cased.
+ *
+ * Shared with the affordance for the same reason `drillDestinations` is: a cell
+ * reads as clickable exactly when clicking it would do something, and deciding
+ * "would it" needs the given's name before any click happens.
+ */
+export function drillGivenName(field: DrillField): string {
+   // The field name verbatim, NOT upper-cased. Given names are stored as the
+   // model spells them and matched exactly, so upper-casing meant a `to=self`
+   // on a lowercase-named dimension resolved to a given that does not exist
+   // and the click was dropped in silence. An upper-case convention is common
+   // enough that it hid this: `given: REGION` worked, `given: region` did not.
+   return field.tag?.tag("drill")?.text("given") ?? field.name;
+}
+
+/** Where a `# drill` click wants to go, for the host to route however it routes. */
+export interface DrillNavigation {
+   /** The destination dashboard's slug. */
+   dashboard: string;
+   /**
+    * Control values to open it with: the clicked value seeded into the drill's
+    * given. Only the seeded given: the source view's other filters are not
+    * carried over, since the destination need not bind them.
+    */
+   givens: Record<string, string>;
+}
+
+/** What a click asked for, once the tag on the clicked field is read. */
+export interface DrillIntent {
+   /** Destinations in declared order: dashboard slugs and/or {@link DRILL_SELF}. */
+   to: string[];
+   /** The given to seed: the dimension name upper-cased, unless `given=` says otherwise. */
+   given: string;
+   /**
+    * The clicked value as Malloy filter syntax, ready to send to a `filter<…>`
+    * given. This is the right encoding for a cross-dashboard drill, whose
+    * destination declares its own givens and is conventionally `filter<…>`.
+    */
+   value: string;
+   /**
+    * The same value before any encoding.
+    *
+    * Carried because the filter encoding above is only correct for a
+    * `filter<…>` target, and a click cannot know what it is aiming at: the
+    * destination may be another dashboard entirely. A host that *does* know,
+    * `to=self`, where the target given is one of its own: re-encodes from this
+    * with {@link encodeDrillValue}. Without it, drilling into a plain `string`
+    * given seeded it with backslash-escaped filter syntax and matched nothing.
+    */
+   rawValue: unknown;
+   /** The clicked value as it read on screen, for labelling the destination menu. */
+   label: string;
+}
+
+/**
+ * The clicked cell's value as filter syntax, or undefined when it cannot be
+ * expressed as one.
+ *
+ * Encoded from the value's own type rather than the given's, which a click does
+ * not know (a notebook cell has no control row to consult). Refusing the cases
+ * it cannot encode is deliberate: a drill that filtered by something other than
+ * the cell the user clicked would be worse than one that does nothing.
+ */
+export function drillValueToFilter(value: unknown): string | undefined {
+   if (typeof value === "string") {
+      // An empty cell is refused, like null below. `encodeFilterList` drops an
+      // empty value, so encoding one yields the EMPTY filter, which matches
+      // every row: a drill that silently widened instead of narrowing. Refusing
+      // is both safer and consistent with how the null case is treated.
+      if (value === "") return undefined;
+      return encodeFilterList([value]);
+   }
+   if (typeof value === "boolean") return String(value);
+   if (typeof value === "number") {
+      // A bare number reads as equality. NaN/Infinity have no filter spelling.
+      return Number.isFinite(value) ? String(value) : undefined;
+   }
+   if (value instanceof Date) {
+      // Malloy's date filter literal. Deliberately day-granularity: seeding a
+      // timestamp to the millisecond would filter to a single row nobody asked
+      // for, and the clicked cell was a truncated date in the first place.
+      const iso = value.toISOString();
+      return iso.slice(0, iso.indexOf("T"));
+   }
+   // null included: "the rows with no value" is expressible in Malloy, but
+   // clicking an empty cell is far more likely a misclick than that request.
+   return undefined;
+}
+
+/** How the clicked value read on screen, for a menu label. */
+function drillValueLabel(value: unknown): string {
+   if (value instanceof Date) return drillValueToFilter(value) ?? "";
+   return String(value);
+}
+
+/**
+ * Read the `# drill` intent off a renderer click, or undefined when the click
+ * was not on a drillable value.
+ *
+ * Silent on anything untagged, which is most clicks: this runs on every click
+ * the renderer reports, so "not a drill" is the ordinary answer, not a fault.
+ */
+export function resolveDrill(
+   payload: DrillClickPayload | undefined,
+): DrillIntent | undefined {
+   // A column header names the field rather than carrying a value, so there is
+   // nothing to seed even though the tag is on the field the header belongs to.
+   if (!payload || payload.isHeader) return undefined;
+
+   const field = payload.field;
+   if (!field) return undefined;
+
+   const to = drillDestinations(field);
+   if (to.length === 0) return undefined;
+
+   const value = drillValueToFilter(payload.value);
+   if (value === undefined) return undefined;
+
+   return {
+      to,
+      given: drillGivenName(field),
+      value,
+      rawValue: payload.value,
+      label: drillValueLabel(payload.value),
+   };
+}
+
+function isNonEmpty(value: string | undefined): value is string {
+   return typeof value === "string" && value !== "";
+}
+
+/**
+ * A clicked value encoded for a given whose declared type is known.
+ *
+ * `filter<…>` takes filter syntax, so the value is escaped into a one-value
+ * filter list. Every other type takes the value itself: a plain `string` given
+ * seeded with `Ben\ &\ Jerry` would match nothing, because the escaping is
+ * meaningful only to the filter parser.
+ *
+ * Undefined when the value has no spelling for that type, which the caller
+ * should treat the way it treats an unresolvable drill: do nothing.
+ */
+export function encodeDrillValue(
+   rawValue: unknown,
+   targetType: string | undefined,
+): string | number | boolean | undefined {
+   if (targetType !== undefined && !isFilterType(targetType)) {
+      // Returned in the given's OWN type, not stringified. `givensToRequest`
+      // converts only `Date`, so a string sent for a `number` or `boolean` given
+      // travels as a string and Malloy refuses the query.
+      if (targetType === "number") {
+         const parsed =
+            typeof rawValue === "number" ? rawValue : Number(rawValue);
+         return typeof rawValue === "boolean" || !Number.isFinite(parsed)
+            ? undefined
+            : parsed;
+      }
+      if (targetType === "boolean") {
+         if (typeof rawValue === "boolean") return rawValue;
+         if (rawValue === "true") return true;
+         if (rawValue === "false") return false;
+         return undefined;
+      }
+      // An empty cell is refused here too, for the same reason as in
+      // `drillValueToFilter`: on a plain given it is a real but almost certainly
+      // unintended value, and clicking a blank cell is far more likely a misclick.
+      if (typeof rawValue === "string")
+         return rawValue === "" ? undefined : rawValue;
+      if (typeof rawValue === "number") {
+         return Number.isFinite(rawValue) ? String(rawValue) : undefined;
+      }
+      if (typeof rawValue === "boolean") return String(rawValue);
+   }
+   return drillValueToFilter(rawValue);
+}

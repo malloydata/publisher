@@ -3,6 +3,7 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { Box, Button, IconButton, Tooltip, Typography } from "@mui/material";
 import { lazy, Suspense, useRef, useState } from "react";
 import { LogMessage } from "../../client";
+import type { DrillBinding } from "../drill/useDrill";
 import { Loading } from "../Loading";
 import { summarizeRenderLogs } from "./renderLogs";
 
@@ -18,6 +19,10 @@ interface ResultContainerProps {
    // Render tag findings from the query response. Callers whose result did not
    // come from a query response have none to pass.
    renderLogs?: LogMessage[];
+   // `# drill` click handling and its affordance. Passed straight through: this
+   // is the one render path dashboards and notebooks share, which is what lets
+   // drill be implemented once for both.
+   drill?: DrillBinding;
 }
 
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
@@ -29,6 +34,7 @@ export default function ResultContainer({
    maxHeight,
    maxResultSize = 0,
    renderLogs,
+   drill,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
    const [measuredHeight, setMeasuredHeight] = useState(maxHeight);
@@ -95,6 +101,7 @@ export default function ResultContainer({
                   result={result}
                   height={renderedHeight}
                   onSizeChange={setMeasuredHeight}
+                  drill={drill}
                />
             </Suspense>
          )}

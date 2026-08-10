@@ -40,7 +40,7 @@ using it would have meant bringing in a second test runner alongside `bun test`.
 ```tsx
 import { describe, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
-import type { GivenValue } from "../../hooks/useGivensForm";
+import type { GivenValue } from "../../hooks/givenValue";
 import { GivenInput } from "./GivenInput";
 
 it("reverts rather than blanking the field", () => {
@@ -72,23 +72,27 @@ No JSX is needed, so a hook spec is a plain `.spec.ts`.
 import { act, renderHook } from "@testing-library/react";
 
 const { result, rerender } = renderHook(
-   ({ declared }) => useGivensForm(declared),
-   { initialProps: { declared: [{ name: "region" }] } },
+   ({ types }) => useGivensState({ declaredTypes: types, autorun: true }),
+   { initialProps: { types: new Map([["REGION", "filter<string>"]]) } },
 );
 
-act(() => result.current.updateGiven("region", "CA"));
-expect(result.current.givenValues.get("region")).toBe("CA");
+act(() => result.current.setGiven("REGION", "West"));
+expect(result.current.applied.get("REGION")).toBe("West");
 
-rerender({ declared: [] });   // props change, effects flush
+rerender({ types: new Map() });   // props change, effects flush
 ```
 
 `result.current` is re-read after every update, so hold onto the object rather
 than destructuring off it. Wrap anything that sets state in `act()`.
 
-`src/hooks/useGivensForm.spec.ts` is the worked example, and its last test is
-worth copying: it renders a hook with a deliberately unmemoized argument to
-prove the hook settles instead of re-rendering forever. That is a real defect
-class here, and it is invisible to a test that only ever passes stable inputs.
+`src/hooks/useGivensState.spec.ts` is the worked example, and two things in it
+are worth copying. Its last test renders the hook with deliberately unmemoized
+arguments to prove it settles instead of re-rendering forever; that is a real
+defect class here, and it is invisible to a test that only ever passes stable
+inputs. And its `renderWithUrlHost` helper feeds the hook's own output back in
+as props, the way the page hosts do through the URL. Several defects in that
+hook only appear on the second half of that loop, so a spec that treats the
+props as constant cannot see them.
 
 ## Where specs live, and what not to break
 
