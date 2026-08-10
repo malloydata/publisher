@@ -24,6 +24,11 @@ export async function initializeSchema(
       await dropLegacyProjectSchema(db);
       logger.info("Creating database schema for the first time...");
    }
+   // Re-keying `incremental_ledger` has to happen on an ALREADY-initialized
+   // database — that is the only case where the old key is on disk — so it runs
+   // outside the branch above rather than beside the legacy-projects drop.
+   await dropPackageKeyedIncrementalLedger(db);
+
    // Always fall through to the CREATE TABLE IF NOT EXISTS pass below.
    // The statements are idempotent and let an already-initialized DB pick
    // up new tables added in later builds (e.g., the `themes` table for
@@ -126,19 +131,36 @@ export async function initializeSchema(
 
    // Incremental ledger.
    //
-   // One row per persisted source lineage that refreshes incrementally, holding
-   // the durable `covered_through` boundary: the exclusive upper end of the
-   // watermark range the serving table is known to contain. A delta run reads it
-   // as the range's start, and advances it only after the DML commits, which is
-   // what makes a crash between the two a repeat rather than a gap.
+   // One row per TABLE that refreshes incrementally, holding the durable
+   // `covered_through` boundary: the exclusive upper end of the watermark range
+   // that table is known to contain. A delta run reads it as the range's start,
+   // and advances it only after the DML commits, which is what makes a crash
+   // between the two a repeat rather than a gap.
    //
-   // The declaration columns are not bookkeeping. Changing `watermark=` or
-   // `merge_key=` changes the DML WITHOUT moving the source's content address
-   // (proven in incremental_compiler_contract.spec.ts), so the address alone
-   // cannot tell a delta that the rules changed under it. Recording what the
-   // boundary was computed under lets the build path detect the mismatch and
-   // re-seed instead of applying a delta whose semantics no longer match the
-   // table.
+   // Keyed on (environment, connection, physical table) because that is what the
+   // boundary is a fact ABOUT. It was keyed on (environment, package, source
+   // address) and that was wrong in a way only an orchestrated host could see: a
+   // host that serves several versions of one package presents a version-
+   // qualified package name (Credible sends `<package>|<versionId>`, which is how
+   // one worker holds several versions at once), so a table shared across those
+   // versions got a fresh ledger row on the first refresh after every publish. No
+   // row means no boundary, and no boundary means a full re-seed — of a table
+   // whose whole purpose is not being rebuilt. Worse, the re-seed lands on the
+   // serving table's own name, so it goes DROP + RENAME over a live table instead
+   // of the atomic cutover a fresh generation gets.
+   //
+   // The declaration columns — the watermark, the merge keys, the strategy, and
+   // the source's content address — are not bookkeeping. Each is recorded so the
+   // read can REFUSE (ledgerLineageMismatch): a change to any of them means the
+   // boundary was measured under rules that no longer apply, so the build path
+   // re-seeds rather than applying a delta whose semantics no longer match the
+   // table. The address needs comparing because it stopped being the key, and a
+   // table's name need not change when its definition does — a standalone
+   // publisher's names are `#@ persist name=` or the source name, with no content
+   // token. The watermark and merge keys need comparing because changing them
+   // changes the DML WITHOUT moving the address at all (proven in
+   // incremental_compiler_contract.spec.ts), so not even the address would be
+   // sufficient on its own.
    //
    // No claim/lease column: the single writer is already guaranteed by the
    // `active_key` unique index on `materializations` (at most one active run per
@@ -159,7 +181,7 @@ export async function initializeSchema(
       advanced_by_materialization_id VARCHAR,
       advanced_at TIMESTAMP NOT NULL,
       created_at TIMESTAMP NOT NULL,
-      PRIMARY KEY (environment_id, package_name, source_entity_id)
+      PRIMARY KEY (environment_id, connection_name, physical_table_name)
     )
   `);
 
@@ -200,9 +222,53 @@ export async function initializeSchema(
    await db.run(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
    );
+   // Not a key prefix any more, and so load-bearing rather than merely helpful:
+   // deleting a package's rows is now a scan of a non-key column.
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_incremental_ledger_environment_package ON incremental_ledger(environment_id, package_name)",
    );
+}
+
+/**
+ * Drop an `incremental_ledger` still keyed on (environment, package, source
+ * address), so the pass above recreates it keyed on the table.
+ *
+ * DuckDB cannot re-key a table in place and this schema has no migration
+ * framework, so the choice is drop-and-recreate or leave the old key on disk
+ * silently. Dropping is safe here in a way it would not be for any other table:
+ * the ledger is a CACHE of a boundary the publisher can always re-derive, and its
+ * miss path is a seed — the same fallback every unprovable fact takes. Losing it
+ * costs one full rebuild per incremental source, which is exactly what the old key
+ * was already costing on every publish.
+ */
+async function dropPackageKeyedIncrementalLedger(
+   db: DuckDBConnection,
+): Promise<void> {
+   const present = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='incremental_ledger'",
+   );
+   if (!present || present.length === 0) {
+      return;
+   }
+   // `pk` is true for every column of a composite primary key, so the old key is
+   // identifiable by package_name being part of it. Reading the key rather than a
+   // schema version means this is self-limiting: once no database has the old key,
+   // it never fires again.
+   const columns = await db.all<{ name: string; pk: boolean }>(
+      "PRAGMA table_info('incremental_ledger')",
+   );
+   const keyedOnPackage = columns.some(
+      (column) => column.name === "package_name" && Boolean(column.pk),
+   );
+   if (!keyedOnPackage) {
+      return;
+   }
+   logger.info(
+      "Re-keying the incremental ledger onto (environment, connection, table); " +
+         "recorded covered_through boundaries are discarded, so each incremental " +
+         "source rebuilds in full once and then resumes advancing by delta",
+   );
+   await db.run("DROP TABLE IF EXISTS incremental_ledger");
 }
 
 /**

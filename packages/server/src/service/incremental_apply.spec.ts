@@ -623,6 +623,7 @@ describe("deltaStatements: merge", () => {
 const LINEAGE = {
    physicalTableName: "analytics.daily",
    connectionName: "wh",
+   sourceEntityId: "sid",
    watermarkName: "order_date",
    watermarkType: "date",
    mergeKeys: [] as string[],
@@ -665,6 +666,19 @@ describe("ledgerLineageMismatch", () => {
             "analytics.other",
          ) as unknown as string,
       });
+   });
+
+   it("rejects a boundary measured over different build SQL", () => {
+      // Load-bearing since the ledger stopped being keyed on the content address:
+      // a standalone publisher's table names carry no content token, so an edited
+      // model keeps its table name and the read HITS. Without this check the
+      // delta would be applied to a table its own definition no longer describes.
+      const mismatch = ledgerLineageMismatch(
+         { ...LEDGER, sourceEntityId: "sid-before-the-edit" },
+         LINEAGE,
+      );
+      expect(mismatch?.reasonCode).toBe("lineage_changed");
+      expect(mismatch?.reason).toContain("content address");
    });
 
    it("rejects a boundary advanced on another connection", () => {

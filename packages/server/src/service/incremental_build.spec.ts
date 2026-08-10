@@ -43,6 +43,7 @@ function lineage(
       dialect: overrides.dialect ?? "postgres",
       physicalTableName: "orders_v1",
       connectionName: "wh",
+      sourceEntityId: "addr-1",
       isStorageBuild: overrides.isStorageBuild ?? false,
    });
 }
@@ -63,6 +64,7 @@ describe("incrementalLineage", () => {
       ).toEqual({
          physicalTableName: "orders_v1",
          connectionName: "wh",
+         sourceEntityId: "addr-1",
          watermarkName: "order_date",
          watermarkType: "date",
          mergeKeys: ["order_id", "region"],
