@@ -43,7 +43,9 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
       // keeps its `control` and silently loses its `label`. Malloy classifies
       // that line `malformed-route` and drops it, so dropping it here agrees.
       const onMotlyRoute = afterSigil === "" || /^[ \t\r\n]/.test(afterSigil);
-      return onMotlyRoute && !hasEnvReference(text);
+      return (
+         onMotlyRoute && !hasEnvReference(text) && !hasPrototypeProperty(text)
+      );
    });
 }
 
@@ -86,6 +88,43 @@ export function hasEnvReference(annotation: string): boolean {
 }
 
 /**
+ * Whether an annotation could declare a `__proto__` property.
+ *
+ * The tag parser builds its property bag as a plain object, so a MOTLY property
+ * named `__proto__` assigns through `Object.prototype` instead of into the bag.
+ * Two shapes, both reachable from a given's own tags and both verified:
+ *
+ * - `# __proto__ { a=b }` pollutes and then throws `RangeError: Maximum call
+ *   stack size exceeded`.
+ * - `# __proto__=x` pollutes **silently**, no throw at all.
+ *
+ * Which is why this has to happen BEFORE the parse and cannot be a `try/catch`:
+ * in the scalar form there is nothing to catch, and in the block form the damage
+ * is already done by the time it throws. It also reaches from nested positions
+ * (`givens { __proto__=x }`, `suggest { __proto__=q }`), so the whole annotation
+ * is checked rather than its top level.
+ *
+ * The cost of missing it is not confined to the offending model. `Object.prototype`
+ * stays polluted for the life of the process, so every later parse throws too,
+ * including a perfectly ordinary `# label="ok"` on somebody else's package. On a
+ * shared multi-tenant worker that is one tenant's five characters disabling tag
+ * parsing for every package on the pod until it restarts.
+ *
+ * `__proto__` is the only vector: `constructor`, `prototype`, `toString`,
+ * `valueOf` and `hasOwnProperty` were each checked in a fresh process and none of
+ * them pollutes. Blunt on purpose, like {@link hasEnvReference}: a quoted
+ * `# label="__proto__"` is harmless and is dropped anyway, because a guard that is
+ * trivial to reason about beats one that is precise.
+ *
+ * The real fix belongs upstream, where that bag should be a `Map` or an
+ * `Object.create(null)`. This guard is what keeps the defect unreachable from the
+ * path this slice opens, and it should be removed once upstream lands.
+ */
+export function hasPrototypeProperty(annotation: string): boolean {
+   return annotation.includes("__proto__");
+}
+
+/**
  * Malloy's `#"` doc-comment text, which `title` falls back to. `#"` resolves to
  * the `"` route, whose payload is prose rather than MOTLY, so it is read as
  * text: sigil, route sigil, one separator, then the content.
@@ -109,6 +148,10 @@ export function docCommentText(texts: readonly string[]): string | undefined {
 
 /**
  * Quote bare filter literals so MOTLY can parse them.
+ *
+ * New in this change, carried across from #935 rather than fixed in place: there
+ * is no version of this on `main`, so nothing here is a regression in a shipped
+ * release. The defects described below were found and fixed while extracting it.
  *
  * Malloyyo documents per-dashboard starting values as filter literals, as in
  * `# artifact { givens { MANUFACTURER=f'Ford Motor Company' } }`, but MOTLY has

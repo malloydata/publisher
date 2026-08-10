@@ -3352,7 +3352,11 @@ components:
         given rather than to any one surface, which is what lets a notebook and
         an SDK host render the same control without restating it. Each of those
         six is present only when the declaration carries the tag it reads, so a
-        given tagged with none of them carries none of them.
+        given tagged with none of them carries none of them. A tag whose value is
+        not one this contract accepts is dropped the same way rather than
+        reported, so an unrecognized `control`, or a `rangeMin`/`rangeMax` that is
+        not a number, is absent here and indistinguishable from never having been
+        written.
       properties:
         name:
           type: string

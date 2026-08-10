@@ -154,6 +154,43 @@ describe("readGivenControlSpec", () => {
       });
    });
 
+   it("never parses an annotation that could declare __proto__", () => {
+      // The tag parser's property bag is a plain object, so a `__proto__`
+      // property assigns through Object.prototype. `# __proto__ { a=b }` pollutes
+      // and then throws RangeError; `# __proto__=x` pollutes silently. Both have
+      // to be refused BEFORE parsing, so a try/catch would not do: in one shape
+      // there is nothing to catch and in the other the damage precedes the throw.
+      //
+      // The blast radius is the whole process, not the offending model: once
+      // Object.prototype is polluted every later parse throws, so one tenant's
+      // tag would take out tag parsing for every package on a shared worker.
+      const polluted = () =>
+         Object.getOwnPropertyNames(Object.prototype).some((key) =>
+            ["properties", "location"].includes(key),
+         );
+      expect(polluted()).toBe(false);
+
+      for (const hostile of [
+         `# __proto__ { a=b }`,
+         `# __proto__=x`,
+         `# givens { __proto__=x }`,
+         `# suggest { __proto__=q }`,
+         `# artifact { __proto__ { a=b } }`,
+         `# label="Region" __proto__=x`,
+      ]) {
+         expect(() => readGivenControlSpec([hostile])).not.toThrow();
+         expect(readGivenControlSpec([hostile])).toEqual({});
+         expect(polluted()).toBe(false);
+      }
+
+      // Still parsing normally afterwards, which is what pollution would break.
+      expect(readGivenControlSpec([`# label="ok"`])).toEqual({ label: "ok" });
+      expect(
+         readStartingGivens(motlyTag([`## givens { __proto__=x }`])),
+      ).toBeUndefined();
+      expect(polluted()).toBe(false);
+   });
+
    it("never derives a value hydrated from the server's environment", () => {
       // MOTLY resolves `@env.NAME` against the Publisher process environment.
       // Plain `#` tags used to stay server-side, so that was harmless; deriving
