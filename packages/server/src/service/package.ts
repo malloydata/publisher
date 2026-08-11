@@ -58,6 +58,19 @@ import {
 } from "./incremental_policy";
 import { materializationConfigWarnings } from "./materialization_config_validation";
 import { CronEvaluator } from "./cron_evaluator";
+import {
+   buildDashboardManifest,
+   COMPONENT_FILE_SUFFIXES,
+   DASHBOARDS_DIR,
+   dashboardSlug,
+   isDashboardModelPath,
+   lintDashboard,
+   lintDrillTargets,
+   lintSelfDrills,
+   lintUndiscoveredDashboard,
+   type DashboardManifest,
+   type DashboardModelFacts,
+} from "./dashboard";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
@@ -66,6 +79,8 @@ import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiNotebook = components["schemas"]["Notebook"];
+type ApiDashboard = components["schemas"]["Dashboard"];
+type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiColumn = components["schemas"]["Column"];
@@ -206,6 +221,16 @@ export class Package {
    // tag does not fail the load (see Model.validateRenderTags); this is the
    // response-level signal that a tag is misconfigured.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   // Load-time dashboard lint findings, on the same read-only warnings surface
+   // as the render-tag ones. Refreshed with the dashboards on load and reload.
+   private dashboardWarnings: ApiPackageWarning[] = [];
+   // Dashboards discovered in `dashboards/`, keyed by slug, in path order.
+   // Computed once per load/reload rather than per request: the artifact tag is
+   // a property of the compiled model, so it can only change when the models do.
+   // A dashboard file that failed to compile has no readable tag, so it lands
+   // here as a slug-titled entry carrying its error rather than disappearing.
+   private dashboards: Map<string, DashboardManifest & { error?: string }> =
+      new Map();
    /**
     * Manifest-shape deprecations the load tolerated (a root-level `scope`), kept
     * so publish can report a still-parsing-but-outdated manifest. Not on the wire
@@ -659,6 +684,7 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
+      await pkg.discoverDashboards();
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
@@ -861,10 +887,12 @@ export class Package {
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
       }
-      // Render-tag findings and storage= warnings share the one operator-facing
-      // warnings array (the {model, subject, message} shape carries both).
+      // Render-tag findings, dashboard lint findings, and storage= warnings share
+      // the one operator-facing warnings array (the {model, subject, message}
+      // shape carries all of them).
       const allWarnings = [
          ...this.renderTagWarnings,
+         ...this.dashboardWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A listed model whose curated surface is empty. Advisory (an
@@ -1865,6 +1893,7 @@ export class Package {
       // the manifest that substitutes its rollup tables.
       await this.pushPreaggregateServeModels();
       this.renderTagWarnings = renderTagWarnings;
+      await this.discoverDashboards();
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
@@ -1940,6 +1969,210 @@ export class Package {
       return values;
    }
 
+   /**
+    * Re-read the package's dashboards from its compiled models. Called at load
+    * and after every reload, because a dashboard is defined by an annotation on
+    * a compiled model — it cannot change without the models changing.
+    *
+    * Never throws: a package whose dashboards can't be read still serves its
+    * models. A file in `dashboards/` with no artifact tag is a shared include
+    * and is skipped, exactly as Malloyyo treats it.
+    */
+   private async discoverDashboards(): Promise<void> {
+      const discovered = new Map<
+         string,
+         DashboardManifest & { error?: string }
+      >();
+      // Kept alongside the manifests so the lint runs once, after every
+      // dashboard is known: a drill target can only be checked against the
+      // complete slug set.
+      const factsByPath = new Map<string, DashboardModelFacts>();
+      // Every model, not just the dashboard files, because `# drill` is
+      // declared on a model dimension: a tag reachable only from a notebook, or
+      // one in a package with no dashboards at all, is exactly as breakable and
+      // would otherwise never be checked.
+      const allFacts = new Map<string, DashboardModelFacts>();
+      for (const modelPath of Array.from(this.models.keys()).sort()) {
+         const model = this.models.get(modelPath);
+         if (!model) continue;
+
+         let facts: DashboardModelFacts | undefined;
+         try {
+            facts = model.getDashboardModelFacts();
+            if (facts) allFacts.set(modelPath, facts);
+         } catch (err) {
+            logger.warn("Reading a model's dashboard facts failed", {
+               packageName: this.packageName,
+               modelPath,
+               error: errMessage(err),
+            });
+         }
+
+         if (!isDashboardModelPath(modelPath)) continue;
+         const name = dashboardSlug(modelPath);
+         if (!facts) {
+            // Unreadable ⇒ the file failed to compile, so its artifact tag
+            // cannot be read. List it anyway, with the error: a broken
+            // dashboard should be visibly broken, not silently absent.
+            const error = model.getCompilationError();
+            if (error) {
+               discovered.set(name, {
+                  name,
+                  title: name,
+                  autorun: true,
+                  entryFile: modelPath,
+                  givens: [],
+                  error: error.message,
+               });
+            }
+            continue;
+         }
+         try {
+            const manifest = buildDashboardManifest(facts);
+            if (manifest) discovered.set(name, manifest);
+            // Kept even without a manifest: a file that produced no dashboard
+            // still has to be explained if its tag failed to parse.
+            factsByPath.set(modelPath, facts);
+         } catch (err) {
+            logger.warn("Dashboard discovery failed", {
+               packageName: this.packageName,
+               modelPath,
+               error: errMessage(err),
+            });
+         }
+      }
+      this.dashboards = discovered;
+      this.dashboardWarnings = await this.lintDashboards(factsByPath, allFacts);
+      for (const warning of this.dashboardWarnings) {
+         logger.warn("Dashboard lint", {
+            packageName: this.packageName,
+            model: warning.model,
+            detail: warning.message,
+         });
+      }
+   }
+
+   /**
+    * Run the dashboard lint across the package once discovery has settled.
+    *
+    * Never throws: a lint failure must not cost the package its dashboards. The
+    * findings ride the package response as non-fatal `warnings`, the same
+    * surface render-tag findings use, rather than a separate verb.
+    */
+   private async lintDashboards(
+      factsByPath: ReadonlyMap<string, DashboardModelFacts>,
+      allFacts: ReadonlyMap<string, DashboardModelFacts>,
+   ): Promise<ApiPackageWarning[]> {
+      const warnings: ApiPackageWarning[] = [];
+      try {
+         const knownSlugs = new Set(this.dashboards.keys());
+         for (const [modelPath, facts] of factsByPath) {
+            const manifest = this.dashboards.get(dashboardSlug(modelPath));
+            const findings = manifest
+               ? lintDashboard(facts, manifest)
+               : lintUndiscoveredDashboard(facts);
+            for (const finding of findings) {
+               warnings.push({ model: modelPath, ...finding });
+            }
+         }
+         // Drill tags live on model dimensions, not on any one dashboard, so
+         // they are reported against the package rather than a single file,
+         // and they are scanned across every model rather than only the
+         // dashboard files — a notebook cell drills from the same tag.
+         const drillFacts = Array.from(allFacts.values());
+         for (const finding of lintDrillTargets(drillFacts, knownSlugs)) {
+            warnings.push(finding);
+         }
+         for (const finding of lintSelfDrills(drillFacts)) {
+            warnings.push(finding);
+         }
+         for (const finding of await this.unsupportedComponentWarnings()) {
+            warnings.push(finding);
+         }
+      } catch (err) {
+         logger.warn("Dashboard lint failed", {
+            packageName: this.packageName,
+            error: errMessage(err),
+         });
+      }
+      return warnings;
+   }
+
+   /**
+    * A `dashboards/*.jsx` (or `.tsx`) in a package Publisher is serving.
+    *
+    * Malloyyo renders such a file as the dashboard's custom component;
+    * Publisher does not implement that, so the file is inert here. This exists
+    * for the migration case: a Malloyyo repo registered unchanged would
+    * otherwise show its custom dashboards as an empty tile grid, or as nothing
+    * at all, with no indication that a file was skipped. Say so at load, and
+    * name the surface that does run author-written code.
+    */
+   private async unsupportedComponentWarnings(): Promise<ApiPackageWarning[]> {
+      const dir = safeJoinUnderRoot(this.packagePath, DASHBOARDS_DIR);
+      let entries: string[];
+      try {
+         entries = await fs.readdir(dir);
+      } catch {
+         return [];
+      }
+      const warnings: ApiPackageWarning[] = [];
+      for (const entry of entries.sort()) {
+         const suffix = COMPONENT_FILE_SUFFIXES.find((s) => entry.endsWith(s));
+         if (!suffix) continue;
+         const base = entry.slice(0, -suffix.length);
+         warnings.push({
+            model: `${DASHBOARDS_DIR}/${entry}`,
+            subject: base,
+            message:
+               `Custom dashboard components are not supported, so ` +
+               `"${DASHBOARDS_DIR}/${entry}" is ignored. Any ` +
+               `${DASHBOARDS_DIR}/${base}${MODEL_FILE_SUFFIX} beside it still ` +
+               `renders from its tags. For a page that runs its own code, use ` +
+               `an HTML data app in the package's public/ directory.`,
+            severity: "warn",
+         });
+      }
+      return warnings;
+   }
+
+   public listDashboards(): ApiDashboard[] {
+      return Array.from(this.dashboards.values()).map((manifest) => ({
+         resource: this.dashboardResource(manifest.name),
+         packageName: this.packageName,
+         name: manifest.name,
+         path: manifest.entryFile,
+         title: manifest.title,
+         description: manifest.description,
+         error: manifest.error,
+      }));
+   }
+
+   /** The full manifest for one dashboard, or undefined if there is no such slug. */
+   public getDashboard(name: string): ApiDashboardManifest | undefined {
+      const manifest = this.dashboards.get(name);
+      if (!manifest) return undefined;
+      return {
+         resource: this.dashboardResource(manifest.name),
+         packageName: this.packageName,
+         name: manifest.name,
+         path: manifest.entryFile,
+         title: manifest.title,
+         description: manifest.description,
+         error: manifest.error,
+         query: manifest.query,
+         tiles: manifest.tiles,
+         dashboardColumns: manifest.dashboardColumns,
+         startingGivens: manifest.startingGivens,
+         autorun: manifest.autorun,
+         givens: manifest.givens,
+      };
+   }
+
+   private dashboardResource(name: string): string {
+      return `${API_PREFIX}/environments/${this.environmentName}/packages/${this.packageName}/dashboards/${name}`;
+   }
+
    public async listNotebooks(): Promise<ApiNotebook[]> {
       return await Promise.all(
          Array.from(this.models.keys())
@@ -1947,11 +2180,18 @@ export class Package {
                return modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
             })
             .map(async (modelPath) => {
-               const error = this.models.get(modelPath)?.getNotebookError();
+               const model = this.models.get(modelPath);
+               const error = model?.getNotebookError();
+               // A notebook that failed to compile has no cells and no
+               // annotations to read a title from, so it lists as its filename
+               // with the error — the same way a broken dashboard does.
+               const listing = model?.getNotebookListing() ?? {};
                return {
                   environmentName: this.environmentName,
                   packageName: this.packageName,
                   path: modelPath,
+                  title: listing.title,
+                  description: listing.description,
                   error: error?.message,
                };
             }),
