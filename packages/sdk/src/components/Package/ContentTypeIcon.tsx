@@ -1,6 +1,6 @@
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
 
-type ContentType = "report" | "model" | "data" | "materialization" | "page";
+type ContentType = "report" | "model" | "data" | "materialization" | "dataApp";
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
    type: ContentType;
@@ -39,7 +39,7 @@ export default function ContentTypeIcon({
          {type === "model" && <BoxTopPath />}
          {type === "data" && <TablePath />}
          {type === "materialization" && <StackPath />}
-         {type === "page" && <BrowserWindowPath />}
+         {type === "dataApp" && <BrowserWindowPath />}
       </SvgIcon>
    );
 }

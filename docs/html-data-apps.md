@@ -234,7 +234,7 @@ hook a host application uses to pass a signed token into an embedded page (see
 
 What the Publisher server enforces on these routes is the package's own model
 governance: filter and runtime-parameter (given) rules, access modifiers, and
-`#(authorize)` annotations are applied when the query compiles and runs. The static file, page-listing, and
+`#(authorize)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
 events routes themselves are open; treat anything you put under `public/` as
 world-readable to anyone who can reach the server, and keep secrets in the models
 and the database, behind the query API, not in the page.
@@ -302,13 +302,13 @@ page never reaches network idle, so a Playwright or Puppeteer check that waits f
 hangs. Wait on `load` plus a content selector instead. This holds with watch mode off too, since
 the stream still connects to hear `mode: disabled`.
 
-## Full-screen apps in the page viewer
+## Full-screen apps in the data app viewer
 
-When you open a page from inside the Publisher Console (the package's Pages list), it
-is shown in an iframe wrapped in light chrome (a title and an "open standalone"
-link). By default that iframe is sized to the page's content height: the page's
-runtime measures how tall its content actually is and the viewer matches it, so
-an ordinary dashboard never gets a nested scrollbar.
+When you open a data app from inside the Publisher Console (the package's Data
+Apps list), it is shown in an iframe wrapped in light chrome (a title and an
+"open standalone" link). By default that iframe is sized to the page's content
+height: the page's runtime measures how tall its content actually is and the
+viewer matches it, so an ordinary dashboard never gets a nested scrollbar.
 
 A full-screen app, such as a slide deck that sizes itself to `100vh`, has no
 content height to measure, so the default sizing would clip it. Declare that the
@@ -322,15 +322,16 @@ The viewer then makes the iframe fill the available height, so the page's own
 `100vh` resolves against the real viewport and looks the same as it does opened
 standalone. Because the viewer reads this tag from the page's markup, it works
 even for a page that does not load `publisher.js`. The tag must sit near the top
-of `<head>` (within the first 4KB, the same window the title is read from). Pages
+of `<head>` (within the first 4KB, the same window the title is read from). Apps
 without it keep content-height sizing, so marking one app full-screen does not
 affect any other page, and opening a page directly at
 `/environments/<env>/packages/<pkg>/<file>` is unaffected either way.
 
-## Listing a package's pages
+## Listing a package's data apps
 
-`GET /api/v0/environments/<env>/packages/<pkg>/pages` returns the package's HTML
-pages, which the Publisher Console uses to show what a package offers. Each entry is:
+`GET /api/v0/environments/<env>/packages/<pkg>/data-apps` returns the package's
+HTML data apps, which the Publisher Console uses to show what a package offers.
+Each entry is:
 
 ```json
 {
@@ -346,7 +347,7 @@ pages, which the Publisher Console uses to show what a package offers. Each entr
 the page's `<title>` tag, falling back to `path`. An entry also carries
 `fit: "viewport"` when the page opts into filling the viewer with
 `<meta name="publisher:fit" content="viewport">` (see
-[Full-screen apps in the page viewer](#full-screen-apps-in-the-page-viewer)), and
+[Full-screen apps in the data app viewer](#full-screen-apps-in-the-data-app-viewer)), and
 omits the field otherwise. The listing covers `.html` and `.htm` files up to
 three directories deep and is empty for a package with no `public/` directory.
 
@@ -376,8 +377,8 @@ the manifest field reference is [packages.md](packages.md).
   your pages (for example to your own app's origin), and do so for any page that
   shows sensitive data. All responses carry `X-Content-Type-Options: nosniff`.
 - The query API applies the model's governance (filters, access modifiers,
-  authorize annotations). The static, pages, and events routes do not add their
-  own auth, so do not place anything sensitive under `public/`.
+  authorize annotations). The static, data-apps, and events routes do not add
+  their own auth, so do not place anything sensitive under `public/`.
 
 ## Reference
 
@@ -388,7 +389,7 @@ Endpoints used by an HTML data app:
 | `GET /environments/<env>/packages/<pkg>/<file>` | Serve a file from `public/` |
 | `GET /sdk/publisher.js` | The page runtime |
 | `POST /api/v0/environments/<env>/packages/<pkg>/models/<model>/query` | Run a query (used by `Publisher.query`) |
-| `GET /api/v0/environments/<env>/packages/<pkg>/pages` | List the package's pages |
+| `GET /api/v0/environments/<env>/packages/<pkg>/data-apps` | List the package's data apps |
 | `GET /api/v0/environments/<env>/packages/<pkg>/events` | Live-reload stream |
 
 See also:

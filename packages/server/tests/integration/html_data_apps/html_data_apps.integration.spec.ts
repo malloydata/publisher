@@ -4,7 +4,7 @@
  * E2E coverage for in-package HTML data apps:
  *   - static-file serving (`serveFromPackage`) from the package's public/
  *     directory only, with realpath containment and HTML-only CSP framing,
- *   - the `/pages` list endpoint (bare `Page[]`, the house list shape),
+ *   - the `/data-apps` list endpoint (bare `DataApp[]`, the house list shape),
  *   - the `/events` SSE stream and its input validation.
  *
  * These routes touch the live filesystem and carry the security-relevant
@@ -24,7 +24,7 @@ const __dirname = path.dirname(__filename);
 const ENV_NAME = "html-data-apps-test-env";
 const PACKAGE_NAME = "html-data-apps-test";
 // A second package in the same env that ships NO public/ directory, to pin the
-// "package without public/" behavior (file requests 404, /pages returns []).
+// "package without public/" behavior (file requests 404, /data-apps returns []).
 const NOPUBLIC_PACKAGE = "html-data-apps-nopublic";
 
 const fixtureDir = path.resolve(
@@ -64,7 +64,7 @@ const servedSiblingLink = path.join(
    "leak.html",
 );
 
-interface PageItem {
+interface DataAppItem {
    resource?: string;
    packageName?: string;
    path?: string;
@@ -76,7 +76,7 @@ interface PageItem {
 // runner lacks (SeCreateSymbolicLinkPrivilege), and the escape target
 // (/etc/hosts) is Unix-only — so the one symlink-escape case is skipped on
 // Windows (see `itEscape` below). The rest of the suite (serving, manifest
-// blocking, 404s, /pages) runs on every platform and is the valuable Windows
+// blocking, 404s, /data-apps) runs on every platform and is the valuable Windows
 // coverage of serveFromPackage's path handling (separators, drive letters,
 // case-insensitive manifest match, realpath containment).
 const isWindows = process.platform === "win32";
@@ -266,9 +266,9 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
-   it("lists no pages for a package with no public/ directory", async () => {
+   it("lists no data apps for a package with no public/ directory", async () => {
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${NOPUBLIC_PACKAGE}/pages`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${NOPUBLIC_PACKAGE}/data-apps`,
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual([]);
@@ -314,16 +314,16 @@ describe("In-package HTML data apps (E2E)", () => {
       },
    );
 
-   // ── /pages list endpoint ─────────────────────────────────────────
+   // ── /data-apps list endpoint ─────────────────────────────────────────
 
-   it("lists pages as a bare Page[] (not a {pages} envelope)", async () => {
-      const res = await fetch(apiUrl("/pages"));
+   it("lists data apps as a bare DataApp[] (not a {dataApps} envelope)", async () => {
+      const res = await fetch(apiUrl("/data-apps"));
       expect(res.status).toBe(200);
       const body = (await res.json()) as unknown;
       expect(Array.isArray(body)).toBe(true);
 
-      const pages = body as PageItem[];
-      const paths = pages.map((p) => p.path).sort();
+      const dataApps = body as DataAppItem[];
+      const paths = dataApps.map((a) => a.path).sort();
       // Only HTML files under public/ are listed; the toEqual pins the exact
       // set, so non-public files (manifest, models, data) can't appear.
       expect(paths).toEqual([
@@ -338,7 +338,7 @@ describe("In-package HTML data apps (E2E)", () => {
          "unterminated.html",
       ]);
 
-      const index = pages.find((p) => p.path === "index.html");
+      const index = dataApps.find((a) => a.path === "index.html");
       expect(index?.title).toBe("Carrier Dashboard");
       expect(index?.packageName).toBe(PACKAGE_NAME);
       expect(index?.resource).toBe(
@@ -346,20 +346,22 @@ describe("In-package HTML data apps (E2E)", () => {
       );
    });
 
-   it("surfaces fit=viewport only for pages that opt in via <meta name=publisher:fit>", async () => {
-      const res = await fetch(apiUrl("/pages"));
+   it("surfaces fit=viewport only for data apps that opt in via <meta name=publisher:fit>", async () => {
+      const res = await fetch(apiUrl("/data-apps"));
       expect(res.status).toBe(200);
-      const pages = (await res.json()) as PageItem[];
+      const dataApps = (await res.json()) as DataAppItem[];
 
       // slides.html opts in with <meta name="publisher:fit" content="viewport">
       // (alongside a standard charset + viewport meta) → fill the embedded viewer.
-      expect(pages.find((p) => p.path === "slides.html")?.fit).toBe("viewport");
+      expect(dataApps.find((a) => a.path === "slides.html")?.fit).toBe(
+         "viewport",
+      );
 
       // fitcomment.html has a real <meta publisher:fit> AFTER a comment that
       // contains the literal "<body>"; stripping comments before locating the
       // </head>/<body> boundary must keep that literal from truncating the scan
       // and hiding the real tag (it must still opt in).
-      expect(pages.find((p) => p.path === "fitcomment.html")?.fit).toBe(
+      expect(dataApps.find((a) => a.path === "fitcomment.html")?.fit).toBe(
          "viewport",
       );
 
@@ -367,43 +369,61 @@ describe("In-package HTML data apps (E2E)", () => {
       // a decoy <meta data-name="publisher:fit"> in <head>, and the real tag as
       // text in a <body> comment. None is a genuine <head> name=publisher:fit,
       // so it must NOT be mistaken for an opt-in.
-      expect(pages.find((p) => p.path === "notfit.html")?.fit).toBeUndefined();
+      expect(
+         dataApps.find((a) => a.path === "notfit.html")?.fit,
+      ).toBeUndefined();
 
       // A page with no relevant meta keeps content-height auto-sizing (the
       // field is omitted, never `null`/`"content"`).
-      expect(pages.find((p) => p.path === "index.html")?.fit).toBeUndefined();
+      expect(
+         dataApps.find((a) => a.path === "index.html")?.fit,
+      ).toBeUndefined();
 
       // nohead.html omits the optional </head> end tag and shows the tag in a
       // <body> comment; the scan stops at <body>, so it must NOT opt in.
-      expect(pages.find((p) => p.path === "nohead.html")?.fit).toBeUndefined();
+      expect(
+         dataApps.find((a) => a.path === "nohead.html")?.fit,
+      ).toBeUndefined();
 
       // barehtml.html omits BOTH </head> and <body> and shows the tag only in
       // an HTML comment; comment-stripping must keep it from opting in.
       expect(
-         pages.find((p) => p.path === "barehtml.html")?.fit,
+         dataApps.find((a) => a.path === "barehtml.html")?.fit,
       ).toBeUndefined();
 
       // bodymeta.html has a REAL (uncommented) <meta publisher:fit> but in
       // <body> and omits </head>, so the head-only scan must stop at <body>
       // and not opt in (locks the <body> boundary).
       expect(
-         pages.find((p) => p.path === "bodymeta.html")?.fit,
+         dataApps.find((a) => a.path === "bodymeta.html")?.fit,
       ).toBeUndefined();
 
       // unterminated.html wraps the tag in a comment with no closing -->; the
       // unterminated-comment strip must still keep it from opting in.
       expect(
-         pages.find((p) => p.path === "unterminated.html")?.fit,
+         dataApps.find((a) => a.path === "unterminated.html")?.fit,
       ).toBeUndefined();
    });
 
-   it("400s a malformed environment/package name on /pages", async () => {
+   it("400s a malformed environment/package name on /data-apps", async () => {
       // getEnvironment runs assertSafePackageName, so a name outside
-      // IdentifierPattern is a 400 (now documented on list-pages in api-doc).
+      // IdentifierPattern is a 400 (now documented on list-data-apps in api-doc).
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/bad%20name/packages/${PACKAGE_NAME}/pages`,
+         `${baseUrl}/api/v0/environments/bad%20name/packages/${PACKAGE_NAME}/data-apps`,
       );
       expect(res.status).toBe(400);
+   });
+
+   it("404s the old /pages path, as JSON rather than the app shell", async () => {
+      // Both halves of the break this release documents, and neither was pinned
+      // anywhere: the removal, and that a migrating caller gets a clean error
+      // instead of a 200 carrying index.html. The second half is #962's
+      // API-prefix fallback rather than anything this rename does, which is
+      // exactly why it is worth asserting here: it holds up the promise made to
+      // callers, and nothing in this change would notice if it regressed.
+      const res = await fetch(apiUrl("/pages"));
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
    });
 
    // ── /events SSE stream ───────────────────────────────────────────

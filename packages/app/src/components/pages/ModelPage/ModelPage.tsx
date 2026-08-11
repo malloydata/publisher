@@ -10,12 +10,13 @@ import {
 import Box from "@mui/material/Box";
 import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
-import { useParams } from "react-router-dom";
+import { Navigate, useLocation, useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 
 function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
+   const { search, hash } = useLocation();
    const navigate = useRouterClickHandler();
    const { server } = useServer();
    if (!params.environmentName) {
@@ -33,20 +34,60 @@ function ModelPage() {
       );
    }
 
-   const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
-
-   // In-package HTML data app (embedded view). The Pages section in
-   // <Package> routes clicks to `pages/<file>` so this branch picks them
-   // up. <DataAppViewer> iframes the standalone Publisher URL and resizes
-   // via the publisher.js postMessage protocol. Real models that live under
-   // a `pages/` subdirectory (e.g. `pages/x.malloy`) are excluded so they
-   // still open in the Model/Notebook viewer.
+   // A data app used to be addressed as `pages/<file>`, which this release
+   // renames to `data-apps/<file>`. Redirect instead of letting the old form
+   // fail, so a bookmark or a shared link self-corrects in the address bar, and
+   // `replace` so the dead URL does not stay in history. The query string and
+   // fragment come along so a rewrite never silently discards state the caller
+   // supplied, matching the server's asset redirect, which rebuilds them through
+   // `withRequestQuery` (server.ts) rather than in the classifier. Note this does
+   // NOT deliver an `embed_token`: that belongs on the standalone URL,
+   // which <DataAppViewer> builds itself via packageFileUrl and which carries no
+   // query string, so an embedded page reads its token from that URL rather than
+   // from this one.
+   //
+   // A model or notebook that legitimately lives in a `pages/` directory is
+   // excluded on the same test the data-apps branch below uses, since the old
+   // data-app URL never named one.
+   //
+   // DEPRECATED. Remove one release after the release that ships this rename,
+   // together with `pages` in SPA_OWNED_SEGMENTS (packages/server/src/
+   // spa_fallback.ts), which is what lets this URL reach the app at all. The
+   // newest tag when this was written was v0.0.240.
    if (
       modelPath?.startsWith("pages/") &&
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
-      const dataAppPath = modelPath.slice("pages/".length);
+      // Both names are encoded, matching the "Back to" link below. Today it can
+      // only be a no-op, because a name that reaches a loaded package has passed
+      // assertSafePackageName and holds nothing worth encoding. But these two come
+      // from the URL rather than from anything validated, so a typed name need not
+      // be safe, and the encoding keeps a stray character in one segment from
+      // reading as structure in the path. The rest is NOT encoded: it carries the
+      // remaining slashes, which have to stay separators.
+      const renamed = `data-apps/${modelPath.slice("pages/".length)}`;
+      const env = encodeURIComponent(params.environmentName);
+      const pkg = encodeURIComponent(params.packageName);
+      return (
+         <Navigate to={`/${env}/${pkg}/${renamed}${search}${hash}`} replace />
+      );
+   }
+
+   const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
+
+   // In-package HTML data app (embedded view). The Data Apps section in
+   // <Package> routes clicks to `data-apps/<file>` so this branch picks them
+   // up. <DataAppViewer> iframes the standalone Publisher URL and resizes
+   // via the publisher.js postMessage protocol. Real models that live under
+   // a `data-apps/` subdirectory (e.g. `data-apps/x.malloy`) are excluded so
+   // they still open in the Model/Notebook viewer.
+   if (
+      modelPath?.startsWith("data-apps/") &&
+      !modelPath.endsWith(".malloy") &&
+      !modelPath.endsWith(".malloynb")
+   ) {
+      const dataAppPath = modelPath.slice("data-apps/".length);
       const dataAppResourceUri = encodeResourceUri({
          environmentName: params.environmentName,
          packageName: params.packageName,
@@ -84,7 +125,7 @@ function ModelPage() {
       );
    }
    // This route is `/:environmentName/:packageName/*`, so it matches any path
-   // under a package, and everything that is not a model, notebook, or page
+   // under a package, and everything that is not a model, notebook, or data app
    // arrives here. Naming the file's type was the wrong diagnosis: the path is
    // usually what is wrong, and blaming the file sent a reader looking for a
    // problem in a file that was fine. Say what was served and what does serve it.
@@ -143,7 +184,7 @@ function ModelPage() {
             >
                Back to {params.packageName}
             </Link>{" "}
-            lists this package&apos;s models, notebooks, and pages.
+            lists this package&apos;s models, notebooks, and data apps.
          </Typography>
       </Box>
    );
