@@ -193,6 +193,7 @@ describe("scaffold: default package", () => {
       for (const file of [
          "sales/publisher.json",
          "sales/sales.malloy",
+         "sales/index.malloy",
          "sales/data/sales.csv",
          "publisher.config.json",
          "package.json",
@@ -207,7 +208,22 @@ describe("scaffold: default package", () => {
 
    test("publisher.json is just the name", () => {
       run();
+      // Deliberately no "explores": the index.malloy below is what declares the
+      // surface now, and a redundant key here would earn a load-time warning.
       expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
+   });
+
+   test("index.malloy imports the model and exports its source", () => {
+      const result = run();
+      expect(result.indexFile).toBe("index.malloy");
+      const index = fs.readFileSync(
+         path.join(tmp, "sales/index.malloy"),
+         "utf8",
+      );
+      expect(index).toContain(`import "sales.malloy"`);
+      expect(index).toContain("export { sales }");
+      // No stray {{placeholders}} left behind.
+      expect(index).not.toContain("{{");
    });
 
    test("registers the package in the config", () => {

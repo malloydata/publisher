@@ -181,6 +181,13 @@ export interface LoadPackageResult {
       name?: string;
       description?: string;
       explores?: string[];
+      /**
+       * True when `explores` was defaulted from the `index.malloy` convention
+       * rather than declared in publisher.json. A convention-derived surface
+       * curates discovery only and must not activate the query boundary: see
+       * {@link resolveExplores} and `Package.applyQueryBoundaryToModels`.
+       */
+      exploresFromConvention?: boolean;
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;

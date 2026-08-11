@@ -3,6 +3,7 @@ import {
    packageMaterializationWarnings,
    parsePackageMaterialization,
    parsePackageScope,
+   resolveExplores,
    resolvePackageScope,
 } from "./package_manifest";
 
@@ -225,6 +226,117 @@ describe("service/package_manifest", () => {
             }),
          ).toEqual([]);
          expect(packageMaterializationWarnings(undefined)).toEqual([]);
+      });
+   });
+
+   describe("resolveExplores", () => {
+      const WITH_INDEX = ["index.malloy", "internal.malloy"];
+      const WITHOUT_INDEX = ["orders.malloy", "internal.malloy"];
+      const resolve = (
+         declaredExplores: unknown,
+         modelPaths: readonly string[],
+         queryableSourcesDeclared = false,
+      ) =>
+         resolveExplores({
+            declaredExplores,
+            queryableSourcesDeclared,
+            modelPaths,
+         });
+
+      it("defaults to index.malloy when the manifest declares no explores", () => {
+         expect(resolve(undefined, WITH_INDEX)).toEqual({
+            explores: ["index.malloy"],
+            fromConvention: true,
+            warnings: [],
+         });
+      });
+
+      it("leaves a package with no index.malloy uncurated", () => {
+         expect(resolve(undefined, WITHOUT_INDEX)).toEqual({
+            explores: undefined,
+            fromConvention: false,
+            warnings: [],
+         });
+      });
+
+      it("lets an explicit explores win over the convention", () => {
+         const resolved = resolve(["orders.malloy"], WITH_INDEX);
+         expect(resolved.explores).toEqual(["orders.malloy"]);
+         expect(resolved.fromConvention).toBe(false);
+      });
+
+      it("warns when an explicit explores disagrees with the convention", () => {
+         const { warnings } = resolve(["orders.malloy"], WITH_INDEX);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("does not list it");
+         // The warning must say which side won, or it is not actionable.
+         expect(warnings[0]).toContain("explicit key wins");
+      });
+
+      it("warns that an explicit explores naming index.malloy is now redundant", () => {
+         const { warnings } = resolve(["index.malloy"], WITH_INDEX);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("you can delete it");
+      });
+
+      it("stays silent for a curated package that has no index.malloy", () => {
+         // The deprecation must not fire where the convention offers no
+         // replacement: a multi-file surface cannot be expressed by it, so a
+         // warning here would have no available fix.
+         expect(
+            resolve(["orders.malloy", "secured.malloy"], WITHOUT_INDEX),
+         ).toEqual({
+            explores: ["orders.malloy", "secured.malloy"],
+            fromConvention: false,
+            warnings: [],
+         });
+      });
+
+      it("treats an explicit empty explores as explicit, not as absent", () => {
+         // `explores: []` means uncurated today. Letting the convention curate
+         // it would change served behavior off a config the author did write.
+         expect(resolve([], WITH_INDEX)).toEqual({
+            explores: [],
+            fromConvention: false,
+            warnings: [],
+         });
+      });
+
+      it("normalizes declared entries the same way listPackageFiles does", () => {
+         expect(resolve(["./index.malloy"], WITH_INDEX).explores).toEqual([
+            "index.malloy",
+         ]);
+         // And the normalized form is what the redundancy check compares, so a
+         // "./"-prefixed entry is recognized as naming the convention file.
+         expect(resolve(["./index.malloy"], WITH_INDEX).warnings[0]).toContain(
+            "you can delete it",
+         );
+      });
+
+      it("ignores a nested index.malloy", () => {
+         expect(resolve(undefined, ["reports/index.malloy"])).toEqual({
+            explores: undefined,
+            fromConvention: false,
+            warnings: [],
+         });
+      });
+
+      it("reports queryableSources as inert when the convention drives", () => {
+         const { warnings, fromConvention } = resolve(
+            undefined,
+            WITH_INDEX,
+            true,
+         );
+         expect(fromConvention).toBe(true);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("has no effect");
+      });
+
+      it("says nothing about queryableSources alongside an explicit explores", () => {
+         // There it is fully meaningful, so there is nothing to warn about.
+         expect(
+            resolve(["orders.malloy"], WITHOUT_INDEX, true).warnings,
+         ).toEqual([]);
       });
    });
 });

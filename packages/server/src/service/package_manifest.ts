@@ -1,8 +1,11 @@
 /**
  * Pure parsing of the package manifest's (publisher.json) `materialization`
- * block. Kept side-effect free (no fs, no worker bootstrap) so it is unit
- * testable in isolation from the package-load worker that consumes it.
+ * block and its discovery surface (`explores`). Kept side-effect free (no fs,
+ * no worker bootstrap) so it is unit testable in isolation from the
+ * package-load worker that consumes it.
  */
+
+import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -239,3 +242,121 @@ export function packageMaterializationWarnings(raw: unknown): string[] {
    const { queryMetadata } = raw as { queryMetadata?: unknown };
    return parseQueryMetadata(queryMetadata).warnings;
 }
+
+/** The resolved discovery surface, plus how it was arrived at. */
+export interface ResolvedExplores {
+   /**
+    * The discovery surface, or undefined when the package is uncurated.
+    * Normalized through `normalizeModelPath`, so entries compare equal to the
+    * paths `listPackageFiles` produces regardless of input channel.
+    */
+   explores: string[] | undefined;
+   /**
+    * True when `explores` came from the `index.malloy` convention rather than
+    * from an explicit key in publisher.json.
+    *
+    * Load-bearing, and the reason this is returned rather than inferred later:
+    * a convention-derived surface curates DISCOVERY only. It must not activate
+    * the query boundary, because that boundary answers 404 (deliberately
+    * indistinguishable from "does not exist"), so inferring it from the mere
+    * presence of a filename would silently revoke query access on a package
+    * whose author never edited a config. See `Package.applyQueryBoundaryToModels`.
+    */
+   fromConvention: boolean;
+   warnings: string[];
+}
+
+/**
+ * Resolve a package's discovery surface from its two sources: an explicit
+ * `explores` in publisher.json, and the `index.malloy` convention.
+ *
+ * Explicit always wins. The convention fills in only where the manifest is
+ * silent, which keeps every package already in the wild on exactly the
+ * behavior it has today.
+ *
+ * An explicit empty array counts as explicit. `explores: []` reads as a
+ * deliberate "do not curate", and today it means every model is listed; having
+ * the convention quietly curate it instead would change served behavior off a
+ * config the author did write.
+ *
+ * Only a root-level `index.malloy` triggers the convention. A nested
+ * `reports/index.malloy` is an ordinary model: the convention exists so a
+ * reader can predict a package's entry point without opening the manifest, and
+ * that only works if there is exactly one place to look.
+ */
+export function resolveExplores(input: {
+   /** The raw `explores` value as it appeared in publisher.json. */
+   declaredExplores: unknown;
+   /** Whether publisher.json carried a `queryableSources` key at all. */
+   queryableSourcesDeclared: boolean;
+   /** Package-relative model paths, as produced by `listPackageFiles`. */
+   modelPaths: readonly string[];
+}): ResolvedExplores {
+   const { declaredExplores, queryableSourcesDeclared, modelPaths } = input;
+   const hasIndexModel = modelPaths.includes(INDEX_MODEL_NAME);
+   const declared = Array.isArray(declaredExplores)
+      ? declaredExplores.map(normalizeModelPath)
+      : undefined;
+
+   if (declared !== undefined) {
+      // Explicit wins. Warn only when the package also has an index.malloy,
+      // because that is the only case where the author has a convention
+      // available to drop the key for. Warning on every `explores` user would
+      // fire on packages that curate a multi-file surface the convention
+      // cannot express (examples/governed-analytics is one), which is a
+      // warning with no available fix.
+      const warnings: string[] = [];
+      // An empty array curates nothing, so every model including index.malloy
+      // is still listed. There is no disagreement to report and nothing hidden.
+      if (hasIndexModel && declared.length > 0) {
+         warnings.push(
+            declared.includes(INDEX_MODEL_NAME)
+               ? EXPLORES_REDUNDANT_WITH_CONVENTION
+               : exploresDisagreesWithConvention(declared),
+         );
+      }
+      return { explores: declared, fromConvention: false, warnings };
+   }
+
+   if (!hasIndexModel) {
+      return { explores: undefined, fromConvention: false, warnings: [] };
+   }
+
+   // The convention fires. `queryableSources` is inert here (the boundary needs
+   // an explicit `explores`), so say so rather than let an operator believe
+   // they have a query boundary they do not have.
+   return {
+      explores: [INDEX_MODEL_NAME],
+      fromConvention: true,
+      warnings: queryableSourcesDeclared
+         ? [QUERYABLE_SOURCES_INERT_UNDER_CONVENTION]
+         : [],
+   };
+}
+
+const EXPLORES_REDUNDANT_WITH_CONVENTION =
+   `"explores" in publisher.json lists "${INDEX_MODEL_NAME}", which is now the ` +
+   `default for any package that has one. The key still works and still wins ` +
+   `over the convention; you can delete it and get the same discovery surface. ` +
+   `Keep it if you also rely on "queryableSources": declaring "explores" ` +
+   `explicitly is what opts a package into the query boundary.`;
+
+function exploresDisagreesWithConvention(declared: string[]): string {
+   return (
+      `This package has an "${INDEX_MODEL_NAME}" but its publisher.json "explores" ` +
+      `does not list it (${JSON.stringify(declared)}). The explicit key wins, so ` +
+      `"${INDEX_MODEL_NAME}" is NOT part of the discovery surface. If that is ` +
+      `intended, nothing is broken and you can silence this by renaming the file. ` +
+      `If you meant it to be the package's entry point, add it to "explores" or ` +
+      `delete the key and let the convention pick it up.`
+   );
+}
+
+const QUERYABLE_SOURCES_INERT_UNDER_CONVENTION =
+   `"queryableSources" in publisher.json has no effect on this package. Its ` +
+   `discovery surface comes from the "${INDEX_MODEL_NAME}" convention, and the ` +
+   `query boundary is only enforced for a surface declared explicitly, so every ` +
+   `source stays queryable by name. Add an explicit "explores" to enforce the ` +
+   `boundary. The convention deliberately does not enforce it: the denial is a ` +
+   `404, so turning it on because a filename exists would revoke access with no ` +
+   `actionable error.`;

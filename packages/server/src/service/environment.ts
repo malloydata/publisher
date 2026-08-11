@@ -2077,6 +2077,15 @@ export class Environment {
             normalizedExplores !== undefined
                ? normalizedExplores
                : existing.explores;
+         // A body that carries its own `explores` makes the surface explicit,
+         // which is what opts the package into the query boundary. A PATCH that
+         // does not mention it leaves the surface (and its origin) alone, so a
+         // name-only edit cannot promote a convention-derived surface into a
+         // declared one and silently start returning 404s. Captured before the
+         // write so the rejection path below can put it back.
+         const previousFromConvention = _package.exploresAreFromConvention();
+         const fromConvention =
+            normalizedExplores !== undefined ? false : previousFromConvention;
          const queryableSources =
             body.queryableSources !== undefined
                ? body.queryableSources
@@ -2110,17 +2119,20 @@ export class Environment {
          const materialization = materializationProvided
             ? body.materialization
             : existing.materialization;
-         _package.setPackageMetadata({
-            name: body.name,
-            description: body.description,
-            resource: body.resource,
-            location: body.location,
-            explores,
-            queryableSources,
-            manifestLocation,
-            materialization,
-            scope,
-         });
+         _package.setPackageMetadata(
+            {
+               name: body.name,
+               description: body.description,
+               resource: body.resource,
+               location: body.location,
+               explores,
+               queryableSources,
+               manifestLocation,
+               materialization,
+               scope,
+            },
+            fromConvention,
+         );
 
          // Strict-reject, symmetric with the publish path
          // (package.controller.addPackage): validate the resulting explores
@@ -2140,7 +2152,7 @@ export class Environment {
             .filter(Boolean)
             .join("\n");
          if (invalidMsg) {
-            _package.setPackageMetadata(existing);
+            _package.setPackageMetadata(existing, previousFromConvention);
             throw new BadRequestError(invalidMsg);
          }
 

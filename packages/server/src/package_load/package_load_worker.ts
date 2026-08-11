@@ -75,7 +75,6 @@ import { fileURLToPath, pathToFileURL } from "url";
 
 import {
    MODEL_FILE_SUFFIX,
-   normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
@@ -88,6 +87,7 @@ import {
    PackageScope,
    packageMaterializationWarnings,
    parsePackageMaterialization,
+   resolveExplores,
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
@@ -405,10 +405,19 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
 // stays decoupled from the main-thread service module graph)
 // ──────────────────────────────────────────────────────────────────────
 
-async function readPackageMetadata(packagePath: string): Promise<{
+async function readPackageMetadata(
+   packagePath: string,
+   /**
+    * Package-relative model paths, from `listPackageFiles`. Needed because the
+    * discovery surface can come from the `index.malloy` convention, which is a
+    * fact about the tree rather than about the manifest.
+    */
+   modelPaths: readonly string[],
+): Promise<{
    name?: string;
    description?: string;
    explores?: string[];
+   exploresFromConvention?: boolean;
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
    materialization?: PackageMaterializationConfig | null;
@@ -430,16 +439,24 @@ async function readPackageMetadata(packagePath: string): Promise<{
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
+   // The discovery surface likewise has two sources (explicit `explores`, the
+   // `index.malloy` convention). Unlike scope this never throws: the explicit
+   // key always wins, and a disagreement rides back as a warning.
+   const explores = resolveExplores({
+      declaredExplores: parsed.explores,
+      queryableSourcesDeclared: parsed.queryableSources !== undefined,
+      modelPaths,
+   });
    const manifestWarnings = [
       ...scope.warnings,
+      ...explores.warnings,
       ...packageMaterializationWarnings(parsed.materialization),
    ];
    return {
       name: parsed.name,
       description: parsed.description,
-      explores: Array.isArray(parsed.explores)
-         ? parsed.explores.map(normalizeModelPath)
-         : undefined,
+      explores: explores.explores,
+      exploresFromConvention: explores.fromConvention,
       // Default + invalid fall back to "declared" (fail-safe: queryable ==
       // discoverable). Only an explicit "all" opts out of the query boundary.
       queryableSources: parsed.queryableSources === "all" ? "all" : "declared",
@@ -473,10 +490,11 @@ function filterModelPaths(allRelative: string[]): string[] {
    );
 }
 
-// `normalizeModelPath` (shared, from ../constants) runs here at parse time so
-// the keys stored in Package.models are already normalized, and the API
-// publish/update path normalizes its `explores` input through the same helper —
-// so on-disk and API-written manifests share one representation.
+// `normalizeModelPath` (shared, from ../constants) runs at parse time inside
+// `resolveExplores` so the keys stored in Package.models are already
+// normalized, and the API publish/update path normalizes its `explores` input
+// through the same helper, so on-disk and API-written manifests share one
+// representation.
 
 // explores validation is intentionally NOT done here. The worker is the
 // shared load path (startup, reload, AND publish), but the policy differs by
@@ -898,11 +916,17 @@ async function loadPackage(
 ): Promise<LoadPackageResult> {
    const loadStart = performance.now();
 
-   const packageMetadata = await readPackageMetadata(job.packagePath);
-   const malloyConfig = buildWorkerMalloyConfig(job);
-
+   // File listing runs before the manifest read: the discovery surface can be
+   // defaulted from an `index.malloy` on disk, so the parse needs the tree.
+   // Both still sit in the setup region excluded from the compile timing below.
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+
+   const packageMetadata = await readPackageMetadata(
+      job.packagePath,
+      modelPaths,
+   );
+   const malloyConfig = buildWorkerMalloyConfig(job);
 
    // Bracket the compile region: only work from here on is compilation +
    // proxied schema fetches. The setup above (manifest read + file listing)

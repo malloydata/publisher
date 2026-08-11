@@ -135,9 +135,15 @@ CLAUDE.md / AGENTS.md    short, package-scoped agent instructions
 .claude/skills/          the Malloy agent skills, copied in as real files
 sales/                   the package
   publisher.json         the manifest
+  index.malloy           the published surface: what the package exports
   sales.malloy           a starter model over the sample data
   data/sales.csv         the sample data
 ```
+
+Publisher reads `index.malloy` as the list of what a package publishes, so the manifest
+needs no `explores` key. Add a source to its `export { ... }` to publish it, or leave one
+out to keep it an internal building block that other models can still import and join.
+Leaving it out hides the source from listings; it stays queryable by name.
 
 The `publisher.db*` entry is a glob rather than a plain `publisher.db` on purpose:
 DuckDB leaves a `.wal` sidecar behind even after a clean shutdown, so without the glob

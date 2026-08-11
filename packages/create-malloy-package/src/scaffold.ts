@@ -86,6 +86,12 @@ export interface DeclinedScript {
  * with no start command, no ports, no MCP reconnect, and no skills index in it.
  */
 const MALLOY_AGENTS_FILE = "AGENTS.malloy.md";
+/**
+ * The conventional name Publisher reads a package's published surface from.
+ * Must stay in step with the server's own constant of the same name; this
+ * package cannot import it, since it ships standalone.
+ */
+const INDEX_MODEL_FILE = "index.malloy";
 
 /**
  * The line every generated briefing carries, in AGENTS.md and in
@@ -127,6 +133,8 @@ export interface ScaffoldResult {
    packageName?: string;
    sourceName?: string;
    modelFile?: string;
+   /** The package's published surface, `index.malloy`. */
+   indexFile?: string;
    dataPath?: string;
    /** The --data file's own name, set only when copying it in had to rename it. */
    dataFileRenamedFrom?: string;
@@ -531,10 +539,21 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
       );
    }
 
+   // The package's published surface. Publisher defaults a package's discovery
+   // surface to its index.malloy, so scaffolding one means a new package is
+   // curated from the first boot without a publisher.json "explores" key, and
+   // the user has one obvious file to edit when they want to publish more.
+   writeFile(
+      path.join(packageDir, INDEX_MODEL_FILE),
+      renderTemplate("index.malloy", { sourceName, modelFile }),
+      options.cwd,
+   );
+
    result.packageCreated = true;
    result.packageName = name;
    result.sourceName = sourceName;
    result.modelFile = modelFile;
+   result.indexFile = INDEX_MODEL_FILE;
    result.dataPath = dataPath;
    result.written.push(`${name}/`);
    if (packageDirExists) {
@@ -554,7 +573,8 @@ function forceDescription(name: string, modelFile: string, host: Host): string {
    const mcpPath = mcpConfigPathFor(host);
    return (
       `--force does not empty the directory. It rewrites ${name}/publisher.json, ` +
-      `${name}/${modelFile} and the data file it copies into ${name}/data/, and ` +
+      `${name}/${modelFile}, ${name}/${INDEX_MODEL_FILE} and the data file it ` +
+      `copies into ${name}/data/, and ` +
       `leaves anything else in there alone. It also refreshes .claude/skills/ ` +
       `from the bundled copies, as every run does. Outside the package it ` +
       `replaces ${agentFiles}; in package.json it sets only the "start" and ` +
@@ -1887,7 +1907,7 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
    if (result.packageCreated) {
       const base = restBase(result.packageName as string);
       lines.push(
-         `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
+         `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. \`${result.packageName}/${result.indexFile}\` is the package's published surface, so it is what model listings return; export a source there to publish it. The package's REST base is:`,
          "",
          "```",
          base,

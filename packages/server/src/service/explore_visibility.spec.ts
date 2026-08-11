@@ -10,9 +10,12 @@
  *     listed as sources — imported helpers stay out.
  *   - A query that joins through a hidden module still resolves.
  *   - Notebooks are always listed regardless of `explores`.
- *   - Absent/empty `explores` → every model is listed with the full source set
- *     (backward compatible; no within-file `export {}` curation).
- *   - Within-file curation applies only when `explores` is declared.
+ *   - Absent/empty `explores` AND no `index.malloy` → every model is listed
+ *     with the full source set (backward compatible; no within-file
+ *     `export {}` curation).
+ *   - Absent `explores` WITH an `index.malloy` → the surface defaults to that
+ *     file (the discovery convention); an explicit `explores` still wins.
+ *   - Within-file curation applies only when there is a surface at all.
  *   - A bogus `explores` path is fail-safe at load (warn + hide, no throw);
  *     the publish path rejects it (package.controller.spec.ts).
  */
@@ -95,13 +98,17 @@ describe("Explore Visibility via worker pool", () => {
    // A base module (never an explore) plus a curated index that imports it,
    // joins through it, and re-exports only `customers`. `helper` is a second
    // local source the index does NOT export — used to prove within-file curation.
-   function writeLayeredModels(): void {
+   //
+   // `entryName` is parameterized because the entry file's NAME is now load
+   // bearing: `index.malloy` triggers the discovery convention, so a test that
+   // wants the uncurated legacy behavior has to avoid that one name.
+   function writeLayeredModels(entryName = "index.malloy"): void {
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
          `source: base_source is duckdb.sql("select 1 as id, 'x' as label")`,
       );
       fs.writeFileSync(
-         path.join(tempDir, "index.malloy"),
+         path.join(tempDir, entryName),
          `import "base.malloy"
 source: helper is duckdb.sql("select 1 as id")
 source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
@@ -198,23 +205,64 @@ export { customers }`,
 
    it("lists every model and full sources when explores is absent (backward compatible)", async () => {
       writeManifest();
-      writeLayeredModels();
+      // Deliberately NOT named index.malloy: with no explores and no index
+      // file, the package is uncurated, which is the legacy behavior this
+      // pins. The convention case is the test immediately below.
+      writeLayeredModels("entry.malloy");
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(await listedModelPaths(pkg)).toEqual([
             "base.malloy",
-            "index.malloy",
+            "entry.malloy",
          ]);
 
          // No `explores` ⇒ export{} curation off; non-exported `helper` listed.
-         const apiModel = (await pkg.getModel("index.malloy")!.getModel()) as {
+         const apiModel = (await pkg.getModel("entry.malloy")!.getModel()) as {
             sources?: { name?: string }[];
          };
          const names = (apiModel.sources ?? []).map((s) => s.name).sort();
          expect(names).toContain("customers");
          expect(names).toContain("helper");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("defaults the surface to index.malloy when the manifest declares no explores", async () => {
+      writeManifest(); // no explores; the convention supplies the surface
+      writeLayeredModels();
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // base.malloy drops out of listings exactly as a declared
+         // `explores: ["index.malloy"]` would have hidden it.
+         expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
+
+         // And within-file curation comes with it: `helper` is not exported.
+         const apiModel = (await pkg.getModel("index.malloy")!.getModel()) as {
+            sources?: { name?: string }[];
+         };
+         expect((apiModel.sources ?? []).map((s) => s.name).sort()).toEqual([
+            "customers",
+         ]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("lets an explicit explores beat the convention", async () => {
+      writeManifest({ explores: ["base.malloy"] });
+      writeLayeredModels();
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // index.malloy exists, but the author said base.malloy, so base.malloy
+         // it is. The convention only ever fills a gap.
+         expect(await listedModelPaths(pkg)).toEqual(["base.malloy"]);
       } finally {
          await duckdb.close();
       }
