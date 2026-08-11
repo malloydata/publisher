@@ -5,8 +5,10 @@ import {
    docCommentText,
    filterPublisherOwnedRenderLogs,
    isDashboardModelPath,
+   isServableDashboardSlug,
    lintDashboard,
    lintDrillTargets,
+   lintGivenTags,
    lintSelfDrills,
    lintUndiscoveredDashboard,
    motlyAnnotations,
@@ -753,5 +755,165 @@ describe("service/dashboard lint", () => {
          ]);
          expect(findings).toHaveLength(1);
       });
+   });
+});
+
+describe("service/dashboard slug is servable", () => {
+   // `dashboards/.malloy` yields an empty slug, whose published `resource`
+   // would end in `/dashboards/` and fold onto the LIST route under Express's
+   // non-strict routing, so following the manifest's own link returns an array.
+   it("rejects a slug that cannot round-trip through its own URL", () => {
+      expect(isServableDashboardSlug(dashboardSlug("dashboards/.malloy"))).toBe(
+         false,
+      );
+      expect(
+         isServableDashboardSlug(dashboardSlug("dashboards/...malloy")),
+      ).toBe(false);
+      expect(isServableDashboardSlug("has space")).toBe(false);
+      expect(isServableDashboardSlug("has/slash")).toBe(false);
+   });
+
+   it("accepts the names the path parameter declares", () => {
+      expect(isServableDashboardSlug("overview")).toBe(true);
+      expect(isServableDashboardSlug("q3-2026_v2")).toBe(true);
+   });
+});
+
+describe("service/dashboard silent-vanish lint", () => {
+   const messages = (f: DashboardModelFacts) =>
+      lintUndiscoveredDashboard(f).map((finding) => finding.message);
+
+   // The composite branch is gated on having at least one tile, and a tag that
+   // PARSES is invisible to the parse-error check, so this file produced no
+   // dashboard and no finding at all.
+   it("explains a model-level artifact tag that declares no tiles", () => {
+      expect(
+         messages(
+            facts({
+               modelAnnotations: ['## artifact { title="Overview" }\n'],
+            }),
+         ),
+      ).toEqual([expect.stringContaining("declares no tiles=")]);
+   });
+
+   it("explains an empty tiles= as well", () => {
+      expect(
+         messages(facts({ modelAnnotations: ["## artifact { tiles=[] }\n"] })),
+      ).toEqual([expect.stringContaining("declares an empty tiles=")]);
+   });
+
+   it("stays silent for a file that simply carries no tag", () => {
+      expect(messages(facts({ modelAnnotations: ["## nothing\n"] }))).toEqual(
+         [],
+      );
+   });
+});
+
+describe("service/dashboard given-tag lint", () => {
+   const messages = (f: DashboardModelFacts) =>
+      lintGivenTags([f]).map((finding) => finding.message);
+
+   // A failed MOTLY parse yields an EMPTY tag rather than undefined, so
+   // `readGivenControlSpec` cannot detect it: the given silently loses its
+   // whole control contract. This is the only signal that exists for it.
+   it("reports a given whose annotation does not parse", () => {
+      expect(
+         messages(
+            facts({
+               givens: new Map([given("REGION", "filter<string>", ["# (\n"])]),
+            }),
+         ),
+      ).toEqual([expect.stringContaining('given "REGION" has an annotation')]);
+   });
+
+   it("stays silent on a well-formed given", () => {
+      expect(
+         messages(
+            facts({
+               givens: new Map([
+                  given("REGION", "filter<string>", ['# label="Region"\n']),
+               ]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
+   // The rescue runs before the parse, so a documented Malloyyo starting value
+   // must not be reported as broken.
+   it("stays silent on a bare filter literal, which is rescued", () => {
+      expect(
+         messages(
+            facts({
+               givens: new Map([
+                  given("REGION", "filter<string>", ["# default=f'US'\n"]),
+               ]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+});
+
+describe("service/dashboard grid width and hostile literals", () => {
+   function lintOf(f: DashboardModelFacts) {
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      return lintDashboard(f, manifest).map((finding) => finding.message);
+   }
+
+   const singleQuery = (annotation: string) =>
+      facts({
+         queries: [{ name: "overview", annotations: [annotation], givens: [] }],
+      });
+
+   // BOTH spellings reach the manifest, but only `dashboard_columns` was ever
+   // checked — and `# dashboard { columns=N }` is the form the shipped example
+   // dashboards use, so a bad value there was dropped with no finding at all.
+   it("validates the # dashboard { columns= } spelling", () => {
+      expect(
+         lintOf(singleQuery('# artifact dashboard { columns="wide" }\n')),
+      ).toEqual([expect.stringContaining("# dashboard { columns=… } must be")]);
+   });
+
+   it("validates the composite dashboard_columns spelling", () => {
+      expect(
+         lintOf(
+            facts({
+               modelAnnotations: [
+                  '## artifact { tiles=["orders -> totals"] dashboard_columns="wide" }\n',
+               ],
+               viewGivens: new Map([["orders -> totals", []]]),
+               sourceFields: new Map([["orders", new Set(["totals"])]]),
+            }),
+         ),
+      ).toEqual([expect.stringContaining("dashboard_columns must be")]);
+   });
+
+   it("accepts a valid width in either spelling", () => {
+      expect(
+         lintOf(singleQuery("# artifact dashboard { columns=6 }\n")),
+      ).toEqual([]);
+   });
+
+   // `Tag.text()` THROWS on a bad date literal rather than returning undefined.
+   // The reporting path calls it on the very value it is complaining about, and
+   // the lint's try/catch wraps the whole package loop, so one bad literal would
+   // have cost every dashboard finding in the package.
+   it("reports a bad date literal as a width rather than throwing", () => {
+      expect(() =>
+         lintOf(singleQuery("# artifact dashboard { columns=@2024-13-01 }\n")),
+      ).not.toThrow();
+      expect(
+         lintOf(singleQuery("# artifact dashboard { columns=@2024-13-01 }\n")),
+      ).toEqual([expect.stringContaining("# dashboard { columns=… } must be")]);
+   });
+
+   // Same throwing reader, reached through the manifest build rather than the
+   // lint: a title that is a bad date literal must cost the title, not the
+   // dashboard.
+   it("still builds a manifest when the title is a bad date literal", () => {
+      const manifest = build(singleQuery("# artifact { title=@2024-13-01 }\n"));
+      expect(manifest).toMatchObject({ name: "overview", query: "overview" });
+      // Falls through the title chain to the slug.
+      expect(manifest?.title).toBe("overview");
    });
 });

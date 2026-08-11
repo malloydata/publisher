@@ -44,6 +44,7 @@ import {
    quoteFilterLiterals,
    readAutorun,
    readStartingGivens,
+   tagNumeric,
    tagText,
    unwrapFilterLiteral,
 } from "./motly";
@@ -185,6 +186,23 @@ export function dashboardSlug(modelPath: string): string {
    return basename.slice(0, -MODEL_FILE_SUFFIX.length);
 }
 
+/**
+ * Whether a slug can actually be served at a URL, matching the `dashboardName`
+ * pattern `api-doc.yaml` declares for the path parameter.
+ *
+ * Nothing validated it, and the slug is derived from a filename rather than
+ * chosen, so a file could produce one that does not round-trip:
+ * `dashboards/.malloy` yields an empty slug, whose published `resource` ends in
+ * `/dashboards/` and folds onto the LIST route under Express's non-strict
+ * routing, so following the manifest's own link returns an array where a
+ * manifest belongs. `dashboards/...malloy` yields `..`. There is no traversal
+ * risk — the lookup is a `Map` and never touches the filesystem — but a
+ * published link that points somewhere else is wrong on its own terms.
+ */
+export function isServableDashboardSlug(slug: string): boolean {
+   return /^[a-zA-Z0-9_-]+$/.test(slug);
+}
+
 /** The `artifact` sub-tag read into the manifest fields it contributes. */
 interface ArtifactTagData {
    title?: string;
@@ -202,10 +220,10 @@ function readArtifactTag(tag: Tag): ArtifactTagData | undefined {
    const autorun = readAutorun(artifact);
 
    return {
-      title: artifact.text("title"),
+      title: tagText(artifact, "title"),
       tiles: artifact
          .array("tiles")
-         ?.map((tile) => tile.text())
+         ?.map((tile) => tagText(tile))
          .filter((tile): tile is string => tile !== undefined),
       // The composite form carries its grid width inside the artifact tag; the
       // single-query form gets it from the `# dashboard` render tag, which the
@@ -444,13 +462,28 @@ function readDrillTag(
    if (!drill) return undefined;
    // Malloyyo accepts a single destination unbracketed (`to=overview`) as well
    // as the list form, so fall back to reading `to` as text.
-   const to = drill.textArray("to") ?? [drill.text("to")].filter(isString);
-   const given = drill.text("given");
+   const to =
+      tagTextArray(drill, "to") ?? [tagText(drill, "to")].filter(isString);
+   const given = tagText(drill, "given");
    return given === undefined ? { to } : { to, given };
 }
 
 function isString(value: string | undefined): value is string {
    return value !== undefined;
+}
+
+/**
+ * `Tag.textArray()` throws on a bad literal exactly as `text()` does, so read
+ * the list with `array()` (which does not) and take each element through
+ * {@link tagText}. One unreadable entry is dropped rather than costing the
+ * whole list.
+ */
+function tagTextArray(
+   tag: Tag | undefined,
+   ...path: string[]
+): string[] | undefined {
+   const items = tag?.array(...path);
+   return items?.map((item) => tagText(item)).filter(isString);
 }
 
 /**
@@ -627,24 +660,30 @@ export function lintDashboard(
    const add = (message: string, severity: "error" | "warn" = "warn") =>
       findings.push({ subject: slug, message, severity });
 
-   const artifactTag = (
-      manifest.tiles
-         ? motlyTag(facts.modelAnnotations)
-         : motlyTag(
-              facts.queries.find((query) => query.name === manifest.query)
-                 ?.annotations ?? [],
-           )
-   )?.tag("artifact");
+   const ownTag = manifest.tiles
+      ? motlyTag(facts.modelAnnotations)
+      : motlyTag(
+           facts.queries.find((query) => query.name === manifest.query)
+              ?.annotations ?? [],
+        );
+   const artifactTag = ownTag?.tag("artifact");
 
-   // dashboard_columns must be a positive integer. `numeric()` yields undefined
-   // for a non-numeric value, so a bad one is invisible in the manifest — which
-   // is exactly why it needs saying out loud.
-   if (artifactTag?.has("dashboard_columns")) {
-      const columns = artifactTag.numeric("dashboard_columns");
+   // The grid width has two spellings and BOTH reach the manifest (see
+   // readArtifactTag), so both are checked here. Checking only the artifact-tag
+   // spelling left `# dashboard { columns=… }` — the form the shipped examples
+   // use — silently dropped on a bad value.
+   for (const [tag, key, written] of [
+      [artifactTag, "dashboard_columns", "dashboard_columns"],
+      [ownTag?.tag("dashboard"), "columns", "# dashboard { columns=… }"],
+   ] as const) {
+      // `numeric()` yields undefined for a non-numeric value, so a bad one is
+      // invisible in the manifest — which is exactly why it needs saying aloud.
+      if (!tag?.has(key)) continue;
+      const columns = tagNumeric(tag, key);
       if (columns === undefined || !Number.isInteger(columns) || columns < 1) {
          add(
-            `dashboard_columns must be a positive integer, got ` +
-               `${JSON.stringify(artifactTag.text("dashboard_columns"))}. ` +
+            `${written} must be a positive integer, got ` +
+               `${JSON.stringify(tagText(tag, key))}. ` +
                `The grid falls back to the renderer default.`,
          );
       }
@@ -759,17 +798,82 @@ export function lintDashboard(
 export function lintUndiscoveredDashboard(
    facts: DashboardModelFacts,
 ): DashboardLintFinding[] {
+   const subject = dashboardSlug(facts.modelPath);
    const errors = [
       ...motlyParseErrors(facts.modelAnnotations),
       ...facts.queries.flatMap((query) => motlyParseErrors(query.annotations)),
    ];
-   return errors.map((message) => ({
-      subject: dashboardSlug(facts.modelPath),
+   const findings = errors.map((message) => ({
+      subject,
       message:
          `Tag does not parse (${message}), so the whole tag is discarded and ` +
          `this file is treated as a shared include rather than a dashboard.`,
       severity: "error" as const,
    }));
+   if (findings.length > 0) return findings;
+
+   // A tag that PARSES but describes no dashboard vanishes just as completely,
+   // and the checks above cannot see it because there is no parse error to
+   // report. The common case is a model-level `## artifact` with no `tiles=`:
+   // the composite branch is gated on having at least one tile, and no
+   // query-level artifact tag follows, so the file produces nothing at all.
+   const modelArtifact = motlyTag(facts.modelAnnotations)?.tag("artifact");
+   if (modelArtifact) {
+      const tiles = modelArtifact.array("tiles");
+      findings.push({
+         subject,
+         message:
+            (tiles === undefined
+               ? `Model-level '## artifact' declares no tiles=, `
+               : `Model-level '## artifact' declares an empty tiles=, `) +
+            `so this file produces no dashboard. A composite dashboard needs ` +
+            `tiles=["source -> view", …]; for a single-query dashboard put ` +
+            `the '# artifact' tag on the query instead.`,
+         severity: "error" as const,
+      });
+   }
+   return findings;
+}
+
+/**
+ * Report a given whose own annotations do not parse as MOTLY.
+ *
+ * This is the only signal that exists for it. A failed parse yields an EMPTY
+ * tag rather than `undefined`, so `readGivenControlSpec` cannot detect one: it
+ * returns `{}` and the given silently loses its whole control contract — label,
+ * control kind, range, suggest — with nothing reported anywhere. The commonest
+ * cause is a bare filter literal, which is rescued before parsing, so what
+ * reaches here is the residue that rescue could not save.
+ *
+ * Package-wide rather than per-dashboard because a given is declared on a model
+ * and reached through imports, so the same broken declaration would otherwise be
+ * reported once per dashboard that imports it, or not at all when no dashboard
+ * does. Deduplicated on name and message for that reason.
+ *
+ * Bounded by what {@link motlyParseErrors} can honestly claim: syntax only, no
+ * position, and silent on a line that only parses after rescue. So this catches
+ * *a* malformed tag, and its absence is not proof the tags are well formed.
+ */
+export function lintGivenTags(
+   facts: readonly DashboardModelFacts[],
+): DashboardLintFinding[] {
+   const findings = new Map<string, DashboardLintFinding>();
+   for (const file of facts) {
+      for (const [name, declaration] of file.givens) {
+         for (const message of motlyParseErrors(declaration.annotations)) {
+            findings.set(`${name}|${message}`, {
+               subject: name,
+               message:
+                  `given "${name}" has an annotation that does not parse ` +
+                  `(${message}), so the whole line is discarded and the given ` +
+                  `loses any label, control, range or suggest it declared. ` +
+                  `It still accepts values; only its presentation is lost.`,
+               severity: "error",
+            });
+         }
+      }
+   }
+   return Array.from(findings.values());
 }
 
 /**

@@ -64,8 +64,10 @@ import {
    DASHBOARDS_DIR,
    dashboardSlug,
    isDashboardModelPath,
+   isServableDashboardSlug,
    lintDashboard,
    lintDrillTargets,
+   lintGivenTags,
    lintSelfDrills,
    lintUndiscoveredDashboard,
    type DashboardManifest,
@@ -1970,6 +1972,48 @@ export class Package {
    }
 
    /**
+    * Whether a model file may be a top-level query target, the same policy
+    * `applyQueryBoundaryToModels` pushes onto each Model: inert unless
+    * `explores` is declared AND `queryableSources` is `"declared"`.
+    *
+    * Read here as well because a dashboard is only worth serving if the queries
+    * its manifest advertises can actually run.
+    */
+   private isQueryableEntryPoint(modelPath: string): boolean {
+      if (this.packageMetadata.queryableSources === "all") return true;
+      const exploreSet = this.exploreSet();
+      return exploreSet ? exploreSet.has(modelPath) : true;
+   }
+
+   /**
+    * Whether a `dashboards/*.malloy` that did NOT compile nevertheless claims to
+    * be a dashboard, read from its source text.
+    *
+    * Only ever consulted for a file that failed to compile, where the tag cannot
+    * be read off a `ModelDef` because there isn't one. The alternative was to
+    * list every uncompilable file in the directory, which contradicts the
+    * documented rule that an untagged file is a shared include and produced a
+    * dashboard that existed only while a sibling include was broken.
+    *
+    * Deliberately textual and deliberately generous: it looks for an `artifact`
+    * annotation at the start of a line. A false positive lists a broken file
+    * that was never a dashboard, which is noisy; a false negative hides a
+    * genuinely broken dashboard, which is worse. Never throws — an unreadable
+    * file is simply not a dashboard.
+    */
+   private async claimsToBeADashboard(modelPath: string): Promise<boolean> {
+      try {
+         const source = await fs.readFile(
+            safeJoinUnderRoot(this.packagePath, modelPath),
+            "utf8",
+         );
+         return /^[ \t]*##?[ \t]*artifact\b/m.test(source);
+      } catch {
+         return false;
+      }
+   }
+
+   /**
     * Re-read the package's dashboards from its compiled models. Called at load
     * and after every reload, because a dashboard is defined by an annotation on
     * a compiled model — it cannot change without the models changing.
@@ -1992,6 +2036,10 @@ export class Package {
       // one in a package with no dashboards at all, is exactly as breakable and
       // would otherwise never be checked.
       const allFacts = new Map<string, DashboardModelFacts>();
+      // Dashboards the curation gate held back, reported once discovery settles.
+      const heldBack: { modelPath: string; name: string }[] = [];
+      // Files whose derived slug could not be served at a URL.
+      const unservableSlugs: string[] = [];
       for (const modelPath of Array.from(this.models.keys()).sort()) {
          const model = this.models.get(modelPath);
          if (!model) continue;
@@ -2010,12 +2058,42 @@ export class Package {
 
          if (!isDashboardModelPath(modelPath)) continue;
          const name = dashboardSlug(modelPath);
+
+         // A slug that cannot round-trip through its own URL is not served.
+         // Nothing validated this, and it is derived from a filename rather
+         // than chosen, so `dashboards/.malloy` published a `resource` ending
+         // in `/dashboards/` that folds onto the LIST route.
+         if (!isServableDashboardSlug(name)) {
+            unservableSlugs.push(modelPath);
+            continue;
+         }
+
+         // Curation gate, before anything about this file is published. Every
+         // other listing path in this class consults `exploreSet()`; discovery
+         // did not, so a curated package served a full manifest — query name,
+         // given names, suggest-query names — for a dashboard whose every one
+         // of those names then 404s, and served the compile error (which names
+         // tables, columns and connections) for one that failed to compile.
+         // Held back rather than published broken, with a warning saying so.
+         if (!this.isQueryableEntryPoint(modelPath)) {
+            heldBack.push({ modelPath, name });
+            continue;
+         }
+
          if (!facts) {
             // Unreadable ⇒ the file failed to compile, so its artifact tag
             // cannot be read. List it anyway, with the error: a broken
             // dashboard should be visibly broken, not silently absent.
+            //
+            // Only if it actually claims to be one. `api-doc.yaml` promises a
+            // file with no artifact tag is a shared include and is not listed,
+            // and a compile failure must not turn that promise off: a syntax
+            // error in `dashboards/_shared.malloy` otherwise produced a phantom
+            // dashboard that vanished once the error was fixed. The tag cannot
+            // be read from a model that did not compile, so it is read from the
+            // source text — a heuristic used ONLY on this already-broken path.
             const error = model.getCompilationError();
-            if (error) {
+            if (error && (await this.claimsToBeADashboard(modelPath))) {
                discovered.set(name, {
                   name,
                   title: name,
@@ -2042,7 +2120,12 @@ export class Package {
          }
       }
       this.dashboards = discovered;
-      this.dashboardWarnings = await this.lintDashboards(factsByPath, allFacts);
+      this.dashboardWarnings = await this.lintDashboards(
+         factsByPath,
+         allFacts,
+         heldBack,
+         unservableSlugs,
+      );
       for (const warning of this.dashboardWarnings) {
          logger.warn("Dashboard lint", {
             packageName: this.packageName,
@@ -2062,10 +2145,37 @@ export class Package {
    private async lintDashboards(
       factsByPath: ReadonlyMap<string, DashboardModelFacts>,
       allFacts: ReadonlyMap<string, DashboardModelFacts>,
+      heldBack: readonly { modelPath: string; name: string }[],
+      unservableSlugs: readonly string[],
    ): Promise<ApiPackageWarning[]> {
       const warnings: ApiPackageWarning[] = [];
       try {
          const knownSlugs = new Set(this.dashboards.keys());
+         for (const modelPath of unservableSlugs) {
+            warnings.push({
+               model: modelPath,
+               message:
+                  `is in ${DASHBOARDS_DIR}/ but its filename does not make a ` +
+                  `usable dashboard name (letters, digits, "-" and "_" only), ` +
+                  `so it could not be addressed at a URL and is not served. ` +
+                  `Rename the file.`,
+               severity: "warn",
+            });
+         }
+         for (const { modelPath, name } of heldBack) {
+            warnings.push({
+               model: modelPath,
+               subject: name,
+               message:
+                  `is a dashboard, but "${modelPath}" is not listed in ` +
+                  `'explores' and this package sets ` +
+                  `queryableSources: "declared", so its query would be ` +
+                  `refused. It is not served. Add it to 'explores', or set ` +
+                  `queryableSources: "all" to keep the curated surface for ` +
+                  `discovery only.`,
+               severity: "warn",
+            });
+         }
          for (const [modelPath, facts] of factsByPath) {
             const manifest = this.dashboards.get(dashboardSlug(modelPath));
             const findings = manifest
@@ -2084,6 +2194,12 @@ export class Package {
             warnings.push(finding);
          }
          for (const finding of lintSelfDrills(drillFacts)) {
+            warnings.push(finding);
+         }
+         // Scanned across every model for the same reason as the drill lints: a
+         // given is declared on a model and reached through imports, so a broken
+         // declaration in a file no dashboard imports is exactly as silent.
+         for (const finding of lintGivenTags(drillFacts)) {
             warnings.push(finding);
          }
          for (const finding of await this.unsupportedComponentWarnings()) {

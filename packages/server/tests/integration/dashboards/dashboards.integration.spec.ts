@@ -14,6 +14,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
@@ -30,6 +31,9 @@ const NO_DASHBOARDS_PACKAGE = "html-data-apps-nopublic";
 // lint. Kept apart from PACKAGE_NAME so that one can assert the opposite: a
 // well-formed package produces no dashboard warnings at all.
 const LINT_PACKAGE = "dashboards-lint";
+// A fourth package that curates its query surface, to pin that discovery
+// honours it: one dashboard is in `explores` and one is not.
+const CURATED_PACKAGE = "dashboards-curated";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
 const noDashboardsFixtureDir = path.resolve(
@@ -39,6 +43,10 @@ const noDashboardsFixtureDir = path.resolve(
 const lintFixtureDir = path.resolve(
    __dirname,
    "../../fixtures/dashboards-lint",
+);
+const curatedFixtureDir = path.resolve(
+   __dirname,
+   "../../fixtures/dashboards-curated",
 );
 
 interface DashboardItem {
@@ -100,6 +108,7 @@ describe("Dashboard discovery (E2E)", () => {
                   location: noDashboardsFixtureDir,
                },
                { name: LINT_PACKAGE, location: lintFixtureDir },
+               { name: CURATED_PACKAGE, location: curatedFixtureDir },
             ],
             connections: [],
          }),
@@ -613,7 +622,7 @@ describe("Dashboard discovery (E2E)", () => {
       ): Promise<
          {
             model?: string;
-            target?: string;
+            subject?: string;
             message?: string;
             severity?: string;
          }[]
@@ -635,6 +644,53 @@ describe("Dashboard discovery (E2E)", () => {
 
       it("says nothing about a well-formed package", async () => {
          expect(await packageWarnings(PACKAGE_NAME)).toEqual([]);
+      });
+
+      /**
+       * A broken shared include fails the reload outright rather than
+       * half-loading the package, so the previously-compiled dashboards keep
+       * serving unchanged and no phantom appears.
+       *
+       * This pins the surrounding contract, NOT the guard in
+       * `claimsToBeADashboard`. Measured while writing it: `?reload=true`
+       * answers 424 here and logs "Preserving existing package directory after failed
+       * load", and `Package.create` aborts on the first model error, so the
+       * branch that lists an uncompilable dashboard with its error is not
+       * reachable from either ordinary load path. It is reachable only from
+       * `Package.reloadAllModels` (materialization refresh, manifest rebind),
+       * which keeps per-model placeholders. The guard is therefore defensive,
+       * and deliberately not claimed here as pinned.
+       */
+      it("fails the reload rather than inventing a dashboard from a broken include", async () => {
+         const include = path.resolve(
+            "publisher_data",
+            ENV_NAME,
+            LINT_PACKAGE,
+            "dashboards/_shared.malloy",
+         );
+         const listUrl = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}`;
+         try {
+            await fs.writeFile(
+               include,
+               "// No artifact tag: a shared include, and it does not compile.\n" +
+                  "source: oops is duckdb.table('data/orders.csv') extend {\n" +
+                  "   dimension: bad is\n" +
+                  "}\n",
+            );
+            const reload = await fetch(`${listUrl}?reload=true`);
+            expect(reload.status).toBe(424);
+            const res = await fetch(`${listUrl}/dashboards`);
+            expect(res.status).toBe(200);
+            const dashboards = (await res.json()) as DashboardItem[];
+            // Unchanged, and above all no `_shared`.
+            expect(dashboards.map((d) => d.name).sort()).toEqual([
+               "broken",
+               "overview",
+            ]);
+         } finally {
+            await fs.rm(include, { force: true });
+            await fetch(`${listUrl}?reload=true`);
+         }
       });
 
       it("still serves the broken package's dashboards", async () => {
@@ -784,6 +840,78 @@ describe("Dashboard discovery (E2E)", () => {
          expect(res.headers.get("content-type") ?? "").not.toContain(
             "javascript",
          );
+      });
+   });
+
+   /**
+    * Discovery was the only listing path in `Package` that never consulted
+    * `exploreSet()`, so a package that curates its query surface published full
+    * manifests for dashboards whose every query and given name then 404s.
+    * Notebooks are uncurated in BOTH directions; dashboards had taken "always
+    * listed" without "always queryable".
+    */
+   describe("a package that curates its query surface", () => {
+      const curatedUrl = (sub: string) =>
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CURATED_PACKAGE}${sub}`;
+
+      it("serves only the dashboard whose entry file is in explores", async () => {
+         const res = await fetch(curatedUrl("/dashboards"));
+         expect(res.status).toBe(200);
+         const dashboards = (await res.json()) as DashboardItem[];
+         expect(dashboards.map((d) => d.name)).toEqual(["listed"]);
+      });
+
+      it("404s the held-back dashboard rather than serving its manifest", async () => {
+         // The disclosure, not just the listing: the manifest carries the query
+         // name, the given names, and the suggest-query names, every one of
+         // which the query endpoint would refuse. The 404 echoing the slug the
+         // caller just sent is not a disclosure; its contents would be.
+         const res = await fetch(curatedUrl("/dashboards/unlisted"));
+         expect(res.status).toBe(404);
+         const body = await res.text();
+         expect(body).not.toContain("BRAND");
+         expect(body).not.toContain("givens");
+      });
+
+      it("confirms the held-back dashboard's query really would be refused", async () => {
+         // Pins WHY it is held back rather than assuming it: if the query
+         // boundary ever stopped refusing this, holding the dashboard back
+         // would become wrong and this test should fail.
+         const res = await fetch(
+            curatedUrl("/models/dashboards/unlisted.malloy/query"),
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ queryName: "unlisted" }),
+            },
+         );
+         expect(res.status).toBe(404);
+      });
+
+      it("still runs the served dashboard through the ordinary query endpoint", async () => {
+         const manifest = (await (
+            await fetch(curatedUrl("/dashboards/listed"))
+         ).json()) as DashboardManifest;
+         const res = await fetch(curatedUrl(`/models/${manifest.path}/query`), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+               queryName: manifest.query,
+               compactJson: true,
+            }),
+         });
+         expect(res.status).toBe(200);
+      });
+
+      it("reports the omission instead of leaving it silent", async () => {
+         const res = await fetch(curatedUrl(""));
+         const body = (await res.json()) as {
+            warnings?: { model?: string; message?: string }[];
+         };
+         const warning = (body.warnings ?? []).find((w) =>
+            (w.model ?? "").includes("unlisted"),
+         );
+         expect(warning?.message ?? "").toContain("not listed in 'explores'");
       });
    });
 });
