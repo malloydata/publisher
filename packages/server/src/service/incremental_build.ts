@@ -5,6 +5,7 @@ import { recordIncrementalStep } from "../materialization_metrics";
 import type {
    IncrementalLedgerEntry,
    IncrementalStrategy,
+   LedgerEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage } from "../utils";
 import {
@@ -15,6 +16,7 @@ import {
    seedCoveredThrough,
    type IncrementalLineage,
    type IncrementalStep,
+   type RecordedBoundary,
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
@@ -74,6 +76,53 @@ export interface IncrementalRunContext {
    /** sourceID -> the source's resolved declaration. */
    declarations: Record<string, IncrementalDeclaration>;
    ledger: IncrementalLedgerStore;
+   /**
+    * The caller-supplied ledger (`buildInstructions.ledger`), indexed by table —
+    * see {@link indexCallerLedger}. When present (even empty), it REPLACES
+    * {@link ledger} for the whole run: boundaries are read from here, and
+    * nothing local is read or written — not on a delta, not on a seed. A row
+    * left behind "as a backup" is a landmine for a later run in the other mode,
+    * and the caller's copy is authoritative-by-report anyway: the manifest
+    * entry's `ledger` is how the advance travels back.
+    *
+    * Run-level rather than per-source because a mixed run has no coherent
+    * answer: a boundary read from one authority and written to another is a
+    * boundary neither can be held to.
+    */
+   callerLedger?: ReadonlyMap<string, RecordedBoundary>;
+}
+
+/** The caller-ledger index key: a boundary is a fact about a TABLE. */
+function ledgerTableKey(
+   connectionName: string,
+   physicalTableName: string,
+): string {
+   return `${connectionName}\u0000${physicalTableName}`;
+}
+
+/**
+ * Index a caller-supplied ledger by the table each entry belongs to — the same
+ * key the local store uses — converting each wire entry into the boundary shape
+ * the planner reads. Nothing is derived: every field is one the publisher
+ * reported on a manifest entry, echoed back.
+ */
+export function indexCallerLedger(
+   entries: LedgerEntry[],
+): Map<string, RecordedBoundary> {
+   const index = new Map<string, RecordedBoundary>();
+   for (const entry of entries) {
+      index.set(ledgerTableKey(entry.connectionName, entry.physicalTableName), {
+         sourceEntityId: entry.sourceEntityId,
+         coveredThroughValue: entry.coveredThrough,
+         coveredThroughType: entry.coveredThroughType,
+         watermarkDimension: entry.watermark,
+         mergeKeyDimensions: entry.mergeKeys ?? [],
+         derivedStrategy: entry.strategy,
+         physicalTableName: entry.physicalTableName,
+         connectionName: entry.connectionName,
+      });
+   }
+   return index;
 }
 
 /**
@@ -135,6 +184,17 @@ export function incrementalLineage(params: {
  * Degrades to a seed on any failure, including an unreadable ledger. The ledger
  * is publisher-local state ABOUT a warehouse table, so when the two cannot be
  * reconciled the table wins: rebuild it and record the boundary again.
+ *
+ * A caller-supplied boundary reaches the same planner through the same checks,
+ * with ONE difference in what a failed check means: a boundary the CALLER sent
+ * that no longer describes the source it names is thrown as an error rather
+ * than absorbed as a seed. The caller's input was wrong, and per the API
+ * contract an invalid ledger entry is rejected, not quietly rebuilt around —
+ * create-time validation catches the common case (a changed content address),
+ * and this catches what only the compiled declaration can (a moved
+ * `watermark=`, `merge_key=`, or strategy). Facts about the TABLE (emptied,
+ * unreadable, shape drift) still seed in both modes: the input was fine, the
+ * world moved.
  */
 export async function planSourceRefresh(params: {
    context: IncrementalRunContext;
@@ -168,36 +228,52 @@ export async function planSourceRefresh(params: {
    runner: SqlRunner;
 }): Promise<IncrementalStep> {
    const { context, lineage } = params;
-   let ledgerEntry: IncrementalLedgerEntry | null = null;
-   try {
-      ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
-         context.environmentId,
-         lineage.connectionName,
-         lineage.physicalTableName,
-      );
-   } catch (err) {
-      return {
-         mode: "seed",
-         reasonCode: "ledger_unreadable",
-         reason: `the covered_through ledger could not be read (${errMessage(err)})`,
-      };
+   const forceRefresh = context.forceRefresh || params.reseed === true;
+   const dialect = params.persistSource.dialectName;
+
+   let ledgerEntry: RecordedBoundary | null = null;
+   if (context.callerLedger) {
+      // The local store is not consulted, not even as a fallback for a table the
+      // caller sent no entry for. A worker's own row may be stale by a whole
+      // generation (it is why this mode exists), so falling back to it would
+      // reintroduce exactly the boundary the caller was asked to own. No entry
+      // means the planner's ordinary `no_boundary` seed.
+      ledgerEntry =
+         context.callerLedger.get(
+            ledgerTableKey(lineage.connectionName, lineage.physicalTableName),
+         ) ?? null;
+   } else {
+      try {
+         ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
+            context.environmentId,
+            lineage.connectionName,
+            lineage.physicalTableName,
+         );
+      } catch (err) {
+         return {
+            mode: "seed",
+            reasonCode: "ledger_unreadable",
+            reason: `the covered_through ledger could not be read (${errMessage(err)})`,
+         };
+      }
    }
    // Only asked when it can change the answer: the version gates MERGE alone,
    // and a source with no recorded boundary is seeding regardless.
    const postgresVersionNum =
       lineage.strategy === "merge" &&
-      params.persistSource.dialectName === "postgres" &&
+      dialect === "postgres" &&
       ledgerEntry !== null
          ? await probePostgresVersion(params.runner)
          : undefined;
+   let step: IncrementalStep;
    try {
-      return await planIncrementalStep({
+      step = await planIncrementalStep({
          runner: params.runner,
-         dialect: params.persistSource.dialectName,
+         dialect,
          quotedTablePath: params.quotedTablePath,
          lineage,
          ledgerEntry,
-         forceRefresh: context.forceRefresh || params.reseed === true,
+         forceRefresh,
          now: context.now,
          sourceSQL: params.sourceSQL,
          columns: params.columns,
@@ -210,6 +286,26 @@ export async function planSourceRefresh(params: {
          reason: `the delta could not be planned (${errMessage(err)})`,
       };
    }
+   // A caller-supplied entry that does not describe the source it names is the
+   // CALLER's error, and the API contract makes it one: fail the run rather
+   // than absorb it as a seed. Reachable only for a mismatch create-time
+   // validation cannot see (a declaration moved without moving the content
+   // address); the address itself was already checked against the plan, and the
+   // table key matches by construction of the index.
+   if (
+      context.callerLedger &&
+      step.mode === "seed" &&
+      (step.reasonCode === "lineage_changed" ||
+         step.reasonCode === "table_renamed")
+   ) {
+      throw new Error(
+         `The supplied ledger entry for table "${lineage.physicalTableName}" ` +
+            `was measured under a different definition of this source: ` +
+            `${step.reason}. Delete the entry to rebuild the source, or set ` +
+            `reseed.`,
+      );
+   }
+   return step;
 }
 
 /**
@@ -217,6 +313,11 @@ export async function planSourceRefresh(params: {
  * is already correct at this point, and a ledger write that fails must not fail
  * the build. The cost of losing the write is one full rebuild on the next run,
  * which is the same thing the ledger row is there to avoid — never wrong data.
+ *
+ * A no-op when the caller supplied the ledger: there the advance travels on the
+ * manifest entry (which is written either way, from the value this would have
+ * stored), and the local store is left untouched so it cannot later contradict
+ * the caller.
  */
 export async function advanceLedger(params: {
    context: IncrementalRunContext;
@@ -224,6 +325,7 @@ export async function advanceLedger(params: {
    coveredThrough: WatermarkBound;
 }): Promise<void> {
    const { context, lineage } = params;
+   if (context.callerLedger) return;
    try {
       await context.ledger.upsertIncrementalLedgerEntry({
          environmentId: context.environmentId,
@@ -253,11 +355,20 @@ export async function advanceLedger(params: {
  * rebuild is about to run: between the rebuild's start and its boundary write,
  * the recorded value describes a table that no longer exists, and a crash in that
  * window must not leave a delta reading it.
+ *
+ * A no-op when the caller supplied the ledger: there is no local row to clear,
+ * and the window it protects is closed differently — a run that crashes
+ * mid-rebuild reports no manifest, so the caller keeps the entry it already
+ * had, measured against a table the failed rebuild replaced. The next run's
+ * planner sees that table's emptiness or the entry's own idempotent range,
+ * never a silently skipped row (the boundary can only LAG a table the rebuild
+ * was refreshing).
  */
 export async function resetLedger(
    context: IncrementalRunContext,
    lineage: IncrementalLineage,
 ): Promise<void> {
+   if (context.callerLedger) return;
    try {
       await context.ledger.deleteIncrementalLedgerEntry(
          context.environmentId,
@@ -279,7 +390,10 @@ export async function resetLedger(
  * rows to bound records nothing, leaving the next run to seed again.
  *
  * Returns the boundary it recorded (undefined when there was none to record) so
- * the caller can report it on the manifest entry.
+ * the caller can report it on the manifest entry. When the caller supplied the
+ * ledger, the probe and the return value are the whole job — the store write
+ * below is skipped — because the entry's `ledger` is the only place that
+ * boundary needs to reach.
  */
 export async function advanceLedgerAfterSeed(params: {
    context: IncrementalRunContext;

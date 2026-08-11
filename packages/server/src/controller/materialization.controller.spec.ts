@@ -225,6 +225,94 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).rejects.toThrow("'reseed' must be a boolean");
    });
 
+   it("carries the caller's `ledger` through, empty or not", async () => {
+      // Same carry-through hazard as `destination` and `reseed`: a silently
+      // dropped ledger reads as "use the local store", which on an
+      // interchangeable worker means a full rebuild that reports success.
+      const entry = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         coveredThrough: "2024-06-20",
+         coveredThroughType: "date",
+         watermark: "order_date",
+         mergeKeys: ["order_id"],
+         strategy: "range_replace",
+         sourceEntityId: "content-addr",
+      };
+      const sources = [
+         {
+            sourceEntityId: "b1",
+            materializedTableId: "mt-1",
+            physicalTableName: "orders_v1",
+            realization: "COPY",
+         },
+      ];
+      const parsed = await parse({
+         buildInstructions: { sources, ledger: [entry] },
+      });
+      expect(parsed.ledger).toEqual([entry]);
+
+      // Empty and absent mean OPPOSITE things — "I own the ledger and nothing
+      // is recorded" vs "use your local store" — so both must survive as sent.
+      expect(
+         (await parse({ buildInstructions: { sources } })).ledger,
+      ).toBeUndefined();
+      expect(
+         (await parse({ buildInstructions: { sources, ledger: [] } })).ledger,
+      ).toEqual([]);
+      // And null reads as absent, not as an empty ledger.
+      expect(
+         (await parse({ buildInstructions: { sources, ledger: null } })).ledger,
+      ).toBeUndefined();
+   });
+
+   it("rejects a malformed ledger entry", async () => {
+      // Every field is an echo of what the publisher reported, so a wrong shape
+      // is a caller bug — refused here, before it can misdescribe a boundary.
+      const valid = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         coveredThrough: "2024-06-20",
+         coveredThroughType: "date",
+         watermark: "order_date",
+         strategy: "range_replace",
+         sourceEntityId: "content-addr",
+      };
+      const withLedger = (ledger: unknown) => ({
+         buildInstructions: {
+            ledger,
+            sources: [
+               {
+                  sourceEntityId: "b1",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "orders_v1",
+                  realization: "COPY",
+               },
+            ],
+         },
+      });
+      const { controller } = build();
+      for (const bad of [
+         valid, // not wrapped in an array
+         ["2024-06-20"],
+         [{ ...valid, coveredThrough: "" }],
+         [{ ...valid, coveredThrough: 20240620 }],
+         [{ ...valid, watermark: undefined }],
+         [{ ...valid, physicalTableName: undefined }],
+         [{ ...valid, connectionName: "" }],
+         [{ ...valid, strategy: "upsert" }],
+         [{ ...valid, mergeKeys: "order_id" }],
+      ]) {
+         await expect(
+            controller.createMaterialization("env", "pkg", withLedger(bad)),
+         ).rejects.toThrow(BadRequestError);
+      }
+      // And the valid shape survives without a merge key list, which is what a
+      // keyless (range-replace) source reports.
+      const parsed = await parse(withLedger([valid]));
+      expect(parsed.ledger).toEqual([valid]);
+   });
+
    it("preserves the optional `connectionName` on a manifest reference", async () => {
       // Regression: `connectionName` (added by #904) lets the seed loop dialect-
       // quote the referenced upstream for a case-folding engine. Dropping it here
