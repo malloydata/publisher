@@ -27,6 +27,7 @@ import {
    BuildManifestResult,
    BuildPlan,
    FreshnessManifest,
+   LedgerEntry,
    Materialization,
    MaterializationStatus,
    MaterializationUpdate,
@@ -57,6 +58,7 @@ import {
    advanceLedger,
    advanceLedgerAfterSeed,
    incrementalLineage,
+   indexCallerLedger,
    planSourceRefresh,
    reportDeltaApplied,
    reportIncrementalStep,
@@ -103,19 +105,65 @@ import { resolveEnvironmentId } from "./resolve_environment";
 import { redactPgSecrets } from "../pg_helpers";
 
 /**
- * A boundary as the manifest entry's two reported fields, or nothing when there
- * is no boundary — an ordinary (non-incremental) source, or an incremental one
- * whose source is empty. Spread into the entry so the absent case adds no keys
- * at all rather than explicit undefineds.
+ * What an incremental refresh DID to the table, as the manifest entry's field,
+ * or nothing for a source that is not refreshed incrementally at all.
+ *
+ * Reported because it cannot be inferred: every fallback in the delta path
+ * answers success and rebuilds, so a caller that instructed a delta and got a
+ * rebuild sees an identical entry otherwise. It is also how a caller supplying
+ * its own ledger tells that its entries are being advanced from.
+ *
+ * `none` names the do-nothing case rather than leaving it to absence, so absence
+ * carries ONE meaning: this source is not refreshed incrementally. The
+ * alternative reads the same for a skip and for a plain full-refresh source, and
+ * `ledger` cannot break the tie — an incremental source over an empty table
+ * reports no boundary either.
  */
-function boundaryFields(
+function refreshFields(
+   did: "delta" | "full" | "none" | undefined,
+): { refresh: "delta" | "full" | "none" } | Record<never, never> {
+   return did ? { refresh: did } : {};
+}
+
+/**
+ * The manifest entry's `ledger` field: the boundary this refresh left in force,
+ * self-contained — the table it belongs to, the value, and the source
+ * definition it was measured under. A caller that owns the ledger stores this
+ * object and returns it verbatim in the next run's `buildInstructions.ledger`;
+ * nothing else about it needs to be understood, which is the point.
+ *
+ * The ONLY place a boundary is reported, which is why it is emitted whoever owns
+ * the ledger, and on every path that leaves one in force — a delta, a seed, or a
+ * skip that applied nothing. It is also how progress is observed: a
+ * `coveredThrough` that moved between runs is a delta that applied. The boundary
+ * is not repeated on the entry itself, because the value alone is not
+ * comparable across runs: it means something only alongside the watermark and
+ * the source address it was measured under, which are right here.
+ *
+ * Nothing when there is no boundary: a non-incremental source, or an incremental
+ * one whose source is empty (no boundary is derivable, so none is recorded).
+ * Spread into the entry so that case adds no key at all rather than an explicit
+ * undefined.
+ */
+function ledgerFields(
+   lineage: IncrementalLineage | undefined,
    bound: WatermarkBound | undefined,
-):
-   | { coveredThrough: string; coveredThroughType: string }
-   | Record<never, never> {
-   return bound
-      ? { coveredThrough: bound.value, coveredThroughType: bound.malloyType }
-      : {};
+): { ledger: LedgerEntry } | Record<never, never> {
+   if (!lineage || !bound) return {};
+   return {
+      ledger: {
+         connectionName: lineage.connectionName,
+         physicalTableName: lineage.physicalTableName,
+         coveredThrough: bound.value,
+         coveredThroughType: bound.malloyType,
+         watermark: lineage.watermarkName,
+         ...(lineage.mergeKeys.length > 0
+            ? { mergeKeys: lineage.mergeKeys }
+            : {}),
+         strategy: lineage.strategy,
+         sourceEntityId: lineage.sourceEntityId,
+      },
+   };
 }
 
 /**
@@ -503,6 +551,16 @@ export class MaterializationService {
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
          /**
+          * `BuildInstructions.ledger`: the incremental ledger for this run,
+          * supplied by the caller (each entry a `ManifestEntry.ledger` an
+          * earlier run reported). When present — even empty — it replaces the
+          * publisher's local store for the whole run. Orchestrated-only, and
+          * validated against the build plan at create time so an entry that
+          * names an uninstructed table or a moved source is a 400, not a
+          * failed background run.
+          */
+         ledger?: LedgerEntry[];
+         /**
           * What initiated this run. `ON_DEMAND` (default) = a manual/API create;
           * `SCHEDULER` = the standalone materialization scheduler firing a
           * package's `materialization.schedule` cron. Recorded on the run
@@ -530,7 +588,12 @@ export class MaterializationService {
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
       if (orchestrated) {
-         this.validateInstructions(pkg.getBuildPlan(), buildInstructions);
+         this.validateInstructions(
+            pkg.getBuildPlan(),
+            buildInstructions,
+            options.ledger,
+            options.reseed ?? false,
+         );
       }
 
       const active = await this.repository.getActiveMaterialization(
@@ -584,6 +647,10 @@ export class MaterializationService {
                forceRefresh,
                reseed,
                buildInstructions,
+               // Orchestrated-only, and clamped here rather than trusted: an
+               // auto-run has no caller to take a ledger from, and taking one
+               // would replace the local store it depends on.
+               ledger: orchestrated ? options.ledger : undefined,
                referenceManifest: options.referenceManifest,
                strictUpstreams: options.strictUpstreams,
                trigger,
@@ -613,6 +680,7 @@ export class MaterializationService {
          forceRefresh: boolean;
          reseed: boolean;
          buildInstructions: BuildInstruction[] | undefined;
+         ledger: LedgerEntry[] | undefined;
          referenceManifest: ManifestReference[] | undefined;
          strictUpstreams: boolean | undefined;
          trigger: "ON_DEMAND" | "SCHEDULER";
@@ -683,6 +751,7 @@ export class MaterializationService {
             // full rebuilds that no delta could ever follow.
             forceRefresh: opts.reseed ?? false,
             now: new Date(startedAt),
+            ledger: opts.ledger,
          });
 
          let instructions: BuildInstruction[];
@@ -1177,10 +1246,25 @@ export class MaterializationService {
     * build plan: every instructed sourceEntityId must be a planned source, and only
     * COPY realization is supported. Throws when the package declares no persist
     * source (no plan to build against).
+    *
+    * When the caller supplied the ledger, each of its entries is validated here
+    * too, per the API contract that an invalid entry is a 400 rather than a
+    * quiet rebuild: an entry must name a table this run instructs, name it once,
+    * belong to a source that declares incremental refresh, and carry the content
+    * address the plan carries for that source. The address check is the one
+    * that fires in ordinary operation — a publish or rollback that changes a
+    * source moves its address, and the caller's stored entry was measured under
+    * the old one — which is exactly why it is checked HERE, synchronously,
+    * where the caller can react (delete the entry, or set `reseed`), instead of
+    * failing a background run. An entry for a source being reseeded is ignored
+    * unvalidated: `reseed` is the documented recovery from this 400, so it must
+    * not itself trip it.
     */
    private validateInstructions(
       plan: BuildPlan | null,
       instructions: BuildInstruction[],
+      ledger?: LedgerEntry[],
+      runReseed = false,
    ): void {
       if (!plan) {
          throw new BadRequestError(
@@ -1202,6 +1286,71 @@ export class MaterializationService {
          if (instruction.realization === "SNAPSHOT") {
             throw new BadRequestError(
                "realization=SNAPSHOT is not supported (COPY only)",
+            );
+         }
+      }
+
+      if (ledger === undefined || ledger.length === 0) return;
+
+      // What this run is building, by the table each instruction writes — the
+      // same key a ledger entry carries — with what the plan knows about the
+      // source writing it. Resolved by sourceID when the instruction echoes
+      // one, else by content address (the same order the build loop matches
+      // instructions in).
+      const instructed = new Map<
+         string,
+         { sourceEntityId: string; refresh: string | null; reseed: boolean }
+      >();
+      const byAddress = new Map(
+         Object.values(plan.sources).map((s) => [s.sourceEntityId, s]),
+      );
+      for (const instruction of instructions) {
+         const planSource =
+            (instruction.sourceID
+               ? plan.sources[instruction.sourceID]
+               : undefined) ?? byAddress.get(instruction.sourceEntityId);
+         if (!planSource) continue; // Unreachable: every instruction matched above.
+         instructed.set(
+            `${planSource.connectionName}\u0000${instruction.physicalTableName}`,
+            {
+               sourceEntityId: planSource.sourceEntityId,
+               refresh: planSource.refresh ?? null,
+               reseed: runReseed || instruction.reseed === true,
+            },
+         );
+      }
+
+      const seen = new Set<string>();
+      for (const entry of ledger) {
+         const key = `${entry.connectionName}\u0000${entry.physicalTableName}`;
+         const table = `'${entry.physicalTableName}' on connection '${entry.connectionName}'`;
+         if (seen.has(key)) {
+            throw new BadRequestError(
+               `Ledger entry for table ${table} appears more than once`,
+            );
+         }
+         seen.add(key);
+         const target = instructed.get(key);
+         if (!target) {
+            throw new BadRequestError(
+               `Ledger entry names table ${table}, which this run's ` +
+                  `instructions do not build`,
+            );
+         }
+         if (target.reseed) continue;
+         if (target.refresh !== "incremental") {
+            throw new BadRequestError(
+               `Ledger entry names table ${table}, whose source does not ` +
+                  `declare refresh="incremental"`,
+            );
+         }
+         if (entry.sourceEntityId !== target.sourceEntityId) {
+            throw new BadRequestError(
+               `Ledger entry for table ${table} was measured under a ` +
+                  `different definition of its source (its sourceEntityId does ` +
+                  `not match the plan's) — expected after a publish or ` +
+                  `rollback that changed the source. Delete the entry to ` +
+                  `rebuild the source, or set reseed.`,
             );
          }
       }
@@ -1261,6 +1410,12 @@ export class MaterializationService {
          materializationId: string;
          forceRefresh: boolean;
          now: Date;
+         /**
+          * The caller-supplied ledger, when the caller owns it. Undefined means
+          * the local store, as before; present (even empty) replaces it for the
+          * whole run.
+          */
+         ledger: LedgerEntry[] | undefined;
       },
    ): IncrementalRunContext | undefined {
       // An unreadable declaration is dropped by collectIncrementalDeclarations
@@ -1273,7 +1428,15 @@ export class MaterializationService {
          if (declaration.incremental) declarations[sourceID] = declaration;
       }
       if (Object.keys(declarations).length === 0) return undefined;
-      return { ...run, declarations, ledger: this.repository };
+      const { ledger, ...rest } = run;
+      return {
+         ...rest,
+         declarations,
+         ledger: this.repository,
+         ...(ledger !== undefined
+            ? { callerLedger: indexCallerLedger(ledger) }
+            : {}),
+      };
    }
 
    /**
@@ -1922,7 +2085,14 @@ export class MaterializationService {
          physicalTableName,
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
-         ...boundaryFields(seededThrough),
+         // The table now holds a full snapshot, so the boundary probed from it
+         // is what turns the NEXT refresh into a delta.
+         ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
+         // Reported for an incremental source whatever brought it here — no
+         // recorded boundary, `reseed`, a table the delta path could not build
+         // on — because from outside, a rebuild in the name of an incremental
+         // refresh is otherwise indistinguishable from a delta.
+         ...refreshFields(incrementalRefresh ? "full" : undefined),
          rowCount: null,
       };
    }
@@ -2022,7 +2192,11 @@ export class MaterializationService {
          // A delta reports where it advanced to; a skip reports the boundary
          // that stays in force. Either way the caller reads coverage from the
          // entry rather than inferring it from the run's outcome.
-         ...boundaryFields(step.coveredThrough),
+         ...ledgerFields(lineage, step.coveredThrough),
+         // A skip applied nothing and says so, rather than leaving a reader to
+         // infer it from an absent field: its unchanged `ledger` boundary
+         // already says the table stands where it did.
+         ...refreshFields(step.mode === "delta" ? "delta" : "none"),
       };
    }
 

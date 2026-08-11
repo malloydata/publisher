@@ -821,6 +821,28 @@ export interface IncrementalLineage {
 }
 
 /**
+ * A recorded boundary as the plan reads it: the value, plus the table and the
+ * declaration contract it was established under.
+ *
+ * A local ledger row is one of these (it also carries audit columns no decision
+ * reads), and so is a caller-returned wire `LedgerEntry` — which is why this is
+ * the shape the planner takes rather than the row type. Both arrive at the same
+ * checks, so a boundary the caller echoed is trusted exactly as one the
+ * publisher stored itself: it IS one the publisher stored, held by the caller.
+ */
+export type RecordedBoundary = Pick<
+   IncrementalLedgerEntry,
+   | "sourceEntityId"
+   | "coveredThroughValue"
+   | "coveredThroughType"
+   | "watermarkDimension"
+   | "mergeKeyDimensions"
+   | "derivedStrategy"
+   | "physicalTableName"
+   | "connectionName"
+>;
+
+/**
  * Why a recorded boundary cannot be built on, or undefined when it can.
  *
  * Each of these is a case where the ledger's `covered_through` is a claim about
@@ -829,14 +851,21 @@ export interface IncrementalLineage {
  * mismatched claim writes the wrong rows into a serving table.
  */
 export function ledgerLineageMismatch(
-   entry: IncrementalLedgerEntry,
+   entry: RecordedBoundary,
    lineage: IncrementalLineage,
 ): { reasonCode: IncrementalStepReasonCode; reason: string } | undefined {
    // Carries its own reason code, separate from every other mismatch below,
    // because its causes are different in kind from theirs and so are its
-   // remedies. The others mean the author changed the model; this one means the
-   // boundary was measured on a different TABLE under a model that may not have
-   // changed at all. Two ways that happens, and the reason names both because an
+   // remedies. The others mean the source's DEFINITION is not the one the
+   // boundary was measured under, which has two causes depending on who is
+   // driving: a standalone author editing the model in place, or — where packages
+   // are immutable and a table is shared across a package's versions — a refresh
+   // instructed through a different version than the one that established the
+   // boundary, which a publish that touches this source or a rollback to an
+   // earlier version both produce. Neither is anyone's mistake, which is why both
+   // seed instead of failing. This one means the boundary was measured on a
+   // different TABLE, under a definition that may not have moved at all. Two ways
+   // THAT happens, and the reason names both because an
    // operator cannot tell them apart from the code alone: an orchestrated host
    // assigning a generational physical name per run, or two sources sharing one
    // content address and so fighting over one ledger row (which the publish gate
@@ -859,13 +888,16 @@ export function ledgerLineageMismatch(
    // Checked before the individual declarations because it subsumes them: a
    // different content address means different build SQL, and the boundary was
    // measured over rows that SQL may no longer produce. The declaration checks
-   // below catch the narrower case of a model edit that moves `watermark=` or
+   // below catch the narrower case of a definition that moves `watermark=` or
    // `merge_key=` — those do NOT move the address (proven in
    // incremental_compiler_contract.spec.ts), which is why both layers exist.
    if (entry.sourceEntityId !== lineage.sourceEntityId) {
       return changed(
-         `the source's content address changed, so the recorded boundary was ` +
-            `measured over different SQL than this refresh would apply a delta to`,
+         `the source's content address is not the one the recorded boundary was ` +
+            `measured under, so that boundary describes different SQL than this ` +
+            `refresh would apply a delta to — either the model was edited, or ` +
+            `this refresh is instructed through a different version of the ` +
+            `package than the one that advanced the boundary`,
       );
    }
    if (entry.connectionName !== lineage.connectionName) {
@@ -1007,7 +1039,11 @@ export async function planIncrementalStep(inputs: {
    /** The target as the CREATE quoted it, for the DML and the probes. */
    quotedTablePath: string;
    lineage: IncrementalLineage;
-   ledgerEntry: IncrementalLedgerEntry | null;
+   /**
+    * The recorded boundary this refresh may advance from: a row from the local
+    * store, or a caller-returned ledger entry. Null seeds.
+    */
+   ledgerEntry: RecordedBoundary | null;
    forceRefresh: boolean;
    /** The run's start time, used as the range end for a time watermark. */
    now: Date;

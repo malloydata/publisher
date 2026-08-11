@@ -174,6 +174,13 @@ export type ManifestEntry = components["schemas"]["ManifestEntry"];
 export type BuildInstruction = components["schemas"]["BuildInstruction"];
 export type ManifestReference = components["schemas"]["ManifestReference"];
 export type Realization = components["schemas"]["Realization"];
+/**
+ * One incremental source's `covered_through` boundary as it travels on the
+ * wire: reported on `ManifestEntry.ledger`, and returned verbatim in
+ * `BuildInstructions.ledger` by a caller that owns the ledger. The store-row
+ * counterpart is {@link IncrementalLedgerEntry}.
+ */
+export type LedgerEntry = components["schemas"]["LedgerEntry"];
 
 export interface Materialization {
    id: string;

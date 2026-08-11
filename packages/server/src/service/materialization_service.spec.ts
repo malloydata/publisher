@@ -15,9 +15,11 @@ import {
 } from "../errors";
 import {
    BuildInstruction,
+   LedgerEntry,
    MaterializationStatus,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
+import { indexCallerLedger } from "./incremental_build";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import { EnvironmentStore } from "./environment_store";
 import {
@@ -693,6 +695,36 @@ describe("MaterializationService", () => {
          ).toMatchObject({ mode: "orchestrated" });
       });
 
+      it("takes the ledger from the caller only when the caller is instructing", async () => {
+         setPackage(ctx.environmentStore, {
+            getBuildPlan: () => makeBuildPlan(),
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({ status: "PENDING" }),
+         );
+         const runBuild = sinon.stub().resolves();
+         (ctx.service as unknown as { runBuild: sinon.SinonStub }).runBuild =
+            runBuild;
+
+         // An EMPTY ledger is meaningful — "I own the ledger and nothing is
+         // recorded" — and must survive to the run rather than degrade to
+         // "use the local store".
+         await ctx.service.createMaterialization("my-env", "pkg", {
+            buildInstructions: [makeInstruction()],
+            ledger: [],
+         });
+         expect(runBuild.firstCall.args[3].ledger).toEqual([]);
+
+         // An auto-run has no caller to take a ledger from, so it is clamped
+         // rather than trusted: taking one would replace the local store the
+         // auto-run depends on.
+         await ctx.service.createMaterialization("my-env", "pkg", {
+            ledger: [],
+         });
+         expect(runBuild.secondCall.args[3].ledger).toBeUndefined();
+      });
+
       it("rejects instructions referencing an unknown sourceEntityId before creating", async () => {
          setPackage(ctx.environmentStore, {
             getBuildPlan: () => makeBuildPlan(),
@@ -727,6 +759,120 @@ describe("MaterializationService", () => {
                buildInstructions: [makeInstruction()],
             }),
          ).rejects.toThrow(BadRequestError);
+      });
+
+      // A supplied ledger is validated at CREATE time, per the API contract
+      // that an invalid entry is a 400 rather than a quiet rebuild — and the
+      // sourceEntityId case is checked here precisely because it fires in
+      // ordinary operation (a publish or rollback moves the address), where a
+      // synchronous, actionable rejection beats a failed background run.
+      describe("with a supplied ledger", () => {
+         /** A plan whose one source declares incremental refresh. */
+         const incrementalPlan = () =>
+            makeBuildPlan({
+               sources: {
+                  "orders@m.malloy": {
+                     name: "orders",
+                     sourceID: "orders@m.malloy",
+                     connectionName: "duckdb",
+                     dialect: "duckdb",
+                     sourceEntityId: "build-orders",
+                     sql: "SELECT 1",
+                     columns: [],
+                     refresh: "incremental",
+                  },
+               },
+            });
+
+         /** A ledger entry matching {@link makeInstruction}'s target table. */
+         const entry = (overrides: Partial<LedgerEntry> = {}): LedgerEntry => ({
+            connectionName: "duckdb",
+            physicalTableName: '"orders_v1"',
+            coveredThrough: "2024-06-20",
+            coveredThroughType: "date",
+            watermark: "order_date",
+            strategy: "range_replace",
+            sourceEntityId: "build-orders",
+            ...overrides,
+         });
+
+         function creating(options: {
+            ledger: LedgerEntry[];
+            reseed?: boolean;
+            instruction?: BuildInstruction;
+            plan?: () => ReturnType<typeof makeBuildPlan>;
+         }) {
+            setPackage(ctx.environmentStore, {
+               getBuildPlan: options.plan ?? incrementalPlan,
+            });
+            ctx.repository.getActiveMaterialization.resolves(null);
+            ctx.repository.createMaterialization.resolves(
+               makeMaterialization({ status: "PENDING" }),
+            );
+            const runBuild = sinon.stub().resolves();
+            (ctx.service as unknown as { runBuild: sinon.SinonStub }).runBuild =
+               runBuild;
+            return ctx.service.createMaterialization("my-env", "pkg", {
+               buildInstructions: [options.instruction ?? makeInstruction()],
+               ledger: options.ledger,
+               ...(options.reseed === undefined
+                  ? {}
+                  : { reseed: options.reseed }),
+            });
+         }
+
+         it("accepts an entry that matches the plan", async () => {
+            const created = await creating({ ledger: [entry()] });
+            expect(created.status).toBe("PENDING");
+         });
+
+         it("rejects an entry naming a table this run does not instruct", async () => {
+            await expect(
+               creating({
+                  ledger: [entry({ physicalTableName: '"other_table"' })],
+               }),
+            ).rejects.toThrow(/do not build/);
+            expect(ctx.repository.createMaterialization.called).toBe(false);
+         });
+
+         it("rejects an entry measured under a different source definition", async () => {
+            // The publish/rollback case: the caller echoed faithfully, but the
+            // instructing version's address moved. The message says what to do.
+            await expect(
+               creating({
+                  ledger: [entry({ sourceEntityId: "an-older-address" })],
+               }),
+            ).rejects.toThrow(/publish or rollback|reseed/);
+         });
+
+         it("rejects an entry for a source that is not incremental", async () => {
+            await expect(
+               creating({ ledger: [entry()], plan: () => makeBuildPlan() }),
+            ).rejects.toThrow(/refresh="incremental"/);
+         });
+
+         it("rejects a ledger naming the same table twice", async () => {
+            await expect(
+               creating({ ledger: [entry(), entry()] }),
+            ).rejects.toThrow(/more than once/);
+         });
+
+         it("ignores an invalid entry for a source being reseeded", async () => {
+            // `reseed` is the documented recovery from the rejections above, so
+            // it must not itself trip them — run-level or per-instruction.
+            const stale = entry({ sourceEntityId: "an-older-address" });
+            expect(
+               (await creating({ ledger: [stale], reseed: true })).status,
+            ).toBe("PENDING");
+            expect(
+               (
+                  await creating({
+                     ledger: [stale],
+                     instruction: makeInstruction({ reseed: true }),
+                  })
+               ).status,
+            ).toBe("PENDING");
+         });
       });
    });
 
@@ -2397,8 +2543,9 @@ describe("runBuild (branch behavior)", () => {
          reseed: boolean;
          trigger: "ON_DEMAND" | "SCHEDULER";
          buildInstructions: unknown[];
+         ledger: unknown[];
       }>,
-   ): Promise<{ forceRefresh: boolean }> {
+   ): Promise<{ forceRefresh: boolean; ledger?: unknown[] }> {
       const svc = stubEngine();
       const contextSpy = sinon.stub().returns(undefined);
       (
@@ -2421,8 +2568,24 @@ describe("runBuild (branch behavior)", () => {
       );
 
       expect(contextSpy.calledOnce).toBe(true);
-      return contextSpy.firstCall.args[1] as { forceRefresh: boolean };
+      return contextSpy.firstCall.args[1] as {
+         forceRefresh: boolean;
+         ledger?: unknown[];
+      };
    }
+
+   it("hands the run the caller's ledger, or none, verbatim", async () => {
+      // Absent means "read the local store", for every caller that predates the
+      // field and any mid-upgrade fleet — which is what makes it additive.
+      expect((await contextArgsFor({})).ledger).toBeUndefined();
+      expect(
+         (await contextArgsFor({ buildInstructions: [{}] })).ledger,
+      ).toBeUndefined();
+      // Present — even empty — means the caller owns it for this run.
+      expect(
+         (await contextArgsFor({ buildInstructions: [{}], ledger: [] })).ledger,
+      ).toEqual([]);
+   });
 
    it("NEVER reads a force as a re-seed, whoever asked", async () => {
       // Including an ON_DEMAND API caller, which is the case that used to
@@ -2859,29 +3022,39 @@ describe("buildOneSource: incremental refresh", () => {
    function incrementalContext(overrides: {
       ledgerEntry?: typeof LEDGER_ROW | null;
       forceRefresh?: boolean;
+      /**
+       * The caller-supplied ledger. Present (even `[]`) puts the run in
+       * caller-ledger mode, replacing the local store; absent reads the store.
+       */
+      ledger?: LedgerEntry[];
+      now?: Date;
    }) {
       const upsert = sinon.stub().resolves();
       const remove = sinon.stub().resolves();
+      const read = sinon
+         .stub()
+         .resolves(
+            overrides.ledgerEntry === undefined
+               ? LEDGER_ROW
+               : overrides.ledgerEntry,
+         );
       const context = {
          environmentId: "env-1",
          packageName: "pkg",
          materializationId: "run-1",
          forceRefresh: overrides.forceRefresh ?? false,
-         now: new Date("2024-07-01T00:00:00Z"),
+         now: overrides.now ?? new Date("2024-07-01T00:00:00Z"),
          declarations: { orders: DECLARATION },
+         ...(overrides.ledger !== undefined
+            ? { callerLedger: indexCallerLedger(overrides.ledger) }
+            : {}),
          ledger: {
-            getIncrementalLedgerEntry: sinon
-               .stub()
-               .resolves(
-                  overrides.ledgerEntry === undefined
-                     ? LEDGER_ROW
-                     : overrides.ledgerEntry,
-               ),
+            getIncrementalLedgerEntry: read,
             upsertIncrementalLedgerEntry: upsert,
             deleteIncrementalLedgerEntry: remove,
          },
       };
-      return { context, upsert, remove };
+      return { context, upsert, remove, read };
    }
 
    function callBuildOneSource(params: {
@@ -2894,8 +3067,8 @@ describe("buildOneSource: incremental refresh", () => {
    }): Promise<{
       sourceEntityId: string;
       physicalTableName: string;
-      coveredThrough?: string;
-      coveredThroughType?: string;
+      refresh?: string;
+      ledger?: LedgerEntry;
    }> {
       const source = fakeSource({
          name: "orders",
@@ -2908,20 +3081,20 @@ describe("buildOneSource: incremental refresh", () => {
          // the table its columns from.
          columns: ["order_date", "revenue"],
       });
-      const instruction: BuildInstruction = {
+      const instruction = {
          sourceEntityId: "abcdef1234567890",
          materializedTableId: "mt-1",
          physicalTableName: "orders_v1",
          realization: "COPY",
          ...(params.reseed === undefined ? {} : { reseed: params.reseed }),
-      };
+      } as BuildInstruction;
       return (
          ctx.service as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                sourceEntityId: string;
                physicalTableName: string;
-               coveredThrough?: string;
-               coveredThroughType?: string;
+               refresh?: string;
+               ledger?: LedgerEntry;
             }>;
          }
       ).buildOneSource(
@@ -2981,9 +3154,18 @@ describe("buildOneSource: incremental refresh", () => {
       // The entry still names the same table: a delta advances in place.
       expect(entry.physicalTableName).toBe("orders_v1");
       // And it reports the coverage it reached, so an orchestrating caller can
-      // verify the delta advanced instead of inferring it from the run's outcome.
-      expect(entry.coveredThrough).toBe("2024-07-01");
-      expect(entry.coveredThroughType).toBe("date");
+      // verify the delta advanced instead of inferring it from the run's
+      // outcome. The boundary is reported ONLY here, alongside the watermark and
+      // address it was measured under, which is what makes it comparable.
+      expect(entry.ledger).toEqual({
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         coveredThrough: "2024-07-01",
+         coveredThroughType: "date",
+         watermark: "order_date",
+         strategy: "range_replace",
+         sourceEntityId: "abcdef1234567890",
+      });
    });
 
    it("re-seeds the ONE source whose instruction says so", async () => {
@@ -2999,7 +3181,7 @@ describe("buildOneSource: incremental refresh", () => {
       // A rebuild still leaves a boundary behind — probed from the table it just
       // wrote — so the NEXT refresh is a delta again rather than another rebuild.
       expect(upsert.calledOnce).toBe(true);
-      expect(entry.coveredThrough).toBe("2024-07-01");
+      expect(entry.ledger?.coveredThrough).toBe("2024-07-01");
    });
 
    it("reports the boundary a SEED reached on the manifest entry", async () => {
@@ -3011,8 +3193,8 @@ describe("buildOneSource: incremental refresh", () => {
 
       const statements = runSQL.getCalls().map((c) => c.args[0] as string);
       expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(true);
-      expect(entry.coveredThrough).toBe("2024-07-01");
-      expect(entry.coveredThroughType).toBe("date");
+      expect(entry.ledger?.coveredThrough).toBe("2024-07-01");
+      expect(entry.ledger?.coveredThroughType).toBe("date");
    });
 
    it("carries the Snowflake delta as ONE scripting block, not a script", async () => {
@@ -3063,7 +3245,7 @@ describe("buildOneSource: incremental refresh", () => {
       ).toBe('"orders_v1"');
       // A skip reports the boundary that STAYS in force, so a caller does not
       // read a gap where coverage is simply unchanged.
-      expect(entry.coveredThrough).toBe("2024-07-01");
+      expect(entry.ledger?.coveredThrough).toBe("2024-07-01");
    });
 
    it("fails the build and leaves the boundary alone when the delta's DML fails", async () => {
@@ -3193,5 +3375,241 @@ describe("buildOneSource: incremental refresh", () => {
       );
       expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
       expect(upsert.called).toBe(false);
+   });
+
+   it("reports what an incremental refresh DID: delta, full or none", async () => {
+      // Otherwise indistinguishable from the entry, and a caller cannot infer it
+      // from what it instructed: every fallback answers success and rebuilds.
+      const delta = await callBuildOneSource({
+         runSQL: probeAwareRunSQL(),
+         context: incrementalContext({}).context,
+      });
+      expect(delta.refresh).toBe("delta");
+
+      const rebuilt = await callBuildOneSource({
+         runSQL: probeAwareRunSQL(),
+         context: incrementalContext({ ledgerEntry: null }).context,
+      });
+      expect(rebuilt.refresh).toBe("full");
+
+      // A skip applied nothing and SAYS so, rather than leaving it to an absent
+      // field: its unchanged boundary already says the table stands where it did.
+      const skipped = await callBuildOneSource({
+         runSQL: probeAwareRunSQL(),
+         context: incrementalContext({
+            ledgerEntry: { ...LEDGER_ROW, coveredThroughValue: "2024-07-01" },
+         }).context,
+      });
+      expect(skipped.refresh).toBe("none");
+
+      // Which leaves absence with exactly one meaning: this source is not
+      // refreshed incrementally at all.
+      const { context } = incrementalContext({});
+      context.declarations = {} as typeof context.declarations;
+      const ordinary = await callBuildOneSource({
+         runSQL: probeAwareRunSQL(),
+         context,
+      });
+      expect(ordinary.refresh).toBeUndefined();
+   });
+
+   // ── caller-supplied ledger ──────────────────────────────────────────────
+   //
+   // The same dispatch, reading the boundary off `buildInstructions.ledger`
+   // instead of the local store. What these pin: the boundary reaches the same
+   // planner through the same checks, the local store is neither read nor
+   // written on any path, a missing entry seeds exactly like a missing row —
+   // and, unlike a stored row, an entry that no longer describes its source
+   // FAILS the run, per the API contract that an invalid input is an error.
+   describe("with a caller-supplied ledger", () => {
+      /** The publisher's own last report (`ManifestEntry.ledger`), echoed back. */
+      const ENTRY: LedgerEntry = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         coveredThrough: "2024-06-20",
+         coveredThroughType: "date",
+         watermark: "order_date",
+         strategy: "range_replace",
+         sourceEntityId: "abcdef1234567890",
+      };
+
+      it("advances from the caller's entry while a DIFFERENT local row sits unread", async () => {
+         // The local row says 2024-06-01 and is deliberately wrong: this is the
+         // whole point of the mode, since the row a given worker holds may be a
+         // generation stale or absent entirely.
+         const runSQL = probeAwareRunSQL();
+         const { context, upsert, remove, read } = incrementalContext({
+            ledger: [ENTRY],
+         });
+         const entry = await callBuildOneSource({ runSQL, context });
+
+         const script = runSQL
+            .getCalls()
+            .map((c) => c.args[0] as string)
+            .find((s) => s.startsWith("BEGIN;"));
+         expect(script).toContain(`>= DATE '2024-06-20'`);
+         expect(script).not.toContain("2024-06-01");
+         expect(read.called).toBe(false);
+         // Not written either, on either path: a row left behind here is a stale
+         // landmine for a later run in the other mode.
+         expect(upsert.called).toBe(false);
+         expect(remove.called).toBe(false);
+         // The advance travels back on the entry's `ledger`, which is the
+         // caller's own next input — verbatim.
+         expect(entry.refresh).toBe("delta");
+         expect(entry.ledger).toEqual({
+            ...ENTRY,
+            coveredThrough: "2024-07-01",
+         });
+      });
+
+      it("round-trips: store run 1's `ledger`, return it, run 2 deltas from it", async () => {
+         const first = await callBuildOneSource({
+            runSQL: probeAwareRunSQL(),
+            // An empty ledger, which is what an orchestrator sends the first
+            // time: it owns the ledger and has nothing recorded yet.
+            context: incrementalContext({ ledger: [] }).context,
+         });
+         expect(first.refresh).toBe("full");
+         // The seed reports the whole entry to store — the caller's entire
+         // protocol is `entries[*].ledger` back as `buildInstructions.ledger`.
+         expect(first.ledger).toBeDefined();
+         expect(first.ledger!.coveredThrough).toBe("2024-07-01");
+
+         const runSQL = probeAwareRunSQL();
+         const second = await callBuildOneSource({
+            runSQL,
+            context: incrementalContext({
+               ledger: [first.ledger!],
+               now: new Date("2024-07-02T00:00:00Z"),
+            }).context,
+         });
+         expect(second.refresh).toBe("delta");
+         const script = runSQL
+            .getCalls()
+            .map((c) => c.args[0] as string)
+            .find((s) => s.startsWith("BEGIN;"));
+         expect(script).toContain(`>= DATE '2024-07-01'`);
+         expect(script).toContain(`< DATE '2024-07-02'`);
+         expect(second.ledger!.coveredThrough).toBe("2024-07-02");
+      });
+
+      it("recomputes an idempotent overlap when the entry lags the table", async () => {
+         // A stale-but-lagging entry (the caller echoed an older report) is
+         // SAFE, not an error and not a rebuild: the half-open range is
+         // idempotent, so the delta recomputes rows the table already holds and
+         // replaces them with themselves. This is the same tolerance a lagging
+         // local row has always had.
+         const runSQL = probeAwareRunSQL();
+         const { context } = incrementalContext({
+            ledger: [{ ...ENTRY, coveredThrough: "2024-06-10" }],
+         });
+         const entry = await callBuildOneSource({ runSQL, context });
+         expect(entry.refresh).toBe("delta");
+         const script = runSQL
+            .getCalls()
+            .map((c) => c.args[0] as string)
+            .find((s) => s.startsWith("BEGIN;"));
+         expect(script).toContain(`>= DATE '2024-06-10'`);
+      });
+
+      // These still rebuild rather than erroring: none of them is a defect in
+      // the caller's INPUT. A missing entry means "nothing recorded" (a first
+      // build), and `reseed` is the documented escape hatch that ignores the
+      // entry. Both report the path they took.
+      const fallbacks: [
+         string,
+         {
+            ledger: LedgerEntry[];
+            reseed?: boolean;
+         },
+      ][] = [
+         ["no entry for this table (an empty ledger)", { ledger: [] }],
+         ["reseed, which ignores the entry", { ledger: [ENTRY], reseed: true }],
+      ];
+
+      for (const [what, params] of fallbacks) {
+         it(`rebuilds in full, truthfully, given ${what}`, async () => {
+            const runSQL = probeAwareRunSQL();
+            const { context, upsert, remove } = incrementalContext({
+               ledger: params.ledger,
+            });
+            const entry = await callBuildOneSource({
+               runSQL,
+               context,
+               ...(params.reseed === undefined
+                  ? {}
+                  : { reseed: params.reseed }),
+            });
+
+            const statements = runSQL
+               .getCalls()
+               .map((c) => c.args[0] as string);
+            expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(
+               true,
+            );
+            expect(statements.some((s) => s.startsWith("BEGIN;"))).toBe(false);
+            expect(entry.refresh).toBe("full");
+            // A rebuild still reports the entry to store, so the caller's next
+            // run has a boundary to send.
+            expect(entry.ledger?.coveredThrough).toBe("2024-07-01");
+            expect(upsert.called).toBe(false);
+            expect(remove.called).toBe(false);
+         });
+      }
+
+      // An entry that no longer describes the source it names is the caller's
+      // error, and the API contract makes it one. Only a mismatch create-time
+      // validation cannot see reaches this throw — one the compiled declaration
+      // alone reveals — but the unit pins the whole family.
+      const invalid: [string, LedgerEntry][] = [
+         ["measures another watermark", { ...ENTRY, watermark: "shipped_at" }],
+         [
+            "was measured under another watermark type",
+            { ...ENTRY, coveredThroughType: "timestamp" },
+         ],
+         ["was advanced by another strategy", { ...ENTRY, strategy: "merge" }],
+         [
+            "carries a different row identity",
+            { ...ENTRY, mergeKeys: ["order_id"] },
+         ],
+         [
+            "was measured under different SQL",
+            { ...ENTRY, sourceEntityId: "some-older-address" },
+         ],
+      ];
+
+      for (const [what, entry] of invalid) {
+         it(`fails the run when the supplied entry ${what}`, async () => {
+            const runSQL = probeAwareRunSQL();
+            const { context, upsert, remove } = incrementalContext({
+               ledger: [entry],
+            });
+            await expect(
+               callBuildOneSource({ runSQL, context }),
+            ).rejects.toThrow(/different definition of this source/);
+            // Nothing was built and nothing was written: the run fails before
+            // any DML, so the caller can fix the input and re-send.
+            const statements = runSQL
+               .getCalls()
+               .map((c) => c.args[0] as string);
+            expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(
+               false,
+            );
+            expect(statements.some((s) => s.startsWith("BEGIN;"))).toBe(false);
+            expect(upsert.called).toBe(false);
+            expect(remove.called).toBe(false);
+         });
+      }
+
+      it("still seeds on a fact about the TABLE, exactly as local mode does", async () => {
+         // The entry is fine; the table is empty. That is not the caller's
+         // input being wrong, so it degrades the same way a local row does.
+         const runSQL = probeAwareRunSQL(false);
+         const { context, upsert } = incrementalContext({ ledger: [ENTRY] });
+         const entry = await callBuildOneSource({ runSQL, context });
+         expect(entry.refresh).toBe("full");
+         expect(upsert.called).toBe(false);
+      });
    });
 });
