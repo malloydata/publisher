@@ -917,3 +917,75 @@ describe("service/dashboard grid width and hostile literals", () => {
       expect(manifest?.title).toBe("overview");
    });
 });
+
+describe("service/dashboard inherits the annotation guards", () => {
+   // Dashboard discovery reads `# artifact`, so it is a NEW reader of
+   // reserved-namespace tags and must inherit both guards `motly.ts` installs.
+   // Structurally it does, because every read here goes through `motlyTag`
+   // rather than `parseAnnotation`; these pin that it stays that way.
+
+   // MOTLY hydrates `@env.NAME` from the server's own environment. Plain `#`
+   // tags used to stay server-side, so it was harmless until deriving a
+   // control contract put them on the wire.
+   it("does not hydrate @env into a dashboard title", () => {
+      process.env.SLICE6_PROBE_SECRET = "super-secret-value";
+      try {
+         const manifest = build(
+            facts({
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: [
+                        "# artifact { title=@env.SLICE6_PROBE_SECRET }\n",
+                     ],
+                     givens: [],
+                  },
+               ],
+            }),
+         );
+         expect(JSON.stringify(manifest ?? {})).not.toContain(
+            "super-secret-value",
+         );
+      } finally {
+         delete process.env.SLICE6_PROBE_SECRET;
+      }
+   });
+
+   // The parser's property bag is a plain object, so `__proto__` reaches the
+   // prototype chain. The block form throws RangeError and poisons the process
+   // for every later parse; the bare form pollutes silently. Both must be
+   // stopped BEFORE the parse, which is why the guard cannot be a try/catch.
+   it("survives a __proto__ artifact tag without poisoning later parses", () => {
+      for (const hostile of [
+         "# artifact { __proto__ { a=b } }\n",
+         "# __proto__ { a=b }\n",
+         "# __proto__=x\n",
+      ]) {
+         expect(() =>
+            build(
+               facts({
+                  queries: [
+                     { name: "overview", annotations: [hostile], givens: [] },
+                  ],
+               }),
+            ),
+         ).not.toThrow();
+      }
+      // The damage would persist for the life of the process, so an ordinary
+      // unrelated tag parsed afterwards is the real assertion.
+      const after = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ['# artifact { title="Still fine" }\n'],
+                  givens: [],
+               },
+            ],
+         }),
+      );
+      expect(after?.title).toBe("Still fine");
+      expect(({} as Record<string, unknown>).location).toBeUndefined();
+      expect(({} as Record<string, unknown>).eq).toBeUndefined();
+   });
+});
