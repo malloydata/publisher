@@ -36,6 +36,7 @@ export type AuthorizeGuardField =
    | "compile_source";
 
 let guardRejectionCounter: Counter | null = null;
+let bypassCounter: Counter | null = null;
 
 /**
  * Record one caller-declared-authorize rejection. Call BEFORE throwing, for the
@@ -56,9 +57,42 @@ export function recordAuthorizeGuardRejection(
 }
 
 /**
+ * Which gate entry point skipped its evaluation under an authorize bypass.
+ * `source` is {@link Model.assertAuthorized} (a named source, including the
+ * early surface-syntax gate); `runnable` is
+ * {@link Model.assertAuthorizedForAllSources} (the compiled entry-point walk).
+ * A single bypassed query emits one of each — the walk short-circuits before
+ * its own nested `assertAuthorized` call, so neither is double-counted.
+ */
+export type AuthorizeBypassEntryPoint = "source" | "runnable";
+
+/**
+ * Record one gate evaluation skipped because the request carried an authorize
+ * bypass (the private data-management path).
+ *
+ * Deliberately unlabelled by org / package / model / source: this counter is
+ * the alertable rate signal, and those identifiers are unbounded-cardinality.
+ * They are carried on the paired audit log line instead, which is what an
+ * investigation reads once the rate signal fires.
+ */
+export function recordAuthorizeBypass(
+   entryPoint: AuthorizeBypassEntryPoint,
+): void {
+   bypassCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_bypass_total",
+      {
+         description:
+            "Gate evaluations skipped because the request carried an authorize bypass (private data-management path). Label: entry_point ('source'|'runnable'). Any nonzero value on a path that should not use the bypass is a finding — see the paired `authorize bypass` audit log line for org/package/model/source.",
+      },
+   );
+   bypassCounter.add(1, { entry_point: entryPoint });
+}
+
+/**
  * Visible for tests. Drops the cached instrument so a fresh `MeterProvider` can
  * capture future emissions. Do NOT call from production code.
  */
 export function resetAuthorizeGuardTelemetryForTesting(): void {
    guardRejectionCounter = null;
+   bypassCounter = null;
 }

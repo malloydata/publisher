@@ -50,6 +50,7 @@ import {
    getPersistStorageMode,
    getQueryMetadataMode,
 } from "./config";
+import { readBypassAuthorize } from "./authorize_bypass_header";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
@@ -1779,6 +1780,15 @@ app.post(
                queryClass: req.body?.queryClass,
                versionId: req.body?.versionId as string | undefined,
             },
+            // Internal data-management control, NOT part of the documented query
+            // API: it disables the author's `#(authorize)` gates. Publisher does
+            // no inbound auth, so nothing here bounds who may set it — the bound
+            // is the network (publisher reachable only from the router) plus the
+            // router's M2M assertion on `/private/**`. Read from a HEADER, never
+            // the body: the router's outbound worker request and its own public
+            // inbound request are the same generated schema, so a body field
+            // would also be settable by any external caller.
+            readBypassAuthorize(req),
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,

@@ -46,6 +46,14 @@ export class QueryController {
          queryClass?: unknown;
          versionId?: string;
       },
+      /**
+       * Skip `#(authorize)` gates for this request. Carried by the
+       * `x-publisher-bypass-authorize` header, set only by the router's private
+       * data-management endpoint, which pins an M2M identity first;
+       * `/private/**` is not routed from ingress. Orthogonal to
+       * {@link bypassFilters} — see {@link Model.getQueryResults}.
+       */
+      bypassAuthorize?: boolean,
    ): Promise<ApiQuery> {
       let requestMetadata: QueryMetadata | undefined;
       let queryClass: QueryClass | undefined;
@@ -128,6 +136,7 @@ export class QueryController {
                   // while the model built and capped the full result was how a
                   // request came to be refused on bytes it would never receive.
                   compactJson ? "compact" : "full",
+                  bypassAuthorize,
                ),
             getQueryTimeoutMs(),
          );
