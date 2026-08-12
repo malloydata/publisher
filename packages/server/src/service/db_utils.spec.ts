@@ -581,6 +581,132 @@ describe("getSchemasForConnection", () => {
    });
 
    describe("snowflake", () => {
+      function snowflakeConn(
+         database?: string,
+         schema?: string,
+      ): ApiConnection {
+         return {
+            name: "test",
+            type: "snowflake",
+            snowflakeConnection: {
+               account: "acct",
+               username: "user",
+               password: "pw",
+               warehouse: "wh",
+               database,
+               schema,
+            },
+         };
+      }
+
+      it("scopes the query to the configured database", async () => {
+         const rows = [
+            {
+               CATALOG_NAME: "MYDB",
+               SCHEMA_NAME: "TEST_SCHEMA",
+               SCHEMA_OWNER: "SYSADMIN",
+            },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn("MYDB", "TEST_SCHEMA"),
+            m.conn,
+         );
+
+         // Qualified, because an unqualified INFORMATION_SCHEMA resolves
+         // against the session's current database.
+         expect(m.lastSQL).toContain("MYDB.INFORMATION_SCHEMA.SCHEMATA");
+         expect(m.lastSQL).toContain("CATALOG_NAME = 'MYDB'");
+         expect(m.lastSQL).toContain("SCHEMA_NAME = 'TEST_SCHEMA'");
+         expect(schemas).toHaveLength(1);
+         expect(schemas[0].name).toBe("MYDB.TEST_SCHEMA");
+         expect(schemas[0].isDefault).toBe(true);
+         expect(schemas[0].isHidden).toBe(false);
+      });
+
+      it("lists schemas across every database when none is configured", async () => {
+         // SHOW output is lower-case, unlike INFORMATION_SCHEMA's.
+         const rows = [
+            { database_name: "DB_B", name: "PUBLIC", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         expect(m.lastSQL).toBe("SHOW SCHEMAS IN ACCOUNT");
+         expect(schemas.map((s) => s.name)).toEqual([
+            "DB_A.SALES",
+            "DB_B.PUBLIC",
+         ]);
+         expect(schemas.every((s) => s.isHidden === false)).toBe(true);
+      });
+
+      it("ignores a configured schema when no database is set", async () => {
+         // The schema is a default for queries, not a filter: honoring it
+         // account-wide would return a same-named schema from every database
+         // and hide the rest.
+         const rows = [
+            { database_name: "DB_A", name: "PUBLIC", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "OTHER", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, "PUBLIC"),
+            m.conn,
+         );
+
+         expect(schemas).toHaveLength(2);
+         // No single schema can be the default without a database to scope it.
+         expect(schemas.every((s) => s.isDefault === false)).toBe(true);
+      });
+
+      it("hides system databases and INFORMATION_SCHEMA account-wide", async () => {
+         const rows = [
+            { database_name: "SNOWFLAKE", name: "ACCOUNT_USAGE", owner: "" },
+            {
+               database_name: "SNOWFLAKE_SAMPLE_DATA",
+               name: "TPCH_SF1",
+               owner: "SYSADMIN",
+            },
+            {
+               database_name: "DB_A",
+               name: "INFORMATION_SCHEMA",
+               owner: "SYSADMIN",
+            },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         const visible = schemas.filter((s) => !s.isHidden);
+         expect(visible.map((s) => s.name)).toEqual(["DB_A.SALES"]);
+      });
+
+      it("drops rows that cannot form a DATABASE.SCHEMA name", async () => {
+         // A half-populated row would otherwise yield ".FOO" or "DB.", which
+         // listTablesForSchema parses into a database that does not exist.
+         const rows = [
+            { database_name: "", name: "ORPHAN", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         expect(schemas.map((s) => s.name)).toEqual(["DB_A.SALES"]);
+      });
+   });
+
+   describe("snowflake", () => {
       it("queries INFORMATION_SCHEMA.SCHEMATA with database filter", async () => {
          const conn: ApiConnection = {
             name: "test",

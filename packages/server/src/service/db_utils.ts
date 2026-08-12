@@ -275,6 +275,105 @@ async function getSchemasForMySQL(
    ];
 }
 
+/**
+ * Snowflake-managed databases, hidden from an account-wide schema listing.
+ *
+ * SNOWFLAKE is the account's metadata share and SNOWFLAKE_SAMPLE_DATA is the
+ * sample share every account gets; neither is user data, and between them they
+ * contribute the large majority of schemas on an otherwise-empty account.
+ */
+const SNOWFLAKE_SYSTEM_DATABASES = new Set([
+   "SNOWFLAKE",
+   "SNOWFLAKE_SAMPLE_DATA",
+]);
+
+/** One schema row, normalized across the two sources that can produce it. */
+interface SnowflakeSchemaRow {
+   catalogName: string;
+   schemaName: string;
+   owner: string;
+}
+
+/**
+ * Schemas within one configured database, via that database's
+ * INFORMATION_SCHEMA. Column names come back upper-case.
+ */
+async function listSnowflakeSchemasInDatabase(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+   database: string,
+   schema: string | undefined,
+): Promise<SnowflakeSchemaRow[]> {
+   const filters = [
+      `CATALOG_NAME = '${sqlLiteral(database, connection.type)}'`,
+   ];
+   if (schema) {
+      filters.push(`SCHEMA_NAME = '${sqlLiteral(schema, connection.type)}'`);
+   }
+   // Identifier position, so this is validated rather than escaped. Previously
+   // spliced bare; a database name is operator-supplied config rather than
+   // caller input, so this is consistency with the Trino/Databricks catalog
+   // handling rather than a new trust boundary.
+   assertSafeSqlIdentifier(database, "database name");
+   const result = await runIntrospectionSQL(
+      malloyConnection,
+      `SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM ${database}.INFORMATION_SCHEMA.SCHEMATA WHERE ${filters.join(
+         " AND ",
+      )} ORDER BY SCHEMA_NAME`,
+   );
+   return standardizeRunSQLResult(result).map((row: unknown) => {
+      const r = row as Record<string, unknown>;
+      return {
+         catalogName: String(r.CATALOG_NAME ?? r.catalog_name ?? ""),
+         schemaName: String(r.SCHEMA_NAME ?? r.schema_name ?? ""),
+         owner: String(r.SCHEMA_OWNER ?? r.schema_owner ?? ""),
+      };
+   });
+}
+
+/**
+ * Every role-visible schema in the account, for a connection with no configured
+ * database.
+ *
+ * SHOW is a metadata command rather than a SELECT, so it needs no current
+ * database. Its output columns are LOWER-case (`database_name`, `name`,
+ * `owner`) where INFORMATION_SCHEMA's are upper-case; reading it with the
+ * upper-case keys yields empty owners, which the caller's `isHidden` rule treats
+ * as a system schema and would hide every row.
+ *
+ * The alternative source, SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA, is rejected on
+ * purpose: it needs elevated grants and lags reality by up to ~2 hours, so a
+ * just-created schema would be missing.
+ */
+async function listSnowflakeSchemasInAccount(
+   malloyConnection: Connection,
+): Promise<SnowflakeSchemaRow[]> {
+   const result = await runIntrospectionSQL(
+      malloyConnection,
+      "SHOW SCHEMAS IN ACCOUNT",
+   );
+   return (
+      standardizeRunSQLResult(result)
+         .map((row: unknown) => {
+            const r = row as Record<string, unknown>;
+            return {
+               catalogName: String(r.database_name ?? r.DATABASE_NAME ?? ""),
+               schemaName: String(r.name ?? r.NAME ?? ""),
+               owner: String(r.owner ?? r.OWNER ?? ""),
+            };
+         })
+         // A row missing either half cannot form a usable DATABASE.SCHEMA name, and
+         // listTablesForSnowflake would mis-parse it. Drop it rather than emit a
+         // name that fails later at the point of use.
+         .filter((r) => r.catalogName && r.schemaName)
+         .sort(
+            (a, b) =>
+               a.catalogName.localeCompare(b.catalogName) ||
+               a.schemaName.localeCompare(b.schemaName),
+         )
+   );
+}
+
 async function getSchemasForSnowflake(
    connection: ApiConnection,
    malloyConnection: Connection,
@@ -286,42 +385,47 @@ async function getSchemasForSnowflake(
       const database = connection.snowflakeConnection.database;
       const schema = connection.snowflakeConnection.schema;
 
-      const filters: string[] = [];
-      if (database) {
-         filters.push(
-            `CATALOG_NAME = '${sqlLiteral(database, connection.type)}'`,
-         );
-      }
-      if (schema) {
-         filters.push(`SCHEMA_NAME = '${sqlLiteral(schema, connection.type)}'`);
-      }
-      const whereClause =
-         filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
+      // INFORMATION_SCHEMA.SCHEMATA is PER-DATABASE in Snowflake, and an
+      // unqualified reference to it resolves against the session's current
+      // database. A connection with no configured database has no current
+      // database, so the unqualified form does not merely return the wrong rows,
+      // it fails outright ("Cannot perform SELECT. This session does not have a
+      // current database"). There is also no qualified form that spans
+      // databases. So the two cases need different instruments:
+      //
+      //   database configured -> <db>.INFORMATION_SCHEMA.SCHEMATA, as before.
+      //   no database         -> SHOW SCHEMAS IN ACCOUNT, which needs no current
+      //                          database and reports every role-visible schema.
+      //
+      // Both branches emit the same `DATABASE.SCHEMA` name, which is the shape
+      // listTablesForSnowflake parses back apart, so the two-part contract holds
+      // either way.
+      const rows = database
+         ? await listSnowflakeSchemasInDatabase(
+              connection,
+              malloyConnection,
+              database,
+              schema,
+           )
+         : await listSnowflakeSchemasInAccount(malloyConnection);
 
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM ${database ? `${database}.` : ""}INFORMATION_SCHEMA.SCHEMATA ${whereClause} ORDER BY SCHEMA_NAME`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return rows.map((row: unknown) => {
-         const typedRow = row as Record<string, unknown>;
-         const catalogName = String(
-            typedRow.CATALOG_NAME ?? typedRow.catalog_name ?? "",
-         );
-         const schemaName = String(
-            typedRow.SCHEMA_NAME ?? typedRow.schema_name ?? "",
-         );
-         const owner = String(
-            typedRow.SCHEMA_OWNER ?? typedRow.schema_owner ?? "",
-         );
-         return {
-            name: `${catalogName}.${schemaName}`,
-            isHidden:
-               ["SNOWFLAKE", ""].includes(owner) ||
-               schemaName === "INFORMATION_SCHEMA",
-            isDefault: schema ? schemaName === schema : false,
-         };
-      });
+      return rows.map(({ catalogName, schemaName, owner }) => ({
+         name: `${catalogName}.${schemaName}`,
+         isHidden:
+            ["SNOWFLAKE", ""].includes(owner) ||
+            schemaName === "INFORMATION_SCHEMA" ||
+            // Account-wide listing surfaces Snowflake's own databases, which are
+            // noise in a schema picker. They are only reachable in the
+            // no-database branch; a connection explicitly pointed at one still
+            // lists it, because there the operator asked for it by name.
+            (!database && SNOWFLAKE_SYSTEM_DATABASES.has(catalogName)),
+         // Scoped to the configured database on purpose. Account-wide, a bare
+         // `schemaName === schema` marks a same-named schema in EVERY database
+         // as the default, so N databases with a `PUBLIC` schema would yield N
+         // defaults. Without a database there is no one default to point at.
+         isDefault:
+            Boolean(database) && Boolean(schema) && schemaName === schema,
+      }));
    } catch (error) {
       logger.error(
          `Error getting schemas for Snowflake connection ${connection.name}`,

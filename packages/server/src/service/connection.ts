@@ -1476,10 +1476,25 @@ function entryToDuckDBOptions(
    return { ...removeUndefined(rest), name };
 }
 
+/**
+ * Drop keys whose value is absent, treating `null` as absent alongside
+ * `undefined`.
+ *
+ * `null` matters as much as `undefined` here: an optional field omitted from
+ * JSON config arrives as `null`, and the values this builds land in a Malloy
+ * connection whose `getDigest()` feeds them to `makeDigest`, which reads
+ * `.length` off each part and special-cases `undefined` alone. A surviving
+ * `null` therefore throws "null is not an object (evaluating 'p.length')" on
+ * the first digest. That digest is taken by the package-load worker's
+ * connection-metadata RPC, so the symptom is not a connection error but the
+ * whole package failing to load with "import reference failure" on the source
+ * line -- while the same model compiles cleanly through /compile, which runs on
+ * the main thread and never takes a digest.
+ */
 function removeUndefined<T extends object>(value: T): Partial<T> {
    return Object.fromEntries(
       Object.entries(value).filter(
-         ([, fieldValue]) => fieldValue !== undefined,
+         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
       ),
    ) as Partial<T>;
 }
