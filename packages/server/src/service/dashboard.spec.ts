@@ -1036,6 +1036,42 @@ describe("service/dashboard grid width and hostile literals", () => {
       }
    });
 
+   // The same strictness, on the OTHER spelling. Both reach the manifest, and a
+   // mutation sweep showed only the render-tag half was pinned: reverting the
+   // composite half to raw `Tag.numeric()` failed nothing. Enumerating the set
+   // is the point, not testing one member of it twice.
+   it("keeps an invalid composite dashboard_columns off the manifest too", () => {
+      const composite = (annotation: string) =>
+         facts({
+            modelAnnotations: [annotation],
+            viewGivens: new Map([["orders -> totals", []]]),
+            sourceFields: new Map([["orders", new Set(["totals"])]]),
+         });
+      for (const bad of ['"12abc"', "1e999", "0", "-4", "2.5"]) {
+         const f = composite(
+            `## artifact { tiles=["orders -> totals"] dashboard_columns=${bad} }\n`,
+         );
+         expect(build(f)?.dashboardColumns).toBeUndefined();
+         const manifest = build(f);
+         if (!manifest) throw new Error("expected a dashboard");
+         expect(lintDashboard(f, manifest)).toHaveLength(1);
+      }
+   });
+
+   it("keeps a valid composite dashboard_columns ON the manifest", () => {
+      const f = facts({
+         modelAnnotations: [
+            '## artifact { tiles=["orders -> totals"] dashboard_columns=4 }\n',
+         ],
+         viewGivens: new Map([["orders -> totals", []]]),
+         sourceFields: new Map([["orders", new Set(["totals"])]]),
+      });
+      expect(build(f)?.dashboardColumns).toBe(4);
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest)).toEqual([]);
+   });
+
    it("accepts a valid width in either spelling", () => {
       expect(
          lintOf(singleQuery("# artifact dashboard { columns=6 }\n")),
