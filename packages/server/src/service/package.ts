@@ -1738,6 +1738,19 @@ export class Package {
       // against the wrong one.
       this.exploresFromConvention =
          outcome.packageMetadata.exploresFromConvention ?? false;
+      if (!this.exploresFromConvention) {
+         // Every post-load warning describes a surface that came from the
+         // convention, so a reload that finds a declared one makes all of them
+         // false. This matters in the INVERSE direction to the usual worry: the
+         // author who reads "the boundary is NOT enforced", declares `explores`
+         // in publisher.json and reloads would otherwise keep being told it is
+         // off while it is now on. Cleared here as well as in
+         // setPackageMetadata because this path sets the flag directly and
+         // never goes through it.
+         this.postLoadWarnings = this.postLoadWarnings.filter(
+            (w) => !isExploresConventionWarning(w),
+         );
+      }
       this.packageMetadata.explores = outcome.packageMetadata.explores;
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;

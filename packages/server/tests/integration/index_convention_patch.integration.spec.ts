@@ -222,6 +222,48 @@ describe("index.malloy convention across a metadata PATCH", () => {
       ).toBe(true);
    });
 
+   it("drops the stale warning once the author really does declare a surface", async () => {
+      // The inverse of the defect above, and just as misleading. The author
+      // reads "the boundary is NOT enforced", does the thing the warning tells
+      // them to do (declare `explores` in publisher.json), and reloads. The
+      // boundary is now ON, so a surviving warning would insist it is off.
+      // This path sets the origin flag directly rather than through
+      // setPackageMetadata, so it needs its own clear.
+      expect(
+         (await packageWarnings()).some((m) =>
+            m.includes("query boundary is NOT enforced"),
+         ),
+      ).toBe(true);
+
+      const manifest = readManifest();
+      fs.writeFileSync(
+         manifestPath,
+         JSON.stringify({ ...manifest, explores: ["index.malloy"] }, null, 2),
+      );
+      // Deliberately an IN-PLACE reload, not `?reload=true`. The latter runs
+      // Package.create and hands back a new object whose post-load warnings are
+      // empty anyway, so it would pass whether or not the clear exists. A
+      // `manifestLocation` on the body reloads the SAME Package, which is the
+      // only path where a stale warning can survive. Note this PATCH carries no
+      // `explores`, so setPackageMetadata leaves the origin alone and the
+      // worker's fresh read of publisher.json is what flips it.
+      const reload = await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
+      });
+      expect(reload.status).toBe(200);
+
+      // The surface is declared now, so the boundary really is on...
+      expect(await hiddenSourceStatus()).toBe(404);
+      // ...and nothing is still claiming otherwise.
+      expect(
+         (await packageWarnings()).some((m) =>
+            m.includes("query boundary is NOT enforced"),
+         ),
+      ).toBe(false);
+   });
+
    it("persists and enforces a surface the caller actually declared", async () => {
       // The other direction: a body naming a DIFFERENT surface is a real
       // declaration, so it is written to disk and the boundary engages, both
