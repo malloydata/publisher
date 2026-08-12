@@ -486,7 +486,11 @@ export function isExploresConventionWarning(warning: string): boolean {
    );
 }
 
-const EXPLORES_PATCH_IGNORED_PREFIX =
+/** Stable opening of {@link exploresPatchIgnoredUnderConvention}, so a later
+ *  answer to the same question supersedes an earlier one. Exported for the
+ *  same reason {@link QUERYABLE_SOURCES_INERT_PREFIX} is: the PATCH path has to
+ *  pass it, and the two post-load warnings must behave identically. */
+export const EXPLORES_PATCH_IGNORED_PREFIX =
    "An API update re-sent this package's discovery surface";
 
 /**

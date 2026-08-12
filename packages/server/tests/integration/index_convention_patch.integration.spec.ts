@@ -269,29 +269,48 @@ describe("index.malloy convention across a metadata PATCH", () => {
       expect(await hiddenSourceStatus()).toBe(200);
    });
 
-   it("supersedes rather than stacks the queryableSources remedy", async () => {
-      // Successive PATCHes answer the same question differently. Keeping both
-      // leaves one remedy that is wrong for the value now in force.
+   it("supersedes rather than stacks BOTH post-load warnings", async () => {
+      // Successive PATCHes answer the same question differently. Each of the
+      // two post-load warnings has two variants that differ only in their
+      // remedy, so exact de-dupe keeps both and one of them is wrong for the
+      // `queryableSources` now in force. Both must supersede; applying it to
+      // only one was the defect.
+      //
+      // `explores` is sent on both PATCHes so the echoed-declaration warning is
+      // raised too, not just the inert one.
       await fetch(`${baseUrl}${API}`, {
          method: "PATCH",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
             name: PACKAGE_NAME,
+            explores: ["index.malloy"],
             queryableSources: "declared",
          }),
       });
       await fetch(`${baseUrl}${API}`, {
          method: "PATCH",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ name: PACKAGE_NAME, queryableSources: "all" }),
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            explores: ["index.malloy"],
+            queryableSources: "all",
+         }),
       });
-      const inert = (await packageWarnings()).filter((m) =>
-         m.includes("has no effect"),
+
+      const warnings = await packageWarnings();
+      const inert = warnings.filter((m) => m.includes("has no effect"));
+      const ignored = warnings.filter((m) =>
+         m.includes("re-sent this package's discovery surface"),
       );
       expect(inert).toHaveLength(1);
-      // And it is the one matching the value now in force.
+      expect(ignored).toHaveLength(1);
+      // Each is the variant matching the value now in force ("all"), not the
+      // earlier one. The stale echo variant is the dangerous half: it says
+      // declaring the surface "does enforce it", which under "all" it does not.
       expect(inert[0]).toContain("you can delete it");
       expect(inert[0]).not.toContain('Add an explicit "explores"');
+      expect(ignored[0]).toContain("You need BOTH");
+      expect(ignored[0]).not.toContain("a surface declared there does enforce");
 
       // Put it back: "all" persists to the manifest, and leaving it would
       // disarm the boundary for the tests below, which is a property of this

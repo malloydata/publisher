@@ -228,6 +228,28 @@ describe("scaffold: default package", () => {
       expect(result.modelFile).toBe("index.malloy");
    });
 
+   test("a package named 'Index' still gets the canonical filename", () => {
+      // The lowercase case cannot pin this: `${sourceName}.malloy` is already
+      // "index.malloy" there, so removing the normalization is a no-op. Only a
+      // capitalised name shows it. Without it the model lands in Index.malloy
+      // and the surface template in index.malloy, which on a case-insensitive
+      // filesystem is the same path (one destroys the other), and on a
+      // case-sensitive one leaves a package the server never curates, because
+      // its convention test is an exact match on "index.malloy".
+      const result = run({ name: "Index" });
+      const malloys = fs
+         .readdirSync(path.join(tmp, "Index"))
+         .filter((f) => f.endsWith(".malloy"));
+      expect(malloys).toEqual(["index.malloy"]);
+      expect(result.modelFile).toBe("index.malloy");
+      const model = fs.readFileSync(
+         path.join(tmp, "Index/index.malloy"),
+         "utf8",
+      );
+      expect(model).toContain("source: Index is duckdb.table");
+      expect(model).not.toContain(`import "index.malloy"`);
+   });
+
    test("index.malloy imports the model and exports its source", () => {
       const result = run();
       expect(result.indexFile).toBe("index.malloy");

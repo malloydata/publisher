@@ -23,6 +23,7 @@ import {
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import {
+   EXPLORES_PATCH_IGNORED_PREFIX,
    exploresPatchIgnoredUnderConvention,
    QUERYABLE_SOURCES_INERT_PREFIX,
    queryableSourcesInertUnderConvention,
@@ -2178,8 +2179,13 @@ export class Environment {
             throw new BadRequestError(invalidMsg);
          }
          if (declarationIgnored) {
+            // Supersede for the same reason the inert warning does: the two
+            // variants of this string differ only in their remedy, so exact
+            // de-dupe keeps both and one of them is wrong for the
+            // `queryableSources` now in force.
             _package.addPostLoadWarning(
                exploresPatchIgnoredUnderConvention(queryableSources),
+               EXPLORES_PATCH_IGNORED_PREFIX,
             );
          }
          // A `queryableSources` sent at a package whose surface came from the
