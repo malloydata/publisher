@@ -701,6 +701,7 @@ describe("Dashboard discovery (E2E)", () => {
             expect(dashboards.map((d) => d.name).sort()).toEqual([
                "broken",
                "overview",
+               "v1.2",
             ]);
          } finally {
             await fs.rm(include, { force: true });
@@ -709,18 +710,33 @@ describe("Dashboard discovery (E2E)", () => {
       });
 
       /**
-       * Two orderings, opposite directions, one line apart. A drill at a
-       * WITHHELD dashboard is correct and must not be called missing (covered
-       * in the curated-package block). A drill at a slug nothing can ever
-       * address is broken and must still be called missing. Recording the slug
-       * as known before the servable-slug check silenced the second, which is a
-       * lint-coverage regression a fix for the first introduced.
+       * A name outside the documented pattern is SERVED and only noted. The
+       * route is a plain Express param, so `GET .../dashboards/v1.2` resolves;
+       * measured, not assumed. Withholding it broke working dashboards for any
+       * team that versions a filename, and then made the drill lint call a real
+       * dashboard "not a dashboard in this package".
        */
-      it("still reports a drill at a dashboard whose slug cannot be addressed", async () => {
-         const warnings = await packageWarnings(LINT_PACKAGE);
-         const messages = warnings.map((w) => w.message ?? "");
+      it("serves a dashboard whose name is outside the documented pattern", async () => {
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/dashboards/v1.2`,
+         );
+         expect(res.status).toBe(200);
+         expect((await res.json()) as { name?: string }).toMatchObject({
+            name: "v1.2",
+         });
+      });
+
+      it("notes the unconventional name without refusing to serve it", async () => {
+         const messages = (await packageWarnings(LINT_PACKAGE)).map(
+            (w) => w.message ?? "",
+         );
          expect(messages).toContainEqual(
-            expect.stringContaining('targets "v1.2", which is not a dashboard'),
+            expect.stringContaining('"v1.2" is outside the dashboard name'),
+         );
+         // And the drill pointing at it resolves, because it is real and
+         // reachable, so there is no finding about it.
+         expect(messages).not.toContainEqual(
+            expect.stringContaining('targets "v1.2"'),
          );
       });
 
@@ -735,6 +751,7 @@ describe("Dashboard discovery (E2E)", () => {
          expect(dashboards.map((d) => d.name).sort()).toEqual([
             "broken",
             "overview",
+            "v1.2",
          ]);
       });
 
@@ -824,16 +841,13 @@ describe("Dashboard discovery (E2E)", () => {
          // A drill is declared on a model dimension, not in a dashboard, so it
          // is reported once for the package rather than per importing file, and
          // names no model.
-         expect(drillWarnings.map((w) => w.subject).sort()).toEqual(
-            [
-               // Names a dashboard that exists but whose slug "v1.2" can never
-               // be addressed, so the drill dead-ends and must still be reported.
-               "orders.unaddressable_target",
-               "orders.region_name",
-               "shipping.carrier_name",
-               "shipping.warehouse",
-            ].sort(),
-         );
+         // `orders.unaddressable_target` drills at `v1.2`, which IS served, so
+         // it correctly produces no finding.
+         expect(drillWarnings.map((w) => w.subject).sort()).toEqual([
+            "orders.region_name",
+            "shipping.carrier_name",
+            "shipping.warehouse",
+         ]);
          for (const warning of drillWarnings) {
             expect(warning.severity).toBe("error");
             expect(warning.model).toBeUndefined();

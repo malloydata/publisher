@@ -193,15 +193,19 @@ export function dashboardSlug(modelPath: string): string {
  *
  * Nothing validated it, and the slug is derived from a filename rather than
  * chosen, so a file could produce one that does not round-trip:
- * `dashboards/v1.2.malloy` yields the slug `v1.2`, which does not match the
- * pattern, so its published `resource` would be a URL the server's own route
- * cannot match. There is no traversal risk (the lookup is a `Map` and never
- * touches the filesystem), but a published link that does not resolve is wrong
- * on its own terms.
+ * ADVISORY ONLY. A name outside the pattern is still served, because this
+ * server routes it: the Express param matches `v1.2` and nothing validates the
+ * pattern at runtime, which was measured rather than assumed. What the pattern
+ * governs is what a client GENERATED from the spec will accept, so a name
+ * outside it is worth reporting and not worth refusing.
  *
- * A leading-dot filename is NOT the case to reason about here, though it looks
- * like the obvious one: `listPackageFiles` enumerates with `ignoreDotfiles`, so
- * `dashboards/.malloy` never becomes a model at all and cannot reach this.
+ * Two earlier justifications for this were both wrong, which is why the
+ * reasoning is spelled out. `dashboards/.malloy` (an empty slug) cannot occur
+ * at all, because `listPackageFiles` enumerates with `ignoreDotfiles` so a
+ * leading-dot filename never becomes a model. And a dot mid-name does not break
+ * routing, so withholding one broke working dashboards for teams that version a
+ * filename. There is no traversal risk either way: the lookup is a `Map` and
+ * never touches the filesystem.
  */
 export function isServableDashboardSlug(slug: string): boolean {
    return /^[a-zA-Z0-9_-]+$/.test(slug);

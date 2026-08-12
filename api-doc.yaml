@@ -1740,12 +1740,14 @@ paths:
         the cached set. Either way the matching warning is computed at load, so
         after a `PATCH` it appears only once the package reloads.
 
-        Being listed does not by itself guarantee the dashboard runs. The
-        query boundary also checks the entry file's own `export {}` closure, so
-        a dashboard file that only imports other files and re-exports none of
-        their sources is still served while every query against it is refused.
-        That case is reported in the package's `warnings` rather than omitted,
-        because withholding on a guess would hide dashboards that do work.
+        Under `"declared"`, being listed does not by itself guarantee the
+        dashboard runs: the query boundary also checks the entry file's own
+        `export {}` closure, so a dashboard file that only imports other files
+        and re-exports none of their sources is still served while every query
+        against it is refused. That case is reported in the package's
+        `warnings` rather than omitted, because withholding on a guess would
+        hide dashboards that do work. Under `"all"` nothing is refused, so the
+        situation does not arise and no such warning is emitted.
       parameters:
         - name: environmentName
           in: path

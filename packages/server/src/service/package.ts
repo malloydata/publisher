@@ -2090,8 +2090,9 @@ export class Package {
       const allFacts = new Map<string, DashboardModelFacts>();
       // Dashboards the curation gate held back, reported once discovery settles.
       const heldBack: { modelPath: string; name: string }[] = [];
-      // Files whose derived slug could not be served at a URL.
-      const unservableSlugs: string[] = [];
+      // Files whose derived slug is outside the documented name pattern. Served
+      // anyway; see the comment at the check below.
+      const unconventionalSlugs: { modelPath: string; name: string }[] = [];
       // Dashboards served from a file that re-exports nothing, so every query
       // against them is refused by the within-file half of the query boundary.
       const emptySurface: { modelPath: string; name: string }[] = [];
@@ -2169,13 +2170,17 @@ export class Package {
             };
          }
 
-         // A slug that cannot round-trip through its own URL is not served.
-         // Nothing validated this, and it is derived from a filename rather
-         // than chosen, so `dashboards/v1.2.malloy` published a `resource` the
-         // server's own route cannot match.
+         // A name outside the documented `dashboardName` pattern is SERVED, and
+         // only noted. Measured rather than assumed: the route is a plain
+         // Express param, which matches `v1.2` happily, and nothing validates
+         // the pattern at runtime, so `GET .../dashboards/v1.2` resolves. An
+         // earlier version of this withheld such a dashboard and told the
+         // author it "could not be addressed at a URL", which broke every
+         // working dashboard whose file happened to carry a version in its
+         // name. The pattern still matters to a client generated from the spec,
+         // so it is worth saying; it is not worth refusing to serve.
          if (!isServableDashboardSlug(name)) {
-            unservableSlugs.push(modelPath);
-            continue;
+            unconventionalSlugs.push({ modelPath, name });
          }
 
          // The file IS a dashboard and CAN be addressed, so a drill naming it
@@ -2217,7 +2222,7 @@ export class Package {
          factsByPath,
          allFacts,
          heldBack,
-         unservableSlugs,
+         unconventionalSlugs,
          dashboardSlugs,
          emptySurface,
       );
@@ -2241,7 +2246,7 @@ export class Package {
       factsByPath: ReadonlyMap<string, DashboardModelFacts>,
       allFacts: ReadonlyMap<string, DashboardModelFacts>,
       heldBack: readonly { modelPath: string; name: string }[],
-      unservableSlugs: readonly string[],
+      unconventionalSlugs: readonly { modelPath: string; name: string }[],
       knownSlugs: ReadonlySet<string>,
       emptySurface: readonly { modelPath: string; name: string }[],
    ): Promise<ApiPackageWarning[]> {
@@ -2250,14 +2255,16 @@ export class Package {
       // package rather than once per file that imports its source.
       const withheldDrills = new Map<string, ApiPackageWarning>();
       try {
-         for (const modelPath of unservableSlugs) {
+         for (const { modelPath, name } of unconventionalSlugs) {
             warnings.push({
                model: modelPath,
+               subject: name,
                message:
-                  `is in ${DASHBOARDS_DIR}/ but its filename does not make a ` +
-                  `usable dashboard name (letters, digits, "-" and "_" only), ` +
-                  `so it could not be addressed at a URL and is not served. ` +
-                  `Rename the file.`,
+                  `is served, but "${name}" is outside the dashboard name ` +
+                  `pattern the API documents (letters, digits, "-" and "_"). ` +
+                  `This server routes it, so the dashboard works; a client ` +
+                  `generated from the spec may refuse to request it. Rename ` +
+                  `the file if that matters to your callers.`,
                severity: "warn",
             });
          }
