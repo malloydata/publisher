@@ -246,20 +246,6 @@ A `.malloy` file in a package's `dashboards/` directory carrying an `# artifact`
 - **A notebook listing carries `title` and `description`,** resolved from its own `## title="…"`, then its `#"` doc comment, then its first markdown heading. `RawNotebook` gains `autorun`, the same flag with the same default that a dashboard's artifact tag carries.
 - **`Notebook` declares `environmentName`,** which the response has always sent, and drops `resource`, which it declared and never sent (issue #979).
 
-## [Unreleased]: dashboards are discovered and served over REST
-
-A `.malloy` file in a package's `dashboards/` directory carrying an `# artifact` tag is now discovered at load and served over two read-only endpoints. This is the server half only: there is no UI for it yet.
-
-### What changed
-
-- **Two new endpoints.** `GET …/packages/{packageName}/dashboards` lists a package's dashboards, and `GET …/packages/{packageName}/dashboards/{dashboardName}` returns one manifest: the artifact tag's declarations plus the control contract derived from the givens its query references. New schemas `Dashboard`, `DashboardManifest`, and `DashboardTile`.
-- **There is deliberately no run endpoint.** A dashboard's query, each composite tile, and each control's suggest query all run through the ordinary `POST …/models/{path}/query` with `givens`, using the manifest's `path` as the model, so row caps, byte caps, authorize gates, and render-tag validation all apply unchanged.
-- **A dashboard is only listed if it is also queryable.** When a package curates its query surface (`queryableSources: "declared"`), a dashboard whose entry file is not in `explores` is held back from the listing rather than published with a manifest whose every query and given name would 404, and the omission is reported in the package's `warnings`.
-- **Load-time lint.** Findings for a `# artifact` tag that does not parse or does not describe a dashboard, a tile or suggest query that does not resolve, an invalid grid width, and a `# drill` naming a destination that is not a dashboard, all on the existing non-fatal `Package.warnings` surface.
-- **A notebook listing carries `title` and `description`,** resolved from its own `## title="…"`, then its `#"` doc comment, then its first markdown heading. `RawNotebook` gains `autorun`, the same flag with the same default that a dashboard's artifact tag carries.
-- **`Notebook` declares `environmentName`,** which the response has always sent, and drops `resource`, which it declared and never sent (issue #979).
-
-
 ## [0.0.208] — Single-call materialization (plan-as-artifact)
 
 **Breaking change to the materialization API.** Materialization moves from the two-round (compile-then-build) protocol to a single call. The build plan is now a compile-time property of the package, and a build is requested in one request.

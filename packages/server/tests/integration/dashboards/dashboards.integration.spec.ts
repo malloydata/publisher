@@ -891,7 +891,7 @@ describe("Dashboard discovery (E2E)", () => {
          // A drill is declared on a model dimension, not in a dashboard, so it
          // is reported once for the package rather than per importing file, and
          // names no model.
-         // `orders.unaddressable_target` drills at `v1.2`, which IS served, so
+         // `orders.unconventional_target` drills at `v1.2`, which IS served, so
          // it correctly produces no finding.
          expect(drillWarnings.map((w) => w.subject).sort()).toEqual([
             "orders.region_name",
@@ -1122,6 +1122,14 @@ describe("Dashboard discovery (E2E)", () => {
          // file importing that source carries it; reporting per importer
          // emitted this same finding four times.
          expect(withheld).toHaveLength(1);
+
+         // And at `error`, matching `lintDrillTargets`. Both describe the same
+         // broken click and differ only in why the destination is missing, so
+         // they must not differ in how loudly they say it.
+         const finding = (body.warnings ?? []).find((w) =>
+            (w.message ?? "").includes("but is not served"),
+         );
+         expect(finding?.severity).toBe("error");
       });
 
       /**

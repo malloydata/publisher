@@ -190,27 +190,19 @@ export function dashboardSlug(modelPath: string): string {
 /**
  * Whether a name matches the `dashboardName` pattern `api-doc.yaml` documents.
  *
- * This does NOT decide whether the dashboard is served. Everything is served;
- * the name is percent-encoded into its URL and the route resolves. What this
- * governs is whether a client GENERATED from the spec will accept the name, so
- * it drives an advisory warning and nothing else. It was previously a gate, and
- * as a gate it broke working dashboards.
+ * ADVISORY ONLY. It does not decide whether a dashboard is served: every
+ * dashboard is served, and its name is percent-encoded into the published URL,
+ * so the route resolves whatever the name contains. What the pattern governs is
+ * what a client GENERATED from the spec will accept, which is worth reporting
+ * and not worth refusing to serve for.
  *
- * Nothing validated it, and the slug is derived from a filename rather than
- * chosen, so a file could produce one that does not round-trip:
- * ADVISORY ONLY. A name outside the pattern is still served, because this
- * server routes it: the Express param matches `v1.2` and nothing validates the
- * pattern at runtime, which was measured rather than assumed. What the pattern
- * governs is what a client GENERATED from the spec will accept, so a name
- * outside it is worth reporting and not worth refusing.
- *
- * Two earlier justifications for this were both wrong, which is why the
- * reasoning is spelled out. `dashboards/.malloy` (an empty slug) cannot occur
- * at all, because `listPackageFiles` enumerates with `ignoreDotfiles` so a
+ * It was a gate once, and both justifications given for it were wrong, which is
+ * why the reasoning is written down. `dashboards/.malloy` (an empty name)
+ * cannot occur: `listPackageFiles` enumerates with `ignoreDotfiles`, so a
  * leading-dot filename never becomes a model. And a dot mid-name does not break
- * routing, so withholding one broke working dashboards for teams that version a
- * filename. There is no traversal risk either way: the lookup is a `Map` and
- * never touches the filesystem.
+ * routing, measured rather than argued, so withholding those broke working
+ * dashboards for anyone who versions a filename. No traversal risk either way:
+ * the lookup is a `Map` and never touches the filesystem.
  */
 export function matchesDocumentedDashboardName(slug: string): boolean {
    return /^[a-zA-Z0-9_-]+$/.test(slug);
@@ -481,9 +473,11 @@ export function readDashboardModelFacts(
 
 /**
  * Read a `# drill { to=[…] given=… }` tag off a dimension's annotations, or
- * undefined when it carries none. A bare `# drill` with no `to=` is treated as
- * absent: there is no destination to navigate to, and the lint reports it
- * separately rather than this returning a half-formed drill.
+ * undefined when it carries none. A bare `# drill` with no `to=` is returned
+ * WITH an empty `to`, deliberately: the tag exists and is broken, and keeping it
+ * is what lets `lintDrillTargets` report "names no destination". Returning
+ * undefined there would make a broken drill indistinguishable from no drill,
+ * which is the outcome that lint exists to prevent.
  */
 function readDrillTag(
    annotations: string[],

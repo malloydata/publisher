@@ -2273,6 +2273,10 @@ export class Package {
             });
          }
          for (const { modelPath, name } of emptySurface) {
+            // Worded off the form the dashboard actually took: this fires per
+            // FILE, so it reaches the single-query form as readily as the
+            // composite one, and that form has no tiles to talk about.
+            const tiles = this.dashboards.get(name)?.tiles;
             warnings.push({
                model: modelPath,
                subject: name,
@@ -2280,9 +2284,12 @@ export class Package {
                   `is served, but "${modelPath}" only imports other files and ` +
                   `re-exports none of their sources, so this package's ` +
                   `queryableSources: "declared" setting refuses every query ` +
-                  `made against it and each of the dashboard's tiles answers ` +
-                  `404. Add 'export { source_name }' to the file for the ` +
-                  `sources its tiles read.`,
+                  `made against it and ` +
+                  (tiles
+                     ? `each of the dashboard's tiles answers 404`
+                     : `the dashboard's query answers 404`) +
+                  `. Add 'export { source_name }' to the file for the sources ` +
+                  `it reads.`,
                severity: "warn",
             });
          }
@@ -2307,7 +2314,11 @@ export class Package {
                         `dashboard in this package but is not served (see the ` +
                         `finding on "${modelPath}"), so the click has nowhere ` +
                         `to land.`,
-                     severity: "warn",
+                     // `error`, matching `lintDrillTargets`. The two describe
+                     // the same broken click and differ only in why the
+                     // destination is missing, so they should not differ in
+                     // how loudly they say it.
+                     severity: "error",
                   });
                }
             }

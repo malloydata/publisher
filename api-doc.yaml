@@ -3066,9 +3066,14 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Currently only `error`-severity render
-                  findings are surfaced here; lower-severity findings remain on
-                  the query-time `renderLogs` surface.
+                  Finding severity. Render findings are surfaced here only at
+                  `error` severity; lower-severity render findings remain on the
+                  query-time `renderLogs` surface. Materialization and dashboard
+                  findings use both: `error` for something that cannot work as
+                  written, such as a tile naming a view the source does not
+                  have, and `warn` for something that works but not as the
+                  author probably intended, such as a dashboard held back by
+                  curation.
         queryableSources:
           type: string
           enum:

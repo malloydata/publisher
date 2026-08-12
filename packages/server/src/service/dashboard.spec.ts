@@ -758,29 +758,12 @@ describe("service/dashboard lint", () => {
    });
 });
 
-describe("service/dashboard name is safe in the published URL", () => {
-   // A dashboard name is a filename basename, so it can carry anything the
-   // filesystem allows. Serving such a dashboard is right; publishing its name
-   // RAW in the `resource` URL was not. Measured live: `.../dashboards/a#b`
-   // opens a fragment, so a client following the link asks for
-   // `.../dashboards/a` and gets a 404, while `.../dashboards/a%23b` is 200.
-   it("encodes a name that would otherwise break the URL", () => {
-      for (const [name, encoded] of [
-         ["a#b", "a%23b"],
-         ["c?d", "c%3Fd"],
-         ["e f", "e%20f"],
-         ["p%q", "p%25q"],
-      ]) {
-         expect(encodeURIComponent(name)).toBe(encoded);
-      }
-   });
-
-   it("leaves a conventional name untouched, so existing links do not move", () => {
-      for (const name of ["overview", "q3-2026_v2", "v1.2"]) {
-         expect(encodeURIComponent(name)).toBe(name);
-      }
-   });
-});
+// The dashboard name's URL safety is pinned by the integration suite, which
+// follows the `resource` the listing actually published and asserts it resolves
+// (`publishes a followable URL ...`). A unit test here asserted only that
+// `encodeURIComponent` behaves like `encodeURIComponent`, which is the runtime's
+// job and not this module's, and it stayed green when the encoding was reverted.
+// Removed rather than kept as decoration.
 
 describe("service/dashboard multi-line doc comment as a title", () => {
    // Fixed once on the notebook path and left on both dashboard paths, which is
@@ -862,13 +845,12 @@ describe("service/dashboard single-query given lint", () => {
    });
 });
 
-describe("service/dashboard slug is servable", () => {
-   // The reachable case is a dot mid-name: `dashboards/v1.2.malloy` yields
-   // `v1.2`, whose published `resource` is a URL the server's own route cannot
-   // match. A LEADING-dot name is not reachable, because `listPackageFiles`
-   // enumerates with `ignoreDotfiles`, so it never becomes a model; it is
-   // asserted here only to pin that the predicate itself is not fooled by it.
-   it("rejects a slug that cannot round-trip through its own URL", () => {
+describe("service/dashboard name matches the documented pattern", () => {
+   // This predicate no longer gates anything: every dashboard is served and its
+   // name is percent-encoded into the published URL. What it decides is whether
+   // the name matches the pattern the API documents, which is what a client
+   // generated from the spec will accept, so a mismatch is advisory only.
+   it("reports a name outside the documented pattern", () => {
       expect(
          matchesDocumentedDashboardName(
             dashboardSlug("dashboards/v1.2.malloy"),
