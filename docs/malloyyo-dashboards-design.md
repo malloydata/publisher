@@ -15,10 +15,11 @@ The design also lands **by halves** in places, so "has it merged" is often not a
 have to check both halves rather than one. The given control contract is the clearest case: the
 control fields it puts on `Given` in the spec and the server code that derives them from a
 declaration's tags are separate changes that need not arrive together. The dashboard REST surface is
-the other, being two endpoints. Before building on any part of this design, read the open and merged
-dashboard pull requests and look in the tree, rather than trusting a sentence here. These are the
-files and symbols each part lives in, which is what makes that check quick, and the table splits the
-halves so neither can be mistaken for the whole:
+another, being two endpoints, and discovery is a third: the server side can arrive before the
+package-page section that surfaces it. Before building on any part of this design, read the open
+and merged dashboard pull requests and look in the tree, rather than trusting a sentence here.
+These are the files and symbols each part lives in, which is what makes that check quick, and the
+table splits the halves so neither can be mistaken for the whole:
 
 | Part of the design                       | Lives in                                                        |
 | ---------------------------------------- | --------------------------------------------------------------- |
@@ -40,8 +41,9 @@ tree's naming too. The dashboard-specific names are the ones still worth checkin
 above says where to look. Written July 2026, revised against the implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
-and, once they land, `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or
-an HTML data app) and `docs/dashboards.md` (how to use the feature rather than read its design).
+plus `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or an HTML data
+app) and `docs/dashboards.md` (how to use the feature rather than read its design), both part of the
+phase 5 doc slice.
 Externally, Malloyyo's `docs/creating-dashboards.md`, `docs/composite-dashboards.md`, and
 `docs/dashboard-iframe-security.md` are the format and security posture this design adopts.
 
