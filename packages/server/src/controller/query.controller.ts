@@ -86,6 +86,7 @@ export class QueryController {
             queryCorrelationId,
             servedFrom,
             executionTimeMs,
+            queryCostBytes,
          } = await runWithQueryTimeout(
             (abortSignal) =>
                model.getQueryResults(
@@ -169,6 +170,7 @@ export class QueryController {
             // from the managed store.
             servedFrom,
             executionTimeMs,
+            queryCostBytes,
          } as ApiQuery;
       }
    }

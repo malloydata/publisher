@@ -1265,6 +1265,25 @@ describe("service/model", () => {
          expect(result.servedFrom).toBeNull();
       });
 
+      it("reports queryCostBytes as null rather than zero when unreported", async () => {
+         // Null and 0 mean opposite things here. Every non-BigQuery backend
+         // reports nothing, and so does a storage-served query that touched no
+         // warehouse — reading either as "this cost zero" is how a savings
+         // number gets fabricated out of a backend that simply cannot say.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
+
+         expect(result.queryCostBytes).toBeNull();
+      });
+
       it("keeps unbounded values off the query histogram's labels", async () => {
          // The query TEXT and the returned ROW COUNT are both unbounded label
          // values, and a histogram label multiplies by the bucket count — either

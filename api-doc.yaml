@@ -3682,6 +3682,27 @@ components:
             caller's own stopwatch. Use it to attribute ONE query, which an
             aggregate histogram cannot do; use the histogram for rates and
             percentiles.
+        queryCostBytes:
+          type: ["integer", "null"]
+          description: >-
+            Warehouse bytes this query will be billed for, as reported by the
+            backend that ran it.
+
+            **Null is not zero.** It means the backend did not report a figure,
+            and there are two very different reasons for that. Either the backend
+            has no inline equivalent — BigQuery returns `totalBytesProcessed` in
+            the job metadata the driver already fetches, while Snowflake exposes
+            bytes only in `QUERY_HISTORY` keyed by query id (join it later on the
+            `query_id` query-metadata property rather than paying a round trip per
+            query) and Postgres has none at all. Or the query touched no warehouse,
+            which is the case for every `servedFrom: storage` answer. Check
+            `servedFrom` before reading a null as "free".
+
+            Where it is reported it is the backend's own pre-execution estimate of
+            bytes processed, not a settled bill: it ignores per-table minimums,
+            flat-rate/slot pricing, and cached-result discounts. Good enough to
+            compare queries against each other; not good enough to render as
+            money without saying so.
 
     LogMessage:
       type: object
@@ -5119,6 +5140,38 @@ components:
           $ref: "#/components/schemas/Realization"
         rowCount:
           type: ["integer", "null"]
+        buildDurationMs:
+          type: ["integer", "null"]
+          description: >-
+            Wall-clock milliseconds spent building this one source's table —
+            measured around the build itself, so it excludes planning, manifest
+            distribution, and anything the orchestrator does around it.
+
+            Null when no build ran, which is the normal case for an incremental
+            source whose refresh SKIPPED because its boundary already covered the
+            requested range. Null rather than 0 on purpose: a zero would average
+            into build-duration series as an implausibly fast build.
+
+            Per SOURCE, where a run-level duration is per instruction. A run that
+            builds five sources reports five of these, and their sum is less than
+            the run's duration by whatever the orchestration cost.
+        queryCostBytes:
+          type: ["integer", "null"]
+          description: >-
+            Warehouse bytes billed for the read that produced this table — the
+            recurring cost of keeping the source materialized, and the debit
+            against whatever materializing it saves on the read side.
+
+            **Null is not zero**, and on this path it is usually null. Reported
+            only for a COLOCATED build on a backend that supplies a figure
+            (BigQuery), because that path runs its CTAS through the Malloy
+            connection and gets the backend's own statistics back. A
+            `storage=` build reports null structurally rather than from
+            omission: its warehouse read happens inside DuckDB's native
+            query-passthrough, so the connector that would surface the figure is
+            never in the call path. An incremental delta likewise reports null,
+            since its statements do not run through a single call whose result
+            reaches here.
         dataAsOf:
           type: string
           format: date-time

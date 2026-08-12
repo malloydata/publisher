@@ -315,6 +315,28 @@ export class Model {
          unit: "ms",
       },
    );
+   /**
+    * Warehouse bytes billed for model queries, summed. A counter rather than a
+    * histogram: the question is "how much did this cost over a period", which is
+    * a sum, and bytes as a histogram VALUE would need bucket boundaries spanning
+    * kilobytes to terabytes to say anything useful.
+    *
+    * Only advances for backends that report the figure — today BigQuery, whose
+    * job metadata carries `totalBytesProcessed` in the same response the driver
+    * already fetches. **Absent is not zero.** Snowflake exposes bytes only in
+    * `QUERY_HISTORY`, keyed by query id, so getting it inline would cost an extra
+    * round trip per query; it belongs to a deferred join on the query tag
+    * instead. Postgres has no equivalent. A dashboard summing this across
+    * connections silently understates every non-BigQuery one.
+    */
+   private queryCostBytesCounter = this.meter.createCounter(
+      "malloy_model_query_cost_bytes",
+      {
+         description:
+            "Warehouse bytes billed for Malloy model queries, where the backend reports them",
+         unit: "By",
+      },
+   );
 
    constructor(
       packageName: string,
@@ -2369,6 +2391,13 @@ export class Model {
        * caller's own stopwatch reads.
        */
       executionTimeMs: number;
+      /**
+       * Warehouse bytes this query will be billed for, when the backend reports
+       * it (BigQuery today). Null means "not reported", which includes both a
+       * backend that cannot say and a storage-served query that touched no
+       * warehouse — never read it as zero cost without checking `servedFrom`.
+       */
+      queryCostBytes: number | null;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
@@ -2945,18 +2974,24 @@ export class Model {
          responseShape === "compact" ? bigIntReplacer : undefined,
       );
       assertWithinModelByteLimit(serializedResult, maxBytes, "model_query");
-      this.queryExecutionHistogram.record(
-         executionTime,
-         this.queryMetricAttributes({
-            environment: queryMetadataInput?.environment,
-            queryName,
-            sourceName,
-            status: "success",
-            connection: queryResults.connectionName,
-            servedFrom,
-            rowsLimit: rowLimit,
-         }),
-      );
+      const metricAttributes = this.queryMetricAttributes({
+         environment: queryMetadataInput?.environment,
+         queryName,
+         sourceName,
+         status: "success",
+         connection: queryResults.connectionName,
+         servedFrom,
+         rowsLimit: rowLimit,
+      });
+      this.queryExecutionHistogram.record(executionTime, metricAttributes);
+      // Only advanced when the backend actually reported a figure, so the counter
+      // stays absent rather than reading a false zero on a backend that cannot
+      // report one. A query served from storage never reaches here with a cost:
+      // it touched no warehouse, which is the entire point.
+      const queryCostBytes = queryResults.runStats?.queryCostBytes;
+      if (queryCostBytes !== undefined) {
+         this.queryCostBytesCounter.add(queryCostBytes, metricAttributes);
+      }
       return {
          result: wrappedResult,
          serializedResult,
@@ -2992,6 +3027,12 @@ export class Model {
          // and against the same query on another connection, and it is NOT what a
          // caller's own stopwatch will read.
          executionTimeMs: Math.round(executionTime),
+         // What the warehouse will bill for this query, when it says. Null on a
+         // backend that does not report it — which is NOT the same as zero, and
+         // is why the field is nullable rather than defaulted. A storage-served
+         // query legitimately has no warehouse cost, and reports null for the
+         // opposite reason: there was no warehouse in the path at all.
+         queryCostBytes: queryCostBytes ?? null,
       };
    }
 
