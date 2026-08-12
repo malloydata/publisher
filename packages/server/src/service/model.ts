@@ -2417,7 +2417,11 @@ export class Model {
             : undefined) ||
          surfaceName;
       if (earlySource) {
-         await this.assertAuthorized(earlySource, givens ?? {}, bypassAuthorize);
+         await this.assertAuthorized(
+            earlySource,
+            givens ?? {},
+            bypassAuthorize,
+         );
       }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
