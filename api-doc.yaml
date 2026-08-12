@@ -1602,26 +1602,6 @@ paths:
         as a raw Malloy query string or by referencing a named query within the model. This endpoint
         supports both ad-hoc queries and predefined model queries, making it flexible for various
         use cases including data exploration, reporting, and application integration.
-
-        **`x-publisher-bypass-authorize` (internal).** When this request header is exactly
-        `true`, the author's `#(authorize)` gates are not evaluated for this query. It exists for
-        trusted data-management callers: indexing runs as a machine identity with no givens, so a
-        gated source otherwise returns 403 and is never scanned even when the author tagged a
-        dimension `#(index)`.
-
-        Only expressions collected from `#(authorize)` / `##(authorize)` are disabled. The
-        author's own `where:` clauses, `#(filter)` handling, and every other semantic are
-        untouched, and this is NOT `bypassFilters` — a separate, deprecated, `#(filter)`-only
-        control in the request body.
-
-        Deliberately a header, not a `QueryRequest` field: a deployment fronting this API reuses
-        the same generated schema for its own inbound body, so a field able to reach here would
-        also be settable by that deployment's external callers. It is deliberately not declared
-        as a parameter either, so it does not become an argument on every generated SDK and CLI
-        client for a control almost no caller should set. Publisher performs no inbound
-        authentication, so nothing here bounds who may send it — the bound is the deployment's
-        network boundary. Every use is counted (`publisher_authorize_bypass_total`) and
-        audit-logged.
       parameters:
         - name: environmentName
           in: path

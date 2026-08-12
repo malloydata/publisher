@@ -61,8 +61,12 @@ export function recordAuthorizeGuardRejection(
  * `source` is {@link Model.assertAuthorized} (a named source, including the
  * early surface-syntax gate); `runnable` is
  * {@link Model.assertAuthorizedForAllSources} (the compiled entry-point walk).
- * A single bypassed query emits one of each — the walk short-circuits before
- * its own nested `assertAuthorized` call, so neither is double-counted.
+ * Neither is ever double-counted: the walk short-circuits before its own nested
+ * `assertAuthorized` call. But do NOT read the two as always paired. `runnable`
+ * fires on every bypassed query; `source` fires only when a run target was
+ * resolvable from surface syntax before compilation, so an ad-hoc query whose
+ * target cannot be pinned up front emits `runnable` alone. Alert on the sum, not
+ * on a ratio between them.
  */
 export type AuthorizeBypassEntryPoint = "source" | "runnable";
 

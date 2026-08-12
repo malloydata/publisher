@@ -47,11 +47,9 @@ export class QueryController {
          versionId?: string;
       },
       /**
-       * Skip `#(authorize)` gates for this request. Carried by the
-       * `x-publisher-bypass-authorize` header, set only by the router's private
-       * data-management endpoint, which pins an M2M identity first;
-       * `/private/**` is not routed from ingress. Orthogonal to
-       * {@link bypassFilters} — see {@link Model.getQueryResults}.
+       * Skip `#(authorize)` gates for this request. Set from the
+       * `x-publisher-bypass-authorize` request header only, never from the body.
+       * Orthogonal to {@link bypassFilters} — see {@link Model.getQueryResults}.
        */
       bypassAuthorize?: boolean,
    ): Promise<ApiQuery> {

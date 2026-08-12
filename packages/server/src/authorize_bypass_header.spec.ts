@@ -44,9 +44,19 @@ describe("readBypassAuthorize", () => {
       },
    );
 
-   // A repeated header arrives as an array. We cannot read it as exactly one
-   // `true`, so it leaves gates enforced rather than guessing.
-   it("returns undefined for a repeated header", () => {
+   // What Node actually does with a duplicated custom header: joins the values
+   // into one comma-separated string. Not `"true"`, so it denies. (The array arm
+   // below is reachable only for set-cookie, but the type allows it, so pin it
+   // too rather than leave a shape unhandled.)
+   it("returns undefined for a duplicated header, as Node joins it", () => {
+      expect(
+         readBypassAuthorize(
+            withHeaders({ [BYPASS_AUTHORIZE_HEADER]: "true, true" }),
+         ),
+      ).toBeUndefined();
+   });
+
+   it("returns undefined for an array-valued header", () => {
       expect(
          readBypassAuthorize(
             withHeaders({ [BYPASS_AUTHORIZE_HEADER]: ["true", "true"] }),
@@ -68,10 +78,16 @@ describe("readBypassAuthorize", () => {
 
 /**
  * The reader being body-blind is only half the guarantee: the query route has to
- * actually use it. A route that went back to `req.body.bypassAuthorize` would
- * leave every test above green while making the bypass settable from the public
- * request schema, so pin the wiring in the source the same way the data-apps
- * route parity spec pins its path.
+ * actually use it, and only it. `authorize_bypass_wiring.integration.spec.ts`
+ * proves the behaviour through a real HTTP request; this pins the one thing a
+ * request cannot see — that the value the route hands the controller is derived
+ * from the header and from nothing else.
+ *
+ * Asserted POSITIVELY, against the extracted argument list with comments
+ * stripped. The previous form ("no line contains both `bypassAuthorize` and
+ * `req.body`") was blocklist-shaped and a comment could satisfy its other half:
+ * `const b = req.body; … b.bypassAuthorize` walked straight past it. An exact
+ * match on the argument cannot be satisfied by anything but the right call.
  */
 describe("query route wiring", () => {
    const serverSource = readFileSync(
@@ -79,17 +95,34 @@ describe("query route wiring", () => {
       "utf8",
    );
 
-   it("passes the request to the header reader", () => {
-      expect(serverSource).toContain("readBypassAuthorize(req)");
-   });
+   /** The `getQuery(...)` argument list on the query route, comments removed. */
+   const queryCallArguments = (): string => {
+      const withoutComments = serverSource
+         .replace(/\/\*[\s\S]*?\*\//g, "")
+         .replace(/^\s*\/\/.*$/gm, "");
+      const start = withoutComments.indexOf("queryController.getQuery(");
+      expect(start).toBeGreaterThan(-1);
+      // Balance parens from the opening one so nested calls don't end it early.
+      let depth = 0;
+      for (let i = withoutComments.indexOf("(", start); i > 0; i++) {
+         if (withoutComments[i] === "(") depth++;
+         if (withoutComments[i] === ")") depth--;
+         if (depth === 0) {
+            return withoutComments.slice(
+               withoutComments.indexOf("(", start) + 1,
+               i,
+            );
+         }
+      }
+      throw new Error("unbalanced getQuery( call in server.ts");
+   };
 
-   it("never reads bypassAuthorize off a request body", () => {
-      const bodyReads = serverSource
+   it("derives the bypass from the header reader and nothing else", () => {
+      const args = queryCallArguments();
+      const bypassArguments = args
          .split("\n")
-         .filter(
-            (line) =>
-               line.includes("bypassAuthorize") && line.includes("req.body"),
-         );
-      expect(bodyReads).toEqual([]);
+         .map((line) => line.trim())
+         .filter((line) => /bypassAuthorize|readBypassAuthorize/i.test(line));
+      expect(bypassArguments).toEqual(["readBypassAuthorize(req),"]);
    });
 });

@@ -18,6 +18,7 @@ import {
 } from "../authorize_bypass_header";
 import { resetAuthorizeGuardTelemetryForTesting } from "../authorize_metrics";
 import { AccessDeniedError, BadRequestError } from "../errors";
+import { logger } from "../logger";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -3189,6 +3190,49 @@ source: dm_mixed is duckdb.table('customers') extend {
          expect(
             await harness.collectCounter(COUNTER, { entry_point: "runnable" }),
          ).toBe(1);
+      });
+
+      /**
+       * The audit line is the compensating control for a bypass, so the source it
+       * names is the whole point. `assertAuthorizedForAllSources` used to return
+       * before resolving it and log `"(query)"` — and it did that on exactly the
+       * request where nothing else records the target: an ad-hoc query whose run
+       * target cannot be pinned from surface syntax before compilation, so the
+       * `source` entry point never fires either. That left the one case an
+       * investigator most needs with package and model but no source at all.
+       */
+      it('names the source on the runnable audit, not "(query)"', async () => {
+         await writeModel("dm_gated.malloy", GATED);
+         const lines: Array<Record<string, unknown>> = [];
+         const info = logger.info;
+         (logger as { info: unknown }).info = (
+            message: string,
+            meta?: Record<string, unknown>,
+         ) => {
+            if (message === "authorize bypass" && meta) lines.push(meta);
+            return undefined as never;
+         };
+         try {
+            // Declared in the caller's own text, so `earlySource` resolves to
+            // nothing and `runnable` is the only emission there is.
+            await runGated(
+               "dm_gated.malloy",
+               "source: mine is dm_gated extend {}\nrun: mine -> { aggregate: c }",
+               {},
+               undefined,
+               true,
+            );
+         } finally {
+            (logger as { info: unknown }).info = info;
+         }
+
+         const runnable = lines.filter((l) => l.entryPoint === "runnable");
+         expect(runnable.length).toBe(1);
+         expect(runnable[0]?.sourceName).not.toBe("(query)");
+         expect(runnable[0]).toMatchObject({
+            modelPath: "dm_gated.malloy",
+            packageName: "test-pkg",
+         });
       });
 
       it("counts nothing when the bypass is not used", async () => {

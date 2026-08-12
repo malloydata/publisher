@@ -1780,14 +1780,10 @@ app.post(
                queryClass: req.body?.queryClass,
                versionId: req.body?.versionId as string | undefined,
             },
-            // Internal data-management control, NOT part of the documented query
-            // API: it disables the author's `#(authorize)` gates. Publisher does
-            // no inbound auth, so nothing here bounds who may set it — the bound
-            // is the network (publisher reachable only from the router) plus the
-            // router's M2M assertion on `/private/**`. Read from a HEADER, never
-            // the body: the router's outbound worker request and its own public
-            // inbound request are the same generated schema, so a body field
-            // would also be settable by any external caller.
+            // Disables the author's `#(authorize)` gates. From a HEADER, never the
+            // body, and nothing in Publisher bounds who may send it — the
+            // deployment must strip it at its edge. See
+            // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
             readBypassAuthorize(req),
          );
          setFilterDeprecationHeaders(res, {

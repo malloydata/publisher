@@ -746,12 +746,18 @@ export class Model {
       givens: Record<string, GivenValue>,
       bypassAuthorize = false,
    ): Promise<void> {
-      // Returns BEFORE the nested assertAuthorized below, so a bypassed query
-      // books exactly one `source` and one `runnable` emission, never two of
-      // either. It also skips the entry-point walk itself, which is the
-      // expensive part (resolveRunTargetStruct + collectEntryPointGates).
+      // Returns BEFORE the nested assertAuthorized below, so this books at most
+      // one `runnable` emission and never two. It still skips the entry-point
+      // walk, which is the expensive part (resolveRunTargetStruct +
+      // collectEntryPointGates) — but NOT the source-name resolution, which is
+      // the only thing that tells an investigator what a bypass actually read.
+      // An ad-hoc query is exactly the case where the caller-side name is
+      // unavailable and this is the sole record of the target.
       if (bypassAuthorize) {
-         this.noteAuthorizeBypass("runnable", undefined);
+         this.noteAuthorizeBypass(
+            "runnable",
+            await this.resolveAuthorizeSourceFromRunnable(runnable),
+         );
          return;
       }
       const ownSourceName =
@@ -1199,17 +1205,17 @@ export class Model {
     * file-level gate applies — the same top-level-only boundary as the query
     * path's early gate. Used by the `/compile` path, which has no runnable to
     * resolve before it decides whether to compile at all.
+    *
+    * Takes no bypass argument, deliberately. `/compile` returns schema and, with
+    * `includeSql`, SQL; no caller needs to compile through a gate, so the
+    * parameter is not plumbed here rather than plumbed and defaulted off. Adding
+    * it back should require deciding to, not one word in a call site.
     */
    public async assertAuthorizedForText(
       text: string,
       givens: Record<string, GivenValue>,
-      bypassAuthorize = false,
    ): Promise<void> {
-      await this.assertAuthorized(
-         extractRunTargetSourceName(text),
-         givens,
-         bypassAuthorize,
-      );
+      await this.assertAuthorized(extractRunTargetSourceName(text), givens);
    }
 
    /**
@@ -1221,17 +1227,14 @@ export class Model {
     * Used as the `/compile` backstop once a runnable exists, so `/compile`
     * applies the same entry-point rule as the query path — including its
     * "joins are not gated" consequence.
+    *
+    * No bypass argument, for the same reason as {@link assertAuthorizedForText}.
     */
    public async assertAuthorizedForRunnable(
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
-      bypassAuthorize = false,
    ): Promise<void> {
-      await this.assertAuthorizedForAllSources(
-         runnable,
-         givens,
-         bypassAuthorize,
-      );
+      await this.assertAuthorizedForAllSources(runnable, givens);
    }
 
    /**
