@@ -5162,17 +5162,79 @@ components:
             recurring cost of keeping the source materialized, and the debit
             against whatever materializing it saves on the read side.
 
-            **Null is not zero**, and on this path it is usually null. Reported
-            today only for a COLOCATED build on a backend that supplies a figure
-            (BigQuery), because that path runs its CTAS through the Malloy
-            connection and gets the backend's own statistics back.
+            **Null is not zero.** A colocated build reads it from the Malloy
+            connection's own statistics; a `storage=` build reads it back from the
+            warehouse afterwards (see `buildCost`), which does not always resolve;
+            an incremental delta reports null because its statements do not run
+            through a single call whose result reaches here; and a chained
+            `storage=` build reports null because it read its parent's
+            already-materialized table and touched no warehouse at all.
 
-            A `storage=` build reports null because its warehouse read happens
-            inside DuckDB's native query-passthrough, where that connector is not
-            in the call path. Obtainable by other routes the passthrough
-            extension offers, but not wired, because each costs an extra API call
-            per build. An incremental delta reports null too: its statements do
-            not run through a single call whose result reaches here.
+            A convenience mirror of `buildCost.bytesBilled` for callers that want
+            one number. Prefer `buildCost` — it distinguishes bytes SCANNED from
+            bytes BILLED, which differ by up to BigQuery's 10MB-per-query floor.
+        buildCost:
+          type: ["object", "null"]
+          description: >-
+            What the warehouse charged for the read that produced this table,
+            read back from its own accounting after the build.
+
+            **Every field is per-engine and nullable by design.** The warehouses
+            do not measure the same things, and flattening them into one shape
+            would invent equivalences that do not exist: BigQuery bills bytes,
+            Snowflake bills warehouse-seconds. There is no cross-engine "cost"
+            number here, and callers must not compute one.
+
+            The whole object is null when the read could not be attributed to
+            exactly one query. Neither passthrough returns a job handle for a
+            rows-returning call, so the query is identified by a time window plus
+            an exact match on the recorded query text; when that matches nothing,
+            or matches more than one, this is null rather than a guess. Watch
+            `publisher_build_cost_lookup_total{outcome}` to see how often — a
+            figure derived from these is computed over the subset that resolved,
+            not over all builds.
+          properties:
+            engine:
+              type: string
+              enum: [bigquery, snowflake]
+            jobId:
+              type: ["string", "null"]
+              description: The warehouse's own id for the read, so a human can look it up.
+            bytesScanned:
+              type: ["integer", "null"]
+              description: >-
+                Bytes the query read. BigQuery `totalBytesProcessed`, Snowflake
+                `BYTES_SCANNED`.
+            bytesBilled:
+              type: ["integer", "null"]
+              description: >-
+                Bytes the query is BILLED for — the figure that maps to money,
+                and not the same as `bytesScanned`: BigQuery rounds up to a 10MB
+                minimum per query, so a small read bills an order of magnitude
+                above what it scanned, and materialization refreshes are mostly
+                small reads. BigQuery only; Snowflake has no per-query billed
+                quantity.
+            slotTimeMs:
+              type: ["integer", "null"]
+              description: >-
+                BigQuery slot-milliseconds: aggregate parallel compute, so it is
+                NOT wall clock and routinely exceeds the query's duration. Null on
+                Snowflake, which has no comparable per-query figure.
+            executionTimeMs:
+              type: ["integer", "null"]
+              description: >-
+                Snowflake wall-clock execution time. Null on BigQuery, where
+                `slotTimeMs` is the meaningful number. Deliberately a separate
+                field: it is not the same quantity as slot time.
+            cacheHit:
+              type: ["boolean", "null"]
+              description: >-
+                The warehouse answered from cache, so the read was free. On a
+                BUILD this is a finding rather than a saving: the cache is
+                invalidated when the underlying tables change, so a cached build
+                means the source data had not moved and the rebuild did no useful
+                work. Inferred rather than reported on Snowflake, which exposes no
+                such column.
         dataAsOf:
           type: string
           format: date-time

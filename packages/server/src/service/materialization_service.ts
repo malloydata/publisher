@@ -2446,22 +2446,13 @@ export class MaterializationService {
          realization: instruction.realization,
          rowCount: null,
          buildDurationMs: durationMs,
-         // Not reported yet — and obtainable, which is worth stating so nobody
-         // concludes otherwise from the null. The warehouse read happens inside
-         // DuckDB's query-passthrough, so the Malloy connector that supplies this
-         // on the colocated path is not in the call path. The passthrough
-         // extension exposes it two other ways, both verified against BigQuery:
-         //   - `bigquery_query(project, sql, dry_run := true)` returns
-         //     `total_bytes_processed` without executing. Dry runs are free, and
-         //     on a real scan the estimate matched the executed job's billed
-         //     bytes exactly.
-         //   - `bigquery_jobs(project, ...)` returns `bytes_processed` and
-         //     `total_slot_time_ms` for jobs already run — the actual figure
-         //     rather than an estimate, at the cost of correlating a job to a
-         //     build.
-         // Wiring either adds an API call per build, so it is deliberately a
-         // separate decision from reporting the fields.
-         queryCostBytes: null,
+         // The warehouse read happens inside DuckDB's query-passthrough, so the
+         // Malloy connector that supplies this on the colocated path is not in
+         // the call path. Read back from the warehouse's own accounting instead,
+         // after the build — see lookupBuildCost, including why a null here is
+         // never "free".
+         queryCostBytes: result.buildCost?.bytesBilled ?? null,
+         buildCost: result.buildCost,
       };
    }
 
