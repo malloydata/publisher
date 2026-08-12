@@ -44,7 +44,7 @@ there for the primitive, then follow the application you need.
 | [givens.md](givens.md)                             | Learn the base mechanism — declare runtime parameters, drive filter widgets, and reach access control. |
 | [row-level-access.md](row-level-access.md)         | Restrict _which rows_ a caller sees (given-scoped `where:` + `#(authorize)`).                          |
 | [authorize.md](authorize.md)                       | Gate _who_ can query a whole source with `#(authorize)`.                                               |
-| [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`explores` / `queryableSources`) — the visibility axis.  |
+| [discovery-and-access.md](discovery-and-access.md) | Control _what_ is discoverable and queryable (`index.malloy`, `explores` / `queryableSources`) — the visibility axis.  |
 | [security-posture.md](security-posture.md)         | Understand what Publisher does and does not defend against, before deploying it or adding a feature.   |
 
 ## Deploy & operate
