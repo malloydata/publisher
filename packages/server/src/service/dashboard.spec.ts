@@ -597,7 +597,7 @@ describe("service/dashboard lint", () => {
       );
       // Still three findings, but "B" reaches a different one. `source=` with
       // no `dimension=` is not a runnable suggest form, so the spec is dropped
-      // before it can be resolved against `sourceFields` — it is reported as an
+      // before it can be resolved against `sourceFields`, so it is reported as an
       // unusable declaration rather than as a missing source.
       expect(messages).toEqual([
          expect.stringContaining('query "missing_q"'),
@@ -758,6 +758,46 @@ describe("service/dashboard lint", () => {
    });
 });
 
+describe("service/dashboard single-query given lint", () => {
+   // The tile form warned about this and the single-query form did not, so a
+   // single-query dashboard dropped the control in silence while
+   // `buildGivenSpecs` claimed the lint covered it.
+   it("names a given the query filters by but the file does not import", () => {
+      const f = facts({
+         queries: [
+            {
+               name: "overview",
+               annotations: ["# artifact\n"],
+               givens: ["REGION"],
+            },
+         ],
+      });
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest).map((x) => x.message)).toEqual([
+         expect.stringContaining(
+            'query "overview" filters by given "REGION", which this file does not import',
+         ),
+      ]);
+   });
+
+   it("stays silent when the file does import it", () => {
+      const f = facts({
+         queries: [
+            {
+               name: "overview",
+               annotations: ["# artifact\n"],
+               givens: ["REGION"],
+            },
+         ],
+         givens: new Map([given("REGION", "filter<string>", [])]),
+      });
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest)).toEqual([]);
+   });
+});
+
 describe("service/dashboard slug is servable", () => {
    // `dashboards/.malloy` yields an empty slug, whose published `resource`
    // would end in `/dashboards/` and fold onto the LIST route under Express's
@@ -866,7 +906,7 @@ describe("service/dashboard grid width and hostile literals", () => {
       });
 
    // BOTH spellings reach the manifest, but only `dashboard_columns` was ever
-   // checked — and `# dashboard { columns=N }` is the form the shipped example
+   // checked, and `# dashboard { columns=N }` is the form the shipped example
    // dashboards use, so a bad value there was dropped with no finding at all.
    it("validates the # dashboard { columns= } spelling", () => {
       expect(
@@ -886,6 +926,24 @@ describe("service/dashboard grid width and hostile literals", () => {
             }),
          ),
       ).toEqual([expect.stringContaining("dashboard_columns must be")]);
+   });
+
+   // The lint said the value was dropped while `Tag.numeric()` (parseFloat)
+   // still put a number on the wire: `12abc` arrived as 12, and `1e999` as
+   // Infinity, which JSON renders as null against a field the spec declares an
+   // integer. Both sides now share one helper so they cannot disagree.
+   it("keeps an invalid width off the manifest, not just out of the lint", () => {
+      for (const bad of [
+         '# artifact dashboard { columns="12abc" }\n',
+         "# artifact dashboard { columns=1e999 }\n",
+         "# artifact dashboard { columns=0 }\n",
+         "# artifact dashboard { columns=-4 }\n",
+         "# artifact dashboard { columns=2.5 }\n",
+      ]) {
+         const manifest = build(singleQuery(bad));
+         expect(manifest?.dashboardColumns).toBeUndefined();
+         expect(lintOf(singleQuery(bad))).toHaveLength(1);
+      }
    });
 
    it("accepts a valid width in either spelling", () => {

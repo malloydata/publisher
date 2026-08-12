@@ -2299,10 +2299,19 @@ export class Model {
       // imported model's `## title=` or `#"` doc comment must not become it.
       const annotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
       const description = docCommentText(annotations);
+      // A title is one line. `docCommentText` joins a multi-line `#"` comment
+      // with newlines on purpose, because that route carries markdown, so
+      // falling back to the whole comment put an embedded newline into a field
+      // every caller renders on one line. Take its first non-empty line and
+      // leave the full text to `description`.
+      const firstDocLine = description
+         ?.split("\n")
+         .map((line) => line.trim())
+         .find((line) => line.length > 0);
       return {
          title:
             tagText(motlyTag(annotations), "title") ??
-            description ??
+            firstDocLine ??
             this.firstMarkdownHeading(),
          description,
       };

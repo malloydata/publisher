@@ -196,7 +196,7 @@ export function dashboardSlug(modelPath: string): string {
  * `/dashboards/` and folds onto the LIST route under Express's non-strict
  * routing, so following the manifest's own link returns an array where a
  * manifest belongs. `dashboards/...malloy` yields `..`. There is no traversal
- * risk — the lookup is a `Map` and never touches the filesystem — but a
+ * risk (the lookup is a `Map` and never touches the filesystem), but a
  * published link that points somewhere else is wrong on its own terms.
  */
 export function isServableDashboardSlug(slug: string): boolean {
@@ -228,12 +228,29 @@ function readArtifactTag(tag: Tag): ArtifactTagData | undefined {
       // The composite form carries its grid width inside the artifact tag; the
       // single-query form gets it from the `# dashboard` render tag, which the
       // renderer reads too.
+      //
+      // Read through the same strict reader the lint validates with, and
+      // require a positive integer here as well. `Tag.numeric()` is parseFloat,
+      // so it took `12abc` as 12 and `1e999` as Infinity, which JSON renders as
+      // null against a field the spec declares an integer. That put a value on
+      // the wire in the very case the lint was reporting as dropped, so the two
+      // disagreed about the same tag.
       dashboardColumns:
-         artifact.numeric("dashboard_columns") ??
-         tag.tag("dashboard")?.numeric("columns"),
+         positiveInteger(tagNumeric(artifact, "dashboard_columns")) ??
+         positiveInteger(tagNumeric(tag.tag("dashboard"), "columns")),
       givens,
       autorun,
    };
+}
+
+/**
+ * A grid width, or undefined when the value is not one. Kept beside the lint's
+ * own check so the manifest and the finding can never disagree about a tag.
+ */
+function positiveInteger(value: number | undefined): number | undefined {
+   return value !== undefined && Number.isInteger(value) && value >= 1
+      ? value
+      : undefined;
 }
 
 /** One given declaration, as discovery needs it. */
@@ -531,7 +548,8 @@ function buildGivenSpecs(
    for (const name of new Set(names)) {
       const declaration = declarations.get(name);
       // Absent when the given is referenced but not imported by the entry file,
-      // so it is not bindable — no control for it. The lint names that case.
+      // so it is not bindable and gets no control. `lintDashboard` names that
+      // case for both dashboard forms.
       if (!declaration) continue;
       specs.push(givenSpec(declaration));
    }
@@ -670,17 +688,17 @@ export function lintDashboard(
 
    // The grid width has two spellings and BOTH reach the manifest (see
    // readArtifactTag), so both are checked here. Checking only the artifact-tag
-   // spelling left `# dashboard { columns=… }` — the form the shipped examples
-   // use — silently dropped on a bad value.
+   // spelling left `# dashboard { columns=… }`, the form the shipped examples
+   // use, silently dropped on a bad value.
    for (const [tag, key, written] of [
       [artifactTag, "dashboard_columns", "dashboard_columns"],
       [ownTag?.tag("dashboard"), "columns", "# dashboard { columns=… }"],
    ] as const) {
-      // `numeric()` yields undefined for a non-numeric value, so a bad one is
-      // invisible in the manifest — which is exactly why it needs saying aloud.
+      // A bad value is invisible in the manifest, because `positiveInteger`
+      // drops it there too, which is exactly why it needs saying aloud. Both
+      // sides go through the same helper so they cannot disagree about a tag.
       if (!tag?.has(key)) continue;
-      const columns = tagNumeric(tag, key);
-      if (columns === undefined || !Number.isInteger(columns) || columns < 1) {
+      if (positiveInteger(tagNumeric(tag, key)) === undefined) {
          add(
             `${written} must be a positive integer, got ` +
                `${JSON.stringify(tagText(tag, key))}. ` +
@@ -722,12 +740,28 @@ export function lintDashboard(
       }
    }
 
+   // The same loss, on the single-query form. It used to be reported for tiles
+   // only, so a single-query dashboard dropped the control in silence while
+   // `buildGivenSpecs` claimed the lint covered it.
+   if (manifest.query !== undefined) {
+      const query = facts.queries.find((q) => q.name === manifest.query);
+      for (const name of query?.givens ?? []) {
+         if (facts.givens.has(name)) continue;
+         add(
+            `query "${manifest.query}" filters by given "${name}", which this ` +
+               `file does not import, so no control is shown for it and it ` +
+               `stays at its default. Add it to an import in ` +
+               `${facts.modelPath}.`,
+         );
+      }
+   }
+
    for (const spec of manifest.givens) {
       const suggest = spec.suggest;
       if (!suggest) {
          // `readGivenControlSpec` drops a `suggest` block that cannot fetch
-         // options — `source` with no `dimension` names no column, `dimension`
-         // with neither `query` nor `source` names nothing to read it from — so
+         // options. `source` with no `dimension` names no column, and `dimension`
+         // with neither `query` nor `source` names nothing to read it from, so
          // an author who wrote one of those gets no suggest AND, without this,
          // no finding either. The declaration is still on the given's tags, so
          // read it back to say what was dropped and why.
@@ -840,8 +874,8 @@ export function lintUndiscoveredDashboard(
  *
  * This is the only signal that exists for it. A failed parse yields an EMPTY
  * tag rather than `undefined`, so `readGivenControlSpec` cannot detect one: it
- * returns `{}` and the given silently loses its whole control contract — label,
- * control kind, range, suggest — with nothing reported anywhere. The commonest
+ * returns `{}` and the given silently loses its whole control contract: label,
+ * control kind, range and suggest, with nothing reported anywhere. The commonest
  * cause is a bare filter literal, which is rescued before parsing, so what
  * reaches here is the residue that rescue could not save.
  *

@@ -3,5 +3,9 @@
    "version": "1.0.0",
    "description": "Fixture pinning that dashboard discovery honours the curated query surface",
    "queryableSources": "declared",
-   "explores": ["orders.malloy", "dashboards/listed.malloy"]
+   "explores": [
+      "orders.malloy",
+      "dashboards/listed.malloy",
+      "dashboards/composite.malloy"
+   ]
 }

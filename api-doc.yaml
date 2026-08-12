@@ -1723,9 +1723,14 @@ paths:
         artifact tag is a shared include and is not listed, whether or not it
         compiles.
 
-        A tagged dashboard that failed to compile IS listed, carrying its
-        `error`, so a broken dashboard is visibly broken rather than silently
-        absent. When the package curates its query surface
+        A tagged dashboard that failed to compile is listed carrying its
+        `error` where that state can arise at all, so a broken dashboard is
+        visibly broken rather than silently absent. In practice it rarely does:
+        a package whose model fails to compile is not loaded, and a reload that
+        would break one is refused and leaves the previously loaded package
+        serving, so `error` is only reachable on the paths that keep per-model
+        placeholders. Treat it as present-but-uncommon rather than the normal
+        way a broken dashboard surfaces. When the package curates its query surface
         (`queryableSources: "declared"`), a dashboard whose entry file is not in
         `explores` is omitted, because its query and given names would not be
         runnable; the omission is reported in the package's `warnings`.

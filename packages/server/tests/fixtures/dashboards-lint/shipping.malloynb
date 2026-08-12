@@ -8,6 +8,7 @@ covers notebooks too.
 // A doc comment and no `## title=`, so the title falls back to this rather than
 // to the "Shipping" heading above — the middle step of the chain.
 ##" Carrier volumes
+##" Shipments per carrier, refreshed nightly.
 import "shipping.malloy"
 >>>markdown
 ## By carrier

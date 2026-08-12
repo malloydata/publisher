@@ -1895,7 +1895,6 @@ export class Package {
       // the manifest that substitutes its rollup tables.
       await this.pushPreaggregateServeModels();
       this.renderTagWarnings = renderTagWarnings;
-      await this.discoverDashboards();
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
@@ -1907,6 +1906,13 @@ export class Package {
          outcome.packageMetadata.manifestLocation ?? null;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      // AFTER the refreshed explore set is installed, never before. Dashboard
+      // discovery consults it (see isQueryableEntryPoint), so running it first
+      // computed the served set against the PREVIOUS policy: the reload that
+      // first curates a package would have kept serving the manifests that
+      // curation was meant to withhold, and gone on doing so until some later
+      // reload, since nothing recomputes them in between.
+      await this.discoverDashboards();
       // Remember what we just bound so /compile can route identically and
       // /status can report the binding. An empty map reverts to live (unbound).
       // Retains the full freshness entries so the serve-path gate can evaluate
@@ -1972,12 +1978,22 @@ export class Package {
    }
 
    /**
-    * Whether a model file may be a top-level query target, the same policy
-    * `applyQueryBoundaryToModels` pushes onto each Model: inert unless
-    * `explores` is declared AND `queryableSources` is `"declared"`.
+    * Whether a model file may be a top-level query target, the FILE-LEVEL half
+    * of the policy `applyQueryBoundaryToModels` pushes onto each Model: inert
+    * unless `explores` is declared AND `queryableSources` is `"declared"`.
     *
-    * Read here as well because a dashboard is only worth serving if the queries
-    * its manifest advertises can actually run.
+    * Read here because a dashboard is only worth serving if the queries its
+    * manifest advertises can actually run.
+    *
+    * Deliberately only that half, and the gap is worth stating rather than
+    * leaving to be rediscovered. The boundary has a second, within-file level:
+    * `assertQueryBoundaryEarly` also requires the target to be inside the
+    * model's `export {}` closure. So a file listed in `explores` that only
+    * imports and re-exports nothing still refuses every query, and a COMPOSITE
+    * dashboard in such a file is served with a manifest whose every tile 404s.
+    * Mirroring that second level here would mean resolving each tile against
+    * the closure before the manifest exists, which is a bigger change than this
+    * slice should make; the warning below names the real fix instead.
     */
    private isQueryableEntryPoint(modelPath: string): boolean {
       if (this.packageMetadata.queryableSources === "all") return true;
@@ -1998,7 +2014,7 @@ export class Package {
     * Deliberately textual and deliberately generous: it looks for an `artifact`
     * annotation at the start of a line. A false positive lists a broken file
     * that was never a dashboard, which is noisy; a false negative hides a
-    * genuinely broken dashboard, which is worse. Never throws — an unreadable
+    * genuinely broken dashboard, which is worse. Never throws: an unreadable
     * file is simply not a dashboard.
     */
    private async claimsToBeADashboard(modelPath: string): Promise<boolean> {
@@ -2040,6 +2056,14 @@ export class Package {
       const heldBack: { modelPath: string; name: string }[] = [];
       // Files whose derived slug could not be served at a URL.
       const unservableSlugs: string[] = [];
+      // Dashboards served from a file that re-exports nothing, so every query
+      // against them is refused by the within-file half of the query boundary.
+      const emptySurface: { modelPath: string; name: string }[] = [];
+      // Every slug this package actually has a dashboard for, INCLUDING the
+      // ones withheld below. The drill lint resolves against this rather than
+      // against the served set, so withholding a dashboard does not turn a
+      // correct `# drill { to=... }` into "not a dashboard in this package".
+      const dashboardSlugs = new Set<string>();
       for (const modelPath of Array.from(this.models.keys()).sort()) {
          const model = this.models.get(modelPath);
          if (!model) continue;
@@ -2059,6 +2083,62 @@ export class Package {
          if (!isDashboardModelPath(modelPath)) continue;
          const name = dashboardSlug(modelPath);
 
+         // Establish that the file IS a dashboard before any of the checks
+         // below, because every one of them reports on the assumption that it
+         // is. Ordering these the other way round told the author that
+         // `dashboards/_shared.malloy`, an untagged shared include the spec
+         // says is never listed, was a dashboard being withheld from them.
+         let manifest: (DashboardManifest & { error?: string }) | undefined;
+         if (facts) {
+            try {
+               manifest = buildDashboardManifest(facts);
+            } catch (err) {
+               logger.warn("Dashboard discovery failed", {
+                  packageName: this.packageName,
+                  modelPath,
+                  error: errMessage(err),
+               });
+               continue;
+            }
+            if (!manifest) {
+               // No artifact tag, so a shared include. Its facts are still
+               // kept, because a file that produced no dashboard has to be
+               // explained if the reason was a tag that failed to parse.
+               factsByPath.set(modelPath, facts);
+               continue;
+            }
+         } else {
+            // Unreadable, so the file failed to compile and its artifact tag
+            // cannot be read. It is listed anyway carrying the error, because a
+            // broken dashboard should be visibly broken rather than absent.
+            //
+            // Only if it actually claims to be one. `api-doc.yaml` promises a
+            // file with no artifact tag is a shared include and is not listed,
+            // and a compile failure must not turn that promise off: a syntax
+            // error in `dashboards/_shared.malloy` otherwise produced a phantom
+            // dashboard that vanished once the error was fixed. The tag cannot
+            // be read from a model that did not compile, so it is read from the
+            // source text, a heuristic used ONLY on this already-broken path.
+            const error = model.getCompilationError();
+            if (!error || !(await this.claimsToBeADashboard(modelPath))) {
+               continue;
+            }
+            manifest = {
+               name,
+               title: name,
+               autorun: true,
+               entryFile: modelPath,
+               givens: [],
+               error: error.message,
+            };
+         }
+
+         // From here the file IS a dashboard, so a finding naming it is true.
+         // Recorded before the two gates below, because a drill pointing at a
+         // dashboard this package really has must not be reported as pointing
+         // at one that does not exist just because it is withheld.
+         dashboardSlugs.add(name);
+
          // A slug that cannot round-trip through its own URL is not served.
          // Nothing validated this, and it is derived from a filename rather
          // than chosen, so `dashboards/.malloy` published a `resource` ending
@@ -2068,56 +2148,31 @@ export class Package {
             continue;
          }
 
-         // Curation gate, before anything about this file is published. Every
-         // other listing path in this class consults `exploreSet()`; discovery
-         // did not, so a curated package served a full manifest — query name,
-         // given names, suggest-query names — for a dashboard whose every one
-         // of those names then 404s, and served the compile error (which names
-         // tables, columns and connections) for one that failed to compile.
-         // Held back rather than published broken, with a warning saying so.
+         // Curation gate. Every other listing path in this class consults
+         // `exploreSet()`; discovery did not, so a curated package served a
+         // full manifest, advertising a query name, given names and
+         // suggest-query names that the query boundary then refuses with 404.
+         // Held back rather than published unusable, with a warning saying so.
          if (!this.isQueryableEntryPoint(modelPath)) {
             heldBack.push({ modelPath, name });
             continue;
          }
 
-         if (!facts) {
-            // Unreadable ⇒ the file failed to compile, so its artifact tag
-            // cannot be read. List it anyway, with the error: a broken
-            // dashboard should be visibly broken, not silently absent.
-            //
-            // Only if it actually claims to be one. `api-doc.yaml` promises a
-            // file with no artifact tag is a shared include and is not listed,
-            // and a compile failure must not turn that promise off: a syntax
-            // error in `dashboards/_shared.malloy` otherwise produced a phantom
-            // dashboard that vanished once the error was fixed. The tag cannot
-            // be read from a model that did not compile, so it is read from the
-            // source text — a heuristic used ONLY on this already-broken path.
-            const error = model.getCompilationError();
-            if (error && (await this.claimsToBeADashboard(modelPath))) {
-               discovered.set(name, {
-                  name,
-                  title: name,
-                  autorun: true,
-                  entryFile: modelPath,
-                  givens: [],
-                  error: error.message,
-               });
-            }
-            continue;
+         // Served, but possibly unusable for a second reason the file-level
+         // gate above cannot see. The query boundary ALSO requires the target
+         // to be inside the file's own `export {}` closure, so a dashboard file
+         // that only imports and re-exports nothing refuses every query made
+         // against it: a composite's tiles all 404 while the manifest looks
+         // fine. Reported rather than withheld, deliberately. Withholding would
+         // mean resolving each tile against the closure before the manifest
+         // exists, and being wrong in that direction hides a working dashboard,
+         // which is worse than serving one with a finding attached.
+         if (model.hasEmptyDiscoverySurface()) {
+            emptySurface.push({ modelPath, name });
          }
-         try {
-            const manifest = buildDashboardManifest(facts);
-            if (manifest) discovered.set(name, manifest);
-            // Kept even without a manifest: a file that produced no dashboard
-            // still has to be explained if its tag failed to parse.
-            factsByPath.set(modelPath, facts);
-         } catch (err) {
-            logger.warn("Dashboard discovery failed", {
-               packageName: this.packageName,
-               modelPath,
-               error: errMessage(err),
-            });
-         }
+
+         discovered.set(name, manifest);
+         if (facts) factsByPath.set(modelPath, facts);
       }
       this.dashboards = discovered;
       this.dashboardWarnings = await this.lintDashboards(
@@ -2125,6 +2180,8 @@ export class Package {
          allFacts,
          heldBack,
          unservableSlugs,
+         dashboardSlugs,
+         emptySurface,
       );
       for (const warning of this.dashboardWarnings) {
          logger.warn("Dashboard lint", {
@@ -2147,10 +2204,11 @@ export class Package {
       allFacts: ReadonlyMap<string, DashboardModelFacts>,
       heldBack: readonly { modelPath: string; name: string }[],
       unservableSlugs: readonly string[],
+      knownSlugs: ReadonlySet<string>,
+      emptySurface: readonly { modelPath: string; name: string }[],
    ): Promise<ApiPackageWarning[]> {
       const warnings: ApiPackageWarning[] = [];
       try {
-         const knownSlugs = new Set(this.dashboards.keys());
          for (const modelPath of unservableSlugs) {
             warnings.push({
                model: modelPath,
@@ -2159,6 +2217,20 @@ export class Package {
                   `usable dashboard name (letters, digits, "-" and "_" only), ` +
                   `so it could not be addressed at a URL and is not served. ` +
                   `Rename the file.`,
+               severity: "warn",
+            });
+         }
+         for (const { modelPath, name } of emptySurface) {
+            warnings.push({
+               model: modelPath,
+               subject: name,
+               message:
+                  `is served, but "${modelPath}" only imports other files and ` +
+                  `re-exports none of their sources, so this package's ` +
+                  `queryableSources: "declared" setting refuses every query ` +
+                  `made against it and each of the dashboard's tiles answers ` +
+                  `404. Add 'export { source_name }' to the file for the ` +
+                  `sources its tiles read.`,
                severity: "warn",
             });
          }
@@ -2172,7 +2244,11 @@ export class Package {
                   `queryableSources: "declared", so its query would be ` +
                   `refused. It is not served. Add it to 'explores', or set ` +
                   `queryableSources: "all" to keep the curated surface for ` +
-                  `discovery only.`,
+                  `discovery only. Listing it is not always sufficient on its ` +
+                  `own: a dashboard file that only imports other files must ` +
+                  `also re-export what it queries (e.g. ` +
+                  `'export { orders }'), because the query boundary checks the ` +
+                  `file's own export closure as well as this list.`,
                severity: "warn",
             });
          }
@@ -2253,20 +2329,36 @@ export class Package {
    }
 
    public listDashboards(): ApiDashboard[] {
-      return Array.from(this.dashboards.values()).map((manifest) => ({
-         resource: this.dashboardResource(manifest.name),
-         packageName: this.packageName,
-         name: manifest.name,
-         path: manifest.entryFile,
-         title: manifest.title,
-         description: manifest.description,
-         error: manifest.error,
-      }));
+      return Array.from(this.dashboards.values())
+         .filter((manifest) => this.isQueryableEntryPoint(manifest.entryFile))
+         .map((manifest) => ({
+            resource: this.dashboardResource(manifest.name),
+            packageName: this.packageName,
+            name: manifest.name,
+            path: manifest.entryFile,
+            title: manifest.title,
+            description: manifest.description,
+            error: manifest.error,
+         }));
    }
 
    /** The full manifest for one dashboard, or undefined if there is no such slug. */
    public getDashboard(name: string): ApiDashboardManifest | undefined {
       const manifest = this.dashboards.get(name);
+      // Re-checked here as well as at discovery, because the two can drift.
+      // `setPackageMetadata` (the metadata PATCH) installs a new explore set and
+      // re-applies the query boundary WITHOUT re-running discovery, so a PATCH
+      // that curates a package would otherwise leave this map serving the
+      // manifests curation was meant to withhold until some unrelated reload.
+      // The gate is a set lookup, so paying for it per request is free.
+      //
+      // This is deliberately one-directional: it can withhold a dashboard the
+      // cached map still holds, but it cannot surface one discovery already
+      // dropped, so RELAXING curation by PATCH needs a reload to take effect.
+      // That is the safe direction to be wrong in.
+      if (manifest && !this.isQueryableEntryPoint(manifest.entryFile)) {
+         return undefined;
+      }
       if (!manifest) return undefined;
       return {
          resource: this.dashboardResource(manifest.name),

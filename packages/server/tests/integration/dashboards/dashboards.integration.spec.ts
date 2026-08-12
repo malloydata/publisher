@@ -607,10 +607,16 @@ describe("Dashboard discovery (E2E)", () => {
       it("takes the doc comment ahead of the heading", async () => {
          const notebooks = await listNotebooks(LINT_PACKAGE);
          const shipping = notebooks.find((n) => n.path === "shipping.malloynb");
+         // A title is one line and a description is not. `docCommentText` joins
+         // a multi-line comment with newlines on purpose, since that route
+         // carries markdown, so the title takes only the first line; using the
+         // whole comment put an embedded newline into a single-line field.
          expect(shipping).toMatchObject({
             title: "Carrier volumes",
-            description: "Carrier volumes",
+            description:
+               "Carrier volumes\nShipments per carrier, refreshed nightly.",
          });
+         expect(shipping?.title ?? "").not.toContain("\n");
       });
    });
 
@@ -854,11 +860,103 @@ describe("Dashboard discovery (E2E)", () => {
       const curatedUrl = (sub: string) =>
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CURATED_PACKAGE}${sub}`;
 
-      it("serves only the dashboard whose entry file is in explores", async () => {
+      it("serves only the dashboards whose entry files are in explores", async () => {
          const res = await fetch(curatedUrl("/dashboards"));
          expect(res.status).toBe(200);
          const dashboards = (await res.json()) as DashboardItem[];
-         expect(dashboards.map((d) => d.name)).toEqual(["listed"]);
+         expect(dashboards.map((d) => d.name).sort()).toEqual([
+            "composite",
+            "listed",
+         ]);
+      });
+
+      /**
+       * The gate is file-level only, and the query boundary has a second,
+       * within-file level: the target must also be inside the file's own
+       * `export {}` closure. `dashboards/composite.malloy` is in `explores` but
+       * only imports, so it passes the gate and every one of its tiles is still
+       * refused. Reported rather than withheld, because being wrong in the
+       * withholding direction hides a working dashboard.
+       */
+      it("warns that a re-exporting-nothing dashboard's tiles will be refused", async () => {
+         const body = (await (await fetch(curatedUrl(""))).json()) as {
+            warnings?: { model?: string; message?: string }[];
+         };
+         const warning = (body.warnings ?? []).find((w) =>
+            (w.model ?? "").includes("composite"),
+         );
+         expect(warning?.message ?? "").toContain("re-exports none");
+         expect(warning?.message ?? "").toContain("export { source_name }");
+      });
+
+      it("confirms that tile really is refused, so the warning is not theoretical", async () => {
+         const res = await fetch(
+            curatedUrl("/models/dashboards/composite.malloy/query"),
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ query: "run: orders -> by_brand" }),
+            },
+         );
+         expect(res.status).toBe(404);
+      });
+
+      /**
+       * Curation applied AFTER the package is already serving must take effect,
+       * by both routes that can apply it.
+       *
+       * Found by security review, and both halves were real. `reloadAllModels`
+       * ran discovery BEFORE installing the freshly-read `explores`, so the
+       * reload that first curates a package computed its dashboard set against
+       * the previous policy and kept serving the manifests curation was meant
+       * to withhold, not for one request but until some later reload. And
+       * `setPackageMetadata`, which the metadata PATCH goes through, re-applied
+       * the query boundary without re-running discovery at all, so that route
+       * never took effect.
+       */
+      it("applies curation added by a metadata PATCH, not just at load", async () => {
+         const pkgUrl = curatedUrl("");
+         const before = (await (
+            await fetch(curatedUrl("/dashboards"))
+         ).json()) as DashboardItem[];
+         expect(before.map((d) => d.name).sort()).toEqual([
+            "composite",
+            "listed",
+         ]);
+         try {
+            // Curate harder: drop the one dashboard that WAS being served.
+            const patch = await fetch(pkgUrl, {
+               method: "PATCH",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  name: CURATED_PACKAGE,
+                  explores: ["orders.malloy"],
+                  queryableSources: "declared",
+               }),
+            });
+            expect(patch.ok).toBe(true);
+            const after = (await (
+               await fetch(curatedUrl("/dashboards"))
+            ).json()) as DashboardItem[];
+            expect(after.map((d) => d.name)).toEqual([]);
+            const one = await fetch(curatedUrl("/dashboards/listed"));
+            expect(one.status).toBe(404);
+         } finally {
+            await fetch(pkgUrl, {
+               method: "PATCH",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  name: CURATED_PACKAGE,
+                  explores: [
+                     "orders.malloy",
+                     "dashboards/listed.malloy",
+                     "dashboards/composite.malloy",
+                  ],
+                  queryableSources: "declared",
+               }),
+            });
+            await fetch(curatedUrl("?reload=true"));
+         }
       });
 
       it("404s the held-back dashboard rather than serving its manifest", async () => {
