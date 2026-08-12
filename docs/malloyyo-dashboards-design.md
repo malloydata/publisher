@@ -35,10 +35,9 @@ components) was built and then **cut**, and that cut is a real decision that sur
 Per-item detail is in [Phasing](#phasing).
 
 Paths, component names, and UI section labels describe the **end state** of the sequence. The rename
-this document was written ahead of has landed, so its Data Apps and Notebooks naming now matches
-`main`. The dashboard-specific names do not, per the table above: `dashboard.ts`, the `Dashboard`
-export, and the Dashboards section are still ahead of `main`. Written July 2026, revised against the
-implementation.
+this document was written ahead of has since landed, so its Data Apps and Notebooks naming is the
+tree's naming too. The dashboard-specific names are the ones still worth checking, and the table
+above says where to look. Written July 2026, revised against the implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
 and, once they land, `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or
