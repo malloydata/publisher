@@ -1740,8 +1740,9 @@ paths:
         the cached set. Either way the matching warning is computed at load, so
         after a `PATCH` it appears only once the package reloads.
 
-        Under `"declared"`, being listed does not by itself guarantee the
-        dashboard runs: the query boundary also checks the entry file's own
+        Where the boundary is active at all, which needs `explores` declared
+        AND `queryableSources` left at `"declared"`, being listed does not by
+        itself guarantee the dashboard runs: the query boundary also checks the entry file's own
         `export {}` closure, so a dashboard file that only imports other files
         and re-exports none of their sources is still served while every query
         against it is refused. That case is reported in the package's
@@ -1815,10 +1816,17 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: dashboardName
           in: path
-          description: The dashboard's slug (its filename basename)
+          description: >-
+            The dashboard's name: its filename basename. Conventionally letters,
+            digits, "-" and "_", and a package is warned when one of its
+            dashboards falls outside that. It is NOT constrained to it, because
+            the name comes from a filename rather than being chosen: a file such
+            as `dashboards/v1.2.malloy` is served, and its published `resource`
+            carries the name percent-encoded. Send it percent-encoded.
           required: true
           schema:
-            $ref: "#/components/schemas/IdentifierPattern"
+            type: string
+            minLength: 1
         - name: versionId
           in: query
           description: Version identifier for the package

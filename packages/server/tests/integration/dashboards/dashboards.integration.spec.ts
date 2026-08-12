@@ -1160,6 +1160,30 @@ describe("Dashboard discovery (E2E)", () => {
          expect(res.status).toBe(200);
       });
 
+      /**
+       * Out of the documented name pattern AND withheld by curation. The
+       * "is served" finding used to be pushed before the gate, so this one file
+       * carried two contradictory warnings and the confident one was wrong.
+       */
+      it("does not claim a withheld dashboard is served, even when its name is unconventional", async () => {
+         const body = (await (await fetch(curatedUrl(""))).json()) as {
+            warnings?: { model?: string; message?: string }[];
+         };
+         const mine = (body.warnings ?? []).filter((w) =>
+            (w.model ?? "").includes("w1.9"),
+         );
+         // Exactly one finding, and it is the withheld one.
+         expect(mine).toHaveLength(1);
+         expect(mine[0]?.message ?? "").toContain("It is not served.");
+         expect(mine[0]?.message ?? "").not.toContain("is served, but");
+
+         // And it really is absent from the listing.
+         const listed = (await (
+            await fetch(curatedUrl("/dashboards"))
+         ).json()) as DashboardItem[];
+         expect(listed.map((d) => d.name)).not.toContain("w1.9");
+      });
+
       it("reports the omission instead of leaving it silent", async () => {
          const res = await fetch(curatedUrl(""));
          const body = (await res.json()) as {

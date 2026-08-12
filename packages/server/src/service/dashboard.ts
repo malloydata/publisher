@@ -188,8 +188,13 @@ export function dashboardSlug(modelPath: string): string {
 }
 
 /**
- * Whether a slug can actually be served at a URL, matching the `dashboardName`
- * pattern `api-doc.yaml` declares for the path parameter.
+ * Whether a name matches the `dashboardName` pattern `api-doc.yaml` documents.
+ *
+ * This does NOT decide whether the dashboard is served. Everything is served;
+ * the name is percent-encoded into its URL and the route resolves. What this
+ * governs is whether a client GENERATED from the spec will accept the name, so
+ * it drives an advisory warning and nothing else. It was previously a gate, and
+ * as a gate it broke working dashboards.
  *
  * Nothing validated it, and the slug is derived from a filename rather than
  * chosen, so a file could produce one that does not round-trip:
@@ -207,7 +212,7 @@ export function dashboardSlug(modelPath: string): string {
  * filename. There is no traversal risk either way: the lookup is a `Map` and
  * never touches the filesystem.
  */
-export function isServableDashboardSlug(slug: string): boolean {
+export function matchesDocumentedDashboardName(slug: string): boolean {
    return /^[a-zA-Z0-9_-]+$/.test(slug);
 }
 

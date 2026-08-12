@@ -5,7 +5,7 @@ import {
    docCommentText,
    filterPublisherOwnedRenderLogs,
    isDashboardModelPath,
-   isServableDashboardSlug,
+   matchesDocumentedDashboardName,
    lintDashboard,
    lintDrillTargets,
    lintGivenTags,
@@ -870,17 +870,19 @@ describe("service/dashboard slug is servable", () => {
    // asserted here only to pin that the predicate itself is not fooled by it.
    it("rejects a slug that cannot round-trip through its own URL", () => {
       expect(
-         isServableDashboardSlug(dashboardSlug("dashboards/v1.2.malloy")),
+         matchesDocumentedDashboardName(
+            dashboardSlug("dashboards/v1.2.malloy"),
+         ),
       ).toBe(false);
-      expect(isServableDashboardSlug("has space")).toBe(false);
-      expect(isServableDashboardSlug("has/slash")).toBe(false);
-      expect(isServableDashboardSlug("")).toBe(false);
-      expect(isServableDashboardSlug("..")).toBe(false);
+      expect(matchesDocumentedDashboardName("has space")).toBe(false);
+      expect(matchesDocumentedDashboardName("has/slash")).toBe(false);
+      expect(matchesDocumentedDashboardName("")).toBe(false);
+      expect(matchesDocumentedDashboardName("..")).toBe(false);
    });
 
    it("accepts the names the path parameter declares", () => {
-      expect(isServableDashboardSlug("overview")).toBe(true);
-      expect(isServableDashboardSlug("q3-2026_v2")).toBe(true);
+      expect(matchesDocumentedDashboardName("overview")).toBe(true);
+      expect(matchesDocumentedDashboardName("q3-2026_v2")).toBe(true);
    });
 });
 

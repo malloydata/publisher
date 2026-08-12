@@ -64,7 +64,7 @@ import {
    DASHBOARDS_DIR,
    dashboardSlug,
    isDashboardModelPath,
-   isServableDashboardSlug,
+   matchesDocumentedDashboardName,
    lintDashboard,
    lintDrillTargets,
    lintGivenTags,
@@ -2170,25 +2170,11 @@ export class Package {
             };
          }
 
-         // A name outside the documented `dashboardName` pattern is SERVED, and
-         // only noted. Measured rather than assumed: the route is a plain
-         // Express param, which matches `v1.2` happily, and nothing validates
-         // the pattern at runtime, so `GET .../dashboards/v1.2` resolves. An
-         // earlier version of this withheld such a dashboard and told the
-         // author it "could not be addressed at a URL", which broke every
-         // working dashboard whose file happened to carry a version in its
-         // name. The pattern still matters to a client generated from the spec,
-         // so it is worth saying; it is not worth refusing to serve.
-         if (!isServableDashboardSlug(name)) {
-            unconventionalSlugs.push({ modelPath, name });
-         }
-
-         // The file IS a dashboard and CAN be addressed, so a drill naming it
-         // resolves. Recorded before the curation gate below but after the slug
-         // check above, and the order matters in both directions: a drill at a
-         // withheld dashboard is correct and must not be reported as naming
-         // something that does not exist, while a drill at a slug nothing can
-         // ever address is broken and must still be reported.
+         // The file IS a dashboard, so a drill naming it resolves. Recorded
+         // before the curation gate below on purpose: a drill pointing at a
+         // dashboard this package really has must not be reported as naming
+         // something that does not exist merely because curation withholds it.
+         // Every dashboard is addressable, so there is no second case here.
          dashboardSlugs.add(name);
 
          // Curation gate. Every other listing path in this class consults
@@ -2199,6 +2185,24 @@ export class Package {
          if (!this.isQueryableEntryPoint(modelPath)) {
             heldBack.push({ modelPath, name });
             continue;
+         }
+
+         // From here the dashboard IS served, which is where a finding may say
+         // so. Reported after the curation gate rather than before it: saying
+         // "is served" about a file the next branch withholds put two
+         // contradictory warnings on the same dashboard, and the confident one
+         // was the wrong one.
+         //
+         // A name outside the documented `dashboardName` pattern is served and
+         // only noted. Measured rather than assumed: the route is a plain
+         // Express param and nothing validates the pattern at runtime, so the
+         // encoded URL resolves. An earlier version withheld such a dashboard
+         // and told the author it "could not be addressed at a URL", which
+         // broke every working dashboard whose file carried a version in its
+         // name. The pattern still matters to a client generated from the
+         // spec, so it is worth saying; it is not worth refusing to serve.
+         if (!matchesDocumentedDashboardName(name)) {
+            unconventionalSlugs.push({ modelPath, name });
          }
 
          // Served, but possibly unusable for a second reason the file-level
