@@ -1049,11 +1049,15 @@ describe("Dashboard discovery (E2E)", () => {
             messages.filter((m) => m.includes("is not a dashboard in this")),
          ).toEqual([]);
          // But not silent either: the click still has nowhere to land.
-         expect(messages).toContainEqual(
-            expect.stringContaining(
+         const withheld = messages.filter((m) =>
+            m.includes(
                'targets "unlisted", which IS a dashboard in this package but is not served',
             ),
          );
+         // Exactly once. A drill is declared on a model dimension, so every
+         // file importing that source carries it; reporting per importer
+         // emitted this same finding four times.
+         expect(withheld).toHaveLength(1);
       });
 
       /**

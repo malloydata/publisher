@@ -2008,16 +2008,6 @@ export class Package {
    }
 
    /**
-    * Whether the query boundary restricts anything at all: `explores` declared
-    * AND `queryableSources` left at `"declared"`. Under `"all"` the boundary is
-    * inert and every compiled source stays directly queryable.
-    *
-    * Shared so a finding cannot assert a policy the package does not have.
-    * `Model.hasEmptyDiscoverySurface` is about the DISCOVERY surface and is
-    * indifferent to this mode, so a warning about queries being refused has to
-    * check the mode itself rather than lean on that predicate.
-    */
-   /**
     * A reusable form of {@link isQueryableEntryPoint} that resolves the explore
     * set once, for callers testing more than one path.
     */
@@ -2028,9 +2018,23 @@ export class Package {
          exploreSet ? exploreSet.has(modelPath) : true;
    }
 
+   /**
+    * Whether the query boundary restricts anything at all: `explores` declared
+    * AND `queryableSources` left at `"declared"`. Under `"all"` the boundary is
+    * inert and every compiled source stays directly queryable. An unrecognised
+    * `queryableSources` counts as `"declared"`, which is what the spec says.
+    *
+    * Shared so a finding cannot assert a policy the package does not have.
+    * `Model.hasEmptyDiscoverySurface` is about the DISCOVERY surface and is
+    * indifferent to this mode, so a warning about queries being refused has to
+    * check the mode itself rather than lean on that predicate.
+    */
    private queryBoundaryActive(): boolean {
       if (this.packageMetadata.queryableSources === "all") return false;
-      return this.exploreSet() !== null;
+      // `exploresDeclared` rather than an `exploreSet() !== null` comparison:
+      // the two coincide by construction, but this is the stated source of
+      // truth for the fact and it does not allocate a Set to answer it.
+      return this.exploresDeclared();
    }
 
    /**
@@ -2242,6 +2246,9 @@ export class Package {
       emptySurface: readonly { modelPath: string; name: string }[],
    ): Promise<ApiPackageWarning[]> {
       const warnings: ApiPackageWarning[] = [];
+      // Keyed on dimension + destination, so one drill is reported once for the
+      // package rather than once per file that imports its source.
+      const withheldDrills = new Map<string, ApiPackageWarning>();
       try {
          for (const modelPath of unservableSlugs) {
             warnings.push({
@@ -2272,17 +2279,24 @@ export class Package {
             // A drill AT a withheld dashboard still dead-ends: the dashboard is
             // real, so calling it "not a dashboard in this package" is false,
             // but the click 404s all the same. Say which of the two it is.
+            //
+            // Deduplicated on the dimension and destination for the same reason
+            // `lintDrillTargets` is: a drill is declared on a model dimension,
+            // so every file importing that source carries it, and reporting per
+            // importer emitted the identical finding four times in the test
+            // fixture alone.
             for (const file of allFacts.values()) {
                for (const drill of file.drills) {
                   if (!drill.to.includes(name)) continue;
-                  warnings.push({
-                     subject: `${drill.source}.${drill.dimension}`,
+                  const where = `${drill.source}.${drill.dimension}`;
+                  withheldDrills.set(`${where}|${name}`, {
+                     subject: where,
                      message:
-                        `# drill on ${drill.source}.${drill.dimension} ` +
-                        `targets "${name}", which IS a dashboard in this ` +
-                        `package but is not served (see the finding on ` +
-                        `"${modelPath}"), so the click has nowhere to land.`,
-                     severity: "error",
+                        `# drill on ${where} targets "${name}", which IS a ` +
+                        `dashboard in this package but is not served (see the ` +
+                        `finding on "${modelPath}"), so the click has nowhere ` +
+                        `to land.`,
+                     severity: "warn",
                   });
                }
             }
@@ -2317,6 +2331,9 @@ export class Package {
          // and they are scanned across every model rather than only the
          // dashboard files — a notebook cell drills from the same tag.
          const drillFacts = Array.from(allFacts.values());
+         for (const finding of withheldDrills.values()) {
+            warnings.push(finding);
+         }
          for (const finding of lintDrillTargets(drillFacts, knownSlugs)) {
             warnings.push(finding);
          }
