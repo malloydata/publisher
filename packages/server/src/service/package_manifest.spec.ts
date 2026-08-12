@@ -281,7 +281,7 @@ describe("service/package_manifest", () => {
       it("warns that an explicit explores naming index.malloy is now redundant", () => {
          const { warnings } = resolve(["index.malloy"], WITH_INDEX);
          expect(warnings).toHaveLength(1);
-         expect(warnings[0]).toContain("you can delete it");
+         expect(warnings[0]).toContain("no longer needed");
       });
 
       it("stays silent for a curated package that has no index.malloy", () => {
@@ -314,7 +314,7 @@ describe("service/package_manifest", () => {
          // And the normalized form is what the redundancy check compares, so a
          // "./"-prefixed entry is recognized as naming the convention file.
          expect(resolve(["./index.malloy"], WITH_INDEX).warnings[0]).toContain(
-            "you can delete it",
+            "no longer needed",
          );
       });
 
@@ -369,7 +369,33 @@ describe("service/package_manifest", () => {
       it("still says a lone index.malloy explores is deletable", () => {
          const { warnings } = resolve(["index.malloy"], WITH_INDEX);
          expect(warnings).toHaveLength(1);
-         expect(warnings[0]).toContain("you can delete it");
+         expect(warnings[0]).toContain("no longer needed");
+      });
+
+      it("warns that deleting a redundant explores also drops the boundary", () => {
+         // The boundary is on by DEFAULT for a declared surface, so keying the
+         // caveat on whether the author wrote a `queryableSources` key would
+         // miss exactly the author most likely to delete the key and silently
+         // reopen every hidden source.
+         const { warnings } = resolve(["index.malloy"], WITH_INDEX);
+         expect(warnings[0]).toContain("reopens every one of them to query");
+         expect(warnings[0]).toContain(
+            'whether or not you ever wrote a "queryableSources" key',
+         );
+      });
+
+      it("does not claim a boundary cost when queryableSources is all", () => {
+         // There is no boundary to lose, so the same caveat would be false.
+         const { warnings } = resolve(["index.malloy"], WITH_INDEX, "all");
+         expect(warnings[0]).not.toContain("reopens every one of them");
+         expect(warnings[0]).toContain("no query boundary is in force");
+      });
+
+      it("tells a disagreeing package what deleting the key would cost", () => {
+         const { warnings } = resolve(["orders.malloy"], WITH_INDEX);
+         expect(warnings[0]).toContain("ALSO drops the query boundary");
+         const all = resolve(["orders.malloy"], WITH_INDEX, "all");
+         expect(all.warnings[0]).not.toContain("ALSO drops the query boundary");
       });
 
       it("warns rather than silently curating when explores is not an array", () => {

@@ -2778,14 +2778,33 @@ components:
           items:
             type: string
           description: >-
-            Optional opt-in for curated discovery. When present, only these
+            The package's curated discovery surface. When non-empty, only these
             model file paths (relative to the package root) are listed via
             `listModels()`, and within-file discovery is filtered to each
-            model's `export {}` closure. When absent or empty, every model is
-            listed with its full source set (backward-compatible). Every other
-            .malloy file still compiles for import/join resolution but is
-            hidden from listings once `explores` is declared. Notebooks are
-            always listed regardless of this field.
+            model's `export {}` closure. Every other .malloy file still
+            compiles for import/join resolution but is hidden from listings.
+            Notebooks are always listed regardless of this field.
+
+
+            This value may be DERIVED rather than declared. A package whose
+            root holds an `index.malloy` and whose manifest declares no
+            `explores` is served as `["index.malloy"]` by convention, so a
+            response can carry a value the author never wrote. An explicit
+            empty array is honoured as a deliberate "do not curate" and
+            suppresses the convention; only a package with neither is
+            uncurated, listing every model with its full source set.
+
+
+            The derivation is not visible on the wire, and it matters for two
+            reasons. First, the query boundary (see `queryableSources`) is
+            enforced only for a surface the author DECLARED, so a response
+            showing `explores` plus `queryableSources` of `declared` does not
+            by itself mean unlisted sources are refused. Second, on a PATCH,
+            an `explores` identical to the value the server derived is treated
+            as a client echoing back what it read, so it neither becomes a
+            declaration nor is written to the manifest; the package then
+            reports a warning saying so. Send a different surface to declare
+            one, or edit publisher.json directly.
         exploresWarnings:
           type: array
           readOnly: true
@@ -2849,16 +2868,25 @@ components:
             - all
           description: >-
             Controls whether the discovery surface is also a query boundary.
-            `"declared"` (the default) makes queryable == discoverable: when
-            `explores` is declared, only `explores` model files — and within
-            them only the `export {}` closure — are valid top-level query
-            targets; every other source still compiles, imports, joins, and
-            extends but is not directly queryable (denied with 404). `"all"`
-            decouples them: `explores`/`export {}` gate discovery only and every
-            compiled source stays directly queryable. When `explores` is absent
-            there is no curated surface, so both modes are equivalent
-            (everything queryable). Invalid values fall back to `"declared"`.
-            Identity-based access is a separate concern — see `#(authorize)`.
+            `"declared"` (the default) makes queryable == discoverable: only
+            the `explores` model files, and within them only the `export {}`
+            closure, are valid top-level query targets; every other source
+            still compiles, imports, joins, and extends but is not directly
+            queryable (denied with 404). `"all"` decouples them:
+            `explores`/`export {}` gate discovery only and every compiled
+            source stays directly queryable. Invalid values fall back to
+            `"declared"`. Identity-based access is a separate concern, see
+            `#(authorize)`.
+
+
+            This field has effect ONLY alongside an `explores` the author
+            declared in publisher.json. It is inert both when there is no
+            curated surface at all and when the surface was derived from the
+            `index.malloy` convention (see `explores`), where every source
+            stays queryable by name whichever mode is set. That is deliberate,
+            because the denial is a 404 indistinguishable from "does not
+            exist", so enforcing it because a file of a given name appeared
+            would revoke query access with no actionable error.
         manifestLocation:
           type: ["string", "null"]
           description: |

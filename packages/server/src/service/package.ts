@@ -261,13 +261,6 @@ export class Package {
       this.applyQueryBoundaryToModels();
    }
 
-   /**
-    * Push the discovery-curation policy down onto each Model. Curation (file
-    * listing via `explores` and within-file `export {}` filtering) is enabled
-    * only when `explores` is declared in publisher.json — absent/empty
-    * `explores` preserves legacy listings. Re-derived on reload and metadata
-    * PATCH (the inputs can change there).
-    */
    /** True when the package has a non-empty discovery surface, from either
     *  source. Single source of truth for the curation/listing derivations so
     *  they can't drift out of sync. NOT the query-boundary predicate: see
@@ -301,6 +294,17 @@ export class Package {
       return explores && explores.length > 0 ? new Set(explores) : null;
    }
 
+   /**
+    * Push the discovery-curation policy down onto each Model. Curation (file
+    * listing plus within-file `export {}` filtering) is enabled whenever the
+    * package has a surface, from EITHER source: a declared `explores` or the
+    * `index.malloy` convention. Only a package with neither keeps the legacy
+    * uncurated listings. Re-derived on reload and metadata PATCH, since the
+    * inputs can change there.
+    *
+    * Note this is the listing axis only. Access is {@link boundaryDeclared},
+    * which counts the declared source alone.
+    */
    private applyDiscoveryPolicyToModels(): void {
       const curationEnabled = this.exploresDeclared();
       for (const model of this.models.values()) {

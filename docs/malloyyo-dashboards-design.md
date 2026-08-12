@@ -698,6 +698,14 @@ as a full snapshot rather than a patch, because the sandbox does not compile wit
     exports is exactly what is discoverable and queryable, matching Malloyyo's semantics. An
     explicit `explores` in `publisher.json` wins over the convention; if both are present and
     disagree, surface a load-time package warning rather than guessing.
+
+    > **Shipped, with one deliberate change.** The convention now defaults `explores`, but it does
+    > NOT touch `queryableSources`: a surface derived from `index.malloy` curates listings only,
+    > and every source stays queryable by name. Only an `explores` the author declared enforces the
+    > boundary. `queryableSources` already defaults to `"declared"`, so defaulting `explores` alone
+    > would have switched the boundary on, and its denial is a 404 indistinguishable from "does not
+    > exist", which would have revoked query access on existing packages with no config edit and no
+    > actionable error. See [discovery-and-access.md](discovery-and-access.md) for the shipped rule.
   - **No** `publisher.json` **required.** With the two conventions above, a bare Malloyyo repo
     (model files + `index.malloy` + `malloy-config.json` + `dashboards/`) needs no
     Publisher-specific files at all. Package name comes from the registration call as it does

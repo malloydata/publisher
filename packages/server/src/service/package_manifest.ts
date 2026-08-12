@@ -343,13 +343,20 @@ export function resolveExplores(input: {
       // is still listed. There is no disagreement to report and nothing hidden.
       if (hasIndexModel && declared.length > 0) {
          if (!declared.includes(INDEX_MODEL_NAME)) {
-            warnings.push(exploresDisagreesWithConvention(declared));
+            warnings.push(
+               exploresDisagreesWithConvention(
+                  declared,
+                  declaredQueryableSources,
+               ),
+            );
          } else if (declared.length === 1) {
             // Only a surface of EXACTLY index.malloy is what the convention
             // would produce, so only that one can be deleted for the same
             // result. Saying so for a multi-entry surface would be advice that
             // silently drops every other entry.
-            warnings.push(EXPLORES_REDUNDANT_WITH_CONVENTION);
+            warnings.push(
+               exploresRedundantWithConvention(declaredQueryableSources),
+            );
          }
       }
       return { explores: declared, fromConvention: false, warnings };
@@ -378,12 +385,35 @@ export function resolveExplores(input: {
    return { explores: [INDEX_MODEL_NAME], fromConvention: true, warnings };
 }
 
-const EXPLORES_REDUNDANT_WITH_CONVENTION =
-   `"explores" in publisher.json lists only "${INDEX_MODEL_NAME}", which is now ` +
-   `the default for any package that has one. The key still works and still ` +
-   `wins over the convention; you can delete it and get the same discovery ` +
-   `surface. Keep it if you also rely on "queryableSources": declaring ` +
-   `"explores" explicitly is what opts a package into the query boundary.`;
+/**
+ * Said when a declared `explores` is exactly what the convention would derive.
+ *
+ * Takes `queryableSources` because the interesting half is what DELETING the
+ * key costs, and that depends on whether the boundary is live. Keying the
+ * caveat on whether the author wrote a `queryableSources` key would be wrong:
+ * the boundary is on by default, so the author who never wrote one is exactly
+ * the author most likely to delete `explores` and silently reopen every hidden
+ * source to query.
+ */
+function exploresRedundantWithConvention(
+   declaredQueryableSources: unknown,
+): string {
+   const head =
+      `"explores" in publisher.json lists only "${INDEX_MODEL_NAME}", which is ` +
+      `now the default for any package that has one, so the key is no longer ` +
+      `needed to get this discovery surface. `;
+   return declaredQueryableSources === "all"
+      ? head +
+           `You have "queryableSources": "all", so no query boundary is in ` +
+           `force and deleting the key changes nothing. Both can go.`
+      : head +
+           `Before deleting it, note that it is ALSO what enforces the query ` +
+           `boundary here: "queryableSources" defaults to "declared", so ` +
+           `sources outside this surface are refused today, and deleting the ` +
+           `key reopens every one of them to query. That holds whether or not ` +
+           `you ever wrote a "queryableSources" key. Delete it only if you want ` +
+           `curated listings without a query boundary.`;
+}
 
 /**
  * Decide whether a package's surface is still convention-derived after a
@@ -492,19 +522,34 @@ function exploresMalformed(raw: unknown): string {
       `"explores" in publisher.json is not a list of model file paths (got ` +
       `${JSON.stringify(raw)}), so it was ignored. Write it as an array of ` +
       `strings, for example ["${INDEX_MODEL_NAME}"]. Until you do, this ` +
-      `package's discovery surface is whatever the ` +
-      `"${INDEX_MODEL_NAME}" convention decides, which is not what the key says.`
+      `package's discovery surface is whatever the "${INDEX_MODEL_NAME}" ` +
+      `convention decides, which is not what the key says. Note that fixing it ` +
+      `does more than restore the listing you meant: a declared "explores" also ` +
+      `turns on the query boundary (unless "queryableSources" is "all"), so ` +
+      `sources you leave out will start being refused rather than merely hidden.`
    );
 }
 
-function exploresDisagreesWithConvention(declared: string[]): string {
+function exploresDisagreesWithConvention(
+   declared: string[],
+   declaredQueryableSources: unknown,
+): string {
+   // Deleting the key is the tempting remedy and the dangerous one: it also
+   // drops the query boundary, which is on by default. Say so, unless the
+   // author already opted out of the boundary with "all".
+   const deleteCost =
+      declaredQueryableSources === "all"
+         ? `delete the key (you have "queryableSources": "all", so no query ` +
+           `boundary is in force and deleting changes only the listings)`
+         : `delete the key, which ALSO drops the query boundary this package ` +
+           `currently enforces and makes every source queryable again`;
    return (
       `This package has an "${INDEX_MODEL_NAME}" but its publisher.json "explores" ` +
       `does not list it (${JSON.stringify(declared)}). The explicit key wins, so ` +
       `"${INDEX_MODEL_NAME}" is NOT part of the discovery surface. If that is ` +
       `intended, nothing is broken and you can silence this by renaming the file. ` +
-      `If you meant it to be the package's entry point, add it to "explores" or ` +
-      `delete the key and let the convention pick it up.`
+      `If you meant it to be the package's entry point, add it to "explores", or ` +
+      `${deleteCost}.`
    );
 }
 
