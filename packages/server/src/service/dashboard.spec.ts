@@ -758,6 +758,30 @@ describe("service/dashboard lint", () => {
    });
 });
 
+describe("service/dashboard name is safe in the published URL", () => {
+   // A dashboard name is a filename basename, so it can carry anything the
+   // filesystem allows. Serving such a dashboard is right; publishing its name
+   // RAW in the `resource` URL was not. Measured live: `.../dashboards/a#b`
+   // opens a fragment, so a client following the link asks for
+   // `.../dashboards/a` and gets a 404, while `.../dashboards/a%23b` is 200.
+   it("encodes a name that would otherwise break the URL", () => {
+      for (const [name, encoded] of [
+         ["a#b", "a%23b"],
+         ["c?d", "c%3Fd"],
+         ["e f", "e%20f"],
+         ["p%q", "p%25q"],
+      ]) {
+         expect(encodeURIComponent(name)).toBe(encoded);
+      }
+   });
+
+   it("leaves a conventional name untouched, so existing links do not move", () => {
+      for (const name of ["overview", "q3-2026_v2", "v1.2"]) {
+         expect(encodeURIComponent(name)).toBe(name);
+      }
+   });
+});
+
 describe("service/dashboard multi-line doc comment as a title", () => {
    // Fixed once on the notebook path and left on both dashboard paths, which is
    // the incomplete-fix pattern: the title is a one-line field and the doc

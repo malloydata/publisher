@@ -699,8 +699,10 @@ describe("Dashboard discovery (E2E)", () => {
             const dashboards = (await res.json()) as DashboardItem[];
             // Unchanged, and above all no `_shared`.
             expect(dashboards.map((d) => d.name).sort()).toEqual([
+               "a#b",
                "broken",
                "overview",
+               "p%q",
                "v1.2",
             ]);
          } finally {
@@ -723,6 +725,52 @@ describe("Dashboard discovery (E2E)", () => {
          expect(res.status).toBe(200);
          expect((await res.json()) as { name?: string }).toMatchObject({
             name: "v1.2",
+         });
+      });
+
+      /**
+       * The published link must be FOLLOWABLE. A name is a filename basename,
+       * so it can carry a `#`, which opens a URL fragment: published raw,
+       * `.../dashboards/a#b` makes a client ask for `.../dashboards/a` and get
+       * a 404. Serving the dashboard was the right call; publishing its name
+       * unencoded was not, and the old code hid that by withholding it.
+       */
+      it("publishes a followable URL for a name that is hostile in one", async () => {
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/dashboards`,
+         );
+         const hash = ((await res.json()) as DashboardItem[]).find(
+            (d) => d.name === "a#b",
+         );
+         expect(hash?.resource).toContain("/dashboards/a%23b");
+         expect(hash?.resource).not.toContain("/dashboards/a#b");
+
+         // And following exactly what was published resolves.
+         const followed = await fetch(`${baseUrl}${hash?.resource ?? ""}`);
+         expect(followed.status).toBe(200);
+         expect((await followed.json()) as { name?: string }).toMatchObject({
+            name: "a#b",
+         });
+      });
+
+      /**
+       * A percent is a different and worse failure mode than a hash. Raw, the
+       * param cannot be decoded at all, so the response is 400 rather than a
+       * wrong-but-valid 404. This case is why encoding is the fix and "the
+       * route matches it" was too broad a conclusion to draw from one dot.
+       */
+      it("publishes a followable URL for a name containing a percent", async () => {
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/dashboards`,
+         );
+         const pct = ((await res.json()) as DashboardItem[]).find(
+            (d) => d.name === "p%q",
+         );
+         expect(pct?.resource).toContain("/dashboards/p%25q");
+         const followed = await fetch(`${baseUrl}${pct?.resource ?? ""}`);
+         expect(followed.status).toBe(200);
+         expect((await followed.json()) as { name?: string }).toMatchObject({
+            name: "p%q",
          });
       });
 
@@ -749,8 +797,10 @@ describe("Dashboard discovery (E2E)", () => {
          expect(res.status).toBe(200);
          const dashboards = (await res.json()) as DashboardItem[];
          expect(dashboards.map((d) => d.name).sort()).toEqual([
+            "a#b",
             "broken",
             "overview",
+            "p%q",
             "v1.2",
          ]);
       });

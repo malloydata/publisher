@@ -2455,8 +2455,22 @@ export class Package {
       };
    }
 
+   /**
+    * The dashboard's own URL.
+    *
+    * The NAME is percent-encoded; the environment and package names are not,
+    * because both are validated on the way in and cannot carry a character that
+    * matters here. The name is different: it is a filename basename, so it can
+    * carry anything a filesystem allows. Serving such a dashboard is right, and
+    * measured: the route matches and the encoded URL answers 200. Publishing
+    * the name RAW was not. `dashboards/a#b.malloy` published
+    * `.../dashboards/a#b`, where the `#` opens a fragment, so a client
+    * following the link asked for `.../dashboards/a` and got a 404; `?` did the
+    * same via a query string, and a space is not a legal URL character at all.
+    * Encoded, all three answer 200.
+    */
    private dashboardResource(name: string): string {
-      return `${API_PREFIX}/environments/${this.environmentName}/packages/${this.packageName}/dashboards/${name}`;
+      return `${API_PREFIX}/environments/${this.environmentName}/packages/${this.packageName}/dashboards/${encodeURIComponent(name)}`;
    }
 
    public async listNotebooks(): Promise<ApiNotebook[]> {

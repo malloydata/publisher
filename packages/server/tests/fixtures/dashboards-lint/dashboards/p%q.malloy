@@ -1,0 +1,10 @@
+// A name containing a percent sign. Published raw it is not merely a wrong
+// link: Express fails to decode the param and answers 400. Encoded as `p%25q`
+// it round-trips back to this exact name.
+import { orders } from '../orders.malloy'
+
+# artifact { title="Percent In Name" }
+query: percent_in_name is orders -> {
+   group_by: brand_name
+   aggregate: total_amount
+}
