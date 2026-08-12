@@ -46,6 +46,14 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
   [docs/authorize.md § Security model](docs/authorize.md#security-model) and
   [§ Known limitations](docs/authorize.md#known-limitations), and in
   [docs/row-level-access.md](docs/row-level-access.md).
+- A gate skipped for a request carrying `x-publisher-bypass-authorize: true` — the documented
+  data-management bypass ([docs/authorize.md § Authorize
+  bypass](docs/authorize.md#authorize-bypass-for-trusted-data-management-callers)). Publisher
+  bounds nobody who may send it; stripping it at the edge is the deployment's job
+  ([docs/authorize-bypass-deployment.md](docs/authorize-bypass-deployment.md)). A finding that
+  Publisher *honours* the header is working as documented. A finding that it honours one it should
+  not — on a notebook or `/compile` request, from a body field, or without counting and logging
+  it — is in scope below.
 - Broad reach for whoever can publish a package or `PATCH` a connection on a bare Publisher
   ([docs/query-metadata.md](docs/query-metadata.md), [docs/packages.md](docs/packages.md)).
 - The default `Content-Security-Policy: frame-ancestors *`, which `PUBLISHER_FRAME_ANCESTORS` exists
@@ -61,7 +69,10 @@ Anything that breaks a boundary Publisher does claim, including:
   **queryable == discoverable** boundary in
   [docs/discovery-and-access.md](docs/discovery-and-access.md).
 - An `#(authorize)` gate granting access its expression should deny for the givens actually sent,
-  including none.
+  including none — absent the documented bypass header above.
+- The bypass applying where it should not: honoured on a notebook cell or `/compile` request,
+  reachable from the request body rather than the header, surviving onto a subsequent request, or
+  skipping a gate without incrementing `publisher_authorize_bypass_total` and logging it.
 - Connection credentials or secrets leaking through an API response, log line, or error.
 - Escaping a package's static root — path traversal or symlink past the rejections in
   [docs/html-data-apps.md § Security model](docs/html-data-apps.md#security-model).
