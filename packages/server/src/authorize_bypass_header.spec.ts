@@ -103,15 +103,15 @@ describe("query route wiring", () => {
       const start = withoutComments.indexOf("queryController.getQuery(");
       expect(start).toBeGreaterThan(-1);
       // Balance parens from the opening one so nested calls don't end it early.
+      // Bounded by the string length: an unbalanced call must reach the throw
+      // below rather than run off the end reading undefined forever.
+      const open = withoutComments.indexOf("(", start);
       let depth = 0;
-      for (let i = withoutComments.indexOf("(", start); i > 0; i++) {
+      for (let i = open; i < withoutComments.length; i++) {
          if (withoutComments[i] === "(") depth++;
          if (withoutComments[i] === ")") depth--;
          if (depth === 0) {
-            return withoutComments.slice(
-               withoutComments.indexOf("(", start) + 1,
-               i,
-            );
+            return withoutComments.slice(open + 1, i);
          }
       }
       throw new Error("unbalanced getQuery( call in server.ts");
