@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 // Stub the missing optional dependency so db_utils.ts can be imported
 mock.module("@azure/identity", () => ({
@@ -20,6 +20,8 @@ mock.module("@google-cloud/bigquery", () => ({
 }));
 
 import { Connection } from "@malloydata/malloy";
+import { BadRequestError } from "../errors";
+import { logger } from "../logger";
 import { normalizeQueryArray } from "../query_param_utils";
 import {
    extractErrorDataFromError,
@@ -580,7 +582,7 @@ describe("getSchemasForConnection", () => {
       });
    });
 
-   describe("snowflake", () => {
+   describe("snowflake - database-less account listing", () => {
       function snowflakeConn(
          database?: string,
          schema?: string,
@@ -636,12 +638,105 @@ describe("getSchemasForConnection", () => {
             m.conn,
          );
 
-         expect(m.lastSQL).toBe("SHOW SCHEMAS IN ACCOUNT");
+         // The LIMIT is stated rather than left to the server's implicit
+         // default, so that landing on the cap is detectable.
+         expect(m.lastSQL).toBe("SHOW SCHEMAS IN ACCOUNT LIMIT 10000");
          expect(schemas.map((s) => s.name)).toEqual([
             "DB_A.SALES",
             "DB_B.PUBLIC",
          ]);
          expect(schemas.every((s) => s.isHidden === false)).toBe(true);
+      });
+
+      it("warns that the schema list is incomplete when SHOW hits its row cap", async () => {
+         // Passing the LIMIT trades Snowflake's above-10k error for a capped
+         // result, so truncation becomes possible where it previously was not.
+         // Landing on the cap is the only evidence available that schemas are
+         // missing, so silence here would present a partial list as complete.
+         const rows = Array.from({ length: 10_000 }, (_unused, i) => ({
+            database_name: "DB_A",
+            name: `SCHEMA_${i}`,
+            owner: "SYSADMIN",
+         }));
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("hit the SHOW row limit"),
+               ),
+            ).toBe(true);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("does not warn when the schema list is below the SHOW row cap", async () => {
+         const rows = [
+            { database_name: "DB_A", name: "PUBLIC", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("hit the SHOW row limit"),
+               ),
+            ).toBe(false);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("surfaces an unusable database name as a bad request, not an internal error", async () => {
+         // A rejected identifier is deterministically invalid, so classifying it
+         // as an internal fault tells the caller to retry a value that can never
+         // succeed. Matches the guard in getSchemasForTrino / Databricks.
+         const m = mockConnection([]);
+         await expect(
+            getSchemasForConnection(
+               snowflakeConn("bad-name", undefined),
+               m.conn,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+
+      it("warns rather than silently returning nothing when no row parses", async () => {
+         // A SHOW output whose columns we no longer recognise returns rows and
+         // yields no schemas, which is indistinguishable from an account with no
+         // schemas unless it is reported. This is the collapsed-signal case: the
+         // empty result carries evidence, the silent one does not.
+         const rows = [
+            { unexpected_column: "DB_A", another: "PUBLIC" },
+            { unexpected_column: "DB_B", another: "SALES" },
+         ];
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            const schemas = await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            expect(schemas).toHaveLength(0);
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("missing a database or schema name"),
+               ),
+            ).toBe(true);
+         } finally {
+            warnSpy.mockRestore();
+         }
       });
 
       it("ignores a configured schema when no database is set", async () => {

@@ -4141,25 +4141,30 @@ components:
           type: string
           description: Snowflake username for authentication
         password:
-          type: string
+          type: ["string", "null"]
           description: Snowflake password for authentication
         privateKey:
           type: string
           description: Snowflake private key for authentication
         privateKeyPass:
-          type: string
+          type: ["string", "null"]
           description: Passphrase for the Snowflake private key
         warehouse:
           type: string
           description: Snowflake warehouse name
         database:
-          type: string
-          description: Snowflake database name
+          type: ["string", "null"]
+          description:
+            Snowflake database name. Omitted or null connects with no current
+            database, so names must be fully qualified as
+            DATABASE.SCHEMA.TABLE and schema discovery spans the account.
         schema:
-          type: string
-          description: Snowflake schema name
+          type: ["string", "null"]
+          description:
+            Snowflake schema name. Sets the session default schema; it does not
+            restrict which schemas are discoverable.
         role:
-          type: string
+          type: ["string", "null"]
           description: Snowflake role name
         responseTimeoutMilliseconds:
           type: integer

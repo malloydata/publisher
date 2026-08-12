@@ -302,7 +302,9 @@ async function listSnowflakeSchemasInDatabase(
    connection: ApiConnection,
    malloyConnection: Connection,
    database: string,
-   schema: string | undefined,
+   // `null` as well as `undefined`: the API contract declares the optional
+   // Snowflake fields nullable, so an omitted schema arrives as either.
+   schema: string | null | undefined,
 ): Promise<SnowflakeSchemaRow[]> {
    const filters = [
       `CATALOG_NAME = '${sqlLiteral(database, connection.type)}'`,
@@ -332,6 +334,34 @@ async function listSnowflakeSchemasInDatabase(
 }
 
 /**
+ * Snowflake's maximum for the `LIMIT` clause of a SHOW command.
+ *
+ * Stated explicitly rather than omitted, because the two behaviors differ and
+ * only one of them is recoverable. Per Snowflake's SHOW SCHEMAS documentation,
+ * omitting `LIMIT` makes the command ERROR when the result set exceeds ten
+ * thousand rows, which fails the whole listing and returns no schemas at all.
+ * Passing the limit instead caps the result, so a large account still gets a
+ * usable (if partial) list rather than a 500.
+ *
+ * The cap in {@link runIntrospectionSQL} cannot substitute for this. That one is
+ * a driver-side `RunSQLOptions.rowLimit`, which the Snowflake driver applies by
+ * slicing the array it already fetched, so it never reaches the server and never
+ * changes what SHOW itself decides to return or reject.
+ *
+ * Trading the error for a cap makes truncation possible, so the caller warns
+ * when a result lands on the limit: a silently partial schema list is
+ * indistinguishable from a complete one, and a table that exists would simply
+ * never appear.
+ *
+ * 10,000 is Snowflake's own ceiling, not a number chosen here -- `LIMIT 10001`
+ * is rejected -- so this cannot be raised to page further. An account above it
+ * needs a different instrument: SHOW per database, the `FROM '<name>'` cursor
+ * sub-clause, or SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA with its elevated grants and
+ * ~2h lag.
+ */
+const SNOWFLAKE_SHOW_ROW_LIMIT = 10_000;
+
+/**
  * Every role-visible schema in the account, for a connection with no configured
  * database.
  *
@@ -348,29 +378,52 @@ async function listSnowflakeSchemasInDatabase(
 async function listSnowflakeSchemasInAccount(
    malloyConnection: Connection,
 ): Promise<SnowflakeSchemaRow[]> {
+   // The row cap in runIntrospectionSQL cannot cover this: it is passed to the
+   // driver as a RunSQLOptions.rowLimit, which the Snowflake driver applies by
+   // slicing the returned array, so it never reaches the server and never
+   // constrains what SHOW itself decides to return.
    const result = await runIntrospectionSQL(
       malloyConnection,
-      "SHOW SCHEMAS IN ACCOUNT",
+      `SHOW SCHEMAS IN ACCOUNT LIMIT ${SNOWFLAKE_SHOW_ROW_LIMIT}`,
    );
-   return (
-      standardizeRunSQLResult(result)
-         .map((row: unknown) => {
-            const r = row as Record<string, unknown>;
-            return {
-               catalogName: String(r.database_name ?? r.DATABASE_NAME ?? ""),
-               schemaName: String(r.name ?? r.NAME ?? ""),
-               owner: String(r.owner ?? r.OWNER ?? ""),
-            };
-         })
-         // A row missing either half cannot form a usable DATABASE.SCHEMA name, and
-         // listTablesForSnowflake would mis-parse it. Drop it rather than emit a
-         // name that fails later at the point of use.
-         .filter((r) => r.catalogName && r.schemaName)
-         .sort(
-            (a, b) =>
-               a.catalogName.localeCompare(b.catalogName) ||
-               a.schemaName.localeCompare(b.schemaName),
-         )
+   const returnedRows = standardizeRunSQLResult(result);
+   if (returnedRows.length >= SNOWFLAKE_SHOW_ROW_LIMIT) {
+      logger.warn(
+         "Snowflake account-wide schema listing hit the SHOW row limit; the schema list is incomplete and some tables will not be discoverable",
+         {
+            rowLimit: SNOWFLAKE_SHOW_ROW_LIMIT,
+            returnedRows: returnedRows.length,
+         },
+      );
+   }
+   const parsed = returnedRows.map((row: unknown) => {
+      const r = row as Record<string, unknown>;
+      return {
+         catalogName: String(r.database_name ?? r.DATABASE_NAME ?? ""),
+         schemaName: String(r.name ?? r.NAME ?? ""),
+         owner: String(r.owner ?? r.OWNER ?? ""),
+      };
+   });
+   // A row missing either half cannot form a usable DATABASE.SCHEMA name, and
+   // listTablesForSnowflake would mis-parse it. Drop it rather than emit a name
+   // that fails later at the point of use.
+   const usable = parsed.filter((r) => r.catalogName && r.schemaName);
+   if (usable.length < parsed.length) {
+      // Dropping silently would collapse two very different situations into the
+      // same empty list: an account with no schemas, and a SHOW output whose
+      // columns we no longer recognise (a renamed column, or a role that cannot
+      // see them). The second returns rows and still yields nothing, so without
+      // this the endpoint reports "no schemas" for what is really a parse or
+      // permissions failure.
+      logger.warn(
+         "Dropped Snowflake schema rows missing a database or schema name; the schema list is incomplete",
+         { dropped: parsed.length - usable.length, returned: parsed.length },
+      );
+   }
+   return usable.sort(
+      (a, b) =>
+         a.catalogName.localeCompare(b.catalogName) ||
+         a.schemaName.localeCompare(b.schemaName),
    );
 }
 
@@ -427,6 +480,12 @@ async function getSchemasForSnowflake(
             Boolean(database) && Boolean(schema) && schemaName === schema,
       }));
    } catch (error) {
+      // A rejected database name is the config's to fix, not an internal fault.
+      // Flattened into a generic Error it classifies as "unexpected internal
+      // error, retry later", so a caller retries a deterministically-invalid
+      // value forever. Matches getSchemasForTrino, getSchemasForDatabricks and
+      // listTablesForSnowflake, which guard the same way for the same reason.
+      if (error instanceof BadRequestError) throw error;
       logger.error(
          `Error getting schemas for Snowflake connection ${connection.name}`,
          { error },

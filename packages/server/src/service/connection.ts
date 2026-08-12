@@ -1536,12 +1536,14 @@ function entryToDuckDBOptions(
  * line -- while the same model compiles cleanly through /compile, which runs on
  * the main thread and never takes a digest.
  */
-function removeUndefined<T extends object>(value: T): Partial<T> {
+function removeUndefined<T extends object>(
+   value: T,
+): { [K in keyof T]?: Exclude<T[K], null> } {
    return Object.fromEntries(
       Object.entries(value).filter(
          ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
       ),
-   ) as Partial<T>;
+   ) as { [K in keyof T]?: Exclude<T[K], null> };
 }
 
 function buildSnowflakePrivateKeyConnection(
