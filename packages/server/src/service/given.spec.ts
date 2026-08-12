@@ -167,9 +167,32 @@ describe("readGivenControlSpec", () => {
       // The blast radius is the whole process, not the offending model: once
       // Object.prototype is polluted every later parse throws, so one tenant's
       // tag would take out tag parsing for every package on a shared worker.
+      // Watch every object the parser can reach, not just Object.prototype, and
+      // diff the names rather than looking for two we happen to expect. Watching
+      // one object is what let `constructor { k=v }` write onto the global
+      // `Object` unseen, and hardcoding key names is the same error one level
+      // down.
+      const targets: object[] = [Object.prototype];
+      for (const key of Object.getOwnPropertyNames(Object.prototype)) {
+         const descriptor = Object.getOwnPropertyDescriptor(
+            Object.prototype,
+            key,
+         );
+         const value =
+            descriptor && "value" in descriptor ? descriptor.value : undefined;
+         if (
+            (typeof value === "object" || typeof value === "function") &&
+            value !== null
+         ) {
+            targets.push(value as object);
+         }
+      }
+      const baselines = targets.map((t) => Object.getOwnPropertyNames(t));
       const polluted = () =>
-         Object.getOwnPropertyNames(Object.prototype).some((key) =>
-            ["properties", "location"].includes(key),
+         targets.some((t, i) =>
+            Object.getOwnPropertyNames(t).some(
+               (k) => !baselines[i].includes(k),
+            ),
          );
       expect(polluted()).toBe(false);
 
@@ -189,6 +212,13 @@ describe("readGivenControlSpec", () => {
          "# `__prot\\o__`=x",
          "# suggest { `__prot\\o__` { a=b } }",
          "# `\\u005f\\u005fproto__` { a=b }",
+         // The prototype CHAIN, not just Object.prototype: `constructor` resolves
+         // to the global `Object` and `toString` to the built-in method object,
+         // and writes there accumulate for the life of the process.
+         `# label="ok" constructor { tenant_key="payload" }`,
+         `# toString=x`,
+         `# valueOf { a=b }`,
+         `# hasOwnProperty=y`,
       ]) {
          expect(() => readGivenControlSpec([hostile])).not.toThrow();
          expect(readGivenControlSpec([hostile])).toEqual({});

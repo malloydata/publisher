@@ -86,6 +86,36 @@ export function hasEnvReference(annotation: string): boolean {
 }
 
 /**
+ * Every object the tag parser can be tricked into writing into.
+ *
+ * Computed once from the runtime rather than listed by hand, because listing by
+ * hand is what went wrong twice. The parser resolves a property path with
+ * `key in properties`, and `in` walks the prototype chain, so a MOTLY key of
+ * `__proto__` reaches `Object.prototype` while `constructor` reaches the global
+ * `Object` and `toString` reaches the built-in method object. The reachable set
+ * is therefore exactly `Object.prototype` plus the value of each of its own
+ * properties, which is what this derives. Twelve objects today, and it stays
+ * correct if the runtime grows another.
+ */
+const POLLUTION_TARGETS: readonly object[] = (() => {
+   const seen = new Set<object>();
+   const add = (value: unknown): void => {
+      if (
+         (typeof value === "object" || typeof value === "function") &&
+         value !== null
+      ) {
+         seen.add(value as object);
+      }
+   };
+   add(Object.prototype);
+   for (const key of Object.getOwnPropertyNames(Object.prototype)) {
+      const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, key);
+      if (descriptor && "value" in descriptor) add(descriptor.value);
+   }
+   return [...seen];
+})();
+
+/**
  * Message used when an annotation cannot be parsed without collateral damage.
  * Surfaced through {@link motlyParseErrors} so the reader a later slice builds
  * has something to report rather than a silent empty tag.
@@ -93,52 +123,60 @@ export function hasEnvReference(annotation: string): boolean {
 const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
 
 /**
- * `parseAnnotation`, with any damage it does to `Object.prototype` undone.
+ * `parseAnnotation`, with any damage it does to the shared prototypes undone.
  *
  * The tag parser writes tag properties into a plain object, so a MOTLY property
- * named `__proto__` lands on the prototype instead of in the bag. Two shapes,
- * both reachable from a given's own tags: `# __proto__ { a=b }` adds `location`
- * and `properties` and then throws `RangeError`, after which every later parse
- * throws as well, and `# __proto__=x` adds `eq` and `location` silently, parsing
- * clean with an empty log. Left alone on a shared worker, the first is one
- * tenant's annotation disabling tag parsing for every package on the pod, and the
- * second corrupts `Object.prototype` for all code in the process, so an ordinary
- * `if (obj.location)` starts answering true.
+ * whose name resolves along that object's prototype chain lands on a shared
+ * global instead of in the bag. `# __proto__ { a=b }` puts `location` and
+ * `properties` on `Object.prototype` and then throws `RangeError`, after which
+ * every later parse throws too; `# __proto__=x` does the same silently with an
+ * empty log; and `# constructor { k=v }` writes tenant data onto the global
+ * `Object`, which accumulates without bound and which watching `Object.prototype`
+ * alone never sees.
  *
- * **This deliberately does NOT try to recognise the hostile input.** An earlier
- * version of this guard refused any annotation containing the substring
- * `__proto__`, and that was defeated in review: MOTLY decodes escapes inside a
- * backtick-quoted identifier, so `` # `__prot\o__` { a=b } `` spells the same
- * property with no such substring anywhere in the text. Any denylist of spellings
- * invites that, and it is also the wrong shape for the upstream fix.
+ * **This deliberately does not try to recognise the hostile input.** An earlier
+ * version refused any annotation containing the substring `__proto__` and was
+ * defeated in review, because MOTLY decodes escapes inside a backtick-quoted
+ * identifier, so `` # `__prot\o__` { a=b } `` spells the same property with no
+ * such substring. Any denylist of spellings invites that.
  *
- * So the effect is observed instead of the cause. `Object.prototype` is snapshotted,
- * the parse runs, and any own property it gained is deleted, which measurably
- * restores both the prototype and later parses. That is sound whatever the
- * spelling, because it does not depend on predicting one. Safe to do because
- * `parseAnnotation` is synchronous, so nothing else can run in between and the
+ * So the effect is observed instead. Every object in {@link POLLUTION_TARGETS} is
+ * snapshotted, the parse runs, and any own property gained is deleted; the
+ * annotation is then reported unparseable, since its properties are the ones that
+ * went astray. Deleting measurably restores both the prototypes and later parses.
+ * Safe because `parseAnnotation` is synchronous, so nothing interleaves and the
  * only keys removed are the ones this call added.
  *
- * An annotation that trips it is reported as unparseable rather than returned,
- * since its properties are exactly the ones that went astray.
- *
  * A repair, not a fix. The fix is upstream, where that bag wants a `Map` or an
- * `Object.create(null)`; this keeps the defect harmless on the one path this
- * module opens, and should be deleted once that lands.
+ * `Object.create(null)`, and this should be deleted once that lands.
  */
 function parseGuarded(texts: readonly string[]): {
    tag: Tag | undefined;
    messages: string[];
 } {
-   const before = Object.getOwnPropertyNames(Object.prototype);
+   const before = POLLUTION_TARGETS.map((target) =>
+      Object.getOwnPropertyNames(target),
+   );
    const undoPollution = (): boolean => {
-      const gained = Object.getOwnPropertyNames(Object.prototype).filter(
-         (key) => !before.includes(key),
-      );
-      for (const key of gained) {
-         delete (Object.prototype as unknown as Record<string, unknown>)[key];
-      }
-      return gained.length > 0;
+      let polluted = false;
+      POLLUTION_TARGETS.forEach((target, index) => {
+         for (const key of Object.getOwnPropertyNames(target)) {
+            if (before[index].includes(key)) continue;
+            polluted = true;
+            // Per-key try, because the repair itself must not be able to throw.
+            // Modules are strict, so `delete` on a non-configurable property
+            // raises a TypeError, and this also runs inside the catch below,
+            // where a throw would escape and fail the whole package load: the
+            // outcome the guard exists to prevent.
+            try {
+               delete (target as Record<string, unknown>)[key];
+            } catch {
+               // Left in place. Reporting the annotation unparseable is still
+               // right, and is what the flag below causes.
+            }
+         }
+      });
+      return polluted;
    };
    try {
       const result = parseAnnotation([...texts]);
