@@ -84,6 +84,8 @@ export class QueryController {
             rowLimit,
             rowLimitSource,
             queryCorrelationId,
+            servedFrom,
+            executionTimeMs,
          } = await runWithQueryTimeout(
             (abortSignal) =>
                model.getQueryResults(
@@ -160,6 +162,13 @@ export class QueryController {
             // so cannot reproduce the MCP envelope's _limit_hit.
             queryRowLimitSource: rowLimitSource,
             queryCorrelationId,
+            // How the answer was produced, and how long producing it took. A
+            // storage-served answer is byte-identical to a live one, so without
+            // `servedFrom` a caller cannot tell that materialization did anything
+            // — and cannot show a user which of their sources is being served
+            // from the managed store.
+            servedFrom,
+            executionTimeMs,
          } as ApiQuery;
       }
    }

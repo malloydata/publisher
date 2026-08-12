@@ -3645,6 +3645,43 @@ components:
             Which of the two queryRowLimit came from. Only server_default means
             rows were probably left behind; a deliberate limit or top returning
             exactly that many rows is a complete answer.
+        servedFrom:
+          type: ["string", "null"]
+          enum: [storage, live_fallback, null]
+          description: >-
+            How this answer was produced, when the query reached the storage
+            routing decision at all.
+
+            `storage` — served from a materialized table in a `storage=`
+            destination, via the virtual-source transform. The source's own
+            warehouse was not queried.
+
+            `live_fallback` — the query DID route to storage and the store then
+            failed underneath it, and the source's freshness fallback allowed it
+            to degrade to the live warehouse. **The rows are correct and the
+            request succeeded**, which is why this needs its own value: it is
+            indistinguishable from a storage hit at the call site, and treating it
+            as one would report a healthy hit rate for a broken store.
+
+            Null when the query never had a storage binding to consider — every
+            query on a deployment with no `storage=` sources, which is the default.
+
+            A storage-served result is byte-identical to a live one by design, so
+            this field is the only way a caller can tell that materialization did
+            anything, or show a user which of their sources it applies to.
+        executionTimeMs:
+          type: integer
+          description: >-
+            Wall-clock milliseconds spent executing the query, measured around
+            execution only.
+
+            Deliberately narrower than the HTTP round trip: it excludes
+            serialization and transport, so it is comparable against the
+            `malloy_model_query_duration` histogram and against the same query run
+            against a different connection — and it will read lower than a
+            caller's own stopwatch. Use it to attribute ONE query, which an
+            aggregate histogram cannot do; use the histogram for rates and
+            percentiles.
 
     LogMessage:
       type: object

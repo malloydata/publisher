@@ -1190,6 +1190,130 @@ describe("service/model", () => {
          expect(result.queryCorrelationId).toBe("corr-1");
       });
 
+      it("returns servedFrom and an execution time to the caller", async () => {
+         // A storage-served answer is byte-identical to a live one, so without
+         // these two a caller cannot tell that materialization did anything.
+         // `live_fallback` specifically must reach the caller: it is a SUCCESS
+         // answered by the warehouse, indistinguishable from a hit at the call
+         // site, and a UI that showed it as "from storage" would be lying.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
+
+         expect(result.servedFrom).toBe("live_fallback");
+         expect(result.executionTimeMs).toBeGreaterThanOrEqual(0);
+         expect(Number.isInteger(result.executionTimeMs)).toBe(true);
+      });
+
+      it("reports servedFrom null when the query never routed", async () => {
+         // The default for every deployment with no storage sources. Null rather
+         // than a made-up "live", because "this query had no storage binding to
+         // consider" and "storage was considered and declined" are different
+         // facts and only the second is worth showing anyone.
+         const model = new Model(
+            packageName,
+            mockModelPath,
+            {},
+            "model",
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (() => {
+               const runnable = {
+                  getPreparedResult: sinon.stub().resolves({
+                     resultExplore: { limit: 0 },
+                     connectionName: "pg",
+                  }),
+                  run: sinon.stub().resolves({
+                     _queryResult: { data: { rawData: [] } },
+                     totalRows: 0,
+                     data: { value: [] },
+                     connectionName: "pg",
+                  }),
+               };
+               return {
+                  loadQuery: sinon.stub().returns(runnable),
+                  loadRestrictedQuery: sinon.stub().returns(runnable),
+               };
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            })() as any,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            { contents: {}, exports: [], queryList: [] } as any,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+         );
+         sinon
+            .stub(API.util, "wrapResult")
+            .returns({ rows: [] } as unknown as ReturnType<
+               typeof API.util.wrapResult
+            >);
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+         );
+
+         expect(result.servedFrom).toBeNull();
+      });
+
+      it("keeps unbounded values off the query histogram's labels", async () => {
+         // The query TEXT and the returned ROW COUNT are both unbounded label
+         // values, and a histogram label multiplies by the bucket count — either
+         // one grows the metric for as long as the process serves traffic. They
+         // belong on the request log, not here. This pins the exclusion, because
+         // re-adding one is a one-line change that looks harmless.
+         const { model, recordStub } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+
+         for (const attrs of recordStub
+            .getCalls()
+            .map((c) => c.args[1] as Record<string, unknown>)) {
+            expect(attrs["malloy.model.query.query"]).toBeUndefined();
+            expect(attrs["malloy.model.query.rows_total"]).toBeUndefined();
+         }
+      });
+
+      it("labels the query histogram with the environment and package", async () => {
+         // Without these the only identity on the metric is a bare model path,
+         // which is neither unique across packages nor able to answer "whose
+         // queries are being served from storage".
+         const { model, recordStub } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { environment: "acme___prod" },
+         );
+
+         const success = recordStub
+            .getCalls()
+            .map((c) => c.args[1] as Record<string, string>)
+            .find((a) => a["malloy.model.query.status"] === "success");
+         expect(success?.["malloy.environment"]).toBe("acme___prod");
+         expect(success?.["malloy.package"]).toBe(packageName);
+      });
+
       it("does not record a live-served answer as a storage hit", async () => {
          // The hit rate is the tier's headline KPI; counting a fallback as a hit
          // makes it RISE while the tier is broken.

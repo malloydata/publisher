@@ -165,6 +165,16 @@ const MALLOY_VERSION = (
 ).version;
 
 export type ModelType = "model" | "notebook";
+
+/**
+ * How a query's answer was ultimately produced, once it reached the storage
+ * routing decision at all. `storage` = served from the materialized table via
+ * the virtual-source transform. `live_fallback` = it routed, then a run-time
+ * store failure degraded it to the live warehouse — a success the caller cannot
+ * distinguish from a storage hit, which is exactly why it is reported
+ * separately. Absent means the query never had a storage binding to consider.
+ */
+export type ServedFrom = "storage" | "live_fallback";
 type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 /** One reachable authorize gate found by {@link Model.collectEntryPointGates}. */
@@ -2346,6 +2356,19 @@ export class Model {
        * metadata was attached.
        */
       queryCorrelationId: string | null;
+      /**
+       * How the answer was produced once the query reached the storage routing
+       * decision; null when it never had a storage binding to consider. See
+       * {@link ServedFrom} — `live_fallback` is a SUCCESS answered by the live
+       * warehouse, so a caller must not read it as a storage hit.
+       */
+      servedFrom: ServedFrom | null;
+      /**
+       * Wall-clock milliseconds around execution only — no serialization, no
+       * transport. Comparable against the query histogram; lower than what a
+       * caller's own stopwatch reads.
+       */
+      executionTimeMs: number;
    }> {
       const startTime = performance.now();
       if (this.compilationError) {
@@ -2379,7 +2402,7 @@ export class Model {
       // "live_fallback" when it routed but a run-time store failure degraded it
       // to live — which must NOT count as a storage hit, since the hit rate is
       // the tier's headline KPI and would otherwise rise while the tier is down.
-      let servedFrom: "storage" | "live_fallback" | undefined;
+      let servedFrom: ServedFrom | undefined;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
 
@@ -2480,13 +2503,15 @@ export class Model {
          } else {
             const endTime = performance.now();
             const executionTime = endTime - startTime;
-            this.queryExecutionHistogram.record(executionTime, {
-               "malloy.model.path": this.modelPath,
-               "malloy.model.query.name": queryName,
-               "malloy.model.query.source": sourceName,
-               "malloy.model.query.query": query,
-               "malloy.model.query.status": "error",
-            });
+            this.queryExecutionHistogram.record(
+               executionTime,
+               this.queryMetricAttributes({
+                  environment: queryMetadataInput?.environment,
+                  queryName,
+                  sourceName,
+                  status: "error",
+               }),
+            );
             throw new BadRequestError(
                "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
             );
@@ -2761,18 +2786,16 @@ export class Model {
             // Record error metrics
             const errorEndTime = performance.now();
             const errorExecutionTime = errorEndTime - startTime;
-            this.queryExecutionHistogram.record(errorExecutionTime, {
-               "malloy.model.path": this.modelPath,
-               "malloy.model.query.name": queryName,
-               "malloy.model.query.source": sourceName,
-               "malloy.model.query.query": query,
-               "malloy.model.query.status": "error",
-               // Ships dark: only tag queries that routed. A live/off query gets
-               // no new attribute, so an off deployment's histogram is unchanged.
-               ...(servedFrom
-                  ? { "malloy.model.query.served_from": servedFrom }
-                  : {}),
-            });
+            this.queryExecutionHistogram.record(
+               errorExecutionTime,
+               this.queryMetricAttributes({
+                  environment: queryMetadataInput?.environment,
+                  queryName,
+                  sourceName,
+                  status: "error",
+                  servedFrom,
+               }),
+            );
 
             // Bad client-supplied givens (unknown name, wrong-typed value, an
             // operator-finalized override, ...) all surface as a Malloy
@@ -2922,22 +2945,18 @@ export class Model {
          responseShape === "compact" ? bigIntReplacer : undefined,
       );
       assertWithinModelByteLimit(serializedResult, maxBytes, "model_query");
-      this.queryExecutionHistogram.record(executionTime, {
-         "malloy.model.path": this.modelPath,
-         "malloy.model.query.name": queryName,
-         "malloy.model.query.source": sourceName,
-         "malloy.model.query.query": query,
-         "malloy.model.query.rows_limit": rowLimit,
-         "malloy.model.query.rows_total": queryResults.totalRows,
-         "malloy.model.query.connection": queryResults.connectionName,
-         "malloy.model.query.status": "success",
-         // Ships dark: only tag queries that routed (see the error path).
-         // "live_fallback" here is a SUCCESS answered by the live warehouse, so
-         // it must not inflate the storage hit rate.
-         ...(servedFrom
-            ? { "malloy.model.query.served_from": servedFrom }
-            : {}),
-      });
+      this.queryExecutionHistogram.record(
+         executionTime,
+         this.queryMetricAttributes({
+            environment: queryMetadataInput?.environment,
+            queryName,
+            sourceName,
+            status: "success",
+            connection: queryResults.connectionName,
+            servedFrom,
+            rowsLimit: rowLimit,
+         }),
+      );
       return {
          result: wrappedResult,
          serializedResult,
@@ -2959,6 +2978,74 @@ export class Model {
          // a bag shed under budget pressure sheds context last, but a caller
          // should be told the truth about what it can look up.
          queryCorrelationId: appliedQueryMetadata?.query_id ?? null,
+         // Where the answer came from, and how long producing it took. Both are
+         // measured here already for the histogram; returning them lets a caller
+         // attribute a SINGLE query, which an aggregate histogram cannot do —
+         // "this chart is slow" needs the one query, not the p95.
+         //
+         // `servedFrom` is the only way a caller can tell a storage-served answer
+         // from a live one: the rows are identical by design, so without it the
+         // whole point of materializing is invisible at the call site.
+         servedFrom: servedFrom ?? null,
+         // Wall-clock around execution, not the HTTP round trip: it excludes
+         // serialization and transport, so it is comparable against the histogram
+         // and against the same query on another connection, and it is NOT what a
+         // caller's own stopwatch will read.
+         executionTimeMs: Math.round(executionTime),
+      };
+   }
+
+   /**
+    * The label set for {@link queryExecutionHistogram}. Every recording site
+    * builds its labels here so the success and error paths cannot drift apart.
+    *
+    * <b>The query text and the returned row count are deliberately absent.</b>
+    * Both are unbounded: ad-hoc query text yields a new label value for every
+    * distinct query a caller ever sends, and a row count yields one for every
+    * distinct result size. A histogram label multiplies by the bucket count, so
+    * either one makes this metric grow without limit for as long as the process
+    * serves traffic — the classic Prometheus cardinality leak, and the reason
+    * it is worth stating here rather than letting someone re-add them. Both
+    * remain on the request log, where cardinality costs nothing.
+    *
+    * `environment` and `package` are what make the metric attributable. Without
+    * them the only identity is a bare model path (`report.malloynb`), which is
+    * neither unique across packages nor able to answer "whose queries are these".
+    *
+    * `rows_limit` stays: its values are the server default plus whatever limits
+    * authors actually write, which is a small set in practice — but it is the one
+    * label here bounded by convention rather than by construction.
+    */
+   private queryMetricAttributes(args: {
+      environment?: string;
+      queryName?: string;
+      sourceName?: string;
+      status: "success" | "error";
+      connection?: string;
+      servedFrom?: ServedFrom;
+      rowsLimit?: number;
+   }): Record<string, string | number | undefined> {
+      return {
+         "malloy.model.path": this.modelPath,
+         "malloy.package": this.packageName,
+         "malloy.model.query.name": args.queryName,
+         "malloy.model.query.source": args.sourceName,
+         "malloy.model.query.status": args.status,
+         ...(args.environment
+            ? { "malloy.environment": args.environment }
+            : {}),
+         ...(args.connection
+            ? { "malloy.model.query.connection": args.connection }
+            : {}),
+         ...(args.rowsLimit === undefined
+            ? {}
+            : { "malloy.model.query.rows_limit": args.rowsLimit }),
+         // Ships dark: only tag queries that actually reached the storage routing
+         // decision. A live query on a deployment with no storage destination gets
+         // no new label, so its histogram is byte-for-byte what it was before.
+         ...(args.servedFrom
+            ? { "malloy.model.query.served_from": args.servedFrom }
+            : {}),
       };
    }
 
