@@ -94,10 +94,12 @@ describe("federateSourceForPassthrough", () => {
       const secret = sql.find((s) => s.includes("CREATE OR REPLACE SECRET"));
       expect(secret).toContain("AUTH_TYPE 'key_pair'");
       expect(secret).toContain("PRIVATE KEY-----");
-      expect(secret).toContain("PRIVATE_KEY_PASSPHRASE 'pass''phrase'");
-      // Not even an empty one: a PASSWORD alongside the key pair is what the
-      // extension rejects.
-      expect(secret).not.toContain("PASSWORD '");
+      expect(secret).toContain("PRIVATE_KEY_PASSWORD 'pass''phrase'");
+      // No BARE password field — not even an empty one, which is what the
+      // extension rejects alongside a key pair. Anchored to the start of the
+      // emitted line: an unanchored "PASSWORD '" also matches inside
+      // PRIVATE_KEY_PASSWORD and would fail on a correct secret.
+      expect(secret).not.toContain("\n   PASSWORD '");
    });
 
    it("snowflake: normalizes a single-line private key, as the live path does", async () => {

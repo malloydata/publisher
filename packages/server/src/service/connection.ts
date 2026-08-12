@@ -958,12 +958,16 @@ async function federateSnowflake(
       `   TYPE snowflake`,
       `   ACCOUNT '${params.account}'`,
       `   USER '${params.user}'`,
+      // PRIVATE_KEY_PASSWORD, not the PRIVATE_KEY_PASSPHRASE the extension's docs
+      // show: the latter is carried as a backward-compatible alias onto the
+      // former, and an alias is the thing that gets retired. Both are accepted
+      // today; this is the one the extension actually consumes.
       ...(usesKeyPair
          ? [
               `   AUTH_TYPE 'key_pair'`,
               `   PRIVATE_KEY '${params.privateKey}'`,
               ...(params.privateKeyPass
-                 ? [`   PRIVATE_KEY_PASSPHRASE '${params.privateKeyPass}'`]
+                 ? [`   PRIVATE_KEY_PASSWORD '${params.privateKeyPass}'`]
                  : []),
            ]
          : [`   PASSWORD '${params.password}'`]),
