@@ -65,15 +65,37 @@ export type BuildCostOutcome =
  */
 const CLOCK_SKEW_MARGIN_MS = 60_000;
 
-/** Cap the candidate set. A window this narrow holding more rows means something is wrong. */
+/**
+ * Cap the candidate set. The window is at least CLOCK_SKEW_MARGIN_MS wide plus
+ * the build's duration, and both accounting views are project-/account-wide
+ * rather than session-scoped, so on a busy warehouse fifty jobs inside it is
+ * ordinary and the target can fall off the end. That truncation surfaces as
+ * `not_found`, which reads as "the key did not hold" rather than "we truncated"
+ * -- worth remembering before concluding the correlation is weak.
+ */
 const MAX_CANDIDATES = 50;
+
+/**
+ * Give up on the accounting query after this long. The build has already
+ * succeeded and its table is captured; what is still open is the credential
+ * window the session holds. Without a bound, a wedged warehouse API parks a
+ * finished build indefinitely while it holds live warehouse credentials --
+ * "never throws" was enforced, "never hangs" was not.
+ */
+const LOOKUP_TIMEOUT_MS = 10_000;
 
 export interface BuildCostLookup {
    /** Runs SQL on the session that performed the build — the passthrough is reachable from it. */
    runner: SqlRunner;
    engine: "bigquery" | "snowflake";
-   /** BigQuery billing/target project. Unused for Snowflake. */
-   project?: string;
+   /**
+    * The passthrough handle for this engine, exactly as
+    * `federateSourceForPassthrough` returned it: the billing/target project on
+    * BigQuery, the DuckDB secret name on Snowflake. Named for what it is rather
+    * than for one engine's use of it -- calling it `project` invited passing the
+    * wrong thing on the Snowflake path.
+    */
+   handle?: string;
    /** The exact SQL handed to the passthrough — the correlation key. */
    sql: string;
    /** When the read started, by our clock. */
@@ -114,10 +136,9 @@ export async function lookupBuildCost(
 ): Promise<BuildCost | null> {
    const { engine } = opts;
    try {
-      const rows =
-         engine === "bigquery"
-            ? await lookupBigQuery(opts)
-            : await lookupSnowflake(opts);
+      const rows = await withTimeout(
+         engine === "bigquery" ? lookupBigQuery(opts) : lookupSnowflake(opts),
+      );
 
       if (rows.length === 0) return finish(engine, "not_found", null);
       if (rows.length > 1) {
@@ -147,8 +168,37 @@ function finish(
    outcome: BuildCostOutcome,
    cost: BuildCost | null,
 ): BuildCost | null {
-   recordBuildCostLookup(engine, outcome);
+   // Guarded even though a counter should not throw: this runs on the catch path
+   // too, where an exception would escape the "never throws" contract that the
+   // whole design rests on.
+   try {
+      recordBuildCostLookup(engine, outcome);
+   } catch {
+      /* telemetry must not fail a build */
+   }
    return cost;
+}
+
+/**
+ * Reject after {@link LOOKUP_TIMEOUT_MS}. The losing promise is left to settle on
+ * its own — there is no abort to plumb through the passthrough — but the build no
+ * longer waits on it, which is the property that matters here.
+ */
+async function withTimeout<T>(work: Promise<T>): Promise<T> {
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   try {
+      return await Promise.race([
+         work,
+         new Promise<never>((_, reject) => {
+            timer = setTimeout(
+               () => reject(new Error("build cost lookup timed out")),
+               LOOKUP_TIMEOUT_MS,
+            );
+         }),
+      ]);
+   } finally {
+      if (timer) clearTimeout(timer);
+   }
 }
 
 /**
@@ -170,7 +220,7 @@ async function lookupBigQuery(opts: BuildCostLookup): Promise<BuildCost[]> {
              total_slot_time_ms,
              json_extract_string(statistics, '$.query.totalBytesBilled') AS billed,
              json_extract_string(statistics, '$.query.cacheHit')         AS cache_hit
-      FROM (SELECT * FROM bigquery_jobs(${lit(opts.project ?? "")},
+      FROM (SELECT * FROM bigquery_jobs(${lit(opts.handle ?? "")},
                                         minCreationTime := ${lit(since.toISOString())},
                                         maxResults := ${MAX_CANDIDATES})
             WHERE job_type = 'QUERY') j
@@ -214,7 +264,14 @@ async function lookupBigQuery(opts: BuildCostLookup): Promise<BuildCost[]> {
  */
 async function lookupSnowflake(opts: BuildCostLookup): Promise<BuildCost[]> {
    const since = new Date(opts.since.getTime() - CLOCK_SKEW_MARGIN_MS);
-   const sql = `
+   // Snowflake-dialect SQL, so it CANNOT go to the runner directly: the runner is
+   // the build's DuckDB session, and federating Snowflake installs only a DuckDB
+   // secret — there is no ATTACH that would make INFORMATION_SCHEMA resolvable.
+   // DuckDB rejects `FROM TABLE(...)` at the parser. It has to travel the same way
+   // the build's own read does, through the passthrough, with the handle as the
+   // secret name. Escaped twice on purpose: once embedding this statement as a
+   // string literal, once for the query text inside it.
+   const inner = `
       SELECT QUERY_ID          AS job_id,
              BYTES_SCANNED     AS bytes_scanned,
              EXECUTION_TIME    AS execution_time_ms,
@@ -223,7 +280,13 @@ async function lookupSnowflake(opts: BuildCostLookup): Promise<BuildCost[]> {
                  END_TIME_RANGE_START => TO_TIMESTAMP_LTZ(${lit(since.toISOString())}),
                  RESULT_LIMIT => ${MAX_CANDIDATES}))
       WHERE QUERY_TEXT = ${lit(opts.sql)}
-        AND EXECUTION_STATUS = 'SUCCESS'`;
+        AND EXECUTION_STATUS = 'SUCCESS'
+        -- QUERY_HISTORY is scoped by ROLE visibility, not by user. Under a role
+        -- carrying MONITOR, an exact text match can resolve to another
+        -- principal's run of the same SQL -- one row, so the ambiguity guard
+        -- would not catch it, and the cost would be attributed here.
+        AND USER_NAME = CURRENT_USER()`;
+   const sql = `SELECT * FROM snowflake_query(${lit(inner)}, ${lit(opts.handle ?? "")})`;
    const { rows } = await opts.runner(sql);
    return (rows as Record<string, unknown>[]).map((r) => {
       const scanned = num(r["bytes_scanned"]);

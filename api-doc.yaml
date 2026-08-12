@@ -3675,13 +3675,13 @@ components:
             Wall-clock milliseconds spent executing the query, measured around
             execution only.
 
-            Deliberately narrower than the HTTP round trip: it excludes
-            serialization and transport, so it is comparable against the
-            `malloy_model_query_duration` histogram and against the same query run
-            against a different connection — and it will read lower than a
-            caller's own stopwatch. Use it to attribute ONE query, which an
-            aggregate histogram cannot do; use the histogram for rates and
-            percentiles.
+            Covers compile, authorize, storage routing, prepare and the warehouse
+            round trip. Narrower than the HTTP round trip — it excludes
+            serialization and transport, so it reads lower than a caller's own
+            stopwatch — and it is the same span the `malloy_model_query_duration`
+            histogram records, so the two are directly comparable. Use it to
+            attribute ONE query, which an aggregate histogram cannot do; use the
+            histogram for rates and percentiles.
         queryCostBytes:
           type: ["integer", "null"]
           description: >-
@@ -3698,11 +3698,17 @@ components:
             which is the case for every `servedFrom: storage` answer. Check
             `servedFrom` before reading a null as "free".
 
-            Where it is reported it is the backend's own pre-execution estimate of
-            bytes processed, not a settled bill: it ignores per-table minimums,
-            flat-rate/slot pricing, and cached-result discounts. Good enough to
-            compare queries against each other; not good enough to render as
-            money without saying so.
+            Where it is reported it is the executed job's ACTUAL bytes
+            processed, i.e. bytes SCANNED — not an estimate, and not what the
+            query is billed. BigQuery bills a 10MB minimum per query, so a small
+            read is billed well above this figure. Good for comparing queries
+            against each other; not a spend number.
+
+            One asymmetry worth knowing on BigQuery: the connector reports a
+            genuinely-zero scan as absent rather than as 0, so a fully cached
+            query is indistinguishable here from a backend that cannot say. Free
+            and unknown are the same value, and a savings calculation built on
+            this will treat free queries as unmeasured rather than as free.
 
     LogMessage:
       type: object
@@ -5170,9 +5176,13 @@ components:
             `storage=` build reports null because it read its parent's
             already-materialized table and touched no warehouse at all.
 
-            A convenience mirror of `buildCost.bytesBilled` for callers that want
-            one number. Prefer `buildCost` — it distinguishes bytes SCANNED from
-            bytes BILLED, which differ by up to BigQuery's 10MB-per-query floor.
+            Bytes SCANNED, on every path — the colocated build reads it from the
+            connector's own statistics, and a `storage=` build from
+            `buildCost.bytesScanned`. It is deliberately not billed bytes: one
+            field carrying scanned on one path and billed on the other would
+            differ by up to BigQuery's 10MB-per-query floor, and summing it across
+            a package's sources would add the two together.
+            `buildCost.bytesBilled` is the single money number.
         buildCost:
           type: ["object", "null"]
           description: >-

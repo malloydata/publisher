@@ -325,7 +325,7 @@ export async function buildSourceIntoStorage(params: {
             : await lookupBuildCost({
                  runner: (sql) => session.runSQL(sql),
                  engine: sourceType,
-                 project: federated.handle,
+                 handle: federated.handle,
                  sql: buildSQL,
                  since: readStartedAt,
               });

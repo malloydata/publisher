@@ -2386,9 +2386,11 @@ export class Model {
        */
       servedFrom: ServedFrom | null;
       /**
-       * Wall-clock milliseconds around execution only — no serialization, no
-       * transport. Comparable against the query histogram; lower than what a
-       * caller's own stopwatch reads.
+       * Wall-clock milliseconds from the start of query handling through the end
+       * of execution — compile, authorize, routing, prepare and the warehouse
+       * round trip. It excludes serialization and transport, so it reads lower
+       * than a caller's own stopwatch, and it is the same span the query
+       * histogram records.
        */
       executionTimeMs: number;
       /**
@@ -2761,7 +2763,6 @@ export class Model {
             queryMetadataInput,
             preparedResult.connectionName,
          );
-         executionTime = performance.now() - startTime;
 
          queryResults = await runnable.run({
             rowLimit,
@@ -2771,6 +2772,13 @@ export class Model {
             virtualMap: serveVirtualMap,
             queryMetadata: appliedQueryMetadata,
          });
+         // AFTER run(), not before it. Taken above, this stopped at
+         // getPreparedResult and so measured compile + authorize + routing +
+         // prepare while excluding the warehouse round trip entirely — the one
+         // part anyone reading "query duration" is asking about. The live-fallback
+         // branch below already recomputed it post-run, so the same field meant
+         // two different things depending on which path ran.
+         executionTime = performance.now() - startTime;
       } catch (error) {
          // A binding that declares `freshnessFallback=live` is saying the tier is
          // a performance optimisation, not a dependency — so a store that fails

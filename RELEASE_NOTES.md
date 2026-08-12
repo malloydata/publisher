@@ -30,6 +30,8 @@ histogram carried two labels that grew without bound. Both are addressed.
 - **`ManifestEntry` gains `buildDurationMs` and `buildCost`.** The duration was already measured for the build histogram and sent upward as null. `buildCost` is read back from the warehouse's own accounting after a build — `bigquery_jobs()` for BigQuery, `INFORMATION_SCHEMA.QUERY_HISTORY` for Snowflake — and reports bytes scanned, bytes billed, slot or execution time, and whether the read was cached.
 - **Two counters:** `publisher_build_cost_lookup_total{engine,outcome}` and `publisher_build_cache_hit_total{engine}`.
 
+**Coverage, plainly.** The BigQuery lookup has been exercised against a live project. The Snowflake one has not: what was verified there is _Snowflake's_ behaviour — that `INFORMATION_SCHEMA.QUERY_HISTORY` carries no lag, and that the passthrough reuses one session — not this code path end to end. Its first real `storage=` build is its first execution; watch `publisher_build_cost_lookup_total{engine="snowflake",outcome}` to see whether the correlation holds.
+
 ### Reading the cost numbers
 
 **Bytes billed is not bytes scanned.** BigQuery rounds up to a 10MB minimum per query, so a small read bills an order of magnitude above what it scanned — and materialization refreshes are mostly small reads. Both are reported; only the billed figure maps to money.

@@ -2451,7 +2451,13 @@ export class MaterializationService {
          // the call path. Read back from the warehouse's own accounting instead,
          // after the build — see lookupBuildCost, including why a null here is
          // never "free".
-         queryCostBytes: result.buildCost?.bytesBilled ?? null,
+         // SCANNED, matching the colocated path above, which fills this from the
+         // connector's runStats -- and that is totalBytesProcessed, i.e. scanned.
+         // Reporting billed here would put two different quantities in one field,
+         // differing by up to BigQuery's 10MB floor, and anyone summing it across a
+         // package's sources would add them together. buildCost.bytesBilled stays
+         // the single money number.
+         queryCostBytes: result.buildCost?.bytesScanned ?? null,
          buildCost: result.buildCost,
       };
    }

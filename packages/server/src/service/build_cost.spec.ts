@@ -24,7 +24,7 @@ describe("lookupBuildCost", () => {
    const bq = (rows: unknown[]) => ({
       runner: sinon.stub().resolves({ rows }),
       engine: "bigquery" as const,
-      project: "proj",
+      handle: "proj",
       sql: "SELECT 1",
       since: new Date("2026-08-12T00:00:00Z"),
    });
@@ -198,6 +198,7 @@ describe("lookupBuildCost", () => {
       const sf = (rows: unknown[]) => ({
          runner: sinon.stub().resolves({ rows }),
          engine: "snowflake" as const,
+         handle: "sf_secret",
          sql: "SELECT 1",
          since: new Date("2026-08-12T00:00:00Z"),
       });
@@ -263,11 +264,44 @@ describe("lookupBuildCost", () => {
          const sql = (opts.runner as sinon.SinonStub).firstCall
             .args[0] as string;
          // ACCOUNT_USAGE lags by up to three hours, so it cannot answer a
-         // question asked right after a build. BY_SESSION cannot be trusted
-         // either: the passthrough gives no guarantee the session is reused.
+         // question asked right after a build.
          expect(sql).toContain("INFORMATION_SCHEMA.QUERY_HISTORY");
          expect(sql).not.toContain("ACCOUNT_USAGE");
-         expect(sql).not.toContain("QUERY_HISTORY_BY_SESSION");
+      });
+
+      it("sends the statement THROUGH the passthrough, not to the DuckDB session", async () => {
+         // The runner is the build's DuckDB session, and federating Snowflake
+         // installs only a secret — no ATTACH makes INFORMATION_SCHEMA
+         // resolvable. Handed over raw, DuckDB rejects `FROM TABLE(...)` at the
+         // parser, lookupBuildCost swallows it, and every Snowflake build records
+         // outcome=error with a null cost forever.
+         //
+         // Asserting the query TEXT alone cannot catch that — it passes happily on
+         // SQL DuckDB could never run. This asserts the transport instead: the
+         // outer statement must be a snowflake_query() call carrying the secret,
+         // with the Snowflake SQL escaped inside it.
+         const opts = sf([]);
+         opts.handle = "secret_snowflake_src";
+         await lookupBuildCost(opts);
+         const sql = (opts.runner as sinon.SinonStub).firstCall
+            .args[0] as string;
+         expect(sql).toStartWith("SELECT * FROM snowflake_query(");
+         expect(sql).toContain("'secret_snowflake_src'");
+         // Escaped one level down, i.e. genuinely nested rather than concatenated.
+         expect(sql).toContain("INFORMATION_SCHEMA.QUERY_HISTORY");
+         expect(sql).not.toMatch(/^\s*SELECT QUERY_ID/);
+      });
+
+      it("scopes history to the current user", async () => {
+         // QUERY_HISTORY is scoped by ROLE visibility, not by user. Under a role
+         // carrying MONITOR, an exact text match can resolve to another
+         // principal's run of the same SQL — a single row, so the ambiguity guard
+         // would not catch it, and their cost would be reported as this build's.
+         const opts = sf([]);
+         await lookupBuildCost(opts);
+         const sql = (opts.runner as sinon.SinonStub).firstCall
+            .args[0] as string;
+         expect(sql).toContain("USER_NAME = CURRENT_USER()");
       });
    });
 });
