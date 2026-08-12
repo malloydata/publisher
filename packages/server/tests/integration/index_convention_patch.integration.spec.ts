@@ -46,6 +46,15 @@ describe("index.malloy convention across a metadata PATCH", () => {
    const readManifest = (): Record<string, unknown> =>
       JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 
+   const packageWarnings = async (): Promise<string[]> => {
+      const pkg = (await (await fetch(`${baseUrl}${API}`)).json()) as {
+         warnings?: ({ message?: string } | string)[];
+      };
+      return (pkg.warnings ?? []).map((w) =>
+         typeof w === "string" ? w : (w.message ?? ""),
+      );
+   };
+
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
@@ -162,14 +171,54 @@ describe("index.malloy convention across a metadata PATCH", () => {
       expect(res.status).toBe(200);
       expect(await hiddenSourceStatus()).toBe(200);
 
-      const pkg = (await (await fetch(`${baseUrl}${API}`)).json()) as {
-         warnings?: { message?: string }[];
-      };
-      const messages = (pkg.warnings ?? []).map((w) =>
-         typeof w === "string" ? w : (w.message ?? ""),
-      );
       expect(
-         messages.some((m) => m.includes("query boundary is NOT enforced")),
+         (await packageWarnings()).some((m) =>
+            m.includes("query boundary is NOT enforced"),
+         ),
+      ).toBe(true);
+   });
+
+   it("keeps that warning when the same PATCH triggers a reload", async () => {
+      // The trap this guards: every GET emits `manifestLocation: null`, so a
+      // client that round-trips the whole object always sends it, and any
+      // manifestLocation on the body triggers reloadAllModels, which replaces
+      // manifestWarnings wholesale from a fresh disk parse. The warning added
+      // moments earlier in the same request was being destroyed before the
+      // response was built, so the one client the echo rule exists for was the
+      // one client that never saw it.
+      const res = await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            explores: ["index.malloy"],
+            manifestLocation: null,
+         }),
+      });
+      expect(res.status).toBe(200);
+      expect(await hiddenSourceStatus()).toBe(200);
+      expect(
+         (await packageWarnings()).some((m) =>
+            m.includes("query boundary is NOT enforced"),
+         ),
+      ).toBe(true);
+   });
+
+   it("says a queryableSources sent under the convention has no effect", async () => {
+      // Derived at load from the manifest text, so before this it only showed
+      // up after the next reload. The PATCH response is when the operator is
+      // looking.
+      const res = await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            queryableSources: "declared",
+         }),
+      });
+      expect(res.status).toBe(200);
+      expect(
+         (await packageWarnings()).some((m) => m.includes("has no effect")),
       ).toBe(true);
    });
 

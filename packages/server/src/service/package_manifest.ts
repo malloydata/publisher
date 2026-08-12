@@ -504,16 +504,29 @@ const EXPLORES_PATCH_IGNORED_PREFIX =
  * avoiding most: they would believe queries were gated when they are not. So
  * it is said out loud, with the route that does work.
  */
-export function exploresPatchIgnoredUnderConvention(): string {
+export function exploresPatchIgnoredUnderConvention(
+   effectiveQueryableSources: unknown,
+): string {
+   // The remedy has to account for "all", or it promises a boundary that
+   // declaring the surface would still not produce. This is the one builder
+   // whose subject is an author actively trying to ARM the boundary, so a
+   // wrong remedy here fails in the direction the whole feature guards.
+   const remedy =
+      effectiveQueryableSources === "all"
+         ? `If you meant to enforce the boundary, note that this package also ` +
+           `has "queryableSources": "all", which switches it off on its own. ` +
+           `You need BOTH: set "queryableSources" to "declared" and add ` +
+           `"explores" to the package's publisher.json, then reload.`
+         : `If you meant to enforce the boundary, add "explores" to the ` +
+           `package's publisher.json and reload; a surface declared there does ` +
+           `enforce it.`;
    return (
       `${EXPLORES_PATCH_IGNORED_PREFIX} ("${INDEX_MODEL_NAME}"), which is ` +
       `exactly what the convention already derives, so nothing changed and the ` +
       `query boundary is NOT enforced: every source is still queryable by name. ` +
       `An API update cannot tell that request apart from a client echoing back ` +
       `what it read, and treating it as a declaration would revoke query access ` +
-      `from anyone who had only edited a description. If you meant to enforce ` +
-      `the boundary, add "explores" to the package's publisher.json and reload; ` +
-      `a surface declared there does enforce it.`
+      `from anyone who had only edited a description. ${remedy}`
    );
 }
 
@@ -553,7 +566,7 @@ function exploresDisagreesWithConvention(
    );
 }
 
-function queryableSourcesInertUnderConvention(raw: unknown): string {
+export function queryableSourcesInertUnderConvention(raw: unknown): string {
    // "all" already means "do not enforce", so telling that author to declare
    // `explores` would send them to a state that still does not enforce. Only
    // the author who asked for a boundary needs the two-part remedy.

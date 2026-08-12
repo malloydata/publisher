@@ -65,11 +65,13 @@ discovery and chat), at two granularities that **both apply only once the packag
   > empty array is read as a deliberate "do not curate", so listings, `export {}` filtering and
   > query access are all unchanged.
   >
-  > Two things not to reach for. Renaming the file also restores the listings, but it changes the
-  > model's identity, so `…/models/index.malloy` starts returning 404 and any sibling that
-  > `import`s `"index.malloy"` stops compiling. And declaring `explores` with your old file list
-  > does **not** restore the old behavior: it turns on the query boundary and `export {}` filtering,
-  > which is a larger change than the one you are undoing.
+  > Two things not to reach for. Renaming the file changes the model's identity, so
+  > `…/models/index.malloy` starts returning 404, and if any sibling `import`s `"index.malloy"` the
+  > dangling import fails the compile, which takes the **whole package** out of service rather than
+  > just that file: it disappears from `GET …/packages` entirely and the only trace is
+  > `loadErrors` in `GET /api/v0/status`. And declaring `explores` with your old file list does
+  > **not** restore the old behavior either: it turns on the query boundary and `export {}`
+  > filtering, which is a larger change than the one you are undoing.
   >
   > **Watch for one shape in particular.** If your `index.malloy` is an aggregator, all `import`s
   > and no `export { … }`, it exports nothing, so the package now lists one model with no sources

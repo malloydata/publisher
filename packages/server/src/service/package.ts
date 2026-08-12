@@ -209,6 +209,20 @@ export class Package {
     */
    private manifestWarnings: string[] = [];
    /**
+    * Warnings raised AFTER load, by an API request rather than by parsing the
+    * manifest. Kept separate from {@link manifestWarnings} because that array
+    * is replaced wholesale from the worker on every reload, and a reload can
+    * happen inside the very request that raised the warning: any PATCH
+    * carrying `manifestLocation` triggers one, and every GET emits
+    * `manifestLocation: null`, so a client that round-trips the whole object
+    * always sends it. Storing these here means a warning cannot be destroyed
+    * by the same request that produced it.
+    *
+    * Cleared when the condition they describe stops holding, which for all of
+    * them is the surface origin changing to declared.
+    */
+   private postLoadWarnings: string[] = [];
+   /**
     * True when `explores` was defaulted from the `index.malloy` convention
     * rather than declared in publisher.json.
     *
@@ -845,7 +859,12 @@ export class Package {
             sources: this.buildPlan?.sources
                ? Object.values(this.buildPlan.sources)
                : [],
-            manifestWarnings: this.manifestWarnings,
+            // Both channels, so a warning raised by the request in flight is
+            // reported even when that same request triggered a reload.
+            manifestWarnings: [
+               ...this.manifestWarnings,
+               ...this.postLoadWarnings,
+            ],
          }),
       ];
       if (allWarnings.length > 0) {
@@ -2033,6 +2052,12 @@ export class Package {
          this.manifestWarnings = this.manifestWarnings.filter(
             (w) => !isExploresConventionWarning(w),
          );
+         // Same reasoning for the post-load ones: every warning in that array
+         // describes a surface that came from the convention, so a change of
+         // origin makes all of them false.
+         this.postLoadWarnings = this.postLoadWarnings.filter(
+            (w) => !isExploresConventionWarning(w),
+         );
       }
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
@@ -2044,13 +2069,14 @@ export class Package {
    }
 
    /**
-    * Append a manifest warning raised after load (today, only the PATCH path).
-    * De-duplicated, because a client that round-trips repeatedly would
-    * otherwise stack the same sentence up on every call.
+    * Append a warning raised after load (today, only the PATCH path). Goes to
+    * {@link postLoadWarnings} so a reload inside the same request cannot
+    * discard it. De-duplicated, because a client that round-trips repeatedly
+    * would otherwise stack the same sentence up on every call.
     */
-   public addManifestWarning(warning: string): void {
-      if (!this.manifestWarnings.includes(warning)) {
-         this.manifestWarnings.push(warning);
+   public addPostLoadWarning(warning: string): void {
+      if (!this.postLoadWarnings.includes(warning)) {
+         this.postLoadWarnings.push(warning);
       }
    }
 

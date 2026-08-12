@@ -24,6 +24,7 @@ import {
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import {
    exploresPatchIgnoredUnderConvention,
+   queryableSourcesInertUnderConvention,
    resolvePatchedExploresOrigin,
 } from "./package_manifest";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
@@ -2176,7 +2177,18 @@ export class Environment {
             throw new BadRequestError(invalidMsg);
          }
          if (declarationIgnored) {
-            _package.addManifestWarning(exploresPatchIgnoredUnderConvention());
+            _package.addPostLoadWarning(
+               exploresPatchIgnoredUnderConvention(queryableSources),
+            );
+         }
+         // A `queryableSources` sent at a package whose surface came from the
+         // convention does nothing, and the load-time warning that says so is
+         // only derived when the manifest is next parsed. The PATCH response is
+         // the moment the operator is looking, so say it now too.
+         if (fromConvention && body.queryableSources !== undefined) {
+            _package.addPostLoadWarning(
+               queryableSourcesInertUnderConvention(body.queryableSources),
+            );
          }
 
          await this.writePackageManifest(packageName, {

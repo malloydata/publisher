@@ -469,7 +469,8 @@ describe("service/package_manifest", () => {
             declaredQueryableSources: "all",
             modelPaths: WITH_INDEX,
          }).warnings[0],
-         exploresPatchIgnoredUnderConvention(),
+         exploresPatchIgnoredUnderConvention("declared"),
+         exploresPatchIgnoredUnderConvention("all"),
       ];
 
       it("matches every warning the convention can emit", () => {
@@ -490,6 +491,21 @@ describe("service/package_manifest", () => {
          })[0];
          expect(queryMetadata).toBeDefined();
          expect(isExploresConventionWarning(queryMetadata)).toBe(false);
+      });
+   });
+
+   describe("exploresPatchIgnoredUnderConvention", () => {
+      it("promises a boundary only where declaring one would produce it", () => {
+         // The subject of this warning is an author actively trying to ARM the
+         // boundary, so a remedy that would not produce one fails in the exact
+         // direction the feature guards.
+         const declared = exploresPatchIgnoredUnderConvention("declared");
+         expect(declared).toContain("query boundary is NOT enforced");
+         expect(declared).toContain('add "explores" to the');
+
+         const all = exploresPatchIgnoredUnderConvention("all");
+         expect(all).toContain("You need BOTH");
+         expect(all).toContain('"queryableSources" to "declared"');
       });
    });
 
