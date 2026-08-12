@@ -1733,7 +1733,17 @@ paths:
         way a broken dashboard surfaces. When the package curates its query surface
         (`queryableSources: "declared"`), a dashboard whose entry file is not in
         `explores` is omitted, because its query and given names would not be
-        runnable; the omission is reported in the package's `warnings`.
+        runnable; the omission is reported in the package's `warnings` as of the
+        last load. The listing reflects a curation change immediately, including
+        one applied by a metadata `PATCH`, but the matching warning is computed
+        at load, so after a `PATCH` it appears only once the package reloads.
+
+        Being listed does not by itself guarantee the dashboard runs. The
+        query boundary also checks the entry file's own `export {}` closure, so
+        a dashboard file that only imports other files and re-exports none of
+        their sources is still served while every query against it is refused.
+        That case is reported in the package's `warnings` rather than omitted,
+        because withholding on a guess would hide dashboards that do work.
       parameters:
         - name: environmentName
           in: path

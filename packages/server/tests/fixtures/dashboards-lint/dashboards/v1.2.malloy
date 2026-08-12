@@ -1,0 +1,12 @@
+// A tagged dashboard whose derived slug is "v1.2". The dot is not allowed in a
+// dashboard name, so it can never be addressed at a URL and is not served. It
+// is still a dashboard, so a drill naming it must be reported as unresolvable.
+// Deliberately NOT a dotfile: the package loader ignores those outright, so a
+// leading-dot filename never becomes a model and cannot exercise this path.
+import { orders } from '../orders.malloy'
+
+# artifact { title="Versioned" }
+query: versioned is orders -> {
+   group_by: brand_name
+   aggregate: total_amount
+}

@@ -34,6 +34,10 @@ const LINT_PACKAGE = "dashboards-lint";
 // A fourth package that curates its query surface, to pin that discovery
 // honours it: one dashboard is in `explores` and one is not.
 const CURATED_PACKAGE = "dashboards-curated";
+// A fifth package with `explores` declared but `queryableSources: "all"`, so the
+// query boundary is inert. Its composite dashboard is import-only, which under
+// "declared" would mean every tile 404s, and here means nothing of the sort.
+const OPEN_PACKAGE = "dashboards-open";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
 const noDashboardsFixtureDir = path.resolve(
@@ -47,6 +51,10 @@ const lintFixtureDir = path.resolve(
 const curatedFixtureDir = path.resolve(
    __dirname,
    "../../fixtures/dashboards-curated",
+);
+const openFixtureDir = path.resolve(
+   __dirname,
+   "../../fixtures/dashboards-open",
 );
 
 interface DashboardItem {
@@ -109,6 +117,7 @@ describe("Dashboard discovery (E2E)", () => {
                },
                { name: LINT_PACKAGE, location: lintFixtureDir },
                { name: CURATED_PACKAGE, location: curatedFixtureDir },
+               { name: OPEN_PACKAGE, location: openFixtureDir },
             ],
             connections: [],
          }),
@@ -699,6 +708,22 @@ describe("Dashboard discovery (E2E)", () => {
          }
       });
 
+      /**
+       * Two orderings, opposite directions, one line apart. A drill at a
+       * WITHHELD dashboard is correct and must not be called missing (covered
+       * in the curated-package block). A drill at a slug nothing can ever
+       * address is broken and must still be called missing. Recording the slug
+       * as known before the servable-slug check silenced the second, which is a
+       * lint-coverage regression a fix for the first introduced.
+       */
+      it("still reports a drill at a dashboard whose slug cannot be addressed", async () => {
+         const warnings = await packageWarnings(LINT_PACKAGE);
+         const messages = warnings.map((w) => w.message ?? "");
+         expect(messages).toContainEqual(
+            expect.stringContaining('targets "v1.2", which is not a dashboard'),
+         );
+      });
+
       it("still serves the broken package's dashboards", async () => {
          // The lint is advisory: a bad tile costs you that tile, not the
          // dashboard or the package.
@@ -799,11 +824,16 @@ describe("Dashboard discovery (E2E)", () => {
          // A drill is declared on a model dimension, not in a dashboard, so it
          // is reported once for the package rather than per importing file, and
          // names no model.
-         expect(drillWarnings.map((w) => w.subject).sort()).toEqual([
-            "orders.region_name",
-            "shipping.carrier_name",
-            "shipping.warehouse",
-         ]);
+         expect(drillWarnings.map((w) => w.subject).sort()).toEqual(
+            [
+               // Names a dashboard that exists but whose slug "v1.2" can never
+               // be addressed, so the drill dead-ends and must still be reported.
+               "orders.unaddressable_target",
+               "orders.region_name",
+               "shipping.carrier_name",
+               "shipping.warehouse",
+            ].sort(),
+         );
          for (const warning of drillWarnings) {
             expect(warning.severity).toBe("error");
             expect(warning.model).toBeUndefined();
@@ -998,6 +1028,67 @@ describe("Dashboard discovery (E2E)", () => {
                compactJson: true,
             }),
          });
+         expect(res.status).toBe(200);
+      });
+
+      /**
+       * A `# drill` pointing at a WITHHELD dashboard is still pointing at a
+       * dashboard this package has. Resolving the drill lint against the served
+       * map made the gate turn a correct tag into "not a dashboard in this
+       * package", sending the author to fix something that was right.
+       * `orders.malloy` carries `# drill { to=unlisted }` for this.
+       */
+      it("reports a drill at a withheld dashboard as withheld, not as missing", async () => {
+         const body = (await (await fetch(curatedUrl(""))).json()) as {
+            warnings?: { message?: string }[];
+         };
+         const messages = (body.warnings ?? []).map((w) => w.message ?? "");
+         // Not "missing": the dashboard is real, so that wording sends the
+         // author to fix a drill tag that is correct.
+         expect(
+            messages.filter((m) => m.includes("is not a dashboard in this")),
+         ).toEqual([]);
+         // But not silent either: the click still has nowhere to land.
+         expect(messages).toContainEqual(
+            expect.stringContaining(
+               'targets "unlisted", which IS a dashboard in this package but is not served',
+            ),
+         );
+      });
+
+      /**
+       * `queryableSources: "all"` decouples the axes: `explores` still curates
+       * DISCOVERY, but nothing is refused. `hasEmptyDiscoverySurface` is about
+       * the discovery surface and is indifferent to the mode, so leaning on it
+       * alone made the warning assert a `"declared"` policy the package does
+       * not have, and 404s that never happen. The sibling held-back warning
+       * recommends exactly this setting, so an author following that advice hit
+       * it.
+       */
+      it("says nothing about an import-only dashboard when the boundary is inert", async () => {
+         const openUrl = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN_PACKAGE}`;
+         const body = (await (await fetch(openUrl)).json()) as {
+            warnings?: { message?: string }[];
+         };
+         expect(
+            (body.warnings ?? []).filter((w) =>
+               (w.message ?? "").includes("re-exports none"),
+            ),
+         ).toEqual([]);
+      });
+
+      it("and its tiles really do run, which is why the warning would be false", async () => {
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN_PACKAGE}/models/dashboards/composite.malloy/query`,
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  query: "run: orders -> by_brand",
+                  compactJson: true,
+               }),
+            },
+         );
          expect(res.status).toBe(200);
       });
 

@@ -758,6 +758,46 @@ describe("service/dashboard lint", () => {
    });
 });
 
+describe("service/dashboard multi-line doc comment as a title", () => {
+   // Fixed once on the notebook path and left on both dashboard paths, which is
+   // the incomplete-fix pattern: the title is a one-line field and the doc
+   // comment is deliberately newline-joined markdown.
+   const twoLine = ['#" Business Overview\n', '#" Updated nightly.\n'];
+
+   it("takes only the first line on the single-query form", () => {
+      const m = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: [...twoLine, "# artifact\n"],
+                  givens: [],
+               },
+            ],
+         }),
+      );
+      expect(m?.title).toBe("Business Overview");
+      expect(m?.title ?? "").not.toContain("\n");
+      expect(m?.description).toBe("Business Overview\nUpdated nightly.");
+   });
+
+   it("takes only the first line on the composite form", () => {
+      const m = build(
+         facts({
+            modelAnnotations: [
+               ...twoLine,
+               '## artifact { tiles=["orders -> totals"] }\n',
+            ],
+            viewGivens: new Map([["orders -> totals", []]]),
+            sourceFields: new Map([["orders", new Set(["totals"])]]),
+         }),
+      );
+      expect(m?.title).toBe("Business Overview");
+      expect(m?.title ?? "").not.toContain("\n");
+      expect(m?.description).toBe("Business Overview\nUpdated nightly.");
+   });
+});
+
 describe("service/dashboard single-query given lint", () => {
    // The tile form warned about this and the single-query form did not, so a
    // single-query dashboard dropped the control in silence while
@@ -799,18 +839,19 @@ describe("service/dashboard single-query given lint", () => {
 });
 
 describe("service/dashboard slug is servable", () => {
-   // `dashboards/.malloy` yields an empty slug, whose published `resource`
-   // would end in `/dashboards/` and fold onto the LIST route under Express's
-   // non-strict routing, so following the manifest's own link returns an array.
+   // The reachable case is a dot mid-name: `dashboards/v1.2.malloy` yields
+   // `v1.2`, whose published `resource` is a URL the server's own route cannot
+   // match. A LEADING-dot name is not reachable, because `listPackageFiles`
+   // enumerates with `ignoreDotfiles`, so it never becomes a model; it is
+   // asserted here only to pin that the predicate itself is not fooled by it.
    it("rejects a slug that cannot round-trip through its own URL", () => {
-      expect(isServableDashboardSlug(dashboardSlug("dashboards/.malloy"))).toBe(
-         false,
-      );
       expect(
-         isServableDashboardSlug(dashboardSlug("dashboards/...malloy")),
+         isServableDashboardSlug(dashboardSlug("dashboards/v1.2.malloy")),
       ).toBe(false);
       expect(isServableDashboardSlug("has space")).toBe(false);
       expect(isServableDashboardSlug("has/slash")).toBe(false);
+      expect(isServableDashboardSlug("")).toBe(false);
+      expect(isServableDashboardSlug("..")).toBe(false);
    });
 
    it("accepts the names the path parameter declares", () => {
@@ -943,6 +984,29 @@ describe("service/dashboard grid width and hostile literals", () => {
          const manifest = build(singleQuery(bad));
          expect(manifest?.dashboardColumns).toBeUndefined();
          expect(lintOf(singleQuery(bad))).toHaveLength(1);
+      }
+   });
+
+   // The two spellings are read with `??`, so a bad value in one is not always
+   // a fallback to the renderer default: when the other spelling is good, the
+   // grid quietly uses it, and the finding must say so.
+   it("names the width actually used when the other spelling supplies one", () => {
+      const both = singleQuery(
+         '# artifact { dashboard_columns="wide" } dashboard { columns=6 }\n',
+      );
+      expect(build(both)?.dashboardColumns).toBe(6);
+      expect(lintOf(both)).toEqual([
+         expect.stringContaining("The grid uses 6 instead."),
+      ]);
+   });
+
+   it("still says renderer default when neither spelling is usable", () => {
+      const neither = singleQuery(
+         '# artifact { dashboard_columns="wide" } dashboard { columns="wider" }\n',
+      );
+      expect(build(neither)?.dashboardColumns).toBeUndefined();
+      for (const m of lintOf(neither)) {
+         expect(m).toContain("falls back to the renderer default");
       }
    });
 

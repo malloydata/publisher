@@ -1993,12 +1993,44 @@ export class Package {
     * dashboard in such a file is served with a manifest whose every tile 404s.
     * Mirroring that second level here would mean resolving each tile against
     * the closure before the manifest exists, which is a bigger change than this
-    * slice should make; the warning below names the real fix instead.
+    * slice should make.
+    *
+    * The warning below covers only the WHOLLY import-only case, which is what
+    * `hasEmptyDiscoverySurface` detects. A dashboard file that exports
+    * something, but not the source its tiles actually read, still serves a
+    * manifest whose tiles 404 and produces no finding at all. That gap is known
+    * and is not closed here; do not read the warning as complete coverage.
     */
    private isQueryableEntryPoint(modelPath: string): boolean {
-      if (this.packageMetadata.queryableSources === "all") return true;
+      if (!this.queryBoundaryActive()) return true;
       const exploreSet = this.exploreSet();
       return exploreSet ? exploreSet.has(modelPath) : true;
+   }
+
+   /**
+    * Whether the query boundary restricts anything at all: `explores` declared
+    * AND `queryableSources` left at `"declared"`. Under `"all"` the boundary is
+    * inert and every compiled source stays directly queryable.
+    *
+    * Shared so a finding cannot assert a policy the package does not have.
+    * `Model.hasEmptyDiscoverySurface` is about the DISCOVERY surface and is
+    * indifferent to this mode, so a warning about queries being refused has to
+    * check the mode itself rather than lean on that predicate.
+    */
+   /**
+    * A reusable form of {@link isQueryableEntryPoint} that resolves the explore
+    * set once, for callers testing more than one path.
+    */
+   private servableEntryPoints(): (modelPath: string) => boolean {
+      if (!this.queryBoundaryActive()) return () => true;
+      const exploreSet = this.exploreSet();
+      return (modelPath: string) =>
+         exploreSet ? exploreSet.has(modelPath) : true;
+   }
+
+   private queryBoundaryActive(): boolean {
+      if (this.packageMetadata.queryableSources === "all") return false;
+      return this.exploreSet() !== null;
    }
 
    /**
@@ -2133,20 +2165,22 @@ export class Package {
             };
          }
 
-         // From here the file IS a dashboard, so a finding naming it is true.
-         // Recorded before the two gates below, because a drill pointing at a
-         // dashboard this package really has must not be reported as pointing
-         // at one that does not exist just because it is withheld.
-         dashboardSlugs.add(name);
-
          // A slug that cannot round-trip through its own URL is not served.
          // Nothing validated this, and it is derived from a filename rather
-         // than chosen, so `dashboards/.malloy` published a `resource` ending
-         // in `/dashboards/` that folds onto the LIST route.
+         // than chosen, so `dashboards/v1.2.malloy` published a `resource` the
+         // server's own route cannot match.
          if (!isServableDashboardSlug(name)) {
             unservableSlugs.push(modelPath);
             continue;
          }
+
+         // The file IS a dashboard and CAN be addressed, so a drill naming it
+         // resolves. Recorded before the curation gate below but after the slug
+         // check above, and the order matters in both directions: a drill at a
+         // withheld dashboard is correct and must not be reported as naming
+         // something that does not exist, while a drill at a slug nothing can
+         // ever address is broken and must still be reported.
+         dashboardSlugs.add(name);
 
          // Curation gate. Every other listing path in this class consults
          // `exploreSet()`; discovery did not, so a curated package served a
@@ -2167,7 +2201,7 @@ export class Package {
          // mean resolving each tile against the closure before the manifest
          // exists, and being wrong in that direction hides a working dashboard,
          // which is worse than serving one with a finding attached.
-         if (model.hasEmptyDiscoverySurface()) {
+         if (this.queryBoundaryActive() && model.hasEmptyDiscoverySurface()) {
             emptySurface.push({ modelPath, name });
          }
 
@@ -2235,6 +2269,23 @@ export class Package {
             });
          }
          for (const { modelPath, name } of heldBack) {
+            // A drill AT a withheld dashboard still dead-ends: the dashboard is
+            // real, so calling it "not a dashboard in this package" is false,
+            // but the click 404s all the same. Say which of the two it is.
+            for (const file of allFacts.values()) {
+               for (const drill of file.drills) {
+                  if (!drill.to.includes(name)) continue;
+                  warnings.push({
+                     subject: `${drill.source}.${drill.dimension}`,
+                     message:
+                        `# drill on ${drill.source}.${drill.dimension} ` +
+                        `targets "${name}", which IS a dashboard in this ` +
+                        `package but is not served (see the finding on ` +
+                        `"${modelPath}"), so the click has nowhere to land.`,
+                     severity: "error",
+                  });
+               }
+            }
             warnings.push({
                model: modelPath,
                subject: name,
@@ -2329,8 +2380,11 @@ export class Package {
    }
 
    public listDashboards(): ApiDashboard[] {
+      // Resolved once rather than per dashboard: `isQueryableEntryPoint` builds
+      // a Set from `explores` on every call.
+      const servable = this.servableEntryPoints();
       return Array.from(this.dashboards.values())
-         .filter((manifest) => this.isQueryableEntryPoint(manifest.entryFile))
+         .filter((manifest) => servable(manifest.entryFile))
          .map((manifest) => ({
             resource: this.dashboardResource(manifest.name),
             packageName: this.packageName,

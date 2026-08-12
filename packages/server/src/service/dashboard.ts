@@ -38,6 +38,7 @@ import {
 } from "./given";
 import {
    docCommentText,
+   docCommentTitle,
    motlyAnnotations,
    motlyParseErrors,
    motlyTag,
@@ -192,12 +193,15 @@ export function dashboardSlug(modelPath: string): string {
  *
  * Nothing validated it, and the slug is derived from a filename rather than
  * chosen, so a file could produce one that does not round-trip:
- * `dashboards/.malloy` yields an empty slug, whose published `resource` ends in
- * `/dashboards/` and folds onto the LIST route under Express's non-strict
- * routing, so following the manifest's own link returns an array where a
- * manifest belongs. `dashboards/...malloy` yields `..`. There is no traversal
- * risk (the lookup is a `Map` and never touches the filesystem), but a
- * published link that points somewhere else is wrong on its own terms.
+ * `dashboards/v1.2.malloy` yields the slug `v1.2`, which does not match the
+ * pattern, so its published `resource` would be a URL the server's own route
+ * cannot match. There is no traversal risk (the lookup is a `Map` and never
+ * touches the filesystem), but a published link that does not resolve is wrong
+ * on its own terms.
+ *
+ * A leading-dot filename is NOT the case to reason about here, though it looks
+ * like the obvious one: `listPackageFiles` enumerates with `ignoreDotfiles`, so
+ * `dashboards/.malloy` never becomes a model at all and cannot reach this.
  */
 export function isServableDashboardSlug(slug: string): boolean {
    return /^[a-zA-Z0-9_-]+$/.test(slug);
@@ -592,7 +596,7 @@ export function buildDashboardManifest(
       return {
          ...base,
          title:
-            composite.title ?? docCommentText(facts.modelAnnotations) ?? name,
+            composite.title ?? docCommentTitle(facts.modelAnnotations) ?? name,
          description: docCommentText(facts.modelAnnotations),
          tiles,
          dashboardColumns: composite.dashboardColumns,
@@ -613,9 +617,10 @@ export function buildDashboardManifest(
       const artifact = tag ? readArtifactTag(tag) : undefined;
       if (!artifact) continue;
       const doc = docCommentText(query.annotations);
+      const docTitle = docCommentTitle(query.annotations);
       return {
          ...base,
-         title: artifact.title ?? doc ?? name,
+         title: artifact.title ?? docTitle ?? name,
          description: doc,
          query: query.name,
          dashboardColumns: artifact.dashboardColumns,
@@ -698,13 +703,19 @@ export function lintDashboard(
       // drops it there too, which is exactly why it needs saying aloud. Both
       // sides go through the same helper so they cannot disagree about a tag.
       if (!tag?.has(key)) continue;
-      if (positiveInteger(tagNumeric(tag, key)) === undefined) {
-         add(
-            `${written} must be a positive integer, got ` +
-               `${JSON.stringify(tagText(tag, key))}. ` +
-               `The grid falls back to the renderer default.`,
-         );
-      }
+      if (positiveInteger(tagNumeric(tag, key)) !== undefined) continue;
+      // What actually happens depends on the OTHER spelling, because the two
+      // are read with `??`. Saying "falls back to the renderer default" was
+      // right only when neither spelling supplied a usable value; when this one
+      // is bad and the other is good, the grid quietly uses the other, and a
+      // finding naming a default the author never sees is worse than none.
+      add(
+         `${written} must be a positive integer, got ` +
+            `${JSON.stringify(tagText(tag, key))}. ` +
+            (manifest.dashboardColumns === undefined
+               ? `The grid falls back to the renderer default.`
+               : `The grid uses ${manifest.dashboardColumns} instead.`),
+      );
    }
 
    for (const { query: tile } of manifest.tiles ?? []) {

@@ -7,6 +7,12 @@ source: orders is duckdb.table('data/orders.csv') extend {
    # drill { to=["overview"] }
    dimension: brand_name is brand
 
+   // Points at `dashboards/v1.2.malloy`, which IS a dashboard but whose slug
+   // "v1.2" can never be addressed at a URL, so the drill dead-ends and must
+   // be reported. Recording an unaddressable slug as "known" silenced this.
+   # drill { to=["v1.2"] }
+   dimension: unaddressable_target is brand
+
    # drill { to=["no_such_dashboard"] }
    dimension: region_name is region
 

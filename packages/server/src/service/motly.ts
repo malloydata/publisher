@@ -380,6 +380,24 @@ export function docCommentText(texts: readonly string[]): string | undefined {
 }
 
 /**
+ * The first non-empty line of a doc comment, for a field that must be one line.
+ *
+ * {@link docCommentText} joins with newlines on purpose, because that route
+ * carries markdown and authors write one line per source line. A title is not
+ * markdown and is rendered on one line everywhere, so using the whole comment
+ * as a title fallback published an embedded newline. Every title fallback in
+ * the codebase goes through this, so the two cannot drift: there are three of
+ * them (a notebook listing, a composite dashboard, a single-query dashboard)
+ * and fixing only the first is how this was a defect twice.
+ */
+export function docCommentTitle(texts: readonly string[]): string | undefined {
+   return docCommentText(texts)
+      ?.split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+}
+
+/**
  * Quote bare filter literals so MOTLY can parse them.
  *
  * New in this change, carried across from #935 rather than fixed in place: there
