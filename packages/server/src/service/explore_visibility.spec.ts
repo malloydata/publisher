@@ -27,6 +27,7 @@ import {
    describe,
    expect,
    it,
+   spyOn,
 } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -35,6 +36,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
+import { logger } from "../logger";
 import { Package } from "./package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
@@ -249,6 +251,38 @@ export { customers }`,
             "customers",
          ]);
       } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("says at load which file the convention picked", async () => {
+      // A surface that nothing in publisher.json mentions must not be
+      // invisible: an operator working out why a model stopped being listed
+      // has only the log to go on, since the convention firing is not itself a
+      // warning. Pinned because nothing else asserts this line exists.
+      writeManifest();
+      writeLayeredModels();
+
+      const infoSpy = spyOn(logger, "info");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         await Package.create("env", "pkg", tempDir, malloyConfig);
+         const calls = infoSpy.mock.calls as unknown as unknown[][];
+         const line = calls.find((c) =>
+            String(c[0]).includes(
+               "discovery surface defaulted from convention",
+            ),
+         );
+         expect(line).toBeDefined();
+         const detail = (line?.[1] ?? {}) as {
+            explores?: string[];
+            queryBoundaryEnforced?: boolean;
+         };
+         expect(detail.explores).toEqual(["index.malloy"]);
+         // The operator's actual next question, answered in the same line.
+         expect(detail.queryBoundaryEnforced).toBe(false);
+      } finally {
+         infoSpy.mockRestore();
          await duckdb.close();
       }
    });
