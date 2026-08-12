@@ -193,11 +193,16 @@ async function lookupBigQuery(opts: BuildCostLookup): Promise<BuildCost[]> {
  *
  * `INFORMATION_SCHEMA.QUERY_HISTORY` rather than `ACCOUNT_USAGE.QUERY_HISTORY`:
  * the latter lags by up to three hours and needs elevated grants, so it cannot
- * answer a question asked immediately after a build. Not
- * `QUERY_HISTORY_BY_SESSION` either — the passthrough gives no guarantee that a
- * second call reuses the session the build ran on, and a session mismatch would
- * return someone else's history rather than nothing, which is the one failure
- * this design refuses to accept.
+ * answer a question asked immediately after a build. The one used here carries no
+ * such lag — measured against a live account, a query appears in it immediately.
+ *
+ * `QUERY_HISTORY_BY_SESSION` would filter tighter and is genuinely available: the
+ * passthrough reuses a single session across calls (measured — two
+ * `snowflake_query` calls report the same `CURRENT_SESSION()`). It is not used
+ * here because the account-wide view plus an exact query-text match already
+ * resolves to one row. That same session guarantee is what would make
+ * `LAST_QUERY_ID()` usable as an EXACT key rather than the heuristic below, which
+ * is the better long-term shape and deliberately not attempted here.
  *
  * <b>The cost columns are not BigQuery's, and are not translated into them.</b>
  * Snowflake bills warehouse-seconds rather than per-query bytes, so there is no

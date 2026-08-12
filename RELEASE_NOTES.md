@@ -18,6 +18,28 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — queries and builds report what they cost
+
+The server measured several things and then discarded them, and the query
+histogram carried two labels that grew without bound. Both are addressed.
+
+### What changed
+
+- **`malloy_model_query_duration` no longer labels by query text or row count.** Both are unbounded — ad-hoc text yields a new series per distinct query, a row count one per distinct result size — and a histogram label multiplies by the bucket count, so the metric grew for as long as a process served traffic. They remain on the request log. `environment` and `package` take their place: the only identity on the metric was previously a bare model path, which is not unique across packages.
+- **`QueryResult` gains `servedFrom`, `executionTimeMs` and `queryCostBytes`.** A storage-served answer is byte-identical to a live one, so `servedFrom` is the only way a caller can tell a materialized source did anything; `live_fallback` is reported separately from `storage` because it is a success answered by the live warehouse, and counting it as a hit would report a healthy hit rate for a broken store. `queryCostBytes` comes from `runStats`, which the BigQuery connector already populated and nothing read.
+- **`ManifestEntry` gains `buildDurationMs` and `buildCost`.** The duration was already measured for the build histogram and sent upward as null. `buildCost` is read back from the warehouse's own accounting after a build — `bigquery_jobs()` for BigQuery, `INFORMATION_SCHEMA.QUERY_HISTORY` for Snowflake — and reports bytes scanned, bytes billed, slot or execution time, and whether the read was cached.
+- **Two counters:** `publisher_build_cost_lookup_total{engine,outcome}` and `publisher_build_cache_hit_total{engine}`.
+
+### Reading the cost numbers
+
+**Bytes billed is not bytes scanned.** BigQuery rounds up to a 10MB minimum per query, so a small read bills an order of magnitude above what it scanned — and materialization refreshes are mostly small reads. Both are reported; only the billed figure maps to money.
+
+**Null is not zero.** Every cost field is per-engine and nullable. Snowflake has no per-query billed quantity at all (it bills warehouse-seconds), a chained `storage=` build touches no warehouse by construction, and a lookup that does not resolve reports nothing rather than guessing.
+
+That last case is worth watching. Neither passthrough returns a job handle for a rows-returning call, so a build's query is identified by a time window plus an exact match on the recorded query text. When that matches nothing — or more than one — the result is null: two identical-SQL reads are where costs diverge _most_, since the second hits the result cache and bills zero, so taking the most recent would systematically under-report. `publisher_build_cost_lookup_total{outcome}` reports how often the key holds, and any figure derived from these numbers is computed over the subset that resolved rather than over all builds.
+
+---
+
 ## [Unreleased] — `storage=` builds from a Snowflake source now work (Docker image)
 
 The 0.0.236 notes below list `snowflake_query` among the native query-passthroughs a `storage=` source is materialized through. That was true of the code and never true of the published image: **materializing a Snowflake source into a storage destination has not worked at all.** Two independent faults, both fixed.
