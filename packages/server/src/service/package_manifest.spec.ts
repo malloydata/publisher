@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
+   exploresPatchIgnoredUnderConvention,
+   isExploresConventionWarning,
    packageMaterializationWarnings,
    parsePackageMaterialization,
    parsePackageScope,
@@ -231,6 +233,8 @@ describe("service/package_manifest", () => {
    });
 
    describe("resolveExplores", () => {
+      /** Stable fragment of the malformed-key warning, matched by several tests. */
+      const MALFORMED = "is not a list of model file paths";
       const WITH_INDEX = ["index.malloy", "internal.malloy"];
       const WITHOUT_INDEX = ["orders.malloy", "internal.malloy"];
       const resolve = (
@@ -378,7 +382,7 @@ describe("service/package_manifest", () => {
          );
          expect(explores).toEqual(["index.malloy"]);
          expect(fromConvention).toBe(true);
-         expect(warnings.some((w) => w.includes("is not an array"))).toBe(true);
+         expect(warnings.some((w) => w.includes(MALFORMED))).toBe(true);
       });
 
       it("warns about a malformed explores even with no index.malloy", () => {
@@ -387,7 +391,79 @@ describe("service/package_manifest", () => {
             WITHOUT_INDEX,
          );
          expect(explores).toBeUndefined();
-         expect(warnings.some((w) => w.includes("is not an array"))).toBe(true);
+         expect(warnings.some((w) => w.includes(MALFORMED))).toBe(true);
+      });
+
+      it("rejects an array with a non-string entry rather than coercing it", () => {
+         // Coercing would build a surface naming "null", which matches no
+         // model, so curation would switch ON over an empty set and the package
+         // would list NOTHING, with no warning to explain it. Rejecting the key
+         // leaves the package uncurated, which is the conservative direction.
+         const { explores, warnings } = resolve(
+            ["orders.malloy", null],
+            WITHOUT_INDEX,
+         );
+         expect(explores).toBeUndefined();
+         expect(warnings.some((w) => w.includes(MALFORMED))).toBe(true);
+      });
+   });
+
+   describe("isExploresConventionWarning", () => {
+      // The predicate decides which warnings survive an origin change. Nothing
+      // enforced that it matches the strings beside it, and a reword in this
+      // same feature already changed one of them, so pin both directions.
+      const WITH_INDEX = ["index.malloy", "internal.malloy"];
+      const emitted = [
+         // redundant
+         resolveExplores({
+            declaredExplores: ["index.malloy"],
+            declaredQueryableSources: undefined,
+            modelPaths: WITH_INDEX,
+         }).warnings[0],
+         // disagrees
+         resolveExplores({
+            declaredExplores: ["orders.malloy"],
+            declaredQueryableSources: undefined,
+            modelPaths: WITH_INDEX,
+         }).warnings[0],
+         // malformed
+         resolveExplores({
+            declaredExplores: "orders.malloy",
+            declaredQueryableSources: undefined,
+            modelPaths: WITH_INDEX,
+         }).warnings[0],
+         // queryableSources inert, both remedies
+         resolveExplores({
+            declaredExplores: undefined,
+            declaredQueryableSources: "declared",
+            modelPaths: WITH_INDEX,
+         }).warnings[0],
+         resolveExplores({
+            declaredExplores: undefined,
+            declaredQueryableSources: "all",
+            modelPaths: WITH_INDEX,
+         }).warnings[0],
+         exploresPatchIgnoredUnderConvention(),
+      ];
+
+      it("matches every warning the convention can emit", () => {
+         for (const w of emitted) {
+            expect(w).toBeDefined();
+            expect(isExploresConventionWarning(w)).toBe(true);
+         }
+      });
+
+      it("does not match unrelated manifest warnings", () => {
+         // These describe the manifest's shape, not the surface's origin, so
+         // an origin change must not delete them.
+         const scopeDeprecation = resolvePackageScope("version", undefined)
+            .warnings[0];
+         expect(isExploresConventionWarning(scopeDeprecation)).toBe(false);
+         const queryMetadata = packageMaterializationWarnings({
+            queryMetadata: { retries: 3 },
+         })[0];
+         expect(queryMetadata).toBeDefined();
+         expect(isExploresConventionWarning(queryMetadata)).toBe(false);
       });
    });
 

@@ -268,13 +268,16 @@ describe("generated project serves against a real server", () => {
       );
    });
 
-   test("a source hidden from listings is still queryable by name", async () => {
-      // The convention curates discovery, never access. sales.malloy is not
-      // listed above, and must still answer.
-      const model = await getJson<{ path: string; error?: string }>(
-         `${pkgBase()}/models/sales.malloy`,
+   test("a model hidden from listings is still QUERYABLE by name", async () => {
+      // The convention curates discovery, never access. This has to run a
+      // QUERY: the boundary gates getQueryResults and /compile, not retrieval
+      // by exact path, so a GET of the model would pass with the boundary armed
+      // and prove nothing.
+      const response = await postJson<{ result: string }>(
+         `${pkgBase()}/models/sales.malloy/query`,
+         { sourceName: "sales", queryName: "overview" },
       );
-      expect(model.error).toBeUndefined();
+      expect(response.result).toBeDefined();
    });
 
    test("the starter model compiles with all its views", async () => {

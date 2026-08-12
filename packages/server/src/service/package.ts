@@ -2040,6 +2040,32 @@ export class Package {
    }
 
    /**
+    * Append a manifest warning raised after load (today, only the PATCH path).
+    * De-duplicated, because a client that round-trips repeatedly would
+    * otherwise stack the same sentence up on every call.
+    */
+   public addManifestWarning(warning: string): void {
+      if (!this.manifestWarnings.includes(warning)) {
+         this.manifestWarnings.push(warning);
+      }
+   }
+
+   /** A copy of the current manifest warnings, for a caller that may roll back. */
+   public getManifestWarnings(): string[] {
+      return [...this.manifestWarnings];
+   }
+
+   /**
+    * Put back warnings a rolled-back edit dropped. `setPackageMetadata`'s filter
+    * is destructive and runs again on the way back, so restoring the metadata
+    * alone would leave the package quietly missing a warning whose condition
+    * never changed.
+    */
+   public restoreManifestWarnings(warnings: string[]): void {
+      this.manifestWarnings = [...warnings];
+   }
+
+   /**
     * Say at load which file the convention picked, so a discovery surface that
     * nothing in publisher.json mentions is never invisible to an operator
     * reading the logs to work out why a model stopped being listed.

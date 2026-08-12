@@ -306,22 +306,30 @@ export function resolveExplores(input: {
 }): ResolvedExplores {
    const { declaredExplores, declaredQueryableSources, modelPaths } = input;
    const hasIndexModel = modelPaths.includes(INDEX_MODEL_NAME);
+   // An array of strings is the only well-formed shape. A NON-string element is
+   // malformed too, and is treated exactly like a malformed key rather than
+   // coerced: `String(null)` would build a surface naming "null", which matches
+   // no model, so curation would switch on over an empty set and the package
+   // would list nothing with no warning to explain it. Rejecting the key is the
+   // conservative direction, because it leaves the package uncurated (or on the
+   // convention) rather than silently emptying it.
    const declaredIsArray = Array.isArray(declaredExplores);
-   const declared = declaredIsArray
-      ? (declaredExplores as unknown[]).map((e) =>
-           typeof e === "string" ? normalizeModelPath(e) : String(e),
-        )
+   const wellFormedArray =
+      declaredIsArray &&
+      (declaredExplores as unknown[]).every((e) => typeof e === "string");
+   const declared = wellFormedArray
+      ? (declaredExplores as string[]).map(normalizeModelPath)
       : undefined;
 
    // A present-but-malformed `explores` (a bare string is the usual typo of the
-   // array form) is neither a declaration nor an absence. Treating it as an
-   // absence would let the convention quietly curate the package, dropping
-   // every model the author was trying to list with no clue why, so it falls
-   // through to the convention but says so.
+   // array form; a null or number among the entries is the other) is neither a
+   // declaration nor an absence. Treating it as an absence would let the
+   // convention quietly curate the package, dropping every model the author was
+   // trying to list with no clue why, so it falls through but says so.
    const malformed =
       declaredExplores !== undefined &&
       declaredExplores !== null &&
-      !declaredIsArray;
+      !wellFormedArray;
 
    if (declared !== undefined) {
       // Explicit wins. Warn only when the package also has an index.malloy,
@@ -443,15 +451,47 @@ export function isExploresConventionWarning(warning: string): boolean {
    return (
       warning.startsWith(`"explores" in publisher.json`) ||
       warning.startsWith(`This package has an "${INDEX_MODEL_NAME}"`) ||
-      warning.startsWith(`"queryableSources" in publisher.json`)
+      warning.startsWith(`"queryableSources" in publisher.json`) ||
+      warning.startsWith(EXPLORES_PATCH_IGNORED_PREFIX)
+   );
+}
+
+const EXPLORES_PATCH_IGNORED_PREFIX =
+   "An API update re-sent this package's discovery surface";
+
+/**
+ * Said when a metadata PATCH carried an `explores` identical to the surface the
+ * convention had already produced.
+ *
+ * That request is ambiguous and the server cannot tell the two readings apart:
+ * a client echoing back what it just read (which must stay a no-op, or editing
+ * a description would arm a 404 boundary), or an author declaring the surface
+ * on purpose to opt INTO that boundary. It is treated as the echo, because
+ * guessing the other way silently revokes query access.
+ *
+ * The cost is that the second author's intent is not applied, and an unsaid
+ * "we ignored your declaration" on an access control is the failure mode worth
+ * avoiding most: they would believe queries were gated when they are not. So
+ * it is said out loud, with the route that does work.
+ */
+export function exploresPatchIgnoredUnderConvention(): string {
+   return (
+      `${EXPLORES_PATCH_IGNORED_PREFIX} ("${INDEX_MODEL_NAME}"), which is ` +
+      `exactly what the convention already derives, so nothing changed and the ` +
+      `query boundary is NOT enforced: every source is still queryable by name. ` +
+      `An API update cannot tell that request apart from a client echoing back ` +
+      `what it read, and treating it as a declaration would revoke query access ` +
+      `from anyone who had only edited a description. If you meant to enforce ` +
+      `the boundary, add "explores" to the package's publisher.json and reload; ` +
+      `a surface declared there does enforce it.`
    );
 }
 
 function exploresMalformed(raw: unknown): string {
    return (
-      `"explores" in publisher.json is not an array (got ` +
-      `${JSON.stringify(raw)}), so it was ignored. Write it as a list of model ` +
-      `file paths, for example ["${INDEX_MODEL_NAME}"]. Until you do, this ` +
+      `"explores" in publisher.json is not a list of model file paths (got ` +
+      `${JSON.stringify(raw)}), so it was ignored. Write it as an array of ` +
+      `strings, for example ["${INDEX_MODEL_NAME}"]. Until you do, this ` +
       `package's discovery surface is whatever the ` +
       `"${INDEX_MODEL_NAME}" convention decides, which is not what the key says.`
    );

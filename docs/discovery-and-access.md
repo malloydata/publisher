@@ -48,9 +48,13 @@ discovery and chat), at two granularities that **both apply only once the packag
   > no `explores`, this changes what it lists: the surface becomes that one file, so your other
   > models drop out of listings and `export { … }` curation starts applying inside it. Nothing
   > becomes unreachable, because the convention never gates queries (see the boundary section
-  > below), so anything you did not mean to hide is still queryable by name while you fix it. To
-  > keep the old behavior, either declare `explores` explicitly with the set you want, or rename
-  > the file.
+  > below), so anything you did not mean to hide is still queryable by name while you fix it.
+  >
+  > To get the old listings back, **rename the file**: that is the only change that restores
+  > exactly the previous behavior. If you would rather keep the name and curate deliberately,
+  > declare `explores` with the set you want *and* set `"queryableSources": "all"`, because
+  > declaring `explores` on its own also turns on the query boundary, which is a larger change
+  > than the one you are undoing.
 
 - **Within a file: `export { … }`.** Once the package has a surface, the discovery accessors list only
   the model's re-export closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos`

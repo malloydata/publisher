@@ -22,7 +22,10 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
-import { resolvePatchedExploresOrigin } from "./package_manifest";
+import {
+   exploresPatchIgnoredUnderConvention,
+   resolvePatchedExploresOrigin,
+} from "./package_manifest";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -2092,6 +2095,12 @@ export class Environment {
             patchedExplores: normalizedExplores,
             existingExplores: existing.explores,
          });
+         // The body named a surface and we kept treating it as convention. That
+         // is right for the echo it usually is, but if the caller meant it as a
+         // declaration their boundary is not enforced, so say so rather than
+         // let them believe queries are gated.
+         const declarationIgnored =
+            normalizedExplores !== undefined && fromConvention;
          const queryableSources =
             body.queryableSources !== undefined
                ? body.queryableSources
@@ -2125,6 +2134,10 @@ export class Environment {
          const materialization = materializationProvided
             ? body.materialization
             : existing.materialization;
+         // Snapshot before the write: setPackageMetadata drops the convention
+         // warnings when the origin changes, and the rejection path below has
+         // to put back everything it rolled back, not just the metadata.
+         const previousManifestWarnings = _package.getManifestWarnings();
          _package.setPackageMetadata(
             {
                name: body.name,
@@ -2159,13 +2172,25 @@ export class Environment {
             .join("\n");
          if (invalidMsg) {
             _package.setPackageMetadata(existing, previousFromConvention);
+            _package.restoreManifestWarnings(previousManifestWarnings);
             throw new BadRequestError(invalidMsg);
+         }
+         if (declarationIgnored) {
+            _package.addManifestWarning(exploresPatchIgnoredUnderConvention());
          }
 
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
-            explores: normalizedExplores,
+            // Never persist a surface that is still convention-derived. The
+            // origin lives only in memory, so writing the resolved
+            // `["index.malloy"]` out would make disk say "declared" while the
+            // running server says "convention": the boundary would stay off
+            // now and switch ON at the next reload, long after the PATCH that
+            // caused it and with nothing linking the two. Leaving the key
+            // absent keeps disk and runtime agreeing, and the convention
+            // re-derives the same surface on every load.
+            explores: fromConvention ? undefined : normalizedExplores,
             queryableSources: body.queryableSources,
             manifestLocation: body.manifestLocation,
             // Only write when explicitly provided (non-null): mirrors the

@@ -449,7 +449,17 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    }
 
    const sourceName = toMalloyIdentifier(name);
-   const modelFile = `${sourceName}.malloy`;
+   // Normally `<source>.malloy`. A package called `index` (or `Index`) is the
+   // exception: its model would collide with the published-surface file, and on
+   // a case-insensitive filesystem writing both would silently destroy one of
+   // them. Give it the canonical lowercase name instead, so the model simply IS
+   // the surface. Exactly `index.malloy`, because the server's convention test
+   // is an exact match, so `Index.malloy` would leave the package uncurated on
+   // every platform while the scaffolder claimed otherwise.
+   const modelFile =
+      sourceName.toLowerCase() === "index"
+         ? INDEX_MODEL_FILE
+         : `${sourceName}.malloy`;
    const packageDir = path.join(options.cwd, name);
 
    const packageDirExists = fs.existsSync(packageDir);
@@ -544,15 +554,11 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    // curated from the first boot without a publisher.json "explores" key, and
    // the user has one obvious file to edit when they want to publish more.
    //
-   // Unless the starter model IS that file. `create-malloy-package index` names
-   // the model index.malloy, and writing the surface template over it would
-   // replace the user's only model with a file that imports itself and exports
-   // a source that no longer exists, so the package would not compile. The
-   // model is already the entry point in that case, and needs no separate one.
-   // Compared case-insensitively because macOS and Windows would overwrite it
-   // for `Index` too, and matching that here keeps every platform on the same
-   // layout rather than only the ones that would have corrupted it.
-   const modelIsIndex = modelFile.toLowerCase() === INDEX_MODEL_FILE;
+   // Unless the starter model IS that file (see the modelFile note above).
+   // Writing the surface template over it would replace the user's only model
+   // with one that imports itself and exports a source that no longer exists,
+   // so the package would not compile. The model is already the entry point.
+   const modelIsIndex = modelFile === INDEX_MODEL_FILE;
    if (!modelIsIndex) {
       writeFile(
          path.join(packageDir, INDEX_MODEL_FILE),
@@ -585,8 +591,12 @@ function forceDescription(name: string, modelFile: string, host: Host): string {
    const mcpPath = mcpConfigPathFor(host);
    return (
       `--force does not empty the directory. It rewrites ${name}/publisher.json, ` +
-      `${name}/${modelFile}, ${name}/${INDEX_MODEL_FILE} and the data file it ` +
-      `copies into ${name}/data/, and ` +
+      // One name when the model IS the surface, or the same path would be
+      // listed twice.
+      (modelFile === INDEX_MODEL_FILE
+         ? `${name}/${modelFile}`
+         : `${name}/${modelFile}, ${name}/${INDEX_MODEL_FILE}`) +
+      ` and the data file it copies into ${name}/data/, and ` +
       `leaves anything else in there alone. It also refreshes .claude/skills/ ` +
       `from the bundled copies, as every run does. Outside the package it ` +
       `replaces ${agentFiles}; in package.json it sets only the "start" and ` +
