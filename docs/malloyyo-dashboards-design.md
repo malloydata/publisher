@@ -18,8 +18,7 @@ declaration's tags are separate changes that need not arrive together. The dashb
 another, being two endpoints, and discovery is a third: the server side can arrive before the
 package-page section that surfaces it. Before building on any part of this design, read the open
 and merged dashboard pull requests and look in the tree, rather than trusting a sentence here.
-These are the files and symbols each part lives in, which is what makes that check quick, and the
-table splits the halves so neither can be mistaken for the whole:
+These are the files and symbols each part lives in, which is what makes that check quick:
 
 | Part of the design                       | Lives in                                                        |
 | ---------------------------------------- | --------------------------------------------------------------- |
@@ -27,7 +26,7 @@ table splits the halves so neither can be mistaken for the whole:
 | Given control contract, derived from tags | `readGivenControlSpec` in `packages/server/src/service/given.ts` |
 | `dashboards/` discovery and the manifest | `packages/server/src/service/dashboard.ts`                      |
 | The artifact / MOTLY tag primitives      | `packages/server/src/service/motly.ts`                          |
-| The dashboard REST surface               | the `dashboards` paths in `api-doc.yaml` (a list and a get)      |
+| The dashboard REST surface               | `dashboard.controller.ts`, plus its `dashboards` paths in `api-doc.yaml` |
 | The viewer                               | `packages/sdk/src/components/Dashboard/`                        |
 
 Phases 1 to 3 (discovery and REST, the tag-only viewer, `# drill`) and phase 5 (the `storefront`
@@ -42,8 +41,8 @@ above says where to look. Written July 2026, revised against the implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
 plus `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or an HTML data
-app) and `docs/dashboards.md` (how to use the feature rather than read its design), both part of the
-phase 5 doc slice.
+app) and `docs/dashboards.md` (how to use the feature rather than read its design), both
+delivered by phase 5 in [Phasing](#phasing) below.
 Externally, Malloyyo's `docs/creating-dashboards.md`, `docs/composite-dashboards.md`, and
 `docs/dashboard-iframe-security.md` are the format and security posture this design adopts.
 
