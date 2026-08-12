@@ -933,7 +933,7 @@ describe("service/dashboard silent-vanish lint", () => {
    // the space in `@2024-03-01 10:00`, which discards the WHOLE artifact tag,
    // dashboard and all. Pinned because that is a natural thing to write next to
    // a timestamp given, and the reason it is acceptable is that it is reported
-   // here rather than lost — `readStartingGivens` says so and this is the proof.
+   // here rather than lost. `readStartingGivens` says so and this is the proof.
    it("reports a timestamp starting value, which the grammar cannot parse", () => {
       expect(
          messages(

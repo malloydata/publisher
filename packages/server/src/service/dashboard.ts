@@ -589,6 +589,29 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
 }
 
 /**
+ * Whether a compiled file carries an artifact tag at all, read from the same two
+ * places {@link buildDashboardManifest} reads it: the model-level annotations and
+ * each named query's.
+ *
+ * Exists for the one caller that has `facts` in hand but no manifest, because
+ * building it threw. There the textual `claimsToBeADashboard` heuristic is the
+ * wrong tool: the tag IS readable, it was the construction that failed, and that
+ * caller pays the most for a false positive (it emits an `error` finding and
+ * registers a slug, which silences a genuinely dangling `# drill`).
+ *
+ * Deliberately broader than the manifest build, which additionally needs
+ * `readArtifactTag` to yield something. So `manifest !== undefined` implies this
+ * is true, never the reverse. That is the safe direction: it can over-report a
+ * dropped dashboard, and can never silently drop a real one.
+ */
+export function factsCarryArtifactTag(facts: DashboardModelFacts): boolean {
+   if (motlyTag(facts.modelAnnotations)?.tag("artifact")) return true;
+   return facts.queries.some((query) =>
+      Boolean(motlyTag(query.annotations)?.tag("artifact")),
+   );
+}
+
+/**
  * Build the manifest for one dashboard file, or undefined when the file carries
  * no artifact tag (a shared include).
  *

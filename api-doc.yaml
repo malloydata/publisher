@@ -2995,7 +2995,12 @@ components:
             describe a dashboard, a tile or suggest query that does not resolve,
             a `# drill` naming a destination that is not a dashboard, and a
             dashboard held back from the listing because its entry file is not
-            in `explores`. Server-computed and read-only: ignored on
+            in `explores`. Two dashboard findings are about Publisher rather
+            than about the package: one when a file carrying an artifact tag
+            could not be read and so is not served at all, and one when the lint
+            stops early, in which case the list must be read as incomplete
+            rather than as a clean package. Server-computed and read-only:
+            ignored on
             create/update requests and only returned in responses. Present only
             when there are such findings.
 
@@ -3075,7 +3080,14 @@ components:
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
                   author probably intended, such as a dashboard held back by
-                  curation.
+                  curation. The two findings about Publisher rather than about
+                  the package split across both: a file that carries an artifact
+                  tag and could not be read is `error`, because the dashboard it
+                  should have produced does not exist, and a lint that stopped
+                  early is `warn`, because the lint failing is not itself a
+                  defect in the package. That `warn` does NOT mean the package is
+                  free of `error`-severity findings, since the ones the lint
+                  never reached are exactly what it cannot report.
         queryableSources:
           type: string
           enum:

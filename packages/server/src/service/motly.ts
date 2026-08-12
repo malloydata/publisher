@@ -828,7 +828,7 @@ export function readStartingGivens(
       // `date` is the only temporal literal that reaches here: MOTLY's grammar
       // stops at the space in `@2024-03-01 10:00` ("Expected '{', found '0'"),
       // so a timestamp starting value has to be written as a quoted string.
-      // That is not a silent loss — the parse error discards the whole tag, and
+      // That is not a silent loss: the parse error discards the whole tag, and
       // `lintUndiscoveredDashboard` reports it against the file.
       collected[name] =
          scalarTypeOf(tag) === "date"

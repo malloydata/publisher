@@ -26,7 +26,7 @@ put the server behind your own gateway before exposing it beyond localhost.
     │   ├── /notebooks/{path}           a .malloynb notebook
     │   │   └── /cells/{index}          GET — run one notebook cell
     │   ├── /dashboards                 `# artifact` dashboards in dashboards/
-    │   │   └── /{name}                 GET — one dashboard's manifest
+    │   │   └── /{name}                 GET, one dashboard's manifest
     │   ├── /data-apps                  in-package HTML data apps
     │   ├── /events                     GET, the live-reload SSE stream (held open)
     │   ├── /databases                  the package's embedded data files (e.g. parquet)

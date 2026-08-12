@@ -775,8 +775,8 @@ describe("Dashboard discovery (E2E)", () => {
 
       /**
        * A percent is a different and worse failure mode than a hash. Raw, the
-       * param cannot be decoded at all, so the response is 400 rather than a
-       * wrong-but-valid 404. This case is why encoding is the fix and "the
+       * param cannot be decoded at all, so the request never reaches a handler
+       * and no 404 is possible. This case is why encoding is the fix and "the
        * route matches it" was too broad a conclusion to draw from one dot.
        */
       it("publishes a followable URL for a name containing a percent", async () => {
@@ -792,6 +792,43 @@ describe("Dashboard discovery (E2E)", () => {
          expect((await followed.json()) as { name?: string }).toMatchObject({
             name: "p%q",
          });
+      });
+
+      /**
+       * Sending the name RAW is what the encoding avoids, and it fails before
+       * routing: Express cannot decode the param, so no handler runs. Measured
+       * rather than assumed, because the obvious guess is 400 and it is not one.
+       *
+       * Read what this does and does not pin. It exercises NO dashboard code:
+       * `decode_param` throws during layer matching, so `getDashboard` never
+       * runs and no regression in lookup, gating or payload is visible here.
+       * What it pins is that a trailing-param route matches at all and that the
+       * app-level handler maps an unclassified error to 500, and that the
+       * dashboards route is not somehow special among its neighbours.
+       *
+       * `models` and `notebooks` are the comparison because they take a param in
+       * the same position. Their routes are wildcards where this one is
+       * `:dashboardName`, so the bodies match only while both captures are the
+       * single segment `p%q`; a multi-segment capture would diverge for reasons
+       * unrelated to dashboards. The package route behaves the same way and is
+       * simply not expressible through the helper below.
+       *
+       * Expected to go red when the middleware is fixed to return 400, which is
+       * the point of writing it down.
+       */
+      it("answers a raw, undecodable name exactly as its neighbours do", async () => {
+         const raw = (suffix: string) =>
+            fetch(
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/${suffix}/p%q`,
+            );
+         const onDashboards = await raw("dashboards");
+         expect(onDashboards.status).toBe(500);
+         const body = await onDashboards.text();
+         for (const neighbour of ["models", "notebooks"]) {
+            const other = await raw(neighbour);
+            expect(other.status).toBe(onDashboards.status);
+            expect(await other.text()).toBe(body);
+         }
       });
 
       it("notes the unconventional name without refusing to serve it", async () => {
