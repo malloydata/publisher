@@ -18,6 +18,30 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — `storage=` builds from a Snowflake source now work (Docker image)
+
+The 0.0.236 notes below list `snowflake_query` among the native query-passthroughs a `storage=` source is materialized through. That was true of the code and never true of the published image: **materializing a Snowflake source into a storage destination has not worked at all.** Two independent faults, both fixed.
+
+### What changed
+
+- **The image now carries the ADBC Snowflake driver.** The Snowflake extension is a wrapper over it, and `INSTALL snowflake FROM community` does not bring it — so every `snowflake_query()` failed at run time with `ADBC Snowflake driver (libadbc_driver_snowflake.so) not found`. It is now fetched at a pinned version, for the image's architecture, into the extension directory the runtime reads.
+- **A key-pair Snowflake connection can be federated.** The passthrough required a password and emitted `PASSWORD`, so a connection authenticating by key pair — which queries fine on the live path — could not be built from at all. Key pair or password is now accepted, with a private-key passphrase when supplied.
+- **`ROLE` and `SCHEMA` travel with the federated connection.** Both are part of what identifies a Malloy connection; without them a build ran under the user's _default_ role while live queries on the same connection used the configured one.
+
+### Why it went unnoticed
+
+Both guards were blind for the same reason. The image build verified Snowflake with `SELECT snowflake_version()` — a scalar that never touches the driver and passes without it — and the offline extension smoke test asserted only that extensions `LOAD`. The driver is a query-time dependency, so nothing that ran at build time could see it missing.
+
+### Scope, and what is still missing
+
+The driver is installed by the **Docker image**. A local clone or `npx @malloy-publisher/server` still has no driver, so `storage=` builds from Snowflake continue to fail there with the same error — installing it is a manual step (`dbc install snowflake`, or the extension's installer script). Closing that properly means the bake step owning the driver alongside the extensions, which is worth doing and is not this change.
+
+### Operational notes
+
+A failed driver fetch now **fails the image build** rather than warning and continuing. An image without the driver cannot answer a Snowflake query, so it should not leave the builder reporting success — which is how this shipped. A release built from an unchecked ref is covered by the same assertion, since it lives in the Dockerfile rather than only in CI.
+
+---
+
 ## [0.0.236] — DuckDB/DuckLake materialization tier (`storage=`)
 
 This section describes the tier as it stands at 0.0.236. It first shipped in 0.0.232; the disjoint-set semantics between `storageDestinations` and `connections` landed in 0.0.236.

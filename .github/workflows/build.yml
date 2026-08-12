@@ -334,16 +334,68 @@ jobs:
             echo "✓ $ext loads offline"
           done
 
-          # 3. The community extensions (bigquery, snowflake) must load offline
-          #    too. snowflake in particular loads via its BUNDLED ADBC driver --
-          #    we removed the external ADBC driver install, so a failure here
-          #    means the extension no longer self-provides the driver.
+          # 3. The community extensions (bigquery, snowflake) must load offline too.
           for ext in bigquery snowflake; do
             docker run --rm --network none --entrypoint duckdb \
               malloy-publisher:smoke-test -c "LOAD $ext;" \
-              || { echo "✗ community extension '$ext' failed to load offline (bundled driver missing?)"; exit 1; }
+              || { echo "✗ community extension '$ext' failed to load offline"; exit 1; }
             echo "✓ $ext loads offline"
           done
+
+          # 4. snowflake does NOT self-provide its ADBC driver, whatever an earlier
+          #    version of this comment asserted. The extension is a wrapper over
+          #    libadbc_driver_snowflake.so, which the image installs separately.
+          #    LOAD succeeds without it and only snowflake_query() fails, so step 3
+          #    cannot see it missing -- which is how the image came to ship unable
+          #    to run a single Snowflake query.
+          #
+          #    4a. Structural: a driver beside EVERY directory holding the
+          #    extension. The Dockerfile places one per directory and asserts that
+          #    at least one exists; "at least one" and "one beside each" diverge if
+          #    a copy fails in a non-final loop iteration, because a pipeline's
+          #    status is its last command's. The explicit zero-match guard matters
+          #    for the same reason: `find | while read` succeeds vacuously when the
+          #    loop body never runs.
+          docker run --rm --entrypoint sh malloy-publisher:smoke-test -c '
+            n=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
+            [ "$n" -gt 0 ] || { echo "no snowflake.duckdb_extension in the image"; exit 1; }
+            find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
+              | while read -r d; do
+                  [ -f "$d/libadbc_driver_snowflake.so" ] || { echo "no driver beside $d"; exit 1; }
+                done' \
+            || { echo "✗ ADBC Snowflake driver not co-located with the extension"; exit 1; }
+          echo "✓ ADBC driver sits beside every snowflake.duckdb_extension"
+
+          #    4b. Functional: the driver actually LOADS. Presence cannot show that
+          #    -- a truncated or wrong-architecture .so sits there and fails to
+          #    dlopen, which 4a reports as perfectly fine.
+          #
+          #    Asserted by PROGRESS rather than by message. Offline with a bogus
+          #    secret the query fails whatever happens; what differs is how far it
+          #    gets. With the driver loaded it clears ADBC init and enters
+          #    Snowflake's login retry loop, so it is still running when the timeout
+          #    kills it (124). A missing or unloadable driver dies immediately.
+          #
+          #    Two properties follow, both measured against a real image, one with
+          #    the driver deleted and one with it truncated. It cannot rot: no error
+          #    text is matched, so a reworded message cannot quietly stop the check
+          #    from checking -- the failure this step exists to correct. And it
+          #    costs ~10s rather than the ~3.5 MINUTES that letting the login
+          #    retries exhaust takes. That wait is the retry loop itself and is not
+          #    avoidable by pointing the secret at loopback (measured: identical).
+          rc=0
+          docker run --rm --network none --entrypoint bash \
+            malloy-publisher:smoke-test -c \
+            "timeout 10 duckdb -c \"LOAD snowflake;
+               CREATE SECRET s (TYPE snowflake, ACCOUNT 'x', USER 'y', PASSWORD 'z');
+               SELECT * FROM snowflake_query('SELECT 1','s');\" >/dev/null 2>&1" \
+            >/dev/null 2>&1 || rc=$?
+          if [ "$rc" -ne 124 ]; then
+            echo "✗ snowflake_query() died before reaching the network (exit $rc)"
+            echo "  the ADBC driver is missing or failed to load"
+            exit 1
+          fi
+          echo "✓ ADBC driver loads (a real query reaches Snowflake's login retry)"
           echo "✓ All baked DuckDB extensions load offline"
       - name: Start container
         run: |
