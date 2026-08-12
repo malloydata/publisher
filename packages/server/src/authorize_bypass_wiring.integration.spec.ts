@@ -19,7 +19,9 @@
 
 import { describe, expect, it } from "bun:test";
 import express from "express";
+import { readFileSync } from "fs";
 import { request as httpRequest } from "http";
+import { resolve } from "path";
 import sinon from "sinon";
 import request from "supertest";
 
@@ -172,5 +174,29 @@ describe("authorize bypass wiring, over HTTP", () => {
          {},
       );
       expect(bypass).toBe(true);
+   });
+});
+
+/**
+ * The legacy `/projects/…` alias is a live query route — `server.ts` imports
+ * `registerLegacyRoutes` from `server-old.ts` — and it does NOT honour the
+ * bypass. That asymmetry is deliberate (the alias exists for pre-rename SDK
+ * compatibility and passes no `givens` either, so it cannot satisfy a gate at
+ * all), but "deliberate" and "nobody noticed" look identical in a diff. Pinned
+ * from the source so a future edit has to choose: wire it and update this test,
+ * or leave it alone.
+ */
+describe("the legacy /projects alias accepts no bypass", () => {
+   const legacySource = readFileSync(
+      resolve(import.meta.dir, "server-old.ts"),
+      "utf8",
+   );
+
+   it("passes no bypass argument to getQuery", () => {
+      const withoutComments = legacySource
+         .replace(/\/\*[\s\S]*?\*\//g, "")
+         .replace(/^\s*\/\/.*$/gm, "");
+      expect(withoutComments).not.toContain("readBypassAuthorize");
+      expect(withoutComments).not.toContain("bypassAuthorize");
    });
 });

@@ -717,6 +717,11 @@ export function registerLegacyRoutes(
       },
    );
 
+   // Accepts NO authorize bypass, deliberately: this alias exists only for
+   // pre-rename SDK compatibility, it passes no `givens` either (so it cannot
+   // satisfy a gate in the first place), and every extra route that can disable
+   // a gate is another one to audit. A caller that needs the bypass uses the
+   // current `/environments/…` route. Pinned by authorize_bypass_wiring.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
       queryConcurrency(),
