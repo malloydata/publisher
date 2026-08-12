@@ -74,6 +74,14 @@ jobs:
         run: bun run build
         shell: bash
 
+      # Component and hook specs render against a DOM registered in a bun
+      # preload (packages/sdk/test/setup.ts). Run on every OS because a preload
+      # path and a DOM shim are exactly the sort of thing that resolves on
+      # Linux and not on Windows. First because it is the fastest suite here.
+      - name: Run SDK tests
+        run: bun run --cwd packages/sdk test
+        shell: bash
+
       # The skills package copies a directory tree and resolves it back by
       # path, so it is exactly the kind of code that breaks on Windows only.
       - name: Run skills package tests

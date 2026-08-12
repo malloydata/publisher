@@ -59,7 +59,7 @@ const SHOTS = [
     fullPage: false,
   },
   {
-    file: "publisher-app.png",
+    file: "console.png",
     url: `${BASE}/examples/storefront`,
     viewport: { width: 1440, height: 900 },
     waitFor: "body",

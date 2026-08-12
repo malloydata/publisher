@@ -11,13 +11,13 @@ import React, {
 } from "react";
 import {
    ConnectionsApi,
+   DataAppsApi,
    DatabasesApi,
    EnvironmentsApi,
    MaterializationsApi,
    ModelsApi,
    NotebooksApi,
    PackagesApi,
-   PagesApi,
    PublisherApi,
    WatchModeApi,
 } from "../client";
@@ -138,7 +138,7 @@ const getApiClients = (
       publisher: new PublisherApi(config, basePath, axiosInstance),
       environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
-      pages: new PagesApi(config, basePath, axiosInstance),
+      dataApps: new DataAppsApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),

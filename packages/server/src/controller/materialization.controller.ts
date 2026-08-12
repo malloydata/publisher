@@ -2,6 +2,7 @@ import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import {
    BuildInstruction,
+   LedgerEntry,
    ManifestReference,
 } from "../storage/DatabaseInterface";
 import { MaterializationService } from "../service/materialization_service";
@@ -38,6 +39,7 @@ export class MaterializationController {
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      ledger?: LedgerEntry[];
       runContext?: RunContext;
    } {
       const result: {
@@ -47,6 +49,7 @@ export class MaterializationController {
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         ledger?: LedgerEntry[];
          runContext?: RunContext;
       } = {};
       if (body.runContext !== undefined && body.runContext !== null) {
@@ -63,6 +66,9 @@ export class MaterializationController {
          }
          if (parsed.strictUpstreams !== undefined) {
             result.strictUpstreams = parsed.strictUpstreams;
+         }
+         if (parsed.ledger !== undefined) {
+            result.ledger = parsed.ledger;
          }
       }
       if (body.forceRefresh !== undefined) {
@@ -154,6 +160,7 @@ export class MaterializationController {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      ledger?: LedgerEntry[];
    } {
       if (typeof raw !== "object" || raw === null) {
          throw new BadRequestError("buildInstructions must be an object");
@@ -169,6 +176,7 @@ export class MaterializationController {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         ledger?: LedgerEntry[];
       } = {
          sources: sources.map((instruction) =>
             this.validateInstruction(instruction),
@@ -194,6 +202,19 @@ export class MaterializationController {
             );
          }
          result.strictUpstreams = obj.strictUpstreams;
+      }
+      // Null is read as absent ("use the local store"), not as an empty ledger:
+      // the two mean opposite things, and a caller that means "I own the ledger
+      // and it is empty" says so with `[]`.
+      if (obj.ledger !== undefined && obj.ledger !== null) {
+         if (!Array.isArray(obj.ledger)) {
+            throw new BadRequestError(
+               "buildInstructions.ledger must be an array",
+            );
+         }
+         result.ledger = obj.ledger.map((entry) =>
+            this.validateLedgerEntry(entry),
+         );
       }
       return result;
    }
@@ -280,6 +301,65 @@ export class MaterializationController {
          // without rebuilding all of them.
          ...(typeof instruction.reseed === "boolean"
             ? { reseed: instruction.reseed }
+            : {}),
+      };
+   }
+
+   /**
+    * Validate one `buildInstructions.ledger` entry's SHAPE. Every field is an
+    * echo of a `ManifestEntry.ledger` the publisher reported, so nothing here
+    * is interpreted — only checked for being present and of the right type.
+    * What the entry claims (which table, which source definition) is validated
+    * against the package's build plan by the service, at create time.
+    */
+   private validateLedgerEntry(raw: unknown): LedgerEntry {
+      if (typeof raw !== "object" || raw === null) {
+         throw new BadRequestError(
+            "Each buildInstructions.ledger entry must be an object",
+         );
+      }
+      const entry = raw as Record<string, unknown>;
+      for (const field of [
+         "connectionName",
+         "physicalTableName",
+         "coveredThrough",
+         "coveredThroughType",
+         "watermark",
+         "sourceEntityId",
+      ] as const) {
+         if (typeof entry[field] !== "string" || entry[field] === "") {
+            throw new BadRequestError(
+               `Ledger entry '${field}' must be a non-empty string`,
+            );
+         }
+      }
+      if (entry.strategy !== "merge" && entry.strategy !== "range_replace") {
+         throw new BadRequestError(
+            "Ledger entry 'strategy' must be 'merge' or 'range_replace'",
+         );
+      }
+      if (
+         entry.mergeKeys !== undefined &&
+         (!Array.isArray(entry.mergeKeys) ||
+            entry.mergeKeys.some((k) => typeof k !== "string"))
+      ) {
+         throw new BadRequestError(
+            "Ledger entry 'mergeKeys' must be an array of strings",
+         );
+      }
+      return {
+         connectionName: entry.connectionName as string,
+         physicalTableName: entry.physicalTableName as string,
+         coveredThrough: entry.coveredThrough as string,
+         coveredThroughType: entry.coveredThroughType as string,
+         watermark: entry.watermark as string,
+         strategy: entry.strategy,
+         sourceEntityId: entry.sourceEntityId as string,
+         // Absent and empty mean the same thing — a keyless (range-replace)
+         // source — so an absent list is not normalized into one here; the
+         // comparison reads both as no merge keys.
+         ...(Array.isArray(entry.mergeKeys)
+            ? { mergeKeys: entry.mergeKeys as string[] }
             : {}),
       };
    }

@@ -34,16 +34,11 @@ dashboards, `docs/dashboards.md`, the skill) were built on that branch; phase 4 
 components) was built and then **cut**, and that cut is a real decision that survives the split.
 Per-item detail is in [Phasing](#phasing).
 
-Paths, component names, and UI section labels describe the **end state** of the sequence. A rename
-lands as its own slice, in two parts, and they do not divide the way you would guess. The first
-renames the files and components (`PageViewer` to `DataAppViewer`, `pageEmbed.ts` to
-`dataAppEmbed.ts`) and relabels Governed Reports to Notebooks. The second renames the `/pages` REST
-endpoint and the generated client that follows from it, **and carries the Pages to Data Apps section
-label with it**, because that label names the endpoint's feature. So there is a window in which the
-files have been renamed and both the endpoint and the Data Apps label have not. Check the tree for
-the names you need rather than assuming either set.
-
-Written July 2026, revised against the implementation.
+Paths, component names, and UI section labels describe the **end state** of the sequence. The rename
+this document was written ahead of has landed, so its Data Apps and Notebooks naming now matches
+`main`. The dashboard-specific names do not, per the table above: `dashboard.ts`, the `Dashboard`
+export, and the Dashboards section are still ahead of `main`. Written July 2026, revised against the
+implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
 and, once they land, `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or

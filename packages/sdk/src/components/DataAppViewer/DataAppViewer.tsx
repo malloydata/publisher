@@ -8,47 +8,47 @@ import { parseResourceUri } from "../../utils/formatting";
 import {
    isPublisherResizeMessage,
    packageFileUrl,
-} from "../../utils/pageEmbed";
+} from "../../utils/dataAppEmbed";
 
-interface PageViewerProps {
+interface DataAppViewerProps {
    resourceUri: string;
 }
 
-function parsePageResource(resourceUri: string) {
+function parseDataAppResource(resourceUri: string) {
    try {
       const { environmentName, packageName, modelPath } =
          parseResourceUri(resourceUri);
       if (!environmentName || !packageName || !modelPath) return null;
-      return { environmentName, packageName, pagePath: modelPath };
+      return { environmentName, packageName, dataAppPath: modelPath };
    } catch {
       return null;
    }
 }
 
 /**
- * Renders an in-package HTML page (from the Publisher static-file route)
+ * Renders an in-package HTML data app (from the Publisher static-file route)
  * inside an iframe, wrapped in light SPA chrome — title, breadcrumb-ish
  * label, and an "open standalone" escape hatch.
  *
  * The iframe `src` points at the Publisher worker's standalone URL on the
  * data origin (derived from `useServer().server`, which may differ from
- * the SPA origin in multi-host deployments). The page's `publisher.js`
+ * the SPA origin in multi-host deployments). The app's `publisher.js`
  * runtime postMessages `{ type: "publisher:resize", height }` as content
  * height changes; we listen and resize the iframe to match so embedded
  * dashboards don't get a nested scrollbar.
  *
  * Full-screen apps (e.g. slide decks) can opt out of content-height sizing
  * with `<meta name="publisher:fit" content="viewport">`, surfaced as
- * `Page.fit === "viewport"`. The iframe then fills the available viewport
- * height (matching the standalone view) instead of collapsing to the page's
+ * `DataApp.fit === "viewport"`. The iframe then fills the available viewport
+ * height (matching the standalone view) instead of collapsing to the app's
  * near-zero reported content height.
  */
-export default function PageViewer({ resourceUri }: PageViewerProps) {
+export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
    const { server, apiClients } = useServer();
-   const parsed = parsePageResource(resourceUri);
+   const parsed = parseDataAppResource(resourceUri);
    const environmentName = parsed?.environmentName ?? "";
    const packageName = parsed?.packageName ?? "";
-   const pagePath = parsed?.pagePath ?? "";
+   const dataAppPath = parsed?.dataAppPath ?? "";
 
    const standaloneUrl = useMemo(
       () =>
@@ -56,29 +56,33 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
             server,
             environmentName,
             packageName,
-            path: pagePath,
+            path: dataAppPath,
          }),
-      [server, environmentName, packageName, pagePath],
+      [server, environmentName, packageName, dataAppPath],
    );
 
-   // Use the /pages endpoint to grab the <title> for the header. Any error
-   // here (older Publisher without /pages, transient network blip, 5xx) is
-   // non-fatal — `title` falls back to `pagePath` and the iframe still
-   // renders. The page itself is loaded via the iframe `src`, not from this
+   // Use the /data-apps endpoint to grab the <title> for the header. Any error
+   // here (older Publisher without /data-apps, transient network blip, 5xx) is
+   // non-fatal — `title` falls back to `dataAppPath` and the iframe still
+   // renders. The app itself is loaded via the iframe `src`, not from this
    // query, so blocking the viewer on a metadata lookup would be wrong.
-   const pagesQuery = useQueryWithApiError({
-      queryKey: ["pages", environmentName, packageName],
-      queryFn: () => apiClients.pages.listPages(environmentName, packageName),
+   const dataAppsQuery = useQueryWithApiError({
+      queryKey: ["data-apps", environmentName, packageName],
+      queryFn: () =>
+         apiClients.dataApps.listDataApps(environmentName, packageName),
       enabled: !!parsed,
    });
-   const pageMeta = pagesQuery.data?.data?.find((p) => p.path === pagePath);
-   const title = pageMeta?.title ?? pagePath;
+   const dataAppMeta = dataAppsQuery.data?.data?.find(
+      (a) => a.path === dataAppPath,
+   );
+   const title = dataAppMeta?.title ?? dataAppPath;
    // Full-screen apps opt in via <meta name="publisher:fit" content="viewport">
-   // (surfaced as Page.fit by the /pages listing). In fill mode the iframe fills
-   // the available viewport height instead of being sized to the page's reported
-   // content height: a viewport-filling deck has ~no content height to report,
-   // so the default auto-size would clip it. Ordinary pages keep auto-sizing.
-   const fillViewport = pageMeta?.fit === "viewport";
+   // (surfaced as DataApp.fit by the /data-apps listing). In fill mode the
+   // iframe fills the available viewport height instead of being sized to the
+   // app's reported content height: a viewport-filling deck has ~no content
+   // height to report, so the default auto-size would clip it. An ordinary
+   // content-driven app keeps auto-sizing.
+   const fillViewport = dataAppMeta?.fit === "viewport";
 
    const iframeRef = useRef<HTMLIFrameElement | null>(null);
    // Start small so the iframe doesn't pre-commit space before the first
@@ -89,7 +93,7 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
    useEffect(() => {
       // Fill mode pins the iframe to 100%, so content-height resize messages are
       // irrelevant; skip subscribing (and the per-message re-renders) until the
-      // page is in content-height mode.
+      // app is in content-height mode.
       if (fillViewport) return;
       function onMessage(e: MessageEvent) {
          if (!isPublisherResizeMessage(e.data)) return;
@@ -106,10 +110,10 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
       return (
          <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
             <Typography variant="h6" sx={{ fontWeight: 600 }}>
-               Can&apos;t open page
+               Can&apos;t open data app
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-               This page link is missing an environment, package, or path:
+               This data app link is missing an environment, package, or path:
                <Box
                   component="span"
                   sx={{ fontFamily: MONO_FONT_FAMILY, ml: 1 }}
@@ -125,10 +129,11 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
       <Box
          sx={{
             p: 3,
-            // Fill mode fills the available height of PageViewer's ancestor, so
-            // it must render inside a height-constrained container. The Publisher
-            // app provides one (MainPage's 100dvh flex chain); an SDK consumer
-            // embedding PageViewer should give it a bounded-height parent.
+            // Fill mode fills the available height of DataAppViewer's ancestor,
+            // so it must render inside a height-constrained container. The
+            // Publisher app provides one (MainPage's 100dvh flex chain); an SDK
+            // consumer embedding DataAppViewer should give it a bounded-height
+            // parent.
             ...(fillViewport
                ? { height: "100%", display: "flex", flexDirection: "column" }
                : { maxWidth: 1200, mx: "auto" }),
@@ -151,7 +156,7 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
                color="text.secondary"
                sx={{ fontFamily: MONO_FONT_FAMILY }}
             >
-               {pagePath}
+               {dataAppPath}
             </Typography>
             <Box sx={{ flex: 1 }} />
             <Tooltip title="Open standalone in new tab">
@@ -175,7 +180,7 @@ export default function PageViewer({ resourceUri }: PageViewerProps) {
                overflow: "hidden",
                backgroundColor: "background.paper",
                // Fill mode: grow to consume the remaining viewport height (the
-               // SPA gives PageViewer a 100dvh flex ancestor) so the iframe
+               // SPA gives DataAppViewer a 100dvh flex ancestor) so the iframe
                // below can be 100% tall. minHeight:0 lets this flex child
                // actually shrink/grow instead of overflowing its parent.
                ...(fillViewport ? { flex: 1, minHeight: 0 } : {}),

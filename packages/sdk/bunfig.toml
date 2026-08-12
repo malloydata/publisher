@@ -1,0 +1,4 @@
+[test]
+# Installs a DOM onto globalThis before any spec runs, so React components and
+# hooks in this package can be rendered under `bun test`. See test/setup.ts.
+preload = ["./test/setup.ts"]

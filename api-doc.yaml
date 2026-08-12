@@ -9,9 +9,9 @@ info:
 
     ## Key Features
 
-    - **Discovery**: List environments, packages, and the models, notebooks, pages, and data a package contains
+    - **Discovery**: List environments, packages, and the models, notebooks, data apps, and data a package contains
     - **Query Execution**: Run queries against models, execute notebooks a cell at a time, and compile-check Malloy without running it
-    - **Pages**: In-package HTML data apps served from a package's `public/` directory
+    - **Data Apps**: In-package HTML data apps served from a package's `public/` directory
     - **Materializations**: Persist Malloy sources as tables, on a schedule or on demand
     - **Connection Management**: Configure and test warehouse connections, and browse their schemas and tables
     - **Watch Mode**: File watching, and a change-event stream for development workflows
@@ -29,7 +29,7 @@ info:
         └── Packages
             ├── Models                query and compile
             ├── Notebooks             execute a cell at a time
-            ├── Pages                 static HTML data apps from public/
+            ├── Data Apps             static HTML data apps from public/
             ├── Databases             embedded data files
             ├── Materializations      persisted sources
             ├── Connections           package-scoped connection access
@@ -64,8 +64,10 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
-  - name: pages
-    description: Static HTML pages (in-package data apps)
+  - name: data-apps
+    description:
+      In-package HTML data apps (static pages served from a package's public/
+      directory)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -1954,21 +1956,22 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/pages:
+  /environments/{environmentName}/packages/{packageName}/data-apps:
     get:
       tags:
-        - pages
-      operationId: list-pages
-      summary: List package pages
+        - data-apps
+      operationId: list-data-apps
+      summary: List package data apps
       description: |
-        Retrieves a list of all static HTML pages (in-package data apps) within
-        the specified package. Each page entry includes the relative path, the
-        package name, a canonical resource URL, and the page title (extracted
-        from the file's <title> tag, falling back to the path). Used by the
-        Publisher SPA to surface a clickable "Pages" section on the package
-        detail view, and by anyone who wants to discover in-package data apps
-        programmatically without scraping the directory. Recursive depth is
-        capped server-side to keep this cheap on large packages.
+        Retrieves a list of all in-package HTML data apps (static pages served
+        from the package's public/ directory) within the specified package. Each
+        entry includes the relative path, the package name, a canonical resource
+        URL, and the title (extracted from the file's <title> tag, falling back
+        to the path). Used by the Publisher SPA to surface a clickable "Data
+        Apps" section on the package detail view, and by anyone who wants to
+        discover a package's data apps programmatically without scraping the
+        directory. Recursive depth is capped server-side to keep this cheap on
+        large packages.
       parameters:
         - name: environmentName
           in: path
@@ -1984,13 +1987,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
-          description: A list of pages in the package
+          description: A list of data apps in the package
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Page"
+                  $ref: "#/components/schemas/DataApp"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3051,19 +3054,21 @@ components:
           type: string
           description: Error message if the notebook failed to compile or load
 
-    Page:
+    DataApp:
       type: object
-      description: Static HTML page (in-package data app) within a Malloy package
+      description:
+        An in-package HTML data app within a Malloy package - a static page
+        served from the package's public/ directory
       properties:
         resource:
           type: string
           description:
-            Canonical URL to the served page. Root-relative and does NOT
-            carry the /api/v0 prefix, because pages are static assets served off
-            the server root rather than API resources.
+            Canonical URL to the served data app. Root-relative and does
+            NOT carry the /api/v0 prefix, because a data app is a static asset
+            served off the server root rather than an API resource.
         packageName:
           type: string
-          description: Name of the package containing this page
+          description: Name of the package containing this data app
         path:
           type: string
           description: Relative path to the HTML file within its package directory
@@ -3078,10 +3083,10 @@ components:
             - viewport
           description:
             Layout hint read from a <meta name="publisher:fit"> tag in the
-            page <head>. "viewport" tells the embedded page viewer to fill the
-            available height instead of auto-sizing to the page's content
-            height, for full-screen apps like slide decks. Omitted for ordinary
-            content pages, which keep content-height auto-sizing.
+            page <head>. "viewport" tells the embedded viewer to fill the
+            available height instead of auto-sizing to the content height, for
+            full-screen apps like slide decks. Omitted for an ordinary
+            content-driven app, which keeps content-height auto-sizing.
 
     RawNotebook:
       type: object
@@ -4826,6 +4831,28 @@ components:
             in referenceManifest fails the build (compiler strict mode) instead
             of silently recomputing it live. Per-unit dispatch should set this
             true.
+        ledger:
+          type: array
+          items:
+            $ref: "#/components/schemas/LedgerEntry"
+          description: >-
+            The incremental ledger for this run, supplied by the caller: each
+            entry is a `ManifestEntry.ledger` an earlier run reported, returned
+            unmodified.
+
+            Absent, the publisher uses its own ledger store — today's behavior,
+            every existing caller. Present (even empty), it IS the ledger for
+            this run: boundaries are read from here, the local store is neither
+            read nor written, and an incremental source with no entry here
+            seeds. An entry that does not validate against this run is a 400
+            (see `LedgerEntry`); an entry for a source being `reseed`-ed is
+            ignored.
+
+            For an orchestrator that dispatches one package's refreshes across
+            interchangeable workers: the local store is per-process, so a
+            refresh landing on a worker that has never built the table would
+            otherwise re-seed a source whose whole purpose is not being
+            rebuilt.
 
     ManifestReference:
       type: object
@@ -4921,6 +4948,73 @@ components:
             only defeats skip-if-unchanged, which does not even run for an
             orchestrated build.
 
+    LedgerEntry:
+      type: object
+      description: >-
+        One incremental source's `covered_through` boundary: the table it
+        belongs to, the boundary itself, and the source definition it was
+        measured under. Reported on the manifest entry of every incrementally
+        refreshed source. A caller that owns the ledger stores each one and
+        returns it verbatim in `BuildInstructions.ledger` on the next run —
+        only the publisher derives these values.
+
+        A returned entry is validated at create time: one naming a table the
+        run does not instruct, or whose `sourceEntityId` is no longer the
+        source's, is a 400. After a publish or rollback that changes the
+        source, delete the entry (the source seeds) or set `reseed`.
+      required:
+        [
+          connectionName,
+          physicalTableName,
+          coveredThrough,
+          coveredThroughType,
+          watermark,
+          strategy,
+          sourceEntityId,
+        ]
+      properties:
+        connectionName:
+          type: string
+          description: With `physicalTableName`, the table the boundary belongs to.
+        physicalTableName:
+          type: string
+          description: The table's logical (unquoted) name, as the manifest reports it.
+        coveredThrough:
+          type: string
+          description: >-
+            Exclusive upper end of the watermark range the table holds, as
+            canonical scalar text. The next delta starts here.
+        coveredThroughType:
+          type: string
+          description: >-
+            The Malloy type of `coveredThrough` (`date`, `timestamp`, `number`,
+            `string`).
+        watermark:
+          type: string
+          description: The source's `watermark=` dimension the boundary measures.
+        mergeKeys:
+          type: array
+          items:
+            type: string
+          description: >-
+            The source's `merge_key=` dimensions, in declared order. Absent for
+            a keyless (range-replace) source.
+        strategy:
+          type: string
+          enum: [merge, range_replace]
+          description: >-
+            How a delta is applied — `merge` when the source declares
+            `merge_key=`, `range_replace` otherwise.
+        sourceEntityId:
+          type: string
+          description: >-
+            The publisher's CONTENT address for the source when the boundary was
+            measured (`PersistSourcePlan.sourceEntityId`, a fingerprint of the
+            build SQL) — NOT the caller-assigned
+            `BuildInstruction.sourceEntityId`. The match is what guarantees a
+            boundary is never applied to a table whose definition has moved on
+            since it was measured.
+
     BuildManifest:
       type: object
       description:
@@ -5005,26 +5099,39 @@ components:
           description: >-
             Per-version read-time policy when the entry is stale. Never combined
             across versions; each version's entries carry its own declared fallback.
-        coveredThrough:
-          type: string
+        ledger:
+          $ref: "#/components/schemas/LedgerEntry"
           description: >-
-            For a source declaring `refresh="incremental"`, the EXCLUSIVE upper
-            end of the watermark range this table is now known to contain — the
-            boundary the next refresh will start from. Canonical scalar text
-            (`2024-07-01`, `2024-07-01 12:00:00`, `41`), interpreted per
-            `coveredThroughType`.
+            For a source refreshed incrementally, the `covered_through` boundary
+            now in force — where the next refresh starts. Present whether the
+            source advanced, rebuilt, or had nothing to do, so incremental
+            progress is something a caller reads rather than infers: a
+            `coveredThrough` that moved between runs is a delta that applied.
 
-            Reported so a caller can observe and verify incremental progress
-            rather than infer it: a value that advanced between runs is a delta
-            that applied. Absent for a non-incremental source, and for an
-            incremental one whose source is empty (no boundary is derivable, so
-            none is recorded).
-        coveredThroughType:
+            Absent for a non-incremental source, and for an incremental one
+            whose source is empty (no boundary is derivable, so none is
+            recorded).
+        refresh:
           type: string
+          enum: [delta, full, none]
           description: >-
-            The Malloy type of `coveredThrough` (`date`, `timestamp`, `number`,
-            `string`), which decides how its text is compared and rendered.
-            Present exactly when `coveredThrough` is.
+            What this run's refresh DID to the table, for a source declaring
+            `refresh="incremental"`: advanced it in place by a bounded range
+            (`delta`), rebuilt it (`full`), or applied nothing because the
+            watermark had not moved (`none`, which leaves the boundary in
+            `ledger` in force).
+
+            Reported because it cannot be inferred: every fallback the publisher
+            applies — no recorded boundary, a table the delta path cannot build
+            on, `reseed` — answers success and rebuilds, so a source quietly
+            rebuilding on every run is otherwise indistinguishable from one
+            advancing.
+
+            Present exactly when the source is refreshed incrementally, so
+            absent means only that it is not: a source declaring
+            `refresh="full"`, or one whose declaration the delta path cannot act
+            on at all (an unsupported dialect, `storage=`), which the publish
+            gate rejects anyway.
 
   parameters:
     environmentName:

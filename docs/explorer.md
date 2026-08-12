@@ -2,7 +2,7 @@
 
 > What this is: a tour of the Explorer, Publisher's no-code visual query builder. Every action
 > generates valid Malloy against a governed model, so metrics stay correct even across joins. Open it
-> from the [Publisher App](publisher-app.md) on any source — the screenshots below use the bundled
+> from the [Publisher Console](console.md) on any source — the screenshots below use the bundled
 > [`storefront`](../examples/storefront) package.
 
 ## 1. Introduction
@@ -224,7 +224,7 @@ With Malloy Explorer, everyone can ask better questions — and trust the answer
 
 ## Where to go next
 
-- Open the Explorer from the [Publisher App](publisher-app.md) — pick a source in the
+- Open the Explorer from the [Publisher Console](console.md) — pick a source in the
   [`storefront`](../examples/storefront) package and start building.
 - Prefer plain English? Point an [AI agent](ai-agents.md) at the same model over MCP.
 - Save what you build into a package: add the view to the model with the

@@ -2,7 +2,7 @@
 
 > What this is: the shape of Publisher's programmatic surfaces — the resource hierarchy, the REST and
 > MCP APIs, and where to find the live, interactive API explorer. For connecting an AI agent, see
-> [ai-agents.md](ai-agents.md); for the App, see [publisher-app.md](publisher-app.md).
+> [ai-agents.md](ai-agents.md); for the Console, see [console.md](console.md).
 
 ## Two surfaces
 
@@ -25,7 +25,7 @@ put the server behind your own gateway before exposing it beyond localhost.
     │   │   └── /compile                POST — compile to SQL / metadata
     │   ├── /notebooks/{path}           a .malloynb notebook
     │   │   └── /cells/{index}          GET — run one notebook cell
-    │   ├── /pages                      in-package HTML data apps
+    │   ├── /data-apps                  in-package HTML data apps
     │   ├── /events                     GET, the live-reload SSE stream (held open)
     │   ├── /databases                  the package's embedded data files (e.g. parquet)
     │   └── /materializations           persisted-source builds
@@ -46,7 +46,7 @@ put the server behind your own gateway before exposing it beyond localhost.
 | `POST …/packages/{pkg}/models/{path}/query` | Run a Malloy query; see [request shapes](#query-request-shapes) below. |
 | `POST …/packages/{pkg}/models/{path}/compile` | Compile Malloy to SQL / metadata. |
 | `GET  …/packages/{pkg}/notebooks/{path}/cells/{index}` | Run one notebook cell. |
-| `GET  …/packages/{pkg}/pages` | List a package's HTML pages. |
+| `GET  …/packages/{pkg}/data-apps` | List a package's HTML data apps. |
 | `GET  …/packages/{pkg}/events` | Live-reload SSE stream ([html-data-apps.md](html-data-apps.md#live-reload)). Held open by design. |
 | `GET  …/environments/{env}/connections` | List database connections. |
 
@@ -81,7 +81,7 @@ The running server hosts the full, interactive **Swagger UI** and the OpenAPI 3.
 | **http://localhost:4000/api-doc.html** | Interactive Swagger UI — browse every endpoint, see schemas, try requests. |
 | **http://localhost:4000/api-doc.yaml** | The raw OpenAPI 3.1 spec (feed it to codegen or Postman). |
 
-The App's footer **Publisher API** link opens the same explorer.
+The Console's footer **Publisher API** link opens the same explorer.
 
 The spec file ships inside the npm package, so every running server serves `/api-doc.yaml` even
 with no internet access. `/api-doc.html` loads the Swagger UI assets from a CDN, so in a sandbox

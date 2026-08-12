@@ -6,7 +6,7 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — copy the relevant section below into the GitHub release page after CI publishes it. The future workflow change to read this file directly is documented in #2 of the May 2026 review.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — copy every `## [Unreleased]` section below into the GitHub release page after CI publishes it, and stamp each one with the version that shipped it. There is regularly more than one, because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives, so reading "the relevant section" as singular ships one and silently drops the others. The future workflow change to read this file directly is documented in #2 of the May 2026 review.
 
 ## Packages that version on their own line
 
@@ -60,6 +60,46 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - `warnings[].target` becomes `warnings[].subject`.
 - `RawNotebook.path` becomes `RawNotebook.modelPath`. `path` was declared but never populated, so anything reading it was already getting `undefined`; `modelPath` is the value it wanted.
 - A caller that treated a `versionId` request's 500 as a server fault should expect 501.
+
+## [Unreleased] — `PageViewer` is now `DataAppViewer`
+
+The SDK component that embeds an in-package HTML data app is renamed, along with the docs page for the built-in web UI. No behavior changes.
+
+### What changed
+
+- **`PageViewer` → `DataAppViewer`**, exported from `components/DataAppViewer`. Props are unchanged (`resourceUri`). There is no alias, so an external consumer importing `PageViewer` will fail to build.
+- **`utils/pageEmbed` → `utils/dataAppEmbed`**, same contents (`PUBLISHER_RESIZE_MESSAGE_TYPE`, `PublisherResizeMessage`, `isPublisherResizeMessage`, `serverBaseUrl`, `packageFileUrl`). The move itself is invisible to consumers: the module has no `./utils/*` subpath in `exports`, so it can only be reached through the package root, and the one symbol the root re-exports, `packageFileUrl`, keeps its name and its root export. Only the path behind it changed.
+- **The package view's "Governed Reports" section is now labelled "Notebooks."** Label only; the same `.malloynb` files are listed, and no prop or route changed.
+- **`docs/publisher-app.md` is now [docs/console.md](docs/console.md)**, and the built-in web UI is called the **Publisher Console** throughout the docs. The `packages/app` package name is unchanged.
+
+### Migration
+
+- Rename the import: `import { DataAppViewer } from "@malloy-publisher/sdk"`. That is the only change an embedder needs. `packageFileUrl` is the other symbol in this area reachable from the package root, and it is untouched.
+
+The REST `/pages` endpoint is untouched by this change and still answers at its existing path. Renaming it to `/data-apps` is a separate, breaking change with its own release note.
+
+## [Unreleased] — Breaking: `/pages` is now `/data-apps`
+
+The endpoint that lists a package's in-package HTML data apps is renamed, along with its schema and the SPA route that opens one. **There is no alias and no deprecation period: a caller still requesting `/pages` stops getting the listing.**
+
+A production deployment answers it **404 as JSON**, so a client sees a clean error rather than a surprise. That is worth stating because it was not true until recently: an unmatched path under `/api/v0/` used to fall through to the SPA's catch-all and answer 200 with `index.html` on any deployment serving the bundled web UI, which would have handed a migrating client an HTML body instead of an error. #962 fixed that catch-all. (Under `NODE_ENV=development` the JSON fallback is not mounted, so the same request gets an HTML 404 from Express instead.)
+
+### What changed
+
+- **`GET …/packages/{pkg}/pages` → `GET …/packages/{pkg}/data-apps`.** Same response shape, same query parameters, same status codes.
+- **Schema `Page` → `DataApp`**, and the OpenAPI `operationId` `list-pages` → `list-data-apps` under a `data-apps` tag. Anything generated from `api-doc.yaml` changes accordingly: in the TypeScript client, `PagesApi.listPages` becomes `DataAppsApi.listDataApps`, and `apiClients.pages` on `<ServerProvider>`'s context becomes `apiClients.dataApps`.
+- **The SPA route `/{env}/{pkg}/pages/{file}` → `/{env}/{pkg}/data-apps/{file}`, and the old form still works for one release.** A bookmark or shared link using `pages/` opens the data app as before and rewrites itself to the new URL in the address bar, carrying any query string or fragment with it so the rewrite never silently drops state a caller supplied. **This alias is deprecated and comes out one release after this one.** Update stored links now rather than relying on it. The standalone URL (`/environments/{env}/packages/{pkg}/{file}`) never changed. One thing the alias does take away: a model or notebook is excluded from the rewrite, so a `.malloy` or `.malloynb` living in a package's `pages/` directory still opens in the model viewer, but a non-model file under `public/pages/` is no longer reachable at `/{env}/{pkg}/pages/<file>` and is addressed as `/{env}/{pkg}/data-apps/pages/<file>` instead. That is the same collision described below for `public/data-apps/`, and nothing in this repo ships either directory.
+- **The package view's "Pages" section is now labelled "Data Apps."**
+
+### Migration
+
+- Change the request path to `/data-apps`. If you generate a client from the spec, regenerate it.
+- If you use the SDK's API clients directly, `apiClients.pages.listPages(env, pkg)` becomes `apiClients.dataApps.listDataApps(env, pkg)`.
+- Update any stored link of the form `/{env}/{pkg}/pages/{file}`. It still works in this release and stops working in the next one.
+
+Why the REST path breaks cleanly while the browser URL gets a grace period: the two have different costs and different owners. Carrying both spellings in the spec would mean two paths, two operationIds and two generated client methods for one listing, with every future change to it made twice, and the one known consumer of the endpoint reviewed this change and chose the clean break, having already accepted the short window during a rollout where some of its machines answer 404. A bookmark has no owner to consult, and the person who saved it is not reading these notes, so that surface redirects for one release rather than failing. The endpoint is documented (in [docs/html-data-apps.md](docs/html-data-apps.md) and [docs/api-overview.md](docs/api-overview.md), both updated here), so the REST break is a real one for anyone who took it up rather than a quiet one. If that trade is wrong for your deployment, say so on the PR.
+
+One more consequence of the SPA route move, easy to miss: the app now claims the `data-apps` segment, so `/{env}/{pkg}/data-apps/<file>` is no longer redirected to the static route. Clicking a data app in the Console is unaffected, because the listing already includes the file's path relative to `public/`. What changes is a hand-written URL of that shape: it opens the embedded viewer one segment down, on `public/<file>`, rather than redirecting. A package that itself ships a `public/data-apps/` directory is the case to know about, since its files are addressed as `/{env}/{pkg}/data-apps/data-apps/<file>`; the standalone URL `/environments/{env}/packages/{pkg}/data-apps/<file>` serves them unchanged either way. This mirrors what `public/pages/` had before, so it is not a new class of collision, but `data-apps` is a likelier directory name than `pages` was.
 
 ## [0.0.208] — Single-call materialization (plan-as-artifact)
 

@@ -27,7 +27,7 @@ import { Loading } from "../Loading";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
-import { serverBaseUrl } from "../../utils/pageEmbed";
+import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon from "./ContentTypeIcon";
 
@@ -93,40 +93,40 @@ export default function Package({
          ),
    });
 
-   // List of HTML pages bundled inside the package (in-package data apps).
+   // List of in-package HTML data apps bundled inside the package.
    // Goes through the configured API client so consumers using a non-default
    // baseURL or Bearer auth (via <ServerProvider>) get the same plumbing as
    // every other endpoint.
-   // No versionId in the key: /pages serves static files, which aren't
-   // versioned (listPages takes only env + package), so keying on
-   // versionId would fragment the cache and prevent PageViewer's identical
+   // No versionId in the key: /data-apps serves static files, which aren't
+   // versioned (listDataApps takes only env + package), so keying on
+   // versionId would fragment the cache and prevent DataAppViewer's identical
    // query from deduping.
-   const pagesQuery = useQueryWithApiError({
-      queryKey: ["pages", environmentName, packageName],
+   const dataAppsQuery = useQueryWithApiError({
+      queryKey: ["data-apps", environmentName, packageName],
       queryFn: async () => {
          try {
-            return await apiClients.pages.listPages(
+            return await apiClients.dataApps.listDataApps(
                environmentName,
                packageName,
             );
          } catch (e) {
             // A 404 or transport-level failure (older Publisher without the
-            // /pages route, network blip) is non-fatal: render the package
-            // page without a Pages section. A genuinely missing package
+            // /data-apps route, network blip) is non-fatal: render the package
+            // page without a Data Apps section. A genuinely missing package
             // surfaces its own error via the package query above, so an empty
             // list here can't hide it.
             const status = (e as { response?: { status?: number } })?.response
                ?.status;
             if (status === 404 || status === undefined) {
                return { data: [] } as Awaited<
-                  ReturnType<typeof apiClients.pages.listPages>
+                  ReturnType<typeof apiClients.dataApps.listDataApps>
                >;
             }
             throw e;
          }
       },
    });
-   const pages = pagesQuery.data?.data ?? [];
+   const dataApps = dataAppsQuery.data?.data ?? [];
 
    const notebooks = (notebooksQuery.data?.data ?? [])
       .slice()
@@ -205,10 +205,7 @@ export default function Package({
 
          {!isLoading && (
             <>
-               <PackageSection
-                  title="Governed Reports"
-                  count={notebooks.length}
-               >
+               <PackageSection title="Notebooks" count={notebooks.length}>
                   {notebooks.map((notebook) => (
                      <PackageItemRow
                         key={notebook.path}
@@ -226,34 +223,35 @@ export default function Package({
                   {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
                </PackageSection>
 
-               {pages.length > 0 && (
-                  <PackageSection title="Pages" count={pages.length}>
-                     {pages.map((page) => {
+               {dataApps.length > 0 && (
+                  <PackageSection title="Data Apps" count={dataApps.length}>
+                     {dataApps.map((dataApp) => {
                         const hasTitle =
-                           !!page.title && page.title !== page.path;
+                           !!dataApp.title && dataApp.title !== dataApp.path;
                         // Standalone (raw) URL: the Publisher static-file route.
-                        // page.resource is the root-relative path; we join it
+                        // dataApp.resource is the root-relative path; we join it
                         // with the data origin (the API base minus /api/v0),
                         // which may differ from the SPA origin when the SDK is
                         // embedded in a host app on another domain.
                         const standaloneUrl = `${serverBaseUrl(server)}${
-                           page.resource
+                           dataApp.resource
                         }`;
                         return (
                            <PackageItemRow
-                              key={page.path}
-                              icon={<ContentTypeIcon type="page" />}
+                              key={dataApp.path}
+                              icon={<ContentTypeIcon type="dataApp" />}
                               tint={MALLOY_BRAND.teal}
-                              label={hasTitle ? page.title : page.path}
-                              rightLabel={hasTitle ? page.path : undefined}
+                              label={hasTitle ? dataApp.title : dataApp.path}
+                              rightLabel={hasTitle ? dataApp.path : undefined}
                               onClick={(event) => {
                                  if (onClickPackageFile) {
                                     // Host app routes within SPA to an embedded
-                                    // <PageViewer> that iframes the standalone URL.
-                                    // The `pages/` prefix lets the router branch
-                                    // off the existing model-path catch-all.
+                                    // <DataAppViewer> that iframes the standalone
+                                    // URL. The `data-apps/` prefix lets the
+                                    // router branch off the existing model-path
+                                    // catch-all.
                                     onClickPackageFile(
-                                       `/${environmentName}/${packageName}/pages/${page.path}`,
+                                       `/${environmentName}/${packageName}/data-apps/${dataApp.path}`,
                                        event,
                                     );
                                  } else {

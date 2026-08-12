@@ -101,7 +101,7 @@ calling it done would leave the other two open.
 
 **4. Resize messages are not origin-checked.** Both the in-page host runtime
 (`packages/server/src/runtime/publisher.js`) and the Console's data-app viewer
-(`PageViewer.tsx`) validate `event.source` against the iframe's `contentWindow` but never
+(`DataAppViewer.tsx`) validate `event.source` against the iframe's `contentWindow` but never
 `event.origin`. Source-matching is the stronger of the two checks and the payload is a single
 number, so the exposure is bounded, but the check is one line.
 

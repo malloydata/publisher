@@ -3,7 +3,7 @@ import {
    isPublisherResizeMessage,
    PUBLISHER_RESIZE_MESSAGE_TYPE,
    serverBaseUrl,
-} from "./pageEmbed";
+} from "./dataAppEmbed";
 
 describe("serverBaseUrl", () => {
    it("strips a trailing /api/v0", () => {
