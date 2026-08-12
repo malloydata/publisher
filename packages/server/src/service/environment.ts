@@ -24,6 +24,7 @@ import {
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import {
    exploresPatchIgnoredUnderConvention,
+   QUERYABLE_SOURCES_INERT_PREFIX,
    queryableSourcesInertUnderConvention,
    resolvePatchedExploresOrigin,
 } from "./package_manifest";
@@ -2138,7 +2139,7 @@ export class Environment {
          // Snapshot before the write: setPackageMetadata drops the convention
          // warnings when the origin changes, and the rejection path below has
          // to put back everything it rolled back, not just the metadata.
-         const previousManifestWarnings = _package.getManifestWarnings();
+         const previousWarnings = _package.snapshotWarnings();
          _package.setPackageMetadata(
             {
                name: body.name,
@@ -2173,7 +2174,7 @@ export class Environment {
             .join("\n");
          if (invalidMsg) {
             _package.setPackageMetadata(existing, previousFromConvention);
-            _package.restoreManifestWarnings(previousManifestWarnings);
+            _package.restoreWarnings(previousWarnings);
             throw new BadRequestError(invalidMsg);
          }
          if (declarationIgnored) {
@@ -2186,8 +2187,12 @@ export class Environment {
          // only derived when the manifest is next parsed. The PATCH response is
          // the moment the operator is looking, so say it now too.
          if (fromConvention && body.queryableSources !== undefined) {
+            // Supersede rather than accumulate: two PATCHes setting different
+            // values would otherwise leave both remedies on the package, and
+            // only one can be right for the value now in force.
             _package.addPostLoadWarning(
                queryableSourcesInertUnderConvention(body.queryableSources),
+               QUERYABLE_SOURCES_INERT_PREFIX,
             );
          }
 

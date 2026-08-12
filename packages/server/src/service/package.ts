@@ -218,8 +218,12 @@ export class Package {
     * always sends it. Storing these here means a warning cannot be destroyed
     * by the same request that produced it.
     *
-    * Cleared when the condition they describe stops holding, which for all of
-    * them is the surface origin changing to declared.
+    * Every entry describes a surface that came from the convention, so they are
+    * cleared wherever the origin becomes declared, and that is BOTH places the
+    * origin can change: `setPackageMetadata` (a PATCH) and `reloadAllModels` (a
+    * re-read of publisher.json), which sets the flag directly and so needs its
+    * own clear. A rejected PATCH restores them, because `setPackageMetadata`
+    * runs before validation and its filter is destructive.
     */
    private postLoadWarnings: string[] = [];
    /**
@@ -2086,16 +2090,36 @@ export class Package {
     * {@link postLoadWarnings} so a reload inside the same request cannot
     * discard it. De-duplicated, because a client that round-trips repeatedly
     * would otherwise stack the same sentence up on every call.
+    *
+    * `supersedesPrefix` drops any existing warning starting with it before
+    * appending. Needed where the same question can be answered differently by
+    * successive requests: two PATCHes setting different `queryableSources`
+    * values would otherwise leave both remedies on the package, and only one
+    * of them can be right for the value now in force.
     */
-   public addPostLoadWarning(warning: string): void {
+   public addPostLoadWarning(warning: string, supersedesPrefix?: string): void {
+      if (supersedesPrefix !== undefined) {
+         this.postLoadWarnings = this.postLoadWarnings.filter(
+            (w) => !w.startsWith(supersedesPrefix),
+         );
+      }
       if (!this.postLoadWarnings.includes(warning)) {
          this.postLoadWarnings.push(warning);
       }
    }
 
-   /** A copy of the current manifest warnings, for a caller that may roll back. */
-   public getManifestWarnings(): string[] {
-      return [...this.manifestWarnings];
+   /**
+    * Both warning lists, for a caller that may roll back. BOTH, because
+    * `setPackageMetadata` filters both on an origin change: snapshotting only
+    * the manifest one would let a rejected PATCH permanently delete a post-load
+    * warning it had no business touching, and the package would then be serving
+    * a surface with no warning that its boundary is unenforced.
+    */
+   public snapshotWarnings(): { manifest: string[]; postLoad: string[] } {
+      return {
+         manifest: [...this.manifestWarnings],
+         postLoad: [...this.postLoadWarnings],
+      };
    }
 
    /**
@@ -2104,8 +2128,12 @@ export class Package {
     * alone would leave the package quietly missing a warning whose condition
     * never changed.
     */
-   public restoreManifestWarnings(warnings: string[]): void {
-      this.manifestWarnings = [...warnings];
+   public restoreWarnings(snapshot: {
+      manifest: string[];
+      postLoad: string[];
+   }): void {
+      this.manifestWarnings = [...snapshot.manifest];
+      this.postLoadWarnings = [...snapshot.postLoad];
    }
 
    /**

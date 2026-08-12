@@ -566,6 +566,11 @@ function exploresDisagreesWithConvention(
    );
 }
 
+/** Stable opening of {@link queryableSourcesInertUnderConvention}, so a later
+ *  answer to the same question can supersede an earlier one. */
+export const QUERYABLE_SOURCES_INERT_PREFIX =
+   '"queryableSources" in publisher.json has no effect';
+
 export function queryableSourcesInertUnderConvention(raw: unknown): string {
    // "all" already means "do not enforce", so telling that author to declare
    // `explores` would send them to a state that still does not enforce. Only
@@ -579,7 +584,7 @@ export function queryableSourcesInertUnderConvention(raw: unknown): string {
          : `Add an explicit "explores" naming your surface to enforce the ` +
            `boundary.`;
    return (
-      `"queryableSources" in publisher.json has no effect on this package. Its ` +
+      `${QUERYABLE_SOURCES_INERT_PREFIX} on this package. Its ` +
       `discovery surface comes from the "${INDEX_MODEL_NAME}" convention, and ` +
       `the query boundary is only enforced for a surface declared explicitly, ` +
       `so every source stays queryable by name. ${remedy} The convention ` +

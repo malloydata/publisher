@@ -222,6 +222,90 @@ describe("index.malloy convention across a metadata PATCH", () => {
       ).toBe(true);
    });
 
+   it("a rejected PATCH does not silently delete the warning", async () => {
+      // setPackageMetadata runs BEFORE validation and its filter is
+      // destructive, so a PATCH that flips the origin and is then rejected
+      // would strip the post-load warning on the way in and never put it back.
+      // The package would be left serving a curated surface with no signal that
+      // its boundary is unenforced, which is the exact state this warning is
+      // the only defence against.
+      expect(
+         (await packageWarnings()).some((m) =>
+            m.includes("query boundary is NOT enforced"),
+         ),
+      ).toBe(true);
+
+      const res = await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            explores: ["does-not-exist.malloy"],
+         }),
+      });
+      expect(res.status).toBe(400);
+
+      // Checking the GET here alone is NOT enough, and this is the subtle part.
+      // The rollback hands a previously-computed metadata object back to
+      // setPackageMetadata, which fossilizes a copy of the old warnings inside
+      // it, and getPackageMetadata only overwrites that copy when the live list
+      // is non-empty. So a deleted warning keeps showing until something else
+      // repopulates the list, and a test that stopped here would pass with the
+      // fix reverted. Force the live list to repopulate first.
+      await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            queryableSources: "declared",
+         }),
+      });
+
+      expect(
+         (await packageWarnings()).some((m) =>
+            m.includes("query boundary is NOT enforced"),
+         ),
+      ).toBe(true);
+      expect(await hiddenSourceStatus()).toBe(200);
+   });
+
+   it("supersedes rather than stacks the queryableSources remedy", async () => {
+      // Successive PATCHes answer the same question differently. Keeping both
+      // leaves one remedy that is wrong for the value now in force.
+      await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            queryableSources: "declared",
+         }),
+      });
+      await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ name: PACKAGE_NAME, queryableSources: "all" }),
+      });
+      const inert = (await packageWarnings()).filter((m) =>
+         m.includes("has no effect"),
+      );
+      expect(inert).toHaveLength(1);
+      // And it is the one matching the value now in force.
+      expect(inert[0]).toContain("you can delete it");
+      expect(inert[0]).not.toContain('Add an explicit "explores"');
+
+      // Put it back: "all" persists to the manifest, and leaving it would
+      // disarm the boundary for the tests below, which is a property of this
+      // shared fixture rather than of the feature.
+      await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            queryableSources: "declared",
+         }),
+      });
+   });
+
    it("drops the stale warning once the author really does declare a surface", async () => {
       // The inverse of the defect above, and just as misleading. The author
       // reads "the boundary is NOT enforced", does the thing the warning tells
