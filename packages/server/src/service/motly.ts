@@ -86,34 +86,40 @@ export function hasEnvReference(annotation: string): boolean {
 }
 
 /**
- * Every object the tag parser can be tricked into writing into.
+ * Every object the tag parser can be tricked into writing into, as of right now.
  *
- * Computed once from the runtime rather than listed by hand, because listing by
- * hand is what went wrong twice. The parser resolves a property path with
- * `key in properties`, and `in` walks the prototype chain, so a MOTLY key of
- * `__proto__` reaches `Object.prototype` while `constructor` reaches the global
- * `Object` and `toString` reaches the built-in method object. The reachable set
- * is therefore exactly `Object.prototype` plus the value of each of its own
- * properties, which is what this derives. Twelve objects today, and it stays
- * correct if the runtime grows another.
+ * Derived rather than listed, because listing is what went wrong twice: first a
+ * denylist of key spellings, then a hand-picked object. The parser resolves a
+ * property path with `key in properties`, and `in` walks the prototype chain, so
+ * a MOTLY key of `__proto__` reaches `Object.prototype`, `constructor` reaches the
+ * global `Object`, and `toString` reaches the built-in method object. Every
+ * nested hop goes through another plain bag with the same chain, so the first
+ * escaping write always lands on `Object.prototype` or on the value of one of its
+ * own properties. That is the set.
+ *
+ * Recomputed on every call rather than cached at module load. A cached set goes
+ * stale the moment anything extends `Object.prototype` afterwards, and a library
+ * that does so creates an unwatched target: measured, a late addition took
+ * `location` and `properties` with the cached version and nothing reported it.
+ * Twelve objects and a dozen descriptor reads, which is not worth being clever
+ * about on a path that is already running a parser.
  */
-const POLLUTION_TARGETS: readonly object[] = (() => {
-   const seen = new Set<object>();
-   const add = (value: unknown): void => {
-      if (
-         (typeof value === "object" || typeof value === "function") &&
-         value !== null
-      ) {
-         seen.add(value as object);
-      }
-   };
-   add(Object.prototype);
+function pollutionTargets(): object[] {
+   const targets: object[] = [Object.prototype];
    for (const key of Object.getOwnPropertyNames(Object.prototype)) {
       const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, key);
-      if (descriptor && "value" in descriptor) add(descriptor.value);
+      if (!descriptor || !("value" in descriptor)) continue;
+      const value = descriptor.value;
+      if (
+         (typeof value === "object" || typeof value === "function") &&
+         value !== null &&
+         !targets.includes(value as object)
+      ) {
+         targets.push(value as object);
+      }
    }
-   return [...seen];
-})();
+   return targets;
+}
 
 /**
  * Message used when an annotation cannot be parsed without collateral damage.
@@ -140,7 +146,7 @@ const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
  * identifier, so `` # `__prot\o__` { a=b } `` spells the same property with no
  * such substring. Any denylist of spellings invites that.
  *
- * So the effect is observed instead. Every object in {@link POLLUTION_TARGETS} is
+ * So the effect is observed instead. Every object {@link pollutionTargets} names is
  * snapshotted, the parse runs, and any own property gained is deleted; the
  * annotation is then reported unparseable, since its properties are the ones that
  * went astray. Deleting measurably restores both the prototypes and later parses.
@@ -154,12 +160,11 @@ function parseGuarded(texts: readonly string[]): {
    tag: Tag | undefined;
    messages: string[];
 } {
-   const before = POLLUTION_TARGETS.map((target) =>
-      Object.getOwnPropertyNames(target),
-   );
+   const targets = pollutionTargets();
+   const before = targets.map((target) => Object.getOwnPropertyNames(target));
    const undoPollution = (): boolean => {
       let polluted = false;
-      POLLUTION_TARGETS.forEach((target, index) => {
+      targets.forEach((target, index) => {
          for (const key of Object.getOwnPropertyNames(target)) {
             if (before[index].includes(key)) continue;
             polluted = true;
@@ -496,11 +501,19 @@ export function tagNumeric(
  * The MOTLY tag of an entity's annotations, with filter literals made parseable.
  *
  * A parse failure never shows up as `undefined` here, so a caller cannot detect
- * one from this return value. The loss is per LINE, not per entity: an entity
- * whose second annotation line is malformed still gets the first line's
- * properties, so a non-empty tag is not evidence of a clean parse either. With a
- * single failing line the tag comes back empty. {@link motlyParseErrors} is the
- * closest thing to a signal, and read its caveats before relying on it.
+ * one from this return value. For an ordinary parse failure the loss is per LINE
+ * rather than per entity: an entity whose second annotation line is malformed
+ * still gets the first line's properties, so a non-empty tag is not evidence of a
+ * clean parse either. With a single failing line the tag comes back empty.
+ * {@link motlyParseErrors} is the closest thing to a signal, and read its caveats
+ * before relying on it.
+ *
+ * One case is per ENTITY rather than per line, and it is deliberate. An annotation
+ * that would write onto a shared prototype is refused by {@link parseGuarded}, and
+ * that verdict is reached on the combined parse, so the whole entity comes back
+ * with no tag. Losing a sibling `label` is the price of not shipping a value that
+ * escaped into a global, and it matches how the `@env` guard already treats an
+ * annotation it will not read.
  */
 export function motlyTag(texts: readonly string[]): Tag | undefined {
    return parseMotly(texts).tag;

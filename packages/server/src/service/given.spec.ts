@@ -194,7 +194,10 @@ describe("readGivenControlSpec", () => {
                (k) => !baselines[i].includes(k),
             ),
          );
-      expect(polluted()).toBe(false);
+      // No entry assertion here on purpose: `polluted()` compares the targets
+      // against a baseline just taken from those same targets, so asserting it
+      // before anything runs is a tautology. The checks inside the loop are the
+      // ones that mean something.
 
       for (const hostile of [
          `# __proto__ { a=b }`,
@@ -215,14 +218,44 @@ describe("readGivenControlSpec", () => {
          // The prototype CHAIN, not just Object.prototype: `constructor` resolves
          // to the global `Object` and `toString` to the built-in method object,
          // and writes there accumulate for the life of the process.
+         // Each paired with a real control key on purpose. `# toString=x` alone
+         // yields `{}` whether or not the guard runs, so asserting `{}` on it
+         // would prove nothing; with a `label` present, the guard is the only
+         // reason the result is empty rather than `{label: "ok"}`.
          `# label="ok" constructor { tenant_key="payload" }`,
-         `# toString=x`,
-         `# valueOf { a=b }`,
-         `# hasOwnProperty=y`,
+         `# label="ok" toString=x`,
+         `# label="ok" valueOf { a=b }`,
+         `# label="ok" hasOwnProperty=y`,
       ]) {
          expect(() => readGivenControlSpec([hostile])).not.toThrow();
          expect(readGivenControlSpec([hostile])).toEqual({});
          expect(polluted()).toBe(false);
+      }
+
+      // A target that appears AFTER module load must be watched too. A cached
+      // target list goes stale the moment anything extends Object.prototype, and
+      // a library that does so would create an unwatched write target.
+      Object.defineProperty(Object.prototype, "zzLateTarget", {
+         value: { marker: true },
+         configurable: true,
+         enumerable: false,
+         writable: true,
+      });
+      try {
+         const late = (Object.prototype as unknown as Record<string, object>)
+            .zzLateTarget;
+         const lateBefore = Object.getOwnPropertyNames(late);
+         expect(readGivenControlSpec([`# zzLateTarget { pwned=yes }`])).toEqual(
+            {},
+         );
+         expect(
+            Object.getOwnPropertyNames(late).filter(
+               (k) => !lateBefore.includes(k),
+            ),
+         ).toEqual([]);
+      } finally {
+         delete (Object.prototype as unknown as Record<string, unknown>)
+            .zzLateTarget;
       }
 
       // Still parsing normally afterwards, which is what pollution would break.
