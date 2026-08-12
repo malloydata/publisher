@@ -8,7 +8,7 @@ export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 /**
  * Conventional name for the model file that declares a package's published
  * surface. A package that has one and declares no `explores` gets its
- * discovery surface defaulted to this file — see {@link resolveExplores}.
+ * discovery surface defaulted to this file. See {@link resolveExplores}.
  *
  * Hardcoded rather than configurable, matching Malloyyo, whose project entry
  * point is the same fixed filename. The point of a convention is that a reader

@@ -22,6 +22,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import { resolvePatchedExploresOrigin } from "./package_manifest";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -2083,9 +2084,14 @@ export class Environment {
          // name-only edit cannot promote a convention-derived surface into a
          // declared one and silently start returning 404s. Captured before the
          // write so the rejection path below can put it back.
+         // ...with one exception for the round trip, which the shared rule
+         // owns; see resolvePatchedExploresOrigin.
          const previousFromConvention = _package.exploresAreFromConvention();
-         const fromConvention =
-            normalizedExplores !== undefined ? false : previousFromConvention;
+         const fromConvention = resolvePatchedExploresOrigin({
+            previousFromConvention,
+            patchedExplores: normalizedExplores,
+            existingExplores: existing.explores,
+         });
          const queryableSources =
             body.queryableSources !== undefined
                ? body.queryableSources

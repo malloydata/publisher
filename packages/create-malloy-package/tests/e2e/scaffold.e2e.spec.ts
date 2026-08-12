@@ -244,9 +244,37 @@ describe("generated project serves against a real server", () => {
       const models = await getJson<{ path: string; error?: string }[]>(
          `${pkgBase()}/models`,
       );
-      const model = models.find((m) => m.path === "sales.malloy");
-      expect(model).toBeDefined();
-      expect(model?.error).toBeUndefined();
+      // index.malloy is the scaffolded package's published surface, so it is
+      // what listings return; sales.malloy is a building block behind it.
+      const index = models.find((m) => m.path === "index.malloy");
+      expect(index).toBeDefined();
+      expect(index?.error).toBeUndefined();
+      expect(models.map((m) => m.path)).not.toContain("sales.malloy");
+   });
+
+   test("the surface re-exports the starter source, with its views", async () => {
+      // The listing curation above is only acceptable if the user's source is
+      // still reachable through the surface. If `export { sales }` dropped the
+      // views, the scaffolded package would look empty in the UI.
+      const model = await getJson<{
+         sources: { name: string; views?: { name: string }[] }[];
+      }>(`${pkgBase()}/models/index.malloy`);
+      expect(model.sources.map((s) => s.name)).toEqual(["sales"]);
+      const views = model.sources.flatMap((s) =>
+         (s.views ?? []).map((v) => v.name),
+      );
+      expect(views).toEqual(
+         expect.arrayContaining(["by_category", "by_region", "overview"]),
+      );
+   });
+
+   test("a source hidden from listings is still queryable by name", async () => {
+      // The convention curates discovery, never access. sales.malloy is not
+      // listed above, and must still answer.
+      const model = await getJson<{ path: string; error?: string }>(
+         `${pkgBase()}/models/sales.malloy`,
+      );
+      expect(model.error).toBeUndefined();
    });
 
    test("the starter model compiles with all its views", async () => {
@@ -306,7 +334,9 @@ describe("generated project serves against a real server", () => {
       const models = await getJson<{ path: string; error?: string }[]>(
          `${api()}/environments/default/packages/budget/models`,
       );
-      const model = models.find((m) => m.path === "budget.malloy");
+      // index.malloy is the surface; budget.malloy sits behind it and is still
+      // queryable by name, which the query below exercises.
+      const model = models.find((m) => m.path === "index.malloy");
       expect(model).toBeDefined();
       expect(model?.error).toBeUndefined();
 

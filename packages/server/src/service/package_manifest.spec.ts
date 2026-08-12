@@ -5,6 +5,7 @@ import {
    parsePackageScope,
    resolveExplores,
    resolvePackageScope,
+   resolvePatchedExploresOrigin,
 } from "./package_manifest";
 
 describe("service/package_manifest", () => {
@@ -235,11 +236,11 @@ describe("service/package_manifest", () => {
       const resolve = (
          declaredExplores: unknown,
          modelPaths: readonly string[],
-         queryableSourcesDeclared = false,
+         declaredQueryableSources: unknown = undefined,
       ) =>
          resolveExplores({
             declaredExplores,
-            queryableSourcesDeclared,
+            declaredQueryableSources,
             modelPaths,
          });
 
@@ -325,18 +326,138 @@ describe("service/package_manifest", () => {
          const { warnings, fromConvention } = resolve(
             undefined,
             WITH_INDEX,
-            true,
+            "declared",
          );
          expect(fromConvention).toBe(true);
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toContain("has no effect");
+         // The remedy must be the one that actually produces a boundary.
+         expect(warnings[0]).toContain('Add an explicit "explores"');
+      });
+
+      it("gives 'all' a remedy that would actually work", () => {
+         // "all" already means no boundary, so telling this author to declare
+         // explores would send them to a state that still does not enforce.
+         const { warnings } = resolve(undefined, WITH_INDEX, "all");
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).not.toContain('Add an explicit "explores"');
+         expect(warnings[0]).toContain("you can delete it");
+         expect(warnings[0]).toContain('"queryableSources": "declared"');
       });
 
       it("says nothing about queryableSources alongside an explicit explores", () => {
          // There it is fully meaningful, so there is nothing to warn about.
          expect(
-            resolve(["orders.malloy"], WITHOUT_INDEX, true).warnings,
+            resolve(["orders.malloy"], WITHOUT_INDEX, "declared").warnings,
          ).toEqual([]);
+      });
+
+      it("does not claim a multi-entry explores can just be deleted", () => {
+         // Deleting it would drop secured.malloy: the convention can only ever
+         // produce ["index.malloy"].
+         const { warnings } = resolve(
+            ["index.malloy", "secured.malloy"],
+            WITH_INDEX,
+         );
+         expect(warnings).toEqual([]);
+      });
+
+      it("still says a lone index.malloy explores is deletable", () => {
+         const { warnings } = resolve(["index.malloy"], WITH_INDEX);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("you can delete it");
+      });
+
+      it("warns rather than silently curating when explores is not an array", () => {
+         // The usual typo of the array form. Before the convention existed this
+         // was ignored and everything stayed listed; now it falls through to
+         // the convention, so it has to say so or models vanish unexplained.
+         const { explores, fromConvention, warnings } = resolve(
+            "reports.malloy",
+            WITH_INDEX,
+         );
+         expect(explores).toEqual(["index.malloy"]);
+         expect(fromConvention).toBe(true);
+         expect(warnings.some((w) => w.includes("is not an array"))).toBe(true);
+      });
+
+      it("warns about a malformed explores even with no index.malloy", () => {
+         const { explores, warnings } = resolve(
+            "reports.malloy",
+            WITHOUT_INDEX,
+         );
+         expect(explores).toBeUndefined();
+         expect(warnings.some((w) => w.includes("is not an array"))).toBe(true);
+      });
+   });
+
+   describe("resolvePatchedExploresOrigin", () => {
+      const CONVENTION = ["index.malloy"];
+
+      it("leaves the origin alone when the body does not mention explores", () => {
+         expect(
+            resolvePatchedExploresOrigin({
+               previousFromConvention: true,
+               patchedExplores: undefined,
+               existingExplores: CONVENTION,
+            }),
+         ).toBe(true);
+      });
+
+      it("treats a body naming a DIFFERENT surface as a declaration", () => {
+         expect(
+            resolvePatchedExploresOrigin({
+               previousFromConvention: true,
+               patchedExplores: ["orders.malloy"],
+               existingExplores: CONVENTION,
+            }),
+         ).toBe(false);
+      });
+
+      it("does not arm the boundary for a GET-then-PATCH round trip", () => {
+         // The client re-sent exactly what it read. It declared nothing, so
+         // editing a description must not switch on a 404 boundary.
+         expect(
+            resolvePatchedExploresOrigin({
+               previousFromConvention: true,
+               patchedExplores: ["index.malloy"],
+               existingExplores: CONVENTION,
+            }),
+         ).toBe(true);
+      });
+
+      it("ignores ordering when deciding whether the surface changed", () => {
+         // The surface is consumed as a Set, so a reordered echo is still an
+         // echo rather than a new declaration.
+         expect(
+            resolvePatchedExploresOrigin({
+               previousFromConvention: true,
+               patchedExplores: ["b.malloy", "a.malloy"],
+               existingExplores: ["a.malloy", "b.malloy"],
+            }),
+         ).toBe(true);
+      });
+
+      it("never resurrects the convention on an already-declared surface", () => {
+         // Once declared, echoing it back keeps it declared: the exception
+         // exists to avoid ARMING a boundary, never to disarm one.
+         expect(
+            resolvePatchedExploresOrigin({
+               previousFromConvention: false,
+               patchedExplores: ["orders.malloy"],
+               existingExplores: ["orders.malloy"],
+            }),
+         ).toBe(false);
+      });
+
+      it("treats a shrunken surface as a declaration", () => {
+         expect(
+            resolvePatchedExploresOrigin({
+               previousFromConvention: true,
+               patchedExplores: [],
+               existingExplores: CONVENTION,
+            }),
+         ).toBe(false);
       });
    });
 });

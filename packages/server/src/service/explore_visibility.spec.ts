@@ -288,10 +288,14 @@ export { public_orders }`,
          expect(sourceNames).toEqual(["internal_scratch", "public_orders"]);
 
          // Opt in via explores ⇒ export closure only, aligned with modelInfo.
-         pkg.setPackageMetadata({
-            ...pkg.getPackageMetadata(),
-            explores: ["model.malloy"],
-         });
+         // false: this is an explicit declaration, not the convention.
+         pkg.setPackageMetadata(
+            {
+               ...pkg.getPackageMetadata(),
+               explores: ["model.malloy"],
+            },
+            false,
+         );
          const curated = (await pkg.getModel("model.malloy")!.getModel()) as {
             sources?: { name?: string }[];
             modelInfo?: string;
@@ -335,11 +339,14 @@ run: base_source -> v`,
          ]);
          expect(pkg.emptyDiscoveryWarnings()).toEqual([]);
 
-         pkg.setPackageMetadata({
-            ...pkg.getPackageMetadata(),
-            explores: ["consumer.malloy"],
-            queryableSources: "all",
-         });
+         pkg.setPackageMetadata(
+            {
+               ...pkg.getPackageMetadata(),
+               explores: ["consumer.malloy"],
+               queryableSources: "all",
+            },
+            false,
+         );
          const curated = (await pkg
             .getModel("consumer.malloy")!
             .getModel()) as {

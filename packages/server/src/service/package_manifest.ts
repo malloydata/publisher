@@ -271,8 +271,16 @@ export interface ResolvedExplores {
  * `explores` in publisher.json, and the `index.malloy` convention.
  *
  * Explicit always wins. The convention fills in only where the manifest is
- * silent, which keeps every package already in the wild on exactly the
- * behavior it has today.
+ * silent.
+ *
+ * That is NOT the same as "no package in the wild changes". A deployed package
+ * that already has a root `index.malloy` and no `explores` does change: it
+ * gains a curated surface it did not have, so its other models drop out of
+ * listings and within-file `export {}` curation starts applying. That is the
+ * intended behavior of the convention, and it is why the change is a listing
+ * change only. Query access is deliberately untouched (see `fromConvention`),
+ * so the worst case is a model that has to be un-hidden, never one that has
+ * become unreachable.
  *
  * An explicit empty array counts as explicit. `explores: []` reads as a
  * deliberate "do not curate", and today it means every model is listed; having
@@ -287,16 +295,33 @@ export interface ResolvedExplores {
 export function resolveExplores(input: {
    /** The raw `explores` value as it appeared in publisher.json. */
    declaredExplores: unknown;
-   /** Whether publisher.json carried a `queryableSources` key at all. */
-   queryableSourcesDeclared: boolean;
+   /**
+    * The raw `queryableSources` value as it appeared in publisher.json, or
+    * undefined when the key was absent. The raw value rather than a boolean,
+    * because "all" and "declared" need different remediation advice.
+    */
+   declaredQueryableSources: unknown;
    /** Package-relative model paths, as produced by `listPackageFiles`. */
    modelPaths: readonly string[];
 }): ResolvedExplores {
-   const { declaredExplores, queryableSourcesDeclared, modelPaths } = input;
+   const { declaredExplores, declaredQueryableSources, modelPaths } = input;
    const hasIndexModel = modelPaths.includes(INDEX_MODEL_NAME);
-   const declared = Array.isArray(declaredExplores)
-      ? declaredExplores.map(normalizeModelPath)
+   const declaredIsArray = Array.isArray(declaredExplores);
+   const declared = declaredIsArray
+      ? (declaredExplores as unknown[]).map((e) =>
+           typeof e === "string" ? normalizeModelPath(e) : String(e),
+        )
       : undefined;
+
+   // A present-but-malformed `explores` (a bare string is the usual typo of the
+   // array form) is neither a declaration nor an absence. Treating it as an
+   // absence would let the convention quietly curate the package, dropping
+   // every model the author was trying to list with no clue why, so it falls
+   // through to the convention but says so.
+   const malformed =
+      declaredExplores !== undefined &&
+      declaredExplores !== null &&
+      !declaredIsArray;
 
    if (declared !== undefined) {
       // Explicit wins. Warn only when the package also has an index.malloy,
@@ -309,37 +334,128 @@ export function resolveExplores(input: {
       // An empty array curates nothing, so every model including index.malloy
       // is still listed. There is no disagreement to report and nothing hidden.
       if (hasIndexModel && declared.length > 0) {
-         warnings.push(
-            declared.includes(INDEX_MODEL_NAME)
-               ? EXPLORES_REDUNDANT_WITH_CONVENTION
-               : exploresDisagreesWithConvention(declared),
-         );
+         if (!declared.includes(INDEX_MODEL_NAME)) {
+            warnings.push(exploresDisagreesWithConvention(declared));
+         } else if (declared.length === 1) {
+            // Only a surface of EXACTLY index.malloy is what the convention
+            // would produce, so only that one can be deleted for the same
+            // result. Saying so for a multi-entry surface would be advice that
+            // silently drops every other entry.
+            warnings.push(EXPLORES_REDUNDANT_WITH_CONVENTION);
+         }
       }
       return { explores: declared, fromConvention: false, warnings };
    }
 
    if (!hasIndexModel) {
-      return { explores: undefined, fromConvention: false, warnings: [] };
+      return {
+         explores: undefined,
+         fromConvention: false,
+         warnings: malformed ? [exploresMalformed(declaredExplores)] : [],
+      };
    }
 
    // The convention fires. `queryableSources` is inert here (the boundary needs
    // an explicit `explores`), so say so rather than let an operator believe
    // they have a query boundary they do not have.
-   return {
-      explores: [INDEX_MODEL_NAME],
-      fromConvention: true,
-      warnings: queryableSourcesDeclared
-         ? [QUERYABLE_SOURCES_INERT_UNDER_CONVENTION]
-         : [],
-   };
+   const warnings: string[] = [];
+   if (malformed) {
+      warnings.push(exploresMalformed(declaredExplores));
+   }
+   if (declaredQueryableSources !== undefined) {
+      warnings.push(
+         queryableSourcesInertUnderConvention(declaredQueryableSources),
+      );
+   }
+   return { explores: [INDEX_MODEL_NAME], fromConvention: true, warnings };
 }
 
 const EXPLORES_REDUNDANT_WITH_CONVENTION =
-   `"explores" in publisher.json lists "${INDEX_MODEL_NAME}", which is now the ` +
-   `default for any package that has one. The key still works and still wins ` +
-   `over the convention; you can delete it and get the same discovery surface. ` +
-   `Keep it if you also rely on "queryableSources": declaring "explores" ` +
-   `explicitly is what opts a package into the query boundary.`;
+   `"explores" in publisher.json lists only "${INDEX_MODEL_NAME}", which is now ` +
+   `the default for any package that has one. The key still works and still ` +
+   `wins over the convention; you can delete it and get the same discovery ` +
+   `surface. Keep it if you also rely on "queryableSources": declaring ` +
+   `"explores" explicitly is what opts a package into the query boundary.`;
+
+/**
+ * Decide whether a package's surface is still convention-derived after a
+ * metadata PATCH.
+ *
+ * A body that names a surface has declared one, and declaring is what opts into
+ * the query boundary. The exception is the round trip: `exploresFromConvention`
+ * is not on the wire, so a client that GETs a package, edits one text field and
+ * PATCHes the whole object back re-sends the convention's own `explores`
+ * verbatim without having declared anything. Arming a 404 boundary as a side
+ * effect of editing a description would be a nasty surprise, so a body that
+ * echoes exactly the current surface leaves the origin alone. Only a body
+ * naming a DIFFERENT surface counts as a declaration.
+ *
+ * Pure and exported so the rule is testable on its own and lives beside the
+ * other `explores` rules rather than buried in the PATCH handler.
+ */
+export function resolvePatchedExploresOrigin(input: {
+   /** Whether the surface was convention-derived before this PATCH. */
+   previousFromConvention: boolean;
+   /** Normalized `explores` from the request body, or undefined if absent. */
+   patchedExplores: readonly string[] | undefined;
+   /** The surface currently in force. */
+   existingExplores: readonly string[] | undefined;
+}): boolean {
+   const { previousFromConvention, patchedExplores, existingExplores } = input;
+   if (patchedExplores === undefined) {
+      // Not mentioned: the surface and its origin are both untouched.
+      return previousFromConvention;
+   }
+   if (
+      previousFromConvention &&
+      sameExploreSet(patchedExplores, existingExplores)
+   ) {
+      return true;
+   }
+   return false;
+}
+
+/**
+ * Whether two `explores` lists name the same surface, order-insensitively.
+ * Order does not matter because the surface is consumed as a Set
+ * (`Package.exploreSet`), so a reordered list is the same surface and must not
+ * read as the author having changed it.
+ */
+function sameExploreSet(
+   a: readonly string[],
+   b: readonly string[] | undefined,
+): boolean {
+   if (b === undefined || a.length !== b.length) return false;
+   const other = new Set(b);
+   return a.every((entry) => other.has(entry));
+}
+
+/**
+ * Whether a manifest warning is one of the ones {@link resolveExplores} emits
+ * about where the discovery surface came from.
+ *
+ * Lives here, beside the strings themselves, so the two cannot drift: a warning
+ * whose wording changes without this predicate changing would start surviving
+ * the origin change it describes. Matched on a stable substring rather than by
+ * equality, because two of the three are built per call.
+ */
+export function isExploresConventionWarning(warning: string): boolean {
+   return (
+      warning.startsWith(`"explores" in publisher.json`) ||
+      warning.startsWith(`This package has an "${INDEX_MODEL_NAME}"`) ||
+      warning.startsWith(`"queryableSources" in publisher.json`)
+   );
+}
+
+function exploresMalformed(raw: unknown): string {
+   return (
+      `"explores" in publisher.json is not an array (got ` +
+      `${JSON.stringify(raw)}), so it was ignored. Write it as a list of model ` +
+      `file paths, for example ["${INDEX_MODEL_NAME}"]. Until you do, this ` +
+      `package's discovery surface is whatever the ` +
+      `"${INDEX_MODEL_NAME}" convention decides, which is not what the key says.`
+   );
+}
 
 function exploresDisagreesWithConvention(declared: string[]): string {
    return (
@@ -352,11 +468,24 @@ function exploresDisagreesWithConvention(declared: string[]): string {
    );
 }
 
-const QUERYABLE_SOURCES_INERT_UNDER_CONVENTION =
-   `"queryableSources" in publisher.json has no effect on this package. Its ` +
-   `discovery surface comes from the "${INDEX_MODEL_NAME}" convention, and the ` +
-   `query boundary is only enforced for a surface declared explicitly, so every ` +
-   `source stays queryable by name. Add an explicit "explores" to enforce the ` +
-   `boundary. The convention deliberately does not enforce it: the denial is a ` +
-   `404, so turning it on because a filename exists would revoke access with no ` +
-   `actionable error.`;
+function queryableSourcesInertUnderConvention(raw: unknown): string {
+   // "all" already means "do not enforce", so telling that author to declare
+   // `explores` would send them to a state that still does not enforce. Only
+   // the author who asked for a boundary needs the two-part remedy.
+   const remedy =
+      raw === "all"
+         ? `Nothing is wrong: "all" also means no boundary, so the setting is ` +
+           `simply redundant here and you can delete it. To enforce a boundary ` +
+           `you would need BOTH an explicit "explores" and ` +
+           `"queryableSources": "declared".`
+         : `Add an explicit "explores" naming your surface to enforce the ` +
+           `boundary.`;
+   return (
+      `"queryableSources" in publisher.json has no effect on this package. Its ` +
+      `discovery surface comes from the "${INDEX_MODEL_NAME}" convention, and ` +
+      `the query boundary is only enforced for a surface declared explicitly, ` +
+      `so every source stays queryable by name. ${remedy} The convention ` +
+      `deliberately does not enforce it: the denial is a 404, so turning it on ` +
+      `because a filename exists would revoke access with no actionable error.`
+   );
+}

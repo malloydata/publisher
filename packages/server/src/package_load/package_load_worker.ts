@@ -444,7 +444,7 @@ async function readPackageMetadata(
    // key always wins, and a disagreement rides back as a warning.
    const explores = resolveExplores({
       declaredExplores: parsed.explores,
-      queryableSourcesDeclared: parsed.queryableSources !== undefined,
+      declaredQueryableSources: parsed.queryableSources,
       modelPaths,
    });
    const manifestWarnings = [

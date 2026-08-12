@@ -213,6 +213,21 @@ describe("scaffold: default package", () => {
       expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
    });
 
+   test("a package named 'index' keeps its starter model", () => {
+      // The model file IS index.malloy here, so writing the surface template
+      // would replace the only model with a file importing itself.
+      const result = run({ name: "index" });
+      const index = fs.readFileSync(
+         path.join(tmp, "index/index.malloy"),
+         "utf8",
+      );
+      expect(index).toContain("source: index is duckdb.table");
+      expect(index).not.toContain(`import "index.malloy"`);
+      // It is still the published surface, it just does not need a second file.
+      expect(result.indexFile).toBe("index.malloy");
+      expect(result.modelFile).toBe("index.malloy");
+   });
+
    test("index.malloy imports the model and exports its source", () => {
       const result = run();
       expect(result.indexFile).toBe("index.malloy");

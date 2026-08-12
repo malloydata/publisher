@@ -44,7 +44,15 @@ discovery and chat), at two granularities that **both apply only once the packag
   An explicit `explores` always wins over the convention. If a package has both and they disagree,
   the explicit key is used and the package logs a warning at load rather than the server guessing.
 
-- **Within a file — `export { … }`.** Once the package has a surface, the discovery accessors list only
+  > **Upgrading an existing package.** If you already have a package with a root `index.malloy` and
+  > no `explores`, this changes what it lists: the surface becomes that one file, so your other
+  > models drop out of listings and `export { … }` curation starts applying inside it. Nothing
+  > becomes unreachable, because the convention never gates queries (see the boundary section
+  > below), so anything you did not mean to hide is still queryable by name while you fix it. To
+  > keep the old behavior, either declare `explores` explicitly with the set you want, or rename
+  > the file.
+
+- **Within a file: `export { … }`.** Once the package has a surface, the discovery accessors list only
   the model's re-export closure (`modelDef.exports`), matching what Malloy's `modelInfo`/`sourceInfos`
   expose. A model with no `export { … }` exports all of its locally-declared top-level sources;
   declaring `export { customers }` lists only `customers` and keeps imported/internal helpers out.

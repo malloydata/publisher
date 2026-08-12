@@ -30,6 +30,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { isExploresConventionWarning } from "./package_manifest";
 import { formatDuration, logger } from "../logger";
 import {
    recordBuildPlanComputeDuration,
@@ -2003,18 +2004,31 @@ export class Package {
    /**
     * Replace the wire metadata and re-derive both policies from it.
     *
-    * `exploresFromConvention` is separate because it is not part of the wire
-    * object: pass it whenever the caller changes where the surface came from
-    * (an API PATCH that carries its own `explores` makes it explicit), and omit
-    * it to preserve the current value, which is what a name-only PATCH wants.
+    * `exploresFromConvention` is REQUIRED and separate, because it is not part
+    * of the wire object. Required rather than defaulted: the safe value depends
+    * entirely on what the caller is doing (a PATCH carrying its own `explores`
+    * makes the surface explicit and must pass false; one that does not must
+    * pass the previous value), and a caller who forgot it on the first of those
+    * would leave the query boundary off on a surface the operator just
+    * declared. A missing argument is a compile error instead.
     */
    public setPackageMetadata(
       packageMetadata: ApiPackage,
-      exploresFromConvention?: boolean,
+      exploresFromConvention: boolean,
    ) {
+      const originChanged =
+         this.exploresFromConvention !== exploresFromConvention;
       this.packageMetadata = packageMetadata;
-      if (exploresFromConvention !== undefined) {
-         this.exploresFromConvention = exploresFromConvention;
+      this.exploresFromConvention = exploresFromConvention;
+      if (originChanged) {
+         // The convention warnings describe where the surface came from, so
+         // they are false the moment that changes. The manifest is only re-read
+         // on reload, so drop them here rather than serve a warning that
+         // contradicts the behavior now in force (notably "queryableSources has
+         // no effect", right after the PATCH that gave it effect).
+         this.manifestWarnings = this.manifestWarnings.filter(
+            (w) => !isExploresConventionWarning(w),
+         );
       }
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();

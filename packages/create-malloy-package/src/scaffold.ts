@@ -543,17 +543,29 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    // surface to its index.malloy, so scaffolding one means a new package is
    // curated from the first boot without a publisher.json "explores" key, and
    // the user has one obvious file to edit when they want to publish more.
-   writeFile(
-      path.join(packageDir, INDEX_MODEL_FILE),
-      renderTemplate("index.malloy", { sourceName, modelFile }),
-      options.cwd,
-   );
+   //
+   // Unless the starter model IS that file. `create-malloy-package index` names
+   // the model index.malloy, and writing the surface template over it would
+   // replace the user's only model with a file that imports itself and exports
+   // a source that no longer exists, so the package would not compile. The
+   // model is already the entry point in that case, and needs no separate one.
+   // Compared case-insensitively because macOS and Windows would overwrite it
+   // for `Index` too, and matching that here keeps every platform on the same
+   // layout rather than only the ones that would have corrupted it.
+   const modelIsIndex = modelFile.toLowerCase() === INDEX_MODEL_FILE;
+   if (!modelIsIndex) {
+      writeFile(
+         path.join(packageDir, INDEX_MODEL_FILE),
+         renderTemplate("index.malloy", { sourceName, modelFile }),
+         options.cwd,
+      );
+   }
 
    result.packageCreated = true;
    result.packageName = name;
    result.sourceName = sourceName;
    result.modelFile = modelFile;
-   result.indexFile = INDEX_MODEL_FILE;
+   result.indexFile = modelIsIndex ? modelFile : INDEX_MODEL_FILE;
    result.dataPath = dataPath;
    result.written.push(`${name}/`);
    if (packageDirExists) {
@@ -1907,7 +1919,11 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
    if (result.packageCreated) {
       const base = restBase(result.packageName as string);
       lines.push(
-         `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. \`${result.packageName}/${result.indexFile}\` is the package's published surface, so it is what model listings return; export a source there to publish it. The package's REST base is:`,
+         `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. ${
+            result.indexFile === result.modelFile
+               ? `That file is also the package's published surface, because Publisher reads a package's \`index.malloy\` as what it publishes.`
+               : `\`${result.packageName}/${result.indexFile}\` is the package's published surface, so it is what model listings return; export a source there to publish it.`
+         } The package's REST base is:`,
          "",
          "```",
          base,
