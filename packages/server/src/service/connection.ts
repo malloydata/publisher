@@ -899,15 +899,24 @@ async function federateSnowflake(
          `Snowflake connection configuration missing for: ${config.name}`,
       );
    }
-   const required = {
+   for (const [field, value] of Object.entries({
       account: sf.account,
       username: sf.username,
-      password: sf.password,
-   };
-   for (const [field, value] of Object.entries(required)) {
+   })) {
       if (!value) {
          throw new Error(`Snowflake ${field} is required for: ${config.name}`);
       }
+   }
+   // Key pair OR password, matching what a Snowflake connection may actually be
+   // configured with. Requiring a password made every key-pair connection
+   // unbuildable into a storage destination even though it queries fine live —
+   // and key-pair is where Snowflake is steering programmatic access, so that is
+   // the case that matters most rather than an exotic one.
+   const usesKeyPair = !!sf.privateKey;
+   if (!usesKeyPair && !sf.password) {
+      throw new Error(
+         `Snowflake privateKey or password is required for: ${config.name}`,
+      );
    }
 
    await installAndLoadExtension(connection, "snowflake", true);
@@ -915,21 +924,44 @@ async function federateSnowflake(
    const params = {
       account: escapeSQL(sf.account || ""),
       user: escapeSQL(sf.username || ""),
-      password: escapeSQL(sf.password || ""),
+      password: sf.password ? escapeSQL(sf.password) : undefined,
+      privateKey: sf.privateKey ? escapeSQL(sf.privateKey) : undefined,
+      privateKeyPass: sf.privateKeyPass
+         ? escapeSQL(sf.privateKeyPass)
+         : undefined,
       database: sf.database ? escapeSQL(sf.database) : undefined,
       warehouse: sf.warehouse ? escapeSQL(sf.warehouse) : undefined,
+      schema: sf.schema ? escapeSQL(sf.schema) : undefined,
+      role: sf.role ? escapeSQL(sf.role) : undefined,
    };
    const secretName = sanitizeSecretName(`snowflake_${config.name}`);
-   // DATABASE/WAREHOUSE are optional — emit them only when supplied, so an
-   // absent one doesn't interpolate the literal string 'undefined' into the
+   // Every field below the credential is optional — emit only what was supplied,
+   // so an absent one doesn't interpolate the literal string 'undefined' into the
    // secret (which Snowflake would then try to use as a real db/warehouse name).
+   //
+   // ROLE and SCHEMA are carried for the same reason the credential is: the
+   // Malloy connection folds both into its connection digest, so they are part of
+   // what identifies this connection. Dropping them here would run a build under
+   // the user's DEFAULT role while live queries on the same connection run under
+   // the configured one — a build that fails on permissions the customer thinks
+   // they granted, or worse, one that reads under wider ones.
    const secretLines = [
       `   TYPE snowflake`,
       `   ACCOUNT '${params.account}'`,
       `   USER '${params.user}'`,
-      `   PASSWORD '${params.password}'`,
+      ...(usesKeyPair
+         ? [
+              `   AUTH_TYPE 'key_pair'`,
+              `   PRIVATE_KEY '${params.privateKey}'`,
+              ...(params.privateKeyPass
+                 ? [`   PRIVATE_KEY_PASSPHRASE '${params.privateKeyPass}'`]
+                 : []),
+           ]
+         : [`   PASSWORD '${params.password}'`]),
       ...(params.database ? [`   DATABASE '${params.database}'`] : []),
       ...(params.warehouse ? [`   WAREHOUSE '${params.warehouse}'`] : []),
+      ...(params.schema ? [`   SCHEMA '${params.schema}'`] : []),
+      ...(params.role ? [`   ROLE '${params.role}'`] : []),
    ];
    await connection.runSQL(
       `CREATE OR REPLACE SECRET ${secretName} (\n${secretLines.join(",\n")}\n);`,
