@@ -5163,15 +5163,16 @@ components:
             against whatever materializing it saves on the read side.
 
             **Null is not zero**, and on this path it is usually null. Reported
-            only for a COLOCATED build on a backend that supplies a figure
+            today only for a COLOCATED build on a backend that supplies a figure
             (BigQuery), because that path runs its CTAS through the Malloy
-            connection and gets the backend's own statistics back. A
-            `storage=` build reports null structurally rather than from
-            omission: its warehouse read happens inside DuckDB's native
-            query-passthrough, so the connector that would surface the figure is
-            never in the call path. An incremental delta likewise reports null,
-            since its statements do not run through a single call whose result
-            reaches here.
+            connection and gets the backend's own statistics back.
+
+            A `storage=` build reports null because its warehouse read happens
+            inside DuckDB's native query-passthrough, where that connector is not
+            in the call path. Obtainable by other routes the passthrough
+            extension offers, but not wired, because each costs an extra API call
+            per build. An incremental delta reports null too: its statements do
+            not run through a single call whose result reaches here.
         dataAsOf:
           type: string
           format: date-time
