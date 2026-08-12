@@ -349,22 +349,44 @@ jobs:
           #    cannot see it missing -- which is how the image came to ship unable
           #    to run a single Snowflake query.
           #
-          #    Issue a real query against a bogus secret. Offline and
-          #    credential-free it cannot reach Snowflake, so it MUST fail; what is
-          #    checked is which failure. A driver error means the driver is gone.
-          driver_err=$(docker run --rm --network none --entrypoint duckdb \
+          #    4a. Structural: a driver beside EVERY directory holding the
+          #    extension. The Dockerfile places one per directory and asserts that
+          #    at least one exists; "at least one" and "one beside each" diverge if
+          #    a copy fails in a non-final loop iteration, because a pipeline's
+          #    status is its last command's. The explicit zero-match guard matters
+          #    for the same reason: `find | while read` succeeds vacuously when the
+          #    loop body never runs.
+          docker run --rm --entrypoint sh malloy-publisher:smoke-test -c '
+            n=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
+            [ "$n" -gt 0 ] || { echo "no snowflake.duckdb_extension in the image"; exit 1; }
+            find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
+              | while read -r d; do
+                  [ -f "$d/libadbc_driver_snowflake.so" ] || { echo "no driver beside $d"; exit 1; }
+                done' \
+            || { echo "✗ ADBC Snowflake driver not co-located with the extension"; exit 1; }
+          echo "✓ ADBC driver sits beside every snowflake.duckdb_extension"
+
+          #    4b. Functional: the driver actually loads. Presence cannot show that
+          #    -- a wrong-architecture .so is present and undlopenable.
+          #
+          #    Assert what a WORKING driver produces, not the absence of a broken
+          #    one. Offline with a bogus secret the query must fail either way; the
+          #    difference is how far it gets. With the driver loaded, the Go client
+          #    builds a request and the failure names the Snowflake host. Matching
+          #    that positively means a driver that vanishes goes red AND a reworded
+          #    error goes red -- where matching the driver error negatively would
+          #    quietly stop matching and print a tick forever, which is precisely
+          #    the failure this step exists to correct.
+          probe=$(docker run --rm --network none --entrypoint duckdb \
             malloy-publisher:smoke-test -c \
             "LOAD snowflake; CREATE SECRET s (TYPE snowflake, ACCOUNT 'x', USER 'y', PASSWORD 'z');
              SELECT * FROM snowflake_query('SELECT 1','s');" 2>&1 || true)
-          #    Match the ERROR, not the filename: on success the extension logs an
-          #    INFO line carrying the driver's path, which a bare filename grep
-          #    matches too and would fail a perfectly good image.
-          if echo "$driver_err" | grep -q "driver (libadbc_driver_snowflake.so) not found"; then
-            echo "✗ ADBC Snowflake driver missing -- snowflake_query() cannot work"
-            echo "$driver_err"
+          if ! echo "$probe" | grep -q "snowflakecomputing.com"; then
+            echo "✗ snowflake_query() never reached the Snowflake host -- driver did not load"
+            echo "$probe"
             exit 1
           fi
-          echo "✓ snowflake ADBC driver present (a real query fails for other reasons)"
+          echo "✓ ADBC driver loads (a real query reaches the Snowflake host)"
           echo "✓ All baked DuckDB extensions load offline"
       - name: Start container
         run: |

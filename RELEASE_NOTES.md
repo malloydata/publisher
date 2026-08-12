@@ -30,7 +30,7 @@ The 0.0.236 notes below list `snowflake_query` among the native query-passthroug
 
 ### Why it went unnoticed
 
-Both guards were blind for the same reason. The image build verified Snowflake with `SELECT snowflake_version()` — a scalar that never touches the driver and passes without it — and the offline extension smoke test asserts only that extensions `LOAD`. The driver is a query-time dependency, so nothing that ran at build time could see it missing.
+Both guards were blind for the same reason. The image build verified Snowflake with `SELECT snowflake_version()` — a scalar that never touches the driver and passes without it — and the offline extension smoke test asserted only that extensions `LOAD`. The driver is a query-time dependency, so nothing that ran at build time could see it missing.
 
 ### Scope, and what is still missing
 
@@ -38,7 +38,7 @@ The driver is installed by the **Docker image**. A local clone or `npx @malloy-p
 
 ### Operational notes
 
-A failed driver fetch now **fails the image build** rather than warning and continuing. An image without the driver cannot answer a Snowflake query, so it should not leave the builder reporting success — which is how this shipped.
+A failed driver fetch now **fails the image build** rather than warning and continuing. An image without the driver cannot answer a Snowflake query, so it should not leave the builder reporting success — which is how this shipped. A release built from an unchecked ref is covered by the same assertion, since it lives in the Dockerfile rather than only in CI.
 
 ---
 
