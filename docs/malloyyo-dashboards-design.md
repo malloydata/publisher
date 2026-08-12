@@ -18,7 +18,8 @@ declaration's tags are separate changes that need not arrive together. The dashb
 another, being two endpoints, and discovery is a third: the server side can arrive before the
 package-page section that surfaces it. Before building on any part of this design, read the open
 and merged dashboard pull requests and look in the tree, rather than trusting a sentence here.
-These are the files and symbols each part lives in, which is what makes that check quick:
+For the parts most often mistaken for one another, these are the files and symbols to look in. It is
+a shortcut for those, not an inventory of the design:
 
 | Part of the design                       | Lives in                                                        |
 | ---------------------------------------- | --------------------------------------------------------------- |
@@ -40,9 +41,9 @@ tree's naming too. The dashboard-specific names are the ones still worth checkin
 above says where to look. Written July 2026, revised against the implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
-plus `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or an HTML data
-app) and `docs/dashboards.md` (how to use the feature rather than read its design), both
-delivered by phase 5 in [Phasing](#phasing) below.
+plus `docs/dashboards.md` (how to use the feature rather than read its design), which phase 5 in
+[Phasing](#phasing) delivers, and `docs/choosing-a-surface.md` (when to reach for a dashboard over a
+notebook or an HTML data app), which it links for the when-to-use guidance.
 Externally, Malloyyo's `docs/creating-dashboards.md`, `docs/composite-dashboards.md`, and
 `docs/dashboard-iframe-security.md` are the format and security posture this design adopts.
 
