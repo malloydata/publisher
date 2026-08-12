@@ -3054,9 +3054,11 @@ components:
                 type: string
                 description: >-
                   What the finding is about: the query or view a render finding
-                  sits on (`by_carrier`, `flights -> by_carrier`), or the source
-                  a materialization finding belongs to. Absent when a finding
-                  spans several, in which case the message names them.
+                  sits on (`by_carrier`, `flights -> by_carrier`), the source a
+                  materialization finding belongs to, or, for a dashboard
+                  finding, the dashboard's name or the `source.dimension` a
+                  `# drill` is declared on. Absent when a finding spans several,
+                  in which case the message names them.
               message:
                 type: string
                 description: A description of the problem.
@@ -3415,10 +3417,16 @@ components:
         givens:
           type: array
           description: |
-            The control row — one entry per given the dashboard's query
-            references. Plain `Given`s, because the presentation a control takes
-            is declared on the given itself, so a dashboard and a notebook
-            render the same control for the same given.
+            The control row: one entry per given the dashboard's query
+            references AND the entry file can bind. A given reachable only
+            through an import chain the entry file does not import itself
+            cannot be bound at query time, so no control is offered for it and
+            it stays at its default; that case is reported in the package's
+            `warnings` rather than represented here by an unusable entry. Plain
+            `Given`s, because the presentation a control takes is declared on
+            the given itself, so a dashboard and a notebook render the same
+            control for the same given, `#(description=…)` helper text
+            included.
           items:
             $ref: "#/components/schemas/Given"
 

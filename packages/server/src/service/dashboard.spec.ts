@@ -289,10 +289,10 @@ describe("service/dashboard given specs (the control contract)", () => {
             name: "BRAND",
             type: "filter<string>",
             default: "f''",
+            annotations: [],
             label: "Brand",
             control: "select",
             suggest: {
-               query: undefined,
                source: "order_items",
                dimension: "brand",
             },
@@ -301,6 +301,7 @@ describe("service/dashboard given specs (the control contract)", () => {
             name: "MIN_PRICE",
             type: "filter<number>",
             default: "f''",
+            annotations: [],
             label: "Min price",
             rangeMin: 0,
             rangeMax: 500,
@@ -322,8 +323,39 @@ describe("service/dashboard given specs (the control contract)", () => {
          }),
       );
       expect(manifest?.givens).toEqual([
-         { name: "REGION", type: "string", default: "'US'" },
+         { name: "REGION", type: "string", default: "'US'", annotations: [] },
       ]);
+   });
+
+   // The dashboard control row is the ordinary API `Given`, so it must carry the
+   // same `#(description="…")` the model and notebook surfaces carry: the
+   // shipped `GivenInput` renders its helper text from `annotations`. Dropping
+   // it made a dashboard control silently plainer than the same given elsewhere.
+   it("carries app-route annotations through, and drops reserved ones", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["REGION"],
+               },
+            ],
+            givens: new Map([
+               given("REGION", "filter<string>", [
+                  '#(description="Which region") \n',
+                  '# label="Region"\n',
+                  '#" a doc comment\n',
+               ]),
+            ]),
+         }),
+      );
+      expect(manifest?.givens[0].annotations).toEqual([
+         '#(description="Which region") \n',
+      ]);
+      // The reserved routes still drive the control contract rather than
+      // appearing as annotations.
+      expect(manifest?.givens[0].label).toBe("Region");
    });
 
    it("ignores a control kind it does not recognize", () => {
@@ -896,6 +928,23 @@ describe("service/dashboard silent-vanish lint", () => {
          [],
       );
    });
+
+   // A `date` is the only temporal literal MOTLY's grammar reaches: it stops at
+   // the space in `@2024-03-01 10:00`, which discards the WHOLE artifact tag,
+   // dashboard and all. Pinned because that is a natural thing to write next to
+   // a timestamp given, and the reason it is acceptable is that it is reported
+   // here rather than lost — `readStartingGivens` says so and this is the proof.
+   it("reports a timestamp starting value, which the grammar cannot parse", () => {
+      expect(
+         messages(
+            facts({
+               modelAnnotations: [
+                  '## artifact { tiles=["orders -> by_month"] givens { WHEN=@2024-03-01 10:00 } }\n',
+               ],
+            }),
+         ),
+      ).toEqual([expect.stringContaining("Tag does not parse")]);
+   });
 });
 
 describe("service/dashboard given-tag lint", () => {
@@ -1064,6 +1113,18 @@ describe("service/dashboard grid width and hostile literals", () => {
    // The reporting path calls it on the very value it is complaining about, and
    // the lint's try/catch wraps the whole package loop, so one bad literal would
    // have cost every dashboard finding in the package.
+   // The reported value must be the author's, not the word `undefined`.
+   // `tagText` returns undefined for exactly the bad-literal case, and
+   // `JSON.stringify(undefined)` is the literal text `undefined`.
+   it("does not print the word undefined for an unreadable width", () => {
+      const messages = lintOf(
+         singleQuery("# artifact dashboard { columns=@2024-13-01 }\n"),
+      );
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("could not be read");
+      expect(messages[0]).not.toContain("undefined");
+   });
+
    it("reports a bad date literal as a width rather than throwing", () => {
       expect(() =>
          lintOf(singleQuery("# artifact dashboard { columns=@2024-13-01 }\n")),

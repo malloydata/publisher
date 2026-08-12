@@ -2264,11 +2264,13 @@ export class Package {
                model: modelPath,
                subject: name,
                message:
-                  `is served, but "${name}" is outside the dashboard name ` +
-                  `pattern the API documents (letters, digits, "-" and "_"). ` +
-                  `This server routes it, so the dashboard works; a client ` +
-                  `generated from the spec may refuse to request it. Rename ` +
-                  `the file if that matters to your callers.`,
+                  `is served, but "${name}" is outside the conventional ` +
+                  `dashboard name shape (letters, digits, "-" and "_"). This ` +
+                  `server routes it and its published URL carries the name ` +
+                  `encoded, so the dashboard works. The convention is worth ` +
+                  `keeping anyway: a name outside it has to be percent-encoded ` +
+                  `by every caller that builds the URL by hand. Rename the ` +
+                  `file if that matters to yours.`,
                severity: "warn",
             });
          }

@@ -25,6 +25,8 @@ put the server behind your own gateway before exposing it beyond localhost.
     │   │   └── /compile                POST — compile to SQL / metadata
     │   ├── /notebooks/{path}           a .malloynb notebook
     │   │   └── /cells/{index}          GET — run one notebook cell
+    │   ├── /dashboards                 `# artifact` dashboards in dashboards/
+    │   │   └── /{name}                 GET — one dashboard's manifest
     │   ├── /data-apps                  in-package HTML data apps
     │   ├── /events                     GET, the live-reload SSE stream (held open)
     │   ├── /databases                  the package's embedded data files (e.g. parquet)
@@ -46,6 +48,8 @@ put the server behind your own gateway before exposing it beyond localhost.
 | `POST …/packages/{pkg}/models/{path}/query` | Run a Malloy query; see [request shapes](#query-request-shapes) below. |
 | `POST …/packages/{pkg}/models/{path}/compile` | Compile Malloy to SQL / metadata. |
 | `GET  …/packages/{pkg}/notebooks/{path}/cells/{index}` | Run one notebook cell. |
+| `GET  …/packages/{pkg}/dashboards` | List a package's dashboards: the `.malloy` files in `dashboards/` carrying an `# artifact` tag. |
+| `GET  …/packages/{pkg}/dashboards/{name}` | One dashboard's manifest: its layout, tiles, and the control row derived from the givens its query references. There is no run endpoint; run the manifest's `path` through `…/models/{path}/query` with `givens`. |
 | `GET  …/packages/{pkg}/data-apps` | List a package's HTML data apps. |
 | `GET  …/packages/{pkg}/events` | Live-reload SSE stream ([html-data-apps.md](html-data-apps.md#live-reload)). Held open by design. |
 | `GET  …/environments/{env}/connections` | List database connections. |

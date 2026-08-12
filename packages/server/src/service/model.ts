@@ -1795,10 +1795,13 @@ export class Model {
     * The facts dashboard discovery reads off this model, or undefined when the
     * model failed to compile.
     *
-    * Deliberately uncurated: `explores` curation shapes the *discovery* surface
-    * agents see, while a dashboard is a separate human artifact addressed by its
-    * own slug. A package that curates its model surface still serves its
-    * dashboards. See `service/dashboard.ts`.
+    * Deliberately uncurated HERE: `explores` curation shapes the *discovery*
+    * surface agents see, and these facts are the raw material the manifest is
+    * built from, so filtering them at this level would lose information the
+    * lint needs. The curation decision is made by the caller instead:
+    * `Package.discoverDashboards` withholds a dashboard whose entry file is not
+    * a query entry point, because its manifest would advertise names the query
+    * boundary refuses. See `service/dashboard.ts`.
     */
    public getDashboardModelFacts(): DashboardModelFacts | undefined {
       if (!this.modelDef) return undefined;

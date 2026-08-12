@@ -7,7 +7,10 @@ rather than the declaration's default. A URL parameter beats it, so a link still
 shows what the sender was looking at.
 >>>malloy
 ##! experimental.givens
-## givens { SINCE="2024-03-01" }
+// Written as a DATE LITERAL, matching the declaration's own default
+// (`given: SINCE :: date is @2024-01-01`), which is the natural spelling and
+// the one that used to publish a full ISO timestamp the query endpoint 400s on.
+## givens { SINCE=@2024-03-01 }
 
 import { orders } from "orders.malloy"
 import { SINCE } from "givens.malloy"

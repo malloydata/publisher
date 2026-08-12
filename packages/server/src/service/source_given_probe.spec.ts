@@ -5,7 +5,7 @@
 // $CATEGORY }` — is the idiomatic way to apply a given to everything built on
 // it, and it is what lets a composite dashboard have a control row at all: a
 // composite has no query of its own, so the filtering it applies lives in what
-// it composes (docs/dashboards.md). The reference lands in the source's
+// it composes (docs/malloyyo-dashboards-design.md). The reference lands in the source's
 // `filterList`, *not* in any view's pipeline, so a walk of the pipeline alone
 // misses it — and the symptom is silent: the dashboard renders filtered results
 // with no control to change them. Pinned here against the real compiler, since

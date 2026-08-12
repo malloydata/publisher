@@ -192,9 +192,11 @@ export function dashboardSlug(modelPath: string): string {
  *
  * ADVISORY ONLY. It does not decide whether a dashboard is served: every
  * dashboard is served, and its name is percent-encoded into the published URL,
- * so the route resolves whatever the name contains. What the pattern governs is
- * what a client GENERATED from the spec will accept, which is worth reporting
- * and not worth refusing to serve for.
+ * so the route resolves whatever the name contains. The spec declares no
+ * pattern on `dashboardName` either, deliberately, because the name comes from
+ * a filename rather than being chosen. What this governs is the CONVENTION,
+ * which is worth reporting because a name outside it has to be percent-encoded
+ * by any caller assembling the URL by hand.
  *
  * It was a gate once, and both justifications given for it were wrong, which is
  * why the reasoning is written down. `dashboards/.malloy` (an empty name)
@@ -568,6 +570,20 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
       name: declaration.name,
       type: declaration.type,
       default: declaration.default,
+      // App-route (`#(…)`) annotations, exactly as `malloyGivenToApi` carries
+      // them on the model and notebook surfaces. Without this a dashboard
+      // control silently lost the `#(description="…")` helper text that the
+      // shipped `GivenInput` renders from `annotations`, while the spec said a
+      // dashboard and a notebook render the same control for the same given.
+      //
+      // A bracketed route is what `isReservedRoute` admits: it is the only
+      // shape here carrying a letter or digit in its route, since the reserved
+      // ones are plain `#`, `#"` and `##!`. Matched on the prefix rather than
+      // re-derived, because re-implementing that classifier by hand is what
+      // went wrong repeatedly in the module this borrows from.
+      annotations: declaration.annotations.filter((text) =>
+         /^##?\(/.test(text),
+      ),
       ...readGivenControlSpec(declaration.annotations),
    };
 }
@@ -712,9 +728,15 @@ export function lintDashboard(
       // right only when neither spelling supplied a usable value; when this one
       // is bad and the other is good, the grid quietly uses the other, and a
       // finding naming a default the author never sees is worse than none.
+      // `tagText` returns undefined for exactly the bad-literal case this guard
+      // exists for, and `JSON.stringify(undefined)` is the literal text
+      // `undefined`, so the author was told the value was "undefined" rather
+      // than what they wrote. Say the value is unreadable instead of naming a
+      // value nobody typed.
+      const raw = tagText(tag, key);
       add(
          `${written} must be a positive integer, got ` +
-            `${JSON.stringify(tagText(tag, key))}. ` +
+            `${raw === undefined ? "a value that could not be read" : JSON.stringify(raw)}. ` +
             (manifest.dashboardColumns === undefined
                ? `The grid falls back to the renderer default.`
                : `The grid uses ${manifest.dashboardColumns} instead.`),

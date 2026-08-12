@@ -563,6 +563,26 @@ describe("Dashboard discovery (E2E)", () => {
          expect(await countSince("2024-03-01")).toBe(2);
       });
 
+      /**
+       * The manifest says `startingGivens` is "in the shape the query endpoint
+       * accepts", so the value it publishes must survive being sent straight
+       * back. A MOTLY date literal arrives as a `Date` and `Tag.text()` renders
+       * one with `toISOString()`, which is exactly the spelling the next test
+       * proves is refused. The fixture writes the literal form deliberately;
+       * quoting it, as it used to, dodged the path entirely.
+       */
+      it("publishes a date starting given the query endpoint will accept", async () => {
+         const res = await fetch(apiUrl("/notebooks/orders-start.malloynb"));
+         expect(res.status).toBe(200);
+         const nb = (await res.json()) as {
+            startingGivens?: Record<string, string>;
+         };
+         expect(nb.startingGivens?.SINCE).toBe("2024-03-01");
+         // And it round-trips: the published value runs.
+         const run = await runSince(nb.startingGivens?.SINCE ?? "");
+         expect(run.status).toBe(200);
+      });
+
       it("rejects a full ISO timestamp for a date given", async () => {
          // The reason `givensToRequest` needs the declared type at all: a
          // blanket toISOString() lands here, not on a result.
@@ -779,7 +799,9 @@ describe("Dashboard discovery (E2E)", () => {
             (w) => w.message ?? "",
          );
          expect(messages).toContainEqual(
-            expect.stringContaining('"v1.2" is outside the dashboard name'),
+            expect.stringContaining(
+               '"v1.2" is outside the conventional dashboard name',
+            ),
          );
          // And the drill pointing at it resolves, because it is real and
          // reachable, so there is no finding about it.

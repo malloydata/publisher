@@ -791,6 +791,19 @@ export function readAutorun(tag: Tag | undefined): boolean {
  * `autorun`, where a document starts is a property of the document, not of the
  * surface presenting it.
  */
+/**
+ * A tag value's scalar type, or undefined. Guarded like {@link tagText}: this
+ * one does not stringify, so it cannot throw on a bad literal, but it is kept
+ * beside its sibling so every read of a tag goes through one shape.
+ */
+function scalarTypeOf(tag: Tag | undefined): string | undefined {
+   try {
+      return tag?.scalarType();
+   } catch {
+      return undefined;
+   }
+}
+
 export function readStartingGivens(
    tag: Tag | undefined,
 ): Record<string, string> | undefined {
@@ -798,8 +811,29 @@ export function readStartingGivens(
    if (!entries) return undefined;
    const collected: Record<string, string> = {};
    for (const [name, value] of entries.entries()) {
-      const text = tagText(value as Tag);
-      if (text !== undefined) collected[name] = unwrapFilterLiteral(text);
+      const tag = value as Tag;
+      const text = tagText(tag);
+      if (text === undefined) continue;
+      // A MOTLY date literal arrives here as a `Date`, and `Tag.text()` renders
+      // one with `toISOString()`. That is precisely the spelling the query
+      // endpoint REFUSES for a `date` given, with "…YYYY-MM-DD…", so publishing
+      // it would hand a caller a starting value that 400s when sent straight
+      // back. `# artifact { givens { SINCE=@2024-03-01 } }` is the natural
+      // spelling too, since it matches the declaration's own default.
+      //
+      // `scalarType` is the discriminator rather than a shape test on the
+      // string, so a caller who deliberately quoted a full timestamp keeps
+      // exactly what they wrote.
+      //
+      // `date` is the only temporal literal that reaches here: MOTLY's grammar
+      // stops at the space in `@2024-03-01 10:00` ("Expected '{', found '0'"),
+      // so a timestamp starting value has to be written as a quoted string.
+      // That is not a silent loss — the parse error discards the whole tag, and
+      // `lintUndiscoveredDashboard` reports it against the file.
+      collected[name] =
+         scalarTypeOf(tag) === "date"
+            ? text.slice(0, 10)
+            : unwrapFilterLiteral(text);
    }
    return Object.keys(collected).length > 0 ? collected : undefined;
 }
