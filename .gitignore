@@ -22,7 +22,11 @@ packages/app/playwright-report/
 
 # SPA bundle copied next to the from-source server so it can serve the web UI
 # (the server looks for app/ beside the running server file).
+# Both spellings: the trailing-slash form matches only a directory, so a
+# symlink of the same name (a common local dev convenience) slipped past it
+# and got committed once via a directory-scoped `git add`.
 packages/server/src/app/
+packages/server/src/app
 
 # Publisher runtime artifacts (DuckDB metadata + per-env package clones).
 # Created wherever the server is launched from; already covered by

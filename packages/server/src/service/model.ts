@@ -112,7 +112,9 @@ import {
    type OwnAuthorizeSource,
 } from "./source_extraction";
 import {
+   recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
+   type AuthorizeBypassEntryPoint,
    type AuthorizeGuardField,
 } from "../authorize_metrics";
 
@@ -597,7 +599,12 @@ export class Model {
    public async assertAuthorized(
       sourceName: string | undefined,
       givens: Record<string, GivenValue>,
+      bypassAuthorize = false,
    ): Promise<void> {
+      if (bypassAuthorize) {
+         this.noteAuthorizeBypass("source", sourceName);
+         return;
+      }
       // A named, declared source is gated from the entry-point walk, with each
       // gate's own `selfContained` flag — the SAME answer the compiled backstop
       // reaches. Before this, the two disagreed in both directions: the walk
@@ -630,6 +637,34 @@ export class Model {
          this.effectiveAuthorizeFor(sourceName),
          givens,
       );
+   }
+
+   /**
+    * Counter + audit line for one skipped gate evaluation.
+    *
+    * Every authorize bypass in the process funnels through here, because the
+    * only two methods that evaluate a gate ({@link assertAuthorized} and
+    * {@link assertAuthorizedForAllSources}) both short-circuit into it — and
+    * the private {@link assertAuthorizedExprs} they share has no other caller.
+    * So this is the complete audit surface: a bypass that does not appear here
+    * did not happen.
+    *
+    * The identifiers live on the log line rather than the counter labels; see
+    * {@link recordAuthorizeBypass} for why. `Model` knows its package and path
+    * but not its environment or organization — the router's own audit line on
+    * the private endpoint carries those, and the two join on package + model.
+    */
+   private noteAuthorizeBypass(
+      entryPoint: AuthorizeBypassEntryPoint,
+      sourceName: string | undefined,
+   ): void {
+      recordAuthorizeBypass(entryPoint);
+      logger.info("authorize bypass", {
+         entryPoint,
+         sourceName: sourceName ?? "(query)",
+         modelPath: this.modelPath,
+         packageName: this.packageName,
+      });
    }
 
    /**
@@ -709,7 +744,22 @@ export class Model {
    public async assertAuthorizedForAllSources(
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
+      bypassAuthorize = false,
    ): Promise<void> {
+      // Returns BEFORE the nested assertAuthorized below, so this books at most
+      // one `runnable` emission and never two. It still skips the entry-point
+      // walk, which is the expensive part (resolveRunTargetStruct +
+      // collectEntryPointGates) — but NOT the source-name resolution, which is
+      // the only thing that tells an investigator what a bypass actually read.
+      // An ad-hoc query is exactly the case where the caller-side name is
+      // unavailable and this is the sole record of the target.
+      if (bypassAuthorize) {
+         this.noteAuthorizeBypass(
+            "runnable",
+            await this.resolveAuthorizeSourceFromRunnable(runnable),
+         );
+         return;
+      }
       const ownSourceName =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
       await this.assertAuthorized(ownSourceName, givens);
@@ -1155,6 +1205,11 @@ export class Model {
     * file-level gate applies — the same top-level-only boundary as the query
     * path's early gate. Used by the `/compile` path, which has no runnable to
     * resolve before it decides whether to compile at all.
+    *
+    * Takes no bypass argument, deliberately. `/compile` returns schema and, with
+    * `includeSql`, SQL; no caller needs to compile through a gate, so the
+    * parameter is not plumbed here rather than plumbed and defaulted off. Adding
+    * it back should require deciding to, not one word in a call site.
     */
    public async assertAuthorizedForText(
       text: string,
@@ -1172,6 +1227,8 @@ export class Model {
     * Used as the `/compile` backstop once a runnable exists, so `/compile`
     * applies the same entry-point rule as the query path — including its
     * "joins are not gated" consequence.
+    *
+    * No bypass argument, for the same reason as {@link assertAuthorizedForText}.
     */
    public async assertAuthorizedForRunnable(
       runnable: { getPreparedQuery(): Promise<unknown> },
@@ -2252,6 +2309,19 @@ export class Model {
        * which predate the parameter; no production caller omits it.
        */
       responseShape: "full" | "compact" = "full",
+      /**
+       * Skip `#(authorize)` gate evaluation for this request — the private
+       * data-management path (see the router's `dataManagementQuery`).
+       *
+       * Disables ONLY expressions collected from `#(authorize)` / `##(authorize)`
+       * annotations. The author's own `where:` clauses, `#(filter)` handling, and
+       * every other semantic are untouched, and this neither reads nor writes
+       * {@link bypassFilters} — that is a separate, deprecated, `#(filter)`-only
+       * control. Never settable from the ingress-exposed surface: `/private/**`
+       * is not routed externally and the router's controller pins an M2M identity
+       * before forwarding it.
+       */
+      bypassAuthorize = false,
    ): Promise<{
       result: Malloy.Result;
       /**
@@ -2350,7 +2420,11 @@ export class Model {
             : undefined) ||
          surfaceName;
       if (earlySource) {
-         await this.assertAuthorized(earlySource, givens ?? {});
+         await this.assertAuthorized(
+            earlySource,
+            givens ?? {},
+            bypassAuthorize,
+         );
       }
 
       // Wrap loadQuery calls in try-catch to handle query parsing errors
@@ -2571,7 +2645,11 @@ export class Model {
       // `duckdb.sql(...)` query is rejected by restricted mode (the raw-SQL
       // ban from loadRestrictedQuery above) before it can run, so the
       // raw-warehouse bypass is closed by restricted mode — not by this gate.
-      await this.assertAuthorizedForAllSources(runnable, givens ?? {});
+      await this.assertAuthorizedForAllSources(
+         runnable,
+         givens ?? {},
+         bypassAuthorize,
+      );
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
