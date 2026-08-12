@@ -18,7 +18,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — `storage=` builds from a Snowflake source now work
+## [Unreleased] — `storage=` builds from a Snowflake source now work (Docker image)
 
 The 0.0.236 notes below list `snowflake_query` among the native query-passthroughs a `storage=` source is materialized through. That was true of the code and never true of the published image: **materializing a Snowflake source into a storage destination has not worked at all.** Two independent faults, both fixed.
 
@@ -31,6 +31,10 @@ The 0.0.236 notes below list `snowflake_query` among the native query-passthroug
 ### Why it went unnoticed
 
 Both guards were blind for the same reason. The image build verified Snowflake with `SELECT snowflake_version()` — a scalar that never touches the driver and passes without it — and the offline extension smoke test asserts only that extensions `LOAD`. The driver is a query-time dependency, so nothing that ran at build time could see it missing.
+
+### Scope, and what is still missing
+
+The driver is installed by the **Docker image**. A local clone or `npx @malloy-publisher/server` still has no driver, so `storage=` builds from Snowflake continue to fail there with the same error — installing it is a manual step (`dbc install snowflake`, or the extension's installer script). Closing that properly means the bake step owning the driver alongside the extensions, which is worth doing and is not this change.
 
 ### Operational notes
 

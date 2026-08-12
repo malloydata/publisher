@@ -334,16 +334,37 @@ jobs:
             echo "✓ $ext loads offline"
           done
 
-          # 3. The community extensions (bigquery, snowflake) must load offline
-          #    too. snowflake in particular loads via its BUNDLED ADBC driver --
-          #    we removed the external ADBC driver install, so a failure here
-          #    means the extension no longer self-provides the driver.
+          # 3. The community extensions (bigquery, snowflake) must load offline too.
           for ext in bigquery snowflake; do
             docker run --rm --network none --entrypoint duckdb \
               malloy-publisher:smoke-test -c "LOAD $ext;" \
-              || { echo "✗ community extension '$ext' failed to load offline (bundled driver missing?)"; exit 1; }
+              || { echo "✗ community extension '$ext' failed to load offline"; exit 1; }
             echo "✓ $ext loads offline"
           done
+
+          # 4. snowflake does NOT self-provide its ADBC driver, whatever an earlier
+          #    version of this comment asserted. The extension is a wrapper over
+          #    libadbc_driver_snowflake.so, which the image installs separately.
+          #    LOAD succeeds without it and only snowflake_query() fails, so step 3
+          #    cannot see it missing -- which is how the image came to ship unable
+          #    to run a single Snowflake query.
+          #
+          #    Issue a real query against a bogus secret. Offline and
+          #    credential-free it cannot reach Snowflake, so it MUST fail; what is
+          #    checked is which failure. A driver error means the driver is gone.
+          driver_err=$(docker run --rm --network none --entrypoint duckdb \
+            malloy-publisher:smoke-test -c \
+            "LOAD snowflake; CREATE SECRET s (TYPE snowflake, ACCOUNT 'x', USER 'y', PASSWORD 'z');
+             SELECT * FROM snowflake_query('SELECT 1','s');" 2>&1 || true)
+          #    Match the ERROR, not the filename: on success the extension logs an
+          #    INFO line carrying the driver's path, which a bare filename grep
+          #    matches too and would fail a perfectly good image.
+          if echo "$driver_err" | grep -q "driver (libadbc_driver_snowflake.so) not found"; then
+            echo "✗ ADBC Snowflake driver missing -- snowflake_query() cannot work"
+            echo "$driver_err"
+            exit 1
+          fi
+          echo "✓ snowflake ADBC driver present (a real query fails for other reasons)"
           echo "✓ All baked DuckDB extensions load offline"
       - name: Start container
         run: |

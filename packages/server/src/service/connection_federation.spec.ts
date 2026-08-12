@@ -100,6 +100,33 @@ describe("federateSourceForPassthrough", () => {
       expect(secret).not.toContain("PASSWORD '");
    });
 
+   it("snowflake: normalizes a single-line private key, as the live path does", async () => {
+      // The shape that matters. A multi-line PEM is already valid, so a test
+      // using one passes whether or not the key is normalized. A SINGLE-LINE key
+      // is accepted by the live path (which normalizes at its own call site) and
+      // is what a user pasting from a secret store actually supplies — and left
+      // unreflowed, its header has no trailing newline, which makes Go's
+      // pem.Decode return nil and the build fail on a key that queries fine.
+      const { conn, sql } = stubbedConnection();
+      const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ".repeat(
+         3,
+      );
+      await federateSourceForPassthrough(conn, "snowflake", {
+         name: "src_sf_oneline",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            privateKey: `-----BEGIN PRIVATE KEY-----${body}-----END PRIVATE KEY-----`,
+         } as components["schemas"]["SnowflakeConnection"],
+      });
+      const secret = sql.find((s) => s.includes("CREATE OR REPLACE SECRET"))!;
+      // Reflowed: a newline directly after the header rather than base64.
+      expect(secret).toContain("-----BEGIN PRIVATE KEY-----\n");
+      expect(secret).not.toContain(
+         `-----BEGIN PRIVATE KEY-----${body.slice(0, 8)}`,
+      );
+   });
+
    it("snowflake: carries ROLE and SCHEMA so a build matches the live connection", async () => {
       // Both are folded into the Malloy connection's digest, i.e. they are part
       // of what identifies the connection. Dropping them runs the build under the

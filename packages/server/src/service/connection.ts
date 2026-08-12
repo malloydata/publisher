@@ -925,7 +925,16 @@ async function federateSnowflake(
       account: escapeSQL(sf.account || ""),
       user: escapeSQL(sf.username || ""),
       password: sf.password ? escapeSQL(sf.password) : undefined,
-      privateKey: sf.privateKey ? escapeSQL(sf.privateKey) : undefined,
+      // Normalized rather than passed through. The config federated here is an
+      // UNnormalized clone of the API connection, and the live path normalizes at
+      // its own call site — so this is where the two diverge. A single-line PEM
+      // (no newline after the header) makes Go's pem.Decode return nil, and the
+      // extension wants PKCS#8 where a user may legitimately have pasted PKCS#1.
+      // Without this, a key that queries perfectly well live fails the build:
+      // the same shape of bug this change exists to fix, one layer in.
+      privateKey: sf.privateKey
+         ? escapeSQL(normalizeSnowflakePrivateKey(sf.privateKey))
+         : undefined,
       privateKeyPass: sf.privateKeyPass
          ? escapeSQL(sf.privateKeyPass)
          : undefined,

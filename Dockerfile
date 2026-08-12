@@ -18,30 +18,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
 # by the CI consistency check.
 ARG DUCKDB_VERSION=1.5.3
-# The Snowflake extension is a wrapper over the ADBC Snowflake driver, which
-# `INSTALL snowflake FROM community` does NOT bring with it — the extension ships
-# alone and the driver is a separate artifact. Without it the extension installs,
-# LOADs, and answers snowflake_version() perfectly well, and then every
-# snowflake_query() fails at run time with "ADBC Snowflake driver
-# (libadbc_driver_snowflake.so) not found".
-#
-# Pinned and downloaded directly rather than via the upstream installer's
-# `curl … | sh`: a build should not execute a remote script it cannot pin, and
-# the version here is auditable the same way DUCKDB_VERSION is. The driver is
-# published per platform, and this image is built for both amd64 and arm64, so
-# the architecture is resolved rather than assumed.
-#
-# It lands in the extension directory for THIS DuckDB version because that is the
-# first path the extension searches, and it is the same directory the runtime
-# reads its baked extensions from — so the driver travels with them.
-#
-# Its own RUN, with no `|| echo` fallback, so a failed fetch FAILS THE BUILD. The
-# neighbouring step tolerates being offline, and that tolerance is what let this
-# ship broken: an image missing the driver is an image that cannot answer a single
-# Snowflake query, and it should not leave the builder claiming success. The
-# closing `test -f` is the verification — snowflake_version() above cannot serve
-# as one, being a scalar that never touches the driver and passes without it.
-ARG ADBC_SNOWFLAKE_VERSION=1.12.0
 RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
     ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
@@ -49,15 +25,6 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
-
-RUN ADBC_ARCH="$(dpkg --print-architecture)" && \
-    EXT_DIR="/root/.duckdb/extensions/v${DUCKDB_VERSION}/linux_${ADBC_ARCH}" && \
-    mkdir -p "${EXT_DIR}" && \
-    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/adbc-snowflake.tar.gz \
-      "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_${ADBC_ARCH}_v${ADBC_SNOWFLAKE_VERSION}.tar.gz" && \
-    tar -xzf /tmp/adbc-snowflake.tar.gz -C "${EXT_DIR}" libadbc_driver_snowflake.so && \
-    rm -f /tmp/adbc-snowflake.tar.gz && \
-    test -f "${EXT_DIR}/libadbc_driver_snowflake.so"
 
 # Builder stage
 FROM oven/bun:1.3.13-slim AS builder
@@ -138,6 +105,50 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 # (the server build) instead of re-running it here. The CLI (base-deps) and
 # runtime engine are pinned to the same DuckDB version, so all agree on one dir.
 COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
+
+# The Snowflake extension is a wrapper over the ADBC Snowflake driver, and
+# `INSTALL snowflake FROM community` does NOT bring it — the extension ships
+# alone, the driver is a separate artifact. Without it the extension installs,
+# LOADs and answers snowflake_version() perfectly well, and then every
+# snowflake_query() fails at run time with "ADBC Snowflake driver
+# (libadbc_driver_snowflake.so) not found".
+#
+# Placed HERE, after the COPY above, rather than earlier: the extension resolves
+# the driver by calling dladdr on ITSELF and looking beside the loaded object, so
+# the driver has to sit next to whichever snowflake.duckdb_extension the runtime
+# actually loads. That directory is discovered rather than reconstructed from a
+# platform string — the CLI (base-deps) and the bake (@duckdb/node-api, in the
+# builder) each write their own, and this is the layer that ships.
+#
+# Downloaded directly rather than through the upstream installer's `curl … | sh`,
+# and checked against the digest GitHub publishes: this is a 16MB native library
+# dlopen'd into the server process, and a version tag is mutable — an asset can
+# be re-uploaded under it. Pin the bytes, not the name.
+#
+# No `|| echo` fallback, unlike the extension install above: a failed fetch FAILS
+# THE BUILD. That tolerance is exactly what let this ship broken. An image without
+# the driver cannot answer a single Snowflake query and must not leave the builder
+# reporting success. The closing `test` is the verification — snowflake_version()
+# cannot serve as one, being a scalar that never touches the driver.
+#
+# When bumping DUCKDB_VERSION, re-check this: the community extension moves with
+# DuckDB and the driver ABI may move with it, and a mismatch surfaces only at
+# query time.
+ARG ADBC_SNOWFLAKE_VERSION=1.12.0
+ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
+ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
+RUN ADBC_ARCH="$(dpkg --print-architecture)" && \
+    if [ "${ADBC_ARCH}" = "amd64" ]; then ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_AMD64}"; \
+    else ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_ARM64}"; fi && \
+    curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
+      -o /tmp/adbc-snowflake.tar.gz \
+      "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_${ADBC_ARCH}_v${ADBC_SNOWFLAKE_VERSION}.tar.gz" && \
+    echo "${ADBC_SHA}  /tmp/adbc-snowflake.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/adbc-snowflake.tar.gz -C /tmp libadbc_driver_snowflake.so && \
+    find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
+      | while read -r d; do cp /tmp/libadbc_driver_snowflake.so "$d/"; done && \
+    rm -f /tmp/adbc-snowflake.tar.gz /tmp/libadbc_driver_snowflake.so && \
+    test -n "$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so -print -quit)"
 
 # Runtime config
 ARG DUCKDB_VERSION=1.5.3
