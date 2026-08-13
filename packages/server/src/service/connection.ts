@@ -1521,12 +1521,44 @@ function entryToDuckDBOptions(
    return { ...removeUndefined(rest), name };
 }
 
-function removeUndefined<T extends object>(value: T): Partial<T> {
+/**
+ * Drop keys whose value is absent, treating `null` as absent alongside
+ * `undefined`.
+ *
+ * This is the null guard for the connectors Publisher builds ITSELF, outside
+ * Malloy's connection lookup. Core strips nulls on its own registry path, so
+ * anything assembled into the Malloy config pojo is already covered; the two
+ * callers here are not. `buildSnowflakePrivateKeyConnection` bypasses the
+ * registry entirely, and reads through `cloneApiConnection`, whose shallow
+ * spread leaves an explicit `null` intact.
+ *
+ * `null` matters as much as `undefined` because the values this builds land in a
+ * connection whose `getDigest()` feeds them to `makeDigest`, which reads
+ * `.length` off each part and special-cases `undefined` alone. A surviving
+ * `null` therefore throws "null is not an object (evaluating 'p.length')" on the
+ * first digest. That digest is taken by the package-load worker's
+ * connection-metadata RPC, so the symptom is not a connection error but the whole
+ * package failing to load with "import reference failure" on the source line --
+ * while the same model compiles cleanly through /compile, which runs on the main
+ * thread and never takes a digest.
+ *
+ * A field omitted from config arrives as `undefined` and was always fine. The
+ * `null` has a producer: an explicit `"database": null` in publisher.config.json,
+ * or a client that serializes unset optionals as null over POST /connections.
+ * Once stored it is durable, because ConnectionRepository round-trips through
+ * JSON.stringify/parse, which drops `undefined` but preserves `null`.
+ *
+ * Stripping is identity-preserving: an explicit null and an omitted field
+ * produce the same digest, so no content-addressed id splits across the fix.
+ */
+function removeUndefined<T extends object>(
+   value: T,
+): { [K in keyof T]?: Exclude<T[K], null> } {
    return Object.fromEntries(
       Object.entries(value).filter(
-         ([, fieldValue]) => fieldValue !== undefined,
+         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
       ),
-   ) as Partial<T>;
+   ) as { [K in keyof T]?: Exclude<T[K], null> };
 }
 
 function buildSnowflakePrivateKeyConnection(
