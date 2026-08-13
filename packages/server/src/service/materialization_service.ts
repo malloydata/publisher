@@ -77,6 +77,7 @@ import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
+   BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
@@ -2366,16 +2367,32 @@ export class MaterializationService {
                sourceConnection,
                destinationConnection,
             );
-            recordStorageBuildFailure(destinationName);
+            // Whether the warehouse read was already BILLED survives the
+            // redaction, because it changes what a caller should do next. This
+            // service's own scheduler advances "regardless of outcome so a
+            // persistent failure retries on the next cron occurrence" and fires
+            // with forceRefresh, which defeats skip-if-unchanged — so a
+            // persistent cause re-runs the same read every occurrence, and on
+            // this branch that means paying for it every occurrence. Rewrapping
+            // as a bare Error made that indistinguishable from an attach
+            // failure, which is free to retry.
+            const alreadyBilled = err instanceof BilledReadNotCapturedError;
+            recordStorageBuildFailure(
+               destinationName,
+               alreadyBilled ? "billed_read_not_captured" : "build_failed",
+            );
             logger.warn("Storage materialization build failed", {
                sourceName: persistSource.name,
                destinationName,
+               alreadyBilled,
                error: safeDetail,
             });
-            throw new Error(
+            const failure =
                `Failed to materialize source '${persistSource.name}' into ` +
-                  `storage destination '${destinationName}': ${safeDetail}`,
-            );
+               `storage destination '${destinationName}': ${safeDetail}`;
+            throw alreadyBilled
+               ? new BilledReadNotCapturedError(failure, { cause: err })
+               : new Error(failure, { cause: err });
          }
       }
 

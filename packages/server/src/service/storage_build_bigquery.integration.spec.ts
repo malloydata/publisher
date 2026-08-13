@@ -38,17 +38,20 @@ import { MaterializationService } from "./materialization_service";
  * split.
  *
  * Locally, set `BIGQUERY_PUBLIC_DATA_CREDENTIALS` to a key file and
- * `BIGQUERY_PUBLIC_DATA_PROJECT_ID` to its project. Absent those this skips, so
- * it costs a developer without credentials nothing.
+ * `BIGQUERY_PUBLIC_DATA_PROJECT_ID` to its project. Absent those this SKIPS —
+ * `describe.skipIf`, not an early `return` from a passing test.
+ *
+ * That distinction is the whole point. This file is under `src/`, so
+ * `test:unit` (`bun test src`) globs it on every PR and on all three platforms,
+ * none of which carry a BigQuery secret. Returning early made those runs report
+ * green tests that had asserted nothing, which is worse than no coverage: it
+ * reads as coverage. A skip reports as a skip.
  */
 const hasPublicDataBigQueryCredentials = () =>
    !!(
       process.env.BIGQUERY_PUBLIC_DATA_CREDENTIALS &&
       process.env.BIGQUERY_PUBLIC_DATA_PROJECT_ID
    );
-
-const SKIP_MESSAGE =
-   "Skipping: BIGQUERY_PUBLIC_DATA_CREDENTIALS / BIGQUERY_PUBLIC_DATA_PROJECT_ID not configured";
 
 /** A read of a real table, with a unique predicate so BigQuery cannot serve it from cache. */
 const buildSQLFor = (nonce: string) =>
@@ -109,117 +112,110 @@ async function rowsInDestination(
    }
 }
 
-describe("storage= build against live BigQuery", () => {
-   it("labels the read, captures its rows, and reports what it cost", async () => {
-      if (!hasPublicDataBigQueryCredentials()) {
-         console.log(SKIP_MESSAGE);
-         return;
-      }
-      const nonce = `lbl${Date.now()}`;
-      const { result, environmentPath, physicalTableName } = await runBuild(
-         nonce,
-         { cred_run: nonce, cred_org: "acme_corp", cred_class: "ops" },
-      );
+describe.skipIf(!hasPublicDataBigQueryCredentials())(
+   "storage= build against live BigQuery",
+   () => {
+      it("labels the read, captures its rows, and reports what it cost", async () => {
+         const nonce = `lbl${Date.now()}`;
+         const { result, environmentPath, physicalTableName } = await runBuild(
+            nonce,
+            { cred_run: nonce, cred_org: "acme_corp", cred_class: "ops" },
+         );
 
-      // The rows are the point: a cost figure from a build that captured
-      // nothing would be worse than no figure.
-      expect(await rowsInDestination(environmentPath, physicalTableName)).toBe(
-         12,
-      );
-      expect(result.schema.map((c) => c.name)).toEqual(["who", "n"]);
+         // The rows are the point: a cost figure from a build that captured
+         // nothing would be worse than no figure.
+         expect(
+            await rowsInDestination(environmentPath, physicalTableName),
+         ).toBe(12);
+         expect(result.schema.map((c) => c.name)).toEqual(["who", "n"]);
 
-      // The split ran, which is the only way a label reaches the job.
-      const cost = result.readCost;
-      expect(cost).not.toBeNull();
-      expect(cost!.engine).toBe("bigquery");
-      expect(cost!.jobId).toBeTruthy();
-      // The child job is not in the default listing, so the parent is what an
-      // operator needs to reach it.
-      expect(cost!.parentJobId).toBeTruthy();
+         // The split ran, which is the only way a label reaches the job.
+         const cost = result.readCost;
+         expect(cost).not.toBeNull();
+         expect(cost!.engine).toBe("bigquery");
+         expect(cost!.jobId).toBeTruthy();
+         // The child job is not in the default listing, so the parent is what an
+         // operator needs to reach it.
+         expect(cost!.parentJobId).toBeTruthy();
 
-      // Real figures off the real job record — this is the surface a fake
-      // session cannot exercise.
-      expect(cost!.bytesScanned).toBeGreaterThan(0);
-      expect(cost!.bytesBilled).toBeGreaterThan(0);
-      // BigQuery's 10MB-per-query floor: a small read bills above what it
-      // scanned, which is why these are separate fields.
-      expect(cost!.bytesBilled).toBeGreaterThanOrEqual(cost!.bytesScanned!);
-      expect(cost!.cacheHit).toBe(false);
-   }, 120_000);
+         // Real figures off the real job record — this is the surface a fake
+         // session cannot exercise.
+         expect(cost!.bytesScanned).toBeGreaterThan(0);
+         expect(cost!.bytesBilled).toBeGreaterThan(0);
+         // BigQuery's 10MB-per-query floor: a small read bills above what it
+         // scanned, which is why these are separate fields.
+         expect(cost!.bytesBilled).toBeGreaterThanOrEqual(cost!.bytesScanned!);
+         expect(cost!.cacheHit).toBe(false);
+      }, 120_000);
 
-   it("puts SCANNED bytes on the manifest entry, never billed", async () => {
-      // The one field the manifest carries, pinned against the one that would
-      // look plausible in its place. Worth doing here rather than over a fake:
-      // these two numbers only diverge against a real warehouse — the 10MB floor
-      // is what makes billed exceed scanned — so a stub would have to assert the
-      // difference it invented.
-      if (!hasPublicDataBigQueryCredentials()) {
-         console.log(SKIP_MESSAGE);
-         return;
-      }
-      const nonce = `mft${Date.now()}`;
-      const serviceAccountKeyJson = await fs.readFile(
-         process.env.BIGQUERY_PUBLIC_DATA_CREDENTIALS!,
-         "utf-8",
-      );
-      const environmentPath = mkdtempSync(
-         path.join(os.tmpdir(), `storage-manifest-${nonce}-`),
-      );
-      const sourceConnection = {
-         name: "bq_src",
-         type: "bigquery",
-         bigqueryConnection: {
-            serviceAccountKeyJson,
-            defaultProjectId: process.env.BIGQUERY_PUBLIC_DATA_PROJECT_ID!,
-         },
-      };
-      const service = Object.create(MaterializationService.prototype) as Record<
-         string,
-         (...a: unknown[]) => Promise<Record<string, unknown>>
-      >;
-      const entry = await service.buildOneSourceIntoStorage(
-         { name: "orders", connectionName: "bq_src" },
-         {
-            sourceEntityId: `sid-${nonce}`,
-            physicalTableName: `orders_${nonce}`,
-            destination: "lake",
-         },
-         { strict: false, update: () => {} },
-         {
-            getApiConnection: () => sourceConnection,
-            getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
-            getEnvironmentPath: () => environmentPath,
-         },
-         buildSQLFor(nonce),
-         {},
-         false,
-         { cred_run: nonce, cred_class: "ops" },
-      );
+      it("puts SCANNED bytes on the manifest entry, never billed", async () => {
+         // The one field the manifest carries, pinned against the one that would
+         // look plausible in its place. Worth doing here rather than over a fake:
+         // these two numbers only diverge against a real warehouse — the 10MB floor
+         // is what makes billed exceed scanned — so a stub would have to assert the
+         // difference it invented.
+         const nonce = `mft${Date.now()}`;
+         const serviceAccountKeyJson = await fs.readFile(
+            process.env.BIGQUERY_PUBLIC_DATA_CREDENTIALS!,
+            "utf-8",
+         );
+         const environmentPath = mkdtempSync(
+            path.join(os.tmpdir(), `storage-manifest-${nonce}-`),
+         );
+         const sourceConnection = {
+            name: "bq_src",
+            type: "bigquery",
+            bigqueryConnection: {
+               serviceAccountKeyJson,
+               defaultProjectId: process.env.BIGQUERY_PUBLIC_DATA_PROJECT_ID!,
+            },
+         };
+         const service = Object.create(
+            MaterializationService.prototype,
+         ) as Record<
+            string,
+            (...a: unknown[]) => Promise<Record<string, unknown>>
+         >;
+         const entry = await service.buildOneSourceIntoStorage(
+            { name: "orders", connectionName: "bq_src" },
+            {
+               sourceEntityId: `sid-${nonce}`,
+               physicalTableName: `orders_${nonce}`,
+               destination: "lake",
+            },
+            { strict: false, update: () => {} },
+            {
+               getApiConnection: () => sourceConnection,
+               getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
+               getEnvironmentPath: () => environmentPath,
+            },
+            buildSQLFor(nonce),
+            {},
+            false,
+            { cred_run: nonce, cred_class: "ops" },
+         );
 
-      const billed = 10_485_760;
-      expect(entry.queryCostBytes).toBeGreaterThan(0);
-      // Scanned and billed genuinely differ on this read, so this distinguishes.
-      expect(entry.queryCostBytes).toBeLessThan(billed);
-      expect(entry.queryCostBytes).not.toBe(billed);
-   }, 120_000);
+         const billed = 10_485_760;
+         expect(entry.queryCostBytes).toBeGreaterThan(0);
+         // Scanned and billed genuinely differ on this read, so this distinguishes.
+         expect(entry.queryCostBytes).toBeLessThan(billed);
+         expect(entry.queryCostBytes).not.toBe(billed);
+      }, 120_000);
 
-   it("leaves an untagged read in the shape it had before, and reports no cost", async () => {
-      if (!hasPublicDataBigQueryCredentials()) {
-         console.log(SKIP_MESSAGE);
-         return;
-      }
-      const nonce = `pln${Date.now()}`;
-      const { result, environmentPath, physicalTableName } = await runBuild(
-         nonce,
-         undefined,
-      );
+      it("leaves an untagged read in the shape it had before, and reports no cost", async () => {
+         const nonce = `pln${Date.now()}`;
+         const { result, environmentPath, physicalTableName } = await runBuild(
+            nonce,
+            undefined,
+         );
 
-      // Same rows by the older path — the split is not load-bearing for data.
-      expect(await rowsInDestination(environmentPath, physicalTableName)).toBe(
-         12,
-      );
-      // No label to carry means no split, and a rows-returning passthrough
-      // call hands back no job to account for.
-      expect(result.readCost).toBeNull();
-   }, 120_000);
-});
+         // Same rows by the older path — the split is not load-bearing for data.
+         expect(
+            await rowsInDestination(environmentPath, physicalTableName),
+         ).toBe(12);
+         // No label to carry means no split, and a rows-returning passthrough
+         // call hands back no job to account for.
+         expect(result.readCost).toBeNull();
+      }, 120_000);
+   },
+);

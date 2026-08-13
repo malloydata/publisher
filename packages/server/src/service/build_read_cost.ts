@@ -142,7 +142,13 @@ function snowflakeDatabaseQualifier(
  * larger than a build — the session form carries the same 100 default, and was
  * also empty in that measurement.
  *
- * The accounting query itself carries the same tag, so it excludes its own shape.
+ * The accounting query carries the same tag as the read it is looking for, and is
+ * NOT filtered out by text: {@link pickSnowflakeReadRow} requires exact equality
+ * with the build's own SQL, which this statement can never satisfy, and
+ * EXECUTION_STATUS excludes the in-flight one. A text filter here would have been
+ * redundant with that AND a false negative for the source most likely to care
+ * about query cost — one that models Snowflake's query history itself.
+ *
  * Aliases are QUOTED because Snowflake folds a bare alias to uppercase, which
  * would make every field below read undefined while a row still came back.
  *
@@ -182,8 +188,7 @@ export function snowflakeCostSQL(
       FROM TABLE(${qualifier}.QUERY_HISTORY_BY_SESSION(
                  RESULT_LIMIT => ${SNOWFLAKE_HISTORY_LIMIT}))
       WHERE QUERY_TAG = '${sqlLiteral(queryTag, "snowflake")}'
-        AND EXECUTION_STATUS = 'SUCCESS'
-        AND QUERY_TEXT NOT LIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'`;
+        AND EXECUTION_STATUS = 'SUCCESS'`;
 }
 
 /**
@@ -255,7 +260,9 @@ function col(row: Record<string, unknown>, key: string): unknown {
 
 function num(value: unknown): number | null {
    if (value === null || value === undefined) return null;
-   const n = typeof value === "bigint" ? Number(value) : Number(value);
+   // Number() handles bigint directly; an explicit branch here read as a
+   // precision guard while doing exactly what the other branch did.
+   const n = Number(value);
    return Number.isFinite(n) ? n : null;
 }
 

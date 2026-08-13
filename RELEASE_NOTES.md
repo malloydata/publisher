@@ -18,6 +18,18 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a `storage=` build's warehouse read is now attributable
+
+A `storage=` build reads its source through DuckDB's native query-passthrough, where no Malloy connector is in the call path to apply the query-metadata bag. Every such build therefore reached the warehouse untagged — the one kind of work a deployment could not attribute. It now carries the same bag the colocated path does, resolved through the same layering.
+
+**Snowflake** takes it as a session `QUERY_TAG`; its read is unchanged. **BigQuery** takes it as `@@query_label`, which it cannot do without splitting the read: `bigquery_query()` accepts no labels parameter and cannot run the script that would set one. So a labelled BigQuery read runs as `bigquery_execute` over a two-statement script, and the anonymous result table that job wrote is then read with `bigquery_scan`. Reading that table goes through the Storage Read API and creates no new query job, so the split is not a second scan. **Postgres** has no per-statement tag and is unaffected.
+
+**New operational prerequisite on BigQuery.** A labelled read locates its result table by listing the executed script's child job, an API surface the unsplit read never touched. A connection that cannot list its own jobs keeps the read it had before and loses attribution rather than its build — the fallback is decided by a probe issued _before_ anything runs, and counted by `publisher_storage_build_attribution_skipped_total`. Separately, and independent of tagging, the passthrough streams its results over the Storage Read API on every path: `bigquery.readsessions.create` (`roles/bigquery.readSessionUser`) is a standing requirement for materializing any BigQuery source into a storage destination.
+
+`ManifestEntry.queryCostBytes` is populated for a tagged `storage=` build, and the full per-engine cost — billed bytes, slot or execution time, the cache flag, the warehouse's own job ids — goes to the build's log line.
+
+---
+
 ## [Unreleased] — queries report how they were served, and what they cost
 
 The server measured several things and then discarded them, and the query
@@ -35,9 +47,9 @@ histogram carried two labels that grew without bound. Both are addressed.
 
 **Bytes scanned is not bytes billed.** BigQuery rounds up to a 10MB minimum per query, so a small read bills an order of magnitude above what it scanned — and materialization refreshes are mostly small reads. Every figure reported here is SCANNED. Use it to compare queries against each other; it is not a spend number.
 
-**Null is not zero, and on the build side it is null more often than not.** `ManifestEntry.queryCostBytes` is populated only for a COLOCATED build, from the Malloy connection's own statistics. An incremental delta reports null because its statements do not run through a single call whose result reaches the manifest, and a chained `storage=` build reports null because it read its parent's already-materialized table and touched no warehouse at all.
+**Null is not zero, and on the build side which paths report differs.** `ManifestEntry.queryCostBytes` is populated for a COLOCATED build, from the Malloy connection's own statistics. An incremental delta reports null because its statements do not run through a single call whose result reaches the manifest, and a chained `storage=` build reports null because it read its parent's already-materialized table and touched no warehouse at all.
 
-A plain `storage=` build also reports null, and that one is a gap rather than a property: its read goes through DuckDB's native query-passthrough, where no Malloy connector is in the call path to report statistics. Recovering the figure means reading it back from the warehouse's own accounting, which needs an identifier for the job — and the passthrough does not return one for a rows-returning call. Obtaining that identifier restructures how the build issues its read, so it is deliberately left to the change that does so rather than approximated here.
+A plain `storage=` build reports a figure when its warehouse read carried query metadata, and null otherwise — see the attribution section above for what makes the difference. A Postgres source reports null on every path, since the label that makes a read reportable is BigQuery's.
 
 On the serve side, check `servedFrom` before reading a null as "free": a `storage`-served query touched no warehouse, while a Snowflake or Postgres query touched one and simply reported nothing.
 

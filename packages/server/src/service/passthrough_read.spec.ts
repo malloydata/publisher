@@ -276,6 +276,56 @@ describe("issuePassthroughRead — BigQuery split", () => {
       expect(read.jobId).toBe("script_job_abc_0");
    });
 
+   it("retries when the listing succeeds but the child is not enumerated yet", async () => {
+      // A 200 with the child missing is the same transient as a 5xx and is
+      // indistinguishable from it here — bigquery_execute returning a job id
+      // proves the script finished, not that the listing has caught up.
+      let calls = 0;
+      const session = {
+         runSQL: async (sql: string) => {
+            if (!sql.includes("parentJobId")) {
+               return {
+                  rows: sql.includes("bigquery_execute")
+                     ? [{ job_id: "job_parent" }]
+                     : [{ job_id: "any" }],
+               };
+            }
+            calls++;
+            // Two empty listings, then the child appears.
+            return { rows: calls < 3 ? [] : BQ_CHILD };
+         },
+      } as never;
+      const read = await issuePassthroughRead(
+         session,
+         "bigquery",
+         "proj",
+         "SELECT 1",
+         { cred_run: "r" },
+      );
+      expect(calls).toBe(3);
+      expect(read.cost?.bytesScanned).toBe(5114816);
+   });
+
+   it("names the parent job when it finally gives up, so the read can be found", async () => {
+      // The one failure documented as the operator's decision. A script's child
+      // job is absent from the default listing, so the parent is the only handle
+      // on a read that was paid for.
+      const { session } = fakeSession([
+         PROBE_OK,
+         [{ job_id: "job_parent" }],
+         [],
+      ]);
+      const error = (await issuePassthroughRead(
+         session,
+         "bigquery",
+         "proj",
+         "SELECT 1",
+         { cred_run: "r" },
+      ).catch((e: Error) => e)) as Error;
+      expect(error).toBeInstanceOf(BilledReadNotCapturedError);
+      expect(error.message).toContain("job_parent");
+   });
+
    it("retries a failing job lookup before failing a build already billed for", async () => {
       // The probe established that this connection CAN list, so a failure here is
       // transient — and the alternative is expensive, because the read is paid for
@@ -327,7 +377,8 @@ describe("issuePassthroughRead — BigQuery split", () => {
    it("fails rather than re-running a read that already happened", async () => {
       // The query HAS run and been billed by this point. Falling back to the
       // direct shape would run and bill it a second time; a retry is the
-      // operator's decision, not a silent double charge.
+      // operator's decision, not a silent double charge. The message is the
+      // retry's terminal one, because an empty listing is now retried first.
       const { session } = fakeSession([
          PROBE_OK,
          [{ job_id: "job_parent" }],
@@ -337,7 +388,7 @@ describe("issuePassthroughRead — BigQuery split", () => {
          issuePassthroughRead(session, "bigquery", "proj", "SELECT 1", {
             cred_run: "r",
          }),
-      ).rejects.toThrow(/no locatable result table/);
+      ).rejects.toThrow(/rows cannot be captured/);
    });
 
    it("fails loudly when the execute reports no job at all", async () => {
