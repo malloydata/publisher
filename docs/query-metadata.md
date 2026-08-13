@@ -10,28 +10,32 @@ It is observability only. It never affects results, and it is excluded from conn
 
 Each backend gets the bag through a mechanism that attaches **per query**:
 
-| Backend | Mechanism | Where it shows up |
-|---|---|---|
-| Snowflake | per-statement `QUERY_TAG` (the bag as JSON) | `QUERY_HISTORY`, `QUERY_ATTRIBUTION_HISTORY` |
-| BigQuery | per-job `labels` | `INFORMATION_SCHEMA.JOBS` |
+| Backend                                             | Mechanism                                                       | Where it shows up                                           |
+| --------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------- |
+| Snowflake                                           | per-statement `QUERY_TAG` (the bag as JSON)                     | `QUERY_HISTORY`, `QUERY_ATTRIBUTION_HISTORY`                |
+| BigQuery                                            | per-job `labels`                                                | `INFORMATION_SCHEMA.JOBS`                                   |
 | Trino / Presto, Databricks, Postgres, DuckDB, MySQL | a leading SQL comment — `-- team="finance" class="interactive"` | query history, `pg_stat_activity`, `system.runtime.queries` |
 
 On the comment-carrying backends the bag is part of the statement text, so it shares whatever window that text is stored in: Postgres truncates `pg_stat_activity.query` at `track_activity_query_size` (1024 bytes by default), and a large declared bag can eat enough of it to cut off the SQL itself. Publisher's own context is about 200 characters; a bag near the 20-property cap is not.
 
 Session-scoped mechanisms (Trino client tags, Databricks `SET QUERY_TAGS`, Postgres `application_name`) are deliberately not used: a pooled session serves many queries, so a session-level tag would attribute all of them to whichever one set it last.
 
+**One path is the exception, and it is exempt from that reasoning rather than in spite of it.** A `storage=` build reads its source through DuckDB's native query-passthrough, where no Malloy connector is in the call path to apply a per-statement tag — so the choice there is a session tag or no attribution at all. What makes it safe is that the session is not pooled: each build runs on its own private DuckDB instance, created and disposed for that build, so "whichever one set it last" is always this build. The tag is cleared before the session is released, so a session the driver may hand over pre-tagged cannot leave a stale attribution behind either.
+
+It does not escape the problem entirely, and the residue is worth knowing before reading a bill. The Snowflake driver issues its own connection probes (`SELECT 1`) around each passthrough call, and those run on the tagged session — so they carry the build's bag into `QUERY_HISTORY` alongside the read itself. They scan nothing, so cost grouped by `class` or `run_id` is unaffected; a COUNT of statements grouped the same way reads high.
+
 ## What Publisher adds by itself
 
 Publisher attaches its own context to every statement, so attribution needs no modeling work:
 
-| Property | Meaning |
-|---|---|
-| `class` | `interactive`, `materialize`, `index` or `ops` |
-| `environment`, `package` | where the query came from |
-| `model` | the model a query ran against |
-| `source` | the persist source a build was materializing |
-| `trigger`, `run_id` | what started a build, and which run it belongs to (also the run whose tables a drop is retiring) |
-| `query_id` | identifies this one query; the response hands it back (see below) |
+| Property                 | Meaning                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------ |
+| `class`                  | `interactive`, `materialize`, `index` or `ops`                                                   |
+| `environment`, `package` | where the query came from                                                                        |
+| `model`                  | the model a query ran against                                                                    |
+| `source`                 | the persist source a build was materializing                                                     |
+| `trigger`, `run_id`      | what started a build, and which run it belongs to (also the run whose tables a drop is retiring) |
+| `query_id`               | identifies this one query; the response hands it back (see below)                                |
 
 Context wins over a declared property of the same name: a caller cannot label its own query as a build, and cannot supply its own `query_id`.
 
@@ -52,11 +56,11 @@ Most specific wins, property by property:
 ```json
 // publisher.json — every statement this package's sources issue
 {
-   "name": "orders",
-   "materialization": {
-      "scope": "version",
-      "queryMetadata": { "team": "finance", "tier": "gold" }
-   }
+  "name": "orders",
+  "materialization": {
+    "scope": "version",
+    "queryMetadata": { "team": "finance", "tier": "gold" }
+  }
 }
 ```
 
@@ -84,9 +88,9 @@ That split is a property of the deployment, not of this code. Publisher's own RE
 ```jsonc
 // connection config
 {
-   "name": "warehouse",
-   "queryMetadata": { "team": "finance" },          // a default; any declaration overrides it
-   "queryMetadataEnforced": { "tenant": "acme" }    // the deployment's; no declaration can
+  "name": "warehouse",
+  "queryMetadata": { "team": "finance" }, // a default; any declaration overrides it
+  "queryMetadataEnforced": { "tenant": "acme" }, // the deployment's; no declaration can
 }
 ```
 
