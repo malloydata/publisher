@@ -284,6 +284,37 @@ describe("readGivenControlSpec", () => {
             .zzAccessorTarget;
       }
 
+      // An accessor that cannot be probed safely, or that hands back a different
+      // object each read, is not watchable at all. Both shapes leaked on the
+      // version that simply called the getter once: a throwing getter was dropped
+      // from the watch set and its object then took the write, and an unstable one
+      // left the parser writing into an object the guard never saw. Refusing is
+      // the only honest answer, so both must come back empty.
+      for (const [name, get] of [
+         [
+            "zzThrows",
+            () => {
+               throw new Error("unprobeable");
+            },
+         ],
+         ["zzUnstable", () => ({ fresh: true })],
+      ] as Array<[string, () => unknown]>) {
+         Object.defineProperty(Object.prototype, name, {
+            get,
+            configurable: true,
+            enumerable: false,
+         });
+         try {
+            expect(
+               readGivenControlSpec([`# label="ok" ${name} { k="v" }`]),
+            ).toEqual({});
+         } finally {
+            delete (Object.prototype as unknown as Record<string, unknown>)[
+               name
+            ];
+         }
+      }
+
       // Still parsing normally afterwards, which is what pollution would break.
       expect(readGivenControlSpec([`# label="ok"`])).toEqual({ label: "ok" });
       expect(

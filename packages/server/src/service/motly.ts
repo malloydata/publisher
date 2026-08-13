@@ -104,7 +104,7 @@ export function hasEnvReference(annotation: string): boolean {
  * Twelve objects and a dozen descriptor reads, which is not worth being clever
  * about on a path that is already running a parser.
  */
-function pollutionTargets(): object[] {
+function pollutionTargets(): object[] | undefined {
    const targets: object[] = [Object.prototype];
    for (const key of Object.getOwnPropertyNames(Object.prototype)) {
       const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, key);
@@ -118,10 +118,20 @@ function pollutionTargets(): object[] {
       if ("value" in descriptor) {
          value = descriptor.value;
       } else if (typeof descriptor.get === "function") {
+         // An accessor is only watchable if reading it is safe and gives the same
+         // object twice. Both failure modes were measured on the version that
+         // just called the getter once and skipped on error: a getter that threw
+         // while being probed was dropped from the set and its object then took
+         // the write unnoticed, and a getter handing back a fresh object each
+         // call left the parser writing into one this never saw. Neither is
+         // watchable, so the annotation is refused instead of parsed blind.
          try {
-            value = descriptor.get.call(Object.prototype);
+            const first = descriptor.get.call(Object.prototype);
+            const second = descriptor.get.call(Object.prototype);
+            if (first !== second) return undefined;
+            value = first;
          } catch {
-            continue;
+            return undefined;
          }
       } else {
          continue;
@@ -188,6 +198,12 @@ function parseGuarded(texts: readonly string[]): {
    messages: string[];
 } {
    const targets = pollutionTargets();
+   if (targets === undefined) {
+      // An accessor on `Object.prototype` could not be probed safely, so nothing
+      // here can tell whether a parse wrote somewhere it should not have.
+      // Refusing is the only honest answer.
+      return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
+   }
    const before = targets.map((target) => Object.getOwnPropertyNames(target));
    const undoPollution = (): boolean => {
       let polluted = false;
