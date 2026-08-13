@@ -123,15 +123,54 @@ export function bigQueryReadCost(
  * actually stored. Measured against a live account: quote-doubling here matched
  * ZERO rows for a tag carrying a backslash, and reported no cost rather than an
  * error.
+ *
+ * <b>A connection may have no database, and then the name has to be qualified.</b>
+ * `INFORMATION_SCHEMA` is per-database and an unqualified reference resolves
+ * against the session's CURRENT database — which a database-less connection does
+ * not have, so the statement fails to compile rather than returning nothing.
+ * Measured against a live account: the unqualified form raises `002004 (42601)`
+ * on such a connection while `SNOWFLAKE.INFORMATION_SCHEMA` answers normally, and
+ * answers identically on a connection that does have one. The `SNOWFLAKE` shared
+ * database exists on every account, which is what makes it usable as the fallback
+ * qualifier; a role that cannot read it loses the cost and nothing else, since
+ * the caller treats a failed lookup as no cost.
+ *
+ * The connection's own database is preferred when it has one, so the common shape
+ * keeps resolving exactly where it did before.
  */
-export function snowflakeCostSQL(queryTag: string): string {
+/**
+ * The database to resolve `INFORMATION_SCHEMA` against.
+ *
+ * Emitted BARE rather than quoted, and only when it is a plain identifier.
+ * Quoting would make it case-exact, while the connection parameter that put the
+ * session on this database resolves case-insensitively — so a connection
+ * configured `mydb` against a stored `MYDB` would qualify to a database that does
+ * not exist. Bare resolution matches how the session got here.
+ *
+ * A name needing quotes takes the shared-database fallback instead of being
+ * interpolated raw. That is a correct answer rather than a degraded one — the
+ * fallback is measured to return the same rows — and it keeps a configured value
+ * out of identifier position.
+ */
+function snowflakeDatabaseQualifier(database: string | undefined): string {
+   return database !== undefined && /^[A-Za-z0-9_$]+$/.test(database)
+      ? database
+      : "SNOWFLAKE";
+}
+
+export function snowflakeCostSQL(
+   queryTag: string,
+   /** The connection's configured database, absent for a database-less one. */
+   database?: string,
+): string {
+   const qualifier = `${snowflakeDatabaseQualifier(database)}.INFORMATION_SCHEMA`;
    return `
       SELECT QUERY_ID       AS "job_id",
              QUERY_TEXT     AS "query_text",
              BYTES_SCANNED  AS "bytes_scanned",
              EXECUTION_TIME AS "execution_time_ms",
              ROWS_PRODUCED  AS "rows_produced"
-      FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(
+      FROM TABLE(${qualifier}.QUERY_HISTORY_BY_SESSION(
                  RESULT_LIMIT => ${SNOWFLAKE_HISTORY_LIMIT}))
       WHERE QUERY_TAG = '${sqlLiteral(queryTag, "snowflake")}'
         AND EXECUTION_STATUS = 'SUCCESS'

@@ -64,6 +64,40 @@ describe("snowflakeCostSQL", () => {
       expect(sql).not.toContain(`QUERY_TAG = '${tag.replace(/'/g, "''")}'`);
    });
 
+   it("resolves INFORMATION_SCHEMA against the connection's own database", () => {
+      expect(snowflakeCostSQL("{}", "MYDB")).toContain(
+         "FROM TABLE(MYDB.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(",
+      );
+   });
+
+   it("emits that database BARE, so it resolves the way the session did", () => {
+      // Quoting would make it case-EXACT, while the connection parameter that put
+      // the session on this database resolves case-insensitively. Verified live: a
+      // connection configured with a lower-cased name qualifies and returns the
+      // read; quoted, it would name a database that does not exist.
+      const sql = snowflakeCostSQL("{}", "mydb");
+      expect(sql).toContain("FROM TABLE(mydb.INFORMATION_SCHEMA");
+      expect(sql).not.toContain('"mydb"');
+   });
+
+   it("falls back to the shared database when the connection has none", () => {
+      // Snowflake supports a database-less connection, and INFORMATION_SCHEMA is
+      // per-database: unqualified, it resolves against a current database that
+      // such a session does not have. Verified live — the unqualified form raises
+      // 002004 (42601) there, and SNOWFLAKE.INFORMATION_SCHEMA answers normally.
+      expect(snowflakeCostSQL("{}", undefined)).toContain(
+         "FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA",
+      );
+   });
+
+   it("takes the fallback rather than interpolating a name that needs quoting", () => {
+      // A correct answer rather than a degraded one — the fallback returns the
+      // same rows — and it keeps a configured value out of identifier position.
+      expect(snowflakeCostSQL("{}", 'we"ird db')).toContain(
+         "FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA",
+      );
+   });
+
    it("reads the low-latency history view, not the lagging one", () => {
       // ACCOUNT_USAGE lags by up to three hours, so it cannot answer a question
       // asked immediately after a build.

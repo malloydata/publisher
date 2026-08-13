@@ -323,6 +323,12 @@ async function snowflakeReadCostAfterBuild(
    handle: string,
    buildSQL: string,
    queryMetadata: QueryMetadata | undefined,
+   /**
+    * The source connection's configured database, absent when it has none.
+    * Snowflake supports that shape, and `INFORMATION_SCHEMA` is per-database, so
+    * the lookup has to be told where to resolve it — see {@link snowflakeCostSQL}.
+    */
+   database: string | undefined,
 ): Promise<BuildReadCost | null> {
    if (sourceType !== "snowflake") return null;
    // Untagged there is nothing to scope the history by — and nothing asked to be
@@ -331,7 +337,7 @@ async function snowflakeReadCostAfterBuild(
    if (tag === undefined) return null;
    try {
       const costResult = await session.runSQL(
-         passthroughSnowflake(snowflakeCostSQL(tag), handle),
+         passthroughSnowflake(snowflakeCostSQL(tag, database), handle),
       );
       const row = pickSnowflakeReadRow(resultRows(costResult), buildSQL);
       return row === null ? null : snowflakeReadCost(row);
@@ -624,6 +630,7 @@ export async function buildSourceIntoStorage(params: {
                federated.handle,
                buildSQL,
                queryMetadata,
+               sourceConnection.snowflakeConnection?.database,
             )),
       };
    } finally {
