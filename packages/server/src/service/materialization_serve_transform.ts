@@ -149,17 +149,27 @@ export interface ServeBinding {
  * does not change a source's materialization SQL, so a base and its extension
  * share a content address and therefore one entry and one table — the extension
  * correctly gets no table of its own, but it still has to READ the base's. An
- * entry names only the source that built it, so `namesByAddress` supplies the
- * rest, and every name sharing the address is bound to the same virtual handle.
- * That is the handle's purpose: it is identity-scoped, so several sources
- * resolving to one virtual table is the design rather than a collision.
+ * entry names only the source that BUILT it, so `aliasesBySourceName` supplies the
+ * rest, and every one of them is bound to the same virtual handle. That is the
+ * handle's purpose: it is identity-scoped, so several sources resolving to one
+ * virtual table is the design rather than a collision.
  *
  * Without it exactly one alias routes and the others silently serve live, chosen
  * by whichever source happened to build the table.
+ *
+ * Keyed by source NAME, deliberately, not by `entry.sourceEntityId`. That field
+ * carries the identity the BUILDER stamped, which on an instructed build is the
+ * caller's — `executeInstructedBuild` treats an instruction's `sourceEntityId` as
+ * opaque precisely so a host may derive it any way it likes — while the alias
+ * grouping has to be computed from the publisher's own content addresses. Keying
+ * on the entry's id would agree with the group only while the host happened to
+ * hash exactly as the publisher does, and would silently degrade to one-alias
+ * routing the moment it did not. A name is the one identifier both sides mean the
+ * same thing by.
  */
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
-   namesByAddress: Record<string, string[]> = {},
+   aliasesBySourceName: Record<string, string[]>,
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
    for (const entry of Object.values(entries)) {
@@ -181,7 +191,7 @@ export function deriveServeBindings(
       // the address group too.
       const names = [
          entry.sourceName,
-         ...(namesByAddress[entry.sourceEntityId] ?? []),
+         ...(aliasesBySourceName[entry.sourceName] ?? []),
       ].filter((name, i, all) => all.indexOf(name) === i);
       for (const sourceName of names) {
          bindings.push({

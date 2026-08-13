@@ -302,40 +302,43 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
 
 describe("deriveServeBindings", () => {
    it("binds only storage entries, keying the handle on sourceEntityId", () => {
-      const bindings = deriveServeBindings({
-         se_storage: {
-            sourceEntityId: "se_storage",
-            sourceName: "mz",
-            physicalTableName: "mz_g003",
-            connectionName: "wh",
-            storageDestinationName: "lake",
-            schema: [{ name: "amount", type: "BIGINT" }],
-            dataAsOf: "2026-07-20T00:00:00Z",
-            realization: "COPY",
-            rowCount: null,
+      const bindings = deriveServeBindings(
+         {
+            se_storage: {
+               sourceEntityId: "se_storage",
+               sourceName: "mz",
+               physicalTableName: "mz_g003",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [{ name: "amount", type: "BIGINT" }],
+               dataAsOf: "2026-07-20T00:00:00Z",
+               realization: "COPY",
+               rowCount: null,
+            },
+            se_pathC: {
+               // In-warehouse (no storage): served via the manifest, not the
+               // transform — must NOT produce a binding.
+               sourceEntityId: "se_pathC",
+               sourceName: "orders",
+               physicalTableName: "orders_v1",
+               connectionName: "wh",
+               realization: "COPY",
+               rowCount: null,
+            },
+            se_noschema: {
+               // Storage but no captured schema — skipped (can't declare a shape).
+               sourceEntityId: "se_noschema",
+               sourceName: "x",
+               physicalTableName: "lake.x",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [],
+               realization: "COPY",
+               rowCount: null,
+            },
          },
-         se_pathC: {
-            // In-warehouse (no storage): served via the manifest, not the
-            // transform — must NOT produce a binding.
-            sourceEntityId: "se_pathC",
-            sourceName: "orders",
-            physicalTableName: "orders_v1",
-            connectionName: "wh",
-            realization: "COPY",
-            rowCount: null,
-         },
-         se_noschema: {
-            // Storage but no captured schema — skipped (can't declare a shape).
-            sourceEntityId: "se_noschema",
-            sourceName: "x",
-            physicalTableName: "lake.x",
-            connectionName: "wh",
-            storageDestinationName: "lake",
-            schema: [],
-            realization: "COPY",
-            rowCount: null,
-         },
-      });
+         {},
+      );
       expect(bindings).toEqual([
          {
             sourceName: "mz",
@@ -369,7 +372,7 @@ describe("deriveServeBindings", () => {
 
       const bindings = deriveServeBindings(
          { se_shared: entry },
-         { se_shared: ["daily", "daily_with_avg"] },
+         { daily: ["daily", "daily_with_avg"] },
       );
 
       expect(bindings.map((b) => b.sourceName)).toEqual([
@@ -403,10 +406,45 @@ describe("deriveServeBindings", () => {
                rowCount: null,
             },
          },
-         { se_shared: ["daily"] },
+         { daily: ["daily"] },
       );
 
       expect(bindings.map((b) => b.sourceName)).toEqual(["daily"]);
+   });
+   it("binds aliases even when the entry carries a HOST-assigned identity", () => {
+      // An instructed build stamps the CALLER's sourceEntityId on its entry
+      // (`executeInstructedBuild` treats it as opaque, so a host may derive it any
+      // way it likes) while `entries` is keyed by the publisher's content address.
+      // Grouping aliases by the entry's id would therefore work only for a host
+      // that hashes exactly as the publisher does, and would silently fall back to
+      // one-alias routing for any other — the bug this pins. The group is keyed by
+      // NAME, which both sides mean the same thing by.
+      const bindings = deriveServeBindings(
+         {
+            // map key = publisher content address; entry id = host's scheme
+            "publisher-content-address": {
+               sourceEntityId: "host-opaque-id-zzz",
+               sourceName: "daily",
+               physicalTableName: "daily__shared__g007__tok",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [{ name: "total_amount", type: "BIGINT" }],
+               realization: "COPY",
+               rowCount: null,
+            },
+         },
+         { daily: ["daily", "daily_with_avg"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName)).toEqual([
+         "daily",
+         "daily_with_avg",
+      ]);
+      // The handle still comes from the entry, so it keeps agreeing with whatever
+      // the build wrote into the virtual map.
+      expect(new Set(bindings.map((b) => b.virtualHandle))).toEqual(
+         new Set(["host-opaque-id-zzz"]),
+      );
    });
 });
 

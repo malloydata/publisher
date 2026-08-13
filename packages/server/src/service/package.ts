@@ -1360,7 +1360,7 @@ export class Package {
    ): void {
       const derived = deriveServeBindings(
          entries,
-         this.persistSourceNamesByAddress(),
+         this.persistSourceAliasesByName(),
       );
       const eligibility = this.sourceEligibility;
       const eligible = new Set(eligibility?.eligible ?? []);
@@ -1405,14 +1405,22 @@ export class Package {
    }
 
    /**
-    * Every persist source this package declares, grouped by content address.
+    * For each persist source this package declares, the OTHER sources that
+    * materialize into its table.
     *
     * A manifest entry names only the source that built its table, but an address
     * can have several sources: `#@ persist` is inherited and `extend` does not
     * change materialization SQL, so a base and its extension share an address and
     * therefore one table. The extension must not get a table of its own — it must
-    * read the base's — and this is what lets {@link deriveServeBindings} bind
-    * every name that resolves to the entry instead of only the builder's.
+    * read the base's — and this is what lets {@link deriveServeBindings} bind every
+    * name that resolves to the entry instead of only the builder's.
+    *
+    * Grouped BY content address, then keyed BY name. The grouping has to use the
+    * publisher's own addresses, because that is what decides which sources really
+    * share a table; the key has to be a name, because that is the one identifier an
+    * entry carries that means the same thing whoever built it — an instructed
+    * build stamps the CALLER's `sourceEntityId` on its entry, which the publisher
+    * treats as opaque.
     *
     * Read off the package's own build plan, which already carries the address per
     * source, so nothing has to travel on the wire or be stored per entry.
@@ -1421,13 +1429,19 @@ export class Package {
     * {@link bindStorageServeBindings}: being an alias of a materialized source
     * does not exempt a source from being refused on its own merits.
     */
-   private persistSourceNamesByAddress(): Record<string, string[]> {
-      const byAddress: Record<string, string[]> = {};
+   private persistSourceAliasesByName(): Record<string, string[]> {
+      const namesByAddress = new Map<string, string[]>();
       for (const source of Object.values(this.buildPlan?.sources ?? {})) {
          if (!source.sourceEntityId || !source.name) continue;
-         (byAddress[source.sourceEntityId] ??= []).push(source.name);
+         const group = namesByAddress.get(source.sourceEntityId);
+         if (group) group.push(source.name);
+         else namesByAddress.set(source.sourceEntityId, [source.name]);
       }
-      return byAddress;
+      const byName: Record<string, string[]> = {};
+      for (const group of namesByAddress.values()) {
+         for (const name of group) byName[name] = group;
+      }
+      return byName;
    }
 
    /** Push the current storage serve bindings onto every loaded model. */
