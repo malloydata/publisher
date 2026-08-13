@@ -109,31 +109,28 @@ function pollutionTargets(): object[] | undefined {
    for (const key of Object.getOwnPropertyNames(Object.prototype)) {
       const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, key);
       if (!descriptor) continue;
-      // Accessors count too. Skipping them left a getter-returned object as an
-      // unwatched write target: measured, `# label="ok" zzAccessor { k=v }`
-      // against an accessor-defined extension wrote onto the shared object and
-      // the guard reported the annotation clean. `__proto__` itself is an
-      // accessor on `Object.prototype`, so this branch is not hypothetical.
       let value: unknown;
       if ("value" in descriptor) {
          value = descriptor.value;
-      } else if (typeof descriptor.get === "function") {
-         // An accessor is only watchable if reading it is safe and gives the same
-         // object twice. Both failure modes were measured on the version that
-         // just called the getter once and skipped on error: a getter that threw
-         // while being probed was dropped from the set and its object then took
-         // the write unnoticed, and a getter handing back a fresh object each
-         // call left the parser writing into one this never saw. Neither is
-         // watchable, so the annotation is refused instead of parsed blind.
-         try {
-            const first = descriptor.get.call(Object.prototype);
-            const second = descriptor.get.call(Object.prototype);
-            if (first !== second) return undefined;
-            value = first;
-         } catch {
-            return undefined;
-         }
       } else {
+         // An accessor is refused, not probed. Reading one to find out what it
+         // guards is what opened three separate holes in as many revisions: a
+         // getter that threw was dropped and its object took the write; one
+         // returning a fresh object each call left the parser writing somewhere
+         // never snapshotted; and a receiver-dependent getter handed this probe a
+         // decoy while the parser, reading the same property off its own bag,
+         // got the real shared object. Each mitigation invited the next, because
+         // any answer a getter gives can be a different answer from the one the
+         // parser gets.
+         //
+         // So no getter is called. An accessor on `Object.prototype` other than
+         // the built-in `__proto__`, whose target is already watched as
+         // `Object.prototype` itself, means this cannot know what a parse would
+         // touch, and the annotation is refused. Fail closed. The cost is that a
+         // deployment which extends `Object.prototype` with an accessor gets no
+         // control contracts at all, which is visible and recoverable, unlike a
+         // value quietly escaping onto a shared object.
+         if (key !== "__proto__") return undefined;
          continue;
       }
       if (
@@ -204,11 +201,21 @@ function parseGuarded(texts: readonly string[]): {
       // Refusing is the only honest answer.
       return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
    }
-   const before = targets.map((target) => Object.getOwnPropertyNames(target));
+   // Even reading own keys is wrapped: a target could be exotic enough that the
+   // read itself throws, and this runs on a path where an escape fails the whole
+   // package load.
+   const ownNames = (target: object): string[] => {
+      try {
+         return Object.getOwnPropertyNames(target);
+      } catch {
+         return [];
+      }
+   };
+   const before = targets.map(ownNames);
    const undoPollution = (): boolean => {
       let polluted = false;
       targets.forEach((target, index) => {
-         for (const key of Object.getOwnPropertyNames(target)) {
+         for (const key of ownNames(target)) {
             if (before[index].includes(key)) continue;
             polluted = true;
             // Per-key try, because the repair itself must not be able to throw.
