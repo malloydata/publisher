@@ -14,6 +14,8 @@ import { logger } from "../logger";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
+import { snowflakeSetQueryTagSQL } from "./build_query_tag";
+import type { QueryMetadata } from "./query_metadata";
 import {
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -86,6 +88,39 @@ export function wrapPassthrough(
             `Unsupported passthrough source type: ${String(exhaustive)}`,
          );
       }
+   }
+}
+
+/**
+ * Tag every subsequent read on a Snowflake build session with this build's
+ * query metadata.
+ *
+ * Snowflake only, and by capability rather than preference: the passthrough
+ * reuses ONE session across `snowflake_query()` calls, so a session-level
+ * `QUERY_TAG` reaches the read that follows. BigQuery has no equivalent —
+ * `bigquery_query()` accepts no labels parameter and cannot run the script that
+ * would set one — so its labelling is part of how the read itself is issued.
+ * Postgres has no per-statement tag to set.
+ *
+ * <b>Best-effort.</b> A build that produces correct rows must not fail because
+ * the warehouse refused a tag; the cost is attribution for this one build, which
+ * the log line makes diagnosable.
+ */
+async function tagSnowflakeSession(
+   session: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   handle: string,
+   queryMetadata: QueryMetadata | undefined,
+): Promise<void> {
+   if (sourceType !== "snowflake") return;
+   const sql = snowflakeSetQueryTagSQL(queryMetadata, handle);
+   if (sql === undefined) return;
+   try {
+      await session.runSQL(sql);
+   } catch (error) {
+      logger.warn("Could not tag the Snowflake build session", {
+         error: error instanceof Error ? error.message : String(error),
+      });
    }
 }
 
@@ -229,6 +264,17 @@ export async function buildSourceIntoStorage(params: {
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    environmentPath: string;
+   /**
+    * Per-query metadata for the warehouse read, already resolved through the
+    * same layering the colocated path uses.
+    *
+    * It has to be applied HERE rather than by a Malloy connector, which is the
+    * whole reason this parameter exists: the read runs inside DuckDB's native
+    * query-passthrough, so no connector is in the call path to render the bag
+    * onto the statement. Without this, a `storage=` build is the one kind of
+    * warehouse work the deployment cannot attribute.
+    */
+   queryMetadata?: QueryMetadata;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -237,6 +283,7 @@ export async function buildSourceIntoStorage(params: {
       buildSQL,
       physicalTableName,
       environmentPath,
+      queryMetadata,
    } = params;
 
    assertSupportedDestination(destinationName, destinationConnection);
@@ -271,6 +318,13 @@ export async function buildSourceIntoStorage(params: {
          session,
          sourceType,
          sourceFederationConfig(sourceConnection),
+      );
+
+      await tagSnowflakeSession(
+         session,
+         sourceType,
+         federated.handle,
+         queryMetadata,
       );
 
       // The CTAS target MUST be qualified with the destination catalog (the

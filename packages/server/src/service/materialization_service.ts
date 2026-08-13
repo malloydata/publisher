@@ -1904,6 +1904,22 @@ export class MaterializationService {
          connectionDigests,
       });
 
+      // Every statement of this source's build carries the same metadata, so the
+      // warehouse's query history shows the staging CTAS, the drop and the rename
+      // as one attributable unit of work.
+      //
+      // Resolved before the storage branch below so BOTH build paths carry the
+      // same bag, layered the same way. A `storage=` build reads through DuckDB's
+      // query-passthrough rather than a Malloy connection, so it applies these
+      // itself instead of handing them to `runSQL` — but what it applies has to be
+      // the same properties, or one deployment's query history attributes the two
+      // paths differently.
+      const runOptions = this.buildRunSQLOptions(
+         persistSource,
+         environment,
+         buildMetadata,
+      );
+
       // `storage=` build: materialize into a DuckDB/DuckLake destination via a
       // build-scoped session (never on the source or serve connection). Diverges
       // fully from the in-warehouse CTAS below — different engine, credential
@@ -1940,17 +1956,9 @@ export class MaterializationService {
             publicBuildSQL,
             builtEntries,
             dependsOnStorageUpstream,
+            runOptions.queryMetadata,
          );
       }
-
-      // Every statement of this source's build carries the same metadata, so the
-      // warehouse's query history shows the staging CTAS, the drop and the rename
-      // as one attributable unit of work.
-      const runOptions = this.buildRunSQLOptions(
-         persistSource,
-         environment,
-         buildMetadata,
-      );
 
       // Incremental refresh: a source that declares `refresh="incremental"` and a
       // usable watermark can advance its serving table by a bounded delta instead
@@ -2237,6 +2245,12 @@ export class MaterializationService {
       buildSQL: string,
       builtEntries: Record<string, ManifestEntry>,
       dependsOnStorageUpstream: boolean,
+      /**
+       * Applied to the warehouse read by the passthrough itself — see
+       * {@link buildSourceIntoStorage}. Resolved by the caller through the same
+       * layering the colocated path uses.
+       */
+      queryMetadata?: QueryMetadata,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -2336,6 +2350,7 @@ export class MaterializationService {
                buildSQL,
                physicalTableName,
                environmentPath: environment.getEnvironmentPath(),
+               queryMetadata,
             });
          } catch (err) {
             // Redaction: a failed federation / passthrough / attach
