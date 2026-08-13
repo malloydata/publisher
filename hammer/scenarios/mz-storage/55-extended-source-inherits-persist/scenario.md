@@ -1,6 +1,6 @@
 ---
 id: extended-source-inherits-persist
-tags: serve-correctness, safety, known-red
+tags: serve-correctness, safety
 package: esi
 ---
 <!--
@@ -8,33 +8,27 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# An extension of a persisted source must not become a second build target
+# An extension of a persisted source is a second READER of one table, not a second table
 
-The user flow: author a persisted source `daily`, then a source `daily_with_avg` that
-extends it to add a derived field, expecting `daily_with_avg` to READ `daily`'s
-materialized table (per the docs), not re-materialize. Publish, materialize, and
-query both — that all works here.
+The user flow: author a persisted source `daily`, then `daily_with_avg` that extends it
+to add a derived field, expecting `daily_with_avg` to READ `daily`'s materialized table
+rather than re-materialize.
 
 Malloy propagating `#@ persist` through `extend` is **by design**, and load-bearing:
-without it, an extension of a persisted source could never be served from a table at
-all. `#@ -persist` is the documented opt-out (see `opt-out-persist-recomputes`).
+without it an extension of a persisted source could never be served from a table at all.
+`#@ -persist` is the documented opt-out (see `opt-out-persist-recomputes`).
 
-The defect is what that inheritance implies downstream: the extension inherits
-`name="esi_daily"` too, so the build plan lists it as a SECOND target writing the
-same table. An inherited annotation should let a source READ the parent's table, not
-claim it as a target of its own. It happens to serve
-correctly today only because `daily` and `daily_with_avg` are content-addressed
-identically (same `sourceEntityId`), so the publisher's auto-run dedups the
-duplicate and both read the one table. But that duplicate target is a landmine: a
-host that materializes per-source (the orchestrated path) issues two builds to the
-same physical table — a silent overwrite, or a collision — and the publisher's own
-collision guard misses it (it dedups by `sourceEntityId`, which these share). Malloy
-compiles it, so nothing fails at publish.
+So the extension appearing in the build plan is correct and necessary — it is how the
+publisher knows the extension may read the table. What must never happen is a second
+**table**: `daily` and `daily_with_avg` compile to identical materialization SQL (an
+`extend` adds query-time fields and changes no SQL), so they share one content address,
+one manifest entry, and one physical table.
 
-The `## Build targets` step surfaces the root cause: the plan must have exactly ONE
-target for `esi_daily`. RED today; GREEN once an inherited `name=` stops minting a
-duplicate target — the extension should read the parent's table rather than claim
-it.
+This scenario pins that shape from three sides: both sources are in the plan, both resolve
+to ONE content address (the `entity` column), and both answer correctly. That the
+extension routes its READ to the base's table — rather than quietly recomputing live — is
+proven separately by `extend-routes-to-the-base-table`, which mutates the warehouse so a
+routed read is distinguishable from a live one.
 
 ## Publisher
 
@@ -70,8 +64,7 @@ source: daily_with_avg is daily extend {
 
 ## Publish
 
-Materialize the package. (`daily_with_avg` should read `daily`'s table, not be a
-second target — see `## Build targets` below.)
+Materialize the package. One table is built; both sources read it.
 
 ## Query daily
 
@@ -106,39 +99,42 @@ Expect:
 
 ## Build targets
 
-Only the base `daily` may write `esi_daily`. RED today: the extended reader
-inherits `#@ persist` and becomes a second target for the same table (malloy PR
-3012). GREEN once malloy keys persist on the source's OWN annotation.
+Both sources are in the plan — the extension has to be, or nothing could bind its read —
+and both carry the inherited `name=`. The `entity` column is the assertion that matters:
+one content address (label `A`) across both, so one table.
 
 Expect:
 
-| source | writes    |
-| ------ | --------- |
-| daily  | esi_daily |
+| source         | writes    | entity |
+| -------------- | --------- | ------ |
+| daily          | esi_daily | A      |
+| daily_with_avg | esi_daily | A      |
 
-## Note (since=2026-07-24)
+## Note (since=2026-08-13)
 
-> Two things. (1) UPSTREAM: malloy propagates `#@ persist` through `extend`, so an
-> extended reader becomes a duplicate build target (fix: malloydata/malloy PR 3012 — a
-> `persistDeclared` flag from the source's OWN annotation only). This is the primary
-> fix; the scenario goes green when we adopt a malloy carrying it. (2) OURS: the
-> orchestrated/host path materializes per-source and issues two builds to one table
-> (silent overwrite / collision), and `persistenceCollisionWarnings` misses it
-> because it also dedups by `sourceEntityId`. Consider hardening the guard to flag
-> two DISTINCT source names resolving to the same persist target even when their
-> content address matches.
+> Rewritten. This scenario previously asserted exactly ONE plan row, i.e. that the
+> extension must not appear as a build-plan source at all, and was tagged `known-red`
+> pending malloydata/malloy PR 3012 (which would have keyed `persist` on a source's OWN
+> annotation).
 >
-> (3) AUTO-RUN IS NOT SAFE EITHER — worse than this note first claimed. The base and
-> the reader share a `sourceEntityId`, so the build dedups to one manifest entry, but
-> that entry can be attributed to the READER: a probe with a mutated source observed
-> the single storage binding land on the extension (`sourceName: daily_plain`,
-> `tablePath: lake.<base target>`) while the declared persist source silently served
-> LIVE. Which name wins is build-iteration order (same mechanism as
-> `extend-persist-materializes-nothing-new`), so the persisted source may or may not
-> keep its routing from run to run. Not pinned as an assertion here precisely because
-> it is non-deterministic; the reason this scenario's own `## Query daily` step still
-> passes is that it does not mutate the source, so stored and live values are
-> identical and a lost binding is invisible. Measured on the storage tier; the
-> colocated twin is unverified for this effect. This raises the stakes on adopting
-> PR 3012: the failure is not only a duplicate build, it is the declared source
-> quietly losing the materialization it asked for.
+> PR 3012 was **closed unmerged**. Its replacement, malloydata/malloy#3029, deliberately
+> leaves `Model.getBuildPlan()` unchanged and documents one-table-many-sources as "the
+> normal case, not an edge case"; the grouping lives in the new `Runtime.getBuildTargets`,
+> which reports one target carrying every source that maps onto it. So the old expectation
+> was not merely waiting on an upstream fix — it asserted the opposite of the design, and
+> meeting it would break serving: the publisher finds an extension's read binding by
+> looking the address up in `buildPlan.sources`, so an extension absent from the plan
+> cannot be routed.
+>
+> What the old prose got right, and what has since been fixed: the duplicate plan entry
+> was a landmine for a host that materializes per SOURCE. That is now handled on both
+> sides of the build — the publisher writes each physical table once and refuses (or warns
+> on) two definitions colliding on one table, and it binds every source sharing an address
+> so the extension routes instead of one alias silently winning by build order.
+>
+> Residual, deliberately not asserted here: the wire build plan reports per-source rows, so
+> a host that mints a physical name per source has to group by `sourceEntityId` first or it
+> will ask for two tables for one address. The publisher cannot resolve that on the host's
+> behalf — declining one of the two instructions would leave the host holding an anchor for
+> a table nothing ever wrote — so it meters the condition instead, as
+> `publisher_materialization_shared_address_instructions_total`.
