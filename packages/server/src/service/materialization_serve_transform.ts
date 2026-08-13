@@ -144,9 +144,22 @@ export interface ServeBinding {
  * in the mapped table path (`physicalTableName`), not the handle. This is the one
  * hard cross-producer contract: whoever supplies the binding (this function, or
  * a host) must key the handle the same way the build did.
+ *
+ * An entry can serve MORE THAN ONE source. `#@ persist` is inherited and `extend`
+ * does not change a source's materialization SQL, so a base and its extension
+ * share a content address and therefore one entry and one table — the extension
+ * correctly gets no table of its own, but it still has to READ the base's. An
+ * entry names only the source that built it, so `namesByAddress` supplies the
+ * rest, and every name sharing the address is bound to the same virtual handle.
+ * That is the handle's purpose: it is identity-scoped, so several sources
+ * resolving to one virtual table is the design rather than a collision.
+ *
+ * Without it exactly one alias routes and the others silently serve live, chosen
+ * by whichever source happened to build the table.
  */
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
+   namesByAddress: Record<string, string[]> = {},
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
    for (const entry of Object.values(entries)) {
@@ -163,20 +176,29 @@ export function deriveServeBindings(
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string }));
       if (schema.length === 0) continue;
-      bindings.push({
-         sourceName: entry.sourceName,
-         destinationName: entry.storageDestinationName,
-         virtualHandle: entry.sourceEntityId,
-         // Qualify the table with the destination catalog (the attach alias) so
-         // the serve reads `<store>.<table>` — the build wrote it there, and an
-         // unqualified name would resolve against the serve session's default
-         // catalog, not the attached store.
-         tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
-         schema,
-         freshAsOf: entry.dataAsOf,
-         freshnessWindowSeconds: entry.freshnessWindowSeconds,
-         freshnessFallback: entry.freshnessFallback,
-      });
+      // The builder's own name first, so it wins any ordering downstream; the
+      // aliases follow. Deduplicated because the builder's name is normally in
+      // the address group too.
+      const names = [
+         entry.sourceName,
+         ...(namesByAddress[entry.sourceEntityId] ?? []),
+      ].filter((name, i, all) => all.indexOf(name) === i);
+      for (const sourceName of names) {
+         bindings.push({
+            sourceName,
+            destinationName: entry.storageDestinationName,
+            virtualHandle: entry.sourceEntityId,
+            // Qualify the table with the destination catalog (the attach alias) so
+            // the serve reads `<store>.<table>` — the build wrote it there, and an
+            // unqualified name would resolve against the serve session's default
+            // catalog, not the attached store.
+            tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
+            schema,
+            freshAsOf: entry.dataAsOf,
+            freshnessWindowSeconds: entry.freshnessWindowSeconds,
+            freshnessFallback: entry.freshnessFallback,
+         });
+      }
    }
    return bindings;
 }

@@ -1358,7 +1358,10 @@ export class Package {
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
-      const derived = deriveServeBindings(entries);
+      const derived = deriveServeBindings(
+         entries,
+         this.persistSourceNamesByAddress(),
+      );
       const eligibility = this.sourceEligibility;
       const eligible = new Set(eligibility?.eligible ?? []);
       const allowed = derived.filter((binding) => {
@@ -1399,6 +1402,32 @@ export class Package {
             this.buildManifestEntries,
          );
       }
+   }
+
+   /**
+    * Every persist source this package declares, grouped by content address.
+    *
+    * A manifest entry names only the source that built its table, but an address
+    * can have several sources: `#@ persist` is inherited and `extend` does not
+    * change materialization SQL, so a base and its extension share an address and
+    * therefore one table. The extension must not get a table of its own — it must
+    * read the base's — and this is what lets {@link deriveServeBindings} bind
+    * every name that resolves to the entry instead of only the builder's.
+    *
+    * Read off the package's own build plan, which already carries the address per
+    * source, so nothing has to travel on the wire or be stored per entry.
+    *
+    * Each name still faces the eligibility gate in
+    * {@link bindStorageServeBindings}: being an alias of a materialized source
+    * does not exempt a source from being refused on its own merits.
+    */
+   private persistSourceNamesByAddress(): Record<string, string[]> {
+      const byAddress: Record<string, string[]> = {};
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (!source.sourceEntityId || !source.name) continue;
+         (byAddress[source.sourceEntityId] ??= []).push(source.name);
+      }
+      return byAddress;
    }
 
    /** Push the current storage serve bindings onto every loaded model. */
