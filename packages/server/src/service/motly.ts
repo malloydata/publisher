@@ -86,6 +86,27 @@ export function hasEnvReference(annotation: string): boolean {
 }
 
 /**
+ * The engine's own `Object.prototype.__proto__` getter, captured by reference and
+ * never called.
+ *
+ * `__proto__` is always an accessor on `Object.prototype`, so refusing every
+ * accessor would refuse every annotation. It is skipped instead, on the grounds
+ * that what it reaches is `Object.prototype`, which is watched anyway. That
+ * reasoning holds only for the built-in: measured, redefining `__proto__` as a
+ * getter returning some other object let a write land there with the annotation
+ * reported clean. Identity against the descriptor captured here is what tells the
+ * two apart, and comparing a function reference invokes nothing.
+ *
+ * If something replaced it before this module loaded, the replacement is what gets
+ * captured. Nothing here can see behind its own start, and the alternative,
+ * calling the getter to find out, is exactly the probing that had to be abandoned.
+ */
+const BUILT_IN_PROTO_GETTER = Object.getOwnPropertyDescriptor(
+   Object.prototype,
+   "__proto__",
+)?.get;
+
+/**
  * Every object the tag parser can be tricked into writing into, as of right now.
  *
  * Derived rather than listed, because listing is what went wrong twice: first a
@@ -130,7 +151,7 @@ function pollutionTargets(): object[] | undefined {
          // deployment which extends `Object.prototype` with an accessor gets no
          // control contracts at all, which is visible and recoverable, unlike a
          // value quietly escaping onto a shared object.
-         if (key !== "__proto__") return undefined;
+         if (descriptor.get !== BUILT_IN_PROTO_GETTER) return undefined;
          continue;
       }
       if (

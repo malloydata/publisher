@@ -315,6 +315,36 @@ describe("readGivenControlSpec", () => {
          }
       }
 
+      // `__proto__` is skipped rather than refused, because it is always an
+      // accessor and refusing it would refuse everything. That is only sound for
+      // the engine's own getter: redefined to return some other object, it let a
+      // write land there with the annotation reported clean.
+      const original = Object.getOwnPropertyDescriptor(
+         Object.prototype,
+         "__proto__",
+      );
+      const decoy: Record<string, unknown> = { legit: 1 };
+      Object.defineProperty(Object.prototype, "__proto__", {
+         get: () => decoy,
+         set: () => {},
+         configurable: true,
+      });
+      try {
+         const decoyBefore = Object.getOwnPropertyNames(decoy);
+         expect(
+            readGivenControlSpec([`# label="ok" __proto__ { k="v" }`]),
+         ).toEqual({});
+         expect(
+            Object.getOwnPropertyNames(decoy).filter(
+               (k) => !decoyBefore.includes(k),
+            ),
+         ).toEqual([]);
+      } finally {
+         if (original) {
+            Object.defineProperty(Object.prototype, "__proto__", original);
+         }
+      }
+
       // Still parsing normally afterwards, which is what pollution would break.
       expect(readGivenControlSpec([`# label="ok"`])).toEqual({ label: "ok" });
       expect(
