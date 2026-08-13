@@ -20,6 +20,7 @@ import {
    buildVirtualMap,
    deriveServeBindings,
    duckdbTypeToMalloy,
+   groupAliasesByName,
    extractJoins,
    extractRefinements,
    extractViews,
@@ -297,6 +298,57 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
    });
 });
 
+describe("groupAliasesByName", () => {
+   const plan = (
+      ...pairs: [name: string, address: string][]
+   ): { name?: string; sourceEntityId?: string }[] =>
+      pairs.map(([name, sourceEntityId]) => ({ name, sourceEntityId }));
+
+   it("groups the sources that share one address, keyed by each of their names", () => {
+      const byName = groupAliasesByName(
+         plan(["daily", "X"], ["daily_with_avg", "X"], ["monthly", "Y"]),
+      );
+      expect(byName["daily"]).toEqual(["daily", "daily_with_avg"]);
+      expect(byName["daily_with_avg"]).toEqual(["daily", "daily_with_avg"]);
+      expect(byName["monthly"]).toEqual(["monthly"]);
+   });
+
+   it("drops a name declared at more than one address", () => {
+      // Source names are not unique in a package — the wire plan is keyed by
+      // sourceID for exactly this reason. `ext` here could mean either table, so
+      // it cannot be resolved by name and must alias nothing; picking one by map
+      // order would eventually bind one name to two tables, put two
+      // `source: ext` declarations in one serve shape, and take the storage tier
+      // out for every model in the package.
+      const byName = groupAliasesByName(
+         plan(["daily", "X"], ["ext", "X"], ["other", "Z"], ["ext", "Z"]),
+      );
+      expect(byName["ext"]).toBeUndefined();
+      // The unambiguous names keep their (now narrower) groups.
+      expect(byName["daily"]).toEqual(["daily"]);
+      expect(byName["other"]).toEqual(["other"]);
+   });
+
+   it("is independent of the order sources arrive in", () => {
+      const forward = groupAliasesByName(
+         plan(["daily", "X"], ["ext", "X"], ["other", "Z"], ["ext", "Z"]),
+      );
+      const reversed = groupAliasesByName(
+         plan(["ext", "Z"], ["other", "Z"], ["ext", "X"], ["daily", "X"]),
+      );
+      expect(reversed).toEqual(forward);
+   });
+
+   it("skips sources missing a name or an address", () => {
+      const byName = groupAliasesByName([
+         { name: "daily", sourceEntityId: "X" },
+         { name: undefined, sourceEntityId: "X" },
+         { name: "nameless", sourceEntityId: undefined },
+      ]);
+      expect(byName).toEqual({ daily: ["daily"] });
+   });
+});
+
 describe("deriveServeBindings", () => {
    it("binds only storage entries, keying the handle on sourceEntityId", () => {
       const bindings = deriveServeBindings(
@@ -442,6 +494,45 @@ describe("deriveServeBindings", () => {
       expect(new Set(bindings.map((b) => b.virtualHandle))).toEqual(
          new Set(["host-opaque-id-zzz"]),
       );
+   });
+   it("never lets an alias claim a name another entry OWNS", () => {
+      // Two tables. `ext` is an alias of `daily`'s table, and also the source
+      // that built its own. Binding it for both would put two `source: ext`
+      // declarations in one serve shape — which fails to compile and drops the
+      // storage tier for every model in the package, silently, since base-only is
+      // the tier the ladder trusts without probing. The owner wins its name.
+      const entry = (
+         sourceEntityId: string,
+         sourceName: string,
+         table: string,
+      ) => ({
+         sourceEntityId,
+         sourceName,
+         physicalTableName: table,
+         connectionName: "wh",
+         storageDestinationName: "lake",
+         schema: [{ name: "total_amount", type: "BIGINT" }],
+         realization: "COPY" as const,
+         rowCount: null,
+      });
+
+      const bindings = deriveServeBindings(
+         {
+            X: entry("X", "daily", "daily_t"),
+            Z: entry("Z", "ext", "ext_t"),
+         },
+         // A stale/ambiguous group that still offers `ext` as an alias of X.
+         { daily: ["daily", "ext"], ext: ["ext"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName).sort()).toEqual([
+         "daily",
+         "ext",
+      ]);
+      // `ext` resolves to the table it OWNS, not to daily's.
+      const ext = bindings.filter((b) => b.sourceName === "ext");
+      expect(ext).toHaveLength(1);
+      expect(ext[0].tablePath).toBe("lake.ext_t");
    });
 });
 
