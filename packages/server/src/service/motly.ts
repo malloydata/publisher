@@ -66,11 +66,34 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
  * client asked for.
  *
  * That containment stops at this module's edge, and the gap is not hypothetical.
- * `service/build_plan.ts` calls `annotations.parseAsTag("@")` itself, so a
- * `#@ persist { name=@env.SNOWFLAKE_PRIVATE_KEY }` is hydrated and returned in
- * `annotationFields` without passing through here. That path predates this
- * change and is deliberately not touched by it; it needs its own fix, and this
- * guard should not be read as covering it.
+ * `service/build_plan.ts` calls `annotations.parseAsTag("@")` itself, so a value
+ * is hydrated and returned without passing through here. **Both spellings below
+ * are returned to a client**, so neither is the lesser one to fix:
+ *
+ * - `deriveAnnotationFields` iterates the *top level* and calls `text()`, so
+ *   `#@ persist name=@env.SNOWFLAKE_PRIVATE_KEY` comes back as
+ *   `{name: "<the key>"}`. That map is the wire field `annotationFields` on
+ *   `BuildPlan`, reachable as `Package.buildPlan`.
+ * - `tagQueryMetadataLayer` does the same inside `queryMetadata`, so
+ *   `#@ persist queryMetadata { owner=@env.… }` hydrates too, and `queryMetadata`
+ *   is likewise declared in `api-doc.yaml`.
+ *
+ * Both examples keep the `persist` keyword, and that is load-bearing rather than
+ * decoration: a source without it never enters `getBuildPlan().sources`, so
+ * neither reader is ever called on it and the annotation leaks nothing. An
+ * earlier version of this comment dropped it from both examples, which turns a
+ * real leak into a repro that yields an empty build plan.
+ *
+ * The one spelling that does NOT reach is the *braced* `#@ persist { name=… }`:
+ * `text()` on a nested block is undefined, so the scalar loop skips it. Treat
+ * that as a curiosity, not a mitigation. It appears nowhere in this repo, while
+ * the sibling form above is what all 156 occurrences in the fixtures, examples
+ * and docs use. An earlier version of this comment cited the braced form as
+ * proof `#@ persist` is safe, which is the exact inversion of the truth, in a
+ * paragraph whose whole job is scoping a credential-exposure surface.
+ *
+ * All of it predates this change and is deliberately not touched by it; it needs
+ * its own fix, and this guard should not be read as covering it.
  *
  * Deliberately blunt, and it errs on the safe side in two ways. It is not
  * quote-aware, so `# description="see @env.md"` is dropped too even though that
@@ -217,12 +240,57 @@ const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
  * pollution in place. Once that has happened the damage predates this function's
  * snapshot, so it sits inside the baseline and is never repaired: measured, one
  * unguarded parse elsewhere makes `readGivenControlSpec` return `{}` for every
- * given afterwards. This reports that state, since the parse then throws, but it
- * cannot undo it. Adopting this guard at those call sites, or fixing it upstream,
- * is what actually closes it.
+ * given afterwards. Adopting this guard at those call sites, or fixing it
+ * upstream, is what actually closes it.
  *
- * A repair, not a fix. The fix is upstream, where that bag wants a `Map` or an
- * `Object.create(null)`, and this should be deleted once that lands.
+ * Two things are measured about that state, and nothing here claims more than
+ * these two. Once `Object.prototype.properties` exists, **every** parse throws
+ * `RangeError`, a benign `# label="x"` included, and that holds whether the bag
+ * is populated or empty, so in that state annotations are refused by the catch
+ * and not by the snapshot.
+ *
+ * The snapshot's own repair is real but has to be demonstrated somewhere the
+ * throw does not mask it, since in the state above nothing parses at all. The
+ * case that shows it is `# constructor { k=v }`, which reaches the global
+ * `Object` as the value of `Object.prototype.constructor`: measured, it parses
+ * with an empty log and no throw, adds `location` and `properties` to `Object`
+ * unguarded, and adds nothing through here.
+ *
+ * What happens in that state beyond those two facts is not characterised. An
+ * earlier version of this paragraph generalised from four measured shapes to a
+ * claim about containment, and was wrong twice: security review found a
+ * hand-built shape (a populated shared tree of null-prototype nodes) where the
+ * guard does not refuse and one declaration's fields appear beside another's.
+ * That shape looks unreachable, since nothing found a way for MOTLY to build
+ * null-prototype nodes, but "looks unreachable" is the most that is measured.
+ *
+ * **And the class is reachable without this module at all, so do not read this as
+ * closing it.** The compiler parses the `##!` and `#@` routes eagerly, inside
+ * `getModel()`, before anything here runs: a model file containing
+ * `##! __proto__ { a=b }` pollutes at compile time on `main` today. Measured, a
+ * second tenant's unchanged, innocent package then stops compiling, which makes it
+ * a tenant-authored, process-wide, sticky denial of service on a shared worker.
+ * Plain `#`/`##` tags are not parsed eagerly, which is why this slice's reader is
+ * the first thing to reach it *by this route* and why the guard belongs here, but
+ * the vulnerability predates the slice and outlives the guard.
+ *
+ * A repair, not a fix. The fix is upstream in `malloydata/motly`
+ * (`bindings/typescript/parser`, `interpreter.js` `buildAccessPath`), where the
+ * bag wants a `Map` or an `Object.create(null)`; `malloy-tag` is a wrapper over
+ * the same `MOTLYSession`, so one change closes both routes. Sequencing when it
+ * lands, since these do not commute: this function becomes deletable, and the
+ * pollution assertions in `given.spec.ts` stop failing closed and simply succeed.
+ * The rule, rather than a count, because two different counts of this were both
+ * wrong before it was written as a rule: **every assertion expecting `{}` on a
+ * line that also carries a readable control key will flip to that contract**, and
+ * only the lines carrying no readable key stay `{}`. That covers the fixture loop
+ * and the accessor, throwing-target and decoy-getter cases below it, which are
+ * easy to miss because they sit outside the loop. Today's behaviour is already
+ * visible without the upstream change: a block key that is NOT on the prototype,
+ * `# label="ok" zzNotOnPrototype { k="v" }`, returns `{label: "ok"}` right now,
+ * and a prototype-safe bag simply makes the prototype keys behave the same way.
+ * `Object.freeze(Object.prototype)` is not a usable stopgap in the meantime: it
+ * kills winston at import, through logform and `@colors/colors`.
  */
 function parseGuarded(texts: readonly string[]): {
    tag: Tag | undefined;
@@ -358,6 +426,14 @@ export function docCommentText(texts: readonly string[]): string | undefined {
  * losing every property on it. Adding a form to {@link endOfDelimited} is the
  * fix; asserting there are none left is what went wrong three times.
  *
+ * A fourth was found in security review and fixed rather than absorbed into this
+ * paragraph: the heredoc terminator was matched with a `/m` regex, whose anchors
+ * break at `\r`, U+2028 and U+2029 where MOTLY breaks only at `\n`, so a decoy
+ * `>>>` after one of those ended the region early and the rescue rewrote inside
+ * what MOTLY still treated as body. Measured, pinned by a test that fails against
+ * the old regex. How many forms remain is still unknown, which is the whole point
+ * of this paragraph; one fewer is not none.
+ *
  * One spelling detail, since it is visible on the wire: the rescue always
  * re-emits with single quotes, so an author who wrote `f"US"` reads back `f'US'`.
  * The body is preserved and the value means the same thing, but that one spelling
@@ -412,7 +488,14 @@ export function quoteFilterLiterals(annotation: string): string {
  * - `"…"` and `'…'`, which the grammar ends at a newline as well as at the
  *   closing quote (`"|(?=$)`).
  * - `` `…` ``, a quoted identifier. The grammar notes it is always a key and
- *   never a value, and it cannot span a newline.
+ *   never a value. Its `` `[^`\n]*` `` says it cannot span a newline, and that
+ *   is the one place the grammar does not describe the parser: MOTLY decodes
+ *   escapes inside the identifier, so `` `a\<newline>` `` parses to the single
+ *   key `"a\n"`, checked against the parser. The branch below therefore has to
+ *   consume an escaped newline rather than treat it as unterminated, which the
+ *   backslash skip does. (The skip and the newline bail test the same character,
+ *   so their relative order does not matter; a mutation swapping them changes
+ *   nothing, which is how this note got corrected.)
  * - `<<<` … `>>>`, a heredoc whose terminator sits alone on its own line.
  *
  * An unterminated region runs to the end of the text, which leaves it for MOTLY
@@ -423,20 +506,50 @@ function endOfDelimited(text: string, start: number): number {
    const char = text[start];
 
    if (char === "`") {
-      const close = text.indexOf("`", start + 1);
-      const newline = text.indexOf("\n", start + 1);
-      const unterminated = close === -1 || (newline !== -1 && newline < close);
-      // Unterminated runs to the end, like every other branch here. Stopping just
-      // past the opening backtick instead would let the caller keep walking
-      // inside an unclosed identifier and rewrite there.
-      return unterminated ? text.length : close + 1;
+      // MOTLY decodes escapes inside a quoted identifier, so an escaped backtick
+      // is part of the key and not its close: `` # `a\`b`=1 `` parses to the
+      // single key ``a`b``, checked against the parser rather than assumed. The
+      // grammar writes the identifier as `` `[^`\n]*` ``, which cannot express
+      // that, and a bare `indexOf` inherits the same limit: it stops at the
+      // escaped backtick, so the rest of the line is never scanned and a filter
+      // literal after it is never quoted. That costs the whole annotation, not
+      // one key, since the line then stays unparseable and every field with it.
+      // Pair backslashes the way the quote branches below do.
+      let i = start + 1;
+      while (i < text.length) {
+         if (text[i] === "\\") {
+            i += 2;
+            continue;
+         }
+         if (text[i] === "`") return i + 1;
+         // Unterminated runs to the end, like every other branch here. Stopping
+         // just past the opening backtick instead would let the caller keep
+         // walking inside an unclosed identifier and rewrite there.
+         if (text[i] === "\n") return text.length;
+         i += 1;
+      }
+      return text.length;
    }
 
    if (text.startsWith("<<<", start)) {
-      const terminator = /^[ \t]*>>>[ \t]*$/m.exec(text.slice(start + 3));
-      return terminator
-         ? start + 3 + terminator.index + terminator[0].length
-         : text.length;
+      // Walk lines the way MOTLY's `parseHeredoc` does: split on `\n` only, and
+      // end at the first line whose `trim()` is `>>>`. A `/^[ \t]*>>>[ \t]*$/m`
+      // regex looks equivalent and is not, because JS multiline anchors also
+      // break at `\r`, U+2028 and U+2029. It would find a terminator MOTLY does
+      // not, end the region early, and let the caller rewrite inside what MOTLY
+      // still treats as body. Measured, `# a=<<<\nbody\r>>>\r x=f'US'\n...`
+      // had `x=f'US'` quoted inside the heredoc. `trim()` rather than `[ \t]*`
+      // for the same reason: it is what MOTLY compares with, and it accepts
+      // wider whitespace. Matching its rule also matches the `\n` test the
+      // backtick branch above already uses.
+      let lineStart = start + 3;
+      for (;;) {
+         const newline = text.indexOf("\n", lineStart);
+         const lineEnd = newline === -1 ? text.length : newline;
+         if (text.slice(lineStart, lineEnd).trim() === ">>>") return lineEnd;
+         if (newline === -1) return text.length;
+         lineStart = newline + 1;
+      }
    }
 
    if (char === '"' || char === "'") {

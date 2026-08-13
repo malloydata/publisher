@@ -15,6 +15,7 @@
 
 import type { Annotations } from "@malloydata/malloy";
 import { isReservedRoute } from "./annotations";
+import type { Tag } from "@malloydata/malloy-tag";
 import { motlyTag, tagNumeric, tagText } from "./motly";
 
 /**
@@ -101,6 +102,31 @@ export interface MalloyGivenApi extends GivenControlSpec {
 }
 
 /**
+ * A tag value that is present *and* says something, for the fields where an
+ * empty value cannot mean anything.
+ *
+ * `text()` returns `""` for `label=""`, which passes an `!== undefined` check
+ * and ships an empty label, an empty helper text, or worst of all a `suggest`
+ * block whose `query=""` satisfies the runnable check below and tells a client
+ * to fetch options from nothing. Absent and empty are the same intent here, so
+ * they get the same answer: omit the field. Note that is *not* a fallback to
+ * something type-derived; only `control` has one of those, and `control` is the
+ * one field this does not guard (an empty value fails its enum check anyway).
+ * An absent `label` is simply an absent label.
+ *
+ * This is deliberately NOT folded into {@link tagText}, which is also how given
+ * *values* are read, and there an empty string is a legitimate value (an empty
+ * filter is not an absent filter).
+ */
+function presentText(
+   tag: Tag | undefined,
+   ...path: string[]
+): string | undefined {
+   const raw = tagText(tag, ...path);
+   return raw !== undefined && raw.trim() !== "" ? raw : undefined;
+}
+
+/**
  * Read the control contract out of a given declaration's annotations.
  *
  * The input is the raw annotation texts, MOTLY route included: these are plain
@@ -121,10 +147,10 @@ export function readGivenControlSpec(
    // date literal MOTLY accepts and `Date` rejects, and both production callers
    // map over every given with no try/catch, so an unguarded read would turn one
    // typo into a failed load for the whole package.
-   const label = tagText(tag, "label");
+   const label = presentText(tag, "label");
    if (label !== undefined) spec.label = label;
 
-   const description = tagText(tag, "description");
+   const description = presentText(tag, "description");
    if (description !== undefined) spec.description = description;
 
    const control = tagText(tag, "control");
@@ -140,11 +166,11 @@ export function readGivenControlSpec(
    const suggest = tag.tag("suggest");
    if (suggest) {
       const parsed: GivenSuggestSpec = {};
-      const query = tagText(suggest, "query");
+      const query = presentText(suggest, "query");
       if (query !== undefined) parsed.query = query;
-      const source = tagText(suggest, "source");
+      const source = presentText(suggest, "source");
       if (source !== undefined) parsed.source = source;
-      const dimension = tagText(suggest, "dimension");
+      const dimension = presentText(suggest, "dimension");
       if (dimension !== undefined) parsed.dimension = dimension;
       // Emit only a block a client can actually run, which is the three forms
       // `GivenSuggest` documents: `query` alone, `source` + `dimension`, or

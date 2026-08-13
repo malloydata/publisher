@@ -74,6 +74,42 @@ describe("readGivenControlSpec", () => {
       ).toEqual({});
    });
 
+   it("treats an empty value as absent, so it cannot name a target either", () => {
+      // `text()` returns "" here, which passes an `!== undefined` check. Left
+      // alone it defeats the runnable guard below by a different route: an empty
+      // `query` is a target as far as `!== undefined` is concerned, so the block
+      // ships and tells a client to fetch its options from nothing.
+      expect(
+         readGivenControlSpec([`# control=select suggest { query="" }`]),
+      ).toEqual({ control: "select" });
+      expect(
+         readGivenControlSpec([
+            `# control=select suggest { source="" dimension="" }`,
+         ]),
+      ).toEqual({ control: "select" });
+      // Same reasoning for the scalar fields: an empty label is not a label, and
+      // whitespace-only is the same intent typed differently.
+      expect(readGivenControlSpec([`# label=""`])).toEqual({});
+      expect(readGivenControlSpec([`# label="   "`])).toEqual({});
+      expect(readGivenControlSpec([`# description=""`])).toEqual({});
+      // The value still has to survive when it says something, or the guard
+      // above would pass by deleting the feature.
+      expect(readGivenControlSpec([`# label="Region"`])).toEqual({
+         label: "Region",
+      });
+   });
+
+   it("still reads the contract on a line carrying an escaped backtick key", () => {
+      // The filter-literal rescue used to stop at the escaped backtick, leaving
+      // the rest of the line unscanned and the annotation unparseable, which
+      // loses every field rather than the one key: measured `{}` before.
+      expect(
+         readGivenControlSpec([
+            "# label=\"Region\" control=select `a\\`b`=1 R=f'US'",
+         ]),
+      ).toEqual({ label: "Region", control: "select" });
+   });
+
    it("omits suggest entirely when the tag names no target", () => {
       expect(readGivenControlSpec([`# control=select suggest { }`])).toEqual({
          control: "select",
@@ -452,6 +488,56 @@ describe("quoteFilterLiterals", () => {
    it("is idempotent, so a second pass cannot double-quote", () => {
       const once = quoteFilterLiterals(`# artifact { givens { R=f'US' } }`);
       expect(quoteFilterLiterals(once)).toBe(once);
+   });
+
+   it("pairs backslashes inside a quoted identifier, like the quote branches", () => {
+      // MOTLY decodes escapes inside backticks, so the escaped backtick here is
+      // part of the key and not its close. Scanning with a bare `indexOf` ended
+      // the identifier early and left the rest of the line unscanned, so the
+      // filter literal after it was never quoted and the annotation stayed
+      // unparseable, which costs the WHOLE contract, not one key (below).
+      expect(quoteFilterLiterals("# `a\\`b`=1 R=f'US'")).toBe(
+         "# `a\\`b`=1 R=\"f'US'\"",
+      );
+      // An ordinary identifier was never affected; pinned so a regression here
+      // is distinguishable from one in the escape handling.
+      expect(quoteFilterLiterals("# `plain`=1 R=f'US'")).toBe(
+         "# `plain`=1 R=\"f'US'\"",
+      );
+   });
+
+   it("ends a heredoc only where MOTLY does, at a line break it recognizes", () => {
+      // MOTLY splits heredoc lines on \n alone and ends the region at the first
+      // line whose trim() is `>>>`. A JS /m regex disagrees: its anchors also
+      // break at \r, U+2028 and U+2029, so it finds a terminator MOTLY does not
+      // and hands the caller a "heredoc" that ends early. The rescue then
+      // rewrites inside what MOTLY still treats as body.
+      //
+      // Each case below puts a decoy `>>>` after one of those three characters,
+      // with a bare filter literal behind it. The real terminator is the `>>>`
+      // alone on its own line further down, so the whole annotation must come
+      // back untouched.
+      for (const sep of ["\r", " ", " "]) {
+         const input = `# a=<<<\nbody${sep}>>>${sep} x=f'INJECTED'\nreal\n>>>\n label="keep"`;
+         expect(quoteFilterLiterals(input)).toBe(input);
+      }
+      // A terminator MOTLY DOES recognize still ends the region, so the fix
+      // cannot pass by never ending a heredoc at all.
+      expect(quoteFilterLiterals(`# a=<<<\nbody\n>>>\n R=f'US'`)).toBe(
+         `# a=<<<\nbody\n>>>\n R="f'US'"`,
+      );
+   });
+
+   it("treats an escaped newline as part of the identifier, not as unterminated", () => {
+      // The grammar says a quoted identifier cannot span a newline; the parser
+      // disagrees, decoding `\<newline>` into a literal one, so `# `a\<nl>`=1`
+      // is the single key "a\n". The old scan saw a newline before the closing
+      // backtick, called the identifier unterminated, and left the rest of the
+      // line unscanned, so the filter literal was never quoted: measured, it
+      // came back byte-identical and unparseable.
+      expect(quoteFilterLiterals("# `a\\\n`=1 R=f'US'")).toBe(
+         "# `a\\\n`=1 R=\"f'US'\"",
+      );
    });
 
    it("escapes a quote inside the literal body", () => {
