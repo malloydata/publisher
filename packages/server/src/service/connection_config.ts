@@ -53,6 +53,20 @@ export type AssembledEnvironmentConnections = {
 
 const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>(["attachedDatabases"]);
 
+/**
+ * Collapse `null` to `undefined` for an optional connection field.
+ *
+ * JSON config distinguishes "absent" from "explicitly null", but the Malloy
+ * config layer treats only `undefined` as absent -- `makeDigest` reads
+ * `.length` off every part it is given and special-cases `undefined` alone, so
+ * a `null` throws rather than hashing as empty. Callers that spread through
+ * `removeUndefined` are not protected either: it filters `undefined`, so a
+ * `null` survives it.
+ */
+function nullToUndefined<T>(value: T | null | undefined): T | undefined {
+   return value ?? undefined;
+}
+
 export function normalizeSnowflakePrivateKey(privateKey: string): string {
    let privateKeyContent = privateKey.trim();
 
@@ -1004,17 +1018,37 @@ export function assembleEnvironmentConnections(
                is: "snowflake",
                account: connection.snowflakeConnection?.account,
                username: connection.snowflakeConnection?.username,
-               password: connection.snowflakeConnection?.password,
+               password: nullToUndefined(
+                  connection.snowflakeConnection?.password,
+               ),
                privateKey: connection.snowflakeConnection?.privateKey
                   ? normalizeSnowflakePrivateKey(
                        connection.snowflakeConnection.privateKey,
                     )
                   : undefined,
-               privateKeyPass: connection.snowflakeConnection?.privateKeyPass,
+               privateKeyPass: nullToUndefined(
+                  connection.snowflakeConnection?.privateKeyPass,
+               ),
                warehouse: connection.snowflakeConnection?.warehouse,
-               database: connection.snowflakeConnection?.database,
-               schema: connection.snowflakeConnection?.schema,
-               role: connection.snowflakeConnection?.role,
+               // An EXPLICIT `"database": null` in config (or a client that
+               // serializes unset optionals as null) survives to here; an omitted
+               // field arrives as `undefined` and was always fine. Malloy's
+               // `makeDigest` reads `.length` off each part and special-cases
+               // `undefined` only, so a surviving `null` throws
+               // "null is not an object (evaluating 'p.length')" on the first
+               // digest.
+               //
+               // Defense in depth rather than the load-bearing fix: Malloy's own
+               // connection lookup already drops nulls before building a
+               // connector, so this pojo path is covered upstream today. The fix
+               // that matters is `removeUndefined` in connection.ts, on the
+               // key-pair path that bypasses that lookup. Kept because the Malloy
+               // dependency is a caret range and core's guard is not a contract.
+               database: nullToUndefined(
+                  connection.snowflakeConnection?.database,
+               ),
+               schema: nullToUndefined(connection.snowflakeConnection?.schema),
+               role: nullToUndefined(connection.snowflakeConnection?.role),
                timeoutMs:
                   connection.snowflakeConnection?.responseTimeoutMilliseconds,
                // Pool sizing is server-owned policy (matches the values

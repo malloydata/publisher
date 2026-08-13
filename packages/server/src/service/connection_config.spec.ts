@@ -128,6 +128,72 @@ describe("assembleEnvironmentConnections — databricks", () => {
    });
 });
 
+describe("assembleEnvironmentConnections — snowflake", () => {
+   // An EXPLICIT null in config (or a client serializing an unset optional as
+   // null) survives to the connector; an omitted field arrives as `undefined`
+   // and was always fine. Malloy's makeDigest reads `.length` off every part and
+   // special-cases `undefined` alone, so a surviving `null` throws when a digest
+   // is taken -- which happens on the package-load worker's connection-metadata
+   // RPC, surfacing as the whole package failing to load with "import reference
+   // failure" rather than as a connection error.
+   //
+   // These assertions cover the pojo path, which Malloy's own lookup also
+   // guards. The key-pair path that actually reproduced the bug is pinned in
+   // connection.spec.ts.
+   const nullableFields = ["database", "schema", "role"] as const;
+
+   function snowflakeConnection(
+      overrides: Record<string, unknown>,
+   ): ApiConnection {
+      return {
+         name: "sf",
+         type: "snowflake",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            password: "pw",
+            warehouse: "wh",
+            ...overrides,
+         },
+      } as ApiConnection;
+   }
+
+   for (const field of nullableFields) {
+      it(`omits a null ${field} from the core entry`, () => {
+         const { pojo } = assembleEnvironmentConnections([
+            snowflakeConnection({ [field]: null }),
+         ]);
+
+         const entry = pojo.connections["sf"] as Record<string, unknown>;
+         // Explicitly not null: `undefined` is what the digest tolerates.
+         expect(entry[field]).toBeUndefined();
+         expect(entry[field]).not.toBeNull();
+      });
+   }
+
+   it("preserves a configured database", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         snowflakeConnection({ database: "MYDB", schema: "MYSCHEMA" }),
+      ]);
+
+      const entry = pojo.connections["sf"] as Record<string, unknown>;
+      expect(entry.database).toBe("MYDB");
+      expect(entry.schema).toBe("MYSCHEMA");
+   });
+
+   it("carries no null through to any core-entry value", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         snowflakeConnection({ database: null, schema: null, role: null }),
+      ]);
+
+      const entry = pojo.connections["sf"] as Record<string, unknown>;
+      const nulls = Object.entries(entry)
+         .filter(([, value]) => value === null)
+         .map(([key]) => key);
+      expect(nulls).toEqual([]);
+   });
+});
+
 describe("normalizeSnowflakePrivateKey", () => {
    const { privateKey: pkcs8Pem } = generateKeyPairSync("rsa", {
       modulusLength: 2048,

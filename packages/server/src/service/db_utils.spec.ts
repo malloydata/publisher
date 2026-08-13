@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 // Stub the missing optional dependency so db_utils.ts can be imported
 mock.module("@azure/identity", () => ({
@@ -20,6 +20,8 @@ mock.module("@google-cloud/bigquery", () => ({
 }));
 
 import { Connection } from "@malloydata/malloy";
+import { BadRequestError } from "../errors";
+import { logger } from "../logger";
 import { normalizeQueryArray } from "../query_param_utils";
 import {
    extractErrorDataFromError,
@@ -577,6 +579,258 @@ describe("getSchemasForConnection", () => {
          expect(schemas).toHaveLength(1);
          expect(schemas[0].name).toBe("mydb");
          expect(schemas[0].isDefault).toBe(true);
+      });
+   });
+
+   describe("snowflake - database-less account listing", () => {
+      function snowflakeConn(
+         database?: string,
+         schema?: string,
+      ): ApiConnection {
+         return {
+            name: "test",
+            type: "snowflake",
+            snowflakeConnection: {
+               account: "acct",
+               username: "user",
+               password: "pw",
+               warehouse: "wh",
+               database,
+               schema,
+            },
+         };
+      }
+
+      it("scopes the query to the configured database", async () => {
+         const rows = [
+            {
+               CATALOG_NAME: "MYDB",
+               SCHEMA_NAME: "TEST_SCHEMA",
+               SCHEMA_OWNER: "SYSADMIN",
+            },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn("MYDB", "TEST_SCHEMA"),
+            m.conn,
+         );
+
+         // Qualified, because an unqualified INFORMATION_SCHEMA resolves
+         // against the session's current database.
+         expect(m.lastSQL).toContain("MYDB.INFORMATION_SCHEMA.SCHEMATA");
+         expect(m.lastSQL).toContain("CATALOG_NAME = 'MYDB'");
+         expect(m.lastSQL).toContain("SCHEMA_NAME = 'TEST_SCHEMA'");
+         expect(schemas).toHaveLength(1);
+         expect(schemas[0].name).toBe("MYDB.TEST_SCHEMA");
+         expect(schemas[0].isDefault).toBe(true);
+         expect(schemas[0].isHidden).toBe(false);
+      });
+
+      it("lists schemas across every database when none is configured", async () => {
+         // SHOW output is lower-case, unlike INFORMATION_SCHEMA's.
+         const rows = [
+            { database_name: "DB_B", name: "PUBLIC", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         // The LIMIT is stated rather than left to the server's implicit
+         // default, so that landing on the cap is detectable.
+         expect(m.lastSQL).toBe("SHOW SCHEMAS IN ACCOUNT LIMIT 10000");
+         expect(schemas.map((s) => s.name)).toEqual([
+            "DB_A.SALES",
+            "DB_B.PUBLIC",
+         ]);
+         expect(schemas.every((s) => s.isHidden === false)).toBe(true);
+      });
+
+      it("warns that the schema list is incomplete when SHOW hits its row cap", async () => {
+         // Passing the LIMIT trades Snowflake's above-10k error for a capped
+         // result, so truncation becomes possible where it previously was not.
+         // Landing on the cap is the only evidence available that schemas are
+         // missing, so silence here would present a partial list as complete.
+         const rows = Array.from({ length: 10_000 }, (_unused, i) => ({
+            database_name: "DB_A",
+            name: `SCHEMA_${i}`,
+            owner: "SYSADMIN",
+         }));
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("hit the SHOW row limit"),
+               ),
+            ).toBe(true);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("does not warn when the schema list is below the SHOW row cap", async () => {
+         const rows = [
+            { database_name: "DB_A", name: "PUBLIC", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("hit the SHOW row limit"),
+               ),
+            ).toBe(false);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("shows a shared database's schemas even though SHOW reports no owner", async () => {
+         // SHOW SCHEMAS reports a blank owner for any schema not local to the
+         // account, so every schema of an IMPORTED DATABASE (a Marketplace or
+         // partner share) looks system-owned. Hiding those drops a deliberately
+         // subscribed dataset from the picker.
+         const rows = [
+            { database_name: "SEC_FILINGS", name: "CYBERSYN", owner: "" },
+            { database_name: "SNOWFLAKE", name: "ACCOUNT_USAGE", owner: "" },
+            {
+               database_name: "SEC_FILINGS",
+               name: "INFORMATION_SCHEMA",
+               owner: "",
+            },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         const visible = schemas.filter((s) => !s.isHidden).map((s) => s.name);
+         expect(visible).toEqual(["SEC_FILINGS.CYBERSYN"]);
+         // The system database and INFORMATION_SCHEMA stay hidden on their own
+         // rules, so dropping the blank-owner test leaks no system noise.
+         expect(
+            schemas.find((s) => s.name === "SNOWFLAKE.ACCOUNT_USAGE")?.isHidden,
+         ).toBe(true);
+         expect(
+            schemas.find((s) => s.name === "SEC_FILINGS.INFORMATION_SCHEMA")
+               ?.isHidden,
+         ).toBe(true);
+      });
+
+      it("surfaces an unusable database name as a bad request, not an internal error", async () => {
+         // A rejected identifier is deterministically invalid, so classifying it
+         // as an internal fault tells the caller to retry a value that can never
+         // succeed. Matches the guard in getSchemasForTrino / Databricks.
+         const m = mockConnection([]);
+         await expect(
+            getSchemasForConnection(
+               snowflakeConn("bad-name", undefined),
+               m.conn,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+
+      it("warns rather than silently returning nothing when no row parses", async () => {
+         // A SHOW output whose columns we no longer recognise returns rows and
+         // yields no schemas, which is indistinguishable from an account with no
+         // schemas unless it is reported. This is the collapsed-signal case: the
+         // empty result carries evidence, the silent one does not.
+         const rows = [
+            { unexpected_column: "DB_A", another: "PUBLIC" },
+            { unexpected_column: "DB_B", another: "SALES" },
+         ];
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            const schemas = await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            expect(schemas).toHaveLength(0);
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("missing a database or schema name"),
+               ),
+            ).toBe(true);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("ignores a configured schema when no database is set", async () => {
+         // The schema is a default for queries, not a filter: honoring it
+         // account-wide would return a same-named schema from every database
+         // and hide the rest.
+         const rows = [
+            { database_name: "DB_A", name: "PUBLIC", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "OTHER", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, "PUBLIC"),
+            m.conn,
+         );
+
+         expect(schemas).toHaveLength(2);
+         // No single schema can be the default without a database to scope it.
+         expect(schemas.every((s) => s.isDefault === false)).toBe(true);
+      });
+
+      it("hides system databases and INFORMATION_SCHEMA account-wide", async () => {
+         const rows = [
+            { database_name: "SNOWFLAKE", name: "ACCOUNT_USAGE", owner: "" },
+            {
+               database_name: "SNOWFLAKE_SAMPLE_DATA",
+               name: "TPCH_SF1",
+               owner: "SYSADMIN",
+            },
+            {
+               database_name: "DB_A",
+               name: "INFORMATION_SCHEMA",
+               owner: "SYSADMIN",
+            },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         const visible = schemas.filter((s) => !s.isHidden);
+         expect(visible.map((s) => s.name)).toEqual(["DB_A.SALES"]);
+      });
+
+      it("drops rows that cannot form a DATABASE.SCHEMA name", async () => {
+         // A half-populated row would otherwise yield ".FOO" or "DB.", which
+         // listTablesForSchema parses into a database that does not exist.
+         const rows = [
+            { database_name: "", name: "ORPHAN", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         expect(schemas.map((s) => s.name)).toEqual(["DB_A.SALES"]);
       });
    });
 

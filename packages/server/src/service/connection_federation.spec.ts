@@ -102,6 +102,29 @@ describe("federateSourceForPassthrough", () => {
       expect(secret).not.toContain("\n   PASSWORD '");
    });
 
+   it("snowflake: omits DATABASE from the secret when the connection has none", async () => {
+      // A database-less connection is now loadable and queryable, so it can also
+      // reach a `storage=` build. The secret simply carries no DATABASE, which
+      // means the passthrough session has no current database and any SQL run
+      // through it must name tables in full. Pinned so the emitted secret is a
+      // deliberate shape rather than an accident of the conditional spread: an
+      // empty `DATABASE ''` line would be worse than its absence, since the
+      // extension would take it as a real (empty) database name.
+      const { conn, sql } = stubbedConnection();
+      await federateSourceForPassthrough(conn, "snowflake", {
+         name: "src_sf_nodb",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            password: "pwd",
+            warehouse: "WH",
+         } as components["schemas"]["SnowflakeConnection"],
+      });
+      const secret = sql.find((s) => s.includes("CREATE OR REPLACE SECRET"))!;
+      expect(secret).not.toContain("DATABASE");
+      expect(secret).toContain("WAREHOUSE 'WH'");
+   });
+
    it("snowflake: normalizes a single-line private key, as the live path does", async () => {
       // The shape that matters. A multi-line PEM is already valid, so a test
       // using one passes whether or not the key is normalized. A SINGLE-LINE key
