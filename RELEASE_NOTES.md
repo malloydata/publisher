@@ -26,13 +26,17 @@ An existing `publisher.db` has always picked up a new **table** added by a later
 
 ### What changed
 
-- **Schema init now reconciles columns.** After the `CREATE TABLE` pass, the declared shape is compared against what is on disk and anything declared-but-absent is added. Only nullable columns, and only additions.
-- **What it cannot fix, it now says at boot.** A type change, or a missing `NOT NULL` column, is logged as a warning naming the column, instead of surfacing later as a binder error on an unrelated request. This is the part that keeps earning its keep after this particular column is behind us.
+- **Schema init now reconciles columns.** After the `CREATE TABLE` pass, the declared shape is compared against what is on disk and anything declared-but-absent is added. Additions only, and only for columns carrying no constraint. A declared `DEFAULT` **is** carried across and backfills existing rows.
+- **What it cannot fix, it now says at boot.** A constrained column that cannot be added, or a column already present whose type, nullability or default has changed, is logged as a warning naming the column, instead of surfacing later as a binder error on an unrelated request. This is the part that keeps earning its keep after this particular column is behind us.
 - **Nothing is ever dropped.** Columns and tables an older store has and this build no longer declares are left in place and reported at debug level. `materializations.build_plan` (added and removed within four days in June 2026) and the `build_manifests` table are both inert relics of this kind; removing them is a decision for an operator, not something an upgrade should do quietly.
 
-### Why only additive
+### What is and is not carried across
 
-`ALTER TABLE ... ADD COLUMN` in DuckDB rejects a column carrying any constraint, `NOT NULL` included, with or without a `DEFAULT`. So the safe subset is not a policy this code chose — it is the boundary the engine enforces. A future column outside it needs a hand-written step, and the boot warning is what tells you the day one appears.
+`ALTER TABLE ... ADD COLUMN` in DuckDB rejects a column carrying any constraint — `NOT NULL`, `PRIMARY KEY`, `UNIQUE`, `CHECK`, `FOREIGN KEY` — with or without a `DEFAULT`. A bare `DEFAULT` is accepted. So the safe subset is not a policy this code chose; it is the boundary the engine enforces.
+
+Constraints are read from `duckdb_constraints()` rather than inferred from nullability, which matters more than it sounds: a `UNIQUE` or `CHECK` column reports as _nullable_, so screening on nullability alone would add it as a bare column and leave the store holding the right column under the wrong rules — two servers on the same build enforcing differently depending on how their store was created. Such a column is refused and named in the warning instead.
+
+A future column outside the safe subset needs a hand-written step, and the boot warning is what tells you the day one appears.
 
 There is still no schema-version marker, and none is needed: the comparison is against the database itself. The expected shape is not written down twice either — it is read back from a scratch in-memory database the same DDL has just been run against, so the `CREATE TABLE` statements remain the single declaration of the schema.
 

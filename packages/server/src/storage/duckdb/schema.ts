@@ -39,9 +39,17 @@ export async function initializeSchema(
    // A CREATE TABLE IF NOT EXISTS is a no-op against an existing table no matter
    // how its COLUMNS differ, so the pass above carries a new table but never a
    // new column. Reconcile those separately, and only where the drift can exist:
-   // a store created by this build (or re-created by --init just above) already
-   // matches the declaration by construction.
-   if (initialized && !force) {
+   // nothing is on disk to have drifted before this build created it.
+   //
+   // `--init` is NOT exempt. It looks like it should be, since dropAllTables
+   // recreates everything from scratch — but that function's table list is a
+   // second, hand-maintained declaration of the table set, exactly the kind of
+   // parallel list this reconcile exists to avoid depending on. A table added to
+   // the DDL and forgotten there survives the drop, no-ops through CREATE TABLE
+   // IF NOT EXISTS, and would keep its drift through the one command the warning
+   // below tells operators to run. On a correctly recreated store the reconcile
+   // finds nothing, so the cost of not exempting it is one in-memory DDL run.
+   if (initialized) {
       await reconcileDeclaredColumns(db);
    }
 
@@ -255,18 +263,36 @@ async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
    );
 }
 
-interface ColumnShape {
+export interface ColumnShape {
    table_name: string;
    column_name: string;
    data_type: string;
    is_nullable: boolean;
+   /** SQL expression, as the catalog renders it (e.g. `CAST('t' AS BOOLEAN)`). */
+   column_default: string | null;
 }
 
-/** The shape of a database as the catalog reports it, for both sides of the diff. */
+export interface ConstraintRow {
+   table_name: string;
+   constraint_type: string;
+   constraint_column_names: string[];
+}
+
+// `database_name = current_database()` is load-bearing, not tidiness: filtering
+// on the schema alone also matches DuckDB's own `system.main` catalog (141 of the
+// 146 rows on an empty database) and anything in `temp.main`. Those cancel out
+// across a diff of two DuckDBs, but the keys here are `table.column`, so a
+// same-named table in a second attached database would collide last-wins.
 const COLUMN_SHAPE_QUERY = `
-   SELECT table_name, column_name, data_type, is_nullable
+   SELECT table_name, column_name, data_type, is_nullable, column_default
    FROM duckdb_columns()
-   WHERE schema_name = 'main'
+   WHERE schema_name = 'main' AND database_name = current_database()
+`;
+
+const CONSTRAINT_QUERY = `
+   SELECT table_name, constraint_type, constraint_column_names
+   FROM duckdb_constraints()
+   WHERE schema_name = 'main' AND database_name = current_database()
 `;
 
 function columnKey(column: ColumnShape): string {
@@ -284,19 +310,26 @@ function columnKey(column: ColumnShape): string {
  * The disk is the other half of the comparison, so no schema-version marker is
  * needed and none is kept.
  *
- * Strictly additive, and only for nullable columns, which is a boundary DuckDB
- * enforces rather than one this code chooses: `ALTER TABLE ... ADD COLUMN`
- * rejects a column carrying any constraint ("Adding columns with constraints not
- * yet supported"), including NOT NULL, with or without a DEFAULT. A bare DEFAULT
- * is accepted and backfills existing rows.
+ * Strictly additive, and only for columns carrying no constraint, which is a
+ * boundary DuckDB enforces rather than one this code chooses: `ALTER TABLE ...
+ * ADD COLUMN` rejects a column carrying any constraint ("Adding columns with
+ * constraints not yet supported") — NOT NULL, PRIMARY KEY, UNIQUE, CHECK and
+ * FOREIGN KEY alike, with or without a DEFAULT. A bare DEFAULT is accepted and
+ * backfills existing rows, so a declared default IS carried across; a constraint
+ * never can be. Constraints are read from `duckdb_constraints()` rather than
+ * inferred from `is_nullable`, because a UNIQUE or CHECK column reports as
+ * nullable and would otherwise be added as a bare column: the store would then
+ * hold the right column under the wrong rules, and two servers on the same build
+ * would enforce differently depending on how their store was created.
  *
  * Everything else the diff finds is reported, not acted on:
  *
- * - A missing NOT NULL column cannot be added at all. Adding it as nullable
- *   would leave the store permanently disagreeing with its own declaration, so
- *   it warns and leaves the write to fail, which is at least traceable to a
- *   named column at boot.
- * - A type change is not an ALTER we can infer the intent of.
+ * - A missing constrained column cannot be added at all. Adding an unconstrained
+ *   stand-in would leave the store permanently disagreeing with its own
+ *   declaration, so it warns and leaves the write to fail, which is at least
+ *   traceable to a named column at boot.
+ * - A column already present whose type, nullability or default has changed is
+ *   not an ALTER we can infer the intent of.
  * - A column or table on disk that this build no longer declares is left alone.
  *   Dropping is a decision, not a reconciliation, and the relics are inert:
  *   `materializations.build_plan` (added and removed within four days in June
@@ -316,53 +349,29 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
 
       const declared = await mirror.all<ColumnShape>(COLUMN_SHAPE_QUERY);
       const onDisk = await db.all<ColumnShape>(COLUMN_SHAPE_QUERY);
+      const constraints = await mirror.all<ConstraintRow>(CONSTRAINT_QUERY);
 
-      const declaredTables = new Set(declared.map((c) => c.table_name));
-      const declaredColumns = new Set(declared.map(columnKey));
-      const diskTables = new Set(onDisk.map((c) => c.table_name));
-      const diskColumns = new Map(onDisk.map((c) => [columnKey(c), c]));
+      const plan = planColumnReconcile(
+         declared,
+         onDisk,
+         constrainedColumnsOf(constraints),
+      );
 
       const added: string[] = [];
-      const needsMigration: string[] = [];
-
-      for (const column of declared) {
-         // A table absent from disk was just created by the pass above, at the
-         // declared shape; only tables that predate this build can drift.
-         if (!diskTables.has(column.table_name)) {
-            continue;
-         }
-         const existing = diskColumns.get(columnKey(column));
-         if (!existing) {
-            if (!column.is_nullable) {
-               needsMigration.push(
-                  `${columnKey(column)} (declared NOT NULL; DuckDB cannot add a constrained column)`,
-               );
-               continue;
-            }
-            await db.run(
-               `ALTER TABLE "${column.table_name}" ADD COLUMN IF NOT EXISTS "${column.column_name}" ${column.data_type}`,
-            );
-            added.push(`${columnKey(column)} ${column.data_type}`);
-         } else if (existing.data_type !== column.data_type) {
-            needsMigration.push(
-               `${columnKey(column)} (on disk ${existing.data_type}, declared ${column.data_type})`,
-            );
+      const failed: string[] = [];
+      for (const add of plan.adds) {
+         // Per column, so one column DuckDB refuses cannot abandon the rest of
+         // the reconcile — and so the summary below still reports what did land.
+         try {
+            await db.run(add.sql);
+            added.push(add.description);
+         } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            failed.push(`${add.description} (${message})`);
          }
       }
 
-      const undeclared = [
-         ...onDisk
-            .filter(
-               (c) =>
-                  declaredTables.has(c.table_name) &&
-                  !declaredColumns.has(columnKey(c)),
-            )
-            .map(columnKey),
-         ...[...diskTables]
-            .filter((t) => !declaredTables.has(t))
-            .map((t) => `${t} (whole table)`),
-      ];
-
+      const needsMigration = [...plan.needsMigration, ...failed];
       if (added.length > 0) {
          logger.info(
             `publisher.db: added ${added.length} column(s) this build declares that the store predates: ${added.join(", ")}`,
@@ -375,9 +384,9 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
                `the store is migrated by hand or recreated with --init: ${needsMigration.join(", ")}`,
          );
       }
-      if (undeclared.length > 0) {
+      if (plan.undeclared.length > 0) {
          logger.debug(
-            `publisher.db holds ${undeclared.length} column(s)/table(s) this build no longer declares; left in place: ${undeclared.join(", ")}`,
+            `publisher.db holds ${plan.undeclared.length} column(s)/table(s) this build no longer declares; left in place: ${plan.undeclared.join(", ")}`,
          );
       }
    } catch (err) {
@@ -394,6 +403,121 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
          // a boot over.
       }
    }
+}
+
+/** Every column named by any constraint, mapped to the constraint kinds naming it. */
+export function constrainedColumnsOf(
+   constraints: ConstraintRow[],
+): Map<string, string[]> {
+   const byColumn = new Map<string, string[]>();
+   for (const constraint of constraints) {
+      for (const column of constraint.constraint_column_names ?? []) {
+         const key = `${constraint.table_name}.${column}`;
+         const kinds = byColumn.get(key) ?? [];
+         if (!kinds.includes(constraint.constraint_type)) {
+            kinds.push(constraint.constraint_type);
+         }
+         byColumn.set(key, kinds);
+      }
+   }
+   return byColumn;
+}
+
+/**
+ * Decide what to do about each difference between the declared shape and the
+ * store, without touching either.
+ *
+ * Split out from the IO so the cases that matter can be tested against synthetic
+ * shapes: today's declared schema has no defaulted or UNIQUE column, so no test
+ * driving the real DDL could reach the branches that handle them, and those are
+ * exactly the branches a future column will land in.
+ *
+ * Exported for tests.
+ */
+export function planColumnReconcile(
+   declared: ColumnShape[],
+   onDisk: ColumnShape[],
+   constrainedColumns: Map<string, string[]>,
+): {
+   adds: Array<{ sql: string; description: string }>;
+   needsMigration: string[];
+   undeclared: string[];
+} {
+   const declaredTables = new Set(declared.map((c) => c.table_name));
+   const declaredColumns = new Set(declared.map(columnKey));
+   const diskTables = new Set(onDisk.map((c) => c.table_name));
+   const diskColumns = new Map(onDisk.map((c) => [columnKey(c), c]));
+
+   const adds: Array<{ sql: string; description: string }> = [];
+   const needsMigration: string[] = [];
+
+   for (const column of declared) {
+      // A table absent from disk was just created by the pass above, at the
+      // declared shape; only tables that predate this build can drift.
+      if (!diskTables.has(column.table_name)) {
+         continue;
+      }
+      const key = columnKey(column);
+      const existing = diskColumns.get(key);
+
+      if (!existing) {
+         const kinds = constrainedColumns.get(key);
+         if (kinds && kinds.length > 0) {
+            needsMigration.push(
+               `${key} (declared ${kinds.join(" + ")}; DuckDB cannot add a constrained column)`,
+            );
+            continue;
+         }
+         const withDefault = column.column_default
+            ? ` DEFAULT ${column.column_default}`
+            : "";
+         adds.push({
+            sql: `ALTER TABLE "${column.table_name}" ADD COLUMN IF NOT EXISTS "${column.column_name}" ${column.data_type}${withDefault}`,
+            description: `${key} ${column.data_type}${withDefault}`,
+         });
+         continue;
+      }
+
+      // Present, but not as declared. Reported per difference rather than as a
+      // bare "differs", because which of the three moved decides what the
+      // hand-written step has to do.
+      const differences: string[] = [];
+      if (existing.data_type !== column.data_type) {
+         differences.push(
+            `type on disk ${existing.data_type}, declared ${column.data_type}`,
+         );
+      }
+      if (existing.is_nullable !== column.is_nullable) {
+         differences.push(
+            `nullability on disk ${existing.is_nullable ? "NULL" : "NOT NULL"}, declared ${column.is_nullable ? "NULL" : "NOT NULL"}`,
+         );
+      }
+      if (
+         (existing.column_default ?? null) !== (column.column_default ?? null)
+      ) {
+         differences.push(
+            `default on disk ${existing.column_default ?? "none"}, declared ${column.column_default ?? "none"}`,
+         );
+      }
+      if (differences.length > 0) {
+         needsMigration.push(`${key} (${differences.join("; ")})`);
+      }
+   }
+
+   const undeclared = [
+      ...onDisk
+         .filter(
+            (c) =>
+               declaredTables.has(c.table_name) &&
+               !declaredColumns.has(columnKey(c)),
+         )
+         .map(columnKey),
+      ...[...diskTables]
+         .filter((t) => !declaredTables.has(t))
+         .map((t) => `${t} (whole table)`),
+   ];
+
+   return { adds, needsMigration, undeclared };
 }
 
 /**

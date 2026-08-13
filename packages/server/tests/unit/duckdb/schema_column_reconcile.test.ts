@@ -6,7 +6,12 @@ import os from "os";
 import path from "path";
 import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
 import { MaterializationRepository } from "../../../src/storage/duckdb/MaterializationRepository";
-import { initializeSchema } from "../../../src/storage/duckdb/schema";
+import {
+   type ColumnShape,
+   constrainedColumnsOf,
+   initializeSchema,
+   planColumnReconcile,
+} from "../../../src/storage/duckdb/schema";
 
 const TEST_DB_DIR = path.join(os.tmpdir(), "duckdb-column-reconcile-tests");
 
@@ -67,6 +72,27 @@ async function columnNames(
    return rows.map((row) => row.column_name);
 }
 
+/**
+ * The full definition of a table's columns, not just their names — type,
+ * nullability and default. Comparing all three is what makes the upgrade
+ * assertions a tripwire: a reconciled store must be indistinguishable from one
+ * this build created, so the day a declared column carries something the ALTER
+ * cannot express, the comparison fails instead of a divergent store shipping.
+ */
+async function fullShape(
+   db: DuckDBConnection,
+   table: string,
+): Promise<unknown[]> {
+   return db.all(
+      `SELECT column_name, data_type, is_nullable, column_default
+       FROM duckdb_columns()
+       WHERE schema_name = 'main' AND database_name = current_database()
+         AND table_name = ?
+       ORDER BY column_name`,
+      [table],
+   );
+}
+
 describe("DuckDB declared-column reconcile", () => {
    beforeEach(async () => {
       await fs.mkdir(TEST_DB_DIR, { recursive: true });
@@ -101,6 +127,16 @@ describe("DuckDB declared-column reconcile", () => {
       expect(created.environmentId).toBe("env-1");
       expect(created.packageName).toBe("pkg-a");
 
+      // The upgraded table is now indistinguishable from a freshly created one,
+      // down to nullability and default — not merely "has a column of that name".
+      const mirror = new DuckDBConnection(":memory:");
+      await mirror.initialize();
+      await initializeSchema(mirror);
+      expect(await fullShape(db, "materializations")).toEqual(
+         await fullShape(mirror, "materializations"),
+      );
+
+      await mirror.close();
       await db.close();
    });
 
@@ -156,6 +192,31 @@ describe("DuckDB declared-column reconcile", () => {
       await db.close();
    });
 
+   it("refuses to add a declared NOT NULL column rather than adding it unconstrained", async () => {
+      const db = new DuckDBConnection(path.join(TEST_DB_DIR, "notnull.duckdb"));
+      await db.initialize();
+      await seedPreManifestSchema(db);
+      // `themes.payload` is declared JSON NOT NULL. A store holding the table
+      // without it cannot be repaired by ALTER, and adding a nullable stand-in
+      // would leave the store disagreeing with its own declaration.
+      await db.run(`
+         CREATE TABLE themes (
+            id VARCHAR PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL
+         )
+      `);
+
+      await initializeSchema(db);
+
+      expect(await columnNames(db, "themes")).not.toContain("payload");
+      // The reconcile continues past the refusal: the unrelated column it CAN
+      // add still lands in the same boot.
+      expect(await columnNames(db, "materializations")).toContain("manifest");
+
+      await db.close();
+   });
+
    it("is idempotent: a second boot against a reconciled store changes nothing", async () => {
       const db = new DuckDBConnection(
          path.join(TEST_DB_DIR, "idempotent.duckdb"),
@@ -191,5 +252,119 @@ describe("DuckDB declared-column reconcile", () => {
 
       await mirror.close();
       await db.close();
+   });
+});
+
+// Today's declared schema has no defaulted, UNIQUE or CHECK column, so no test
+// driving the real DDL can reach the branches that handle them — and those are
+// precisely the branches the next column added to `schema.ts` will land in.
+// Drive the decision function directly with synthetic shapes instead.
+describe("planColumnReconcile", () => {
+   const col = (
+      table: string,
+      name: string,
+      type: string,
+      overrides: Partial<ColumnShape> = {},
+   ): ColumnShape => ({
+      table_name: table,
+      column_name: name,
+      data_type: type,
+      is_nullable: true,
+      column_default: null,
+      ...overrides,
+   });
+
+   const existingTable = [col("t", "id", "VARCHAR")];
+
+   it("carries a declared DEFAULT onto the added column", () => {
+      const plan = planColumnReconcile(
+         [
+            ...existingTable,
+            col("t", "flag", "BOOLEAN", {
+               column_default: "CAST('t' AS BOOLEAN)",
+            }),
+         ],
+         existingTable,
+         new Map(),
+      );
+      expect(plan.adds).toHaveLength(1);
+      expect(plan.adds[0].sql).toBe(
+         `ALTER TABLE "t" ADD COLUMN IF NOT EXISTS "flag" BOOLEAN DEFAULT CAST('t' AS BOOLEAN)`,
+      );
+      expect(plan.needsMigration).toEqual([]);
+   });
+
+   it("refuses a UNIQUE column, which reports as nullable and would otherwise be added bare", () => {
+      const plan = planColumnReconcile(
+         [...existingTable, col("t", "slug", "VARCHAR")],
+         existingTable,
+         new Map([["t.slug", ["UNIQUE"]]]),
+      );
+      expect(plan.adds).toEqual([]);
+      expect(plan.needsMigration[0]).toContain("t.slug");
+      expect(plan.needsMigration[0]).toContain("UNIQUE");
+   });
+
+   it("reports a nullability or default change on a column already present", () => {
+      const plan = planColumnReconcile(
+         [
+            col("t", "id", "VARCHAR", { is_nullable: false }),
+            col("t", "n", "INTEGER", { column_default: "1" }),
+         ],
+         [col("t", "id", "VARCHAR"), col("t", "n", "INTEGER")],
+         new Map(),
+      );
+      expect(plan.adds).toEqual([]);
+      expect(plan.needsMigration).toHaveLength(2);
+      expect(plan.needsMigration[0]).toContain("nullability");
+      expect(plan.needsMigration[1]).toContain("default");
+   });
+
+   it("never plans anything for a table absent from the store", () => {
+      // Just created at the declared shape by the CREATE TABLE pass.
+      const plan = planColumnReconcile(
+         [col("fresh", "a", "VARCHAR")],
+         [],
+         new Map(),
+      );
+      expect(plan.adds).toEqual([]);
+      expect(plan.needsMigration).toEqual([]);
+   });
+
+   it("reports undeclared columns and tables without planning a drop", () => {
+      const plan = planColumnReconcile(
+         existingTable,
+         [
+            ...existingTable,
+            col("t", "relic", "JSON"),
+            col("gone", "x", "VARCHAR"),
+         ],
+         new Map(),
+      );
+      expect(plan.adds).toEqual([]);
+      expect(plan.undeclared).toEqual(["t.relic", "gone (whole table)"]);
+   });
+
+   it("maps every constraint kind onto the columns it names", () => {
+      const constrained = constrainedColumnsOf([
+         {
+            table_name: "t",
+            constraint_type: "PRIMARY KEY",
+            constraint_column_names: ["a", "b"],
+         },
+         {
+            table_name: "t",
+            constraint_type: "NOT NULL",
+            constraint_column_names: ["a"],
+         },
+         {
+            table_name: "t",
+            constraint_type: "CHECK",
+            constraint_column_names: ["c"],
+         },
+      ]);
+      expect(constrained.get("t.a")).toEqual(["PRIMARY KEY", "NOT NULL"]);
+      expect(constrained.get("t.b")).toEqual(["PRIMARY KEY"]);
+      expect(constrained.get("t.c")).toEqual(["CHECK"]);
    });
 });
