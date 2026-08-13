@@ -152,6 +152,14 @@ const storageBuildFailureCounter = lazyCounter(
    "storage= build failures (federation/passthrough/attach/CTAS), distinct from " +
       "in-warehouse build failures. Label: destination (connection name).",
 );
+const attributionSkippedCounter = lazyCounter(
+   "publisher_storage_build_attribution_skipped_total",
+   "storage= builds whose warehouse read went out UNATTRIBUTED while tagging was " +
+      "on. Label: reason ('job_listing_unavailable'). The read still ran and the " +
+      "build still succeeded — what was lost is the label in the customer's own " +
+      "query history, and the cost on this side. Without this an operator who " +
+      "turns tagging on and sees nothing has a single log line to go on.",
+);
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
    "storage= materialization-eligibility refusals. Label: reason " +
@@ -299,6 +307,17 @@ export function recordDropTables(
  */
 export function recordStorageBuildFailure(destination: string): void {
    storageBuildFailureCounter().add(1, { destination });
+}
+
+/**
+ * Record a build that ran its warehouse read WITHOUT attribution, despite tagging
+ * being on. Not a failure — the build succeeded and the rows are correct — which
+ * is exactly why it needs a counter: nothing else about the run looks wrong.
+ */
+export function recordAttributionSkipped(
+   reason: "job_listing_unavailable",
+): void {
+   attributionSkippedCounter().add(1, { reason });
 }
 
 /**
