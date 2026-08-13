@@ -347,6 +347,64 @@ describe("deriveServeBindings", () => {
       // so the serve reads <store>.<table>, not an unqualified name.
       expect(bindings[0].tablePath).toBe("lake.mz_g003");
    });
+
+   it("binds every source sharing an address, not just the one that built it", () => {
+      // A base and its `extend` share a content address and therefore one entry
+      // and one table. The extension must not get a table of its own, but it must
+      // READ the base's — so both names bind, to the same virtual handle. Binding
+      // only `entry.sourceName` left the other silently serving live.
+      const entry = {
+         sourceEntityId: "se_shared",
+         sourceName: "daily",
+         physicalTableName: "daily_g001",
+         connectionName: "wh",
+         storageDestinationName: "lake",
+         schema: [{ name: "total_amount", type: "BIGINT" }],
+         realization: "COPY" as const,
+         rowCount: null,
+      };
+
+      const bindings = deriveServeBindings(
+         { se_shared: entry },
+         { se_shared: ["daily", "daily_with_avg"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName)).toEqual([
+         "daily",
+         "daily_with_avg",
+      ]);
+      // One table, one handle: several sources resolving to one virtual table is
+      // what the identity-scoped handle is for.
+      expect(new Set(bindings.map((b) => b.virtualHandle))).toEqual(
+         new Set(["se_shared"]),
+      );
+      expect(new Set(bindings.map((b) => b.tablePath))).toEqual(
+         new Set(["lake.daily_g001"]),
+      );
+   });
+
+   it("does not duplicate the builder's own name", () => {
+      // The builder's name is normally in the address group too, so the naive
+      // concatenation would bind it twice and push a duplicate source declaration
+      // into the serve model.
+      const bindings = deriveServeBindings(
+         {
+            se_shared: {
+               sourceEntityId: "se_shared",
+               sourceName: "daily",
+               physicalTableName: "daily_g001",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [{ name: "total_amount", type: "BIGINT" }],
+               realization: "COPY",
+               rowCount: null,
+            },
+         },
+         { se_shared: ["daily"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName)).toEqual(["daily"]);
+   });
 });
 
 describe("extractRefinements", () => {
