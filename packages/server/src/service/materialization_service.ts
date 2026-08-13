@@ -2461,13 +2461,17 @@ export class MaterializationService {
          realization: instruction.realization,
          rowCount: null,
          buildDurationMs: durationMs,
-         // The warehouse read happens inside DuckDB's query-passthrough, so the
-         // Malloy connector that supplies this on the colocated path is not in
-         // the call path and there is no per-query statistic to carry. Reading it
-         // back from the warehouse's own accounting requires an identifier for
-         // the job, which the passthrough does not return for a rows-returning
-         // call; obtaining one restructures how the build issues its read.
-         queryCostBytes: null,
+         // SCANNED, matching the colocated path above, which fills this from the
+         // connector's runStats -- and that is totalBytesProcessed, i.e. scanned.
+         // Reporting billed here would put two different quantities in one field,
+         // differing by up to BigQuery's 10MB floor, and anyone summing it across
+         // a package's sources would add them together.
+         //
+         // Null when the read's shape reported nothing: a rows-returning
+         // passthrough call hands back no job to account for. Today that means a
+         // build whose metadata bag was empty, since it is the label that makes
+         // BigQuery's read a form that reports.
+         queryCostBytes: result.readCost?.bytesScanned ?? null,
       };
    }
 

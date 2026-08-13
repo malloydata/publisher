@@ -14,7 +14,15 @@ import { logger } from "../logger";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
-import { snowflakeSetQueryTagSQL } from "./build_query_tag";
+import {
+   bigQueryQueryLabelValue,
+   snowflakeSetQueryTagSQL,
+} from "./build_query_tag";
+import {
+   BIGQUERY_COST_COLUMNS,
+   bigQueryReadCost,
+   type BuildReadCost,
+} from "./build_read_cost";
 import type { QueryMetadata } from "./query_metadata";
 import {
    attachDuckLakeReadWrite,
@@ -122,6 +130,145 @@ async function tagSnowflakeSession(
          error: error instanceof Error ? error.message : String(error),
       });
    }
+}
+
+/**
+ * What the CTAS reads from, and the warehouse's own id for the read when the
+ * shape of that read yielded one.
+ *
+ * `jobId` is what makes a build's cost recoverable by an EXACT key rather than by
+ * matching recorded query text, so it is carried out of here even though the
+ * build itself does not need it.
+ */
+export interface PassthroughRead {
+   /** The SELECT the CTAS wraps. */
+   selectSQL: string;
+   /** The warehouse's id for the read, null when this shape does not produce one. */
+   jobId: string | null;
+   /**
+    * What the read cost, when the shape that issued it also reported it.
+    *
+    * Read from the SAME job record that located the result table rather than by a
+    * later lookup, because a later lookup is not available: a script's child job
+    * is absent from the default `bigquery_jobs()` listing and reachable only
+    * through its parent, so its id resolves to nothing on its own.
+    */
+   cost: BuildReadCost | null;
+}
+
+/**
+ * Issue the source-warehouse read for a `storage=` build and return what the
+ * CTAS should select from.
+ *
+ * Two shapes, and which one runs is decided by whether there is a BigQuery label
+ * to apply:
+ *
+ * <ul>
+ *   <li><b>Direct</b> — `wrapPassthrough`'s single rows-returning call. Every
+ *       engine, and BigQuery too when there is nothing to label. Returns no job
+ *       id: no passthrough hands one back for a call that returns rows.
+ *   <li><b>Split (BigQuery, labelled)</b> — `bigquery_execute` runs the SELECT
+ *       inside a script that sets `@@query_label` first, then the anonymous result
+ *       table that job wrote is read with `bigquery_scan`. `bigquery_query()`
+ *       cannot serve this: it takes no labels parameter, and it cannot run a
+ *       script (a script returns no result schema), so labelling BigQuery is not
+ *       available without splitting the read.
+ * </ul>
+ *
+ * <b>The split is not a second scan.</b> Reading the anonymous result table goes
+ * through the Storage Read API and creates no new QUERY job — measured by
+ * diffing the project's QUERY job ids across the read. `bigquery_query()` is
+ * almost certainly doing the same two steps internally.
+ *
+ * Gating on the label rather than on the engine keeps the unlabelled path
+ * byte-identical to what it was, so the blast radius of the split is exactly the
+ * set of builds that asked to be attributed.
+ */
+export async function issuePassthroughRead(
+   session: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   handle: string,
+   buildSQL: string,
+   queryMetadata: QueryMetadata | undefined,
+): Promise<PassthroughRead> {
+   const label =
+      sourceType === "bigquery"
+         ? bigQueryQueryLabelValue(queryMetadata)
+         : undefined;
+   if (label === undefined) {
+      return {
+         selectSQL: wrapPassthrough(sourceType, handle, buildSQL),
+         jobId: null,
+         cost: null,
+      };
+   }
+
+   // The label is set by a statement of its own, so the script has two: BigQuery
+   // creates a parent job for the script and one child per statement, and it is
+   // the CHILD that ran the SELECT which carries both the label and the cost.
+   const script = `SET @@query_label = "${label}";\n${buildSQL};`;
+   const executed = await session.runSQL(
+      `SELECT * FROM bigquery_execute('${escapeSQL(handle)}', '${escapeSQL(script)}')`,
+   );
+   const parentJobId = firstColumn(executed, "job_id");
+   if (parentJobId === null) {
+      throw new Error(
+         "bigquery_execute returned no job_id for the build's read, so its " +
+            "result table cannot be located",
+      );
+   }
+
+   // The destination table is read from the job record rather than constructed:
+   // it is an anonymous table whose name BigQuery chooses.
+   const child = await session.runSQL(`
+      SELECT job_id,
+             json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,
+             json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,
+             json_extract_string(configuration, '$.query.destinationTable.tableId')   AS table,
+             ${BIGQUERY_COST_COLUMNS}
+      FROM (SELECT * FROM bigquery_jobs('${escapeSQL(handle)}',
+                                        parentJobId := '${escapeSQL(parentJobId)}')
+            WHERE job_type = 'QUERY')`);
+   const rows = resultRows(child);
+   const located = rows.find((r) => str(r.dataset) && str(r.table));
+   if (located === undefined) {
+      // The read HAS run and been paid for at this point. Re-issuing it through
+      // the direct shape would run and bill it a second time, so this fails
+      // instead: a retry is the operator's decision, not a silent double charge.
+      throw new Error(
+         `The build's BigQuery read (job ${parentJobId}) left no locatable ` +
+            `result table, so its rows cannot be captured`,
+      );
+   }
+
+   const path = [
+      str(located.project) ?? handle,
+      str(located.dataset),
+      str(located.table),
+   ].join(".");
+   const jobId = str(located.job_id);
+   return {
+      selectSQL: `SELECT * FROM bigquery_scan('${escapeSQL(path)}')`,
+      jobId,
+      cost: bigQueryReadCost(located, jobId, parentJobId),
+   };
+}
+
+/** Rows from a `runSQL` result, which is either the array itself or wraps one. */
+function resultRows(result: unknown): Record<string, unknown>[] {
+   if (Array.isArray(result)) return result as Record<string, unknown>[];
+   const rows = (result as { rows?: unknown })?.rows;
+   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
+
+/** One named column from the first row, or null when it is absent or empty. */
+function firstColumn(result: unknown, column: string): string | null {
+   const rows = resultRows(result);
+   return rows.length > 0 ? str(rows[0][column]) : null;
+}
+
+function str(value: unknown): string | null {
+   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /** Narrow a connection's declared type to a supported passthrough source type. */
@@ -235,6 +382,12 @@ export interface StorageBuildResult {
    storageDestinationName: string;
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
+   /**
+    * What the source warehouse charged for the read, when the read's shape
+    * reported it. Null is never "free" — see {@link PassthroughRead.cost} for
+    * which shapes report and which do not.
+    */
+   readCost: BuildReadCost | null;
 }
 
 /**
@@ -345,18 +498,28 @@ export async function buildSourceIntoStorage(params: {
          `${destinationName}.${physicalTableName}`,
          "duckdb",
       );
-      const passthrough = wrapPassthrough(
+      const read = await issuePassthroughRead(
+         session,
          sourceType,
          federated.handle,
          buildSQL,
+         queryMetadata,
       );
 
       // Capture the authoritative schema from the freshly-built table — the
       // serve transform declares exactly this, and the compiler does not
       // type-check a virtual source's declared columns.
-      const schema = await createTableAndDescribe(session, target, passthrough);
+      const schema = await createTableAndDescribe(
+         session,
+         target,
+         read.selectSQL,
+      );
 
-      return { storageDestinationName: destinationName, schema };
+      return {
+         storageDestinationName: destinationName,
+         schema,
+         readCost: read.cost,
+      };
    } finally {
       // Dispose closes the private instance (releasing every secret + attach —
       // nothing federated or read-write survives the build) and removes its
@@ -499,6 +662,11 @@ export async function buildDownstreamIntoStorage(params: {
       return {
          storageDestinationName: destinationName,
          schema,
+         // A chained build reads its parent's already-materialized table out of
+         // the destination store, so it touches no source warehouse and there is
+         // nothing to account for. Null here means "did not spend", which is the
+         // one place in this file where it does.
+         readCost: null,
       };
    } finally {
       await dispose();
