@@ -3672,8 +3672,8 @@ components:
         executionTimeMs:
           type: integer
           description: >-
-            Wall-clock milliseconds spent executing the query, measured around
-            execution only.
+            Wall-clock milliseconds from the start of query handling through the
+            end of execution.
 
             Covers compile, authorize, storage routing, prepare and the warehouse
             round trip. Narrower than the HTTP round trip — it excludes

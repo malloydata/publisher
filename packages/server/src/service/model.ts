@@ -316,10 +316,15 @@ export class Model {
       },
    );
    /**
-    * Warehouse bytes billed for model queries, summed. A counter rather than a
-    * histogram: the question is "how much did this cost over a period", which is
-    * a sum, and bytes as a histogram VALUE would need bucket boundaries spanning
-    * kilobytes to terabytes to say anything useful.
+    * Warehouse bytes SCANNED by model queries, summed — not bytes billed. The
+    * backend reports what the query processed; BigQuery then bills a 10MB minimum
+    * per query, so spend runs above this on small reads. Named and described as
+    * scanned because a metric name is the one surface that cannot be corrected
+    * after the fact without renaming the series.
+    *
+    * A counter rather than a histogram: the question is "how much did this cost
+    * over a period", which is a sum, and bytes as a histogram VALUE would need
+    * bucket boundaries spanning kilobytes to terabytes to say anything useful.
     *
     * Only advances for backends that report the figure — today BigQuery, whose
     * job metadata carries `totalBytesProcessed` in the same response the driver
@@ -333,7 +338,7 @@ export class Model {
       "malloy_model_query_cost_bytes",
       {
          description:
-            "Warehouse bytes billed for Malloy model queries, where the backend reports them",
+            "Warehouse bytes scanned by Malloy model queries, where the backend reports them. NOT bytes billed: BigQuery bills a 10MB minimum per query, so spend exceeds this on small reads.",
          unit: "By",
       },
    );

@@ -228,12 +228,12 @@ async function lookupBigQuery(opts: BuildCostLookup): Promise<BuildCost[]> {
    const { rows } = await opts.runner(sql);
    return (rows as Record<string, unknown>[]).map((r) => ({
       engine: "bigquery" as const,
-      jobId: str(r["job_id"]),
-      bytesScanned: num(r["bytes_processed"]),
-      bytesBilled: num(r["billed"]),
-      slotTimeMs: num(r["total_slot_time_ms"]),
+      jobId: str(col(r, "job_id")),
+      bytesScanned: num(col(r, "bytes_processed")),
+      bytesBilled: num(col(r, "billed")),
+      slotTimeMs: num(col(r, "total_slot_time_ms")),
       executionTimeMs: null,
-      cacheHit: bool(r["cache_hit"]),
+      cacheHit: bool(col(r, "cache_hit")),
    }));
 }
 
@@ -271,11 +271,18 @@ async function lookupSnowflake(opts: BuildCostLookup): Promise<BuildCost[]> {
    // the build's own read does, through the passthrough, with the handle as the
    // secret name. Escaped twice on purpose: once embedding this statement as a
    // string literal, once for the query text inside it.
+   // Aliases QUOTED, which is what pins the key this reads back. Snowflake folds
+   // a bare alias to UPPERCASE — verified against a live account: `AS job_id`
+   // returns `JOB_ID` — so unquoted, every field below would read undefined while
+   // one row still came back, i.e. `outcome: "found"` with an entirely empty cost.
+   // That is worse than an error, because a null here reads as "Snowflake has no
+   // such figure". Same reasoning and same fix as `probeAlias` in
+   // incremental_apply.ts, which the codebase already learned this on.
    const inner = `
-      SELECT QUERY_ID          AS job_id,
-             BYTES_SCANNED     AS bytes_scanned,
-             EXECUTION_TIME    AS execution_time_ms,
-             ROWS_PRODUCED     AS rows_produced
+      SELECT QUERY_ID          AS "job_id",
+             BYTES_SCANNED     AS "bytes_scanned",
+             EXECUTION_TIME    AS "execution_time_ms",
+             ROWS_PRODUCED     AS "rows_produced"
       FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(
                  END_TIME_RANGE_START => TO_TIMESTAMP_LTZ(${lit(since.toISOString())}),
                  RESULT_LIMIT => ${MAX_CANDIDATES}))
@@ -289,15 +296,15 @@ async function lookupSnowflake(opts: BuildCostLookup): Promise<BuildCost[]> {
    const sql = `SELECT * FROM snowflake_query(${lit(inner)}, ${lit(opts.handle ?? "")})`;
    const { rows } = await opts.runner(sql);
    return (rows as Record<string, unknown>[]).map((r) => {
-      const scanned = num(r["bytes_scanned"]);
-      const produced = num(r["rows_produced"]);
+      const scanned = num(col(r, "bytes_scanned"));
+      const produced = num(col(r, "rows_produced"));
       return {
          engine: "snowflake" as const,
-         jobId: str(r["job_id"]),
+         jobId: str(col(r, "job_id")),
          bytesScanned: scanned,
          bytesBilled: null,
          slotTimeMs: null,
-         executionTimeMs: num(r["execution_time_ms"]),
+         executionTimeMs: num(col(r, "execution_time_ms")),
          // Inferred, not reported: nothing scanned while rows came back is the
          // shape of a result-cache hit. Left null rather than guessed `false`
          // when either input is missing, so an absent column never reads as a
@@ -313,6 +320,21 @@ async function lookupSnowflake(opts: BuildCostLookup): Promise<BuildCost[]> {
 /** Single-quoted SQL literal with quotes doubled — these strings are server-built, never caller-supplied. */
 function lit(value: string): string {
    return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Read a column case-insensitively. Quoting the aliases is what makes the keys
+ * lowercase, and that is verified — this is the second line of defence, so a
+ * transport that ever folds case again produces a wrong-looking number rather
+ * than a silent null. The quoting has its own assertion in the spec; this does
+ * not replace it.
+ */
+function col(row: Record<string, unknown>, key: string): unknown {
+   if (key in row) return row[key];
+   const upper = key.toUpperCase();
+   if (upper in row) return row[upper];
+   const hit = Object.keys(row).find((k) => k.toLowerCase() === key);
+   return hit === undefined ? undefined : row[hit];
 }
 
 function num(v: unknown): number | null {

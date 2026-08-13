@@ -292,6 +292,49 @@ describe("lookupBuildCost", () => {
          expect(sql).not.toMatch(/^\s*SELECT QUERY_ID/);
       });
 
+      it("QUOTES its output aliases, which is what pins the keys it reads", async () => {
+         // Verified against a live account: a bare `AS job_id` comes back as
+         // `JOB_ID`, and the reader finds nothing under `job_id`. One row still
+         // returns, so the outcome would be "found" with every field null — a null
+         // that reads as "Snowflake has no such figure" rather than as a bug.
+         // Asserting the SQL is what catches the quoting being dropped; the
+         // case-insensitive read is a second line of defence, not a replacement.
+         const opts = sf([]);
+         await lookupBuildCost(opts);
+         const sql = (opts.runner as sinon.SinonStub).firstCall
+            .args[0] as string;
+         for (const alias of [
+            "job_id",
+            "bytes_scanned",
+            "execution_time_ms",
+            "rows_produced",
+         ]) {
+            // Plain double quotes: the nesting escapes SINGLE quotes (the string
+            // literal's own delimiter), and leaves identifier quoting untouched.
+            expect(sql).toContain(`AS "${alias}"`);
+         }
+      });
+
+      it("reads a row whose columns came back UPPERCASE", async () => {
+         // What Snowflake sends if the quoting above is ever lost — and what the
+         // lowercase-keyed fixtures elsewhere in this file cannot express, which
+         // is why this bug survived a round of review.
+         const cost = await lookupBuildCost(
+            sf([
+               {
+                  JOB_ID: "01b2-c3",
+                  BYTES_SCANNED: 4_500_000,
+                  EXECUTION_TIME_MS: 812,
+                  ROWS_PRODUCED: 66,
+               },
+            ]),
+         );
+         expect(cost?.jobId).toBe("01b2-c3");
+         expect(cost?.bytesScanned).toBe(4_500_000);
+         expect(cost?.executionTimeMs).toBe(812);
+         expect(cost?.cacheHit).toBe(false);
+      });
+
       it("scopes history to the current user", async () => {
          // QUERY_HISTORY is scoped by ROLE visibility, not by user. Under a role
          // carrying MONITOR, an exact text match can resolve to another
