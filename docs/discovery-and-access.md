@@ -67,9 +67,15 @@ discovery and chat), at two granularities that **both apply only once the packag
   > the whole point of the convention, so that is intended, but it is worth knowing before you
   > wonder where an indexed source went.
   >
-  > **To keep exactly the old behavior, add `"explores": []`.** One key, no rename, no boundary: the
-  > empty array is read as a deliberate "do not curate", so listings, `export {}` filtering and
-  > query access are all unchanged.
+  > **To keep exactly the old behavior, add `"explores": []` to the package's own `publisher.json`.**
+  > One key, no rename, no boundary: the empty array is read as a deliberate "do not curate", so
+  > listings, `export {}` filtering and query access are all unchanged.
+  >
+  > It has to go in the package source. Setting it through the API writes into the server's
+  > `publisher_data/` copy, so `--init`, a fresh server root, or a replica that re-copies the
+  > package all revert it, and a deployment with `"frozenConfig": true` refuses the call outright.
+  > If you run packages you do not own, that means there is no fix on your side: either accept the
+  > narrowed listings or ask each package's owner to add the key.
   >
   > Two things not to reach for. Renaming the file changes the model's identity, so
   > `…/models/index.malloy` starts returning 404, and if any sibling `import`s `"index.malloy"` the

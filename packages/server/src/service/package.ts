@@ -834,6 +834,13 @@ export class Package {
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
          buildPlan: this.buildPlan,
+         // Read-only, and written LAST so a value that somehow reached
+         // `packageMetadata` from a request body cannot survive: the private
+         // field is the only authority. Present so an operator can inventory
+         // convention-curated packages with a query instead of reloading each
+         // one and reading the log, and so a client can tell a derived surface
+         // from a declared one before assuming the boundary is enforced.
+         exploresFromConvention: this.exploresFromConvention,
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {

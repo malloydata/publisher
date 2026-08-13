@@ -120,6 +120,39 @@ describe("index.malloy convention across a metadata PATCH", () => {
       expect(await hiddenSourceStatus()).toBe(200);
    });
 
+   it("reports on the wire that the surface was derived, not declared", async () => {
+      // Without this an operator cannot inventory convention-curated packages
+      // after upgrading: the only other signal is a load-time log line, so the
+      // answer would require reloading every package and reading stderr.
+      const pkg = (await (await fetch(`${baseUrl}${API}`)).json()) as {
+         explores?: string[];
+         exploresFromConvention?: boolean;
+      };
+      expect(pkg.explores).toEqual(["index.malloy"]);
+      expect(pkg.exploresFromConvention).toBe(true);
+   });
+
+   it("ignores exploresFromConvention sent in a PATCH body", async () => {
+      // Read-only. A client that round-trips the whole object re-sends it, and
+      // a hostile one could claim the opposite; neither may move the flag,
+      // because it decides whether the query boundary applies.
+      const res = await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: PACKAGE_NAME,
+            exploresFromConvention: false,
+         }),
+      });
+      expect(res.status).toBe(200);
+      const pkg = (await (await fetch(`${baseUrl}${API}`)).json()) as {
+         exploresFromConvention?: boolean;
+      };
+      expect(pkg.exploresFromConvention).toBe(true);
+      // And the boundary it governs is still off.
+      expect(await hiddenSourceStatus()).toBe(200);
+   });
+
    it("does not persist a convention surface, so a round-trip PATCH is inert", async () => {
       // The origin flag is not on the wire, so a client that GETs the package,
       // edits one field and PATCHes the whole object back re-sends the

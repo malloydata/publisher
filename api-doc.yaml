@@ -2795,9 +2795,9 @@ components:
             uncurated, listing every model with its full source set.
 
 
-            The derivation is not visible on the wire, and it matters for two
-            reasons. First, the query boundary (see `queryableSources`) is
-            enforced only for a surface the author DECLARED, so a response
+            `exploresFromConvention` says which of the two this is. It matters
+            for two reasons. First, the query boundary (see `queryableSources`)
+            is enforced only for a surface the author DECLARED, so a response
             showing `explores` plus `queryableSources` of `declared` does not
             by itself mean unlisted sources are refused. Second, on a PATCH,
             an `explores` identical to the value the server derived is treated
@@ -2805,6 +2805,21 @@ components:
             declaration nor is written to the manifest; the package then
             reports a warning saying so. Send a different surface to declare
             one, or edit publisher.json directly.
+        exploresFromConvention:
+          type: boolean
+          readOnly: true
+          description: >-
+            True when `explores` was derived from the `index.malloy` convention
+            rather than declared in publisher.json. Read-only: it is a fact
+            about how the package loaded, and sending it is ignored.
+
+
+            Present so an operator can inventory which packages are curated by
+            convention without reloading each one and reading the server log,
+            and so a client can tell a derived surface from a declared one
+            before assuming the query boundary is enforced. False whenever the
+            surface was declared, including when the declared value happens to
+            equal what the convention would have produced.
         exploresWarnings:
           type: array
           readOnly: true

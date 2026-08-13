@@ -112,7 +112,21 @@ A package whose root holds an `index.malloy` now takes its discovery surface fro
 
 - **A package with a root `index.malloy` and no `explores` will list fewer models than before.** Its surface becomes that one file, and `export { … }` curation starts applying inside it. Nothing becomes unreachable, because the convention does not gate queries, so anything you did not mean to hide is still queryable by name while you sort it out.
 - **That reassurance is about query access, not about listings.** Anything downstream that reads the listing rather than querying by name does narrow with it: a catalog, a chat surface, MCP `malloy_getContext`, or a search indexer will see only the surface at its next pass, and a source outside it drops out even if it carries an `#(index)` tag. The `x-publisher-bypass-authorize` header does not help here, because that lifts an identity gate and this is the discovery axis. If you run an indexer, re-check its coverage after upgrading.
-- **To keep exactly the old behavior, add `"explores": []`.** One key, no rename, no boundary. Renaming the file also restores the listings but changes the model's identity, so `…/models/index.malloy` starts returning 404 and any sibling that `import`s `"index.malloy"` fails to compile, which takes the whole package out of service. Declaring `explores` with your old file list does not restore the old behavior either: it turns on the query boundary.
+- **To keep exactly the old behavior, add `"explores": []` to the package's own `publisher.json`.** One key, no rename, no boundary. It has to land in the package source, not via the API: a `PATCH` writes into the server's `publisher_data/` copy, so it is reverted by `--init`, by a fresh server root, and by any replica that re-copies the package, and on a deployment with `"frozenConfig": true` the endpoint answers 403 anyway. **If you operate a fleet of packages you do not own, there is no operator-side fix**: either accept the narrowed listings or have each package's owner add the key. (If you do use the API for a one-off, carry `description` through in the body. A `PATCH` that omits it deletes it, which is long-standing behavior and easy to trip over when scripting.)
+- **Inventory the at-risk packages before you upgrade.** The window closes once you are on the new version, because a package curated by convention then looks like any other curated package in the listing. On your current version, an at-risk package is one whose `explores` is absent and whose model list contains `index.malloy`:
+  ```bash
+  B=http://host/api/v0
+  for env in $(curl -s $B/environments | jq -r '.[].name'); do
+    for p in $(curl -s $B/environments/$env/packages | jq -r '.[] | select(.explores == null) | .name'); do
+      curl -s $B/environments/$env/packages/$p/models \
+        | jq -e '[.[].path]|index("index.malloy")' >/dev/null 2>&1 && echo "AT RISK: $env/$p"
+    done
+  done
+  ```
+  After upgrading, `exploresFromConvention` on the package response answers the same question directly.
+- **Renaming the file is worse than it sounds.** It restores the listings, but it changes the model's identity, so `…/models/index.malloy` starts returning 404 and any sibling that `import`s `"index.malloy"` fails to compile, which takes the **whole package** out of service. Declaring `explores` with your old file list does not restore the old behavior either: it turns on the query boundary.
+- **During a staged rollout, do not let a client PATCH a package object it read from a differently-versioned replica.** An old replica writes a body `explores` unconditionally, so a round trip that is a harmless no-op against a new replica persists `["index.malloy"]` as a declared surface on an old one, which arms the 404 boundary for every replica of either version.
+- **Rolling back is clean.** The server never writes a convention-derived `explores` to a manifest and never persists the flag, so an older publisher reads exactly what it read before and simply does not apply the convention. Nothing has to be undone first.
 - **Watch for the aggregator shape.** An `index.malloy` that is all `import`s and no `export { … }` exports nothing, so the package serves one model with no sources and looks empty. Add `export { … }` naming what you want published, or take the `"explores": []` route.
 
 ## [0.0.242]: one meaning for `givens` across the API
