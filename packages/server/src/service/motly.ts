@@ -108,8 +108,24 @@ function pollutionTargets(): object[] {
    const targets: object[] = [Object.prototype];
    for (const key of Object.getOwnPropertyNames(Object.prototype)) {
       const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, key);
-      if (!descriptor || !("value" in descriptor)) continue;
-      const value = descriptor.value;
+      if (!descriptor) continue;
+      // Accessors count too. Skipping them left a getter-returned object as an
+      // unwatched write target: measured, `# label="ok" zzAccessor { k=v }`
+      // against an accessor-defined extension wrote onto the shared object and
+      // the guard reported the annotation clean. `__proto__` itself is an
+      // accessor on `Object.prototype`, so this branch is not hypothetical.
+      let value: unknown;
+      if ("value" in descriptor) {
+         value = descriptor.value;
+      } else if (typeof descriptor.get === "function") {
+         try {
+            value = descriptor.get.call(Object.prototype);
+         } catch {
+            continue;
+         }
+      } else {
+         continue;
+      }
       if (
          (typeof value === "object" || typeof value === "function") &&
          value !== null &&
@@ -152,6 +168,17 @@ const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
  * went astray. Deleting measurably restores both the prototypes and later parses.
  * Safe because `parseAnnotation` is synchronous, so nothing interleaves and the
  * only keys removed are the ones this call added.
+ *
+ * **It protects this module's parses and nothing else, and the difference matters
+ * more here than it does for the `@env` guard above.** `service/build_plan.ts`
+ * calls `annotations.parseAsTag()` on the same default MOTLY route with no guard,
+ * and two of its call sites catch the throw and degrade to unset, which leaves the
+ * pollution in place. Once that has happened the damage predates this function's
+ * snapshot, so it sits inside the baseline and is never repaired: measured, one
+ * unguarded parse elsewhere makes `readGivenControlSpec` return `{}` for every
+ * given afterwards. This reports that state, since the parse then throws, but it
+ * cannot undo it. Adopting this guard at those call sites, or fixing it upstream,
+ * is what actually closes it.
  *
  * A repair, not a fix. The fix is upstream, where that bag wants a `Map` or an
  * `Object.create(null)`, and this should be deleted once that lands.

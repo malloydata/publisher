@@ -201,9 +201,9 @@ describe("readGivenControlSpec", () => {
 
       for (const hostile of [
          `# __proto__ { a=b }`,
-         `# __proto__=x`,
-         `# givens { __proto__=x }`,
-         `# suggest { __proto__=q }`,
+         `# label="ok" __proto__=x`,
+         `# label="ok" givens { __proto__=x }`,
+         `# label="ok" suggest { __proto__=q }`,
          `# artifact { __proto__ { a=b } }`,
          `# label="Region" __proto__=x`,
          // These spell the same property with NO literal `__proto__` anywhere in
@@ -212,13 +212,13 @@ describe("readGivenControlSpec", () => {
          // and these defeated it, which is why the guard now observes the effect
          // on Object.prototype rather than trying to recognise the input.
          "# `__prot\\o__` { a=b }",
-         "# `__prot\\o__`=x",
+         '# label="ok" `__prot\\o__`=x',
          "# suggest { `__prot\\o__` { a=b } }",
          "# `\\u005f\\u005fproto__` { a=b }",
          // The prototype CHAIN, not just Object.prototype: `constructor` resolves
          // to the global `Object` and `toString` to the built-in method object,
          // and writes there accumulate for the life of the process.
-         // Each paired with a real control key on purpose. `# toString=x` alone
+         // EVERY fixture carries a real control key on purpose. `# toString=x` alone
          // yields `{}` whether or not the guard runs, so asserting `{}` on it
          // would prove nothing; with a `label` present, the guard is the only
          // reason the result is empty rather than `{label: "ok"}`.
@@ -256,6 +256,32 @@ describe("readGivenControlSpec", () => {
       } finally {
          delete (Object.prototype as unknown as Record<string, unknown>)
             .zzLateTarget;
+      }
+
+      // ...and the same target defined as an ACCESSOR rather than a data
+      // property. Reading descriptors and skipping the accessor branch left a
+      // getter-returned object unwatched, and the guard reported it clean.
+      // `__proto__` is itself an accessor on Object.prototype, so this shape is
+      // not exotic.
+      const shared: Record<string, unknown> = { legit: 1 };
+      Object.defineProperty(Object.prototype, "zzAccessorTarget", {
+         get: () => shared,
+         configurable: true,
+         enumerable: false,
+      });
+      try {
+         const sharedBefore = Object.getOwnPropertyNames(shared);
+         expect(
+            readGivenControlSpec([`# label="ok" zzAccessorTarget { k="v" }`]),
+         ).toEqual({});
+         expect(
+            Object.getOwnPropertyNames(shared).filter(
+               (k) => !sharedBefore.includes(k),
+            ),
+         ).toEqual([]);
+      } finally {
+         delete (Object.prototype as unknown as Record<string, unknown>)
+            .zzAccessorTarget;
       }
 
       // Still parsing normally afterwards, which is what pollution would break.
