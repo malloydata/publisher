@@ -108,7 +108,7 @@ describe("issuePassthroughRead — BigQuery split", () => {
 
       expect(issued[0]).toContain("bigquery_execute('proj'");
       expect(issued[0]).toContain(
-         'SET @@query_label = \"cred_run:run_1,cred_class:ops\"',
+         'SET @@query_label = "cred_run:run_1,cred_class:ops"',
       );
       // The SELECT rides in the same script, which is the only way the label
       // applies to the job that runs it.
