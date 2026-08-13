@@ -2447,6 +2447,12 @@ export class MaterializationService {
             storageDestinationName: result.storageDestinationName,
             columns: result.schema.length,
             durationMs,
+            // The whole cost, not just the one field the manifest carries. These
+            // are the numbers that answer a cost question and the ids that let a
+            // human reach the job in the warehouse's own console — the manifest
+            // has room for neither. Null says the read's shape reported nothing,
+            // which is not the same as free: see BuildReadCost.
+            readCost: result.readCost,
          },
       );
 
