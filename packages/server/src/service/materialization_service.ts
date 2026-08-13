@@ -20,6 +20,7 @@ import {
    recordManifestBindDegraded,
    recordMaterializationRun,
    recordSharedAddressInstructions,
+   recordTableCollision,
    recordSourceBuildDuration,
    recordSourcesOutcome,
    recordStorageBuildFailure,
@@ -1641,7 +1642,7 @@ export class MaterializationService {
       // distinction, in opposite directions.
       const writtenTargets = new Map<
          string,
-         { sourceEntityId: string; sourceName: string; entry: ManifestEntry }
+         { sourceEntityId: string; sourceName: string }
       >();
       try {
          for (const graph of graphs) {
@@ -1760,9 +1761,27 @@ export class MaterializationService {
                // wrote the table once per name that reached it — and once per graph
                // that reached it, since a source declared in one model and consumed
                // in another appears in both models' graphs.
-               const target = instruction.destination
-                  ? `destination:${instruction.destination} ${instruction.physicalTableName}`
-                  : `connection:${persistSource.connectionName} ${instruction.physicalTableName}`;
+               // Encoded rather than concatenated: a physical name can contain a
+               // space (see the `quoted-persist-name` scenarios), so a plain
+               // separator could make two different coordinates read as one.
+               //
+               // Exact-match, and so blind in the same place its load-time sibling
+               // is: `Foo`, `foo` and `"foo"` land in different slots here but in
+               // ONE table on a case-folding engine. See the note on
+               // Package.persistenceCollisionWarnings — this guard is no stricter.
+               const target = JSON.stringify(
+                  instruction.destination
+                     ? [
+                          "destination",
+                          instruction.destination,
+                          instruction.physicalTableName,
+                       ]
+                     : [
+                          "connection",
+                          persistSource.connectionName,
+                          instruction.physicalTableName,
+                       ],
+               );
                const written = writtenTargets.get(target);
                if (written) {
                   if (written.sourceEntityId !== sourceEntityId) {
@@ -1788,7 +1807,18 @@ export class MaterializationService {
                         `materialize into table ` +
                         `'${instruction.physicalTableName}', so each overwrites ` +
                         `the other's rows while both resolve to it at serve time.`;
-                     recordSharedAddressInstructions();
+                     recordTableCollision();
+                     // Refused HERE, which is mid-loop, so the pair's first table
+                     // has already been written. Narrow by construction rather than
+                     // by luck: under this same flag a package whose MODEL declares
+                     // the colliding names cannot be published at all (the publish
+                     // gate calls formatPersistenceCollisionRejections), so what
+                     // reaches this point is a collision between physical names a
+                     // HOST assigned. A host that mints generational names does not
+                     // produce one. If that changes, the check wants hoisting to a
+                     // pre-pass over the sources before the first write: the failure
+                     // path reclaims storage tables only, so a colocated collision
+                     // leaves a half-written table in the customer's own warehouse.
                      if (getPersistCollisionEnforce()) {
                         throw new MaterializationEligibilityError({
                            message:
@@ -1900,7 +1930,6 @@ export class MaterializationService {
                writtenTargets.set(target, {
                   sourceEntityId,
                   sourceName: persistSource.name,
-                  entry,
                });
                if (entry.storageDestinationName) builtThisRun.push(entry);
             }
@@ -2825,8 +2854,12 @@ export class MaterializationService {
       // DIFFERENT destination is absent here, so the downstream def fails to
       // compile against the rebind model and the caller falls back — cross-catalog
       // parent reuse is out of scope for the spike.
+      // No aliases: this resolves the upstream TABLES a downstream build reads,
+      // and an alias adds a second name for a table already named here. The
+      // rebind model would then declare one source twice and fail to compile.
       const upstreams: ServeBinding[] = deriveServeBindings(
          builtEntries,
+         {},
       ).filter((b) => b.destinationName === destinationName);
       if (upstreams.length === 0) {
          throw new MaterializationEligibilityError({
