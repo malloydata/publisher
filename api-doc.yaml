@@ -5183,17 +5183,25 @@ components:
             reads, so a field carrying one on some paths and the other elsewhere
             would be unsummable across a package's sources.
 
-            **Null is not zero**, and today it is null on more paths than not.
-            Only a COLOCATED build reports a figure, taken from the Malloy
-            connection's own statistics. An incremental delta reports null
-            because its statements do not run through a single call whose result
-            reaches here. A chained `storage=` build reports null because it read
-            its parent's already-materialized table and touched no warehouse at
-            all. A plain `storage=` build reports null because its read goes
-            through DuckDB's query-passthrough, where no Malloy connector is in
-            the call path to report statistics — recovering the figure means
-            reading it back from the warehouse's own accounting, which requires a
-            job identifier the passthrough does not return.
+            **Null is not zero**, and which paths report a figure differs.
+
+            A COLOCATED build reports one, taken from the Malloy connection's own
+            statistics.
+
+            A plain `storage=` build reports one when its warehouse read carried
+            query metadata, and null otherwise. That read goes through DuckDB's
+            query-passthrough rather than a Malloy connector, so the figure is
+            read back from the warehouse's own accounting afterwards — which needs
+            an identifier for the job, and obtaining one is part of how a TAGGED
+            read is issued. An untagged read is issued the older way, which yields
+            no such identifier, and reports null. A read whose connection cannot
+            reach its own job records also reports null; that case is counted by
+            `publisher_storage_build_attribution_skipped_total`.
+
+            An incremental delta reports null because its statements do not run
+            through a single call whose result reaches here. A chained `storage=`
+            build reports null because it read its parent's already-materialized
+            table and touched no warehouse at all.
         dataAsOf:
           type: string
           format: date-time

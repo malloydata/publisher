@@ -105,9 +105,14 @@ export function bigQueryReadCost(
 function snowflakeDatabaseQualifier(
    database: string | null | undefined,
 ): string {
+   // Must START with a letter or underscore, which is Snowflake's own rule for an
+   // unquoted identifier: a leading digit or `$` is precisely the quote-needing
+   // name this is meant to hand to the fallback rather than emit bare.
+   //
    // typeof, not a truthiness check: the API models an unset database as either
    // null or undefined, and an empty string is not a database either.
-   return typeof database === "string" && /^[A-Za-z0-9_$]+$/.test(database)
+   return typeof database === "string" &&
+      /^[A-Za-z_][A-Za-z0-9_$]*$/.test(database)
       ? database
       : "SNOWFLAKE";
 }

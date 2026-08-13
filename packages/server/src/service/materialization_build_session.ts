@@ -27,6 +27,7 @@ import {
    snowflakeReadCost,
    type BuildReadCost,
 } from "./build_read_cost";
+import { recordAttributionSkipped } from "../materialization_metrics";
 import type { QueryMetadata } from "./query_metadata";
 import {
    attachDuckLakeReadWrite,
@@ -172,8 +173,77 @@ async function canSplitBigQueryRead(
             error: error instanceof Error ? error.message : String(error),
          },
       );
+      recordAttributionSkipped("job_listing_unavailable");
       return false;
    }
+}
+
+/**
+ * A build failed AFTER its warehouse read had run and been billed.
+ *
+ * The distinction is the whole point of the type: everything else this path
+ * throws happens before anything is charged, and can be retried for the price of
+ * a retry. This cannot — the read is paid for, and its rows live in an anonymous
+ * table the build could not locate, so retrying pays for the same read twice.
+ * A caller with a retry policy should treat it as a decision for an operator
+ * rather than something to re-drive automatically.
+ *
+ * It is not degradable to "no cost". Without the job record there is no result
+ * table, so there are no rows to capture — the failure is the build's, not the
+ * telemetry's, which is why this path throws where the Snowflake one returns null.
+ */
+export class BilledReadNotCapturedError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "BilledReadNotCapturedError";
+   }
+}
+
+/** How many times to re-ask for the job record before giving up on the build. */
+const BIGQUERY_LOOKUP_ATTEMPTS = 3;
+const BIGQUERY_LOOKUP_BACKOFF_MS = 250;
+
+/**
+ * Re-ask for the job record a few times before failing a build whose read has
+ * already been billed.
+ *
+ * The capability probe establishes that this connection CAN list jobs, so a
+ * failure here is a transient — a 5xx, a quota trip, a credential rotated between
+ * the probe and now — rather than a standing permission answer. Those are worth a
+ * retry precisely because the alternative is so expensive: the read is paid for
+ * and cannot be re-issued for free.
+ *
+ * Bounded and short. This runs while the build session still holds federated
+ * credentials, and a warehouse that is genuinely down should surface as a failed
+ * build rather than a long stall.
+ */
+async function withBigQueryLookupRetry<T>(work: () => Promise<T>): Promise<T> {
+   let lastError: unknown;
+   for (let attempt = 1; attempt <= BIGQUERY_LOOKUP_ATTEMPTS; attempt++) {
+      try {
+         return await work();
+      } catch (error) {
+         lastError = error;
+         if (attempt < BIGQUERY_LOOKUP_ATTEMPTS) {
+            logger.warn(
+               "Could not read the BigQuery job record for a build's read; retrying",
+               {
+                  attempt,
+                  of: BIGQUERY_LOOKUP_ATTEMPTS,
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+            await new Promise((resolve) =>
+               setTimeout(resolve, BIGQUERY_LOOKUP_BACKOFF_MS * attempt),
+            );
+         }
+      }
+   }
+   throw new BilledReadNotCapturedError(
+      `Could not read the BigQuery job record for a build's read after ` +
+         `${BIGQUERY_LOOKUP_ATTEMPTS} attempts, so its rows cannot be captured: ` +
+         `${lastError instanceof Error ? lastError.message : String(lastError)}`,
+   );
 }
 
 /**
@@ -261,7 +331,7 @@ export async function issuePassthroughRead(
    );
    const parentJobId = firstColumn(executed, "job_id");
    if (parentJobId === null) {
-      throw new Error(
+      throw new BilledReadNotCapturedError(
          "bigquery_execute returned no job_id for the build's read, so its " +
             "result table cannot be located",
       );
@@ -269,7 +339,15 @@ export async function issuePassthroughRead(
 
    // The destination table is read from the job record rather than constructed:
    // it is an anonymous table whose name BigQuery chooses.
-   const child = await session.runSQL(`
+   //
+   // Ordered NEWEST first because the script has more than one statement and
+   // nothing documents the order a `parentJobId` listing returns them in. Taking
+   // the newest with a destination table takes the SELECT, which is the last
+   // statement and the one whose rows this is after. (Measured, `SET
+   // @@query_label` produces no such child — but that is behaviour, not a
+   // guarantee, and this costs nothing to pin.)
+   const child = await withBigQueryLookupRetry(() =>
+      session.runSQL(`
       SELECT job_id,
              json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,
              json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,
@@ -277,14 +355,13 @@ export async function issuePassthroughRead(
              ${BIGQUERY_COST_COLUMNS}
       FROM (SELECT * FROM bigquery_jobs('${escapeSQL(handle)}',
                                         parentJobId := '${escapeSQL(parentJobId)}')
-            WHERE job_type = 'QUERY')`);
+            WHERE job_type = 'QUERY')
+      ORDER BY creation_time DESC`),
+   );
    const rows = resultRows(child);
    const located = rows.find((r) => str(r.dataset) && str(r.table));
    if (located === undefined) {
-      // The read HAS run and been paid for at this point. Re-issuing it through
-      // the direct shape would run and bill it a second time, so this fails
-      // instead: a retry is the operator's decision, not a silent double charge.
-      throw new Error(
+      throw new BilledReadNotCapturedError(
          `The build's BigQuery read (job ${parentJobId}) left no locatable ` +
             `result table, so its rows cannot be captured`,
       );

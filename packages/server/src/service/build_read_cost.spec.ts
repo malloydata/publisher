@@ -90,6 +90,21 @@ describe("snowflakeCostSQL", () => {
       );
    });
 
+   it("takes the fallback for a name Snowflake would reject unquoted", () => {
+      // An unquoted Snowflake identifier must START with a letter or underscore,
+      // so a leading digit or `$` is exactly the quote-needing name the fallback
+      // exists for — emitted bare it would fail to compile.
+      for (const rejected of ["1db", "$db", "9"]) {
+         expect(snowflakeCostSQL("{}", rejected)).toContain(
+            "FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA",
+         );
+      }
+      // A leading underscore is legal, and is not pushed to the fallback.
+      expect(snowflakeCostSQL("{}", "_db")).toContain(
+         "FROM TABLE(_db.INFORMATION_SCHEMA",
+      );
+   });
+
    it("takes the fallback rather than interpolating a name that needs quoting", () => {
       // A correct answer rather than a degraded one — the fallback returns the
       // same rows — and it keeps a configured value out of identifier position.

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
-import { issuePassthroughRead } from "./materialization_build_session";
+import {
+   BilledReadNotCapturedError,
+   issuePassthroughRead,
+} from "./materialization_build_session";
 
 /** A build session that records what it was asked to run and replays canned rows. */
 function fakeSession(replies: Record<string, unknown>[][] = []) {
@@ -238,6 +241,87 @@ describe("issuePassthroughRead — BigQuery split", () => {
          { cred_run: "r" },
       );
       expect(read.cost?.parentJobId).toBe("job_parent");
+   });
+
+   it("asks for the NEWEST child first, so the SELECT wins over any sibling", async () => {
+      // The script has more than one statement and nothing documents the order a
+      // parentJobId listing returns them in. Newest-first takes the last
+      // statement, which is the SELECT whose rows this is after.
+      const { session, issued } = fakeSession([
+         PROBE_OK,
+         [{ job_id: "job_parent" }],
+         BQ_CHILD,
+      ]);
+      await issuePassthroughRead(session, "bigquery", "proj", "SELECT 1", {
+         cred_run: "r",
+      });
+      expect(issued[2]).toContain("ORDER BY creation_time DESC");
+   });
+
+   it("picks the first child carrying a result table, given that ordering", async () => {
+      const { session } = fakeSession([
+         PROBE_OK,
+         [{ job_id: "job_parent" }],
+         // A sibling with no destination table must not be selected over the read.
+         [{ job_id: "sibling", dataset: null, table: null }, ...BQ_CHILD],
+      ]);
+      const read = await issuePassthroughRead(
+         session,
+         "bigquery",
+         "proj",
+         "SELECT 1",
+         { cred_run: "r" },
+      );
+      expect(read.selectSQL).toContain("proj._anon_ds.anon_tbl");
+      expect(read.jobId).toBe("script_job_abc_0");
+   });
+
+   it("retries a failing job lookup before failing a build already billed for", async () => {
+      // The probe established that this connection CAN list, so a failure here is
+      // transient — and the alternative is expensive, because the read is paid for
+      // and cannot be re-issued for free.
+      let calls = 0;
+      const session = {
+         runSQL: async (sql: string) => {
+            if (!sql.includes("parentJobId")) {
+               return {
+                  rows: sql.includes("bigquery_execute")
+                     ? [{ job_id: "job_parent" }]
+                     : [{ job_id: "any" }],
+               };
+            }
+            calls++;
+            if (calls < 3) throw new Error("503 backend error");
+            return { rows: BQ_CHILD };
+         },
+      } as never;
+      const read = await issuePassthroughRead(
+         session,
+         "bigquery",
+         "proj",
+         "SELECT 1",
+         { cred_run: "r" },
+      );
+      expect(calls).toBe(3);
+      expect(read.cost?.bytesScanned).toBe(5114816);
+   });
+
+   it("marks a post-read failure as one a retry would pay for twice", async () => {
+      // Distinguishable so a retry policy can tell "already billed" from "safe to
+      // retry" — the read has run either way.
+      const { session } = fakeSession([
+         PROBE_OK,
+         [{ job_id: "job_parent" }],
+         [],
+      ]);
+      const error = await issuePassthroughRead(
+         session,
+         "bigquery",
+         "proj",
+         "SELECT 1",
+         { cred_run: "r" },
+      ).catch((e: Error) => e);
+      expect(error).toBeInstanceOf(BilledReadNotCapturedError);
    });
 
    it("fails rather than re-running a read that already happened", async () => {
