@@ -131,6 +131,58 @@ export interface ServeBinding {
 }
 
 /**
+ * For each persist source in a build plan, the sources that materialize into its
+ * table — the `aliasesBySourceName` argument {@link deriveServeBindings} takes.
+ *
+ * Grouped BY content address, because that is what decides which sources really
+ * share a table, then keyed BY name, because a name is the only identifier a
+ * manifest entry carries that means the same thing whoever built it (an
+ * instructed build stamps the caller's `sourceEntityId` on its entry).
+ *
+ * A name declared at more than ONE address is dropped from aliasing entirely.
+ * Source names are not unique in a package — two models may each declare `daily`,
+ * which is why the wire plan is keyed by sourceID — so such a name cannot be
+ * resolved to a table by name at all, and picking one by map order would
+ * eventually bind the same name to two different tables. Two `source: daily`
+ * declarations then land in one serve shape, which fails to compile and takes the
+ * storage tier out for EVERY model in the package (bindings are pushed
+ * package-wide), silently: base-only is the tier the ladder trusts without a
+ * probe, so the failure surfaces per query rather than at shape build where the
+ * tier-drop metric would see it. Dropping the ambiguous name costs that one source
+ * its routing and keeps everything else correct.
+ *
+ * The source that OWNS a name still binds it — see the builder rule in
+ * {@link deriveServeBindings}. Only aliasing is withheld.
+ */
+export function groupAliasesByName(
+   planSources: { name?: string; sourceEntityId?: string }[],
+): Record<string, string[]> {
+   const namesByAddress = new Map<string, string[]>();
+   for (const source of planSources) {
+      if (!source.sourceEntityId || !source.name) continue;
+      const group = namesByAddress.get(source.sourceEntityId);
+      if (!group) namesByAddress.set(source.sourceEntityId, [source.name]);
+      else if (!group.includes(source.name)) group.push(source.name);
+   }
+
+   const addressesPerName = new Map<string, number>();
+   for (const group of namesByAddress.values()) {
+      for (const name of group) {
+         addressesPerName.set(name, (addressesPerName.get(name) ?? 0) + 1);
+      }
+   }
+
+   const byName: Record<string, string[]> = {};
+   for (const group of namesByAddress.values()) {
+      const unambiguous = group.filter(
+         (name) => addressesPerName.get(name) === 1,
+      );
+      for (const name of unambiguous) byName[name] = unambiguous;
+   }
+   return byName;
+}
+
+/**
  * Derive the publisher's self-maintained serve bindings from a build's manifest
  * entries — the standalone half of the injectable binding seam (a host/control
  * plane can supply {@link ServeBinding}s directly instead). Only entries that
@@ -172,6 +224,15 @@ export function deriveServeBindings(
    aliasesBySourceName: Record<string, string[]>,
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
+   // Every name that OWNS a table in this manifest. An alias never claims one:
+   // the owner is the source whose SQL produced that table, and a name bound
+   // twice — once as its owner, once as someone else's alias — puts two
+   // `source: <name>` declarations in one serve shape.
+   const builders = new Set(
+      Object.values(entries)
+         .map((entry) => entry.sourceName)
+         .filter((name): name is string => !!name),
+   );
    for (const entry of Object.values(entries)) {
       // Need the source name to rebind it, plus a storage destination + table.
       if (
@@ -191,7 +252,9 @@ export function deriveServeBindings(
       // the address group too.
       const names = [
          entry.sourceName,
-         ...(aliasesBySourceName[entry.sourceName] ?? []),
+         ...(aliasesBySourceName[entry.sourceName] ?? []).filter(
+            (name) => !builders.has(name),
+         ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       for (const sourceName of names) {
          bindings.push({
