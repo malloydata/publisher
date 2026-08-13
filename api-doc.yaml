@@ -3645,6 +3645,74 @@ components:
             Which of the two queryRowLimit came from. Only server_default means
             rows were probably left behind; a deliberate limit or top returning
             exactly that many rows is a complete answer.
+        servedFrom:
+          type: ["string", "null"]
+          enum: [storage, live_fallback, null]
+          description: >-
+            How this answer was produced, when the query reached the storage
+            routing decision at all.
+
+            `storage` — served from a materialized table in a `storage=`
+            destination, via the virtual-source transform. The source's own
+            warehouse was not queried.
+
+            `live_fallback` — the query DID route to storage and the store then
+            failed underneath it, and the source's freshness fallback allowed it
+            to degrade to the live warehouse. **The rows are correct and the
+            request succeeded**, which is why this needs its own value: it is
+            indistinguishable from a storage hit at the call site, and treating it
+            as one would report a healthy hit rate for a broken store.
+
+            Null when the query never had a storage binding to consider — every
+            query on a deployment with no `storage=` sources, which is the default.
+
+            A storage-served result is byte-identical to a live one by design, so
+            this field is the only way a caller can tell that materialization did
+            anything, or show a user which of their sources it applies to.
+        executionTimeMs:
+          type: integer
+          description: >-
+            Wall-clock milliseconds from the start of query handling through the
+            end of execution.
+
+            Covers compile, authorize, storage routing, prepare and the warehouse
+            round trip. Narrower than the HTTP round trip — it excludes
+            serialization and transport, so it reads lower than a caller's own
+            stopwatch — and it is the same span the `malloy_model_query_duration`
+            histogram records, so the two are directly comparable. Use it to
+            attribute ONE query, which an aggregate histogram cannot do; use the
+            histogram for rates and percentiles.
+        queryCostBytes:
+          type: ["integer", "null"]
+          description: >-
+            Warehouse bytes this query SCANNED, as reported by the backend that
+            ran it. Not what it is billed — see below.
+
+            **Null is not zero.** It means the backend did not report a figure,
+            and there are two very different reasons for that. Either the backend
+            has no inline equivalent — BigQuery returns `totalBytesProcessed` in
+            the job metadata the driver already fetches, while Snowflake exposes
+            bytes only in `QUERY_HISTORY` keyed by query id (join it later on the
+            `query_id` query-metadata property rather than paying a round trip per
+            query) and Postgres has none at all. Or the query touched no warehouse,
+            which is the case for every `servedFrom: storage` answer. Check
+            `servedFrom` before reading a null as "free".
+
+            Where it is reported it is the executed job's ACTUAL bytes
+            processed, i.e. bytes SCANNED — not an estimate, and not what the
+            query is billed. BigQuery bills a 10MB minimum per query, so a small
+            read is billed well above this figure. Good for comparing queries
+            against each other; not a spend number.
+
+            Named `cost` rather than `scanned` because it carries Malloy's own
+            `runStats.queryCostBytes` through verbatim — the name follows the
+            figure back to its source.
+
+            One asymmetry worth knowing on BigQuery: the connector reports a
+            genuinely-zero scan as absent rather than as 0, so a fully cached
+            query is indistinguishable here from a backend that cannot say. Free
+            and unknown are the same value, and a savings calculation built on
+            this will treat free queries as unmeasured rather than as free.
 
     LogMessage:
       type: object
@@ -5088,6 +5156,44 @@ components:
           $ref: "#/components/schemas/Realization"
         rowCount:
           type: ["integer", "null"]
+        buildDurationMs:
+          type: ["integer", "null"]
+          description: >-
+            Wall-clock milliseconds spent building this one source's table —
+            measured around the build itself, so it excludes planning, manifest
+            distribution, and anything the orchestrator does around it.
+
+            Null when no build ran, which is the normal case for an incremental
+            source whose refresh SKIPPED because its boundary already covered the
+            requested range. Null rather than 0 on purpose: a zero would average
+            into build-duration series as an implausibly fast build.
+
+            Per SOURCE, where a run-level duration is per instruction. A run that
+            builds five sources reports five of these, and their sum is less than
+            the run's duration by whatever the orchestration cost.
+        queryCostBytes:
+          type: ["integer", "null"]
+          description: >-
+            Warehouse bytes SCANNED by the read that produced this table — the
+            recurring cost of keeping the source materialized, and the debit
+            against whatever materializing it saves on the read side.
+
+            Bytes scanned, never bytes billed. The two differ by up to BigQuery's
+            10MB-per-query floor, and materialization refreshes are mostly small
+            reads, so a field carrying one on some paths and the other elsewhere
+            would be unsummable across a package's sources.
+
+            **Null is not zero**, and today it is null on more paths than not.
+            Only a COLOCATED build reports a figure, taken from the Malloy
+            connection's own statistics. An incremental delta reports null
+            because its statements do not run through a single call whose result
+            reaches here. A chained `storage=` build reports null because it read
+            its parent's already-materialized table and touched no warehouse at
+            all. A plain `storage=` build reports null because its read goes
+            through DuckDB's query-passthrough, where no Malloy connector is in
+            the call path to report statistics — recovering the figure means
+            reading it back from the warehouse's own accounting, which requires a
+            job identifier the passthrough does not return.
         dataAsOf:
           type: string
           format: date-time

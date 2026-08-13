@@ -18,6 +18,35 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — queries report how they were served, and what they cost
+
+The server measured several things and then discarded them, and the query
+histogram carried two labels that grew without bound. Both are addressed.
+
+### What changed
+
+- **`malloy_model_query_duration` no longer labels by query text or row count.** Both are unbounded — ad-hoc text yields a new series per distinct query, a row count one per distinct result size — and a histogram label multiplies by the bucket count, so the metric grew for as long as a process served traffic. On one deployment serving real traffic the query-text label alone carried ~637 distinct values across ~14.9k series for this histogram. They remain on the request log. `environment` and `package` take their place: the only identity on the metric was previously a bare model path, which is not unique across packages.
+- **`malloy_model_query_duration` now spans execution, not just preparation.** The timer stopped before the warehouse round trip, so the histogram excluded the one part its own description ("how long it takes to execute a Malloy model query") named. It now covers compile, authorize, routing, prepare and execution. **Expect every existing p95 panel to step up at deploy** — that is the metric starting to measure what it always claimed, not a regression.
+- **`QueryResult` gains `servedFrom`, `executionTimeMs` and `queryCostBytes`.** A storage-served answer is byte-identical to a live one, so `servedFrom` is the only way a caller can tell a materialized source did anything; `live_fallback` is reported separately from `storage` because it is a success answered by the live warehouse, and counting it as a hit would report a healthy hit rate for a broken store. `queryCostBytes` comes from `runStats`, which the BigQuery connector already populated and nothing read.
+- **`ManifestEntry` gains `buildDurationMs` and `queryCostBytes`.** The duration was already measured for the build histogram and sent upward as null.
+- **`malloy_model_query_scanned_bytes`**, a counter of bytes scanned by served queries, where the backend reports them — BigQuery today.
+
+### Reading the cost numbers
+
+**Bytes scanned is not bytes billed.** BigQuery rounds up to a 10MB minimum per query, so a small read bills an order of magnitude above what it scanned — and materialization refreshes are mostly small reads. Every figure reported here is SCANNED. Use it to compare queries against each other; it is not a spend number.
+
+**Null is not zero, and on the build side it is null more often than not.** `ManifestEntry.queryCostBytes` is populated only for a COLOCATED build, from the Malloy connection's own statistics. An incremental delta reports null because its statements do not run through a single call whose result reaches the manifest, and a chained `storage=` build reports null because it read its parent's already-materialized table and touched no warehouse at all.
+
+A plain `storage=` build also reports null, and that one is a gap rather than a property: its read goes through DuckDB's native query-passthrough, where no Malloy connector is in the call path to report statistics. Recovering the figure means reading it back from the warehouse's own accounting, which needs an identifier for the job — and the passthrough does not return one for a rows-returning call. Obtaining that identifier restructures how the build issues its read, so it is deliberately left to the change that does so rather than approximated here.
+
+On the serve side, check `servedFrom` before reading a null as "free": a `storage`-served query touched no warehouse, while a Snowflake or Postgres query touched one and simply reported nothing.
+
+### For consumers generating clients from this spec
+
+`QueryResult` and `ManifestEntry` both gain fields. Strict generated clients reject unknown properties — openapi-generator's Java/Gson `validateJsonElement` throws on any field absent from the client's `openapiFields` — so a consumer running this server against a client generated from an older spec fails at deserialize on every affected response. **Regenerate clients in the same change as the version bump**, not after it.
+
+---
+
 ## [Unreleased] — `storage=` builds from a Snowflake source now work (Docker image)
 
 The 0.0.236 notes below list `snowflake_query` among the native query-passthroughs a `storage=` source is materialized through. That was true of the code and never true of the published image: **materializing a Snowflake source into a storage destination has not worked at all.** Two independent faults, both fixed.
