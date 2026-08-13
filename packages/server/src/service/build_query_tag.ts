@@ -113,11 +113,18 @@ export function bigQueryQueryLabelValue(
    metadata: QueryMetadata | undefined,
 ): string | undefined {
    if (metadata === undefined) return undefined;
-   const pairs: string[] = [];
+   // Keyed rather than appended, because sanitizing can collide two properties
+   // onto one label key and BigQuery REFUSES a list containing a duplicate: the
+   // statement errors, the script fails, and the build dies. The bag admits that
+   // collision legally — property names are validated case-PRESERVING, so `Team`
+   // and `team` are two properties that both render as `team`. Last wins, which
+   // is the shape every other drop in this rendering already takes.
+   const rendered = new Map<string, string>();
    for (const [key, value] of Object.entries(metadata)) {
       const sanitizedKey = sanitizeBigQueryKey(key);
       if (sanitizedKey === undefined) continue;
-      pairs.push(`${sanitizedKey}:${sanitizeBigQueryValue(value)}`);
+      rendered.set(sanitizedKey, sanitizeBigQueryValue(value));
    }
-   return pairs.length > 0 ? pairs.join(",") : undefined;
+   if (rendered.size === 0) return undefined;
+   return [...rendered].map(([key, value]) => `${key}:${value}`).join(",");
 }

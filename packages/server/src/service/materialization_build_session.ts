@@ -137,6 +137,46 @@ async function tagSnowflakeSession(
 }
 
 /**
+ * Can this connection reach the job records the split depends on?
+ *
+ * The split locates its result table by listing the executed script's child job,
+ * which is an API surface the direct `bigquery_query()` path never touches — so
+ * turning attribution on would otherwise add a permission requirement to builds
+ * that previously needed none, and discover it only AFTER a read had been billed.
+ * This asks the question with a one-row listing, before anything runs.
+ *
+ * <b>A false answer costs attribution, not the build.</b> That is the invariant
+ * this whole path is meant to keep, and it is the reason the check exists rather
+ * than a try/catch further down: once the read has run, falling back is no longer
+ * free — the rows live only in a table this cannot find, so the alternative to
+ * failing would be paying for the read a second time.
+ *
+ * Not cached: it is one listing per build against an API the build is about to
+ * use anyway, and caching it would have to key on the connection's credentials
+ * and survive their rotation.
+ */
+async function canSplitBigQueryRead(
+   session: DuckDBConnection,
+   handle: string,
+): Promise<boolean> {
+   try {
+      await session.runSQL(
+         `SELECT job_id FROM bigquery_jobs('${escapeSQL(handle)}', maxResults := 1)`,
+      );
+      return true;
+   } catch (error) {
+      logger.warn(
+         "Cannot list BigQuery jobs for this connection, so this build's " +
+            "warehouse read will not be labelled or costed",
+         {
+            error: error instanceof Error ? error.message : String(error),
+         },
+      );
+      return false;
+   }
+}
+
+/**
  * What the CTAS reads from, and the warehouse's own id for the read when the
  * shape of that read yielded one.
  *
@@ -199,7 +239,12 @@ export async function issuePassthroughRead(
       sourceType === "bigquery"
          ? bigQueryQueryLabelValue(queryMetadata)
          : undefined;
-   if (label === undefined) {
+   // Asked BEFORE anything runs, so an unusable split costs a probe rather than a
+   // build. Past this point the read has been issued and billed, and there is no
+   // longer a cheap way back: without the job record the result table cannot be
+   // located, so the rows cannot be captured at all and re-issuing them through
+   // the direct shape would bill the same read twice.
+   if (label === undefined || !(await canSplitBigQueryRead(session, handle))) {
       return {
          selectSQL: wrapPassthrough(sourceType, handle, buildSQL),
          jobId: null,

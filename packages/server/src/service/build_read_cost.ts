@@ -1,6 +1,13 @@
 import { sqlLiteral } from "./db_utils";
 
 /**
+ * How much of the build session's history to admit before filtering. Generous
+ * against a session that runs a handful of statements, and set EXPLICITLY because
+ * the default is 100 and applies before the `WHERE` — see {@link snowflakeCostSQL}.
+ */
+const SNOWFLAKE_HISTORY_LIMIT = 10_000;
+
+/**
  * What a `storage=` build's warehouse read cost, as the warehouse accounts for it.
  *
  * Every field is nullable and per-engine, deliberately rather than by omission:
@@ -92,8 +99,19 @@ export function bigQueryReadCost(
  * Keyed on the TAG, not on `LAST_QUERY_ID()`. The passthrough's session is not
  * exclusively ours: the ADBC driver issues its own `SELECT 1` connection probes
  * around each call, and measured against a live account `LAST_QUERY_ID()` after a
- * build-shaped read returned a probe, not the read. A tag scopes to this build's
- * session, and {@link pickSnowflakeReadRow} then picks the read out of it.
+ * build-shaped read returned a probe, not the read. {@link pickSnowflakeReadRow}
+ * then picks the read out of what this returns.
+ *
+ * <b>`_BY_SESSION`, with an explicit `RESULT_LIMIT`, and both matter.</b> These
+ * table functions cap their output BEFORE the `WHERE` runs, so a predicate can
+ * only filter rows the cap already admitted — no key, however unique, reaches
+ * past it. Measured against a live account: with the read pushed beyond the
+ * default 100, the plain account-wide form matched ZERO rows while the same
+ * predicate at `RESULT_LIMIT => 10000` matched one. `_BY_SESSION` narrows the
+ * candidates to this build's own session, and the explicit limit means that
+ * narrowing is what bounds the set rather than a default that happens to be
+ * larger than a build — the session form carries the same 100 default, and was
+ * also empty in that measurement.
  *
  * The accounting query itself carries the same tag, so it excludes its own shape.
  * Aliases are QUOTED because Snowflake folds a bare alias to uppercase, which
@@ -113,7 +131,8 @@ export function snowflakeCostSQL(queryTag: string): string {
              BYTES_SCANNED  AS "bytes_scanned",
              EXECUTION_TIME AS "execution_time_ms",
              ROWS_PRODUCED  AS "rows_produced"
-      FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
+      FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(
+                 RESULT_LIMIT => ${SNOWFLAKE_HISTORY_LIMIT}))
       WHERE QUERY_TAG = '${sqlLiteral(queryTag, "snowflake")}'
         AND EXECUTION_STATUS = 'SUCCESS'
         AND QUERY_TEXT NOT LIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'`;

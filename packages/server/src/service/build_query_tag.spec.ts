@@ -99,6 +99,15 @@ describe("bigQueryQueryLabelValue", () => {
       expect(bigQueryQueryLabelValue({ k: "o'brien\\x" })).toBe("k:o_brien_x");
    });
 
+   it("dedupes keys that collide once sanitized, rather than failing the build", () => {
+      // Property names are validated case-PRESERVING, so `Team` and `team` are
+      // two legal properties that both render as `team`. BigQuery refuses a label
+      // list with a duplicate key outright — verified against a live project:
+      // "Invalid query label list 'team:a,team:b'. Duplicate..." — which fails the
+      // script and kills the build. Last wins.
+      expect(bigQueryQueryLabelValue({ Team: "a", team: "b" })).toBe("team:b");
+   });
+
    it("drops a key that cannot start with a lowercase letter", () => {
       // BigQuery rejects it outright, so sending it would fail the whole job.
       expect(bigQueryQueryLabelValue({ "1st": "x", ok: "y" })).toBe("ok:y");
