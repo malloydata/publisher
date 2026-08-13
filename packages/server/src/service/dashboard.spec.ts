@@ -1183,6 +1183,19 @@ describe("service/dashboard inherits the annotation guards", () => {
    // prototype chain. The block form throws RangeError and poisons the process
    // for every later parse; the bare form pollutes silently. Both must be
    // stopped BEFORE the parse, which is why the guard cannot be a try/catch.
+   //
+   // Read the scope of this narrowly. It proves the guard covers the route
+   // dashboard discovery uses, which is every read going through `motlyTag`.
+   // It does NOT mean the process is safe from `__proto__`, and this comment
+   // says so because the title alone invites that inference. `##!` and `#@` are
+   // parsed EAGERLY BY THE COMPILER during `getModel()`, before any parse of
+   // ours runs, and `motlyAnnotations` drops both routes, so the guard never
+   // sees them and cannot undo damage that predates its snapshot. Measured on
+   // this tree rather than taken on trust: `##! __proto__ { a=b }` leaves
+   // `Object.prototype` carrying `location` and `properties`, and the next
+   // ordinary parse throws RangeError. That is live on `main` today and is not
+   // this slice's to fix; the real repair is upstream in `motly-ts-parser`,
+   // where the property bags want to be `Object.create(null)`.
    it("survives a __proto__ artifact tag without poisoning later parses", () => {
       for (const hostile of [
          "# artifact { __proto__ { a=b } }\n",
