@@ -2740,8 +2740,9 @@ export class Model {
       // Prepare INSIDE the run try/catch: a bad-given / value-type throw at
       // prepare time (getPreparedResult binds the givens) gets the same
       // MalloyError→rethrow / else→400 handling as run, instead of escaping as
-      // a 500. `executionTime` is still captured after prepare and before run,
-      // preserving the pre-existing timing recorded by the success histogram.
+      // a 500. `executionTime` is captured after run() returns, so it spans
+      // prepare AND the warehouse round trip — which is the span the success
+      // histogram has always described itself as recording.
       let rowLimit = 0;
       let rowLimitSource: QueryRowLimitSource = "server_default";
       let executionTime = 0;

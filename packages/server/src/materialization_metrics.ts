@@ -176,22 +176,6 @@ const chainedStorageBuildCounter = lazyCounter(
       "'strict_refused'). The parent_reuse share is the headline signal for how " +
       "far the stack-on-the-parent path gets us vs recompute-from-raw.",
 );
-const buildCostLookupCounter = lazyCounter(
-   "publisher_build_cost_lookup_total",
-   "Attempts to read back what a build's warehouse read cost. Labels: engine, " +
-      "outcome ('found'|'not_found'|'ambiguous'|'error'|'unsupported'). The " +
-      "correlation key is a time window plus exact query text rather than an " +
-      "id, so this counter is how well that key holds: sustained 'ambiguous' " +
-      "or 'not_found' means cost is being reported for a biased subset of " +
-      "builds, and anything derived from it is computed over that subset.",
-);
-const cachedBuildCounter = lazyCounter(
-   "publisher_build_cache_hit_total",
-   "Builds whose warehouse read was answered from cache. Label: engine. Free, " +
-      "but on a BUILD that is a finding rather than a saving: the cache is " +
-      "invalidated when the underlying tables change, so a cached build means " +
-      "the source data had not moved and the rebuild did no useful work.",
-);
 
 /**
  * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
@@ -379,23 +363,6 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
-}
-
-/**
- * Record an attempt to read back a build's warehouse cost. Always recorded,
- * including on the paths that produce no number — a cost figure is only
- * interpretable next to how often the lookup succeeded.
- */
-export function recordBuildCostLookup(
-   engine: string,
-   outcome: "found" | "not_found" | "ambiguous" | "error" | "unsupported",
-): void {
-   buildCostLookupCounter().add(1, { engine, outcome });
-}
-
-/** Record a build whose warehouse read was served from cache — i.e. a rebuild that did no work. */
-export function recordCachedBuild(engine: string): void {
-   cachedBuildCounter().add(1, { engine });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

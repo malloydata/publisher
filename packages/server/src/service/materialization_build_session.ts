@@ -14,8 +14,6 @@ import { logger } from "../logger";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
-import { lookupBuildCost, type BuildCost } from "./build_cost";
-import { recordBuildCostLookup } from "../materialization_metrics";
 import {
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -202,13 +200,6 @@ export interface StorageBuildResult {
    storageDestinationName: string;
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
-   /**
-    * What the warehouse charged for the read, read back from its own accounting
-    * after the fact. Null whenever that could not be established — an engine
-    * with no query history to consult, or a lookup that did not resolve to
-    * exactly one query. Null is never "free": see {@link lookupBuildCost}.
-    */
-   buildCost: BuildCost | null;
 }
 
 /**
@@ -306,31 +297,12 @@ export async function buildSourceIntoStorage(params: {
          buildSQL,
       );
 
-      // Stamped before the read so the cost lookup below has a lower bound on
-      // when the warehouse job could have been created.
-      const readStartedAt = new Date();
-
       // Capture the authoritative schema from the freshly-built table — the
       // serve transform declares exactly this, and the compiler does not
       // type-check a virtual source's declared columns.
       const schema = await createTableAndDescribe(session, target, passthrough);
 
-      // Ask the warehouse what that read cost, while the session still holds the
-      // federated credentials — this MUST run before the finally block disposes
-      // them. Best-effort by construction: the table is already built and
-      // captured, so a lookup that finds nothing costs a null, never the build.
-      const buildCost =
-         sourceType === "postgres"
-            ? (recordBuildCostLookup(sourceType, "unsupported"), null)
-            : await lookupBuildCost({
-                 runner: (sql) => session.runSQL(sql),
-                 engine: sourceType,
-                 handle: federated.handle,
-                 sql: buildSQL,
-                 since: readStartedAt,
-              });
-
-      return { storageDestinationName: destinationName, schema, buildCost };
+      return { storageDestinationName: destinationName, schema };
    } finally {
       // Dispose closes the private instance (releasing every secret + attach —
       // nothing federated or read-write survives the build) and removes its
@@ -470,15 +442,9 @@ export async function buildDownstreamIntoStorage(params: {
       );
       const schema = await createTableAndDescribe(session, target, sql);
 
-      // No warehouse cost to look up, and that is the point of this path rather
-      // than a gap in it: a chained build reads its parent's already-materialized
-      // table out of the destination store, so it never touches the source
-      // warehouse and there is no job to account for. Null here means "did not
-      // spend", which is the one place in this codebase where it does.
       return {
          storageDestinationName: destinationName,
          schema,
-         buildCost: null,
       };
    } finally {
       await dispose();
