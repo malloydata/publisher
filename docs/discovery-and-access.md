@@ -61,6 +61,12 @@ discovery and chat), at two granularities that **both apply only once the packag
   > becomes unreachable, because the convention never gates queries (see the boundary section
   > below), so anything you did not mean to hide is still queryable by name while you fix it.
   >
+  > That last point is about query access, not about listings. Anything that reads the listing
+  > rather than querying by name narrows with it: a catalog, a chat surface, MCP
+  > `malloy_getContext`, or a search indexer sees only the surface at its next pass. Curation is
+  > the whole point of the convention, so that is intended, but it is worth knowing before you
+  > wonder where an indexed source went.
+  >
   > **To keep exactly the old behavior, add `"explores": []`.** One key, no rename, no boundary: the
   > empty array is read as a deliberate "do not curate", so listings, `export {}` filtering and
   > query access are all unchanged.

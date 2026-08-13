@@ -1701,7 +1701,10 @@ export class Model {
     * the fix is to re-export what should be visible (`export { name }`).
     */
    public hasEmptyDiscoverySurface(): boolean {
-      // No curation (no `explores`) ⇒ legacy listings include imported sources.
+      // No curation at all ⇒ legacy listings include imported sources, so an
+      // empty export closure hides nothing. Curation here means a surface from
+      // EITHER source, so this warning does fire for a convention-derived one,
+      // which is the aggregator shape the release note calls out.
       if (!this.discoveryCurationEnabled) return false;
       if (this.modelType !== "model" || !this.modelDef) return false;
       const exports = this.modelDef.exports;
