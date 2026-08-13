@@ -24,25 +24,22 @@ import { MaterializationService } from "./materialization_service";
  * needs no DuckLake catalog, no Postgres and no object storage — only a BigQuery
  * credential.
  *
- * <b>Not yet wired into `connection-integration-tests.yml`, for one reason:</b>
- * the repository's public-data service account lacks
- * `bigquery.readsessions.create`, and every path here needs it. That is not a
- * property of the split — the untagged case below uses `bigquery_query()`, the
- * shape `storage=` builds have always used, and it fails the same way:
+ * <b>The service account needs `bigquery.readsessions.create`</b>, and that is a
+ * requirement of the passthrough rather than of anything here: it streams its
+ * results over the Storage Read API on every path. The untagged case below is the
+ * evidence — it uses `bigquery_query()`, the shape `storage=` builds have always
+ * used, and without that permission it fails identically to the tagged one:
  *
  *     the user does not have 'bigquery.readsessions.create' permission
  *
- * The passthrough reads its results over the Storage Read API, so
- * `roles/bigquery.readSessionUser` (or an equivalent grant) is a standing
- * requirement for materializing ANY BigQuery source into a storage destination,
- * independent of tagging. Granting it to that service account is all this needs;
- * adding the file to the workflow's path filter and a step that runs it is then a
- * two-line change.
+ * So `roles/bigquery.readSessionUser` (or equivalent) is a standing requirement
+ * for materializing ANY BigQuery source into a storage destination, independent
+ * of tagging. Worth knowing before reading a failure here as a defect in the
+ * split.
  *
- * Until then it runs wherever the credentials do exist — set
- * `BIGQUERY_PUBLIC_DATA_CREDENTIALS` to a key file and
- * `BIGQUERY_PUBLIC_DATA_PROJECT_ID` to its project. Absent those it skips, so it
- * costs a developer without credentials nothing.
+ * Locally, set `BIGQUERY_PUBLIC_DATA_CREDENTIALS` to a key file and
+ * `BIGQUERY_PUBLIC_DATA_PROJECT_ID` to its project. Absent those this skips, so
+ * it costs a developer without credentials nothing.
  */
 const hasPublicDataBigQueryCredentials = () =>
    !!(
