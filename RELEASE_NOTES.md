@@ -18,6 +18,30 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — `publisher.db` picks up new columns on upgrade
+
+An existing `publisher.db` has always picked up a new **table** added by a later build, because `CREATE TABLE IF NOT EXISTS` is idempotent. It never picked up a new **column**: that same statement is a no-op against a table that already exists, however its columns differ. So a store created before a column was introduced never gained it, schema initialization reported success anyway, and the first write naming that column failed at the binder.
+
+**If your `publisher.db` predates 2026-06-19, every `POST .../materializations` has been returning 500** with `Binder Error: Table "materializations" does not have a column with name "manifest"`. That store now repairs itself on the next boot. Materialization is the only thing that was affected; nothing else names the column.
+
+### What changed
+
+- **Schema init now reconciles columns.** After the `CREATE TABLE` pass, the declared shape is compared against what is on disk and anything declared-but-absent is added. Only nullable columns, and only additions.
+- **What it cannot fix, it now says at boot.** A type change, or a missing `NOT NULL` column, is logged as a warning naming the column, instead of surfacing later as a binder error on an unrelated request. This is the part that keeps earning its keep after this particular column is behind us.
+- **Nothing is ever dropped.** Columns and tables an older store has and this build no longer declares are left in place and reported at debug level. `materializations.build_plan` (added and removed within four days in June 2026) and the `build_manifests` table are both inert relics of this kind; removing them is a decision for an operator, not something an upgrade should do quietly.
+
+### Why only additive
+
+`ALTER TABLE ... ADD COLUMN` in DuckDB rejects a column carrying any constraint, `NOT NULL` included, with or without a `DEFAULT`. So the safe subset is not a policy this code chose — it is the boundary the engine enforces. A future column outside it needs a hand-written step, and the boot warning is what tells you the day one appears.
+
+There is still no schema-version marker, and none is needed: the comparison is against the database itself. The expected shape is not written down twice either — it is read back from a scratch in-memory database the same DDL has just been run against, so the `CREATE TABLE` statements remain the single declaration of the schema.
+
+### Why it took an upgrade to find
+
+CI starts from a clean checkout with no `publisher.db`, so the create path always runs with the current DDL and the drift cannot arise. The gap was never a missing assertion — it was that no test had ever booted against a store older than the build. There is one now.
+
+---
+
 ## [Unreleased] — a `storage=` build's warehouse read is now attributable
 
 A `storage=` build reads its source through DuckDB's native query-passthrough, where no Malloy connector is in the call path to apply the query-metadata bag. Every such build therefore reached the warehouse untagged — the one kind of work a deployment could not attribute. It now carries the same bag the colocated path does, resolved through the same layering.

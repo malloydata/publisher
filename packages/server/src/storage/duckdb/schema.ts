@@ -34,7 +34,31 @@ export async function initializeSchema(
    // up new tables added in later builds (e.g., the `themes` table for
    // the in-app Theme Editor) without forcing operators to run --init
    // and lose their existing environments / packages / materializations.
+   await createDeclaredTables(db);
 
+   // A CREATE TABLE IF NOT EXISTS is a no-op against an existing table no matter
+   // how its COLUMNS differ, so the pass above carries a new table but never a
+   // new column. Reconcile those separately, and only where the drift can exist:
+   // a store created by this build (or re-created by --init just above) already
+   // matches the declaration by construction.
+   if (initialized && !force) {
+      await reconcileDeclaredColumns(db);
+   }
+
+   // After the reconcile, so an index over a newly added column can be created
+   // in the same boot that adds it.
+   await createDeclaredIndexes(db);
+}
+
+/**
+ * The declared schema: every table this build expects `publisher.db` to hold.
+ *
+ * These statements are the single source of truth for the shape of the store —
+ * `reconcileDeclaredColumns` derives the expected columns by running this same
+ * function against a scratch database rather than from a second, hand-maintained
+ * list, so there is no parallel declaration to drift out of sync with the DDL.
+ */
+async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    // Environments table
    await db.run(`
     CREATE TABLE IF NOT EXISTS environments (
@@ -205,7 +229,9 @@ export async function initializeSchema(
   `);
 
    await createEntityEmbeddingsTable(db);
+}
 
+async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
    // Create indexes for better query performance
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_packages_environment_id ON packages(environment_id)",
@@ -227,6 +253,147 @@ export async function initializeSchema(
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_incremental_ledger_environment_package ON incremental_ledger(environment_id, package_name)",
    );
+}
+
+interface ColumnShape {
+   table_name: string;
+   column_name: string;
+   data_type: string;
+   is_nullable: boolean;
+}
+
+/** The shape of a database as the catalog reports it, for both sides of the diff. */
+const COLUMN_SHAPE_QUERY = `
+   SELECT table_name, column_name, data_type, is_nullable
+   FROM duckdb_columns()
+   WHERE schema_name = 'main'
+`;
+
+function columnKey(column: ColumnShape): string {
+   return `${column.table_name}.${column.column_name}`;
+}
+
+/**
+ * Add columns this build declares that an existing `publisher.db` does not have.
+ *
+ * The expected shape is not written down anywhere: it is read back out of a
+ * throwaway in-memory database that `createDeclaredTables` has just been run
+ * against. A hand-maintained column list would be a second declaration of the
+ * schema, and a column added to the DDL but forgotten there would reproduce this
+ * bug exactly; executing the DDL makes the statements their own specification.
+ * The disk is the other half of the comparison, so no schema-version marker is
+ * needed and none is kept.
+ *
+ * Strictly additive, and only for nullable columns, which is a boundary DuckDB
+ * enforces rather than one this code chooses: `ALTER TABLE ... ADD COLUMN`
+ * rejects a column carrying any constraint ("Adding columns with constraints not
+ * yet supported"), including NOT NULL, with or without a DEFAULT. A bare DEFAULT
+ * is accepted and backfills existing rows.
+ *
+ * Everything else the diff finds is reported, not acted on:
+ *
+ * - A missing NOT NULL column cannot be added at all. Adding it as nullable
+ *   would leave the store permanently disagreeing with its own declaration, so
+ *   it warns and leaves the write to fail, which is at least traceable to a
+ *   named column at boot.
+ * - A type change is not an ALTER we can infer the intent of.
+ * - A column or table on disk that this build no longer declares is left alone.
+ *   Dropping is a decision, not a reconciliation, and the relics are inert:
+ *   `materializations.build_plan` (added and removed within four days in June
+ *   2026) and the `build_manifests` table both sit on stores in the wild,
+ *   unreferenced by any query.
+ *
+ * A failure here is logged and swallowed. The server can serve an environment it
+ * cannot materialize into, and refusing to boot over that would turn a partial
+ * outage into a total one.
+ */
+async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
+   let mirror: DuckDBConnection | null = null;
+   try {
+      mirror = new DuckDBConnection(":memory:");
+      await mirror.initialize();
+      await createDeclaredTables(mirror);
+
+      const declared = await mirror.all<ColumnShape>(COLUMN_SHAPE_QUERY);
+      const onDisk = await db.all<ColumnShape>(COLUMN_SHAPE_QUERY);
+
+      const declaredTables = new Set(declared.map((c) => c.table_name));
+      const declaredColumns = new Set(declared.map(columnKey));
+      const diskTables = new Set(onDisk.map((c) => c.table_name));
+      const diskColumns = new Map(onDisk.map((c) => [columnKey(c), c]));
+
+      const added: string[] = [];
+      const needsMigration: string[] = [];
+
+      for (const column of declared) {
+         // A table absent from disk was just created by the pass above, at the
+         // declared shape; only tables that predate this build can drift.
+         if (!diskTables.has(column.table_name)) {
+            continue;
+         }
+         const existing = diskColumns.get(columnKey(column));
+         if (!existing) {
+            if (!column.is_nullable) {
+               needsMigration.push(
+                  `${columnKey(column)} (declared NOT NULL; DuckDB cannot add a constrained column)`,
+               );
+               continue;
+            }
+            await db.run(
+               `ALTER TABLE "${column.table_name}" ADD COLUMN IF NOT EXISTS "${column.column_name}" ${column.data_type}`,
+            );
+            added.push(`${columnKey(column)} ${column.data_type}`);
+         } else if (existing.data_type !== column.data_type) {
+            needsMigration.push(
+               `${columnKey(column)} (on disk ${existing.data_type}, declared ${column.data_type})`,
+            );
+         }
+      }
+
+      const undeclared = [
+         ...onDisk
+            .filter(
+               (c) =>
+                  declaredTables.has(c.table_name) &&
+                  !declaredColumns.has(columnKey(c)),
+            )
+            .map(columnKey),
+         ...[...diskTables]
+            .filter((t) => !declaredTables.has(t))
+            .map((t) => `${t} (whole table)`),
+      ];
+
+      if (added.length > 0) {
+         logger.info(
+            `publisher.db: added ${added.length} column(s) this build declares that the store predates: ${added.join(", ")}`,
+         );
+      }
+      if (needsMigration.length > 0) {
+         logger.warn(
+            "publisher.db does not match the schema this build declares, and the difference " +
+               "cannot be reconciled automatically. Writes naming these columns will fail until " +
+               `the store is migrated by hand or recreated with --init: ${needsMigration.join(", ")}`,
+         );
+      }
+      if (undeclared.length > 0) {
+         logger.debug(
+            `publisher.db holds ${undeclared.length} column(s)/table(s) this build no longer declares; left in place: ${undeclared.join(", ")}`,
+         );
+      }
+   } catch (err) {
+      logger.error(
+         "Failed to reconcile publisher.db against the schema this build declares. " +
+            "The server will continue; if the store predates a column, writes naming it will fail.",
+         err,
+      );
+   } finally {
+      try {
+         await mirror?.close();
+      } catch {
+         // A scratch in-memory database that will not close is not worth failing
+         // a boot over.
+      }
+   }
 }
 
 /**
