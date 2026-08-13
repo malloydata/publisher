@@ -2736,6 +2736,55 @@ describe("runInBackground (terminal recording)", () => {
    });
 });
 
+describe("per-source failure reporting", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   const flush = () => new Promise((r) => setTimeout(r, 20));
+
+   function background(): {
+      runInBackground: (
+         id: string,
+         run: (signal: AbortSignal) => Promise<void>,
+      ) => void;
+   } {
+      return ctx.service as unknown as {
+         runInBackground: (
+            id: string,
+            run: (signal: AbortSignal) => Promise<void>,
+         ) => void;
+      };
+   }
+
+   // A build carries the reason each source failed for, not one reason for the
+   // whole command. The control plane binds per-source anchors and reports a
+   // failed source on its own materialization, so a single run-level message
+   // cannot say which source failed or why -- a consumer can only infer failure
+   // from an absent entry, and an absence carries no cause.
+   it("records a failed source's reason against that source", async () => {
+      const cause = new Error(
+         "Access Denied: Permission denied while writing to dataset analytics",
+      );
+
+      background().runInBackground("bg-per-source", async () => {
+         throw new SourceBuildFailure("orders", cause);
+      });
+      await flush();
+
+      const recorded = ctx.repository.updateMaterialization.firstCall.args[1];
+      expect(recorded).toMatchObject({ status: "FAILED" });
+      expect(
+         recorded.failedSources,
+         "a failed build must name each source that failed and the reason it " +
+            "reported, so the reason survives to the entry the control plane reads",
+      ).toMatchObject({
+         orders: "Access Denied: Permission denied while writing to dataset analytics",
+      });
+   });
+});
+
 describe("transition (state machine)", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
