@@ -149,9 +149,22 @@ function pollutionTargets(): object[] | undefined {
          // `Object.prototype` itself, means this cannot know what a parse would
          // touch, and the annotation is refused. Fail closed. The cost is that a
          // deployment which extends `Object.prototype` with an accessor gets no
-         // control contracts at all, which is visible and recoverable, unlike a
-         // value quietly escaping onto a shared object.
-         if (descriptor.get !== BUILT_IN_PROTO_GETTER) return undefined;
+         // control contracts at all. That is the safer failure, but be clear it is
+         // not a loud one: nothing calls {@link motlyParseErrors} yet, so the
+         // refusal shows up only as absent control fields. Wiring that reader is
+         // what would make it visible, and it belongs with the slice that owns
+         // package warnings.
+         // Fail closed if the reference is missing as well as if it differs. It
+         // is `undefined` under `node --disable-proto=delete`, which a hardened
+         // deployment may well set, and a setter-only accessor also has an
+         // undefined getter, so comparing without this check would quietly skip
+         // both instead of refusing them.
+         if (
+            BUILT_IN_PROTO_GETTER === undefined ||
+            descriptor.get !== BUILT_IN_PROTO_GETTER
+         ) {
+            return undefined;
+         }
          continue;
       }
       if (
@@ -225,14 +238,22 @@ function parseGuarded(texts: readonly string[]): {
    // Even reading own keys is wrapped: a target could be exotic enough that the
    // read itself throws, and this runs on a path where an escape fails the whole
    // package load.
+   // Fails CLOSED, like the accessor branch. Returning an empty list on a failed
+   // read would tell the caller the target has no keys, which both hides a write
+   // onto it and, if only the first read threw, makes the repair delete every key
+   // it does have. Neither is acceptable, so an unreadable target means the
+   // annotation is refused instead.
+   let unreadable = false;
    const ownNames = (target: object): string[] => {
       try {
          return Object.getOwnPropertyNames(target);
       } catch {
+         unreadable = true;
          return [];
       }
    };
    const before = targets.map(ownNames);
+   if (unreadable) return { tag: undefined, messages: [UNSAFE_TO_PARSE] };
    const undoPollution = (): boolean => {
       let polluted = false;
       targets.forEach((target, index) => {
@@ -252,7 +273,7 @@ function parseGuarded(texts: readonly string[]): {
             }
          }
       });
-      return polluted;
+      return polluted || unreadable;
    };
    try {
       const result = parseAnnotation([...texts]);
