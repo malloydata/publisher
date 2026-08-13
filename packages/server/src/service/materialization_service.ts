@@ -9,7 +9,6 @@ import {
    MaterializationConflictError,
    MaterializationEligibilityError,
    MaterializationNotFoundError,
-   SourceBuildFailure,
 } from "../errors";
 import { logger } from "../logger";
 import {
@@ -1516,6 +1515,9 @@ export class MaterializationService {
       // names a table an earlier successful run built and a live manifest may still
       // serve, so dropping one would be data loss rather than cleanup.
       const builtThisRun: ManifestEntry[] = [];
+      const failedSources: string[] = [];
+      const failedReasons: string[] = [];
+      const builtSources: string[] = [];
       try {
          for (const graph of graphs) {
             const connection = connections.get(graph.connectionName);
@@ -1618,29 +1620,54 @@ export class MaterializationService {
                      sourceEntityId,
                   );
                } catch (buildErr) {
-                  // Name the source the failure belongs to before it leaves this
-                  // loop. Above here the run reports one error for the whole
-                  // command, which cannot say which source failed when only some
-                  // did -- and a consumer binding per-source state has nothing to
-                  // attribute. Redacted against this source's own connection for
-                  // the same reason the run-level message is: a warehouse error
-                  // can echo the credentials it was handed.
-                  throw new SourceBuildFailure(
-                     persistSource.name,
-                     buildErr,
-                     redactConnectionSecrets(errMessage(buildErr), connection),
+                  // One source failing does not end the build: the sources that
+                  // did materialize stay usable, and this one records the reason
+                  // it gave so a consumer can attribute the failure to the unit it
+                  // belongs to rather than to the whole command. A build that
+                  // loses every source still fails, below.
+                  //
+                  // Redacted against this source's own connection for the same
+                  // reason the run-level message is: a warehouse error can echo
+                  // the credentials it was handed, and this value is persisted.
+                  const reason = redactConnectionSecrets(
+                     errMessage(buildErr),
+                     connection,
                   );
+                  failedSources.push(persistSource.name);
+                  failedReasons.push(`${persistSource.name}: ${reason}`);
+                  entries[sourceEntityId] = {
+                     sourceEntityId,
+                     sourceName: persistSource.name,
+                     physicalTableName: instruction.physicalTableName,
+                     materializedTableId: instruction.materializedTableId,
+                     error: reason,
+                  } as ManifestEntry;
+                  continue;
                }
+               builtSources.push(persistSource.name);
                entries[sourceEntityId] = entry;
                if (entry.storageDestinationName) builtThisRun.push(entry);
             }
          }
+
+         // Every source this run built failed, so it produced nothing. A build
+         // with no output must not report itself as one that succeeded with
+         // errors attached; the partial path above covers the case where at least
+         // one source is usable. Thrown from inside the try so a run that wrote
+         // nothing reclaimable still takes the same cleanup path as any other
+         // total failure.
+         if (builtSources.length === 0 && failedSources.length > 0) {
+            throw new Error(failedReasons.join("; "));
+         }
       } catch (err) {
-         // A run that fails part-way commits NO manifest, and manifest-driven GC
-         // only drops names a manifest records — so a table an earlier source in
-         // this run already wrote would be unreachable forever. Reclaim those
-         // before rethrowing. Best-effort and non-fatal: the build's own failure is
-         // what the caller needs to see.
+         // A part-way failure returns a manifest that records the sources which
+         // built and the reason each failed one gave, so those tables stay
+         // reachable to manifest-driven GC. This path is for a build that
+         // produced nothing to record -- an orchestration failure, or every
+         // source failing -- where a table an earlier source wrote would
+         // otherwise be unreachable forever. Reclaim those before rethrowing.
+         // Best-effort and non-fatal: the build's own failure is what the caller
+         // needs to see.
          if (owner) {
             await this.reclaimStorageTablesFromFailedRun(
                builtThisRun,
@@ -2973,22 +3000,11 @@ export class MaterializationService {
             const next = abortController.signal.aborted
                ? "CANCELLED"
                : "FAILED";
-            // A source that failed names itself, so the run records which source
-            // it was alongside the run-level message. Without this the run reports
-            // one error for the whole command and a consumer cannot tell a partial
-            // failure from a total one, nor which unit to attribute the cause to.
-            const failedSources =
-               err instanceof SourceBuildFailure
-                  ? { [err.sourceName]: message }
-                  : undefined;
             try {
                await this.repository.updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
                   error: abortController.signal.aborted ? "Cancelled" : message,
-                  ...(failedSources && !abortController.signal.aborted
-                     ? { failedSources }
-                     : {}),
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {

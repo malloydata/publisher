@@ -5117,6 +5117,15 @@ components:
       properties:
         sourceEntityId:
           type: string
+        error:
+          type: [string, "null"]
+          description: >-
+            Why this source failed to materialize, in the words the warehouse or
+            compiler reported. Present only on a source that failed; absent on one
+            that built, whose table the remaining fields describe. A build that
+            loses some of its sources still returns the ones that succeeded, so an
+            entry carrying this is how a consumer tells a failed source from a
+            healthy one.
         sourceName:
           type: string
         materializedTableId:
