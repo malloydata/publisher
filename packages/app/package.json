@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/app",
    "description": "Malloy Publisher Console (the built-in web UI)",
-   "version": "0.0.209",
+   "version": "0.0.244",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
