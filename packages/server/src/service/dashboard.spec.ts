@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    buildDashboardManifest,
+   normalizeTileExpression,
    dashboardSlug,
    docCommentText,
    filterPublisherOwnedRenderLogs,
@@ -1214,5 +1215,55 @@ describe("service/dashboard inherits the annotation guards", () => {
       expect(after?.title).toBe("Still fine");
       expect(({} as Record<string, unknown>).location).toBeUndefined();
       expect(({} as Record<string, unknown>).eq).toBeUndefined();
+   });
+});
+
+describe("service/dashboard tile normalization", () => {
+   /**
+    * The expression this replaced, kept verbatim as an oracle. It backtracked
+    * quadratically over a whitespace run, which a package author controls
+    * through `tiles=[…]`, and discovery runs on the main server process, so the
+    * stall was every tenant's. The refactor is only safe if it is
+    * behaviour-identical, so that is asserted rather than assumed.
+    */
+   const oracle = (tile: string) =>
+      tile
+         .trim()
+         .replace(/\s*->\s*/g, " -> ")
+         .replace(/\s+/g, " ");
+
+   it("matches the expression it replaced on every shape that occurs", () => {
+      const parts = ["orders", "by_month", "->", " ", "  ", "\t", "", "a b"];
+      const cases: string[] = [];
+      for (const a of parts)
+         for (const b of parts)
+            for (const c of parts) cases.push(`${a}${b}${c}`);
+      cases.push(
+         "orders -> by_month",
+         "orders->by_month",
+         "orders   ->   by_month",
+         "a->b->c",
+         "  padded -> x  ",
+      );
+      for (const tile of cases) {
+         expect([tile, normalizeTileExpression(tile)]).toEqual([
+            tile,
+            oracle(tile),
+         ]);
+      }
+   });
+
+   it("stays linear on the input that made the old one quadratic", () => {
+      const hostile = `orders${" ".repeat(80_000)}bymonth`;
+      // The oracle is evaluated OUTSIDE the timed region: it is the quadratic
+      // one, so timing it here would measure the very thing being replaced.
+      const expected = oracle(hostile);
+      const started = performance.now();
+      const actual = normalizeTileExpression(hostile);
+      const elapsed = performance.now() - started;
+      expect(actual).toBe(expected);
+      // The old expression took ~2.3s on this input; a generous ceiling still
+      // fails by orders of magnitude if the quadratic form comes back.
+      expect(elapsed).toBeLessThan(500);
    });
 });

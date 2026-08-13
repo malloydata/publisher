@@ -334,10 +334,28 @@ export interface DashboardDrill {
  * The run expression form a tile is written in, normalized so `"orders->by_x"`
  * and `"orders  ->  by_x"` are the same key.
  */
-function normalizeTileExpression(tile: string): string {
+export function normalizeTileExpression(tile: string): string {
+   // Split on the literal arrow rather than matching `/\s*->\s*/g`. That
+   // pattern backtracks quadratically over a run of whitespace, and this
+   // function is reached from a package author's own `tiles=[…]` string during
+   // `Package.create` and every reload. Discovery runs in the MAIN server
+   // process, not the compile worker, and there is no yield point in here, so
+   // the cost is one uninterrupted block of the shared event loop: on a
+   // multi-tenant pod that is every other tenant's requests, /health included.
+   // Reload is reachable by any caller (`?reload=true`, `malloy_reloadPackage`),
+   // so it was repeatable rather than a one-off boot cost.
+   //
+   // Measured on `"orders" + " ".repeat(n) + "bymonth"`: 41ms at n=10k, 595ms at
+   // 40k, 2.34s at 80k, against 0.06ms for this version at 80k. Equivalence is
+   // pinned by a fuzz test that keeps the old expression as an oracle.
+   // The trailing collapse matters for consecutive arrows (`a->->b`), where the
+   // empty segment between them would otherwise leave a double space that the
+   // old expression did not produce. Degenerate input, but the refactor is only
+   // worth claiming if it is exact. `\s+` has one quantifier, so it is linear.
    return tile
-      .trim()
-      .replace(/\s*->\s*/g, " -> ")
+      .split("->")
+      .map((part) => part.trim().replace(/\s+/g, " "))
+      .join(" -> ")
       .replace(/\s+/g, " ");
 }
 
