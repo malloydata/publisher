@@ -3293,9 +3293,13 @@ export class MaterializationService {
       // DIFFERENT destination is absent here, so the downstream def fails to
       // compile against the rebind model and the caller falls back — cross-catalog
       // parent reuse is out of scope for the spike.
-      // No aliases: this resolves the upstream TABLES a downstream build reads,
-      // and an alias adds a second name for a table already named here. The
-      // rebind model would then declare one source twice and fail to compile.
+      // No aliases, and the consequence is a scope boundary rather than a
+      // compile problem: two aliases are two DISTINCT names on one handle, which
+      // is what the serve path emits and compiles. What passing none means is
+      // that a chained downstream reading the EXTENSION's name finds it absent
+      // from the rebind model and falls back to recomputing its upstream from
+      // raw. Correct-but-slower, and out of scope here; the serve path is where
+      // an alias has to resolve.
       const upstreams: ServeBinding[] = deriveServeBindings(
          builtEntries,
          {},
