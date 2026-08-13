@@ -171,8 +171,8 @@ Expect:
 > against both cases, because the condition is not "the annotation is ignored" but
 > "whether it applies is decided elsewhere".
 >
-> **The route is not severed here.** `malloydata/malloy` #3029 (merged, unreleased —
-> publisher is pinned at 0.0.427, npm `latest` is 0.0.430) fixes an import that
+> **The route is not severed here.** `malloydata/malloy` #3029 — shipped in 0.0.429 and
+> 0.0.430, while this repo is still pinned at 0.0.427 — fixes an import that
 > copied only persistent sources, severing the path to dependencies reachable only
 > through a `#@ -persist` wrapper. This scenario deliberately builds that shape and
 > the walk resolves it anyway, which bounds how much of the publisher the fix can
