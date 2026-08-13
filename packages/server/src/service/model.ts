@@ -2403,9 +2403,15 @@ export class Model {
        * Warehouse bytes this query SCANNED, when the backend reports it (BigQuery
        * today) — not what it is billed, which runs higher on small reads because
        * BigQuery charges a 10MB minimum per query. Null means "not reported",
-       * which includes both a
-       * backend that cannot say and a storage-served query that touched no
-       * warehouse — never read it as zero cost without checking `servedFrom`.
+       * which includes both a backend that cannot say and a storage-served query
+       * that touched no warehouse — never read it as zero cost without checking
+       * `servedFrom`.
+       *
+       * Named `cost` rather than `scanned` on purpose, and deliberately unlike
+       * the counter above: this field carries `runStats.queryCostBytes` through
+       * verbatim, so it keeps the name upstream Malloy gives it and a reader can
+       * follow it back to its source. The counter had no such lineage to
+       * preserve — it is ours to name — which is why the two land differently.
        */
       queryCostBytes: number | null;
    }> {

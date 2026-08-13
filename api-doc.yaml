@@ -3704,6 +3704,10 @@ components:
             read is billed well above this figure. Good for comparing queries
             against each other; not a spend number.
 
+            Named `cost` rather than `scanned` because it carries Malloy's own
+            `runStats.queryCostBytes` through verbatim — the name follows the
+            figure back to its source.
+
             One asymmetry worth knowing on BigQuery: the connector reports a
             genuinely-zero scan as absent rather than as 0, so a fully cached
             query is indistinguishable here from a backend that cannot say. Free
