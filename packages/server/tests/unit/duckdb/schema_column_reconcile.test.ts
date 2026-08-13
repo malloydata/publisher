@@ -93,6 +93,25 @@ async function fullShape(
    );
 }
 
+/**
+ * The table's constraints, the half `fullShape` cannot see. A column definition
+ * can match perfectly while the table enforces different rules, which is the
+ * divergence that fails silently rather than loudly.
+ */
+async function tableConstraints(
+   db: DuckDBConnection,
+   table: string,
+): Promise<unknown[]> {
+   return db.all(
+      `SELECT constraint_type, constraint_column_names
+       FROM duckdb_constraints()
+       WHERE schema_name = 'main' AND database_name = current_database()
+         AND table_name = ?
+       ORDER BY constraint_type, constraint_column_names`,
+      [table],
+   );
+}
+
 describe("DuckDB declared-column reconcile", () => {
    beforeEach(async () => {
       await fs.mkdir(TEST_DB_DIR, { recursive: true });
@@ -134,6 +153,9 @@ describe("DuckDB declared-column reconcile", () => {
       await initializeSchema(mirror);
       expect(await fullShape(db, "materializations")).toEqual(
          await fullShape(mirror, "materializations"),
+      );
+      expect(await tableConstraints(db, "materializations")).toEqual(
+         await tableConstraints(mirror, "materializations"),
       );
 
       await mirror.close();
@@ -211,7 +233,11 @@ describe("DuckDB declared-column reconcile", () => {
 
       expect(await columnNames(db, "themes")).not.toContain("payload");
       // The reconcile continues past the refusal: the unrelated column it CAN
-      // add still lands in the same boot.
+      // add still lands in the same boot. Note this exercises the PLANNER's
+      // refusal, not the per-column try/catch around the ALTER — a refused
+      // column never becomes an add, so it never reaches that catch. The catch
+      // is a backstop for DuckDB rejecting an ALTER the screen approved, which
+      // nothing here constructs.
       expect(await columnNames(db, "materializations")).toContain("manifest");
 
       await db.close();
@@ -286,6 +312,7 @@ describe("planColumnReconcile", () => {
          ],
          existingTable,
          new Map(),
+         new Map(),
       );
       expect(plan.adds).toHaveLength(1);
       expect(plan.adds[0].sql).toBe(
@@ -299,6 +326,7 @@ describe("planColumnReconcile", () => {
          [...existingTable, col("t", "slug", "VARCHAR")],
          existingTable,
          new Map([["t.slug", ["UNIQUE"]]]),
+         new Map(),
       );
       expect(plan.adds).toEqual([]);
       expect(plan.needsMigration[0]).toContain("t.slug");
@@ -313,6 +341,7 @@ describe("planColumnReconcile", () => {
          ],
          [col("t", "id", "VARCHAR"), col("t", "n", "INTEGER")],
          new Map(),
+         new Map(),
       );
       expect(plan.adds).toEqual([]);
       expect(plan.needsMigration).toHaveLength(2);
@@ -320,11 +349,39 @@ describe("planColumnReconcile", () => {
       expect(plan.needsMigration[1]).toContain("default");
    });
 
+   it("reports a constraint the store lacks, which no ALTER can add back", () => {
+      // A table-level UNIQUE added to an existing table's DDL: the store keeps
+      // accepting duplicate rows a fresh store would reject, and nothing fails.
+      const plan = planColumnReconcile(
+         existingTable,
+         existingTable,
+         new Map([["t.id", ["PRIMARY KEY", "UNIQUE"]]]),
+         new Map([["t.id", ["PRIMARY KEY"]]]),
+      );
+      expect(plan.adds).toEqual([]);
+      expect(plan.needsMigration).toHaveLength(1);
+      expect(plan.needsMigration[0]).toContain(
+         "constraints on disk PRIMARY KEY",
+      );
+      expect(plan.needsMigration[0]).toContain("declared PRIMARY KEY + UNIQUE");
+   });
+
+   it("does not report NOT NULL twice: nullability covers it, constraints ignore it", () => {
+      const plan = planColumnReconcile(
+         [col("t", "id", "VARCHAR", { is_nullable: false })],
+         [col("t", "id", "VARCHAR", { is_nullable: false })],
+         new Map([["t.id", ["NOT NULL"]]]),
+         new Map(),
+      );
+      expect(plan.needsMigration).toEqual([]);
+   });
+
    it("never plans anything for a table absent from the store", () => {
       // Just created at the declared shape by the CREATE TABLE pass.
       const plan = planColumnReconcile(
          [col("fresh", "a", "VARCHAR")],
          [],
+         new Map(),
          new Map(),
       );
       expect(plan.adds).toEqual([]);
@@ -339,6 +396,7 @@ describe("planColumnReconcile", () => {
             col("t", "relic", "JSON"),
             col("gone", "x", "VARCHAR"),
          ],
+         new Map(),
          new Map(),
       );
       expect(plan.adds).toEqual([]);

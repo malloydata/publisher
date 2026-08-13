@@ -328,8 +328,16 @@ function columnKey(column: ColumnShape): string {
  *   stand-in would leave the store permanently disagreeing with its own
  *   declaration, so it warns and leaves the write to fail, which is at least
  *   traceable to a named column at boot.
- * - A column already present whose type, nullability or default has changed is
- *   not an ALTER we can infer the intent of.
+ * - A column already present whose type, nullability, default or constraints
+ *   have changed is not an ALTER we can infer the intent of.
+ *
+ *   Where the hand-written step goes when one is needed:
+ *   `dropPackageKeyedIncrementalLedger` below is exactly that shape — a
+ *   targeted pre-pass, keyed off what it finds on disk rather than a version
+ *   marker, running before the CREATE pass so the tables are recreated
+ *   correctly. Copy it rather than rediscovering the pattern; the warning's
+ *   other suggestion, `--init`, is destructive and takes environments,
+ *   packages and materializations with it.
  * - A column or table on disk that this build no longer declares is left alone.
  *   Dropping is a decision, not a reconciliation, and the relics are inert:
  *   `materializations.build_plan` (added and removed within four days in June
@@ -349,12 +357,14 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
 
       const declared = await mirror.all<ColumnShape>(COLUMN_SHAPE_QUERY);
       const onDisk = await db.all<ColumnShape>(COLUMN_SHAPE_QUERY);
-      const constraints = await mirror.all<ConstraintRow>(CONSTRAINT_QUERY);
 
       const plan = planColumnReconcile(
          declared,
          onDisk,
-         constrainedColumnsOf(constraints),
+         constrainedColumnsOf(
+            await mirror.all<ConstraintRow>(CONSTRAINT_QUERY),
+         ),
+         constrainedColumnsOf(await db.all<ConstraintRow>(CONSTRAINT_QUERY)),
       );
 
       const added: string[] = [];
@@ -366,7 +376,12 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
             await db.run(add.sql);
             added.push(add.description);
          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
+            // First line only: DuckDBConnection.run appends the whole failing
+            // statement after a newline, which would turn a scannable boot
+            // warning into a multi-line SQL dump.
+            const message = (
+               err instanceof Error ? err.message : String(err)
+            ).split("\n")[0];
             failed.push(`${add.description} (${message})`);
          }
       }
@@ -405,6 +420,15 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
    }
 }
 
+/**
+ * The constraint kinds worth comparing between two stores, sorted so the
+ * comparison is order-insensitive. NOT NULL is dropped because `is_nullable`
+ * already carries it, and reporting both would name one difference twice.
+ */
+function enforcedKinds(kinds: string[] | undefined): string[] {
+   return (kinds ?? []).filter((kind) => kind !== "NOT NULL").sort();
+}
+
 /** Every column named by any constraint, mapped to the constraint kinds naming it. */
 export function constrainedColumnsOf(
    constraints: ConstraintRow[],
@@ -438,6 +462,7 @@ export function planColumnReconcile(
    declared: ColumnShape[],
    onDisk: ColumnShape[],
    constrainedColumns: Map<string, string[]>,
+   diskConstrainedColumns: Map<string, string[]>,
 ): {
    adds: Array<{ sql: string; description: string }>;
    needsMigration: string[];
@@ -497,6 +522,20 @@ export function planColumnReconcile(
       ) {
          differences.push(
             `default on disk ${existing.column_default ?? "none"}, declared ${column.column_default ?? "none"}`,
+         );
+      }
+      // A constraint added to a table that already exists is as invisible to
+      // CREATE TABLE IF NOT EXISTS as a column is, and the consequence is worse
+      // than a missing column: the store keeps accepting rows a fresh store
+      // rejects, so two servers on one build enforce different rules with
+      // nothing failing. It has happened here once already — `incremental_ledger`
+      // was re-keyed, and needed the hand-written detector below to catch it.
+      // NOT NULL is excluded because `is_nullable` above says it better.
+      const declaredKinds = enforcedKinds(constrainedColumns.get(key));
+      const diskKinds = enforcedKinds(diskConstrainedColumns.get(key));
+      if (declaredKinds.join(",") !== diskKinds.join(",")) {
+         differences.push(
+            `constraints on disk ${diskKinds.join(" + ") || "none"}, declared ${declaredKinds.join(" + ") || "none"}`,
          );
       }
       if (differences.length > 0) {
