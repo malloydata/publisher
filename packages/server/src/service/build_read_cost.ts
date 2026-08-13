@@ -119,6 +119,12 @@ export function snowflakeReadCost(row: Record<string, unknown>): BuildReadCost {
       // served-from-cache query is recognisable by having scanned nothing while
       // still producing rows. Left null rather than a guessed `false` when either
       // input is missing, so an absent column never reads as "not cached".
+      //
+      // It OVER-reports: anything producing rows without reading a table looks
+      // identical. Measured against a live account, a GENERATOR returning 50,000
+      // rows reports BYTES_SCANNED 0 and reads here as a cache hit. A build's read
+      // scans real tables, so the shape barely arises on this path — but this is a
+      // hint, not a fact, and nothing should bill against it.
       cacheHit:
          scanned === null || produced === null
             ? null

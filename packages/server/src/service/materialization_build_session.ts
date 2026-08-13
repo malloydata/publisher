@@ -21,6 +21,8 @@ import {
 import {
    BIGQUERY_COST_COLUMNS,
    bigQueryReadCost,
+   snowflakeCostSQL,
+   snowflakeReadCost,
    type BuildReadCost,
 } from "./build_read_cost";
 import type { QueryMetadata } from "./query_metadata";
@@ -252,6 +254,49 @@ export async function issuePassthroughRead(
       jobId,
       cost: bigQueryReadCost(located, jobId, parentJobId),
    };
+}
+
+/**
+ * Ask Snowflake what the build's read just cost, keyed on the id of the query it
+ * ran.
+ *
+ * Runs AFTER the read, which is what `LAST_QUERY_ID()` needs and why this is not
+ * part of issuing the read: the passthrough reuses one session, so the id it
+ * reports is the read's. That makes the key EXACT — this statement embeds no
+ * query text, and needs no time window, candidate cap or ambiguity rule.
+ *
+ * <b>Best-effort.</b> The rows are already built and captured, so a lookup that
+ * fails costs a number, never the build.
+ */
+async function snowflakeReadCostAfterBuild(
+   session: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   handle: string,
+): Promise<BuildReadCost | null> {
+   if (sourceType !== "snowflake") return null;
+   try {
+      const idResult = await session.runSQL(
+         passthroughSnowflake(`SELECT LAST_QUERY_ID() AS "query_id"`, handle),
+      );
+      const queryId = firstColumn(idResult, "query_id");
+      if (queryId === null) return null;
+
+      const costResult = await session.runSQL(
+         passthroughSnowflake(snowflakeCostSQL(queryId), handle),
+      );
+      const row = resultRows(costResult)[0];
+      return row === undefined ? null : snowflakeReadCost(row);
+   } catch (error) {
+      logger.warn("Could not read back what the Snowflake build read cost", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+   }
+}
+
+/** Snowflake-dialect SQL sent through the passthrough, which is the only route to it. */
+function passthroughSnowflake(innerSQL: string, handle: string): string {
+   return `SELECT * FROM snowflake_query('${escapeSQL(innerSQL)}', '${escapeSQL(handle)}')`;
 }
 
 /** Rows from a `runSQL` result, which is either the array itself or wraps one. */
@@ -518,7 +563,17 @@ export async function buildSourceIntoStorage(params: {
       return {
          storageDestinationName: destinationName,
          schema,
-         readCost: read.cost,
+         // BigQuery reported its cost while issuing the read, because the shape
+         // that carries the label also returns the job. Snowflake's read is
+         // unchanged, so it can only be asked once the read has run — which is
+         // here, while the session still holds the credentials.
+         readCost:
+            read.cost ??
+            (await snowflakeReadCostAfterBuild(
+               session,
+               sourceType,
+               federated.handle,
+            )),
       };
    } finally {
       // Dispose closes the private instance (releasing every secret + attach —
