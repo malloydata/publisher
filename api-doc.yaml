@@ -3685,8 +3685,8 @@ components:
         queryCostBytes:
           type: ["integer", "null"]
           description: >-
-            Warehouse bytes this query will be billed for, as reported by the
-            backend that ran it.
+            Warehouse bytes this query SCANNED, as reported by the backend that
+            ran it. Not what it is billed — see below.
 
             **Null is not zero.** It means the backend did not report a figure,
             and there are two very different reasons for that. Either the backend
@@ -5164,9 +5164,10 @@ components:
         queryCostBytes:
           type: ["integer", "null"]
           description: >-
-            Warehouse bytes billed for the read that produced this table — the
+            Warehouse bytes SCANNED by the read that produced this table — the
             recurring cost of keeping the source materialized, and the debit
             against whatever materializing it saves on the read side.
+            `buildCost.bytesBilled` is the billed figure.
 
             **Null is not zero.** A colocated build reads it from the Malloy
             connection's own statistics; a `storage=` build reads it back from the

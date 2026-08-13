@@ -318,9 +318,10 @@ export class Model {
    /**
     * Warehouse bytes SCANNED by model queries, summed — not bytes billed. The
     * backend reports what the query processed; BigQuery then bills a 10MB minimum
-    * per query, so spend runs above this on small reads. Named and described as
-    * scanned because a metric name is the one surface that cannot be corrected
-    * after the fact without renaming the series.
+    * per query, so spend runs above this on small reads. Named for what it holds
+    * rather than for what it is used for: a metric name is the one surface that
+    * cannot be corrected after the fact without renaming the series, and `cost`
+    * would have implied money.
     *
     * A counter rather than a histogram: the question is "how much did this cost
     * over a period", which is a sum, and bytes as a histogram VALUE would need
@@ -334,8 +335,8 @@ export class Model {
     * instead. Postgres has no equivalent. A dashboard summing this across
     * connections silently understates every non-BigQuery one.
     */
-   private queryCostBytesCounter = this.meter.createCounter(
-      "malloy_model_query_cost_bytes",
+   private queryScannedBytesCounter = this.meter.createCounter(
+      "malloy_model_query_scanned_bytes",
       {
          description:
             "Warehouse bytes scanned by Malloy model queries, where the backend reports them. NOT bytes billed: BigQuery bills a 10MB minimum per query, so spend exceeds this on small reads.",
@@ -2399,8 +2400,10 @@ export class Model {
        */
       executionTimeMs: number;
       /**
-       * Warehouse bytes this query will be billed for, when the backend reports
-       * it (BigQuery today). Null means "not reported", which includes both a
+       * Warehouse bytes this query SCANNED, when the backend reports it (BigQuery
+       * today) — not what it is billed, which runs higher on small reads because
+       * BigQuery charges a 10MB minimum per query. Null means "not reported",
+       * which includes both a
        * backend that cannot say and a storage-served query that touched no
        * warehouse — never read it as zero cost without checking `servedFrom`.
        */
@@ -3003,7 +3006,7 @@ export class Model {
       // it touched no warehouse, which is the entire point.
       const queryCostBytes = queryResults.runStats?.queryCostBytes;
       if (queryCostBytes !== undefined) {
-         this.queryCostBytesCounter.add(queryCostBytes, metricAttributes);
+         this.queryScannedBytesCounter.add(queryCostBytes, metricAttributes);
       }
       return {
          result: wrappedResult,
