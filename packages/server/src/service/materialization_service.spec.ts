@@ -2655,6 +2655,35 @@ describe("executeInstructedBuild", () => {
       }
    });
 
+   it("meters a table collision apart from a per-source-naming host", async () => {
+      // Two conditions, two counters, on purpose. A host minting a table per source
+      // is wasteful but correct; two definitions sharing one table answers a query
+      // from another source's data. Only the second is worth paging on, so it must
+      // not be indistinguishable from the first.
+      const harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      const warn = sinon.stub(logger, "warn");
+      try {
+         await collidingBuild(sinon.stub().resolves());
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_table_collision_total",
+               {},
+            ),
+         ).toBe(1);
+         expect(
+            await harness.collectCounter(
+               "publisher_materialization_shared_address_instructions_total",
+               {},
+            ),
+         ).toBe(0);
+      } finally {
+         warn.restore();
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      }
+   });
+
    it("refuses that collision under PERSIST_COLLISION_ENFORCE", async () => {
       const prev = process.env.PERSIST_COLLISION_ENFORCE;
       process.env.PERSIST_COLLISION_ENFORCE = "true";

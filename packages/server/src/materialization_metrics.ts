@@ -150,7 +150,17 @@ const sharedAddressInstructionCounter = lazyCounter(
    "Content addresses that arrived with more than one instruction naming a " +
       "DIFFERENT physical table. The host minted a table per source where " +
       "several sources share one artifact; each is built and only one is " +
-      "recorded, so the rest are orphaned. Alertable.",
+      "recorded, so the rest are orphaned. Wasteful, not wrong.",
+);
+const tableCollisionCounter = lazyCounter(
+   "publisher_materialization_table_collision_total",
+   "Two definitions with DIFFERENT content addresses materializing into ONE " +
+      "physical table. Each build overwrites the other's rows while both " +
+      "addresses resolve to the table at serve time, so a query is answered " +
+      "from another source's data. A wrong answer, not wasted work — page on " +
+      "this one. Refused instead of counted-and-continued when " +
+      "PERSIST_COLLISION_ENFORCE is set, so a non-zero rate here is also the " +
+      "measure of what flipping that flag would start refusing.",
 );
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
@@ -306,6 +316,16 @@ export function recordDuplicateTargetSkipped(): void {
  */
 export function recordSharedAddressInstructions(): void {
    sharedAddressInstructionCounter().add(1);
+}
+
+/**
+ * Record two definitions materializing into one physical table. Distinct from
+ * {@link recordSharedAddressInstructions}: that one is a host minting more tables
+ * than an artifact needs (wasteful), this one is two different relations sharing a
+ * table (serve-time wrong data).
+ */
+export function recordTableCollision(): void {
+   tableCollisionCounter().add(1);
 }
 
 /**
