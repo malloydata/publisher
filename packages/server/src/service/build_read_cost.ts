@@ -89,6 +89,30 @@ export function bigQueryReadCost(
 }
 
 /**
+ * The database to resolve `INFORMATION_SCHEMA` against.
+ *
+ * Emitted BARE rather than quoted, and only when it is a plain identifier.
+ * Quoting would make it case-exact, while the connection parameter that put the
+ * session on this database resolves case-insensitively — so a connection
+ * configured `mydb` against a stored `MYDB` would qualify to a database that does
+ * not exist. Bare resolution matches how the session got here.
+ *
+ * A name needing quotes takes the shared-database fallback instead of being
+ * interpolated raw. That is a correct answer rather than a degraded one — the
+ * fallback is measured to return the same rows — and it keeps a configured value
+ * out of identifier position.
+ */
+function snowflakeDatabaseQualifier(
+   database: string | null | undefined,
+): string {
+   // typeof, not a truthiness check: the API models an unset database as either
+   // null or undefined, and an empty string is not a database either.
+   return typeof database === "string" && /^[A-Za-z0-9_$]+$/.test(database)
+      ? database
+      : "SNOWFLAKE";
+}
+
+/**
  * The queries this build's session ran, found by the tag the build set on it.
  *
  * `INFORMATION_SCHEMA.QUERY_HISTORY` rather than `ACCOUNT_USAGE.QUERY_HISTORY`:
@@ -138,30 +162,10 @@ export function bigQueryReadCost(
  * The connection's own database is preferred when it has one, so the common shape
  * keeps resolving exactly where it did before.
  */
-/**
- * The database to resolve `INFORMATION_SCHEMA` against.
- *
- * Emitted BARE rather than quoted, and only when it is a plain identifier.
- * Quoting would make it case-exact, while the connection parameter that put the
- * session on this database resolves case-insensitively — so a connection
- * configured `mydb` against a stored `MYDB` would qualify to a database that does
- * not exist. Bare resolution matches how the session got here.
- *
- * A name needing quotes takes the shared-database fallback instead of being
- * interpolated raw. That is a correct answer rather than a degraded one — the
- * fallback is measured to return the same rows — and it keeps a configured value
- * out of identifier position.
- */
-function snowflakeDatabaseQualifier(database: string | undefined): string {
-   return database !== undefined && /^[A-Za-z0-9_$]+$/.test(database)
-      ? database
-      : "SNOWFLAKE";
-}
-
 export function snowflakeCostSQL(
    queryTag: string,
    /** The connection's configured database, absent for a database-less one. */
-   database?: string,
+   database?: string | null,
 ): string {
    const qualifier = `${snowflakeDatabaseQualifier(database)}.INFORMATION_SCHEMA`;
    return `

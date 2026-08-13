@@ -328,7 +328,7 @@ async function snowflakeReadCostAfterBuild(
     * Snowflake supports that shape, and `INFORMATION_SCHEMA` is per-database, so
     * the lookup has to be told where to resolve it — see {@link snowflakeCostSQL}.
     */
-   database: string | undefined,
+   database: string | null | undefined,
 ): Promise<BuildReadCost | null> {
    if (sourceType !== "snowflake") return null;
    // Untagged there is nothing to scope the history by — and nothing asked to be
