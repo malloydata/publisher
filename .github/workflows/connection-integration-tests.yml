@@ -6,20 +6,12 @@ on:
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
-      - "packages/server/src/service/materialization_build_session.ts"
-      - "packages/server/src/service/build_read_cost.ts"
-      - "packages/server/src/service/build_query_tag.ts"
-      - "packages/server/src/service/storage_build_bigquery.integration.spec.ts"
       - ".github/workflows/connection-integration-tests.yml"
   pull_request:
     branches: [main]
     paths:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
-      - "packages/server/src/service/materialization_build_session.ts"
-      - "packages/server/src/service/build_read_cost.ts"
-      - "packages/server/src/service/build_query_tag.ts"
-      - "packages/server/src/service/storage_build_bigquery.integration.spec.ts"
       - ".github/workflows/connection-integration-tests.yml"
   workflow_dispatch:
 
@@ -136,17 +128,3 @@ jobs:
           cd packages/server
           bun test --timeout 100000 src/service/connection.spec.ts
 
-      # The storage= build's warehouse read reaches BigQuery job records —
-      # bigquery_execute's returned job id, the child job a parentJobId listing
-      # finds, and the anonymous result table it names. The unit suite drives that
-      # through a hand-rolled session that returns the expected shape, so it
-      # proves the logic and nothing about the surface: if any of those move,
-      # every unit test still passes and every real build breaks.
-      #
-      # Uses the public-data SA and a plain local DuckDB destination, so it needs
-      # no DuckLake catalog, no Postgres and no object storage. Skips itself when
-      # the credentials are absent, the same way connection.spec.ts does.
-      - name: Run storage= build integration tests
-        run: |
-          cd packages/server
-          bun test --timeout 100000 src/service/storage_build_bigquery.integration.spec.ts

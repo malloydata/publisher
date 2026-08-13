@@ -20,9 +20,29 @@ import { MaterializationService } from "./materialization_service";
  * one of those tests still passes and every real build breaks.
  *
  * Reuses the public-data service account and the credential-gating shape of
- * `connection.spec.ts`, and runs in the same workflow. The destination is a plain
- * local DuckDB file, so this needs no DuckLake catalog, no Postgres and no object
- * storage — only a BigQuery credential.
+ * `connection.spec.ts`. The destination is a plain local DuckDB file, so this
+ * needs no DuckLake catalog, no Postgres and no object storage — only a BigQuery
+ * credential.
+ *
+ * <b>Not yet wired into `connection-integration-tests.yml`, for one reason:</b>
+ * the repository's public-data service account lacks
+ * `bigquery.readsessions.create`, and every path here needs it. That is not a
+ * property of the split — the untagged case below uses `bigquery_query()`, the
+ * shape `storage=` builds have always used, and it fails the same way:
+ *
+ *     the user does not have 'bigquery.readsessions.create' permission
+ *
+ * The passthrough reads its results over the Storage Read API, so
+ * `roles/bigquery.readSessionUser` (or an equivalent grant) is a standing
+ * requirement for materializing ANY BigQuery source into a storage destination,
+ * independent of tagging. Granting it to that service account is all this needs;
+ * adding the file to the workflow's path filter and a step that runs it is then a
+ * two-line change.
+ *
+ * Until then it runs wherever the credentials do exist — set
+ * `BIGQUERY_PUBLIC_DATA_CREDENTIALS` to a key file and
+ * `BIGQUERY_PUBLIC_DATA_PROJECT_ID` to its project. Absent those it skips, so it
+ * costs a developer without credentials nothing.
  */
 const hasPublicDataBigQueryCredentials = () =>
    !!(
