@@ -43,10 +43,33 @@ describe("snowflakeCostSQL", () => {
       expect(sql).not.toContain("LAST_QUERY_ID");
    });
 
-   it("excludes its own shape, which carries the same tag", () => {
-      expect(snowflakeCostSQL("{}")).toContain(
-         "QUERY_TEXT NOT LIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'",
-      );
+   it("does NOT filter itself out by text, because it does not need to", () => {
+      // The accounting query carries the same tag as the read it looks for, so a
+      // text filter looks necessary. It is not: pickSnowflakeReadRow requires
+      // exact equality with the build's own SQL, which this statement can never
+      // satisfy. Filtering by text would also have blanked out the source most
+      // likely to care about query cost — one that models query history itself.
+      const sql = snowflakeCostSQL("{}");
+      expect(sql).not.toContain("NOT LIKE");
+
+      // The property that makes it safe, asserted directly.
+      const accountingRow = { query_text: sql, rows_produced: 1 };
+      expect(
+         pickSnowflakeReadRow([accountingRow], "SELECT a FROM t"),
+      ).toBeNull();
+   });
+
+   it("still finds a read whose own SQL queries QUERY_HISTORY", () => {
+      // The false negative the text filter used to create: a legitimate persist
+      // source modelling Snowflake's query history reported null forever.
+      const buildSQL =
+         "SELECT QUERY_ID FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())";
+      const row = {
+         query_text: buildSQL,
+         bytes_scanned: 900,
+         rows_produced: 3,
+      };
+      expect(pickSnowflakeReadRow([row], buildSQL)).toBe(row);
    });
 
    it("escapes a backslash in the tag, or it matches NOTHING", () => {

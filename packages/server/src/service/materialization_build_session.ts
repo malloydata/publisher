@@ -134,6 +134,9 @@ async function tagSnowflakeSession(
       logger.warn("Could not tag the Snowflake build session", {
          error: error instanceof Error ? error.message : String(error),
       });
+      // Untagged, the read is unattributable in the customer's query history AND
+      // unfindable by the cost lookup, which keys on that same tag.
+      recordAttributionSkipped("tag_failed");
    }
 }
 
@@ -193,8 +196,8 @@ async function canSplitBigQueryRead(
  * telemetry's, which is why this path throws where the Snowflake one returns null.
  */
 export class BilledReadNotCapturedError extends Error {
-   constructor(message: string) {
-      super(message);
+   constructor(message: string, options?: { cause?: unknown }) {
+      super(message, options);
       this.name = "BilledReadNotCapturedError";
    }
 }
@@ -217,7 +220,11 @@ const BIGQUERY_LOOKUP_BACKOFF_MS = 250;
  * credentials, and a warehouse that is genuinely down should surface as a failed
  * build rather than a long stall.
  */
-async function withBigQueryLookupRetry<T>(work: () => Promise<T>): Promise<T> {
+async function withBigQueryLookupRetry<T>(
+   work: () => Promise<T>,
+   /** Named in the terminal error: the only handle on a read that was paid for. */
+   parentJobId: string,
+): Promise<T> {
    let lastError: unknown;
    for (let attempt = 1; attempt <= BIGQUERY_LOOKUP_ATTEMPTS; attempt++) {
       try {
@@ -230,6 +237,7 @@ async function withBigQueryLookupRetry<T>(work: () => Promise<T>): Promise<T> {
                {
                   attempt,
                   of: BIGQUERY_LOOKUP_ATTEMPTS,
+                  parentJobId,
                   error: error instanceof Error ? error.message : String(error),
                },
             );
@@ -239,10 +247,16 @@ async function withBigQueryLookupRetry<T>(work: () => Promise<T>): Promise<T> {
          }
       }
    }
+   // Names the parent job because this is the failure that leaves a read paid for
+   // and uncaptured, and the parent is the only handle on it: a script's child
+   // job is absent from the default listing. Telling an operator a read was
+   // billed without saying which one leaves them nothing to act on.
    throw new BilledReadNotCapturedError(
-      `Could not read the BigQuery job record for a build's read after ` +
-         `${BIGQUERY_LOOKUP_ATTEMPTS} attempts, so its rows cannot be captured: ` +
+      `Could not read the BigQuery job record for a build's read (parent job ` +
+         `${parentJobId}) after ${BIGQUERY_LOOKUP_ATTEMPTS} attempts, so its ` +
+         `rows cannot be captured: ` +
          `${lastError instanceof Error ? lastError.message : String(lastError)}`,
+      { cause: lastError },
    );
 }
 
@@ -346,8 +360,8 @@ export async function issuePassthroughRead(
    // statement and the one whose rows this is after. (Measured, `SET
    // @@query_label` produces no such child — but that is behaviour, not a
    // guarantee, and this costs nothing to pin.)
-   const child = await withBigQueryLookupRetry(() =>
-      session.runSQL(`
+   const located = await withBigQueryLookupRetry(async () => {
+      const child = await session.runSQL(`
       SELECT job_id,
              json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,
              json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,
@@ -356,16 +370,19 @@ export async function issuePassthroughRead(
       FROM (SELECT * FROM bigquery_jobs('${escapeSQL(handle)}',
                                         parentJobId := '${escapeSQL(parentJobId)}')
             WHERE job_type = 'QUERY')
-      ORDER BY creation_time DESC`),
-   );
-   const rows = resultRows(child);
-   const located = rows.find((r) => str(r.dataset) && str(r.table));
-   if (located === undefined) {
-      throw new BilledReadNotCapturedError(
-         `The build's BigQuery read (job ${parentJobId}) left no locatable ` +
-            `result table, so its rows cannot be captured`,
-      );
-   }
+      ORDER BY creation_time DESC`);
+      const row = resultRows(child).find((r) => str(r.dataset) && str(r.table));
+      if (row === undefined) {
+         // Inside the retry on purpose: a listing can answer 200 without having
+         // enumerated the child yet, which is the same transient as a 5xx and is
+         // indistinguishable from it here. Throwing plainly lets the backoff take
+         // it; only the LAST attempt becomes a terminal failure.
+         throw new Error(
+            `no child job with a result table under parent ${parentJobId}`,
+         );
+      }
+      return row;
+   }, parentJobId);
 
    const path = [
       str(located.project) ?? handle,
@@ -416,12 +433,25 @@ async function snowflakeReadCostAfterBuild(
       const costResult = await session.runSQL(
          passthroughSnowflake(snowflakeCostSQL(tag, database), handle),
       );
-      const row = pickSnowflakeReadRow(resultRows(costResult), buildSQL);
-      return row === null ? null : snowflakeReadCost(row);
+      const candidates = resultRows(costResult);
+      const row = pickSnowflakeReadRow(candidates, buildSQL);
+      if (row === null) {
+         // Counted, not just absent. This is the likeliest Snowflake miss —
+         // it turns on QUERY_TEXT matching buildSQL byte for byte after a round
+         // trip through the driver — and without a signal it is invisible.
+         recordAttributionSkipped(
+            candidates.length === 0
+               ? "read_row_not_found"
+               : "read_row_ambiguous",
+         );
+         return null;
+      }
+      return snowflakeReadCost(row);
    } catch (error) {
       logger.warn("Could not read back what the Snowflake build read cost", {
          error: error instanceof Error ? error.message : String(error),
       });
+      recordAttributionSkipped("cost_query_failed");
       return null;
    }
 }
@@ -446,6 +476,37 @@ function firstColumn(result: unknown, column: string): string | null {
 
 function str(value: unknown): string | null {
    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Clear the session's `QUERY_TAG` before the session is released.
+ *
+ * The build session is private and disposed here, so this is not about leaking a
+ * tag to a later build. It covers the one case the tag statement is allowed to
+ * fail: {@link tagSnowflakeSession} is best-effort, and whether the driver hands
+ * this build a session that was ALREADY tagged is the driver's business rather
+ * than something this can observe. A failed tag on a pre-tagged session would
+ * leave the read attributed to whatever set it last, and wrong attribution is
+ * worse than none — nothing about it looks wrong.
+ *
+ * Best-effort in turn, and last: a build that produced correct rows must not fail
+ * on its own cleanup.
+ */
+async function clearSnowflakeSessionTag(
+   session: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   handle: string | undefined,
+): Promise<void> {
+   if (sourceType !== "snowflake" || handle === undefined) return;
+   try {
+      await session.runSQL(
+         passthroughSnowflake("ALTER SESSION UNSET QUERY_TAG", handle),
+      );
+   } catch (error) {
+      logger.warn("Could not clear the Snowflake build session's query tag", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+   }
 }
 
 /** Narrow a connection's declared type to a supported passthrough source type. */
@@ -626,6 +687,8 @@ export async function buildSourceIntoStorage(params: {
    const { session, dispose } = createIsolatedBuildSession(
       `build_${destinationName}`,
    );
+   // Visible to the finally, which clears the session tag before release.
+   let federatedHandle: string | undefined;
    try {
       await attachDestinationReadWrite(
          session,
@@ -711,6 +774,7 @@ export async function buildSourceIntoStorage(params: {
             )),
       };
    } finally {
+      await clearSnowflakeSessionTag(session, sourceType, federatedHandle);
       // Dispose closes the private instance (releasing every secret + attach —
       // nothing federated or read-write survives the build) and removes its
       // throwaway working directory.
