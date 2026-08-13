@@ -27,7 +27,7 @@ An existing `publisher.db` has always picked up a new **table** added by a later
 ### What changed
 
 - **Schema init now reconciles columns.** After the `CREATE TABLE` pass, the declared shape is compared against what is on disk and anything declared-but-absent is added. Additions only, and only for columns carrying no constraint. A declared `DEFAULT` **is** carried across and backfills existing rows.
-- **What it cannot fix, it now says at boot.** A constrained column that cannot be added, or a column already present whose type, nullability or default has changed, is logged as a warning naming the column, instead of surfacing later as a binder error on an unrelated request. This is the part that keeps earning its keep after this particular column is behind us.
+- **What it cannot fix, it now says at boot.** A constrained column that cannot be added, or a column already present whose type, nullability, default or constraints have changed, is logged as a warning naming the column, instead of surfacing later as a binder error on an unrelated request. This is the part that keeps earning its keep after this particular column is behind us.
 - **Nothing is ever dropped.** Columns and tables an older store has and this build no longer declares are left in place and reported at debug level. `materializations.build_plan` (added and removed within four days in June 2026) and the `build_manifests` table are both inert relics of this kind; removing them is a decision for an operator, not something an upgrade should do quietly.
 
 ### What is and is not carried across
@@ -40,11 +40,11 @@ A future column outside the safe subset needs a hand-written step, and the boot 
 
 Constraints are also now compared on columns both sides already have, and reported the same way. A constraint added to an existing table's DDL is as invisible to `CREATE TABLE IF NOT EXISTS` as a column is, and the consequence is quieter: the older store keeps accepting rows a fresh one rejects, with nothing failing to say so.
 
+There is still no schema-version marker, and none is needed: the comparison is against the database itself. The expected shape is not written down twice either — it is read back from a scratch in-memory database the same DDL has just been run against, so the `CREATE TABLE` statements remain the single declaration of the schema.
+
 ### On a large store
 
 Adding a column without a default is a catalog operation, not a data rewrite — on a 5M-row, 205MB `materializations` table it took 17ms and grew the file by 0.1%. Adding one **with** a `DEFAULT` backfills every existing row, so that path is a real write: ~81ms on the same table, with a longer checkpoint. Both are trivial against a boot that compiles packages, and both happen before the server accepts traffic, but only the first is free.
-
-There is still no schema-version marker, and none is needed: the comparison is against the database itself. The expected shape is not written down twice either — it is read back from a scratch in-memory database the same DDL has just been run against, so the `CREATE TABLE` statements remain the single declaration of the schema.
 
 ### Why it took an upgrade to find
 
