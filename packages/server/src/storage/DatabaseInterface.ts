@@ -259,6 +259,14 @@ export interface MaterializationUpdate {
    startedAt?: Date;
    completedAt?: Date;
    error?: string | null;
+   /**
+    * Why each source that failed did so, keyed by source name.
+    *
+    * `error` above is the run's own message and cannot say which source failed
+    * when only some of them did. A consumer that binds state per source reads
+    * this to attribute a cause to the unit it belongs to.
+    */
+   failedSources?: Record<string, string> | null;
    metadata?: Record<string, unknown> | null;
 }
 

@@ -11,6 +11,7 @@ import {
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
+   SourceBuildFailure,
    internalErrorToHttpError,
 } from "../errors";
 import {
@@ -2780,7 +2781,8 @@ describe("per-source failure reporting", () => {
          "a failed build must name each source that failed and the reason it " +
             "reported, so the reason survives to the entry the control plane reads",
       ).toMatchObject({
-         orders: "Access Denied: Permission denied while writing to dataset analytics",
+         orders:
+            "Access Denied: Permission denied while writing to dataset analytics",
       });
    });
 });

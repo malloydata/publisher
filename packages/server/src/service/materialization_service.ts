@@ -9,6 +9,7 @@ import {
    MaterializationConflictError,
    MaterializationEligibilityError,
    MaterializationNotFoundError,
+   SourceBuildFailure,
 } from "../errors";
 import { logger } from "../logger";
 import {
@@ -1599,21 +1600,37 @@ export class MaterializationService {
                   assertMaterializationEligible(persistSource);
                }
 
-               const entry = await this.buildOneSource(
-                  persistSource,
-                  instruction,
-                  connection,
-                  connectionDigests,
-                  manifest,
-                  environment,
-                  entries,
-                  buildMetadata,
-                  incremental,
-                  // The CONTENT address, distinct from the instruction's
-                  // caller-assigned identity: the ledger is keyed by it so a
-                  // boundary can never be read against different SQL.
-                  sourceEntityId,
-               );
+               let entry;
+               try {
+                  entry = await this.buildOneSource(
+                     persistSource,
+                     instruction,
+                     connection,
+                     connectionDigests,
+                     manifest,
+                     environment,
+                     entries,
+                     buildMetadata,
+                     incremental,
+                     // The CONTENT address, distinct from the instruction's
+                     // caller-assigned identity: the ledger is keyed by it so a
+                     // boundary can never be read against different SQL.
+                     sourceEntityId,
+                  );
+               } catch (buildErr) {
+                  // Name the source the failure belongs to before it leaves this
+                  // loop. Above here the run reports one error for the whole
+                  // command, which cannot say which source failed when only some
+                  // did -- and a consumer binding per-source state has nothing to
+                  // attribute. Redacted against this source's own connection for
+                  // the same reason the run-level message is: a warehouse error
+                  // can echo the credentials it was handed.
+                  throw new SourceBuildFailure(
+                     persistSource.name,
+                     buildErr,
+                     redactConnectionSecrets(errMessage(buildErr), connection),
+                  );
+               }
                entries[sourceEntityId] = entry;
                if (entry.storageDestinationName) builtThisRun.push(entry);
             }
@@ -2956,11 +2973,22 @@ export class MaterializationService {
             const next = abortController.signal.aborted
                ? "CANCELLED"
                : "FAILED";
+            // A source that failed names itself, so the run records which source
+            // it was alongside the run-level message. Without this the run reports
+            // one error for the whole command and a consumer cannot tell a partial
+            // failure from a total one, nor which unit to attribute the cause to.
+            const failedSources =
+               err instanceof SourceBuildFailure
+                  ? { [err.sourceName]: message }
+                  : undefined;
             try {
                await this.repository.updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
                   error: abortController.signal.aborted ? "Cancelled" : message,
+                  ...(failedSources && !abortController.signal.aborted
+                     ? { failedSources }
+                     : {}),
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {

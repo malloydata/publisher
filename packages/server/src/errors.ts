@@ -293,3 +293,25 @@ export class QueryTimeoutError extends Error {
       super(message);
    }
 }
+
+/**
+ * A source that failed to build, carrying which source it was and the reason the
+ * warehouse or compiler gave.
+ *
+ * A build reports one error for the whole command, which cannot say which source
+ * failed when only some of them did. Wrapping the cause here keeps the attribution
+ * attached to it as it travels to the run's terminal record, so a consumer binding
+ * per-source state has something to bind the reason to.
+ */
+export class SourceBuildFailure extends Error {
+   constructor(
+      readonly sourceName: string,
+      readonly cause: unknown,
+      message?: string,
+   ) {
+      super(
+         message ?? (cause instanceof Error ? cause.message : String(cause)),
+      );
+      this.name = "SourceBuildFailure";
+   }
+}
