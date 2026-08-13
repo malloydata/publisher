@@ -16,11 +16,13 @@ import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
 import {
    bigQueryQueryLabelValue,
+   snowflakeQueryTagValue,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import {
    BIGQUERY_COST_COLUMNS,
    bigQueryReadCost,
+   pickSnowflakeReadRow,
    snowflakeCostSQL,
    snowflakeReadCost,
    type BuildReadCost,
@@ -257,13 +259,15 @@ export async function issuePassthroughRead(
 }
 
 /**
- * Ask Snowflake what the build's read just cost, keyed on the id of the query it
- * ran.
+ * Ask Snowflake what the build's read just cost, scoped by the tag the build set
+ * on its session.
  *
- * Runs AFTER the read, which is what `LAST_QUERY_ID()` needs and why this is not
- * part of issuing the read: the passthrough reuses one session, so the id it
- * reports is the read's. That makes the key EXACT — this statement embeds no
- * query text, and needs no time window, candidate cap or ambiguity rule.
+ * Runs AFTER the read, because the history has to contain it. Scoped by the TAG
+ * rather than `LAST_QUERY_ID()`: the session is not exclusively this build's, as
+ * the ADBC driver issues `SELECT 1` connection probes around each passthrough
+ * call — measured against a live account, `LAST_QUERY_ID()` after a build-shaped
+ * read returned a probe rather than the read, which would have reported a probe's
+ * zero cost for every Snowflake build.
  *
  * <b>Best-effort.</b> The rows are already built and captured, so a lookup that
  * fails costs a number, never the build.
@@ -272,20 +276,20 @@ async function snowflakeReadCostAfterBuild(
    session: DuckDBConnection,
    sourceType: FederatedSourceType,
    handle: string,
+   buildSQL: string,
+   queryMetadata: QueryMetadata | undefined,
 ): Promise<BuildReadCost | null> {
    if (sourceType !== "snowflake") return null;
+   // Untagged there is nothing to scope the history by — and nothing asked to be
+   // attributed in the first place.
+   const tag = snowflakeQueryTagValue(queryMetadata);
+   if (tag === undefined) return null;
    try {
-      const idResult = await session.runSQL(
-         passthroughSnowflake(`SELECT LAST_QUERY_ID() AS "query_id"`, handle),
-      );
-      const queryId = firstColumn(idResult, "query_id");
-      if (queryId === null) return null;
-
       const costResult = await session.runSQL(
-         passthroughSnowflake(snowflakeCostSQL(queryId), handle),
+         passthroughSnowflake(snowflakeCostSQL(tag), handle),
       );
-      const row = resultRows(costResult)[0];
-      return row === undefined ? null : snowflakeReadCost(row);
+      const row = pickSnowflakeReadRow(resultRows(costResult), buildSQL);
+      return row === null ? null : snowflakeReadCost(row);
    } catch (error) {
       logger.warn("Could not read back what the Snowflake build read cost", {
          error: error instanceof Error ? error.message : String(error),
@@ -573,6 +577,8 @@ export async function buildSourceIntoStorage(params: {
                session,
                sourceType,
                federated.handle,
+               buildSQL,
+               queryMetadata,
             )),
       };
    } finally {

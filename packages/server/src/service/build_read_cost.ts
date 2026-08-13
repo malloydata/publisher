@@ -1,3 +1,5 @@
+import { sqlLiteral } from "./db_utils";
+
 /**
  * What a `storage=` build's warehouse read cost, as the warehouse accounts for it.
  *
@@ -80,26 +82,65 @@ export function bigQueryReadCost(
 }
 
 /**
- * Snowflake's query history for ONE query, keyed on its id.
+ * The queries this build's session ran, found by the tag the build set on it.
  *
  * `INFORMATION_SCHEMA.QUERY_HISTORY` rather than `ACCOUNT_USAGE.QUERY_HISTORY`:
  * the latter lags by up to three hours and needs elevated grants, so it cannot
  * answer a question asked immediately after a build. The one used here carries no
  * such lag — measured against a live account, a query appears in it immediately.
  *
- * The key is the id the session just reported, so this statement embeds no query
- * text and needs no time window, candidate cap, or ambiguity rule. Aliases are
- * QUOTED because Snowflake folds a bare alias to uppercase, which would make
- * every field below read undefined while a row still came back.
+ * Keyed on the TAG, not on `LAST_QUERY_ID()`. The passthrough's session is not
+ * exclusively ours: the ADBC driver issues its own `SELECT 1` connection probes
+ * around each call, and measured against a live account `LAST_QUERY_ID()` after a
+ * build-shaped read returned a probe, not the read. A tag scopes to this build's
+ * session, and {@link pickSnowflakeReadRow} then picks the read out of it.
+ *
+ * The accounting query itself carries the same tag, so it excludes its own shape.
+ * Aliases are QUOTED because Snowflake folds a bare alias to uppercase, which
+ * would make every field below read undefined while a row still came back.
+ *
+ * The tag is escaped with {@link sqlLiteral}, not by doubling quotes. It is JSON,
+ * so a property value containing a backslash arrives here doubled — and Snowflake
+ * consumes one as an escape, leaving a comparison value that cannot equal the tag
+ * actually stored. Measured against a live account: quote-doubling here matched
+ * ZERO rows for a tag carrying a backslash, and reported no cost rather than an
+ * error.
  */
-export function snowflakeCostSQL(queryId: string): string {
+export function snowflakeCostSQL(queryTag: string): string {
    return `
       SELECT QUERY_ID       AS "job_id",
+             QUERY_TEXT     AS "query_text",
              BYTES_SCANNED  AS "bytes_scanned",
              EXECUTION_TIME AS "execution_time_ms",
              ROWS_PRODUCED  AS "rows_produced"
       FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
-      WHERE QUERY_ID = '${queryId.replace(/'/g, "''")}'`;
+      WHERE QUERY_TAG = '${sqlLiteral(queryTag, "snowflake")}'
+        AND EXECUTION_STATUS = 'SUCCESS'
+        AND QUERY_TEXT NOT LIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'`;
+}
+
+/**
+ * Pick the build's own read out of the queries that carried its tag.
+ *
+ * Measured against a live account, one build-shaped read left FOUR tagged
+ * queries: the read, two driver probes, and the accounting query.
+ *
+ * The read is identified by comparing text HERE rather than in the statement
+ * sent to the warehouse, and that distinction is the point: the compiled SQL is
+ * never embedded in a warehouse query, so there is nothing to escape and no
+ * dialect whose literal grammar it could break. The tag has already reduced the
+ * candidates to this one build's session.
+ *
+ * Returns null on anything other than exactly one match rather than guessing.
+ */
+export function pickSnowflakeReadRow(
+   rows: Record<string, unknown>[],
+   buildSQL: string,
+): Record<string, unknown> | null {
+   const matches = rows.filter(
+      (row) => str(col(row, "query_text"))?.trim() === buildSQL.trim(),
+   );
+   return matches.length === 1 ? matches[0] : null;
 }
 
 /** Read {@link snowflakeCostSQL}'s row. */
