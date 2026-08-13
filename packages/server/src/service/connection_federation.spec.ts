@@ -74,6 +74,117 @@ describe("federateSourceForPassthrough", () => {
       expect(sql.some((s) => s.includes("ATTACH"))).toBe(false);
    });
 
+   it("snowflake: federates a KEY PAIR connection", async () => {
+      // Requiring a password made every key-pair connection unbuildable into a
+      // storage destination though it queries fine live — and key-pair is where
+      // Snowflake is steering programmatic access.
+      const { conn, sql } = stubbedConnection();
+      const result = await federateSourceForPassthrough(conn, "snowflake", {
+         name: "src_sf_kp",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            privateKey:
+               "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+            privateKeyPass: "pass'phrase",
+            warehouse: "WH",
+         } as components["schemas"]["SnowflakeConnection"],
+      });
+      expect(result.sourceType).toBe("snowflake");
+      const secret = sql.find((s) => s.includes("CREATE OR REPLACE SECRET"));
+      expect(secret).toContain("AUTH_TYPE 'key_pair'");
+      expect(secret).toContain("PRIVATE KEY-----");
+      expect(secret).toContain("PRIVATE_KEY_PASSWORD 'pass''phrase'");
+      // No BARE password field — not even an empty one, which is what the
+      // extension rejects alongside a key pair. Anchored to the start of the
+      // emitted line: an unanchored "PASSWORD '" also matches inside
+      // PRIVATE_KEY_PASSWORD and would fail on a correct secret.
+      expect(secret).not.toContain("\n   PASSWORD '");
+   });
+
+   it("snowflake: omits DATABASE from the secret when the connection has none", async () => {
+      // A database-less connection is now loadable and queryable, so it can also
+      // reach a `storage=` build. The secret simply carries no DATABASE, which
+      // means the passthrough session has no current database and any SQL run
+      // through it must name tables in full. Pinned so the emitted secret is a
+      // deliberate shape rather than an accident of the conditional spread: an
+      // empty `DATABASE ''` line would be worse than its absence, since the
+      // extension would take it as a real (empty) database name.
+      const { conn, sql } = stubbedConnection();
+      await federateSourceForPassthrough(conn, "snowflake", {
+         name: "src_sf_nodb",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            password: "pwd",
+            warehouse: "WH",
+         } as components["schemas"]["SnowflakeConnection"],
+      });
+      const secret = sql.find((s) => s.includes("CREATE OR REPLACE SECRET"))!;
+      expect(secret).not.toContain("DATABASE");
+      expect(secret).toContain("WAREHOUSE 'WH'");
+   });
+
+   it("snowflake: normalizes a single-line private key, as the live path does", async () => {
+      // The shape that matters. A multi-line PEM is already valid, so a test
+      // using one passes whether or not the key is normalized. A SINGLE-LINE key
+      // is accepted by the live path (which normalizes at its own call site) and
+      // is what a user pasting from a secret store actually supplies — and left
+      // unreflowed, its header has no trailing newline, which makes Go's
+      // pem.Decode return nil and the build fail on a key that queries fine.
+      const { conn, sql } = stubbedConnection();
+      const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ".repeat(
+         3,
+      );
+      await federateSourceForPassthrough(conn, "snowflake", {
+         name: "src_sf_oneline",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            privateKey: `-----BEGIN PRIVATE KEY-----${body}-----END PRIVATE KEY-----`,
+         } as components["schemas"]["SnowflakeConnection"],
+      });
+      const secret = sql.find((s) => s.includes("CREATE OR REPLACE SECRET"))!;
+      // Reflowed: a newline directly after the header rather than base64.
+      expect(secret).toContain("-----BEGIN PRIVATE KEY-----\n");
+      expect(secret).not.toContain(
+         `-----BEGIN PRIVATE KEY-----${body.slice(0, 8)}`,
+      );
+   });
+
+   it("snowflake: carries ROLE and SCHEMA so a build matches the live connection", async () => {
+      // Both are folded into the Malloy connection's digest, i.e. they are part
+      // of what identifies the connection. Dropping them runs the build under the
+      // user's DEFAULT role while live queries use the configured one.
+      const { conn, sql } = stubbedConnection();
+      await federateSourceForPassthrough(conn, "snowflake", {
+         name: "src_sf_role",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            password: "pw",
+            role: "REPORTING",
+            schema: "ANALYTICS",
+         } as components["schemas"]["SnowflakeConnection"],
+      });
+      const secret = sql.find((s) => s.includes("CREATE OR REPLACE SECRET"));
+      expect(secret).toContain("ROLE 'REPORTING'");
+      expect(secret).toContain("SCHEMA 'ANALYTICS'");
+   });
+
+   it("snowflake: refuses a connection carrying neither credential", async () => {
+      const { conn } = stubbedConnection();
+      await expect(
+         federateSourceForPassthrough(conn, "snowflake", {
+            name: "src_sf_none",
+            snowflakeConnection: {
+               account: "acct",
+               username: "user",
+            } as components["schemas"]["SnowflakeConnection"],
+         }),
+      ).rejects.toThrow(/privateKey or password is required/);
+   });
+
    it("postgres: ATTACHes READ_ONLY and returns the alias as handle", async () => {
       const { conn, sql } = stubbedConnection();
       const result = await federateSourceForPassthrough(conn, "postgres", {

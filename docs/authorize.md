@@ -196,14 +196,15 @@ The `include { … private: * }` layer is what controls which base columns each 
 
 ## Enforcement
 
-The gate runs, fail-closed, on every query entry point — **before** any filter injection or compilation, so a denial is a clean 403 and never masked by a later error:
+The gate runs, fail-closed, on every query entry point — **before** any filter injection or compilation, so a denial is a clean 403 and never masked by a later error. There is one documented exception, [the authorize bypass](#authorize-bypass-for-trusted-data-management-callers), which applies to `POST /…/query` only:
 
 | Entry point | Behavior |
 | --- | --- |
-| `POST /…/query` | Gate the run-target source; deny → 403. |
-| Notebook cell `GET` | Gate each cell that runs a query. |
-| `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling — so compile errors can't be used as a schema oracle — plus a compiled-source backstop). |
-| MCP `malloy_executeQuery` | Routes through the query path; a denial surfaces as `isError: true` naming the source. |
+| `POST /…/query` | Gate the run-target source; deny → 403. Skipped entirely when the request carries `x-publisher-bypass-authorize: true`. |
+| `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is 403 there regardless. Use the `/environments/…` route. |
+| Notebook cell `GET` | Gate each cell that runs a query. Accepts no bypass. |
+| `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling — so compile errors can't be used as a schema oracle — plus a compiled-source backstop). Accepts no bypass. |
+| MCP `malloy_executeQuery` | Routes through the query path; a denial surfaces as `isError: true` naming the source. Sends no bypass. |
 
 **Fail-closed, evaluated as a disjunction.** Each in-scope expression is probed independently; a branch that errors, references an unset given, or returns null / non-`true` is treated as *not granting*, and the next branch is tried. The request is denied only when **no** branch returns `true`. So a single-gate source with an unset given is denied, but a source whose *other* gate is satisfied still grants — the skip keeps OR semantics intact.
 
@@ -228,8 +229,27 @@ Validation covers the gates each source **declares** — its own `#(authorize)` 
 - **It does not defend against a caller who sets their own givens.** Exposed directly to untrusted users, anyone can send `{"ROLE":"admin"}` and pass an `$ROLE = 'admin'` gate. Do not treat `#(authorize)` as end-user authn/authz on a public endpoint.
 - **Identity-bound givens** — a verified token or trusted-proxy header populating reserved "system givens" the caller cannot override — is a planned milestone that would make authorize a standalone boundary. It is not implemented yet.
 
+### Authorize bypass, for trusted data-management callers
+
+A `POST /…/query` request carrying the header `x-publisher-bypass-authorize: true` runs with gate evaluation **skipped**. It exists for data management: an indexer or similar back-office caller is a machine identity with no givens, so a gated source returns 403 and is never scanned — an author who tags a dimension `#(index)` on a gated source otherwise gets an empty index, the tag having opted in and the gate having silently revoked it.
+
+What it does and does not touch:
+
+- **Only** expressions collected from `#(authorize)` / `##(authorize)` are skipped. The author's own `where:` clauses still narrow the scan, row and byte caps still apply, restricted mode still bans raw SQL, and a gate declared in caller-submitted text is still rejected with a 400.
+- It is **not** `bypassFilters`, a separate deprecated `#(filter)`-only control in the request body. Neither reads or writes the other.
+- Notebook cells, `/compile`, and MCP accept no bypass at all.
+
+**Publisher does not bound who may send it.** There is no authentication in the query path, so the header is exactly as trustworthy as the network in front of it — and the header name is published here, so treat it as known to anyone. **A deployment that reaches untrusted callers must strip this header at its edge.** [docs/authorize-bypass-deployment.md](authorize-bypass-deployment.md) is the operator's page: what to strip, why an allowlist beats a blocklist, and how to tell whether a bypass ever happened.
+
+Note what the residual case is if the strip is missing. Publisher has no tenant boundary of its own, so a fronting application's own authorization still decides which packages a caller reaches; what the header removes is the **in-model** gating — role- or row-level policy *within* data that caller is otherwise entitled to reach.
+
+Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`) and logged (`authorize bypass`, with source / model / package). The counter is the rate signal; the log line is what an investigation reads. Read the two carefully: `runnable` fires on every bypassed query, `source` only when a run target was resolvable before compilation, so they are not always paired.
+
+**This is an interim answer, not the intended one.** The shape that keeps the decision with the model author is identity-bound givens (above) — a reserved system given the caller cannot set, so an author writes `#(authorize) "$ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'"` and a source they never opted in stays gated. This header removes the gate globally instead, for callers the deployment trusts wholesale. When identity-bound givens land, this should narrow or go.
+
 ## Known limitations
 
+- **A request can be exempted from the gate entirely** (see [Authorize bypass](#authorize-bypass-for-trusted-data-management-callers)). `x-publisher-bypass-authorize: true` on a query request skips evaluation, and Publisher does not bound who may send it — so on a deployment that does not strip the header at its edge, every gate is advisory for any caller who knows the name. Listed first here because it is the only limitation on this page that a *deployment*, not a model, has to close.
 - **A gate does not follow a join** (see [above](#the-entry-point-and-only-the-entry-point)). This is the limitation with the largest practical consequence: any source that joins gated data and is itself ungated hands that data to every caller. Treat "which sources can a caller enter through, and what does each of them reach" as part of modelling, not as something the gate handles for you.
 - **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with access modifiers to keep the re-exposed column surface deliberate. (An extension with no gate of its own carries the base's.)
 - **A source the caller declares in its own query text is gated after compiling, not before.** For a source the package declares — named plainly, or as an expression over the name like `locked extend { … } -> { … }` or a refinement `locked_q + { … }` — the gate runs before compilation, so a denial cannot be used to read the schema. A caller who writes `source: mine is locked_base extend {}` in the `query` text is different: `mine` does not exist until that text compiles, so there is nothing to gate first. The gate still fires — the compiled run target carries the base's gate and the request is denied with a 403, and no rows are ever returned — but a *malformed* probe (`group_by: no_such_field`) gets Malloy's "field is not defined" instead, which confirms whether a column exists on the locked base. Closing it would mean resolving a gate out of untrusted text before compiling it, which is exactly the resolution-from-text this design refuses to do (see [Security model](#security-model)). Behind the trusted tier the exposure is a column name, not data.

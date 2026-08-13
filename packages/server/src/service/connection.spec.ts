@@ -1839,6 +1839,67 @@ describe("connection integration tests", () => {
             }
          });
 
+         it("should drop explicitly-null Snowflake options from private-key connOptions", async () => {
+            // This is the path that actually throws. A key-pair connection
+            // bypasses the core connection registry (which strips nulls itself)
+            // and is built directly by buildSnowflakePrivateKeyConnection, where
+            // cloneApiConnection's shallow spread leaves nulls intact. A
+            // surviving null reaches SnowflakeConnection.getDigest(), whose
+            // makeDigest reads `.length` off each part and special-cases only
+            // `undefined` -- so the digest throws, and because it is taken by the
+            // package-load worker's metadata RPC, the symptom is a whole package
+            // failing to load rather than a connection error.
+            //
+            // The fixture above omits these fields, making them `undefined`,
+            // which never reproduced the bug. They must be explicitly null here.
+            const { malloyConnections, releaseConnections } =
+               await createEnvironmentConnections(
+                  [
+                     {
+                        name: "sf_private_key_nulls",
+                        type: "snowflake",
+                        snowflakeConnection: {
+                           account: "test-account",
+                           username: "test-user",
+                           privateKey:
+                              "-----BEGIN PRIVATE KEY-----MIIB-----END PRIVATE KEY-----",
+                           warehouse: "test-warehouse",
+                           database: null,
+                           schema: null,
+                           role: null,
+                           password: null,
+                           privateKeyPass: null,
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+
+            try {
+               const connection = malloyConnections.get(
+                  "sf_private_key_nulls",
+               ) as unknown as {
+                  connOptions: Record<string, unknown>;
+                  getDigest: () => string;
+               };
+               // Absent, not null: `null` is what breaks the digest.
+               for (const field of [
+                  "database",
+                  "schema",
+                  "role",
+                  "password",
+                  "privateKeyPass",
+               ]) {
+                  expect(connection.connOptions[field]).toBeUndefined();
+               }
+               // The real oracle: the digest is what threw, so compute it.
+               expect(() => connection.getDigest()).not.toThrow();
+               expect(typeof connection.getDigest()).toBe("string");
+            } finally {
+               await releaseConnections();
+            }
+         });
+
          it("should translate Trino Peaka credentials to core extraCredential", () => {
             const assembled = assembleEnvironmentConnections(
                [

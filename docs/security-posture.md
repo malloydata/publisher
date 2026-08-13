@@ -32,10 +32,16 @@ Concretely:
   reachable server with the default config it is open — but so is the query API, and an attacker
   who can register a package can already read the data directly. Set `"frozenConfig": true` to
   close registration on a deployment where that matters.
-- **Governance is a modeling concern, not a request concern.** `#(authorize)`, given-scoped
+- **Governance is mostly a modeling concern.** `#(authorize)`, given-scoped
   row-level access, `explores`, and `queryableSources` constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
   a given is whatever the caller sends.
+  One request-level exception, and it is load-bearing: `x-publisher-bypass-authorize: true` on a
+  query request skips `#(authorize)` evaluation outright, for trusted data-management callers
+  (indexers). Publisher bounds nobody, so a deployment reaching untrusted callers **must** strip
+  that header at its edge — see
+  [authorize-bypass-deployment.md](authorize-bypass-deployment.md). It is the one place where a
+  request, not a model, decides whether governance applies.
 
 The corollary that keeps coming up in design review: **a feature cannot be made safe by
 sandboxing it if an equivalent capability is available unsandboxed next to it.** Isolation is

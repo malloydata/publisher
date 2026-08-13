@@ -12,8 +12,13 @@ import {
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import {
+   BYPASS_AUTHORIZE_HEADER,
+   readBypassAuthorize,
+} from "../authorize_bypass_header";
 import { resetAuthorizeGuardTelemetryForTesting } from "../authorize_metrics";
 import { AccessDeniedError, BadRequestError } from "../errors";
+import { logger } from "../logger";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -427,6 +432,7 @@ async function runGated(
    query: string,
    givens?: Record<string, GivenValue>,
    bypassFilters?: boolean,
+   bypassAuthorize?: boolean,
 ) {
    const model = await Model.create(
       "test-pkg",
@@ -441,6 +447,10 @@ async function runGated(
       undefined,
       bypassFilters,
       givens,
+      undefined,
+      undefined,
+      "full",
+      bypassAuthorize,
    );
 }
 
@@ -3036,5 +3046,249 @@ source:
       expect(err?.message).toContain(
          'Invalid #(authorize) annotation on source "bf_validate"',
       );
+   });
+});
+
+// The private data-management bypass (router `dataManagementQuery`): a trusted
+// internal caller runs a query with `#(authorize)` gates skipped, so indexing can
+// scan a source the author tagged `#(index)` but gated against the machine
+// identity that does the scanning.
+//
+// What is disabled is ONLY expressions collected from `#(authorize)` /
+// `##(authorize)`. The author's own `where:` is part of the source's definition
+// and is never bypassed — that is the whole authoring contract, and the
+// `where:`-still-applies test below is the one that pins it.
+describe("authorize bypass (private data-management path)", () => {
+   const GATED = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: dm_gated is duckdb.table('customers') extend { measure: c is count() }
+`;
+
+   // The canonical hard case from the design doc: an access GATE and an ordinary
+   // analytical `where:` on the same source. The gate is bypassable; the `where:`
+   // is not.
+   const GATED_PLUS_WHERE = `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: dm_mixed is duckdb.table('customers') extend {
+  where: region = 'us-west'
+  measure: c is count()
+}
+`;
+
+   // `compactResult` is the row array; the aggregate lands in `c`.
+   function countOf(compactResult: unknown): number {
+      const rows = compactResult as Array<Record<string, unknown>>;
+      return Number(rows[0]?.c);
+   }
+
+   it("returns rows for a gated source that would otherwise 403", async () => {
+      await writeModel("dm_gated.malloy", GATED);
+      // No ROLE supplied at all — exactly the indexer's position.
+      const result = await runGated(
+         "dm_gated.malloy",
+         "run: dm_gated -> { aggregate: c }",
+         {},
+         undefined,
+         true,
+      );
+      expect(countOf(result.compactResult)).toBe(2);
+   });
+
+   // Regression pin. If this ever stops throwing, the bypass has stopped being
+   // opt-in and every gate in the product is off.
+   it("still denies the same query without the bypass", async () => {
+      await writeModel("dm_gated.malloy", GATED);
+      await expect(
+         runGated("dm_gated.malloy", "run: dm_gated -> { aggregate: c }", {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("defaults to enforcing when the flag is explicitly false", async () => {
+      await writeModel("dm_gated.malloy", GATED);
+      await expect(
+         runGated(
+            "dm_gated.malloy",
+            "run: dm_gated -> { aggregate: c }",
+            {},
+            undefined,
+            false,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   // CRITICAL. A bypass that also dropped the author's `where:` would silently
+   // widen every scan past the source's own definition — and would break the
+   // v2 rule that the footprint covers gates only, never analytical narrowing.
+   it("still applies the author's own where: under the bypass", async () => {
+      await writeModel("dm_mixed.malloy", GATED_PLUS_WHERE);
+      const result = await runGated(
+         "dm_mixed.malloy",
+         "run: dm_mixed -> { aggregate: c }",
+         {},
+         undefined,
+         true,
+      );
+      // 2 rows exist; `where: region = 'us-west'` keeps exactly 1. Seeing 2 here
+      // would mean the bypass reached past the gate into the source definition.
+      expect(countOf(result.compactResult)).toBe(1);
+   });
+
+   // Isolation, forward direction. The reverse ("bypassFilters does not disable
+   // the gate") is pinned separately in the runtime-gate describe above.
+   it("does not imply bypassFilters", async () => {
+      await writeModel("dm_mixed.malloy", GATED_PLUS_WHERE);
+      const result = await runGated(
+         "dm_mixed.malloy",
+         "run: dm_mixed -> { aggregate: c }",
+         {},
+         undefined, // bypassFilters deliberately NOT set
+         true,
+      );
+      expect(countOf(result.compactResult)).toBe(1);
+   });
+
+   describe("emits telemetry on every use", () => {
+      let harness: MetricsHarness;
+      const COUNTER = "publisher_authorize_bypass_total";
+
+      beforeEach(async () => {
+         harness = await startMetricsHarness();
+         resetAuthorizeGuardTelemetryForTesting();
+      });
+
+      afterEach(async () => {
+         resetAuthorizeGuardTelemetryForTesting();
+         await harness.shutdown();
+      });
+
+      // Asserts the counter, not the status code: a bypass that ran but went
+      // uncounted is exactly the failure that leaves an audit with no rate
+      // signal behind it.
+      it("counts both gate entry points once each", async () => {
+         await writeModel("dm_gated.malloy", GATED);
+         await runGated(
+            "dm_gated.malloy",
+            "run: dm_gated -> { aggregate: c }",
+            {},
+            undefined,
+            true,
+         );
+         // The early surface-syntax gate...
+         expect(
+            await harness.collectCounter(COUNTER, { entry_point: "source" }),
+         ).toBe(1);
+         // ...and the compiled backstop. Exactly one each: the walk
+         // short-circuits before its own nested assertAuthorized call.
+         expect(
+            await harness.collectCounter(COUNTER, { entry_point: "runnable" }),
+         ).toBe(1);
+      });
+
+      /**
+       * The audit line is the compensating control for a bypass, so the source it
+       * names is the whole point. `assertAuthorizedForAllSources` used to return
+       * before resolving it and log `"(query)"` — and it did that on exactly the
+       * request where nothing else records the target: an ad-hoc query whose run
+       * target cannot be pinned from surface syntax before compilation, so the
+       * `source` entry point never fires either. That left the one case an
+       * investigator most needs with package and model but no source at all.
+       */
+      it('names the source on the runnable audit, not "(query)"', async () => {
+         await writeModel("dm_gated.malloy", GATED);
+         const lines: Array<Record<string, unknown>> = [];
+         const info = logger.info;
+         (logger as { info: unknown }).info = (
+            message: string,
+            meta?: Record<string, unknown>,
+         ) => {
+            if (message === "authorize bypass" && meta) lines.push(meta);
+            return undefined as never;
+         };
+         try {
+            // Declared in the caller's own text, so `earlySource` resolves to
+            // nothing and `runnable` is the only emission there is.
+            await runGated(
+               "dm_gated.malloy",
+               "source: mine is dm_gated extend {}\nrun: mine -> { aggregate: c }",
+               {},
+               undefined,
+               true,
+            );
+         } finally {
+            (logger as { info: unknown }).info = info;
+         }
+
+         const runnable = lines.filter((l) => l.entryPoint === "runnable");
+         expect(runnable.length).toBe(1);
+         expect(runnable[0]?.sourceName).not.toBe("(query)");
+         expect(runnable[0]).toMatchObject({
+            modelPath: "dm_gated.malloy",
+            packageName: "test-pkg",
+         });
+      });
+
+      it("counts nothing when the bypass is not used", async () => {
+         await writeModel(
+            "dm_open.malloy",
+            "source: dm_open is duckdb.table('customers') extend { measure: c is count() }\n",
+         );
+         await runGated(
+            "dm_open.malloy",
+            "run: dm_open -> { aggregate: c }",
+            {},
+         );
+         expect(await harness.collectCounter(COUNTER)).toBe(0);
+      });
+   });
+
+   // How the flag actually arrives in production: off the request header, through
+   // the same reader server.ts calls. The reader's own edge cases live in
+   // authorize_bypass_header.spec.ts; what these two add is the composition —
+   // that a header reaches the gate and that a body field does not.
+   describe("arrives on the header, not the body", () => {
+      it("honours the bypass when the header carries it", async () => {
+         await writeModel("dm_gated.malloy", GATED);
+         const result = await runGated(
+            "dm_gated.malloy",
+            "run: dm_gated -> { aggregate: c }",
+            {},
+            undefined,
+            readBypassAuthorize({
+               headers: { [BYPASS_AUTHORIZE_HEADER]: "true" },
+            }),
+         );
+         expect(countOf(result.compactResult)).toBe(2);
+      });
+
+      // The whole safety argument for putting this on a header rather than in
+      // `QueryRequest`. Without this test a refactor that reads the body again
+      // reopens the hole with every other test still green.
+      it("leaves gates enforced for a bypassAuthorize field in the body", async () => {
+         await writeModel("dm_gated.malloy", GATED);
+         // Held in a variable so `body` reaches the reader at all: passed inline,
+         // excess-property checking rejects it, which is itself the type-level
+         // half of this guarantee.
+         const bodyOnlyRequest = {
+            headers: {},
+            body: { bypassAuthorize: true },
+         };
+         await expect(
+            runGated(
+               "dm_gated.malloy",
+               "run: dm_gated -> { aggregate: c }",
+               {},
+               undefined,
+               readBypassAuthorize(bodyOnlyRequest),
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
    });
 });

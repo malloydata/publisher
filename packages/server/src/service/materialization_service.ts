@@ -2019,11 +2019,17 @@ export class MaterializationService {
          `DROP TABLE IF EXISTS ${quotedStaging}`,
          runOptions,
       );
+      // The CTAS is the only statement here that reads the source data, so it is
+      // the only one whose cost is worth reporting: the DROPs and the RENAME are
+      // metadata operations. Undefined on any backend that does not report a
+      // figure — see the manifest entry's queryCostBytes.
+      let buildCostBytes: number | undefined;
       try {
-         await connection.runSQL(
+         const ctas = await connection.runSQL(
             `CREATE TABLE ${quotedStaging} AS (${buildSQL})`,
             runOptions,
          );
+         buildCostBytes = ctas?.runStats?.queryCostBytes;
          await connection.runSQL(
             `DROP TABLE IF EXISTS ${quotedPhysical}`,
             runOptions,
@@ -2094,6 +2100,10 @@ export class MaterializationService {
          // refresh is otherwise indistinguishable from a delta.
          ...refreshFields(incrementalRefresh ? "full" : undefined),
          rowCount: null,
+         buildDurationMs: durationMs,
+         // The recurring warehouse cost of keeping this source materialized —
+         // the debit against whatever the materialization saves on the read side.
+         queryCostBytes: buildCostBytes ?? null,
       };
    }
 
@@ -2151,6 +2161,10 @@ export class MaterializationService {
       if (step.mode === "seed") return undefined;
 
       const startTime = performance.now();
+      // Stays undefined on the SKIP branch, and the manifest entry reports null
+      // rather than 0: a skip did no work, and a zero would average into the
+      // build-duration series as an implausibly fast build.
+      let appliedDurationMs: number | undefined;
       if (step.mode === "delta") {
          // One call, because the range replace's DELETE and INSERT have to commit
          // or roll back together — see deltaScript. A failure here leaves the
@@ -2163,6 +2177,7 @@ export class MaterializationService {
             coveredThrough: step.coveredThrough,
          });
          const durationMs = Math.round(performance.now() - startTime);
+         appliedDurationMs = durationMs;
          recordSourceBuildDuration(durationMs, "delta");
          reportDeltaApplied({
             packageName: context.packageName,
@@ -2189,6 +2204,11 @@ export class MaterializationService {
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
          rowCount: null,
+         buildDurationMs: appliedDurationMs ?? null,
+         // The delta script runs through applyDeltaScript rather than a single
+         // connection.runSQL whose result reaches here, so there is no cost figure
+         // to report even on a backend that would supply one.
+         queryCostBytes: null,
          // A delta reports where it advanced to; a skip reports the boundary
          // that stays in force. Either way the caller reads coverage from the
          // entry rather than inferring it from the run's outcome.
@@ -2425,6 +2445,14 @@ export class MaterializationService {
          schema: result.schema,
          realization: instruction.realization,
          rowCount: null,
+         buildDurationMs: durationMs,
+         // The warehouse read happens inside DuckDB's query-passthrough, so the
+         // Malloy connector that supplies this on the colocated path is not in
+         // the call path and there is no per-query statistic to carry. Reading it
+         // back from the warehouse's own accounting requires an identifier for
+         // the job, which the passthrough does not return for a rows-returning
+         // call; obtaining one restructures how the build issues its read.
+         queryCostBytes: null,
       };
    }
 

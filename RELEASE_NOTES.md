@@ -18,6 +18,59 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — queries report how they were served, and what they cost
+
+The server measured several things and then discarded them, and the query
+histogram carried two labels that grew without bound. Both are addressed.
+
+### What changed
+
+- **`malloy_model_query_duration` no longer labels by query text or row count.** Both are unbounded — ad-hoc text yields a new series per distinct query, a row count one per distinct result size — and a histogram label multiplies by the bucket count, so the metric grew for as long as a process served traffic. On one deployment serving real traffic the query-text label alone carried ~637 distinct values across ~14.9k series for this histogram. They remain on the request log. `environment` and `package` take their place: the only identity on the metric was previously a bare model path, which is not unique across packages.
+- **`malloy_model_query_duration` now spans execution, not just preparation.** The timer stopped before the warehouse round trip, so the histogram excluded the one part its own description ("how long it takes to execute a Malloy model query") named. It now covers compile, authorize, routing, prepare and execution. **Expect every existing p95 panel to step up at deploy** — that is the metric starting to measure what it always claimed, not a regression.
+- **`QueryResult` gains `servedFrom`, `executionTimeMs` and `queryCostBytes`.** A storage-served answer is byte-identical to a live one, so `servedFrom` is the only way a caller can tell a materialized source did anything; `live_fallback` is reported separately from `storage` because it is a success answered by the live warehouse, and counting it as a hit would report a healthy hit rate for a broken store. `queryCostBytes` comes from `runStats`, which the BigQuery connector already populated and nothing read.
+- **`ManifestEntry` gains `buildDurationMs` and `queryCostBytes`.** The duration was already measured for the build histogram and sent upward as null.
+- **`malloy_model_query_scanned_bytes`**, a counter of bytes scanned by served queries, where the backend reports them — BigQuery today.
+
+### Reading the cost numbers
+
+**Bytes scanned is not bytes billed.** BigQuery rounds up to a 10MB minimum per query, so a small read bills an order of magnitude above what it scanned — and materialization refreshes are mostly small reads. Every figure reported here is SCANNED. Use it to compare queries against each other; it is not a spend number.
+
+**Null is not zero, and on the build side it is null more often than not.** `ManifestEntry.queryCostBytes` is populated only for a COLOCATED build, from the Malloy connection's own statistics. An incremental delta reports null because its statements do not run through a single call whose result reaches the manifest, and a chained `storage=` build reports null because it read its parent's already-materialized table and touched no warehouse at all.
+
+A plain `storage=` build also reports null, and that one is a gap rather than a property: its read goes through DuckDB's native query-passthrough, where no Malloy connector is in the call path to report statistics. Recovering the figure means reading it back from the warehouse's own accounting, which needs an identifier for the job — and the passthrough does not return one for a rows-returning call. Obtaining that identifier restructures how the build issues its read, so it is deliberately left to the change that does so rather than approximated here.
+
+On the serve side, check `servedFrom` before reading a null as "free": a `storage`-served query touched no warehouse, while a Snowflake or Postgres query touched one and simply reported nothing.
+
+### For consumers generating clients from this spec
+
+`QueryResult` and `ManifestEntry` both gain fields. Strict generated clients reject unknown properties — openapi-generator's Java/Gson `validateJsonElement` throws on any field absent from the client's `openapiFields` — so a consumer running this server against a client generated from an older spec fails at deserialize on every affected response. **Regenerate clients in the same change as the version bump**, not after it.
+
+---
+
+## [Unreleased] — `storage=` builds from a Snowflake source now work (Docker image)
+
+The 0.0.236 notes below list `snowflake_query` among the native query-passthroughs a `storage=` source is materialized through. That was true of the code and never true of the published image: **materializing a Snowflake source into a storage destination has not worked at all.** Two independent faults, both fixed.
+
+### What changed
+
+- **The image now carries the ADBC Snowflake driver.** The Snowflake extension is a wrapper over it, and `INSTALL snowflake FROM community` does not bring it — so every `snowflake_query()` failed at run time with `ADBC Snowflake driver (libadbc_driver_snowflake.so) not found`. It is now fetched at a pinned version, for the image's architecture, into the extension directory the runtime reads.
+- **A key-pair Snowflake connection can be federated.** The passthrough required a password and emitted `PASSWORD`, so a connection authenticating by key pair — which queries fine on the live path — could not be built from at all. Key pair or password is now accepted, with a private-key passphrase when supplied.
+- **`ROLE` and `SCHEMA` travel with the federated connection.** Both are part of what identifies a Malloy connection; without them a build ran under the user's _default_ role while live queries on the same connection used the configured one.
+
+### Why it went unnoticed
+
+Both guards were blind for the same reason. The image build verified Snowflake with `SELECT snowflake_version()` — a scalar that never touches the driver and passes without it — and the offline extension smoke test asserted only that extensions `LOAD`. The driver is a query-time dependency, so nothing that ran at build time could see it missing.
+
+### Scope, and what is still missing
+
+The driver is installed by the **Docker image**. A local clone or `npx @malloy-publisher/server` still has no driver, so `storage=` builds from Snowflake continue to fail there with the same error — installing it is a manual step (`dbc install snowflake`, or the extension's installer script). Closing that properly means the bake step owning the driver alongside the extensions, which is worth doing and is not this change.
+
+### Operational notes
+
+A failed driver fetch now **fails the image build** rather than warning and continuing. An image without the driver cannot answer a Snowflake query, so it should not leave the builder reporting success — which is how this shipped. A release built from an unchecked ref is covered by the same assertion, since it lives in the Dockerfile rather than only in CI.
+
+---
+
 ## [0.0.236] — DuckDB/DuckLake materialization tier (`storage=`)
 
 This section describes the tier as it stands at 0.0.236. It first shipped in 0.0.232; the disjoint-set semantics between `storageDestinations` and `connections` landed in 0.0.236.
@@ -42,7 +95,7 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - **Multi-replica serving via the manifest.** A `storage=` source can be served across a fleet by carrying its serve binding in the same manifest the publisher already fetches from a package's `manifestLocation`: a manifest entry that names a `storageDestinationName` (with the captured `schema` and `sourceName`) binds as a cross-connection serve binding applied to the already-compiled models (no recompile); entries without it remain same-connection `tableName` substitutions (which do recompile). A refresh is the usual manifest-rebind — rewrite the manifest and re-`PATCH` `manifestLocation` — and a storage-only refresh costs no recompile. Entries are keyed by the build's content `sourceEntityId` (= the serve handle), so a freshness refresh keeps the handle and only swaps the table path, while a schema-changing generation gets a new handle. Standalone (no `manifestLocation`), serve bindings are still re-derived per-replica from the local materialization store on package load; run that single-replica. When a `manifestLocation` is set the host is authoritative and the local-store rebind is skipped, so the two binding sources never fight.
 - **Roll back cleanly.** Deleting a package's materializations before rolling back to a publisher version without this tier avoids a wedge: an older build reuses/binds a persisted `storage=` manifest entry as a same-connection table it can't resolve. Building with `storage=` only ever affects deployments that turned the mode on.
 
-## [Unreleased]: one meaning for `givens` across the API
+## [0.0.242]: one meaning for `givens` across the API
 
 `givens` had come to mean four different things: declarations, typed values, string-encoded values, and a bare list of names. It now always means a collection of `Given` declarations, and the other three have names of their own. Renames and spec corrections only; no endpoint changes what it does.
 
@@ -61,7 +114,7 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - `RawNotebook.path` becomes `RawNotebook.modelPath`. `path` was declared but never populated, so anything reading it was already getting `undefined`; `modelPath` is the value it wanted.
 - A caller that treated a `versionId` request's 500 as a server fault should expect 501.
 
-## [Unreleased] — `PageViewer` is now `DataAppViewer`
+## [0.0.242] — `PageViewer` is now `DataAppViewer`
 
 The SDK component that embeds an in-package HTML data app is renamed, along with the docs page for the built-in web UI. No behavior changes.
 
@@ -78,7 +131,7 @@ The SDK component that embeds an in-package HTML data app is renamed, along with
 
 The REST `/pages` endpoint is untouched by this change and still answers at its existing path. Renaming it to `/data-apps` is a separate, breaking change with its own release note.
 
-## [Unreleased] — Breaking: `/pages` is now `/data-apps`
+## [0.0.242] — Breaking: `/pages` is now `/data-apps`
 
 The endpoint that lists a package's in-package HTML data apps is renamed, along with its schema and the SPA route that opens one. **There is no alias and no deprecation period: a caller still requesting `/pages` stops getting the listing.**
 

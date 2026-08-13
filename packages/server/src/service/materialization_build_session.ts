@@ -442,7 +442,10 @@ export async function buildDownstreamIntoStorage(params: {
       );
       const schema = await createTableAndDescribe(session, target, sql);
 
-      return { storageDestinationName: destinationName, schema };
+      return {
+         storageDestinationName: destinationName,
+         schema,
+      };
    } finally {
       await dispose();
    }

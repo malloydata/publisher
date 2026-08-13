@@ -46,6 +46,12 @@ export class QueryController {
          queryClass?: unknown;
          versionId?: string;
       },
+      /**
+       * Skip `#(authorize)` gates for this request. Set from the
+       * `x-publisher-bypass-authorize` request header only, never from the body.
+       * Orthogonal to {@link bypassFilters} — see {@link Model.getQueryResults}.
+       */
+      bypassAuthorize?: boolean,
    ): Promise<ApiQuery> {
       let requestMetadata: QueryMetadata | undefined;
       let queryClass: QueryClass | undefined;
@@ -78,6 +84,9 @@ export class QueryController {
             rowLimit,
             rowLimitSource,
             queryCorrelationId,
+            servedFrom,
+            executionTimeMs,
+            queryCostBytes,
          } = await runWithQueryTimeout(
             (abortSignal) =>
                model.getQueryResults(
@@ -128,6 +137,7 @@ export class QueryController {
                   // while the model built and capped the full result was how a
                   // request came to be refused on bytes it would never receive.
                   compactJson ? "compact" : "full",
+                  bypassAuthorize,
                ),
             getQueryTimeoutMs(),
          );
@@ -153,6 +163,14 @@ export class QueryController {
             // so cannot reproduce the MCP envelope's _limit_hit.
             queryRowLimitSource: rowLimitSource,
             queryCorrelationId,
+            // How the answer was produced, and how long producing it took. A
+            // storage-served answer is byte-identical to a live one, so without
+            // `servedFrom` a caller cannot tell that materialization did anything
+            // — and cannot show a user which of their sources is being served
+            // from the managed store.
+            servedFrom,
+            executionTimeMs,
+            queryCostBytes,
          } as ApiQuery;
       }
    }

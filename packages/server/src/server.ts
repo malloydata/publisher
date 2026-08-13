@@ -50,6 +50,7 @@ import {
    getPersistStorageMode,
    getQueryMetadataMode,
 } from "./config";
+import { readBypassAuthorize } from "./authorize_bypass_header";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
@@ -1779,6 +1780,11 @@ app.post(
                queryClass: req.body?.queryClass,
                versionId: req.body?.versionId as string | undefined,
             },
+            // Disables the author's `#(authorize)` gates. From a HEADER, never the
+            // body, and nothing in Publisher bounds who may send it — the
+            // deployment must strip it at its edge. See
+            // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
+            readBypassAuthorize(req),
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
