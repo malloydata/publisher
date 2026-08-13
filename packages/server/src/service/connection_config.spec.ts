@@ -129,12 +129,17 @@ describe("assembleEnvironmentConnections — databricks", () => {
 });
 
 describe("assembleEnvironmentConnections — snowflake", () => {
-   // An optional field omitted from JSON config arrives as `null`, not
-   // `undefined`. Malloy's makeDigest reads `.length` off every part and
-   // special-cases `undefined` alone, so a surviving `null` throws when a
-   // digest is taken -- which happens on the package-load worker's
-   // connection-metadata RPC, surfacing as the whole package failing to load
-   // with "import reference failure" rather than as a connection error.
+   // An EXPLICIT null in config (or a client serializing an unset optional as
+   // null) survives to the connector; an omitted field arrives as `undefined`
+   // and was always fine. Malloy's makeDigest reads `.length` off every part and
+   // special-cases `undefined` alone, so a surviving `null` throws when a digest
+   // is taken -- which happens on the package-load worker's connection-metadata
+   // RPC, surfacing as the whole package failing to load with "import reference
+   // failure" rather than as a connection error.
+   //
+   // These assertions cover the pojo path, which Malloy's own lookup also
+   // guards. The key-pair path that actually reproduced the bug is pinned in
+   // connection.spec.ts.
    const nullableFields = ["database", "schema", "role"] as const;
 
    function snowflakeConnection(

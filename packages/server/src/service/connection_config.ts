@@ -1030,18 +1030,20 @@ export function assembleEnvironmentConnections(
                   connection.snowflakeConnection?.privateKeyPass,
                ),
                warehouse: connection.snowflakeConnection?.warehouse,
-               // An omitted optional field arrives as `null` from JSON config,
-               // never as `undefined`. Malloy's `makeDigest` maps over these
-               // values reading `.length`, and it special-cases `undefined`
-               // only, so a `null` here throws
-               // "null is not an object (evaluating 'p.length')" the first time
-               // a digest is taken. That happens on the package-load worker's
-               // connection-metadata RPC, so the failure does not surface as a
-               // connection error: the whole package fails to load with
-               // "import reference failure" on the source line, while the same
-               // model compiles fine through /compile (main thread, no digest).
-               // Normalize at this boundary so `null` never enters the Malloy
-               // config, rather than at each consumer.
+               // An EXPLICIT `"database": null` in config (or a client that
+               // serializes unset optionals as null) survives to here; an omitted
+               // field arrives as `undefined` and was always fine. Malloy's
+               // `makeDigest` reads `.length` off each part and special-cases
+               // `undefined` only, so a surviving `null` throws
+               // "null is not an object (evaluating 'p.length')" on the first
+               // digest.
+               //
+               // Defense in depth rather than the load-bearing fix: Malloy's own
+               // connection lookup already drops nulls before building a
+               // connector, so this pojo path is covered upstream today. The fix
+               // that matters is `removeUndefined` in connection.ts, on the
+               // key-pair path that bypasses that lookup. Kept because the Malloy
+               // dependency is a caret range and core's guard is not a contract.
                database: nullToUndefined(
                   connection.snowflakeConnection?.database,
                ),

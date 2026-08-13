@@ -465,7 +465,21 @@ async function getSchemasForSnowflake(
       return rows.map(({ catalogName, schemaName, owner }) => ({
          name: `${catalogName}.${schemaName}`,
          isHidden:
-            ["SNOWFLAKE", ""].includes(owner) ||
+            owner === "SNOWFLAKE" ||
+            // A BLANK owner counts as system-owned only within a configured
+            // database. Account-wide it does not: SHOW SCHEMAS reports a blank
+            // owner for any schema that is not local to the account, which
+            // includes every schema of an IMPORTED DATABASE -- a Marketplace or
+            // partner share the operator deliberately subscribed to. Treating
+            // those as system schemas drops them from the Connection Explorer
+            // picker by default and tells an agent its tables are elsewhere.
+            //
+            // Nothing is lost by scoping it: account-wide, every other
+            // blank-owner schema is either INFORMATION_SCHEMA (caught by name,
+            // one per database) or inside a Snowflake-managed database (caught
+            // by the set below, which is what actually carries the sample-data
+            // share -- itself blank-owner).
+            (Boolean(database) && owner === "") ||
             schemaName === "INFORMATION_SCHEMA" ||
             // Account-wide listing surfaces Snowflake's own databases, which are
             // noise in a schema picker. They are only reachable in the

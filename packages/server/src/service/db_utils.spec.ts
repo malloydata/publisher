@@ -698,6 +698,39 @@ describe("getSchemasForConnection", () => {
          }
       });
 
+      it("shows a shared database's schemas even though SHOW reports no owner", async () => {
+         // SHOW SCHEMAS reports a blank owner for any schema not local to the
+         // account, so every schema of an IMPORTED DATABASE (a Marketplace or
+         // partner share) looks system-owned. Hiding those drops a deliberately
+         // subscribed dataset from the picker.
+         const rows = [
+            { database_name: "SEC_FILINGS", name: "CYBERSYN", owner: "" },
+            { database_name: "SNOWFLAKE", name: "ACCOUNT_USAGE", owner: "" },
+            {
+               database_name: "SEC_FILINGS",
+               name: "INFORMATION_SCHEMA",
+               owner: "",
+            },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         const visible = schemas.filter((s) => !s.isHidden).map((s) => s.name);
+         expect(visible).toEqual(["SEC_FILINGS.CYBERSYN"]);
+         // The system database and INFORMATION_SCHEMA stay hidden on their own
+         // rules, so dropping the blank-owner test leaks no system noise.
+         expect(
+            schemas.find((s) => s.name === "SNOWFLAKE.ACCOUNT_USAGE")?.isHidden,
+         ).toBe(true);
+         expect(
+            schemas.find((s) => s.name === "SEC_FILINGS.INFORMATION_SCHEMA")
+               ?.isHidden,
+         ).toBe(true);
+      });
+
       it("surfaces an unusable database name as a bad request, not an internal error", async () => {
          // A rejected identifier is deterministically invalid, so classifying it
          // as an internal fault tells the caller to retry a value that can never

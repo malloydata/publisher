@@ -4161,8 +4161,9 @@ components:
         schema:
           type: ["string", "null"]
           description:
-            Snowflake schema name. Sets the session default schema; it does not
-            restrict which schemas are discoverable.
+            Snowflake schema name. Sets the session default schema and forms part
+            of the connection's identity, so it determines what a materialization
+            build runs as. It does not restrict which schemas are discoverable.
         role:
           type: ["string", "null"]
           description: Snowflake role name
