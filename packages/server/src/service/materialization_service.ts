@@ -77,6 +77,7 @@ import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
+   BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
@@ -1904,6 +1905,22 @@ export class MaterializationService {
          connectionDigests,
       });
 
+      // Every statement of this source's build carries the same metadata, so the
+      // warehouse's query history shows the staging CTAS, the drop and the rename
+      // as one attributable unit of work.
+      //
+      // Resolved before the storage branch below so BOTH build paths carry the
+      // same bag, layered the same way. A `storage=` build reads through DuckDB's
+      // query-passthrough rather than a Malloy connection, so it applies these
+      // itself instead of handing them to `runSQL` — but what it applies has to be
+      // the same properties, or one deployment's query history attributes the two
+      // paths differently.
+      const runOptions = this.buildRunSQLOptions(
+         persistSource,
+         environment,
+         buildMetadata,
+      );
+
       // `storage=` build: materialize into a DuckDB/DuckLake destination via a
       // build-scoped session (never on the source or serve connection). Diverges
       // fully from the in-warehouse CTAS below — different engine, credential
@@ -1940,17 +1957,9 @@ export class MaterializationService {
             publicBuildSQL,
             builtEntries,
             dependsOnStorageUpstream,
+            runOptions.queryMetadata,
          );
       }
-
-      // Every statement of this source's build carries the same metadata, so the
-      // warehouse's query history shows the staging CTAS, the drop and the rename
-      // as one attributable unit of work.
-      const runOptions = this.buildRunSQLOptions(
-         persistSource,
-         environment,
-         buildMetadata,
-      );
 
       // Incremental refresh: a source that declares `refresh="incremental"` and a
       // usable watermark can advance its serving table by a bounded delta instead
@@ -2237,6 +2246,12 @@ export class MaterializationService {
       buildSQL: string,
       builtEntries: Record<string, ManifestEntry>,
       dependsOnStorageUpstream: boolean,
+      /**
+       * Applied to the warehouse read by the passthrough itself — see
+       * {@link buildSourceIntoStorage}. Resolved by the caller through the same
+       * layering the colocated path uses.
+       */
+      queryMetadata?: QueryMetadata,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -2336,6 +2351,7 @@ export class MaterializationService {
                buildSQL,
                physicalTableName,
                environmentPath: environment.getEnvironmentPath(),
+               queryMetadata,
             });
          } catch (err) {
             // Redaction: a failed federation / passthrough / attach
@@ -2351,16 +2367,32 @@ export class MaterializationService {
                sourceConnection,
                destinationConnection,
             );
-            recordStorageBuildFailure(destinationName);
+            // Whether the warehouse read was already BILLED survives the
+            // redaction, because it changes what a caller should do next. This
+            // service's own scheduler advances "regardless of outcome so a
+            // persistent failure retries on the next cron occurrence" and fires
+            // with forceRefresh, which defeats skip-if-unchanged — so a
+            // persistent cause re-runs the same read every occurrence, and on
+            // this branch that means paying for it every occurrence. Rewrapping
+            // as a bare Error made that indistinguishable from an attach
+            // failure, which is free to retry.
+            const alreadyBilled = err instanceof BilledReadNotCapturedError;
+            recordStorageBuildFailure(
+               destinationName,
+               alreadyBilled ? "billed_read_not_captured" : "build_failed",
+            );
             logger.warn("Storage materialization build failed", {
                sourceName: persistSource.name,
                destinationName,
+               alreadyBilled,
                error: safeDetail,
             });
-            throw new Error(
+            const failure =
                `Failed to materialize source '${persistSource.name}' into ` +
-                  `storage destination '${destinationName}': ${safeDetail}`,
-            );
+               `storage destination '${destinationName}': ${safeDetail}`;
+            throw alreadyBilled
+               ? new BilledReadNotCapturedError(failure, { cause: err })
+               : new Error(failure, { cause: err });
          }
       }
 
@@ -2432,6 +2464,12 @@ export class MaterializationService {
             storageDestinationName: result.storageDestinationName,
             columns: result.schema.length,
             durationMs,
+            // The whole cost, not just the one field the manifest carries. These
+            // are the numbers that answer a cost question and the ids that let a
+            // human reach the job in the warehouse's own console — the manifest
+            // has room for neither. Null says the read's shape reported nothing,
+            // which is not the same as free: see BuildReadCost.
+            readCost: result.readCost,
          },
       );
 
@@ -2446,13 +2484,17 @@ export class MaterializationService {
          realization: instruction.realization,
          rowCount: null,
          buildDurationMs: durationMs,
-         // The warehouse read happens inside DuckDB's query-passthrough, so the
-         // Malloy connector that supplies this on the colocated path is not in
-         // the call path and there is no per-query statistic to carry. Reading it
-         // back from the warehouse's own accounting requires an identifier for
-         // the job, which the passthrough does not return for a rows-returning
-         // call; obtaining one restructures how the build issues its read.
-         queryCostBytes: null,
+         // SCANNED, matching the colocated path above, which fills this from the
+         // connector's runStats -- and that is totalBytesProcessed, i.e. scanned.
+         // Reporting billed here would put two different quantities in one field,
+         // differing by up to BigQuery's 10MB floor, and anyone summing it across
+         // a package's sources would add them together.
+         //
+         // Null when the read's shape reported nothing: a rows-returning
+         // passthrough call hands back no job to account for. Today that means a
+         // build whose metadata bag was empty, since it is the label that makes
+         // BigQuery's read a form that reports.
+         queryCostBytes: result.readCost?.bytesScanned ?? null,
       };
    }
 
