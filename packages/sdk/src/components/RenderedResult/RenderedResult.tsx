@@ -254,6 +254,18 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    color: var(--publisher-drill-link) !important;
    text-decoration: underline;
 }
+/* Keyboard focus reads the same as hover, plus a ring: a hover colour is not
+   something a keyboard user can produce, and a focus ring is not something a
+   mouse user sees. focus-visible rather than focus, so a click does not leave a
+   ring behind it. (No backticks in here: this is inside a template literal.) */
+.malloy-render .${DRILL_CELL_CLASS}:focus-visible {
+   outline: 2px solid var(--publisher-drill-link);
+   outline-offset: -2px;
+}
+.malloy-render .${DRILL_CELL_CLASS}:focus-visible > .cell-content {
+   color: var(--publisher-drill-link) !important;
+   text-decoration: underline;
+}
 `;
 
 /**
@@ -351,6 +363,8 @@ function RenderedResultInner({
       let viz: MalloyVizHandle | undefined;
       let drillObserver: MutationObserver | null = null;
       let drillFrame = 0;
+      let drillKeydown: ((event: KeyboardEvent) => void) | null = null;
+      let drillKeyup: ((event: KeyboardEvent) => void) | null = null;
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
       // Safety net so a render that never signals ready (an async renderer
@@ -518,6 +532,68 @@ function RenderedResultInner({
                      }
                   };
                   mark();
+                  // Enter and Space fire the drill for a focused cell. Delegated
+                  // on the stage rather than bound per cell, because the
+                  // renderer rebuilds cells as a dashboard's cards arrive and a
+                  // per-cell listener would be lost with them; this one outlives
+                  // every re-mark.
+                  //
+                  // It synthesises a CLICK rather than calling the drill handler
+                  // directly, so the payload comes from the renderer's own click
+                  // path. Building one here would mean re-deriving which field
+                  // and value a cell represents, which is exactly the mapping
+                  // this module has no access to and the reason the affordance
+                  // is matched on rendered text in the first place.
+                  //
+                  // The click goes to the cell's INNER `.cell-content`, not to
+                  // the cell. Measured, because dispatching on the cell looked
+                  // right and silently did nothing: a real mouse click lands on
+                  // `.cell-content` and the renderer reads the event target to
+                  // identify the field, so a click on the outer cell reaches the
+                  // handler with a target it does not recognise and is dropped
+                  // without a sound. Falls back to the cell for a shape that has
+                  // no inner content node.
+                  //
+                  // Enter fires on keydown and Space on keyUP, which is the
+                  // native button rule and is load-bearing here rather than
+                  // pedantry. Firing Space on keydown opened the drill menu and
+                  // then the SAME keypress's keyup landed on the now-focused
+                  // first menu item and chose it, so a Space drill navigated
+                  // straight past the menu it had just opened. Measured: the
+                  // menu was visible while the key was held and gone, with the
+                  // URL already changed, once it was released.
+                  const fire = (cell: Element) => {
+                     const content =
+                        cell.querySelector<HTMLElement>(".cell-content");
+                     (content ?? (cell as HTMLElement)).click();
+                  };
+                  const drillCell = (event: KeyboardEvent) =>
+                     (event.target as HTMLElement | null)?.closest?.(
+                        `.${DRILL_CELL_CLASS}`,
+                     ) ?? null;
+                  drillKeydown = (event: KeyboardEvent) => {
+                     const cell = drillCell(event);
+                     if (!cell) return;
+                     if (event.key === "Enter") {
+                        // Otherwise Enter submits an enclosing form on an
+                        // embedding host.
+                        event.preventDefault();
+                        fire(cell);
+                     } else if (event.key === " ") {
+                        // Held Space scrolls the page; the activation itself
+                        // waits for keyup.
+                        event.preventDefault();
+                     }
+                  };
+                  drillKeyup = (event: KeyboardEvent) => {
+                     if (event.key !== " ") return;
+                     const cell = drillCell(event);
+                     if (!cell) return;
+                     event.preventDefault();
+                     fire(cell);
+                  };
+                  stageNode.addEventListener("keydown", drillKeydown);
+                  stageNode.addEventListener("keyup", drillKeyup);
                   if (
                      names.size > 0 &&
                      typeof MutationObserver !== "undefined"
@@ -562,6 +638,8 @@ function RenderedResultInner({
          cancelled = true;
          observer?.disconnect();
          drillObserver?.disconnect();
+         if (drillKeydown) stage?.removeEventListener("keydown", drillKeydown);
+         if (drillKeyup) stage?.removeEventListener("keyup", drillKeyup);
          cancelAnimationFrame(drillFrame);
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);

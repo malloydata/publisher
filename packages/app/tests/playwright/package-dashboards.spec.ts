@@ -598,6 +598,46 @@ test.describe("package-dashboards", () => {
       });
    });
 
+   test("a drillable cell is reachable and firable from the keyboard", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+      // `cell` resolves the inner `.cell-content`; the affordance attributes and
+      // the focus live on the cell that WRAPS it, which is the element the
+      // marking pass writes to.
+      const target = cell(page, "orders -> by_region", "US").locator("..");
+      await expect(target).toBeVisible({ timeout: 30_000 });
+
+      // Marked cells are in the tab order and announce themselves, which is the
+      // whole difference between a drill a keyboard user can find and one only
+      // a mouse can reach.
+      await expect(target).toHaveAttribute("tabindex", "0");
+      await expect(target).toHaveAttribute("role", "button");
+
+      await target.focus();
+      await page.keyboard.press("Enter");
+      // Two honorable destinations, so Enter opens the menu rather than acting.
+      await expect(page.getByRole("menuitem")).toHaveCount(2);
+   });
+
+   test("Space opens the drill menu without choosing from it", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+      const target = cell(page, "orders -> by_region", "US").locator("..");
+      await expect(target).toBeVisible({ timeout: 30_000 });
+
+      // Space activates on keyUP, the native button rule. Firing it on keydown
+      // instead left the same keypress's keyup landing on the freshly-focused
+      // first menu item, so a Space drill chose a destination it never showed
+      // the reader. The URL check is what catches that regressing.
+      const before = page.url();
+      await target.focus();
+      await page.keyboard.press("Space");
+      await expect(page.getByRole("menuitem")).toHaveCount(2);
+      expect(page.url()).toBe(before);
+   });
+
    test("a cell with no drill tag is not clickable", async ({ page }) => {
       await openDashboard(page, "combined");
       await expect(page.getByRole("heading", { name: "Combined" })).toBeVisible(

@@ -183,6 +183,21 @@ export function markDrillableCells(
             !cell.querySelector(".malloy-table")
          ) {
             cell.classList.add(DRILL_CELL_CLASS);
+            // Reachable without a mouse. The class alone gave a pointer cursor
+            // and a hover colour, both of which a keyboard user never sees and
+            // a touch user cannot produce, so the drill was discoverable only
+            // by clicking at random. `tabindex` puts the cell in the tab order
+            // and `role` tells a screen reader it does something; the cell's
+            // own text is its accessible name, which is the value that gets
+            // drilled on, so no `aria-label` is invented here.
+            //
+            // `button` rather than `link`: a `to=self` drill filters in place
+            // and does not navigate, and one tag can offer both, so the honest
+            // role is the one that promises less. Set alongside the class and
+            // never separately, so the three can never disagree about which
+            // cells are actionable.
+            cell.tabIndex = 0;
+            cell.setAttribute("role", "button");
          }
       }
    }
