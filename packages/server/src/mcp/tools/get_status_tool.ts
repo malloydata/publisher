@@ -40,7 +40,12 @@ export function registerGetStatusTool(
             initialized: status.initialized,
             environments: status.environments.map((environment) => ({
                name: environment.name,
-               packages: (environment.packages ?? []).map((pkg) => pkg.name),
+               // Name is optional in the API schema but always set by
+               // listPackages; filtered rather than emitted as a null an agent
+               // would have to reason about.
+               packages: (environment.packages ?? [])
+                  .map((pkg) => pkg.name)
+                  .filter((name): name is string => name !== undefined),
             })),
             ...(status.loadErrors !== undefined && {
                loadErrors: status.loadErrors,

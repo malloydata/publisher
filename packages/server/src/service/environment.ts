@@ -2397,6 +2397,12 @@ export class Environment {
          this.retireConnectionGeneration(`package ${packageName}`, () =>
             _package.getMalloyConfig().shutdown("close"),
          );
+         // Same reason deletePackage clears: a recorded failure describes a
+         // package that is serving or configured, and after this it is neither.
+         // Today no entry can survive to here (the only caller evicts a package
+         // that addPackage just created, and addPackage clears on success), but
+         // the eviction and the clear belong together whoever calls next.
+         this.clearPackageLoadFailure(packageName);
          this.packages.delete(packageName);
          this.packageStatuses.delete(packageName);
       });
