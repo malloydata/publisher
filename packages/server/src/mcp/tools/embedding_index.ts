@@ -84,7 +84,17 @@ export type SemanticUnavailableReason =
    | "error";
 
 export type SemanticSearchResult =
-   | { hits: SemanticHit[] }
+   | {
+        hits: SemanticHit[];
+        /**
+         * Entities whose best facet matched, but below MIN_SIMILARITY, under
+         * the same scope as `hits`. Makes a thin result legible: 0 alongside
+         * no hits is a true negative ("this package models nothing like
+         * that"), while a large number means the question is diffusely
+         * related to many entities and wants rephrasing or splitting.
+         */
+        belowCutoffCount: number;
+     }
    | { unavailable: SemanticUnavailableReason };
 
 /**
@@ -821,11 +831,43 @@ export async function trySemanticSearch(args: {
             limit,
          ],
       );
+
+      // How many entities matched, but only below the floor. Without it an
+      // empty result is indistinguishable from "this package models nothing
+      // like that", and we watched analysts conclude the latter from the
+      // former. Zero here means a true negative; a large number means the
+      // question is diffusely related to many entities and should be
+      // rephrased or split. Counted as a second statement deliberately: a
+      // single statement carrying the count on result rows loses it in
+      // exactly the case that matters most, when no row clears the floor.
+      const belowCutoff = await db.get<{ n: number }>(
+         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM (
+            SELECT MAX(list_cosine_similarity(embedding, CAST(? AS FLOAT[]))) AS score
+            FROM entity_embeddings
+            WHERE environment_name = ? AND package_name = ?
+              AND embedding_model = ? AND dims = ?
+              ${sourceName !== undefined ? "AND entity_source = ?" : ""}
+            GROUP BY entity_kind, entity_source, entity_name
+         )
+         WHERE score < ?`,
+         [
+            JSON.stringify(queryVector),
+            environmentName,
+            packageName,
+            provider.model,
+            queryVector.length,
+            ...(sourceName !== undefined ? [sourceName] : []),
+            MIN_SIMILARITY,
+         ],
+      );
+
       // A sync or heal holding the package mutex right now may be
       // rewriting rows underneath the query that just ran: that snapshot
       // is unreliable (it can be partial or empty mid-write) and must
       // not be served as semantic. Completed writers are caught by the
       // generation re-check below; this catches the in-flight ones.
+      // Placed after the count so an unreliable snapshot invalidates the
+      // count too, rather than reporting a number read mid-write.
       if (meta.mutex.isLocked()) {
          return { unavailable: "indexing" };
       }
@@ -957,6 +999,7 @@ export async function trySemanticSearch(args: {
             name: row.entity_name,
             score: row.score,
          })),
+         belowCutoffCount: belowCutoff?.n ?? 0,
       };
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

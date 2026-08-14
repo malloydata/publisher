@@ -542,7 +542,7 @@ async function getPackageIndex(
  * first and the reference material last, and the reference stays terse to buy
  * room for it. Full prose belongs in docs/ai-agents.md, not here.
  */
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in names the model actually defines. Start here when you do not know the environment, package, or model names.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in names the model actually defines. Start here when you do not know the environment or package names.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
@@ -556,17 +556,17 @@ All optional; supply what you know.
 - none: the environments and their package names.
 - environmentName: that environment's packages.
 - + packageName: that package's sources, each with its joins.
-- + query: what you need, in plain English; returns the most relevant sources, views, named queries, joins and fields.
+- + query: what you need, in plain English; returns the most relevant sources, views, queries, joins and fields.
 - sourceName: drill down into one source. Without a query it lists that source with its fields, views and queries, so [] means no such source; with a query it ranks within that source, so [] means nothing matched. Its doc and joins always arrive in sources.
 - limit: caps results (max 50; retrieval defaults to 10). Listing levels return all unless set.
 
 ## Response
-results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or named query as queryName with sourceName. A join adds relationship ("one"/"many"/"cross"), traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs rather than taking the first.
-sources[]: per source behind a result — its doc (may be truncated) and complete joins.
-With an embedding provider, ranking is semantic and each entity carries a score.
+results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or named query as queryName with sourceName. A join adds relationship, traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs.
+sources[]: per source behind a result — its doc (may be truncated) and full joins.
+With an embedding provider, ranking is semantic: entities carry a score, and belowCutoffCount counts those below the floor — 0 with no results means nothing here is related, so rephrase rather than retry.
 
 ## Worked example
-{ "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
+{"environmentName":"examples","packageName":"storefront","query":"revenue by product category"}`;
 
 /**
  * Every tier of this tool answers with `results`, so an error keeps that key
@@ -858,6 +858,7 @@ export function registerGetContextTool(
          // same concept in parallel sources and there is nothing to collapse.
          const scoped = Boolean(sourceName);
          let semanticResults: ResultEntity[] | undefined;
+         let belowCutoffCount = 0;
          if (configured) {
             let provider: EmbeddingProvider | null = null;
             try {
@@ -930,6 +931,7 @@ export function registerGetContextTool(
                      semanticResults = scoped
                         ? ranked.slice(0, max)
                         : groupSiblings(ranked, max);
+                     belowCutoffCount = semantic.belowCutoffCount;
                   }
                } catch (error) {
                   // Defensive: trySemanticSearch does not throw, but the
@@ -953,6 +955,9 @@ export function registerGetContextTool(
             const sources = contextForResults(semanticResults, sourceContext);
             return jsonResource(uri, {
                retrieval: "semantic",
+               // Always present on a semantic response, including 0: the
+               // reading depends on being able to tell 0 from absent.
+               belowCutoffCount,
                results: semanticResults,
                ...(sources.length > 0 ? { sources } : {}),
                ...noteFor(),
