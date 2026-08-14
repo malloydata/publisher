@@ -1231,6 +1231,46 @@ describe("deriveSelfInstructions", () => {
       ctx = createMocks();
    });
 
+   it("rebuilds a source whose prior entry recorded a failure", () => {
+      // A prior entry that carries a reason names no table that was built. Reusing
+      // it would retire the source from every later run, so a warehouse error that
+      // clears on its own -- an expired grant, a dataset created a minute later --
+      // would never be retried and the source would stay unbuilt indefinitely.
+      const compiled = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+         },
+         [["s1"]],
+      );
+      const priorEntries = {
+         b1aaaaaaaaaaaaaa: {
+            sourceEntityId: "b1aaaaaaaaaaaaaa",
+            sourceName: "s1",
+            physicalTableName: "s1_prev",
+            error: "Permission denied while writing to dataset analytics",
+         },
+      };
+
+      const { instructions, carried } = (
+         ctx.service as unknown as {
+            deriveSelfInstructions: (
+               c: unknown,
+               n: string[] | undefined,
+               p: unknown,
+            ) => { instructions: BuildInstruction[]; carried: unknown };
+         }
+      ).deriveSelfInstructions(compiled, undefined, priorEntries);
+
+      expect(
+         (carried as Record<string, unknown>)["b1aaaaaaaaaaaaaa"],
+         "a failed source must not be carried forward as a reused table",
+      ).toBeUndefined();
+      expect(
+         instructions.map((i) => i.sourceEntityId),
+         "a failed source must be instructed to build again",
+      ).toContain("b1aaaaaaaaaaaaaa");
+   });
+
    it("carries forward unchanged sourceEntityIds and builds the rest (deduping repeats)", () => {
       const compiled = compiledWith(
          {

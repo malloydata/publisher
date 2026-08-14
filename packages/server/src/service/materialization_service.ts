@@ -841,7 +841,13 @@ export class MaterializationService {
             incremental,
          );
 
-         const sourcesBuilt = instructions.length;
+         // Counted from what the build actually returned, not from what it was
+         // asked to do: a source that failed is recorded in the manifest with its
+         // reason, so instructions.length would report it as built.
+         const sourcesFailed = Object.values(entries).filter(
+            (e) => (e as ManifestEntry).error,
+         ).length;
+         const sourcesBuilt = instructions.length - sourcesFailed;
          const sourcesReused = Object.keys(carried).length;
          const durationMs = Date.now() - startedAt;
          await this.commitManifest(id, entries, {
@@ -863,15 +869,30 @@ export class MaterializationService {
 
          recordSourcesOutcome("built", sourcesBuilt);
          recordSourcesOutcome("reused", sourcesReused);
-         this.recordRun(mode, "success", startedAt);
-         logger.info("Materialization build complete", {
-            materializationId: id,
-            packageName,
+         if (sourcesFailed > 0) {
+            recordSourcesOutcome("failed", sourcesFailed);
+         }
+         // A run that lost sources is a partial success, not a success: the
+         // manifest it committed is missing tables a consumer expected.
+         this.recordRun(
             mode,
-            sourcesBuilt,
-            sourcesReused,
-            durationMs,
-         });
+            sourcesFailed > 0 ? "partial" : "success",
+            startedAt,
+         );
+         logger[sourcesFailed > 0 ? "warn" : "info"](
+            sourcesFailed > 0
+               ? "Materialization build complete with failed sources"
+               : "Materialization build complete",
+            {
+               materializationId: id,
+               packageName,
+               mode,
+               sourcesBuilt,
+               sourcesReused,
+               sourcesFailed,
+               durationMs,
+            },
+         );
       } catch (err) {
          this.recordRun(mode, outcomeFor(err, signal), startedAt);
          throw err;
@@ -986,6 +1007,10 @@ export class MaterializationService {
             if (
                !deltaEligible &&
                prior &&
+               // A prior entry that records a failure names no table that exists:
+               // carrying it forward would retire the source from every later run,
+               // so a transient warehouse error would never be retried.
+               !prior.error &&
                prior.physicalTableName &&
                (prior.storageDestinationName ?? undefined) === destination
             ) {
@@ -1203,7 +1228,14 @@ export class MaterializationService {
          // putting one here would make the original model try to substitute the
          // source with a table on its OWN (source) connection, which doesn't
          // exist there. Only colocated entries go into the tableName manifest.
-         if (entry.physicalTableName && !entry.storageDestinationName) {
+         // A failed source names no table that was built; binding it would rewrite
+         // queries to a table that does not exist, or to the generation this run
+         // failed to replace.
+         if (
+            !entry.error &&
+            entry.physicalTableName &&
+            !entry.storageDestinationName
+         ) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // Carried so the bind step can quote the physical path for the
@@ -2981,7 +3013,7 @@ export class MaterializationService {
 
    private recordRun(
       mode: MaterializationMode,
-      outcome: "success" | "failed" | "cancelled",
+      outcome: "success" | "partial" | "failed" | "cancelled",
       startedAtMs: number,
    ): void {
       recordMaterializationRun(mode, outcome, Date.now() - startedAtMs);

@@ -16,7 +16,16 @@ import { type Counter, type Histogram } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
-export type MaterializationOutcome = "success" | "failed" | "cancelled";
+/**
+ * `partial` is a run that committed a manifest while some of its sources failed:
+ * distinct from `success` because the manifest is missing tables a consumer
+ * expected, and from `failed` because the sources that did build are usable.
+ */
+export type MaterializationOutcome =
+   | "success"
+   | "partial"
+   | "failed"
+   | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
@@ -218,7 +227,7 @@ export function recordMaterializationRun(
  * the main lever on materialization cost.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused",
+   outcome: "built" | "reused" | "failed",
    count: number,
 ): void {
    if (count <= 0) return;

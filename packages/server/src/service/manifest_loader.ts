@@ -129,6 +129,12 @@ export function splitManifestEntries(
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
+      // An entry that records a failure names no table that was built, so it must
+      // not reach a serve binding: the name either resolves to nothing or, on a
+      // rebuild, to the generation this run failed to replace.
+      if (entry?.error) {
+         continue;
+      }
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
          logger.warn("Manifest entry has no physicalTableName; skipping", {
