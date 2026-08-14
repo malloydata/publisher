@@ -1687,6 +1687,16 @@ export class MaterializationService {
                      errMessage(buildErr),
                      connection,
                   );
+                  // The manifest carries this reason to the control plane, but a
+                  // build that lost a source no longer throws -- so without a log
+                  // here the failure is invisible to anyone reading the server's
+                  // own output.
+                  logger.warn("Source failed to materialize", {
+                     packageName: owner?.packageName,
+                     sourceName: persistSource.name,
+                     physicalTableName: instruction.physicalTableName,
+                     reason,
+                  });
                   failedSources.push(persistSource.name);
                   failedReasons.push(`${persistSource.name}: ${reason}`);
                   entries[sourceEntityId] = {
