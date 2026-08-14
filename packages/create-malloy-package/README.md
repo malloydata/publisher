@@ -365,7 +365,7 @@ package's built-in DuckDB sandbox, so no database credentials are required.
 
 ### The workspace path
 
-Spaces, apostrophes, and accents in the workspace path are fine: the model's data
+Spaces, apostrophes, and quotes in the workspace path are fine: the model's data
 references are relative (`data/sales.csv`) and Publisher's per-package DuckDB sandbox
 resolves them against the package's working directory, so the workspace path never
 reaches DuckDB's path parser. `~/Documents/My Projects`, `~/Google Drive`,
@@ -374,9 +374,17 @@ end-to-end (load and query a CSV) under paths containing a space, an apostrophe,
 double quote. An earlier version of this tool refused all of them on a premise that
 does not hold against the current server.
 
-The one thing still refused is a control character (below U+0020) anywhere in the
-path: those corrupt the shell commands and briefing files the scaffold writes
-verbatim, and are never intentional in a directory name.
+What is refused is a path outside **printable ASCII** — an accent, an emoji, any
+non-ASCII character, and every control character. This is the server's own rule, not
+DuckDB's: Publisher checks an environment path against `[\x20-\x7E]` before mounting a
+package from it, so a workspace under `~/josé` loads nothing. The server still reports
+`serving`, with the environment missing and the reason only in the `loadErrors` of
+`/api/v0/status`, so the scaffolder refuses up front instead — before anything is
+written, naming the character. Control characters are refused for the additional reason
+that they corrupt the commands and briefing files the scaffold writes verbatim.
+
+So a home directory whose username carries an accent needs the workspace somewhere
+else, such as `~/malloy-workspace`.
 
 ## License
 

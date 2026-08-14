@@ -192,6 +192,7 @@ describe("scaffold: default package", () => {
       expect(result.packageCreated).toBe(true);
       for (const file of [
          "sales/publisher.json",
+         "sales/malloy-config.json",
          "sales/sales.malloy",
          "sales/data/sales.csv",
          "publisher.config.json",
@@ -208,6 +209,34 @@ describe("scaffold: default package", () => {
    test("publisher.json is just the name", () => {
       run();
       expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
+   });
+
+   test("malloy-config.json points the editor at the package directory", () => {
+      // The whole file is one absolute path, and every way of getting it wrong
+      // is silent: the editor reports unresolved tables while Publisher, which
+      // never reads this file, serves the same model correctly. Absolute
+      // because the extension resolves a relative workingDirectory against its
+      // own per-window process cwd.
+      run();
+      expect(readJson("sales/malloy-config.json")).toEqual({
+         connections: {
+            duckdb: {
+               is: "duckdb",
+               workingDirectory: path.join(tmp, "sales"),
+            },
+         },
+      });
+      expect(path.isAbsolute(tmp)).toBe(true);
+   });
+
+   test("the .gitignore covers the machine-specific editor config", () => {
+      // Committed, its absolute workingDirectory points a teammate's editor at
+      // a directory that does not exist on their machine, which reads as every
+      // table failing rather than as a file that should not have been there.
+      run();
+      expect(fs.readFileSync(path.join(tmp, ".gitignore"), "utf8")).toContain(
+         "malloy-config.json",
+      );
    });
 
    test("registers the package in the config", () => {
@@ -680,10 +709,29 @@ describe("scaffold: unservable workspace path", () => {
       expect(run({ cwd: spaced }).packageCreated).toBe(true);
    });
 
-   test("accepts an accented path", () => {
-      const accented = path.join(tmp, "josé");
+   test("accepts an apostrophe and a double quote", () => {
+      // The other two characters verified end-to-end against the server. This
+      // tool never hands the workspace path to a shell, which is the only
+      // place they would have mattered.
+      const quoted = path.join(tmp, `jim's "data"`);
+      fs.mkdirSync(quoted);
+      expect(run({ cwd: quoted }).packageCreated).toBe(true);
+   });
+
+   test("refuses an accented path, because the server will not mount it", () => {
+      // Not a DuckDB constraint, and not a cosmetic one: assertSafeEnvironmentPath
+      // in the server's path_safety.ts tests an environment path against
+      // /^(?:\/|[A-Za-z]:[\\/])[\x20-\x7E]*$/, so a package under a non-ASCII
+      // path never mounts. Measured against 0.0.244: the server answers
+      // `serving` with environments [], /environments/default/packages 400s,
+      // and the only explanation is in status.loadErrors. Refusing here, before
+      // anything is written, is what turns that into a message.
+      const accented = path.join(tmp, "jos\u00E9");
       fs.mkdirSync(accented);
-      expect(run({ cwd: accented }).packageCreated).toBe(true);
+      expect(() => run({ cwd: accented })).toThrow(/U\+00E9/);
+      expect(() => run({ cwd: accented })).toThrow(/printable ASCII/);
+      // Nothing was written, so there is no half-scaffolded package to explain.
+      expect(fs.readdirSync(accented)).toEqual([]);
    });
 
    // Windows refuses the mkdir itself (EINVAL), so the hazard cannot even be
@@ -692,13 +740,31 @@ describe("scaffold: unservable workspace path", () => {
    controlCharTest(
       "refuses a control character, naming it by codepoint",
       () => {
-         const weird = path.join(tmp, "linefeed");
+         // The escape rather than the raw byte, which is invisible in a diff: a
+         // reviewer reads the directory name as plain ASCII and reads this test as
+         // one that cannot fire. U+0001 is SOH.
+         const weird = path.join(tmp, "soh\u0001here");
          fs.mkdirSync(weird);
          expect(() => run({ cwd: weird })).toThrow(/U\+0001/);
-         // Nothing was written, so there is no half-scaffolded package to explain.
          expect(fs.readdirSync(weird)).toEqual([]);
       },
    );
+
+   controlCharTest("names an escape character without emitting it", () => {
+      // The refusal is printed to a terminal, so interpolating the character
+      // being refused would send the ESC to it instead of showing it.
+      const esc = path.join(tmp, "esc\u001Bhere");
+      fs.mkdirSync(esc);
+      let message = "";
+      try {
+         run({ cwd: esc });
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).toContain("U+001B");
+      expect(message).toContain("\\u001B");
+      expect(message).not.toContain("\u001B");
+   });
 
    test("accepts the plain safe characters", () => {
       const fine = path.join(tmp, "my-data_dir.v2");

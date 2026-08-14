@@ -12,6 +12,7 @@ import { startVersionCheck, staleScaffolderWarning } from "./registry_check";
 import {
    isSpreadsheet,
    portOverrideCommandFor,
+   resetPortOverrideCommandFor,
    scaffold,
    type DeclinedScript,
    type Host,
@@ -947,11 +948,31 @@ export function formatSuccess(result: ScaffoldResult): string {
    // with EADDRINUSE and no guidance here (QA F6). One line names the fix; the
    // .mcp.json note is what makes the move survivable, since the file pins the
    // old MCP port. Uses the same alternates AGENTS.md documents.
+   //
+   // Conditional, and it names WHICH Publisher: read as a statement of fact it
+   // told every user their port was taken, and the remedy is only a remedy for
+   // the other-workspace case. A server already serving THIS workspace holds a
+   // lock on the workspace rather than the port, so moving ports there trades
+   // an EADDRINUSE that says what happened for a server stuck initializing.
+   // The boot it offers is the one this run actually needs: with --init when a
+   // reset is pending, since a plain start on new ports would serve the
+   // persisted package list and silently omit the package just created.
    lines.push(
       log.dim(
-         `  Port ${result.publisherPort} taken (another Publisher?): boot with\n` +
-            `  ${portOverrideCommandFor(result)}\n` +
-            `  and edit the url in ${result.mcpConfigPath} to the new MCP port.`,
+         `  If port ${result.publisherPort} is taken by a Publisher serving a ` +
+            `DIFFERENT\n  workspace, boot with\n` +
+            `  ${
+               result.needsReset
+                  ? resetPortOverrideCommandFor(result)
+                  : portOverrideCommandFor(result)
+            }\n` +
+            `  and edit the url in ${result.mcpConfigPath} to the new MCP port.` +
+            // The reset branch above has already said this, at more length.
+            (result.needsReset
+               ? ""
+               : `\n  One already serving THIS workspace is the other case: ` +
+                 `stop it,\n  because the lock is on the workspace, not the ` +
+                 `port.`),
       ),
    );
    // Not `open <url>`: that command exists on macOS only, and the line was

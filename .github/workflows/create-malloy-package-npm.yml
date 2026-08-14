@@ -224,11 +224,19 @@ jobs:
             echo "::error title=Server pin::could not read SERVER_VERSION from packages/create-malloy-package/src/scaffold.ts"
             exit 1
           fi
-          if ! LATEST="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$LATEST" ]; then
-            printf '%s\n' "$LATEST" | sed 's/^/[npm] /'
+          if ! NPM_OUTPUT="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$NPM_OUTPUT" ]; then
+            # Prefixed, not indented: registry output is untrusted text and the
+            # runner trims leading whitespace before matching "::" as a command.
+            printf '%s\n' "$NPM_OUTPUT" | sed 's/^/[npm] /'
             echo "::error title=Server pin::could not ask npm for @malloy-publisher/server dist-tags.latest"
             exit 1
           fi
+          # tail -n 1, as the skills step above does: the capture folds stderr
+          # in so a failure has something to show, and npm writes routine
+          # warnings there on a successful run too (unknown env config, update
+          # notices, retries). Comparing the raw capture would fail a correct
+          # release reporting `latest is npm warn ...`.
+          LATEST="$(printf '%s\n' "$NPM_OUTPUT" | tail -n 1)"
           if [ "$SERVER_VERSION" != "$LATEST" ]; then
             echo "::error title=Server pin::SERVER_VERSION is $SERVER_VERSION but @malloy-publisher/server latest is $LATEST. Bump SERVER_VERSION in packages/create-malloy-package/src/scaffold.ts (and confirm the new server still honours --host) before publishing."
             exit 1
