@@ -299,6 +299,16 @@ export function GivenInput({
             // Free text keeps the control from being a cage: the suggest query
             // returns the common values, not necessarily every legal one.
             freeSolo
+            // MUI hides the dropdown arrow whenever `freeSolo` is set, which
+            // left a control that HAS a list of values looking exactly like a
+            // plain text box: nothing on it said the list existed, so the only
+            // way to find the options was to guess that clicking would reveal
+            // them. Reported independently by a reader as "the controls render
+            // as text boxes rather than dropdowns"; the options were being
+            // fetched and offered correctly the whole time, and only the
+            // affordance was missing. Same principle as `markDrillableCells`:
+            // something you can act on has to look like it.
+            forcePopupIcon
             // Keeps text the reader typed but did not pick from the list. A
             // `freeSolo` Autocomplete without this discards it on blur, so a
             // value that is legal but absent from `suggest` could be typed and
