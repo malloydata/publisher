@@ -56,7 +56,11 @@ import {
    incrementalPolicyRejections,
    type IncrementalPolicySource,
 } from "./incremental_policy";
-import { materializationConfigWarnings } from "./materialization_config_validation";
+import {
+   materializationConfigWarnings,
+   type QueryMetadataDeclaration,
+} from "./materialization_config_validation";
+import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
@@ -744,6 +748,59 @@ export class Package {
       return this.packageMetadata.materialization ?? null;
    }
 
+   /**
+    * The package's declared `queryMetadata` — the least specific author-declared
+    * layer, and the counterpart to {@link Model.getDeclaredQueryMetadata}.
+    *
+    * Reads through the materialization block because that is where the WIRE
+    * shape still carries it, which is a separate migration from the manifest's:
+    * an author now declares it at the manifest root, and the control plane still
+    * reads it under `materialization`. Callers should not know that — they want
+    * the package's bag, not its build policy.
+    */
+   public getDeclaredQueryMetadata(): QueryMetadata | null {
+      return this.packageMetadata.materialization?.queryMetadata ?? null;
+   }
+
+   /**
+    * Every `queryMetadata` bag this package's authors declared, at whatever
+    * level, as declared. What the publish gate needs in order to name the line
+    * to edit.
+    *
+    * Whether a source persists does not enter into it. A bag on a source rides
+    * every query against that source, materialized or not, so a source is listed
+    * because it declared something — not because a build reads it.
+    */
+   private queryMetadataDeclarations(): QueryMetadataDeclaration[] {
+      const packageDeclaration = this.getDeclaredQueryMetadata();
+      return [
+         ...(packageDeclaration
+            ? [{ level: "package" as const, queryMetadata: packageDeclaration }]
+            : []),
+         ...[...this.models.values()].flatMap((model) => {
+            const modelDeclaration = model.getDeclaredQueryMetadata();
+            return [
+               ...(modelDeclaration
+                  ? [
+                       {
+                          level: "model" as const,
+                          subject: model.getPath(),
+                          queryMetadata: modelDeclaration,
+                       },
+                    ]
+                  : []),
+               ...model
+                  .getDeclaredSourceQueryMetadata()
+                  .map(({ sourceName, queryMetadata }) => ({
+                     level: "source" as const,
+                     subject: sourceName,
+                     queryMetadata,
+                  })),
+            ];
+         }),
+      ];
+   }
+
    public getPackageMetadata(): ApiPackage {
       // Overlay the server-computed fields onto the stored metadata: the
       // explores misconfig warnings (loading is fail-safe — the package still
@@ -791,35 +848,7 @@ export class Package {
          // not do what it says, and manifest shapes that still parse but are
          // deprecated. Advisory by design — none of these blocks a publish.
          ...materializationConfigWarnings({
-            packageMaterialization: this.packageMetadata.materialization,
-            sources: this.buildPlan?.sources
-               ? Object.values(this.buildPlan.sources)
-               : [],
-            // Every model file's own `##` declaration, including files that
-            // persist nothing: the declaration rides queries served from them,
-            // so it needs checking whether or not a build ever reads it.
-            modelDeclarations: [...this.models.values()].flatMap((model) => {
-               const queryMetadata = model.getDeclaredQueryMetadata();
-               return queryMetadata
-                  ? [{ modelPath: model.getPath(), queryMetadata }]
-                  : [];
-            }),
-            // A source's own `#@ queryMetadata.*` where the source persists
-            // nothing. Persist sources are filtered out because `sources` above
-            // already carries them in resolved form; reporting both would say
-            // the same thing twice under two labels.
-            nonPersistSourceDeclarations: (() => {
-               const persisted = new Set(
-                  Object.values(this.buildPlan?.sources ?? {}).map(
-                     (source) => source.name,
-                  ),
-               );
-               return [...this.models.values()].flatMap((model) =>
-                  model
-                     .getDeclaredSourceQueryMetadata()
-                     .filter(({ sourceName }) => !persisted.has(sourceName)),
-               );
-            })(),
+            declarations: this.queryMetadataDeclarations(),
             manifestWarnings: this.manifestWarnings,
          }),
       ];

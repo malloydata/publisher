@@ -392,7 +392,7 @@ export function resolveQueryMetadata(
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): QueryMetadata | null {
    return composeDeclaredQueryMetadata({
-      packageMaterialization,
+      packageDeclaration: packageMaterialization?.queryMetadata ?? null,
       modelTag: safeModelTag(source),
       sourceTag: safeSourceTag(source),
    });
@@ -417,14 +417,20 @@ export function resolveQueryMetadata(
  * "declared nowhere" rather than "declared empty".
  */
 export function composeDeclaredQueryMetadata(layers: {
-   packageMaterialization?: WirePackageMaterialization | null;
+   /**
+    * The package's declared bag — a bag, not the materialization policy that
+    * carries it on the wire. Nothing here needs a schedule or a freshness
+    * window, and threading the policy object through would say this layer is
+    * about materialization when it is not.
+    */
+   packageDeclaration?: QueryMetadata | null;
    modelTag?: ReadableTag;
    sourceTag?: ReadableTag;
 }): QueryMetadata | null {
    // Least specific first, so a more specific layer overwrites property by
    // property.
    const ordered: QueryMetadata[] = [
-      layers.packageMaterialization?.queryMetadata ?? {},
+      layers.packageDeclaration ?? {},
       ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer).reverse(),
       tagQueryMetadataLayer(layers.sourceTag),
    ];

@@ -22,7 +22,6 @@
  * moving them here is a mechanical follow-up with no behavior change.
  */
 
-import type { components } from "../api";
 import {
    queryMetadataAdvisoryWarnings,
    queryMetadataBudgetWarning,
@@ -31,45 +30,50 @@ import {
    type QueryMetadata,
 } from "./query_metadata";
 
-type WirePackageMaterialization =
-   components["schemas"]["PackageMaterializationConfig"];
-type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
+/** Where a `queryMetadata` bag was declared, which is what an author edits. */
+export type QueryMetadataLevel = "package" | "model" | "source";
+
+/** One author's declaration, as declared — not as resolved. */
+export interface QueryMetadataDeclaration {
+   level: QueryMetadataLevel;
+   /** The model path or source name to point the author at; absent for a package. */
+   subject?: string;
+   queryMetadata: QueryMetadata;
+}
 
 export interface MaterializationConfigInput {
-   /** The package manifest's `materialization` block, as parsed. */
-   packageMaterialization?: WirePackageMaterialization | null;
-   /** The compiled plan's sources, carrying each one's RESOLVED metadata. */
-   sources?: WirePersistSourcePlan[];
    /**
-    * Each model file's OWN `## materialization.queryMetadata.*`, keyed by path.
+    * Every `queryMetadata` bag an author declared, at whatever level.
     *
-    * Separate from {@link sources} because the two answer different questions. A
-    * source carries its RESOLVED bag, so a model-file property appears there
-    * attributed to the source and labelled `#@ persist queryMetadata` — which
-    * sends an author to a line that does not contain it. And a model file that
-    * persists nothing has no source to appear under at all, while still
-    * contributing a layer to every query served from it.
-    */
-   modelDeclarations?: { modelPath: string; queryMetadata: QueryMetadata }[];
-   /**
-    * A NON-persist source's own `#@ queryMetadata.*`, keyed by source name.
+    * One list rather than one field per level, and OWN declarations rather than
+    * resolved ones. A resolved bag answers "what will this source send"; a
+    * declaration answers "which line do I edit", and only the second is
+    * actionable in a warning. Reporting resolved bags is also what made a
+    * package property surface under a `#@ persist` label at a source that never
+    * mentioned it.
     *
-    * `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than
-    * a key inside it, so a source that persists nothing can declare tags and
-    * they ride every query against it. Persist sources are excluded because
-    * {@link sources} already carries them in resolved form — including both
-    * would report one declaration twice, under two different labels.
+    * Whether a source persists is irrelevant here: `queryMetadata` is a sibling
+    * of `persist` in the `#@` namespace, so any source can declare a bag and it
+    * rides every query against that source either way.
     */
-   nonPersistSourceDeclarations?: {
-      sourceName: string;
-      queryMetadata: QueryMetadata;
-   }[];
+   declarations?: QueryMetadataDeclaration[];
    /**
     * Deprecations the manifest parse tolerated (e.g. a root-level `scope`), which
     * a load keeps working but a publish should report.
     */
    manifestWarnings?: string[];
 }
+
+/**
+ * How each level is spelled back to the author. The canonical spelling, not the
+ * deprecated `materialization.` one — a message should name the form we want
+ * them to write.
+ */
+const DECLARATION_LABELS: Record<QueryMetadataLevel, string> = {
+   package: "queryMetadata",
+   model: "## queryMetadata",
+   source: "#@ queryMetadata",
+};
 
 /** One finding, in the shape the wire package's operator warnings array uses. */
 export interface MaterializationConfigWarning {
@@ -104,11 +108,10 @@ function metadataWarnings(
  * rule existed must keep loading, and a bad metadata property degrades
  * attribution rather than corrupting anything.
  *
- * A source's metadata is checked in its RESOLVED form (the effective bag from
- * package → model-file → `#@ persist`), because that is what will actually be
- * attached — a property inherited from the manifest is just as broken at the
- * source as it is at the package, and reporting it at both is how an author finds
- * the one they can edit.
+ * Each declaration is checked as DECLARED, at the level that declared it, so a
+ * message names the line an author can edit. Checking a source's resolved bag
+ * instead would report a package property at every source that inherits it,
+ * under a `#@ persist` label those sources never wrote.
  */
 export function materializationConfigWarnings(
    input: MaterializationConfigInput,
@@ -117,45 +120,18 @@ export function materializationConfigWarnings(
       input.manifestWarnings ?? []
    ).map((message) => ({ message }));
 
-   warnings.push(
-      ...metadataWarnings(
-         "materialization.queryMetadata",
-         input.packageMaterialization?.queryMetadata,
-      ),
-   );
-
-   for (const declaration of input.modelDeclarations ?? []) {
+   for (const declaration of input.declarations ?? []) {
       warnings.push(
          ...metadataWarnings(
-            "## materialization.queryMetadata",
+            DECLARATION_LABELS[declaration.level],
             declaration.queryMetadata,
-            declaration.modelPath,
+            declaration.subject,
          ),
       );
    }
 
-   for (const declaration of input.nonPersistSourceDeclarations ?? []) {
-      warnings.push(
-         ...metadataWarnings(
-            "#@ queryMetadata",
-            declaration.queryMetadata,
-            declaration.sourceName,
-         ),
-      );
-   }
-
-   for (const source of input.sources ?? []) {
-      warnings.push(
-         ...metadataWarnings(
-            `#@ persist queryMetadata`,
-            source.queryMetadata,
-            source.name,
-         ),
-      );
-   }
-
-   // Identical findings collapse (two sources inheriting one bad package
-   // property produce one message each, not one per level per source).
+   // Identical findings collapse (the same declaration reaching this function
+   // twice must not produce two messages).
    const seen = new Set<string>();
    return warnings.filter((warning) => {
       const key = `${warning.subject ?? ""}\u0000${warning.message}`;

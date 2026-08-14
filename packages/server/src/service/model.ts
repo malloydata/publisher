@@ -79,11 +79,7 @@ import {
    ownModelAnnotations,
    ownModelNotes,
 } from "./annotations";
-import {
-   composeDeclaredQueryMetadata,
-   type ReadableTag,
-   type WirePackageMaterialization,
-} from "./build_plan";
+import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -153,12 +149,11 @@ export interface ModelQueryMetadataInput {
       enforced?: QueryMetadata | null;
    } | null;
    /**
-    * The package manifest's `materialization` block, for its
-    * `queryMetadata` — the least specific author-declared layer. Supplied by the
-    * controller, which owns the package; the model knows only its own file and
-    * its package's NAME.
+    * The package's declared bag — the least specific author-declared layer.
+    * Supplied by the controller, which owns the package; the model knows only
+    * its own file and its package's NAME.
     */
-   packageMaterialization?: WirePackageMaterialization | null;
+   packageDeclaration?: QueryMetadata | null;
 }
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -3279,7 +3274,7 @@ export class Model {
          connection: connectionLayers?.default,
          enforced: connectionLayers?.enforced,
          model: composeDeclaredQueryMetadata({
-            packageMaterialization: input?.packageMaterialization,
+            packageDeclaration: input?.packageDeclaration,
             modelTag: this.safeModelFileTag(),
             sourceTag: this.safeSourceTag(sourceName),
          }),

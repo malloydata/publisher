@@ -1384,9 +1384,7 @@ describe("service/model", () => {
             undefined,
             {
                correlationId: "corr-2",
-               packageMaterialization: {
-                  queryMetadata: { team: "finance", tier: "bronze" },
-               },
+               packageDeclaration: { team: "finance", tier: "bronze" },
                connectionMetadata: () => ({ default: null, enforced: null }),
             },
          );
@@ -1420,9 +1418,7 @@ describe("service/model", () => {
             {
                correlationId: "corr-3",
                request: { tier: "platinum" },
-               packageMaterialization: {
-                  queryMetadata: { team: "finance", tier: "bronze" },
-               },
+               packageDeclaration: { team: "finance", tier: "bronze" },
                connectionMetadata: () => ({ default: null, enforced: null }),
             },
          );
@@ -1462,9 +1458,7 @@ describe("service/model", () => {
             undefined,
             {
                correlationId: "corr-4",
-               packageMaterialization: {
-                  queryMetadata: { tier: "bronze", team: "finance" },
-               },
+               packageDeclaration: { tier: "bronze", team: "finance" },
                connectionMetadata: () => ({ default: null, enforced: null }),
             },
          );
