@@ -1,0 +1,27 @@
+// The source the HTML data app (public/index.html) queries.
+//
+// The page could interpolate a `where:` into every query string instead, and an
+// earlier version of it did. Givens are better, and not only on style: the value
+// is bound by the server as a typed parameter rather than pasted into query
+// text, so nothing the reader types or picks is ever parsed as Malloy. The page
+// that this replaced escaped a picked value by doubling its quote character,
+// which is not Malloy's escape at all.
+//
+// It exists as its own file because Malloy's given namespace is per-file: a
+// query can only reference a given the file it runs against imports. The
+// notebook does the same thing in its first cell. This is the data app's copy of
+// that idea, with all five givens rather than a subset, because the page renders
+// one control row that every tab shares.
+##! experimental.givens
+import "storefront.malloy"
+import { CATEGORY, BRAND, REGION, SINCE, MIN_SALE } from "givens.malloy"
+
+#(doc) Order lines narrowed by the data app's control row. Every tile queries this.
+source: scoped_orders is order_items extend {
+  where:
+    category ~ $CATEGORY
+    and brand ~ $BRAND
+    and region ~ $REGION
+    and created_at >= $SINCE
+    and sale_price ~ $MIN_SALE
+}

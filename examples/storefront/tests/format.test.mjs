@@ -1,0 +1,207 @@
+// Coverage for the storefront data app's one pure module.
+//
+//   node --test "examples/storefront/tests/*.test.mjs"
+//   bun run test:examples
+//
+// The filter cases below are the point of this file. Every one of them was a
+// value the page's previous encoder turned into something Malloy matched
+// differently from what the reader picked, and every failure was silent: the
+// page rendered a table either way. They run against the real grammar through
+// the vendored bundle, so they fail if a Malloy bump changes the escaping and
+// the vendored copy has not been regenerated.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { StringFilterExpression } from "../public/vendor/malloy-filter.js";
+import {
+   decodeAtLeast,
+   decodeFilterList,
+   encodeAtLeast,
+   encodeFilterList,
+   encodeFilterValue,
+   formatValue,
+   isPlainFilterList,
+   monthLabel,
+   monthOfYearLabel,
+   plural,
+   readGivenDefault,
+} from "../public/app/format.js";
+
+// Built rather than typed, so no editor or tool can quietly normalise them.
+const NBSP = String.fromCharCode(0xa0);
+const TAB = String.fromCharCode(9);
+const NEWLINE = String.fromCharCode(10);
+const BACKSLASH = String.fromCharCode(92);
+
+/** What Malloy will actually match, which is the only question that matters. */
+function valuesMalloyWillMatch(filter) {
+   const { parsed, log } = StringFilterExpression.parse(filter);
+   assert.equal(log?.length ?? 0, 0, `filter did not parse: ${filter}`);
+   assert.notEqual(parsed, null, `filter is a null clause: ${filter}`);
+   assert.equal(parsed.operator, "=", `not a plain equality: ${filter}`);
+   assert.notEqual(parsed.not, true, `filter is negated: ${filter}`);
+   return parsed.values;
+}
+
+// Each of these encoded to something with a different meaning before. The note
+// on each is what the old double-quote encoder actually produced, measured
+// against this same parser.
+const HOSTILE = [
+   ["-Outerwear", "became a negation: everything EXCEPT Outerwear"],
+   ["%", "became a match-anything pattern, so every row came back"],
+   ["50% off", "became a wildcard match"],
+   ["a_b", "became a single-character wildcard match"],
+   ["Ben & Jerry, Inc", "split into two brands on the comma"],
+   ['The "Best" Brand', "left the quote characters inside the matched value"],
+   [`AC${BACKSLASH}DC`, "left the quote characters inside the matched value"],
+   ["null", "became the null operator"],
+   ["empty", "became the empty operator"],
+   ["a;b", "became a conjunction"],
+   ["(x)", "became a grouping"],
+   [" Nike", "left the quote characters inside the matched value"],
+];
+
+test("a value Malloy would read as syntax survives as a literal", () => {
+   for (const [value, wasWrongBecause] of HOSTILE) {
+      const filter = encodeFilterValue(value);
+      assert.notEqual(filter, "", `${value}: refused, and it ${wasWrongBecause}`);
+      assert.deepEqual(
+         valuesMalloyWillMatch(filter),
+         [value],
+         `${value}: it ${wasWrongBecause}`,
+      );
+   }
+});
+
+test("several values become one 'any of these' filter", () => {
+   const filter = encodeFilterList(["Nike", "Ben & Jerry, Inc", "-Outerwear"]);
+   assert.deepEqual(valuesMalloyWillMatch(filter), [
+      "Nike",
+      "Ben & Jerry, Inc",
+      "-Outerwear",
+   ]);
+});
+
+test("a value that cannot round-trip is dropped, not approximated", () => {
+   // Measured, not assumed. Each of these parses to a null clause, which Malloy
+   // compiles to the SQL constant `true` and so matches every row. Encoding one
+   // would widen the filter silently, which is the failure this module exists
+   // to prevent. A non-breaking space is ordinary in pasted and scraped data.
+   for (const value of ["", NBSP, TAB, NBSP + NBSP]) {
+      assert.equal(
+         encodeFilterValue(value),
+         "",
+         `${JSON.stringify(value)} should be refused`,
+      );
+   }
+   // A newline makes the whole expression unparseable rather than mismatched.
+   assert.equal(encodeFilterValue(`a${NEWLINE}b`), "");
+   // A trailing tab comes back without the tab, so it is a different value.
+   assert.equal(encodeFilterValue(`a${TAB}`), "");
+   // One unusable value does not take the good ones with it.
+   assert.deepEqual(
+      valuesMalloyWillMatch(encodeFilterList(["Nike", NBSP, "Loft"])),
+      ["Nike", "Loft"],
+   );
+});
+
+test("ordinary spaces are carried, where a trim() guard would drop them", () => {
+   // This is why the guard asks the grammar instead of predicting. A space
+   // escapes and round-trips; the non-breaking space above does not. A
+   // `value.trim() === ""` test cannot tell those two apart, and it is wrong
+   // about this one: " " is a value some column really holds.
+   assert.deepEqual(valuesMalloyWillMatch(encodeFilterValue(" ")), [" "]);
+   assert.deepEqual(valuesMalloyWillMatch(encodeFilterValue("  ")), ["  "]);
+});
+
+test("no usable values is the empty filter, which means All", () => {
+   assert.equal(encodeFilterList([]), "");
+   assert.equal(encodeFilterList([NBSP, ""]), "");
+});
+
+test("non-strings a control can produce", () => {
+   assert.equal(encodeFilterValue(null), "");
+   assert.equal(encodeFilterValue(undefined), "");
+   assert.equal(encodeFilterValue(true), "true");
+   assert.equal(encodeFilterValue(42), "42");
+   assert.equal(encodeFilterValue(Number.NaN), "");
+   assert.equal(encodeFilterValue(Number.POSITIVE_INFINITY), "");
+   assert.equal(
+      encodeFilterValue(new Date("2024-03-05T00:00:00Z")),
+      "2024-03-05",
+   );
+   assert.equal(encodeFilterValue(new Date("nope")), "");
+});
+
+test("a picker's selection survives the trip through the URL", () => {
+   for (const values of [
+      ["Nike"],
+      ["Nike", "Loft"],
+      ["Ben & Jerry, Inc", "-Outerwear", "50% off"],
+   ]) {
+      assert.deepEqual(decodeFilterList(encodeFilterList(values)), values);
+   }
+});
+
+test("a filter a picker cannot represent is preserved, not mangled", () => {
+   // `-Nike` means "everything except Nike". Re-encoding it as a literal would
+   // turn it into a search for those five characters, so the picker has to know
+   // it cannot show this one and hand it to a text box instead.
+   assert.equal(isPlainFilterList("-Nike"), false);
+   assert.deepEqual(decodeFilterList("-Nike"), ["-Nike"]);
+   assert.equal(isPlainFilterList("Nike, Loft"), true);
+   assert.equal(isPlainFilterList(""), true);
+   assert.equal(isPlainFilterList(undefined), true);
+});
+
+test("a slider's lower bound, both ways", () => {
+   assert.equal(decodeAtLeast(encodeAtLeast(50)), 50);
+   assert.equal(decodeAtLeast(encodeAtLeast(0.5)), 0.5);
+   assert.equal(encodeAtLeast(0), "");
+   assert.equal(encodeAtLeast(-5), "");
+   assert.equal(encodeAtLeast("nope"), "");
+});
+
+test("a filter that is not a lower bound reads as no bound", () => {
+   // The regex this replaced returned 2 for `<= 2`, 9 for `!= 9`, and 5 for
+   // `>= .5`: a bound the filter never expressed, or ten times the real one.
+   for (const filter of ["<= 2", "> 7", "!= 9", ">= 50 | >= 100", ""]) {
+      assert.equal(decodeAtLeast(filter), 0, filter);
+   }
+   assert.equal(decodeAtLeast(">= 1e3"), 1000);
+   assert.equal(decodeAtLeast(">= .5"), 0.5);
+});
+
+test("a given's default literal, unwrapped for a control", () => {
+   assert.equal(readGivenDefault("f''"), "");
+   assert.equal(readGivenDefault("f'Nike'"), "Nike");
+   assert.equal(readGivenDefault("@2023-01-01"), "2023-01-01");
+   assert.equal(readGivenDefault(undefined), "");
+});
+
+test("cells format the way their field's tags ask", () => {
+   assert.equal(formatValue(null), "—");
+   assert.equal(formatValue(undefined), "—");
+   assert.equal(formatValue(1234.5, "currency"), "$1,235");
+   assert.equal(formatValue(0.125, "percent"), "12.5%");
+   assert.equal(formatValue(884, "id"), "884");
+   // The model asks for `#,##0.0` on orders-per-customer, so a value that
+   // rounds to a whole number still shows its decimal place. Dropping it made
+   // a deliberately-one-decimal KPI render as "3" and read like a count.
+   assert.equal(formatValue(2.975, "decimal"), "3.0");
+   assert.equal(formatValue(10.695, "decimal"), "10.7");
+   assert.equal(formatValue("2024-03-01T00:00:00.000Z", "month"), "Mar 2024");
+   assert.equal(formatValue("Nike"), "Nike");
+});
+
+test("month labels", () => {
+   assert.equal(monthLabel("2024-03-01T00:00:00.000Z"), "Mar 2024");
+   assert.equal(monthLabel("not a date"), "not a date");
+   assert.equal(monthOfYearLabel(3), "Mar");
+   assert.equal(monthOfYearLabel(13), "13");
+});
+
+test("pluralizing a control's All option", () => {
+   assert.equal(plural("category"), "categories");
+   assert.equal(plural("brand"), "brands");
+   assert.equal(plural("box"), "boxes");
+});

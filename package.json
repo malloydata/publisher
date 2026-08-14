@@ -30,7 +30,8 @@
     "test:skills": "cd packages/skills && bun run test",
     "test:create-malloy-package": "cd packages/create-malloy-package && bun run test",
     "test:hammer": "bun test hammer/lib",
-    "test": "NODE_ENV=test bun run test:sdk && bun run test:server && bun run test:skills && bun run test:create-malloy-package && bun run test:hammer",
+    "test:examples": "node --test \"examples/storefront/tests/*.test.mjs\"",
+    "test": "NODE_ENV=test bun run test:sdk && bun run test:server && bun run test:skills && bun run test:create-malloy-package && bun run test:hammer && bun run test:examples",
     "generate-api-types:sdk": "cd packages/sdk && bun run generate-api-types",
     "generate-api-types:server": "cd packages/server && bun run generate-api-types",
     "generate-api-types": "bun run generate-api-types:sdk && bun run generate-api-types:server",
@@ -62,6 +63,7 @@
     "validate-pg-sync": "bun scripts/sync-pg-version.js",
     "validate-ducklake-catalog-range": "bun scripts/validate-ducklake-catalog-range.ts",
     "generate:example-data": "node scripts/generate-example-data.mjs",
+    "vendor:malloy-filter": "node scripts/vendor-malloy-filter.mjs",
     "docs:screenshots": "node scripts/capture-screenshots.mjs",
     "docs:recordings": "node scripts/capture-recordings.mjs"
   },
