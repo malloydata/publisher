@@ -304,6 +304,11 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
+   /**
+    * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
+    * `null` = computed and nothing declared.
+    */
+   private declaredQueryMetadataMemo: QueryMetadata | null | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- the file-level gate, every top-level
     *  source's own gate, and every gate a top-level source carries in from
@@ -1683,8 +1688,11 @@ export class Model {
    }
 
    /**
-    * This file's own `## materialization.queryMetadata.*` declaration, or null
-    * if it declares none.
+    * This file's own model-level `queryMetadata` declaration, or null if it
+    * declares none. Covers both the `## materialization.queryMetadata.*` form
+    * and the bare `## queryMetadata.*` one beneath it, since
+    * {@link composeDeclaredQueryMetadata} reads the same two layers the build
+    * path does.
     *
     * Exposed for the publish gate. That gate walks the package manifest and the
     * build plan's persist sources, so a model file's declaration was only ever
@@ -1692,11 +1700,22 @@ export class Model {
     * source was invisible entirely. Since a model-file declaration now rides
     * served queries whether or not the file persists anything, it needs a
     * validation path of its own.
+    *
+    * Memoized, because the caller is not the cold path it looks like:
+    * `getPackageMetadata()` runs once per package inside `listPackages`, and
+    * several callers invoke it only to read `manifestLocation`. Recomputing
+    * would walk the import closure and re-parse every `##` note on each of those.
+    * A compiled model's annotations never change — a reload replaces the `Model`
+    * object outright — so the memo needs no invalidation.
     */
    public getDeclaredQueryMetadata(): QueryMetadata | null {
-      return composeDeclaredQueryMetadata({
-         modelTag: this.safeModelFileTag(),
-      });
+      // `undefined` means "not computed"; `null` is a computed answer of "none".
+      if (this.declaredQueryMetadataMemo === undefined) {
+         this.declaredQueryMetadataMemo = composeDeclaredQueryMetadata({
+            modelTag: this.safeModelFileTag(),
+         });
+      }
+      return this.declaredQueryMetadataMemo;
    }
 
    /**
