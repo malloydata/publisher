@@ -20,6 +20,7 @@ describe("PackageController.addPackage explores validation", () => {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
          formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -59,6 +60,7 @@ describe("PackageController.addPackage explores validation", () => {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
          formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       // installPackage mimics the real contract: invoke the validator and, if it
@@ -110,6 +112,7 @@ describe("PackageController.addPackage explores validation", () => {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
          formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -150,6 +153,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
          formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -181,6 +185,7 @@ describe("PackageController.addPackage persistence policy validation", () => {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
          formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
@@ -238,6 +243,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
          formatInvalidIncrementalPolicy: () => incrementalMsg,
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -272,6 +278,7 @@ describe("PackageController.addPackage incremental policy validation", () => {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
          formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -308,6 +315,7 @@ describe("PackageController.updatePackage explores validation", () => {
             override?.includes("nope.malloy") ? invalidMsg : "",
          formatInvalidPersistencePolicy: () => "",
          formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
