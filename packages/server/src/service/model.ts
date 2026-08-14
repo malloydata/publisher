@@ -2722,7 +2722,9 @@ export class Model {
             const declaredGivenDefaults = new Map(
                (givens ?? [])
                   .filter((g) => g.name != null && g.default != null)
-                  .map((g) => [g.name, g.default as string] as [string, string]),
+                  .map(
+                     (g) => [g.name, g.default as string] as [string, string],
+                  ),
             );
             await validateAuthorizeProbes(modelMaterializer, {
                authorizeMap: sourceResult.authorizeMap,

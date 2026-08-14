@@ -1050,9 +1050,7 @@ source: headcount is duckdb.table('childtable') extend {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(
-            /field "salaries" of source "headcount"/,
-         );
+         expect(err?.message).toMatch(/field "salaries" of source "headcount"/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -1072,9 +1070,7 @@ source: headcount is duckdb.table('childtable') extend {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(
-            /field "salaries" of source "headcount"/,
-         );
+         expect(err?.message).toMatch(/field "salaries" of source "headcount"/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
