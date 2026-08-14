@@ -205,15 +205,14 @@ function pollutionTargets(): object[] | undefined {
 
 /**
  * Message used when an annotation cannot be parsed without collateral damage.
- * Surfaced through {@link motlyParseErrors} so the reader a later slice builds
- * has something to report rather than a silent empty tag.
- */
-/**
- * Exported so a reader reporting a refusal can tell it apart from a genuine
- * syntax error in the annotation. The distinction matters to the author: a
- * syntax error is in their file, whereas this refusal can be triggered by
- * something entirely outside it, including another package on the same worker
- * having already polluted the prototype through an unguarded parse.
+ * Surfaced through {@link motlyParseErrors} so a reader has something to report
+ * rather than a silent empty tag.
+ *
+ * Exported so that reader can tell a refusal apart from a genuine syntax error.
+ * The distinction matters to the author: a syntax error is in their file,
+ * whereas this refusal can be triggered by something entirely outside it,
+ * including another package on the same worker having already polluted the
+ * prototype through an unguarded parse elsewhere in the server.
  */
 export const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
 

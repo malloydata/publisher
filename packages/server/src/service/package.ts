@@ -2248,7 +2248,10 @@ export class Package {
          // before the curation gate below on purpose: a drill pointing at a
          // dashboard this package really has must not be reported as naming
          // something that does not exist merely because curation withholds it.
-         // Every dashboard is addressable, so there is no second case here.
+         // Every dashboard gets a slug registered here, so a drill naming one
+         // always resolves. NOT that every dashboard is reachable: curation can
+         // withhold it and `getDashboard` then answers undefined, which is what
+         // the withheld-drill finding below reports.
          dashboardSlugs.add(name);
 
          // Curation gate. Every other listing path in this class consults

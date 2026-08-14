@@ -605,19 +605,37 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
       // shipped `GivenInput` renders from `annotations`, while the spec said a
       // dashboard and a notebook render the same control for the same given.
       //
-      // Every non-reserved route shape, not just `#(`. `parsePrefix` admits four
-      // bracket pairs plus the block sigil, so `#<doc>`, `#[doc]` and the
-      // multi-line `#|(description) … |#` are non-reserved too and
-      // `malloyGivenToApi` carries all of them. An earlier version matched only
-      // `#(`, which made this claim of parity false: the same declaration
-      // returned four annotations from `/models/{path}` and one from a
-      // dashboard manifest, and the block form is how multi-line helper text is
-      // written. The reserved ones stay out because none of them opens with a
-      // bracket: plain `#`, `#"`, `##!` and `#@`. Matched on the prefix rather than
+      // The paren app route only, and that is NARROWER than the model surface
+      // rather than parity with it. Say so plainly, because two attempts to
+      // claim parity here were both false.
+      //
+      // `malloyGivenToApi` classifies by the PARSED ROUTE
+      // (`!isReservedRoute(note.route)`); this classifies by the opening
+      // character, and the two are not the same function. `parsePrefix` has
+      // four bracket pairs, `()`, `<>`, `[]` and `{}`, so `#<doc>`, `#[doc]`
+      // and `#{doc}` are carried on the model surface and dropped here. A first
+      // attempt widened the class to `[(<[|]` and got it wrong in BOTH
+      // directions: it still missed `{`, and `|` is the block SIGIL rather than
+      // a bracket, so a plain multi-line `#| label="x" … |#` has the empty
+      // MOTLY route, is reserved, and was newly carried here and nowhere else.
+      //
+      // Not re-derived properly because the only exact test is the route, and
+      // deriving that from raw text is reimplementing `parsePrefix`, which this
+      // module already says is what goes wrong. `#(` is what the shipped
+      // `GivenInput` reads (it re-filters to `#(` itself), so the widening
+      // bought nothing a consumer sees. Closing the gap for real means carrying
+      // the already-filtered API annotations down here instead of raw texts,
+      // which MATCHES the model surface rather than widening past it. Read that
+      // as narrow-preserving, not as a note to widen later: the API
+      // `annotations` narrowing is permanent, because Credible's app consumes
+      // that field from another repo (`MalloyReport.tsx` via
+      // `parseNotebookFilterAnnotation`), so widening it reintroduces a live bug
+      // in a consumer this repo cannot see.
+      // Matched on the prefix rather than
       // re-derived, because re-implementing that classifier by hand is what
       // went wrong repeatedly in the module this borrows from.
       annotations: declaration.annotations.filter((text) =>
-         /^##?[(<[|]/.test(text),
+         /^##?\(/.test(text),
       ),
       ...readGivenControlSpec(declaration.annotations),
    };
