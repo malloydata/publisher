@@ -370,7 +370,7 @@ view: explorer is {
 
 ### Distribution (Histogram)
 
-There is no auto-binning function: `autobin(...)` does not exist and fails with `Unknown function 'autobin'`. Bin by arithmetic, choosing the width yourself from the column's actual range (query `min`/`max`/percentiles first, as `skill:malloy-define` § Data-driven tiers does for tier boundaries):
+There is no auto-binning function: `autobin(...)` does not exist and fails with `Unknown function 'autobin'`. Bin by arithmetic, choosing the width from the column's actual range: query `min`, `max` and a few percentiles first, and say in the view's doc where the width came from. A bin width nobody derived is a business decision in disguise.
 
 ```malloy
 # bar_chart
