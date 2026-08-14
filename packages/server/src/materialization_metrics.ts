@@ -3,7 +3,7 @@
  *
  * Operators need to answer "are builds completing, how long do they take, and
  * where are they failing?" without grepping logs. The run counter carries
- * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`failed`|`cancelled`);
+ * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`partial`|`failed`|`cancelled`);
  * the run-duration histogram carries `mode` so a dashboard can render auto-run
  * vs orchestrated build latency side by side.
  *
@@ -16,7 +16,16 @@ import { type Counter, type Histogram } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
-export type MaterializationOutcome = "success" | "failed" | "cancelled";
+/**
+ * `partial` is a run that committed a manifest while some of its sources failed:
+ * distinct from `success` because the manifest is missing tables a consumer
+ * expected, and from `failed` because the sources that did build are usable.
+ */
+export type MaterializationOutcome =
+   | "success"
+   | "partial"
+   | "failed"
+   | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
@@ -86,7 +95,7 @@ function lazyHistogram(
 
 const runCounter = lazyCounter(
    "publisher_materialization_runs_total",
-   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'failed'|'cancelled').",
+   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'partial'|'failed'|'cancelled').",
 );
 const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
@@ -95,7 +104,7 @@ const runDuration = lazyHistogram(
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
+   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused'|'failed').",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -218,7 +227,7 @@ export function recordMaterializationRun(
  * the main lever on materialization cost.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused",
+   outcome: "built" | "reused" | "failed",
    count: number,
 ): void {
    if (count <= 0) return;

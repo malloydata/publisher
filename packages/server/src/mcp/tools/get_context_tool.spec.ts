@@ -199,6 +199,25 @@ const mockManySourcePackage = {
    getModel: () => mockManySourceModel,
 };
 
+/**
+ * An environment double for the tiers that resolve a package.
+ * getStaleCompileErrors is part of the real Environment interface and
+ * getContext reads it to decide whether to attach the staleness note, so a
+ * double that omits it exercises the lookup's failure path instead of the
+ * behavior under test. Defaults to "nothing is stale".
+ */
+const envWith = (
+   getPackage: () => Promise<unknown>,
+   staleCompileErrors: Map<
+      string,
+      { message: string; failedAt: string }
+   > = new Map(),
+) =>
+   ({
+      getPackage,
+      getStaleCompileErrors: () => staleCompileErrors,
+   }) as never;
+
 describe("get_context discovery tiers", () => {
    it("tier 1: no environment lists environments with their package names", async () => {
       const handler = captureHandler({
@@ -227,6 +246,77 @@ describe("get_context discovery tiers", () => {
                listPackages: async () => [
                   { name: "ecommerce", description: "Ecommerce demo" },
                ],
+               getFailedPackages: () => new Map(),
+               getStaleCompileErrors: () => new Map(),
+            }) as never,
+      });
+      const { results } = parse(
+         await handler({ environmentName: "malloy-samples" }),
+      );
+      // No health markers on a healthy package: the entry is byte-identical
+      // to what it was before staleness was reported at all.
+      expect(results).toEqual([
+         {
+            kind: "package",
+            name: "ecommerce",
+            description: "Ecommerce demo",
+            environmentName: "malloy-samples",
+         },
+      ]);
+   });
+
+   it("tier 2: lists a failed package with its load error instead of omitting it", async () => {
+      // listPackages() drops packages that failed to load, which reads as
+      // "does not exist" to an agent. The listing must carry them with an
+      // error marker so a broken package is distinguishable from an absent one.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               listPackages: async () => [{ name: "good" }],
+               getFailedPackages: () =>
+                  new Map([["broken", "Compile failed: unexpected token"]]),
+               getStaleCompileErrors: () => new Map(),
+            }) as never,
+      });
+      const { results } = parse(
+         await handler({ environmentName: "malloy-samples" }),
+      );
+      expect(results).toHaveLength(2);
+      expect(results[0]).toMatchObject({ kind: "package", name: "good" });
+      expect(results[1]).toEqual({
+         kind: "package",
+         name: "broken",
+         environmentName: "malloy-samples",
+         error: "Compile failed: unexpected token",
+      });
+      // No stale marker: this package is not serving anything at all, which is
+      // the distinction the marker exists to draw.
+      expect("stale" in results[1]).toBe(false);
+   });
+
+   it("tier 2: marks a stale package, which listPackages reports as healthy", async () => {
+      // A failed reload keeps the package SERVING, so it comes back from
+      // listPackages looking exactly like a current one. Unmarked, an agent
+      // queries it and gets numbers from the model compiled before the last
+      // save, with nothing in the payload to say so.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               listPackages: async () => [
+                  { name: "current" },
+                  { name: "stale-pkg" },
+               ],
+               getFailedPackages: () => new Map(),
+               getStaleCompileErrors: () =>
+                  new Map([
+                     [
+                        "stale-pkg",
+                        {
+                           message: "line 3: missing ')'",
+                           failedAt: "2026-08-13T00:00:00.000Z",
+                        },
+                     ],
+                  ]),
             }) as never,
       });
       const { results } = parse(
@@ -235,9 +325,15 @@ describe("get_context discovery tiers", () => {
       expect(results).toEqual([
          {
             kind: "package",
-            name: "ecommerce",
-            description: "Ecommerce demo",
+            name: "current",
             environmentName: "malloy-samples",
+         },
+         {
+            kind: "package",
+            name: "stale-pkg",
+            environmentName: "malloy-samples",
+            error: "line 3: missing ')'",
+            stale: true,
          },
       ]);
    });
@@ -304,8 +400,7 @@ describe("get_context discovery tiers", () => {
 
    it("tier 3: package without a query lists only its sources", async () => {
       const handler = captureHandler({
-         getEnvironment: async () =>
-            ({ getPackage: async () => mockPackage }) as never,
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -326,10 +421,105 @@ describe("get_context discovery tiers", () => {
       ]);
    });
 
-   it("tier 4: a query retrieves the matching entity", async () => {
+   it("tier 3: a populated listing of a current package carries no note", async () => {
+      // Notes are for the ambiguous cases only; a healthy payload must stay
+      // byte-identical to what it was before notes existed.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      expect("note" in payload).toBe(false);
+   });
+
+   it("tier 3: a stale package says its names predate the last save", async () => {
+      // The index is the last model that compiled, so every name here is real
+      // and every query against it succeeds. That is exactly the trap: without
+      // the note the payload is indistinguishable from a current package.
       const handler = captureHandler({
          getEnvironment: async () =>
-            ({ getPackage: async () => mockPackage }) as never,
+            envWith(
+               async () => mockPackage,
+               new Map([
+                  [
+                     "ecommerce",
+                     {
+                        message: "line 3: missing ')'",
+                        failedAt: "2026-08-13T00:00:00.000Z",
+                     },
+                  ],
+               ]),
+            ),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      expect(payload.results).toHaveLength(1);
+      expect(payload.note).toContain("STALE");
+      expect(payload.note).toContain("2026-08-13T00:00:00.000Z");
+      expect(payload.note).toContain("malloy_reloadPackage");
+   });
+
+   it("tier 4: retrieval against a stale package carries the note too", async () => {
+      // Tier 4 is the path that goes straight from a question to field names
+      // to a query, so it is the one an agent is most likely to trust blind.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(
+               async () => mockPackage,
+               new Map([
+                  [
+                     "ecommerce",
+                     {
+                        message: "line 3: missing ')'",
+                        failedAt: "2026-08-13T00:00:00.000Z",
+                     },
+                  ],
+               ]),
+            ),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "order items",
+         }),
+      );
+      expect(payload.note).toContain("STALE");
+   });
+
+   it("tier 3: an empty listing says it is a curation gap, not an empty database", async () => {
+      // A package that loaded but exposes nothing and a package with no data
+      // produce the same results: []. The note is what tells an agent the
+      // difference (a failed load never gets here: getPackage throws).
+      const emptyPackage = {
+         listModels: async () => [{ path: "importer.malloy" }],
+         getModel: () => ({ getSourceInfos: () => [], getQueries: () => [] }),
+      };
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => emptyPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "curated-empty",
+         }),
+      );
+      expect(payload.results).toEqual([]);
+      expect(payload.note).toContain("curation gap");
+      expect(payload.note).toContain("malloy_getStatus");
+   });
+
+   it("tier 4: a query retrieves the matching entity", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -363,8 +553,7 @@ describe("get_context discovery tiers", () => {
 
    it("tier 3: lists every source, not just the first 10", async () => {
       const handler = captureHandler({
-         getEnvironment: async () =>
-            ({ getPackage: async () => mockManySourcePackage }) as never,
+         getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
       const { results } = parse(
          await handler({ environmentName: "e", packageName: "p" }),
@@ -374,8 +563,7 @@ describe("get_context discovery tiers", () => {
 
    it("tier 3: honors an explicit limit when given", async () => {
       const handler = captureHandler({
-         getEnvironment: async () =>
-            ({ getPackage: async () => mockManySourcePackage }) as never,
+         getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
       const { results } = parse(
          await handler({ environmentName: "e", packageName: "p", limit: 5 }),
@@ -385,8 +573,7 @@ describe("get_context discovery tiers", () => {
 
    it("tier 4: without a provider the payload has no retrieval marker or scores", async () => {
       const handler = captureHandler({
-         getEnvironment: async () =>
-            ({ getPackage: async () => mockPackage }) as never,
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const payload = parse(
          await handler({
@@ -465,7 +652,7 @@ describe("get_context semantic retrieval", () => {
          getModel: () => mockModel,
       };
       return {
-         getEnvironment: async () => ({ getPackage: async () => pkg }) as never,
+         getEnvironment: async () => envWith(async () => pkg),
          storageManager: {
             getDuckDbConnection: () => db,
          } as never,
