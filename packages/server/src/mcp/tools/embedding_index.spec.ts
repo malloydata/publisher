@@ -14,11 +14,18 @@ import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
-import { EmbeddingProvider } from "../../service/embedding_provider";
+import {
+   EmbeddingProvider,
+   prepareEmbeddingInput,
+} from "../../service/embedding_provider";
 import type { Package } from "../../service/package";
 import {
+   CHUNK_MAX_CHARS,
    EmbeddableEntity,
+   MAX_DOC_CHUNKS,
    MIN_SIMILARITY,
+   chunkDoc,
+   entityFacets,
    SemanticSearchResult,
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
@@ -160,6 +167,78 @@ describe("humanizeName / embeddingText", () => {
    });
 });
 
+describe("chunkDoc / entityFacets", () => {
+   const sentence = (n: number) =>
+      `Fact number ${n} about the grain of this source and how to read it.`;
+
+   it("keeps a short doc as one chunk, so short docs never re-embed", () => {
+      // The upgrade property: anything at or under the ceiling produces the
+      // same single chunk the unchunked scheme produced, so its content hash
+      // is unchanged and it is not re-embedded when chunking ships.
+      expect(chunkDoc("One row per product sold.")).toEqual([
+         "One row per product sold.",
+      ]);
+      const exactly = "a".repeat(CHUNK_MAX_CHARS);
+      expect(chunkDoc(exactly)).toEqual([exactly]);
+   });
+
+   it("returns nothing for an absent or whitespace-only doc", () => {
+      expect(chunkDoc("")).toEqual([]);
+      expect(chunkDoc("   \n  ")).toEqual([]);
+   });
+
+   it("splits a long doc on sentence boundaries, packing toward the target", () => {
+      const doc = Array.from({ length: 12 }, (_, i) => sentence(i)).join(" ");
+      const chunks = chunkDoc(doc);
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+         expect(chunk.length).toBeLessThanOrEqual(CHUNK_MAX_CHARS);
+         // Whole sentences: never cut mid-clause.
+         expect(chunk).toEndWith(".");
+      }
+      // Every sentence survives somewhere; chunking must not drop text.
+      const rejoined = chunks.join(" ");
+      for (let i = 0; i < 12; i++) {
+         expect(rejoined).toContain(sentence(i));
+      }
+   });
+
+   it("caps the chunk count, folding the remainder into the last chunk", () => {
+      // The bound on what one lavishly-documented entity can cost, and the
+      // reason the fold exists: the previous cap DROPPED the overflow.
+      const doc = Array.from({ length: 60 }, (_, i) => sentence(i)).join(" ");
+      const chunks = chunkDoc(doc);
+      expect(chunks).toHaveLength(MAX_DOC_CHUNKS);
+      expect(chunks.join(" ")).toContain(sentence(59));
+   });
+
+   it("keeps an over-long single sentence whole rather than cutting it", () => {
+      const runOn = `${"word ".repeat(200).trim()}.`;
+      expect(chunkDoc(runOn)).toEqual([runOn]);
+   });
+
+   it("prefixes each chunk with the entity name and numbers the facets", () => {
+      const doc = Array.from({ length: 12 }, (_, i) => sentence(i)).join(" ");
+      const facets = entityFacets(entity("fclt_rooms", "src", doc));
+      expect(facets[0]).toEqual({ facet: "name", text: "fclt rooms" });
+      expect(facets.length).toBeGreaterThan(2);
+      facets.slice(1).forEach((f, i) => {
+         expect(f.facet).toBe(`doc:${i}`);
+         // The name anchors a bare fact to the thing it is about.
+         expect(f.text).toStartWith("fclt rooms: ");
+      });
+   });
+
+   it("keeps every chunk within the provider input cap once prefixed", () => {
+      const doc = Array.from({ length: 40 }, (_, i) => sentence(i)).join(" ");
+      for (const facet of entityFacets(entity("some_source", "src", doc))) {
+         expect(prepareEmbeddingInput(facet.text)).toBe(
+            facet.text.replace(/\s+/g, " ").trim(),
+         );
+      }
+   });
+});
+
 describe("trySemanticSearch", () => {
    it("cold start reports indexing, then ranks by cosine with a floor", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
@@ -266,6 +345,51 @@ describe("trySemanticSearch", () => {
          "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
       );
       expect(rows[0].n).toBe(3);
+   });
+
+   it("retrieves a fact buried mid-doc by that fact's own content", async () => {
+      // Symptom B of the same finding: on a ~300-word source doc, a rare
+      // token retrieved the source at rank 1 but near-verbatim business
+      // phrasing from the same doc did not retrieve it at all. Averaged over
+      // everything a long doc mentions, no single fact in it is close to
+      // anything. Here the population rule lives in the doc's fifth
+      // sentence, and the query is that rule in the modeller's own words.
+      const filler = Array.from(
+         { length: 4 },
+         (_, i) => `Unrelated background sentence number ${i} about history.`,
+      ).join(" ");
+      const rule =
+         "Restrict to the buildings Facilities currently holds, excluding leased space.";
+      const doc = `${filler} ${rule} ${filler}`;
+      const chunks = chunkDoc(doc);
+      const ruleChunk = chunks.find((c) => c.includes(rule));
+      if (!ruleChunk) throw new Error("fixture: the rule must land in a chunk");
+
+      // Only the chunk carrying the rule points at the query; the entity's
+      // name and its other chunks point elsewhere.
+      const vectors: Record<string, number[]> = {
+         ...QUERY_VECTORS,
+         "which buildings does facilities hold": [1, 0, 0],
+         "fclt building hist": [0, 0, 1],
+      };
+      for (const chunk of chunks) {
+         vectors[`fclt building hist: ${chunk}`] =
+            chunk === ruleChunk ? [1, 0, 0] : [0, 0, 1];
+      }
+
+      const result = await searchReady({
+         db,
+         provider: mapProvider(vectors).provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "symptom-b",
+         query: "which buildings does facilities hold",
+         limit: 10,
+         entities: [entity("fclt_building_hist", "src", doc)],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits[0].name).toBe("fclt_building_hist");
+      expect(result.hits[0].score).toBeCloseTo(1.0, 3);
    });
 
    it("keeps a documented entity findable by its own name", async () => {

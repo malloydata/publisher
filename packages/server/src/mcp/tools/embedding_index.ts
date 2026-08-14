@@ -123,10 +123,82 @@ export function embeddingText(entity: EmbeddableEntity): string {
 /** The facet holding an entity's own name, embedded free of doc text. */
 export const NAME_FACET = "name";
 
+/**
+ * Target and hard ceiling for one doc chunk, in characters, and the most
+ * chunks one doc may produce.
+ *
+ * The target is small enough that a single fact keeps a vector of its own,
+ * and the cap bounds what one lavishly-documented entity can cost: at most
+ * MAX_DOC_CHUNKS + 1 embeddings. A doc at or under CHUNK_MAX_CHARS stays a
+ * single chunk, so short docs produce byte-identical rows to the unchunked
+ * scheme and cost no re-embed when this ships.
+ */
+export const CHUNK_TARGET_CHARS = 300;
+export const CHUNK_MAX_CHARS = 500;
+export const MAX_DOC_CHUNKS = 8;
+
 /** One embeddable unit of an entity: its name, or a chunk of its doc. */
 export interface EntityFacet {
    facet: string;
    text: string;
+}
+
+/**
+ * Split doc text into chunks that each keep their own embedding.
+ *
+ * A source doc is where modellers put grain caveats, population rules and
+ * reporting conventions, and those facts were unreachable by their own
+ * content: on a ~300-word doc, a rare token retrieved the source at rank 1
+ * while near-verbatim business phrasing from the same doc did not retrieve it
+ * at all. Averaged across everything the doc mentions, no single fact in it
+ * is close to anything.
+ *
+ * It also fixes a silent loss. prepareEmbeddingInput caps input at
+ * MAX_EMBED_INPUT_CHARS, so before chunking, everything past that cap was
+ * dropped with no signal — the tail of a long doc was not merely diluted, it
+ * was never embedded at all.
+ *
+ * Splits on sentence boundaries and packs greedily toward CHUNK_TARGET_CHARS,
+ * so a chunk is a few whole sentences rather than a cut phrase. A sentence
+ * longer than the ceiling on its own is kept whole rather than cut
+ * mid-clause; prepareEmbeddingInput still bounds what is sent. Past
+ * MAX_DOC_CHUNKS the remainder is folded into the last chunk, so no text is
+ * silently dropped the way the old cap dropped it.
+ */
+export function chunkDoc(doc: string): string[] {
+   const text = doc.replace(/\s+/g, " ").trim();
+   if (!text) return [];
+   if (text.length <= CHUNK_MAX_CHARS) return [text];
+
+   const sentences = text.split(/(?<=[.!?])\s+/);
+   const chunks: string[] = [];
+   let current = "";
+   for (const sentence of sentences) {
+      if (!current) {
+         current = sentence;
+         continue;
+      }
+      const joined = `${current} ${sentence}`;
+      // Pack until the target, but never push a chunk past the ceiling.
+      if (
+         joined.length <= CHUNK_TARGET_CHARS ||
+         (current.length < CHUNK_TARGET_CHARS &&
+            joined.length <= CHUNK_MAX_CHARS)
+      ) {
+         current = joined;
+         continue;
+      }
+      chunks.push(current);
+      current = sentence;
+   }
+   if (current) chunks.push(current);
+
+   if (chunks.length > MAX_DOC_CHUNKS) {
+      const kept = chunks.slice(0, MAX_DOC_CHUNKS - 1);
+      kept.push(chunks.slice(MAX_DOC_CHUNKS - 1).join(" "));
+      return kept;
+   }
+   return chunks;
 }
 
 /**
@@ -142,16 +214,21 @@ export interface EntityFacet {
  *
  * Embedding the name on its own fixes that: the name facet matches the plain
  * name at full strength no matter how much documentation the entity carries,
- * and the doc facet still contributes its own vocabulary. Scoring takes the
+ * and the doc facets still contribute their own vocabulary. Scoring takes the
  * best facet (see trySemanticSearch), so more documentation can only add
  * recall, never cost precision on the entity's own name.
+ *
+ * A long doc splits across `doc:N` facets so individual facts stay
+ * retrievable by their own content (see chunkDoc). Each chunk is prefixed
+ * with the entity's name, which anchors a bare fact to the thing it is about;
+ * the chunks are short, so that prefix costs little dilution.
  */
 export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
    const name = humanizeName(entity.name) || entity.name;
    const facets: EntityFacet[] = [{ facet: NAME_FACET, text: name }];
-   if (entity.embedDoc) {
-      facets.push({ facet: "doc:0", text: embeddingText(entity) });
-   }
+   chunkDoc(entity.embedDoc).forEach((chunk, i) => {
+      facets.push({ facet: `doc:${i}`, text: `${name}: ${chunk}` });
+   });
    return facets;
 }
 
