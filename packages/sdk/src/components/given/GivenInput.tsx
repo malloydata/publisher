@@ -220,20 +220,28 @@ export function GivenInput({
    const multiplePickable = isFilterType(type);
    const multiple = given.control === "multiselect" && multiplePickable;
    const filtered = isFilterType(type);
+   const pickerControl =
+      given.control === "select" || given.control === "multiselect";
    // A filter carries its selection as one string ("Nike, Levi's"); a plain
    // array-typed given carries a real array.
-   const selected: string[] = filtered
-      ? typeof value === "string"
-         ? decodeFilterList(value)
-         : []
-      : Array.isArray(value)
-        ? value.map(String)
-        : typeof value === "string" && value !== ""
-          ? [value]
-          : [];
+   //
+   // Guarded by `pickerControl` because it is read only by the picker below and
+   // by the condition guarding it. Computing it for every given would decode a
+   // filter on every render of a control that never shows one.
+   const selected: string[] = !pickerControl
+      ? []
+      : filtered
+        ? typeof value === "string"
+           ? decodeFilterList(value)
+           : []
+        : Array.isArray(value)
+          ? value.map(String)
+          : typeof value === "string" && value !== ""
+            ? [value]
+            : [];
 
    if (
-      (given.control === "select" || given.control === "multiselect") &&
+      pickerControl &&
       pickableType &&
       // A picker that cannot represent the current filter would silently
       // rewrite it on the next edit: `-Nike` decodes to one opaque chip and
@@ -253,13 +261,15 @@ export function GivenInput({
             onChange(filtered ? "" : null);
             return;
          }
-         if (filtered) {
-            onChange(encodeFilterList(next));
-         } else if (multiple) {
-            onChange(next);
-         } else {
-            onChange(next[0]);
-         }
+         // One value for a non-filter given, never the array. `GivenValue`
+         // admits `string[]`, but the URL codec cannot round-trip one:
+         // `givenToParam` joins on `,` and reading it back yields the joined
+         // string, not the list. An `else if (multiple)` arm sending `next`
+         // used to sit here and was unreachable, since `multiple` requires
+         // `isFilterType`, which is the same test `filtered` makes. Removed
+         // rather than left to be revived by a later surface reusing this
+         // codec, where it would silently corrupt the value.
+         onChange(filtered ? encodeFilterList(next) : next[0]);
       };
 
       return (

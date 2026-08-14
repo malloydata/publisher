@@ -4,7 +4,7 @@ import {
    useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 export interface NotebookPageProps {
@@ -37,8 +37,15 @@ export default function NotebookPage({
    // Read through a ref so the callback below stays stable: it is handed to the
    // notebook as a prop, and a new identity on every URL change would churn the
    // effect that calls it.
+   //
+   // Written in an effect rather than during render. A render React discards
+   // never commits, and a ref assigned in one keeps a location the page is not
+   // showing. The callback only runs from a user interaction, long after the
+   // effect has flushed, so it never reads a stale one.
    const locationRef = useRef(location);
-   locationRef.current = location;
+   useEffect(() => {
+      locationRef.current = location;
+   }, [location]);
 
    const givens = useMemo(
       () => Object.fromEntries(searchParams.entries()),

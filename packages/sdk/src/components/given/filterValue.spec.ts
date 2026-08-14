@@ -197,6 +197,22 @@ describe("decodeFilterList", () => {
       expect(valuesMalloyWillMatch(encodeFilterList(["a\tb"]))).toEqual([
          "a\tb",
       ]);
+      // LEADING too, which the docstring used to claim only of trailing.
+      expect(valuesMalloyWillMatch(encodeFilterList(["\ta"]))).toEqual(["a"]);
+      // A space in either position IS escaped, so it survives. This is the
+      // difference the docstring turns on, so it is pinned next to it.
+      expect(valuesMalloyWillMatch(encodeFilterList([" a "]))).toEqual([" a "]);
+   });
+
+   it("does not drop a zero-width space, which is where `trim()` stops", () => {
+      // The all-whitespace refusal tests with JavaScript's `trim()`, which
+      // treats NBSP and the ideographic space as whitespace but not U+200B. So
+      // a zero-width space is carried as an ordinary value. Benign, since it
+      // filters for something useless rather than for everything, and pinned
+      // because the boundary is worth knowing rather than rediscovering.
+      expect(encodeFilterList(["West", "\u00a0"])).toBe("West");
+      expect(encodeFilterList(["West", "\u3000"])).toBe("West");
+      expect(encodeFilterList(["West", "\u200b"])).toBe("West, \u200b");
    });
 
    it("fails a newline outright rather than filtering by the wrong thing", () => {

@@ -53,19 +53,30 @@ export function filterInnerType(type: string | undefined): string | undefined {
  * empty option. Dropping it means an all-empty selection encodes to `""`, the
  * empty filter, which is the "All" state.
  *
- * Two kinds of value do not survive, both involving whitespace the grammar
- * treats as structure. Neither is fixable here without re-introducing the drift
- * this module delegates to avoid, and neither can WIDEN a filter, which is the
+ * Three kinds of value do not survive, all involving whitespace the grammar
+ * treats as structure. None is fixable here without re-introducing the drift
+ * this module delegates to avoid, and none can WIDEN a filter, which is the
  * failure that would matter:
  *
- * - **Trailing whitespace is dropped.** The escaper covers the space character
- *   but not the tab, and the parser trims trailing whitespace, so `"a\t"` comes
- *   back as `"a"`: a filter for a different single value, not a broader one.
+ * - **A leading or trailing tab is dropped.** The escaper covers the space
+ *   character but not the tab, and the parser trims surrounding whitespace, so
+ *   `"a\t"` comes back as `"a"`: a filter for a different single value, not a
+ *   broader one. A space in the same position is escaped and does round-trip,
+ *   and a tab INSIDE a value is untouched.
+ * - **An embedded newline collapses the list.** `["a\nb", "c"]` comes back as
+ *   the single value `"a\nb, c"`, because the grammar excludes a bare newline
+ *   from a match string and the separator stops being read as one. Escaping it
+ *   is not the fix: the library's `unescape` is `/\\(.)/g` and `.` does not
+ *   match a newline, so the value would return carrying a stray backslash.
  * - **A value that is ENTIRELY whitespace is refused**, rather than encoded.
  *   It has to be: `parse` returns a null clause for it with an empty log, not an
  *   error, and Malloy compiles a null clause to the SQL constant `true`, so
  *   encoding it would match every row. That is the same silent widening this
- *   module exists to prevent, so it is dropped like `""` above.
+ *   module exists to prevent, so it is dropped like `""` above. The test is
+ *   JavaScript's `trim()`, which is where this stops: it treats NBSP and the
+ *   ideographic space as whitespace but NOT U+200B, so a zero-width space
+ *   survives as an ordinary value. Harmless, since it filters for something
+ *   useless rather than for everything, but worth knowing the boundary.
  *
  * All three are pinned in the spec so a future change to either side is visible.
  */

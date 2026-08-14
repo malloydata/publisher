@@ -59,8 +59,25 @@ test.describe("notebook givens are URL-addressable", () => {
       const before = await results.count();
       expect(before).toBeGreaterThan(0);
 
+      // Latch onto a node from the PRE-change render. `{cell.result && …}`
+      // unmounts the subtree when a run starts, and a detached node stays
+      // detached, so this cannot be missed the way a spinner can: a spinner is
+      // a window between two polls, this is a one-way transition.
+      const stale = await results.first().elementHandle();
+
       await page.getByLabel("MIN_AMOUNT").fill("500");
       await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
+
+      // A run actually started. Without this the assertion below resolves on its
+      // first poll against the PRE-change DOM: the URL is written immediately
+      // while the run waits out GIVEN_SETTLE_MS. Measured on this notebook, the
+      // count matched at 23ms and the run did not begin until 425ms, so the
+      // assertion was passing 402ms before anything ran and pinned nothing.
+      // `getByRole("progressbar")` reads better but is a window between two
+      // polls rather than a one-way transition, so a fast run closes it unseen.
+      await expect
+         .poll(() => stale?.evaluate((n) => n.isConnected), { timeout: 30_000 })
+         .toBe(false);
 
       // Back to the same number of rendered results, not zero.
       await expect(results).toHaveCount(before, { timeout: 60_000 });
@@ -102,5 +119,21 @@ test.describe("notebook givens are URL-addressable", () => {
 
       await expect(page).not.toHaveURL(/MIN_AMOUNT/);
       await expect(page.getByLabel("MIN_AMOUNT")).toHaveValue("");
+   });
+
+   test("a control change keeps the URL fragment", async ({ page }) => {
+      // The page used to write the URL through `setSearchParams`, which
+      // navigates to a search-only target; a target carrying no hash resolves
+      // the fragment to empty, so changing any control dropped whatever anchor
+      // the reader had arrived on. Browser-level, so it is pinned here rather
+      // than in a unit test.
+      await page.goto(`${NOTEBOOK}#cell-2`);
+      await expect(page.getByText("Parameters", { exact: true })).toBeVisible({
+         timeout: 60_000,
+      });
+
+      await page.getByLabel("MIN_AMOUNT").fill("500");
+      await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
+      await expect(page).toHaveURL(/#cell-2$/);
    });
 });
