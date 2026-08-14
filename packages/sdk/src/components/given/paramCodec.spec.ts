@@ -71,6 +71,11 @@ describe("pickedDayToUtc", () => {
       // tests do discriminate (Sydney catches two that a UTC run cannot), and a
       // half-hour offset adds nothing over UTC at these hours: the useful pair
       // is one zone ahead of UTC and one behind.
+      //
+      // The variable is offset DIRECTION, not zone count. Adding zones for
+      // symmetry buys nothing: Kolkata scores identically to UTC despite being
+      // the most exotic-looking of the four. If only one non-UTC zone can be
+      // afforded, pick a far-ahead one.
       const day = { year: () => 2024, month: () => 0, date: () => 5 };
       const stored = pickedDayToUtc(day);
       expect([
