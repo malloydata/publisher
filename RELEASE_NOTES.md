@@ -94,6 +94,74 @@ A `storage=` build reads its source through DuckDB's native query-passthrough, w
 **New operational prerequisite on BigQuery.** A labelled read locates its result table by listing the executed script's child job, an API surface the unsplit read never touched. A connection that cannot list its own jobs keeps the read it had before and loses attribution rather than its build — the fallback is decided by a probe issued _before_ anything runs, and counted by `publisher_storage_build_attribution_skipped_total`. Separately, and independent of tagging, the passthrough streams its results over the Storage Read API on every path: `bigquery.readsessions.create` (`roles/bigquery.readSessionUser`) is a standing requirement for materializing any BigQuery source into a storage destination.
 
 `ManifestEntry.queryCostBytes` is populated for a tagged `storage=` build, and the full per-engine cost — billed bytes, slot or execution time, the cache flag, the warehouse's own job ids — goes to the build's log line.
+## [Unreleased] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
+
+A gate whose expression reads no row field works exactly as before; a gate that reads one — its
+own source's, or a joined source's — now filters rows instead of only admitting or rejecting the
+whole source. This ships on, unconditionally — there is no flag to stage the rollout.
+
+### Breaking changes, in the order they bite
+
+- **A denied caller now gets 200 with zero rows instead of 403**, for a row-level gate.
+  `#(authorize) "org_id in $GROUPS"` and `#(authorize) "childtable.name = $BOB"` are now valid — the
+  join a joined-field gate needs is compiled in as part of the entry source's own build, before any
+  caller-controlled query stage exists. This cannot affect an existing package: a row-field gate
+  could not be written before this ships (it always failed the one-row probe, which has no real
+  columns for it to read), so no existing caller can be relying on the 403. It matters for gates
+  authors write from now on — check any consumer that keys logic on the 403 status. See
+  [docs/security-posture.md](docs/security-posture.md).
+- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED.** This DOES break
+  existing packages: such a package builds and serves frozen rows TODAY, which is the leak being
+  closed. A package that has one will fail to build where it previously succeeded. Drop
+  `#@ persist` from the source, or move the gate to a source that is not materialized. See
+  [docs/materialization.md](docs/materialization.md).
+- **An `#(authorize)` in a position nothing enforces now fails the model load** — a top-level
+  `query:` statement, or a field (`dimension:`/`measure:`/`view:`) inside a source. This also
+  breaks existing packages, also deliberately: today such a gate silently protects nothing. Move
+  the annotation to the `source:` statement it is meant to protect.
+- **An `#(authorize)` on a `join_one:`/`join_many:` line warns** rather than failing the load —
+  gating a join has no effect, so if this was meant to lock access, move it to the joined source's
+  own `source:` declaration.
+- **`##(authorize)` (file-level) is deprecated and now fails the model load.** It was a mistake to
+  ship a model-wide override in the first place: the raw-warehouse path it existed to close is
+  already closed unconditionally by restricted mode, so the file-level fallback protected nothing a
+  source-level gate couldn't already cover, while being easy to misuse into unlocking every source
+  in a file at once. A `##(authorize)` annotation anywhere in the model — including one folded in
+  from an imported file — now fails the load rather than silently applying; the remedy is
+  `#(authorize)` on each `source:` it was meant to protect. See
+  [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates).
+- **Known limitation:** a notebook cell's row-level gate filters correctly even when that cell both
+  declares the gated source and runs it in the same cell (the first code cell, one preceded only by
+  markdown, or any later cell in the same shape) — EXCEPT for a joined-field gate whose run query
+  does not itself reference the joined field. That one narrow shape denies with a 400 rather than a
+  403 (never a leak — no rows are returned either way); reference the joined field in the run
+  query's own projection to avoid it. See
+  [docs/row-level-authorize-spike-findings.md § 7](docs/row-level-authorize-spike-findings.md).
+
+### What changed
+
+- **A gate that references only givens is unaffected.** Most existing gates are this kind. They
+  keep the one-row DuckDB probe and the whole-source admit/deny decision unchanged.
+- **The accepted row-level shape is a positive allowlist**: a boolean combination of
+  `<field> <operator> $GIVEN` comparisons, with `in` required for an array-typed given. Function
+  calls, arithmetic, a comparison against a constant, `like`, and `not in` are refused at package
+  load, naming the reason. See
+  [docs/authorize.md § Row-level gates](docs/authorize.md#row-level-gates).
+- **A row-level gate's given must be on the model's own given surface** — declared there, or
+  imported one hop away. Malloy does not flatten a `given:` declaration further than that, so a
+  gate referencing one further away would otherwise silently bind that given's declaration
+  default instead of the caller's value; this is refused at load instead.
+
+### Author-facing behavior worth knowing
+
+- A gate on a joined field turns a `join_one` LEFT JOIN into an INNER JOIN — a parent row with no
+  matching child drops out rather than surviving with nulls.
+- A gate must resolve at every entry point the declaring source is reached through. `rename:`,
+  `except:`, and `accept:` can remove the field a gate was written against; package load fails,
+  naming the source.
+- Entry-point-only semantics are unchanged: a gate on a source reached only through a join still
+  does not fire. A gate may now *reference* a joined field from the entry point's own expression —
+  that is not the same thing.
 
 ---
 

@@ -46,6 +46,23 @@ source: summary_fresh is order_summary extend {
 
 Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
 
+### `#(authorize)`-gated sources cannot be materialized
+
+A source protected by an `#(authorize)` gate — its own, or one carried from a joined or derived
+source — cannot be persisted, in either mode:
+
+- **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
+  reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
+  a materialized-once table is served frozen to every caller, and the served shape carries no gate
+  to re-evaluate.
+- **A colocated `#@ persist`** (no `storage=`) refuses the same way: a colocated build is just as
+  frozen as a `storage=` build, so the same leak applies. Drop `#@ persist` from the source, or
+  move the gate to a source that is not materialized.
+
+Both refusals name the source and the remedy; a package carrying one fails to build (or, for
+`storage=`, fails that materialization run) rather than silently serving the gated source to
+everyone.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:

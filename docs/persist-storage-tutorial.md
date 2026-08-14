@@ -674,13 +674,19 @@ just the stored columns; it's the floor that guarantees the captured schema
 forms a valid DuckDB source.
 
 These are the checks derivable from the compiled source and the built schema
-alone. One more belongs here and is **not yet enforced**: a source protected by
-`#(authorize)` — directly, or transitively through a join or derivation — should
-not be materialized into a shared store, because the serve path rebinds it to a
-virtual source whose shape carries no `#(authorize)` annotation, so the gate
-can't be evaluated on the served table. Until that refusal lands (alongside the
-upstream transitive-`#(authorize)` enforcement it reuses), do not materialize an
-authorize-gated source; serve it live.
+alone. One more belongs here and **is enforced**: a source protected by
+`#(authorize)` — directly, or transitively through a join or derivation — is
+refused, because the serve path rebinds it to a virtual source whose shape
+carries no `#(authorize)` annotation, so the gate can't be evaluated on the
+served table. `referencesAuthorize` in `materialization_eligibility.ts` walks the
+compiled source for the gate and fails closed: a source it cannot prove
+gate-free is refused.
+
+A colocated `#@ persist` is refused for the same reason. That case is not about
+rebinding — a colocated build has no virtual source — but about freezing: the
+table is computed once and served to everyone, so a per-request gate on it is
+absent rather than unevaluated. See [materialization.md](materialization.md)
+for the author-facing refusal.
 
 ### Field-level hiding and the materialized table
 
