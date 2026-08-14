@@ -28,6 +28,7 @@ import {
    BuildPlan,
    FreshnessManifest,
    LedgerEntry,
+   isFailedEntry,
    Materialization,
    MaterializationStatus,
    MaterializationUpdate,
@@ -844,8 +845,8 @@ export class MaterializationService {
          // Counted from what the build actually returned, not from what it was
          // asked to do: a source that failed is recorded in the manifest with its
          // reason, so instructions.length would report it as built.
-         const sourcesFailed = Object.values(entries).filter(
-            (e) => (e as ManifestEntry).error,
+         const sourcesFailed = Object.values(entries).filter((e) =>
+            isFailedEntry(e as ManifestEntry),
          ).length;
          const sourcesBuilt = instructions.length - sourcesFailed;
          const sourcesReused = Object.keys(carried).length;
@@ -1010,7 +1011,7 @@ export class MaterializationService {
                // A prior entry that records a failure names no table that exists:
                // carrying it forward would retire the source from every later run,
                // so a transient warehouse error would never be retried.
-               !prior.error &&
+               !isFailedEntry(prior) &&
                prior.physicalTableName &&
                (prior.storageDestinationName ?? undefined) === destination
             ) {
@@ -1232,7 +1233,7 @@ export class MaterializationService {
          // queries to a table that does not exist, or to the generation this run
          // failed to replace.
          if (
-            !entry.error &&
+            !isFailedEntry(entry) &&
             entry.physicalTableName &&
             !entry.storageDestinationName
          ) {
@@ -1523,7 +1524,9 @@ export class MaterializationService {
       manifest.strict = strict;
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
-         if (entry.physicalTableName) {
+         // A seeded entry that records a failure names no table that was built,
+         // so it must not reach a downstream source's FROM.
+         if (!isFailedEntry(entry) && entry.physicalTableName) {
             // The build Manifest feeds a downstream persist's `FROM` verbatim,
             // so a seeded upstream must carry the SAME quoting the builder
             // CREATEd it with — else the downstream CREATE misses the

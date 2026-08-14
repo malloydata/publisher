@@ -1271,6 +1271,54 @@ describe("deriveSelfInstructions", () => {
       ).toContain("b1aaaaaaaaaaaaaa");
    });
 
+   it("keeps a failed prior entry out of the carried set the failure count reads", () => {
+      // The failed-source count is taken over the entries a build returns, which
+      // include the ones carried from a previous run. That count is only right
+      // while a failed entry cannot be carried: if one were, every later run
+      // would inherit it and report a failure that already happened. The two
+      // rules hold each other up, so this pins them together.
+      const compiled = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1", "s2"]],
+      );
+      const priorEntries = {
+         b1aaaaaaaaaaaaaa: {
+            sourceEntityId: "b1aaaaaaaaaaaaaa",
+            physicalTableName: "s1_prev",
+            connectionName: "duckdb",
+         },
+         b2bbbbbbbbbbbbbb: {
+            sourceEntityId: "b2bbbbbbbbbbbbbb",
+            physicalTableName: "s2_prev",
+            connectionName: "duckdb",
+            error: "Permission denied while writing to dataset analytics",
+         },
+      };
+
+      const { carried } = (
+         ctx.service as unknown as {
+            deriveSelfInstructions: (
+               c: unknown,
+               n: string[] | undefined,
+               p: unknown,
+            ) => { instructions: BuildInstruction[]; carried: unknown };
+         }
+      ).deriveSelfInstructions(compiled, undefined, priorEntries);
+
+      const carriedMap = carried as Record<string, { error?: string }>;
+      expect(
+         Object.values(carriedMap).filter((e) => e.error),
+         "no carried entry may record a failure, or the count of failed " +
+            "sources would rise on every later run",
+      ).toHaveLength(0);
+      // The healthy one is still reused, so the guard is not simply refusing to
+      // carry anything.
+      expect(carriedMap["b1aaaaaaaaaaaaaa"]).toBeDefined();
+   });
+
    it("carries forward unchanged sourceEntityIds and builds the rest (deduping repeats)", () => {
       const compiled = compiledWith(
          {
