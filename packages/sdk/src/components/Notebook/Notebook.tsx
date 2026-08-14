@@ -11,7 +11,7 @@ import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
-import { encodeDrillValue } from "../drill";
+import { encodeDrillValue, type DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
@@ -92,11 +92,17 @@ interface NotebookProps {
     * react-router context is required to render a notebook.
     *
     * It does NOT carry drill. A `# drill { to=self }` filters this notebook
-    * through `given:` state and works with or without this handler, and a drill
-    * naming a dashboard is not wired at all yet: see the note in
-    * `NotebookCell` for why.
+    * through `given:` state and needs no handler at all, and a drill naming a
+    * dashboard goes through {@link onDrillNavigate}, which takes a destination
+    * rather than a URL.
     */
    onNavigate?: (to: string, event?: NavigationClick) => void;
+   /**
+    * Opens a `# drill { to=<dashboard> }` from a cell, seeded with the clicked
+    * value. Omitted on a host with no dashboard route, which leaves those
+    * destinations inert AND unmarked rather than painting a dead link.
+    */
+   onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
 }
 
 // Requires PackageProvider
@@ -106,6 +112,7 @@ export default function Notebook({
    givens,
    onGivensChange,
    onNavigate,
+   onDrillNavigate,
 }: NotebookProps) {
    const { apiClients } = useServer();
    const {
@@ -645,6 +652,7 @@ export default function Notebook({
                         // the settle window has to signal.
                         pendingRerun={runScheduled}
                         onNavigate={onNavigate}
+                        onDrillNavigate={onDrillNavigate}
                         onDrillSelf={
                            declaredGivens.length > 0 ? onDrillSelf : undefined
                         }
