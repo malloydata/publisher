@@ -785,3 +785,24 @@ describe("a bare date with a zone, which is a rule of its own", () => {
       }
    });
 });
+
+describe("whitespace, which is not the same as empty", () => {
+   it("does not collapse a whitespace-only temporal parameter to empty", () => {
+      // `restoreUrlPlus` trims to line its pattern up, and returning the
+      // trimmed text turned ` ` into `""` AFTER the empty-means-unset check had
+      // already let it past. The given was then sent as `""`: an empty date the
+      // control showed as unset, so the screen and the query disagreed.
+      for (const type of ["date", "timestamp", "timestamptz"]) {
+         expect(paramToGiven(type, " ")).toBe(" ");
+         expect(paramToGiven(type, "\t ")).toBe("\t ");
+         expect(paramToGiven(type, "")).toBeNull();
+      }
+   });
+
+   it("still puts back a `+` the address bar ate", () => {
+      // The trim above exists for this, so it has to keep working.
+      expect(paramToGiven("timestamptz", "2024-03-01 12:30 05:30")).toEqual(
+         new Date("2024-03-01T07:00:00.000Z"),
+      );
+   });
+});

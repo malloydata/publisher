@@ -32,6 +32,14 @@ export interface UseGivensStateOptions {
     * committed yet.
     */
    onParamsChange?: (params: Record<string, string>) => void;
+   /**
+    * Identifies the document the edits belong to, so they are dropped when the
+    * host swaps documents underneath this hook. Without it the edits are keyed
+    * by their starting VALUES alone, and two documents whose starting values
+    * coincide (the common case: both empty) look like one, so the previous
+    * document's applied values keep filtering the new one.
+    */
+   documentKey?: string;
    /** False batches changes behind Apply. */
    autorun: boolean;
 }
@@ -101,6 +109,7 @@ export function useGivensState({
    startingValues,
    params,
    onParamsChange,
+   documentKey,
    autorun,
 }: UseGivensStateOptions): UseGivensStateResult {
    // Where the document says the controls start, with no URL in it. This is
@@ -125,9 +134,17 @@ export function useGivensState({
 
    // Which starting point the edits below belong to. A change means a different
    // document, or the same one at a different URL after a drill.
+   //
+   // The document is part of the key, not just the values. Keyed by values
+   // alone, navigating between two notebooks that both start empty produced
+   // equal keys, so the first notebook's applied values stayed `active` and
+   // filtered the second, while `lastReported` (equal to them already)
+   // suppressed the report that would have put them in the URL: the address bar
+   // and the running cells disagreed, and copying the URL reproduced neither.
    const initialKey = useMemo(
-      () => JSON.stringify(Array.from(initial.entries())),
-      [initial],
+      () =>
+         JSON.stringify([documentKey ?? null, Array.from(initial.entries())]),
+      [documentKey, initial],
    );
 
    // KNOWN LIMITATION, latent today. A given that has a starting value cannot be
@@ -206,6 +223,17 @@ export function useGivensState({
    // exist, and an unseeded reference would report that emptiness on mount,
    // telling the host to clear a URL whose parameters had not been read yet,
    // wiping the state the link was carrying.
+   //
+   // ACCEPTED COST of that seeding: when the manifest is already cached, the
+   // first render knows the types, so the seed equals the URL's values and no
+   // initial report fires at all. A host that learns which names are its own
+   // FROM the reports (as `NotebookPage` does) therefore never learns them, and
+   // if a later model reload drops one of those givens, its parameter is left
+   // behind in the address bar. Kept because the alternative is worse: an
+   // unseeded reference wipes a shared link's parameters on mount for any
+   // consumer that wires this callback before the manifest lands, and a
+   // leftover parameter for an undeclared given is inert, since `paramsToGivens`
+   // ignores names the model does not declare.
    const appliedParams = useMemo(
       () => givensToParams(applied, declaredTypes),
       [applied, declaredTypes],

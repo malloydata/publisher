@@ -5,7 +5,7 @@ import {
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
 import { useCallback, useMemo, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 export interface NotebookPageProps {
    environmentName: string;
@@ -25,8 +25,20 @@ export default function NotebookPage({
    packageName,
    notebookPath,
 }: NotebookPageProps) {
-   const [searchParams, setSearchParams] = useSearchParams();
+   const [searchParams] = useSearchParams();
    const navigate = useRouterClickHandler();
+
+   // `setSearchParams` is deliberately not used to WRITE. It navigates to a
+   // search-only target (`"?" + params`), and a target carrying no fragment
+   // resolves to an empty one, so changing a control dropped whatever anchor
+   // the reader had arrived on. Navigating with an explicit `hash` keeps it.
+   const routerNavigate = useNavigate();
+   const location = useLocation();
+   // Read through a ref so the callback below stays stable: it is handed to the
+   // notebook as a prop, and a new identity on every URL change would churn the
+   // effect that calls it.
+   const locationRef = useRef(location);
+   locationRef.current = location;
 
    const givens = useMemo(
       () => Object.fromEntries(searchParams.entries()),
@@ -55,39 +67,41 @@ export default function NotebookPage({
    const onGivensChange = useCallback(
       (next: Record<string, string>, managed: readonly string[]) => {
          const ours = new Set([...managed, ...writtenRef.current]);
+         // `managed` as well as the names carried in `next`: a given the notebook
+         // declares is this page's to clean up even when it currently has no
+         // value, which is how a control cleared before a model reload still
+         // gets its parameter removed.
          writtenRef.current = new Set([
             ...writtenRef.current,
             ...Object.keys(next),
+            ...managed,
          ]);
-         setSearchParams(
-            (current) => {
-               // Merged into what is already there, not written over it. The
-               // page's query string is not ours alone: a tracking tag or any
-               // other unrelated parameter shares it, and replacing the whole
-               // string deletes it on the first control change. The SDK takes
-               // the same care in the other direction: `paramsToGivens`
-               // ignores names the model does not declare, and a wholesale
-               // replace here would undo that.
-               const merged = new URLSearchParams(current);
-               // Scoped to the names that are ours: what the notebook manages
-               // now, plus anything this page wrote earlier. A cleared control
-               // has to leave the address bar, and so does a given the model no
-               // longer declares. Anything outside that set is left exactly as
-               // found, which is the whole point of merging.
-               for (const name of ours) {
-                  if (!(name in next)) merged.delete(name);
-               }
-               for (const [name, value] of Object.entries(next)) {
-                  merged.set(name, value);
-               }
-               return merged;
-            },
+         // Merged into what is already there, not written over it. The page's
+         // query string is not ours alone: a tracking tag or any other
+         // unrelated parameter shares it, and replacing the whole string
+         // deletes it on the first control change. The SDK takes the same care
+         // in the other direction: `paramsToGivens` ignores names the model
+         // does not declare, and a wholesale replace here would undo that.
+         const merged = new URLSearchParams(locationRef.current.search);
+         // Scoped to the names that are ours: what the notebook manages now,
+         // plus anything this page wrote earlier. A cleared control has to
+         // leave the address bar, and so does a given the model no longer
+         // declares. Anything outside that set is left exactly as found, which
+         // is the whole point of merging.
+         for (const name of ours) {
+            if (!(name in next)) merged.delete(name);
+         }
+         for (const [name, value] of Object.entries(next)) {
+            merged.set(name, value);
+         }
+         routerNavigate(
+            { search: merged.toString(), hash: locationRef.current.hash },
             // Changing a parameter is not a navigation step: Back should leave
             // the notebook, not walk back through every value the reader tried.
             { replace: true },
          );
       },
-      [setSearchParams],
+      [routerNavigate],
    );
 
    return (

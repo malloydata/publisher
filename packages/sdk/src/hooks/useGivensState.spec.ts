@@ -324,3 +324,37 @@ describe("useGivensState: settling", () => {
       expect(renders).toBeLessThan(5);
    });
 });
+
+describe("useGivensState: swapping documents", () => {
+   it("drops the previous notebook's applied values on navigation", () => {
+      // Navigating between notebooks reuses this hook's component, and the
+      // edits used to be keyed by their starting VALUES alone. Two notebooks
+      // that both start empty produced the same key, so the first one's
+      // applied values stayed active and filtered the second, while
+      // `lastReported` (already equal to them) suppressed the report that
+      // would have shown them in the URL.
+      const reported: Record<string, string>[] = [];
+      const { result, rerender } = renderHook(
+         (props: { doc: string; params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: new Map([["REGION", "string"]]),
+               params: props.params,
+               documentKey: props.doc,
+               onParamsChange: (next) => reported.push(next),
+               autorun: true,
+            }),
+         { initialProps: { doc: "a.malloynb", params: {} } },
+      );
+
+      act(() => result.current.setGiven("REGION", "West"));
+      expect(entries(result.current.applied)).toEqual({ REGION: "West" });
+
+      // The host writes it to the URL and feeds it straight back in.
+      rerender({ doc: "a.malloynb", params: { REGION: "West" } });
+      expect(entries(result.current.applied)).toEqual({ REGION: "West" });
+
+      rerender({ doc: "b.malloynb", params: {} });
+      expect(entries(result.current.applied)).toEqual({});
+      expect(reported.at(-1)).toEqual({});
+   });
+});

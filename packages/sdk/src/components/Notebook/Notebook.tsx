@@ -191,6 +191,10 @@ export default function Notebook({
       // Passing undefined makes the hook skip the report entirely, which leaves
       // its record untouched and the next real change still reportable.
       onParamsChange: isSuccess ? reportGivens : undefined,
+      // Which notebook these edits belong to. Navigating between notebooks
+      // reuses this component, so without it one notebook's applied values
+      // carried into the next whenever both started from the same values.
+      documentKey: resourceUri,
       autorun,
    });
 

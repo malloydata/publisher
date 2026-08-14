@@ -53,23 +53,36 @@ export function drillableFieldNames(
       // Metadata unavailable: no affordance, but clicks still resolve.
       return names;
    }
+   // Header text that a NON-drillable field renders. A header shows the `# label`
+   // when the author set one and the field name otherwise, so that is the one
+   // spelling each of these can put on screen.
+   const taken = new Set<string>();
+   for (const field of fields) {
+      if (!field || canDrill(field)) continue;
+      taken.add(field.tag?.text("label") ?? field.name);
+   }
+
    for (const field of fields) {
       if (!field || !canDrill(field)) continue;
-      names.add(field.name);
-      const label = field.tag?.text("label");
-      if (label) names.add(label);
       // Both spellings, because a header shows the label when there is one and
       // the field name otherwise, and this set is matched against header TEXT.
       //
-      // KNOWN LIMITATION of matching on text: the set is flat across the whole
-      // result, while `markDrillableCells` walks every `.malloy-table` in it,
-      // nested ones included. A nested table whose column happens to carry the
-      // same header text as a drillable outer field is therefore marked too, and
-      // clicking it resolves against ITS own field, which has no `# drill`, so
-      // nothing happens. Bounded (it needs a name collision between a nested and
-      // an outer column) but real, and the honest fix is to match on field
-      // identity rather than rendered text, which is a rewrite of the DOM walk
-      // rather than a patch to it.
+      // A spelling some non-drillable field also renders is dropped rather than
+      // marked. Matching on text cannot tell those two columns apart, and this
+      // file would rather lose an affordance than paint a link that does
+      // nothing when clicked, which is the same reason `canDrill` filters at
+      // all. Costs the affordance on the drillable column in that case.
+      const label = field.tag?.text("label");
+      for (const spelling of label ? [field.name, label] : [field.name]) {
+         if (!taken.has(spelling)) names.add(spelling);
+      }
+      // KNOWN LIMITATION that remains: `markDrillableCells` walks every
+      // `.malloy-table` in the result, nested ones included, and matches this
+      // one flat set against all of them. Two fields that render the same text
+      // are handled above, but only because `getAllFields` reports both; a
+      // column this set never saw can still collide. The honest fix is to match
+      // on field identity rather than rendered text, which is a rewrite of the
+      // DOM walk rather than a patch to it.
    }
    return names;
 }

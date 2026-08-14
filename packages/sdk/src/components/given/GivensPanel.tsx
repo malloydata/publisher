@@ -62,7 +62,11 @@ export function GivensPanel({
    title,
 }: GivensPanelProps) {
    if (givens.length === 0) return null;
-   const hasValues = values.size > 0;
+   // Some value actually SET, not merely some entry present. `paramsToGivens`
+   // records `?X=` as a null entry, so counting entries offered Reset for a
+   // control that is unset, and pressing it changed nothing and left the empty
+   // parameter in the URL.
+   const hasValues = Array.from(values.values()).some((v) => v !== null);
 
    const inputs = givens.map((given) => (
       <Box

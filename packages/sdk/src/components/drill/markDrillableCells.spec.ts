@@ -73,4 +73,29 @@ describe("drillableFieldNames", () => {
          ).size,
       ).toBe(0);
    });
+
+   it("drops a spelling a non-drillable field also renders", () => {
+      // Matching on header TEXT cannot tell the two columns apart, so marking
+      // `Region` would paint the non-drillable column as a link that does
+      // nothing. The affordance is given up instead, on both columns.
+      const names = drillableFieldNames(
+         viz([
+            field("region", ['# drill { to=overview } label="Region"\n']),
+            field("ship_from", ['# label="Region"\n']),
+         ]),
+         navigateOnly,
+      );
+      expect([...names].sort()).toEqual(["region"]);
+   });
+
+   it("still marks a label no other field renders", () => {
+      const names = drillableFieldNames(
+         viz([
+            field("region", ['# drill { to=overview } label="Region"\n']),
+            field("ship_from", ['# label="Origin"\n']),
+         ]),
+         navigateOnly,
+      );
+      expect([...names].sort()).toEqual(["Region", "region"]);
+   });
 });

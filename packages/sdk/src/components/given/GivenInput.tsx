@@ -218,6 +218,20 @@ export function GivenInput({
    );
 
    const multiplePickable = isFilterType(type);
+   const multiple = given.control === "multiselect" && multiplePickable;
+   const filtered = isFilterType(type);
+   // A filter carries its selection as one string ("Nike, Levi's"); a plain
+   // array-typed given carries a real array.
+   const selected: string[] = filtered
+      ? typeof value === "string"
+         ? decodeFilterList(value)
+         : []
+      : Array.isArray(value)
+        ? value.map(String)
+        : typeof value === "string" && value !== ""
+          ? [value]
+          : [];
+
    if (
       (given.control === "select" || given.control === "multiselect") &&
       pickableType &&
@@ -226,22 +240,12 @@ export function GivenInput({
       // re-encodes as a literal, inverting what the filter means. Fall through
       // to the text box instead, where the author's filter stays visible and
       // editable as written.
-      filterIsPickable
+      filterIsPickable &&
+      // Same reasoning, different cause: a single-pick control has room for one
+      // value and the model's filter holds several. It rendered the first and
+      // dropped the rest as soon as the reader picked anything.
+      !(!multiple && selected.length > 1)
    ) {
-      const multiple = given.control === "multiselect" && multiplePickable;
-      const filtered = isFilterType(type);
-      // A filter carries its selection as one string ("Nike, Levi's"); a plain
-      // array-typed given carries a real array.
-      const selected: string[] = filtered
-         ? typeof value === "string"
-            ? decodeFilterList(value)
-            : []
-         : Array.isArray(value)
-           ? value.map(String)
-           : typeof value === "string" && value !== ""
-             ? [value]
-             : [];
-
       const commit = (next: string[]) => {
          if (next.length === 0) {
             // No selection is "All", which for a filter is the empty filter and
@@ -463,8 +467,12 @@ export function GivenInput({
             <DatePicker
                label={label}
                value={parsed?.isValid() ? parsed : null}
+               // Cleared means UNSET, `null`, not an empty filter expression.
+               // `""` is a value for a filter given (the empty string is
+               // meaningful there), so it reached the wire as a filter of no
+               // characters instead of dropping the override.
                onChange={(next) =>
-                  onChange(next ? next.format("YYYY-MM-DD") : "")
+                  onChange(next ? next.format("YYYY-MM-DD") : null)
                }
                slotProps={{
                   textField: {
@@ -472,7 +480,7 @@ export function GivenInput({
                      size: "small",
                      helperText: helperNode,
                   },
-                  field: { clearable: true, onClear: () => onChange("") },
+                  field: { clearable: true, onClear: () => onChange(null) },
                }}
             />
          </LocalizationProvider>

@@ -108,7 +108,7 @@ export function humanizeSlug(slug: string): string {
 
 /**
  * The given a `# drill` on this field would set: `given=` when the tag names
- * one, otherwise the dimension name upper-cased.
+ * one, otherwise the dimension name exactly as the model spells it.
  *
  * Shared with the affordance for the same reason `drillDestinations` is: a cell
  * reads as clickable exactly when clicking it would do something, and deciding
@@ -139,7 +139,7 @@ export interface DrillNavigation {
 export interface DrillIntent {
    /** Destinations in declared order: dashboard slugs and/or {@link DRILL_SELF}. */
    to: string[];
-   /** The given to seed: the dimension name upper-cased, unless `given=` says otherwise. */
+   /** The given to seed: the dimension name as spelled, unless `given=` says otherwise. */
    given: string;
    /**
     * The clicked value as Malloy filter syntax, ready to send to a `filter<…>`
