@@ -13,7 +13,10 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
-import { assertMaterializationEligible } from "./materialization_eligibility";
+import {
+   assertColocatedPersistNotAuthorizeGated,
+   assertMaterializationEligible,
+} from "./materialization_eligibility";
 
 const ROOT = "file:///elig/";
 let connections: FixedConnectionMap;
@@ -154,5 +157,53 @@ source: mz_joined is joiner extend {
       expect(() => assertMaterializationEligible(sources.mz_joined)).toThrow(
          MaterializationEligibilityError,
       );
+   });
+});
+
+describe("assertColocatedPersistNotAuthorizeGated", () => {
+   it("refuses a colocated persist source protected by its own #(authorize) gate", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(authorize) "$role = 'analyst'"
+#@ persist name="mz_colocated_authz"
+source: mz_colocated_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_colocated_authz).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+      ).toThrow(/authorize/i);
+   });
+
+   it("accepts an ungated colocated persist source", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#@ persist name="mz_colocated_plain"
+source: mz_colocated_plain is base -> { aggregate: c is count() }`);
+      expect(sources.mz_colocated_plain).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_plain),
+      ).not.toThrow();
+   });
+
+   it("accepts a colocated persist source that references a given but carries no gate (narrow check does not pull in referencesGiven)", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+#@ persist name="mz_colocated_given"
+source: mz_colocated_given is base -> { where: tenant = $tenant; aggregate: c is count() }`);
+      expect(sources.mz_colocated_given).toBeDefined();
+      // assertMaterializationEligible would refuse this (referencesGiven), but
+      // the colocated check deliberately does not apply that rule.
+      expect(() =>
+         assertMaterializationEligible(sources.mz_colocated_given),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),
+      ).not.toThrow();
    });
 });

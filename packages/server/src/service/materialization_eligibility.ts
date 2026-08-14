@@ -126,6 +126,47 @@ export function assertMaterializationEligible(
 }
 
 /**
+ * Compile-time eligibility gate for the COLOCATED persist path (a plain
+ * `#@ persist` with no `storage=`, which builds a CTAS into the source's own
+ * warehouse). Deliberately narrow: it checks ONLY the `#(authorize)` condition
+ * from {@link assertMaterializationEligible}, reusing the same `referencesAuthorize`
+ * walk rather than duplicating it, and does NOT apply that function's other
+ * rules (`referencesGiven`, unbound parameters). Those other rules exist
+ * because a *storage destination* — a separate DuckDB/DuckLake table — cannot
+ * represent a per-query given or a free parameter; a colocated build has no
+ * such constraint (it is still one relation per source, computed once, in the
+ * source's own warehouse), so applying them here would refuse a large set of
+ * packages that build and serve correctly today. Only the authorize gate is a
+ * problem on this path: it is evaluated per request, and a colocated build is
+ * just as frozen as a storage build, so the same leak applies.
+ *
+ * @throws {MaterializationEligibilityError} (HTTP 422) naming the source and
+ *   the remedy, so the author can either drop `#@ persist` from this source or
+ *   move the gate to a source that is not materialized.
+ */
+export function assertColocatedPersistNotAuthorizeGated(
+   persistSource: PersistSource,
+   sourceName: string = persistSource.name,
+): void {
+   if (referencesAuthorize(persistSource)) {
+      // Reuses the "authorize" reason: this is the same underlying refusal
+      // (a frozen table serving an authorize-gated relation to everyone) as
+      // the storage-destination case, just reached via the colocated path.
+      recordEligibilityRefused("authorize");
+      throw new MaterializationEligibilityError({
+         message:
+            `Source '${sourceName}' cannot be materialized (colocated ` +
+            `'#@ persist'): it is protected by an #(authorize) gate (its own or ` +
+            `a joined source's). An authorize expression is evaluated per ` +
+            `request; a materialized-once table served frozen carries no gate, ` +
+            `so it would be served to everyone, bypassing authorization. This ` +
+            `is refused for safety. Drop '#@ persist' from this source, or move ` +
+            `the gate to a source that is not materialized.`,
+      });
+   }
+}
+
+/**
  * Names of the source's parameters that are declared but not bound to a value.
  * A Malloy `Parameter` carries `value: ConstantExpr | null`; `null` is an
  * unbound (free) parameter — bound-to-constant parameters have a non-null value.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+   classifyAuthorizeGate,
    collectAuthorizeExprs,
    isProbeTrue,
    parseAuthorizeAnnotation,
@@ -150,5 +151,361 @@ describe("collectAuthorizeExprs", () => {
             `#(authorize) "unterminated`,
          ]),
       ).toThrow(/mismatched quotes/);
+   });
+});
+
+// ---------------------------------------------------------------------------
+// classifyAuthorizeGate
+// ---------------------------------------------------------------------------
+//
+// The fixtures below are the compiled shapes Malloy 0.0.427 actually produces
+// for a source-level `where:`, transcribed from a spike that dumped them (see
+// the publisher's docs/row-level-authorize-spike-findings.md §5). They are
+// hand-built here so the decision table can be exercised without standing up a
+// warehouse; `authorize_integration.spec.ts` compiles the real thing, which is
+// what pins these fixtures to reality. If a Malloy bump changes the node names,
+// the integration test is what fails — treat a green unit suite alone as
+// insufficient evidence.
+
+// These are the strings PRODUCTION puts in this map, not a plausible spelling
+// of them. `Model.givenDeclaredTypes()` reads `ApiGiven.type`, which
+// `malloyGivenToApi` renders from Malloy's type discriminator — so an array
+// given is the bare word "array", with the element type dropped. An earlier
+// version of this fixture used "number[]", which no code path produces; the
+// suite passed while every array gate was misclassified as a scalar in
+// production. A fixture is only worth what its fidelity to the real value is.
+const TYPES = new Map<string, string>([
+   ["GROUPS", "array"],
+   ["NAMES", "array"],
+   ["BOB", "string"],
+   ["LVL", "number"],
+   ["ROLE", "string"],
+]);
+
+/** `{node:'field', path:[…]}` — a row or joined field reference. */
+const field = (...path: string[]) => ({ node: "field", path });
+/** `{node:'given', refName}` — a declared given reference. */
+const given = (refName: string) => ({
+   node: "given",
+   refName,
+   id: `given/x:${refName}`,
+});
+const binary = (node: string, left: unknown, right: unknown) => ({
+   node,
+   kids: { left, right },
+});
+const inGiven = (e: unknown, refName: string, not = false) => ({
+   node: "inGiven",
+   not,
+   givenRef: given(refName),
+   e,
+});
+
+/** A compiled condition whose `refSummary.fieldUsage` reports the paths given. */
+function condition(e: unknown, fieldPaths: string[][]) {
+   return {
+      code: "(transcribed fixture)",
+      e,
+      refSummary: {
+         fieldUsage: fieldPaths.map((path) => ({ path })),
+         givenUsage: [{ id: "given/x" }],
+      },
+      isSourceFilter: true,
+   };
+}
+
+describe("classifyAuthorizeGate", () => {
+   it("treats an empty fieldUsage as the pre-existing given-only gate", () => {
+      // The whole-source boolean every gate was before row-level gates existed.
+      // Misclassifying this would change the enforcement mechanism of every
+      // already-published gate on upgrade, so it is the one case that must not
+      // depend on any judgement about the expression's shape.
+      expect(
+         classifyAuthorizeGate(
+            {
+               e: binary(">", given("LVL"), {
+                  node: "numberLiteral",
+                  literal: "3",
+               }),
+               refSummary: { fieldUsage: [], givenUsage: [{ id: "given/x" }] },
+            },
+            TYPES,
+         ),
+      ).toEqual({ shape: "given_only" });
+   });
+
+   it("treats an absent refSummary as given-only rather than guessing", () => {
+      expect(classifyAuthorizeGate({}, TYPES)).toEqual({ shape: "given_only" });
+   });
+
+   it("accepts `field in $ARRAY`", () => {
+      const result = classifyAuthorizeGate(
+         condition(inGiven(field("org_id"), "GROUPS"), [["org_id"]]),
+         TYPES,
+      );
+      expect(result).toEqual({
+         shape: "row_level",
+         fieldPaths: [["org_id"]],
+         givenNames: ["GROUPS"],
+      });
+   });
+
+   it("accepts a JOINED field path", () => {
+      const result = classifyAuthorizeGate(
+         condition(binary("=", field("childtable", "name"), given("BOB")), [
+            ["childtable", "name"],
+         ]),
+         TYPES,
+      );
+      expect(result).toEqual({
+         shape: "row_level",
+         fieldPaths: [["childtable", "name"]],
+         givenNames: ["BOB"],
+      });
+   });
+
+   it("accepts a boolean combination through and / or / parens", () => {
+      const result = classifyAuthorizeGate(
+         condition(
+            binary(
+               "and",
+               { node: "()", e: inGiven(field("org_id"), "GROUPS") },
+               binary(">", field("val"), given("LVL")),
+            ),
+            [["org_id"], ["val"]],
+         ),
+         TYPES,
+      );
+      expect(result.shape).toBe("row_level");
+   });
+
+   it("accepts the given on either side of a comparison", () => {
+      expect(
+         classifyAuthorizeGate(
+            condition(binary("=", given("BOB"), field("owner")), [["owner"]]),
+            TYPES,
+         ).shape,
+      ).toBe("row_level");
+   });
+
+   it("classifies the admin-override fold as row_level", () => {
+      // `Model.resolveGateShape` folds `#(authorize) "$ROLE = 'admin'"` OR'd
+      // with `#(authorize) "org_id in $GROUPS"` into ONE filter,
+      // `(org_id in $GROUPS) or ($ROLE = 'admin')`, to keep OR semantics
+      // under row-level enforcement. The `$ROLE = 'admin'` disjunct is a
+      // given-vs-literal atom: legal, and contributes no field of its own.
+      const result = classifyAuthorizeGate(
+         condition(
+            binary(
+               "or",
+               inGiven(field("org_id"), "GROUPS"),
+               binary("=", given("ROLE"), {
+                  node: "stringLiteral",
+                  literal: "admin",
+               }),
+            ),
+            [["org_id"]],
+         ),
+         TYPES,
+      );
+      expect(result).toEqual({
+         shape: "row_level",
+         fieldPaths: [["org_id"]],
+         givenNames: ["GROUPS", "ROLE"],
+      });
+   });
+
+   it("keeps an all-given-only expression given_only, not row_level", () => {
+      // `$ROLE = 'admin'` alone (no row field anywhere in the expression)
+      // must stay on the pre-existing whole-source-boolean enforcement —
+      // driven by Malloy's own `refSummary.fieldUsage` being empty, which is
+      // checked before the walk ever runs. Already-published given-only
+      // gates must not change enforcement mechanism just because a
+      // given-vs-literal atom is now a legal ROW-LEVEL atom too.
+      const result = classifyAuthorizeGate(
+         condition(
+            binary("=", given("ROLE"), {
+               node: "stringLiteral",
+               literal: "admin",
+            }),
+            [],
+         ),
+         TYPES,
+      );
+      expect(result).toEqual({ shape: "given_only" });
+   });
+
+   it("rejects a given-vs-literal atom with a disallowed operator", () => {
+      // `$ROLE like 'a%'` — the given-vs-literal allowance only covers the
+      // existing scalar comparison set (`=`,`!=`,`>`,`>=`,`<`,`<=`); `like`
+      // is not one of them and stays refused, same as a field-vs-literal
+      // `like`.
+      const result = classifyAuthorizeGate(
+         condition(
+            binary("like", given("ROLE"), {
+               node: "stringLiteral",
+               literal: "a%",
+            }),
+            [["owner"]],
+         ),
+         TYPES,
+      );
+      expect(result).toMatchObject({
+         shape: "rejected",
+         cause: "unsupported_node",
+      });
+   });
+
+   it("rejects `=` against an ARRAY given — it compiles and then fails in the warehouse", () => {
+      // `org_id ? $GROUPS` compiles to this SAME `=` node, so one type check
+      // covers both spellings; there is nothing to tell apart by syntax.
+      const result = classifyAuthorizeGate(
+         condition(binary("=", field("org_id"), given("GROUPS")), [["org_id"]]),
+         TYPES,
+      );
+      expect(result.shape).toBe("rejected");
+      expect(result).toMatchObject({ cause: "array_given_needs_in" });
+   });
+
+   it("rejects `in` against a SCALAR given", () => {
+      const result = classifyAuthorizeGate(
+         condition(inGiven(field("owner"), "BOB"), [["owner"]]),
+         TYPES,
+      );
+      expect(result.shape).toBe("rejected");
+      expect(result).toMatchObject({ cause: "scalar_given_rejects_in" });
+   });
+
+   it("refuses a given that is not on this model's surface, naming the import remedy", () => {
+      // Malloy does not flatten a `given:` past one import hop, so a gate whose
+      // given is two hops out would silently bind that given's DEFAULT.
+      const result = classifyAuthorizeGate(
+         condition(inGiven(field("org_id"), "FARAWAY"), [["org_id"]]),
+         TYPES,
+      );
+      expect(result.shape).toBe("rejected");
+      expect(result).toMatchObject({ cause: "unreachable_given" });
+      expect((result as { detail: string }).detail).toContain(
+         "import { FARAWAY }",
+      );
+   });
+
+   it("rejects a function call", () => {
+      const result = classifyAuthorizeGate(
+         condition(
+            binary("=", { node: "function_call", name: "lower" }, given("BOB")),
+            [["name"]],
+         ),
+         TYPES,
+      );
+      expect(result).toMatchObject({
+         shape: "rejected",
+         cause: "unsupported_node",
+      });
+   });
+
+   it("rejects arithmetic on the field side", () => {
+      const result = classifyAuthorizeGate(
+         condition(
+            binary(
+               ">",
+               binary("+", field("val"), {
+                  node: "numberLiteral",
+                  literal: "1",
+               }),
+               given("LVL"),
+            ),
+            [["val"]],
+         ),
+         TYPES,
+      );
+      expect(result).toMatchObject({
+         shape: "rejected",
+         cause: "unsupported_node",
+      });
+   });
+
+   it("rejects a comparison against a constant — a fixed filter, not an access rule", () => {
+      const result = classifyAuthorizeGate(
+         condition(
+            binary("=", field("org_id"), {
+               node: "numberLiteral",
+               literal: "1",
+            }),
+            [["org_id"]],
+         ),
+         TYPES,
+      );
+      expect(result).toMatchObject({
+         shape: "rejected",
+         cause: "no_given_reference",
+      });
+   });
+
+   it("rejects a `not` wrapper — negation makes an EMPTY given match every row", () => {
+      // Measured on 0.0.427: `not (org_id in $GROUPS)` with an empty $GROUPS
+      // emits `WHERE COALESCE(NOT (FALSE),TRUE)` and returns every row, so a
+      // caller with no groups reads the whole table. Negation inverts the one
+      // property that makes `in $ARRAY` safe. The COALESCE also admits a NULL
+      // on the gated column rather than excluding it.
+      const result = classifyAuthorizeGate(
+         condition({ node: "not", e: inGiven(field("org_id"), "GROUPS") }, [
+            ["org_id"],
+         ]),
+         TYPES,
+      );
+      expect(result).toMatchObject({
+         shape: "rejected",
+         cause: "unsupported_node",
+      });
+   });
+
+   it("rejects `not in` — a gate states which rows a caller MAY read", () => {
+      const result = classifyAuthorizeGate(
+         condition(inGiven(field("org_id"), "GROUPS", true), [["org_id"]]),
+         TYPES,
+      );
+      expect(result).toMatchObject({
+         shape: "rejected",
+         cause: "unsupported_node",
+      });
+   });
+
+   it("rejects `like`", () => {
+      const result = classifyAuthorizeGate(
+         condition(
+            binary("like", field("name"), {
+               node: "stringLiteral",
+               literal: "a%",
+            }),
+            [["name"]],
+         ),
+         TYPES,
+      );
+      expect(result).toMatchObject({
+         shape: "rejected",
+         cause: "unsupported_node",
+      });
+   });
+
+   it("rejects an unreadable condition rather than passing it", () => {
+      // Fail closed: a shape we cannot read is not a gate we can enforce.
+      expect(
+         classifyAuthorizeGate(condition(null, [["org_id"]]), TYPES),
+      ).toMatchObject({ shape: "rejected" });
+      expect(
+         classifyAuthorizeGate(
+            condition({ notANode: true }, [["org_id"]]),
+            TYPES,
+         ),
+      ).toMatchObject({ shape: "rejected" });
+   });
+
+   it("rejects a gate nested past the walk bound", () => {
+      let deep: unknown = inGiven(field("org_id"), "GROUPS");
+      for (let i = 0; i < 80; i++) deep = { node: "()", e: deep };
+      expect(
+         classifyAuthorizeGate(condition(deep, [["org_id"]]), TYPES),
+      ).toMatchObject({ shape: "rejected", cause: "unsupported_node" });
    });
 });

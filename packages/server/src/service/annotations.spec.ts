@@ -79,9 +79,10 @@ describe("modelAnnotations", () => {
 
    it("falls back to an imported model's notes when the local model has no own `##` (authorize must not fail open)", () => {
       // Regression: a `##(authorize)` declared in an imported file must still
-      // flow into the importing file's file-level gate even when the importing
-      // file declares no `##` of its own. An earlier fold kept an empty local
-      // link at the top, so `.notes` returned [] and the gate failed open.
+      // be detected (and refused — file-level `##(authorize)` is deprecated)
+      // even when the importing file declares no `##` of its own. An earlier
+      // fold kept an empty local link at the top, so `.notes` returned [] and
+      // the stray annotation escaped detection entirely.
       const def = makeModelDef("local", {
          local: { ownNotes: {}, inheritsFrom: ["base"] },
          base: {
@@ -131,8 +132,9 @@ describe("ownModelNotes", () => {
 
    it("does not inherit an imported model's `##`", () => {
       // The point of the function. `modelAnnotations` folds the lineage on
-      // purpose, so that an imported `##(authorize)` still gates the importer;
-      // every other model-level tag describes one document. A shared include
+      // purpose, so that an imported `##(authorize)` is still DETECTED (and
+      // refused) through the importer; every other model-level tag describes
+      // one document. A shared include
       // carrying `## artifact` must not turn its importers into dashboards,
       // and an imported `## title=` must not retitle every notebook.
       const def = makeModelDef("file:///pkg/local.malloy", {

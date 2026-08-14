@@ -160,6 +160,30 @@ export interface SerializedModel {
    problems?: unknown[];
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
+   /**
+    * Non-fatal `#(authorize)` load-time findings — two independent sources:
+    *  - `validateAuthorizeProbes`'s `onRowLevelGateUnexpressible` case: a gate
+    *    genuinely INHERITED (not declared) at some entry point that could not
+    *    be expressed THERE (renamed/excluded/projected-away field, or a
+    *    `query_source` projection). "Genuinely" is load-bearing:
+    *    `validateAuthorizeProbes` confirms it by the gate's own annotation
+    *    NOTE OBJECT being shared, by reference, with a base (or absent
+    *    entirely) — not by gate text, which two independently-authored
+    *    sources can share without being related at
+    *    all. The model still loads and serves; the affected entry point
+    *    denies every request (`Model.resolveGateShape`).
+    *  - `extractSourcesFromModelDef`'s `joinMisplacedAuthorize`: a
+    *    `#(authorize)` on a `join_one:`/`join_many:` field that could not be
+    *    explained as Malloy's by-reference copy of a gate declared beyond
+    *    this model's visibility. A join is never enforced either way, so this
+    *    never fails the load — see `describeMisplacedJoinAuthorizeWarnings`.
+    *
+    * The worker has no logger (see `extractSources`'s doc in
+    * `package_load_worker.ts`), so these ride over the wire as plain strings
+    * for the main thread — which does have one — to log once the model is
+    * constructed.
+    */
+   authorizeWarnings?: string[];
 }
 
 export interface SerializedNotebookCell {

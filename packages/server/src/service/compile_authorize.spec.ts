@@ -1,3 +1,4 @@
+import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -15,16 +16,21 @@ const PUBLISHER_JSON = JSON.stringify({
    description: "compile-gate",
 });
 
-// `gated` is locked to $ROLE='analyst'; `open_src` is unrestricted.
+// `gated` is locked to $ROLE='analyst'; `open_src` is unrestricted; `row_gated`
+// is locked by a ROW-FIELD condition (`org_id`), not just a given.
 const MODEL = `##! experimental.givens
 
 given:
   ROLE :: string
+  GROUPS :: number[]
 
 #(authorize) "$ROLE = 'analyst'"
 source: gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 
 source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+
+#(authorize) "org_id in $GROUPS"
+source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend { measure: c is count() }
 `;
 
 describe("compile-path authorize gate (compileSource)", () => {
@@ -50,7 +56,7 @@ describe("compile-path authorize gate (compileSource)", () => {
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
-   const compile = (source: string, givens?: Record<string, string>) =>
+   const compile = (source: string, givens?: Record<string, GivenValue>) =>
       env.compileSource("pkg", "model.malloy", source, false, givens);
 
    it("denies a direct gated source without the satisfying given (early gate)", async () => {
@@ -76,6 +82,35 @@ describe("compile-path authorize gate (compileSource)", () => {
          ROLE: "analyst",
       });
       expect(problems).toBeDefined();
+   });
+
+   it("denies the gated source when the given does NOT satisfy the gate", async () => {
+      // Paired with the admit test above: /compile's backstop
+      // (`assertAuthorizedForRunnable`) resolves this given-only gate through
+      // an independently recompiled model, where `resolveGraftTarget` cannot
+      // link the freshly-compiled `gated` struct back to the package's own
+      // cached one (no shared identity/sourceID across separate compiles —
+      // see `Model.resolveGateShape`'s fallback doc). Both directions have to
+      // keep working through that fallback: an admit that only ever fires
+      // because the fallback stopped discriminating would pass this suite
+      // just as easily as a correct one.
+      await expect(
+         compile("run: gated -> { aggregate: c }", { ROLE: "nobody" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("CRITICAL — a row-level gate still denies even with a satisfying given, when the compile path cannot graft it", async () => {
+      // `row_gated`'s condition reads `org_id`, a real column — genuinely
+      // row-level, not given-only. The same "independently recompiled model"
+      // shape that defeats `resolveGraftTarget` for the given-only gates
+      // above must NOT let this one fall back to the given-only boolean path:
+      // `Model.classifyWithoutGraft`'s own probe has no `org_id` column
+      // either, so it must fail to compile and deny — never admit a caller
+      // whose given would satisfy the row condition, since there is no scope
+      // here to graft the row filter onto at all.
+      await expect(
+         compile("run: row_gated -> { aggregate: c }", { GROUPS: [1] }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("leaves an ungated source compilable without any given", async () => {

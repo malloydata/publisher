@@ -76,7 +76,10 @@ import {
 import type { components } from "../api";
 import { getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
-import { assertMaterializationEligible } from "./materialization_eligibility";
+import {
+   assertColocatedPersistNotAuthorizeGated,
+   assertMaterializationEligible,
+} from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
    BilledReadNotCapturedError,
@@ -988,6 +991,16 @@ export class MaterializationService {
                // throw opaquely, so the eligibility refusal must fire first to
                // give a clean, actionable 422.
                assertMaterializationEligible(persistSource);
+            } else {
+               // No storage destination: this is the colocated `#@ persist`
+               // path (a CTAS into the source's own warehouse). It is not
+               // covered by assertMaterializationEligible above (that gate
+               // only runs when a storage destination resolved), but it is
+               // just as frozen as a storage build, so an authorize-gated
+               // source materialized here would still be served to every
+               // caller. Gate BEFORE computeSourceEntityId for the same
+               // reason as the storage case above.
+               assertColocatedPersistNotAuthorizeGated(persistSource);
             }
 
             const sourceEntityId = computeSourceEntityId(
@@ -1610,6 +1623,17 @@ export class MaterializationService {
                ) {
                   assertMaterializationEligible(persistSource);
                }
+
+               // The gate refusal above only fires for a STORAGE-targeted build,
+               // so on its own it leaves the colocated instruction — the one with
+               // no destination — building a gated source into a frozen table that
+               // carries no gate. An orchestrated host chooses the destination, so
+               // this path reaches that case with no `#@ persist`-vs-`storage=`
+               // distinction to lean on; refuse a gated source however it was
+               // instructed. Before computeSourceEntityId for the reason the
+               // comment above gives: it calls getSQL(), which throws opaquely for
+               // a gate that references a given, losing the clean 422.
+               assertColocatedPersistNotAuthorizeGated(persistSource);
 
                // The manifest is keyed by the content sourceEntityId — what Malloy
                // recomputes to resolve upstream persist references during SQL

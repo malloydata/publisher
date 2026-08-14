@@ -1,9 +1,8 @@
 /**
- * `#(authorize)` / `##(authorize)` annotation parsing.
+ * `#(authorize)` annotation parsing.
  *
  * Annotation format:
  *   #(authorize)  "<malloy-bool-expr>"   — source-level, on a single source
- *   ##(authorize) "<malloy-bool-expr>"   — file/model-level, applies to the file
  *
  * The body is a single double-quoted Malloy boolean expression that references
  * declared givens (`$NAME`), e.g. `#(authorize) "$ROLE = 'analyst'"`. The
@@ -11,14 +10,25 @@
  * so we cannot reuse filter.ts's whitespace tokenizer — we unwrap exactly one
  * layer of double quotes and hand the inner expression back untouched.
  *
+ * A file-level `##(authorize)` — the same tag written above a model rather
+ * than a source — is deprecated: it is a load error, refused by
+ * {@link assertNoMisplacedAuthorizeAnnotations} with a `"file"`-kind
+ * {@link MisplacedAuthorizeAnnotation}, naming the remedy (declare
+ * `#(authorize)` on each `source:` it should protect) rather than silently
+ * applying model-wide the way it used to. The `##` spelling is still
+ * RECOGNIZED — by {@link parseAuthorizeAnnotation} and
+ * {@link assertNoCallerAuthorizeAnnotation} alike — so an author who writes it
+ * gets a clear refusal instead of a silently-ignored annotation.
+ *
  * This module parses, collects, and (at compile time) validates authorize
- * annotations. Evaluating the expression — the actual access gate — lands in a
- * later PR and reuses `buildAuthorizeProbe`. Kept light so it bundles cleanly
- * into the package-load worker (its only non-type import is `../errors`).
+ * annotations. Evaluating the expression — the actual access gate — reuses
+ * `buildAuthorizeProbe`. Kept light so it bundles cleanly into the
+ * package-load worker (its only non-type import is `../errors`).
  */
 
 import { type GivenValue } from "@malloydata/malloy";
 import { BadRequestError, ModelCompilationError } from "../errors";
+import { type AnnotationNote } from "./annotations";
 
 /**
  * An `authorize` annotation's opening tag, source-level (`#`) or file-level
@@ -75,6 +85,126 @@ export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
          "you are authoring, save it to the package's model file and reload the " +
          "package — model load validates every `#(authorize)` annotation it " +
          "declares.",
+   );
+}
+
+/**
+ * Whether ANY of `texts` contains an authorize tag (`#(authorize)` /
+ * `##(authorize)`), well-formed or not.
+ *
+ * Unlike {@link collectAuthorizeExprs}, this does not parse the body or throw
+ * on a malformed one — it exists to DETECT the tag in a position nothing ever
+ * reads it FROM at all (see {@link MisplacedAuthorizeAnnotation}), where the
+ * fact worth catching is that the author wrote the tag, not whether its body
+ * happens to parse.
+ */
+export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
+   return texts.some((text) => AUTHORIZE_ANNOTATION_ANYWHERE.test(text));
+}
+
+/**
+ * A `#(authorize)` annotation Malloy attached somewhere that no authorize
+ * code path ever reads it FROM — so it protects nothing, and the model loads
+ * and serves as if it did not exist. This is the fail-OPEN case
+ * {@link assertNoMisplacedAuthorizeAnnotations} exists to catch: unlike a
+ * malformed gate (which is invalid IN ITSELF, wherever it sits) or a valid
+ * gate one derived entry point can't express (which still gates every OTHER
+ * entry point), an annotation in one of these positions is not a gate at all.
+ *
+ *  - `"query"` — a top-level `query: q is X -> {...}` statement. Malloy
+ *    attaches the annotation to the `NamedQueryDef` itself
+ *    (`extractQueriesFromModelDef`'s `annotations`), but `Model`'s entry-point
+ *    walk resolves a run target through the compiled query's `structRef` —
+ *    the SOURCE it derives from — and never reads the `NamedQueryDef`'s own
+ *    annotations at all. `name` is the query's own name.
+ *  - `"field"` — a `dimension:`/`measure:`/`join_one:`/`view:` line INSIDE a
+ *    `source:` block. `extractSourcesFromModelDef` reads the SOURCE's own
+ *    `struct.annotations`; an annotation written one line lower lands on that
+ *    FIELD's own `annotations` instead, which nothing walks for authorize
+ *    purposes. `name` is the source, `fieldName` the field. EXCLUDES an
+ *    unannotated `join_one:`/`join_many:` of a gated source: Malloy embeds
+ *    the joined source as a nested `StructDef` on the join field and copies
+ *    that source's own annotation note object onto the join field's own
+ *    annotations BY REFERENCE whenever the join line adds none of its own —
+ *    textually indistinguishable from a misplaced annotation, but not one;
+ *    see `extractSourcesFromModelDef`'s note-identity check.
+ *  - `"file"` — a `##(authorize)` annotation on the model itself rather than
+ *    on a `source:`. File-level `##(authorize)` is deprecated: no code path
+ *    reads a model's own notes for authorize purposes any more, so this is
+ *    always a misplacement, never a "some entry point can express it"
+ *    situation — there is no entry point that ever expressed it.
+ */
+export type MisplacedAuthorizeAnnotation =
+   | { kind: "query"; name: string }
+   | { kind: "field"; name: string; fieldName: string }
+   | { kind: "file" };
+
+/** Human-readable position for a {@link MisplacedAuthorizeAnnotation}, shared
+ *  between {@link assertNoMisplacedAuthorizeAnnotations} (fatal) and
+ *  {@link describeMisplacedJoinAuthorizeWarnings} (non-fatal, join-only). */
+function describeMisplacedAuthorizeAnnotation(
+   f: MisplacedAuthorizeAnnotation,
+): string {
+   if (f.kind === "query") return `on query "${f.name}"`;
+   if (f.kind === "file") return "at the file level (`##(authorize)`)";
+   return `on field "${f.fieldName}" of source "${f.name}"`;
+}
+
+/**
+ * Refuse a model load that carries a `#(authorize)` annotation in a position
+ * nothing enforces — see {@link MisplacedAuthorizeAnnotation}. Such a position
+ * was already silently unenforced before row-level gates existed; this turns
+ * it into a load failure instead of a gate that silently protects nothing.
+ *
+ * Throws `ModelCompilationError` naming every finding — not just the first —
+ * so an author with several misplaced annotations sees all of them at once
+ * rather than reloading once per fix. Shared by `Model.create` and the
+ * package-load worker, called alongside `validateAuthorizeProbes`.
+ */
+export function assertNoMisplacedAuthorizeAnnotations(
+   found: readonly MisplacedAuthorizeAnnotation[],
+): void {
+   if (found.length === 0) return;
+   const positions = found
+      .map((f) => `  - ${describeMisplacedAuthorizeAnnotation(f)}`)
+      .join("\n");
+   throw new ModelCompilationError({
+      message:
+         `An \`#(authorize)\` annotation is never enforced at:\n${positions}\n` +
+         `A gate only applies where model load looks for one — a \`source:\`'s ` +
+         `own annotation, or one it inherits from an \`extend\`/query-source ` +
+         `base. File-level \`##(authorize)\` is deprecated and no longer ` +
+         `enforced anywhere, so it always lands here: declare \`#(authorize)\` ` +
+         `on each \`source:\` it was meant to protect instead. Every other ` +
+         `position above should move to the \`source:\` statement it is meant ` +
+         `to protect.`,
+   });
+}
+
+/**
+ * Non-fatal counterpart to {@link assertNoMisplacedAuthorizeAnnotations} for a
+ * `#(authorize)` on a `join_one:`/`join_many:` field that
+ * `extractSourcesFromModelDef` could not explain as Malloy's by-reference copy
+ * of a gated source's own note (`source_extraction.ts`'s
+ * `joinFieldNamesUnresolvableDeclaration` and its identity check). A join line
+ * has no enforcement effect either way, so this is worth telling the author
+ * about — but the detection has twice proved unable to tell an authored
+ * join-line annotation from Malloy's copy across an import boundary, and
+ * getting that wrong here means refusing to load a whole package rather than
+ * one misplaced annotation, so it warns instead of throwing. Returns one
+ * formatted message per finding; callers route them through whatever
+ * load-warning channel they already have (`logger.warn` in-process, the
+ * worker's `authorizeWarnings` wire field out of process).
+ */
+export function describeMisplacedJoinAuthorizeWarnings(
+   found: readonly MisplacedAuthorizeAnnotation[],
+): string[] {
+   return found.map(
+      (f) =>
+         `#(authorize) ${describeMisplacedAuthorizeAnnotation(f)} is a ` +
+         `join_one:/join_many: line and is never enforced there; gating a ` +
+         `join has no effect. If this was meant to lock access, move the ` +
+         `annotation to the JOINED source's own \`source:\` declaration.`,
    );
 }
 
@@ -151,6 +281,362 @@ export function referencedGivenNames(expr: string): string[] {
       }
    }
    return names;
+}
+
+// ---------------------------------------------------------------------------
+// Row-level gate grammar (the positive allowlist)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a gate expression is enforced.
+ *
+ *  - `given_only` — references no row field. Evaluated by the synthetic one-row
+ *    DuckDB probe, unchanged: a whole-source boolean, exactly as every gate was
+ *    before row-level gates existed.
+ *  - `row_level` — references at least one field of the source, or of a source
+ *    joined into it. Enforced as a row filter on the entry source. There is no
+ *    boolean answer to fall back on, so every path that cannot apply the filter
+ *    must deny.
+ */
+export type AuthorizeGateShape = "given_only" | "row_level";
+
+/**
+ * Why a row-level gate was refused at publish. Also the metric label.
+ *
+ * The first five come from {@link classifyAuthorizeGate}: the gate's compiled
+ * condition IS readable and is not an allowed shape — invalid IN ITSELF,
+ * wherever it is probed from. `entry_point_unexpressible` is different in
+ * kind: the gate is a valid, allowed shape, but at one entry point that did
+ * not itself declare it — a derived source (an `extend` that
+ * renamed/excluded/projected away the field, or a `query_source` projection)
+ * inheriting a source's gate, or a source sharing a FILE-level `##(authorize)`
+ * with a sibling that resolves it — the field it reads did not resolve at
+ * all, so there was no condition to classify. That case does not fail the
+ * load — see `validateAuthorizeProbes`'s doc, in particular for how it
+ * confirms the gate is genuinely inherited rather than an
+ * independently-authored one that merely shares text with something else: by
+ * the gate's own annotation NOTE OBJECT, not its string.
+ */
+export type RowLevelGateRejectionCause =
+   | "array_given_needs_in"
+   | "scalar_given_rejects_in"
+   | "unsupported_node"
+   | "no_given_reference"
+   | "unreachable_given"
+   | "entry_point_unexpressible";
+
+export type RowLevelGateClassification =
+   | { shape: "given_only" }
+   | { shape: "row_level"; fieldPaths: string[][]; givenNames: string[] }
+   | { shape: "rejected"; cause: RowLevelGateRejectionCause; detail: string };
+
+/**
+ * The compiled-condition node kinds a row-level gate may be built from, and
+ * how to descend each one.
+ *
+ * A gate is an access-control rule, so the set of shapes it may take should be
+ * small enough to read in one screen. Everything absent from this table is
+ * refused at publish — a function call, arithmetic, a literal comparison, a
+ * `like`, a bare `true`. Widening it is a decision someone makes on purpose.
+ */
+const BOOLEAN_NODES = new Set(["and", "or"]);
+/** Wrappers that contribute no semantics of their own; descend through `.e`. */
+const TRANSPARENT_NODES = new Set(["()"]);
+/** Comparisons legal against a SCALAR given. */
+const SCALAR_COMPARISON_NODES = new Set(["=", "!=", ">", ">=", "<", "<="]);
+
+/** Bound on the compiled-condition walk; a real gate is a handful of nodes. */
+const MAX_GATE_WALK_DEPTH = 64;
+
+/**
+ * A compiled `FilterCondition` as this module reads it. Duck-typed rather than
+ * imported: Malloy does not re-export the expression node types from its
+ * package root (the same situation as `given.ts`'s `MalloyGiven`), and this
+ * module is bundled into the package-load worker, where a type-only import of a
+ * deep path is a liability.
+ */
+export interface CompiledGateCondition {
+   /** The gate as the author wrote it, carried through by the compiler. */
+   code?: string;
+   e?: unknown;
+   refSummary?: { fieldUsage?: unknown[]; givenUsage?: unknown[] };
+   isSourceFilter?: boolean;
+}
+
+/**
+ * Classify a gate from its COMPILED condition — the `FilterCondition` Malloy
+ * produces for `source: … extend { where: <gate> }`.
+ *
+ * Reading the compiled IR rather than the annotation text is what keeps this
+ * exact. Malloy has already resolved which names are fields and which are
+ * givens, so `refSummary.fieldUsage` answers "does this gate reference a row
+ * field" with no guessing — the one question that decides which enforcement
+ * mechanism the gate gets. A text scan cannot answer it: `$ROLE` and `region`
+ * are both bare words, and being wrong in either direction is a security bug
+ * (a field-referencing gate sent to the one-row probe never admits anybody; a
+ * given-only gate sent to the row filter changes the meaning of every gate
+ * already published).
+ *
+ * It also collapses a distinction the plan expected to police by hand. `org_id
+ * ? $GROUPS` and `org_id = $GROUPS` compile to the SAME `=` node, so there is
+ * nothing to tell apart: both are a scalar comparison against an array-typed
+ * given, which is rejected below on the given's declared TYPE. Type, not
+ * spelling, is what decides the operator.
+ *
+ * `declaredTypes` is this model's own given surface. A gate referencing a given
+ * that is not on it is refused rather than guessed: the type is what picks the
+ * legal operator, so an unknown type cannot be checked at all. That refusal
+ * doubles as the given-reachability check — Malloy does not flatten a `given:`
+ * declaration past one import hop, so a gate whose given lives two hops away
+ * would otherwise silently bind that given's declaration DEFAULT at request
+ * time.
+ *
+ * Fails CLOSED: an unreadable condition is a rejection, never a pass.
+ */
+export function classifyAuthorizeGate(
+   condition: CompiledGateCondition,
+   declaredTypes: Map<string, string>,
+): RowLevelGateClassification {
+   const fieldUsage = condition.refSummary?.fieldUsage;
+   // Malloy's own reference-tracking walker populated this. Absent or empty
+   // means the gate reads no row field, which is the pre-existing whole-source
+   // boolean — it MUST keep the probe, or every published gate changes
+   // enforcement mechanism on upgrade.
+   if (!Array.isArray(fieldUsage) || fieldUsage.length === 0) {
+      return { shape: "given_only" };
+   }
+   const fieldPaths: string[][] = [];
+   const givenNames: string[] = [];
+   let rejection: RowLevelGateClassification | undefined;
+
+   const reject = (
+      cause: RowLevelGateRejectionCause,
+      detail: string,
+   ): false => {
+      rejection ??= { shape: "rejected", cause, detail };
+      return false;
+   };
+
+   /** The given a comparison operand names, or null if it is not a given. */
+   const givenOperand = (node: unknown): string | null => {
+      const n = asNode(node);
+      return n && n.node === "given" && typeof n.refName === "string"
+         ? n.refName
+         : null;
+   };
+
+   /**
+    * Whether a comparison operand is a bare literal — `numberLiteral`,
+    * `stringLiteral`, or the boolean literal nodes, which Malloy's compiler
+    * discriminates as the node kinds `"true"` / `"false"` themselves rather
+    * than a `literal` value on a shared `booleanLiteral` kind (confirmed
+    * against `@malloydata/malloy`'s `BooleanLiteralNode`). A given-vs-literal
+    * comparison is the admin-override atom (`$ROLE = 'admin'`); anything else
+    * on this side of a given comparison — a field, a function call, a
+    * `like` — stays refused.
+    */
+   const isLiteralOperand = (node: unknown): boolean => {
+      const n = asNode(node);
+      return (
+         !!n &&
+         (n.node === "numberLiteral" ||
+            n.node === "stringLiteral" ||
+            n.node === "true" ||
+            n.node === "false")
+      );
+   };
+
+   /** The declared type of a given, or a rejection if it is not reachable. */
+   const declaredTypeOf = (name: string): string | null => {
+      const declared = declaredTypes.get(name);
+      if (declared === undefined) {
+         reject(
+            "unreachable_given",
+            `\`$${name}\` is not on this model's given surface, so the gate ` +
+               `would bind its declaration default rather than the caller's ` +
+               `value. Declare it here, importing it if it lives elsewhere ` +
+               `(\`import { ${name} } from "…"\`)`,
+         );
+         return null;
+      }
+      return declared;
+   };
+
+   const walk = (node: unknown, depth: number): boolean => {
+      if (depth > MAX_GATE_WALK_DEPTH) {
+         return reject("unsupported_node", "the gate nests too deeply to read");
+      }
+      const n = asNode(node);
+      if (!n || typeof n.node !== "string") {
+         return reject("unsupported_node", "the gate has an unreadable shape");
+      }
+      const kind = n.node;
+      if (BOOLEAN_NODES.has(kind)) {
+         const kids = asNode(n.kids);
+         if (!kids) {
+            return reject("unsupported_node", `\`${kind}\` has no operands`);
+         }
+         return walk(kids.left, depth + 1) && walk(kids.right, depth + 1);
+      }
+      if (TRANSPARENT_NODES.has(kind)) {
+         return walk(n.e, depth + 1);
+      }
+      if (kind === "inGiven") {
+         // `field in $ARRAY` — the only correct spelling for an array given,
+         // and the only one that fails CLOSED on an empty array (`WHERE FALSE`).
+         if (n.not === true) {
+            return reject(
+               "unsupported_node",
+               "a negated membership test (`not in`) is not an access rule; " +
+                  "write the gate as the set of rows a caller MAY read",
+            );
+         }
+         const given = givenOperand(n.givenRef);
+         if (given === null) {
+            return reject(
+               "unsupported_node",
+               "`in` must test membership of a declared given",
+            );
+         }
+         const declared = declaredTypeOf(given);
+         if (declared === null) return false;
+         if (!isArrayType(declared)) {
+            return reject(
+               "scalar_given_rejects_in",
+               `\`$${given}\` is declared \`${declared}\` (a scalar), so ` +
+                  `\`in $${given}\` is not a membership test. Compare it with ` +
+                  `\`=\` instead`,
+            );
+         }
+         givenNames.push(given);
+         return walkFieldOperand(n.e);
+      }
+      if (SCALAR_COMPARISON_NODES.has(kind)) {
+         const kids = asNode(n.kids);
+         if (!kids) {
+            return reject("unsupported_node", `\`${kind}\` has no operands`);
+         }
+         const left = givenOperand(kids.left);
+         const right = givenOperand(kids.right);
+         const given = left ?? right;
+         if (given === null) {
+            return reject(
+               "no_given_reference",
+               `\`${kind}\` must compare a field against a given; a comparison ` +
+                  `against a constant is a fixed filter and belongs in the ` +
+                  `source's own \`where:\``,
+            );
+         }
+         const declared = declaredTypeOf(given);
+         if (declared === null) return false;
+         if (isArrayType(declared)) {
+            // Both `org_id = $GROUPS` and `org_id ? $GROUPS` arrive here: they
+            // compile to the same node. Each one compiles clean and then fails
+            // in the warehouse (`WHERE "org_id"=ARRAY[7,8]` is a cast error),
+            // so it is a broken gate rather than a strict one.
+            return reject(
+               "array_given_needs_in",
+               `\`$${given}\` is declared \`${declared}\` (an array), so ` +
+                  `comparing it with \`${kind}\` compiles and then fails in the ` +
+                  `warehouse. Write \`in $${given}\` — it is also the spelling ` +
+                  `that matches no rows when the array is empty`,
+            );
+         }
+         const otherSide = left === null ? kids.left : kids.right;
+         if (isLiteralOperand(otherSide)) {
+            // `<given> <op> <literal>` — e.g. the admin-override disjunct
+            // `$ROLE = 'admin'`. Constant for the life of one request, so
+            // it is an all-rows-or-no-rows term inside the `where:`, exactly
+            // like the whole-source boolean this gate would have been before
+            // row-level gates existed. Legal as an ATOM inside a row-level
+            // gate; it contributes no field reference of its own, so it
+            // doesn't get pushed to `fieldPaths`.
+            givenNames.push(given);
+            return true;
+         }
+         givenNames.push(given);
+         return walkFieldOperand(otherSide);
+      }
+      return reject(
+         "unsupported_node",
+         `\`${kind}\` is not permitted in a gate; a row-level gate is a ` +
+            `boolean combination of \`<field> <operator> $GIVEN\` comparisons`,
+      );
+   };
+
+   /** The non-given side of a comparison: a plain field reference, nothing else. */
+   const walkFieldOperand = (node: unknown): boolean => {
+      const n = asNode(node);
+      if (!n || n.node !== "field" || !Array.isArray(n.path)) {
+         return reject(
+            "unsupported_node",
+            `a gate compares a FIELD against a given; \`${
+               asNode(node)?.node ?? "that operand"
+            }\` is not a field reference`,
+         );
+      }
+      fieldPaths.push(n.path.map(String));
+      return true;
+   };
+
+   let ok: boolean;
+   try {
+      ok = walk(condition.e, 0);
+   } catch {
+      // Fail closed: a condition we cannot read is not a gate we can enforce.
+      return {
+         shape: "rejected",
+         cause: "unsupported_node",
+         detail: "the gate's compiled shape could not be read",
+      };
+   }
+   if (!ok) {
+      return (
+         rejection ?? {
+            shape: "rejected",
+            cause: "unsupported_node",
+            detail: "the gate is not an allowed shape",
+         }
+      );
+   }
+   if (givenNames.length === 0) {
+      return {
+         shape: "rejected",
+         cause: "no_given_reference",
+         detail:
+            "a row-level gate must compare a field against a given; a gate " +
+            "that references none is a fixed filter and belongs in the " +
+            "source's own `where:`",
+      };
+   }
+   return { shape: "row_level", fieldPaths, givenNames };
+}
+
+/**
+ * Whether a given's declared type is an array.
+ *
+ * The string comes from `ApiGiven.type`, which `malloyGivenToApi` renders from
+ * Malloy's type DISCRIMINATOR — so an array given arrives as the bare word
+ * `"array"`, not as `"string[]"`. (See the note above `malloyGivenToApi` in
+ * `given.ts`: the element type is dropped on the way to the wire.) Matching only
+ * a `[]` suffix silently classified every array given as a scalar, which turned
+ * `field in $ARRAY` — the one spelling that is correct AND fail-closed on an
+ * empty array — into a per-request denial that told the author to use `=`, which
+ * is itself rejected.
+ *
+ * The `[]` suffix is still accepted so a caller holding a source-authored
+ * spelling is not misread, but `"array"` is the one production emits.
+ */
+function isArrayType(declaredType: string): boolean {
+   const normalized = declaredType.trim().toLowerCase();
+   return normalized === "array" || normalized.endsWith("[]");
+}
+
+/** Narrow an unknown IR node to an indexable object, or null. */
+function asNode(node: unknown): Record<string, unknown> | null {
+   return node !== null && typeof node === "object"
+      ? (node as Record<string, unknown>)
+      : null;
 }
 
 /**
@@ -319,21 +805,11 @@ export async function evaluateAuthorize(
    exprs: string[],
    givens: Record<string, GivenValue>,
    declaredTypes?: Map<string, string>,
-   options?: { selfContainedFirst?: boolean; ambientPrefix?: number },
+   options?: { selfContainedFirst?: boolean },
 ): Promise<boolean> {
    const selfContainedFirst = options?.selfContainedFirst ?? false;
-   // The first `ambientPrefix` expressions are always probed ambient-first, even
-   // in self-contained mode. They are the file-level `##(authorize)` gates, which
-   // are authored in the ENTRY model — the one namespace where ambient resolution
-   // is unambiguously right — while the rest of the list may have been carried in
-   // from another source. Probing the file-level gate self-contained would drop
-   // the entry model's own declared `given:` DEFAULTS, so a model-wide admin
-   // override stopped working as soon as the source it applied to also inherited
-   // a gate. Both live in ONE list because they are OR'd (either grants), so they
-   // cannot be split into separate AND-ed entries.
-   const ambientPrefix = options?.ambientPrefix ?? 0;
-   for (const [index, expr] of exprs.entries()) {
-      if (selfContainedFirst && index >= ambientPrefix) {
+   for (const expr of exprs) {
+      if (selfContainedFirst) {
          if (
             await evaluateSelfContainedFirst(
                executor,
@@ -434,27 +910,199 @@ async function evaluateSelfContainedFirst(
    }
 }
 
-/** A source plus its effective authorize expressions. */
-interface SourceWithAuthorize {
-   name?: string;
-   authorize?: string[];
+/**
+ * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
+ * query string. Escapes backslashes and backticks (in that order) so a name
+ * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
+ * contains an embedded backtick cannot break out of the quotes. Mirrors
+ * `Model`'s private `quoteMalloyIdentifier` in `service/model.ts` — same
+ * escaping rules, duplicated here (rather than shared) so this module keeps
+ * its light import surface (see the module doc comment: it must stay
+ * importable by the package-load worker).
+ */
+function quoteMalloyIdentifier(name: string): string {
+   return "`" + name.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
 }
 
 /**
- * Translation-time validation. For each source carrying authorize expressions,
- * compile the probe (no givens, no DB execution) so unknown givens and
- * source-field references surface as compile errors at model load instead of
- * first request. Type mismatches such as `$ROLE = 5` are NOT Malloy compile
- * errors, so they are not caught here — they fail closed at the runtime gate.
+ * Build the ROW-LEVEL probe query text: apply a source's effective authorize
+ * expressions as a source-level `where:` directly on `sourceName`, so the
+ * gate's field references resolve against THAT entry point's own field space
+ * — renames, `except:`/`accept:` drops, and projections included — rather
+ * than the synthetic one-row source `buildAuthorizeProbe` uses, which has no
+ * real columns at all. `__authorize_probe` is a reserved, deliberately
+ * obscure select name, same convention as `buildAuthorizeProbe`'s
+ * `__auth_N` and `Model.liftGateCondition`'s identical probe shape (kept in
+ * lockstep with it: both need the SAME shape to read back the compiled
+ * `FilterCondition` from `_query.structRef.filterList`).
+ */
+function buildRowLevelProbe(sourceName: string, exprs: string[]): string {
+   const filterText = exprs.map((e) => `(${e})`).join(" or ");
+   return `run: ${quoteMalloyIdentifier(sourceName)} extend { where: ${filterText} } -> { select: __authorize_probe is 1; limit: 1 }`;
+}
+
+/**
+ * Compile {@link buildRowLevelProbe} and lift the LAST entry of the compiled
+ * query's `structRef.filterList` — the condition Malloy built for the
+ * `where:` this probe just added. Throws if the probe fails to compile (an
+ * unreachable given, or — the case this exists to catch — a field the gate
+ * references that this entry point renamed, excluded, or projected away) or
+ * if the compiled shape carries no filter at all.
+ */
+async function liftRowLevelCondition(
+   compiler: AuthorizeProbeCompiler,
+   sourceName: string,
+   exprs: string[],
+): Promise<CompiledGateCondition> {
+   const prepared = (await compiler
+      .loadQuery(buildRowLevelProbe(sourceName, exprs))
+      .getPreparedQuery()) as {
+      _query?: { structRef?: { filterList?: CompiledGateCondition[] } };
+   };
+   const filterList = prepared._query?.structRef?.filterList;
+   if (!Array.isArray(filterList) || filterList.length === 0) {
+      throw new Error(
+         `row-level probe for "${sourceName}" carries no filter condition`,
+      );
+   }
+   return filterList[filterList.length - 1];
+}
+
+/**
+ * Run the one-row `buildAuthorizeProbe`, wrapping a failure into the
+ * `ModelCompilationError` shape `validateAuthorizeProbes` has always thrown.
+ * Shared by the `given_only` path and the "no ancestor to blame this on"
+ * fallback so a genuinely broken gate reports the identical message
+ * regardless of which path found it.
+ */
+async function runOneRowProbeOrThrow(
+   compiler: AuthorizeProbeCompiler,
+   sourceName: string,
+   exprs: string[],
+): Promise<void> {
+   try {
+      await compiler.loadQuery(buildAuthorizeProbe(exprs)).getPreparedQuery();
+   } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new ModelCompilationError({
+         message: `Invalid #(authorize) annotation on source "${sourceName}" [${exprs.join(" | ")}]: ${detail}`,
+      });
+   }
+}
+
+/**
+ * Translation-time validation. Type mismatches such as `$ROLE = 5` are NOT
+ * Malloy compile errors, so they are not caught here — they fail closed at
+ * the runtime gate.
  *
- * Pass the gates DECLARED on each source (`ownAuthorizeSources` from
- * `extractSourcesFromModelDef`), not its effective list. A gate INHERITED from a
- * base is authored in the base's own given namespace, and Malloy merges only one
- * level of import — so a base two or more hops away can reference a given this
- * model cannot see. Probing it here would fail the load with a 424 that blames a
- * perfectly good annotation. The inherited case is covered at request time
- * instead, fail-closed (`Model.gateExprsForOwnAnnotations` maps a parse failure
- * to a single unsatisfiable `"false"`).
+ * Validation is shape-aware: it works from `options.authorizeMap` (source
+ * name → EFFECTIVE gates, inheritance included, from
+ * `extractSourcesFromModelDef`) — the full entry-point list, not just the
+ * declaring source. `docs/row-level-authorize-spike-findings.md` §4 measured
+ * that a gate's field reference can resolve at the source that declares it
+ * and still fail at an entry point that renamed, excluded, or projected the
+ * field away (`rename:`, `except:`, `accept:`, a `->` projection) — and that
+ * loading the model successfully is NOT evidence this can't happen; the break
+ * otherwise surfaces only when a real query touches it. This covers only
+ * entry points in THIS model: `compileMalloyModel` compiles each file
+ * independently, so an importing model's own entry points get validated when
+ * THAT model loads; anything this pass misses fails closed at request time
+ * (`Model.resolveGateShape` denies rather than leaks) instead of leaking.
+ *
+ * For each entry point in `authorizeMap`:
+ *  - First compile {@link buildRowLevelProbe} — the gate applied as a
+ *    source-level `where:` on the entry point itself — via
+ *    `getPreparedQuery()` (compile-only; unlike `getSQL()` it does not
+ *    require a given to have a bound value, so an unbound given is not
+ *    confused with a field-resolution failure).
+ *  - If it compiles, lift the condition and classify it with
+ *    {@link classifyAuthorizeGate}:
+ *     - `given_only` — ALSO run the pre-existing one-row probe, unchanged,
+ *       so a gate that has always been a whole-source boolean keeps being
+ *       validated exactly as it always was.
+ *     - `row_level` — the field(s) it reads resolved at this entry point;
+ *       valid, nothing further to do.
+ *     - `rejected` — record {@link recordRowLevelGateRejected} (via
+ *       `options.onRowLevelGateRejected`, so this module itself never
+ *       imports the telemetry stack) and throw, naming the source, the gate
+ *       text, and the rejection detail.
+ *  - If it does NOT compile, the entry is set aside as PENDING rather than
+ *    decided immediately — see the two-pass note below for why: a compile
+ *    failure alone cannot tell "genuinely broken gate" apart from "this ONE
+ *    derived entry point renamed/excluded/projected away the field(s), and
+ *    every other entry point that shares the identical gate text is fine".
+ *
+ * `sourceName` is deliberately NOT used to make that call: whether
+ * `sourceName` is among the sources that DECLARE a gate cannot tell apart a
+ * source that wrote its own annotation from one Malloy merely copied it onto.
+ * Malloy shares a base's annotation NOTE objects, by reference, onto a
+ * derived struct's OWN `annotations` whenever the deriving statement adds no
+ * annotation of its own — `extend {}`, `extend { rename: … }`, `extend {
+ * except: … }`, `extend { accept: … }` all do this. `W_rename`, `W_except`,
+ * and `W_accept` — the exact class of "unexpressible at this one entry
+ * point" case this scoping exists FOR — therefore look exactly as
+ * "declaring" as the source that actually wrote the annotation, by every
+ * signal short of comparing note object identity.
+ *
+ * Gate TEXT is equally unsafe for the same question ("did this exact gate
+ * validate somewhere else"): two sources can independently type the
+ * identical gate string (same givens, same convention, no relation to each
+ * other) and get TWO SEPARATE note objects — one parsed occurrence each. Text
+ * matching cannot tell that apart from `W_rename` genuinely sharing `X`'s
+ * note object by reference, so a source whose OWN declaration was broken
+ * would escape to a warning purely because an unrelated neighbor happened to
+ * type the same string and validated fine. Object identity is exactly the
+ * discriminator fix1's join-field scan (`source_extraction.ts`) also relies
+ * on for the identical reason: it is shared ONLY when Malloy itself copied
+ * the reference, never when two authors independently wrote the same text.
+ *
+ * So the question this function asks is: **is this failing entry's gate
+ * genuinely INHERITED** — either it carries no annotation of its own at all
+ * (a `query_source` struct has no `annotations` whatsoever, so it can only
+ * ever be inheriting), or its own annotation note object is the SAME
+ * object, by reference, as one that validated successfully somewhere else
+ * in this model? If yes, some OTHER entry point already proved the gate
+ * sound and this one just can't express it — denies at request time instead
+ * (`Model.resolveGateShape`). If the failing entry's own note is a DISTINCT
+ * object (independently authored, even if textually identical to something
+ * else), there is no ancestor to blame it on: the load fails exactly as it
+ * always has.
+ *
+ * `options.authorizeOwnNotes` (from `extractSourcesFromModelDef`) folds a
+ * FILE-level `##(authorize)`'s own note object into every source's entry —
+ * the same object for all of them, since there is exactly one file-level
+ * annotation list — for the identical reason: a file-level gate is authored
+ * once but applies everywhere, so proving it sound at one source has to
+ * downgrade it everywhere else it fails, not just for a source-level gate.
+ *
+ * TWO PASSES over `authorizeMap`, because that answer isn't known until every
+ * entry has been tried, and entry order is `Object.values(modelDef.contents)`
+ * insertion order — not guaranteed to put a clean entry point before a
+ * renamed/excepted/accepted one:
+ *  1. Compile+classify every entry. A `rejected` classification throws
+ *     immediately, unconditionally — the compiled condition's SHAPE (an
+ *     `and`/`or`/`inGiven` tree) does not depend on which entry point it was
+ *     probed from, only on whether it compiles there at all, so a grammar
+ *     violation is invalid wherever it is found, full stop. `given_only`
+ *     and `row_level` both count as this entry SUCCEEDING — its own
+ *     `#(authorize)`-tagged note objects (`options.authorizeOwnNotes`, from
+ *     `extractSourcesFromModelDef`) are added to a set of "proven" note
+ *     objects. A compile failure is recorded as PENDING (source name, exprs,
+ *     the underlying error) instead of decided yet.
+ *  2. For each pending failure: it escapes — reported via
+ *     {@link recordRowLevelGateRejected} (`onRowLevelGateRejected`) and
+ *     `onRowLevelGateUnexpressible` for a human-readable warning (this
+ *     module stays free of both the telemetry stack and a logger, see the
+ *     module doc) — WITHOUT failing the load, if its own note objects are
+ *     empty (no annotation of its own to have gotten wrong) or intersect the
+ *     "proven" set from pass 1. Otherwise it falls back to the one-row
+ *     probe — either the gate is genuinely broken (reports today's familiar
+ *     error), or the given is not visible from this entry point's model at
+ *     all: a gate INHERITED from a base is authored in the base's own given
+ *     namespace, and Malloy merges only one level of import, so a base two
+ *     or more hops away can reference a given this model cannot see. The
+ *     probe reports that as an unresolved given rather than misreporting it
+ *     as a broken gate.
  *
  * Throws `ModelCompilationError` naming the source on the first invalid
  * annotation. Shared by `Model.create` and the package-load worker so both
@@ -462,21 +1110,120 @@ interface SourceWithAuthorize {
  */
 export async function validateAuthorizeProbes(
    compiler: AuthorizeProbeCompiler,
-   sources: readonly SourceWithAuthorize[],
+   options: {
+      authorizeMap?: AuthorizeMap;
+      declaredTypes?: Map<string, string>;
+      /**
+       * source name → the source's OWN-level `#(authorize)`-tagged note
+       * objects (from `extractSourcesFromModelDef`) PLUS the file-level
+       * `##(authorize)` note objects, which every source carries the SAME
+       * object for — empty only when the struct carries no annotation of its
+       * own at all AND the file declares no `##(authorize)` (e.g. a
+       * `query_source` in a file with no file-level gate). This is the
+       * note-object identity the two-pass escape decision below keys on —
+       * see the function doc for why gate TEXT is not safe for this and
+       * object identity is what's left.
+       */
+      authorizeOwnNotes?: Map<string, AnnotationNote[]>;
+      onRowLevelGateRejected?: (cause: RowLevelGateRejectionCause) => void;
+      /**
+       * Called instead of throwing when a gate that validated successfully at
+       * some OTHER entry point fails to resolve at `sourceName` specifically
+       * — see the doc above. `detail` is the underlying compile failure
+       * (Malloy already names the unresolved field/join in it, e.g. `'org_id'
+       * is not defined`), for a caller with a logger to report against.
+       */
+      onRowLevelGateUnexpressible?: (
+         sourceName: string,
+         detail: string,
+      ) => void;
+   },
 ): Promise<void> {
-   for (const source of sources) {
-      const exprs = source.authorize;
-      if (!exprs || exprs.length === 0) continue;
+   const declaredTypes = options.declaredTypes ?? new Map<string, string>();
+   // Note objects that validated successfully somewhere in this model — see
+   // the function doc for why this, not gate TEXT, is the safe discriminator
+   // for "is a pending failure elsewhere's genuinely inherited copy".
+   const provenNoteObjects = new Set<AnnotationNote>();
+   const ownNotesOf =
+      options.authorizeOwnNotes ?? new Map<string, AnnotationNote[]>();
+   const pending: Array<{ sourceName: string; exprs: string[]; err: unknown }> =
+      [];
+
+   for (const [sourceName, exprs] of options.authorizeMap ?? []) {
+      if (exprs.length === 0) continue;
+
+      let condition: CompiledGateCondition;
       try {
-         await compiler
-            .loadQuery(buildAuthorizeProbe(exprs))
-            .getPreparedQuery();
+         condition = await liftRowLevelCondition(compiler, sourceName, exprs);
       } catch (err) {
-         const detail = err instanceof Error ? err.message : String(err);
+         pending.push({ sourceName, exprs, err });
+         continue;
+      }
+
+      const classification = classifyAuthorizeGate(condition, declaredTypes);
+      if (classification.shape === "given_only") {
+         await runOneRowProbeOrThrow(compiler, sourceName, exprs);
+         for (const note of ownNotesOf.get(sourceName) ?? []) {
+            provenNoteObjects.add(note);
+         }
+         continue;
+      }
+      if (classification.shape === "rejected") {
+         options.onRowLevelGateRejected?.(classification.cause);
          throw new ModelCompilationError({
-            message: `Invalid #(authorize) annotation on source "${source.name ?? "(unnamed)"}" [${exprs.join(" | ")}]: ${detail}`,
+            message:
+               `Invalid #(authorize) annotation on source "${sourceName}" ` +
+               `[${exprs.join(" | ")}]: ${classification.detail}`,
          });
       }
+      // shape === "row_level": the probe compiled at this entry point, so
+      // the gate's field(s) resolved here. Valid.
+      for (const note of ownNotesOf.get(sourceName) ?? []) {
+         provenNoteObjects.add(note);
+      }
+   }
+
+   for (const failure of pending) {
+      const ownNotes = ownNotesOf.get(failure.sourceName) ?? [];
+      // Genuinely inherited: either this entry carries no annotation of its
+      // own at all (nothing here could be the authoring mistake — e.g. a
+      // `query_source` struct, which has no `annotations` whatsoever), or
+      // EVERY one of its own notes is, BY REFERENCE, a note that validated
+      // successfully elsewhere. Gate TEXT is deliberately not consulted: two
+      // sources can independently type the identical string and get two
+      // SEPARATE note objects, and text matching cannot tell that apart from
+      // a genuine by-reference inheritance — see the function doc.
+      //
+      // `every`, not `some`: a source can carry MORE THAN ONE of its own
+      // notes (e.g. two `#(authorize)` annotations, OR'd) — one proven sound
+      // elsewhere, the other its own genuinely broken gate. `some` reports
+      // "inherited" as soon as ANY one note matches, so a source carrying
+      // both would escape to a warning ("not expressible at this entry
+      // point") that misdescribes its own broken annotation as merely
+      // unexpressible here. `every` requires EVERY own note to trace back to
+      // something already proven before it calls the whole entry inherited.
+      const inherited =
+         ownNotes.length === 0 ||
+         ownNotes.every((note) => provenNoteObjects.has(note));
+      if (inherited) {
+         // Some OTHER entry point already proved this exact gate object
+         // sound — this one specifically renamed, excluded, or projected
+         // away the field(s) it needs. Not a reason to fail the whole
+         // model: `Model.resolveGateShape` denies every request against
+         // THIS entry point (see its doc), so leaving the load to continue
+         // does not leak anything.
+         const detail =
+            failure.err instanceof Error
+               ? failure.err.message
+               : String(failure.err);
+         options.onRowLevelGateRejected?.("entry_point_unexpressible");
+         options.onRowLevelGateUnexpressible?.(failure.sourceName, detail);
+         continue;
+      }
+      // No ancestor to blame this on — either genuinely broken, or an
+      // independently-authored gate that merely shares text with something
+      // else that validated. Fall back to the one-row probe.
+      await runOneRowProbeOrThrow(compiler, failure.sourceName, failure.exprs);
    }
 }
 
