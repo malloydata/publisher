@@ -10,7 +10,8 @@
 
 3. **Rewrite for retrieval**: LookML descriptions are written for Looker's field picker. Malloy `#(doc)` strings power AI search. Rewrite to match how analysts search:
    - Use business meaning, not Looker jargon
-   - Include units (USD, count, percentage) and valid values for categorical fields
+   - Include units (USD, count, percentage): a unit is part of what a number means
+   - For a categorical field, listing a short set of values (roughly ten or fewer) makes the description concrete; past that, describe what the field captures instead of dumping the list, which crowds out the meaning and goes stale as the data changes
    - Avoid "filterable", "groupable", "dimension", "measure"
 
 4. **Map formatting to render tags:**
