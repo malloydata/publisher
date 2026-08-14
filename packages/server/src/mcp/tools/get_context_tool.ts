@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import lunr from "lunr";
+import type { Relationship } from "@malloydata/malloy-interfaces";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import {
@@ -15,13 +16,13 @@ import { entityRowKey, trySemanticSearch } from "./embedding_index";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
- * measure) defined on a source, or a named query. Sources, views, and fields come
- * from the compiled SourceInfo (Model.getSourceInfos()); named queries from
- * Model.getQueries().
+ * measure) defined on a source, a join it declares, or a named query. Sources,
+ * views, fields, and joins come from the compiled SourceInfo
+ * (Model.getSourceInfos()); named queries from Model.getQueries().
  */
 interface Entity {
    id: string;
-   kind: "source" | "view" | "query" | "dimension" | "measure";
+   kind: "source" | "view" | "query" | "dimension" | "measure" | "join";
    name: string;
    source: string | undefined;
    modelPath: string;
@@ -30,6 +31,9 @@ interface Entity {
    // #(doc)-only text used as embedding input; never carries predicate
    // annotations (#(authorize) etc.) that must not leave the machine.
    embedDoc: string;
+   // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
+   // traversing the join fans out (many) before it writes a query against it.
+   relationship?: Relationship;
 }
 
 /** One tier-4 result. `score` (cosine) rides only on semantic results. */
@@ -41,6 +45,7 @@ interface ResultEntity {
    packageName: string;
    modelPath: string;
    doc: string;
+   relationship?: Relationship;
    score?: number;
 }
 
@@ -124,9 +129,10 @@ export function sanitize(query: string): string {
 }
 
 /**
- * Walk every model in the package and collect sources, their views and
- * dimension/measure fields, and named queries. Returns the full set; the
- * optional source-level drill-down is applied by the caller after retrieval.
+ * Walk every model in the package and collect sources, their views,
+ * dimension/measure fields and declared joins, and named queries. Returns the
+ * full set; the optional source-level drill-down is applied by the caller
+ * after retrieval.
  */
 async function collectEntities(pkg: Package): Promise<Entity[]> {
    // listModels() already returns only .malloy model files (notebooks are listed separately).
@@ -157,8 +163,32 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
             embedDoc: docOnlyText(sourceInfo.annotations),
          });
          for (const field of sourceInfo.schema.fields ?? []) {
-            // v1 indexes the queryable surface: views and dimension/measure
-            // fields. Joins (structural) and calculate (window) are skipped.
+            // Joins are indexed as entities in their own right: an agent that
+            // cannot see a declared join concludes the model has none and
+            // burns queries guessing one. The join's own #(doc) is a common
+            // home for the rule that governs the relationship, so it has to
+            // be retrievable. `calculate` (window) fields stay unindexed:
+            // they are not referenceable outside the view that defines them.
+            if (field.kind === "join") {
+               entities.push({
+                  id: String(n++),
+                  kind: "join",
+                  name: field.name,
+                  // The source that DECLARES the join, so a drill-down on
+                  // that source sees it. The stable JoinInfo inlines the
+                  // target's schema without naming the target source, so
+                  // there is no targetSource to report.
+                  source: sourceName,
+                  modelPath,
+                  doc: docText(field.annotations),
+                  embedDoc: docOnlyText(field.annotations),
+                  relationship: field.relationship,
+               });
+               // Deliberately NOT recursing into field.schema: those fields
+               // are the target source's own, already indexed under it.
+               // Recursing would duplicate every joined field once per join.
+               continue;
+            }
             if (
                field.kind !== "view" &&
                field.kind !== "dimension" &&
@@ -272,12 +302,12 @@ All optional. Supply what you know and omit the rest; each combination answers a
 - none: lists the environments, each with its package names.
 - environmentName: lists that environment's packages, with descriptions.
 - + packageName: lists that package's sources.
-- + query: a plain-English description of what you need, returning the sources, views, named queries, and dimension/measure fields most relevant to it.
+- + query: a plain-English description of what you need, returning the sources, views, named queries, joins, and dimension/measure fields most relevant to it.
 - sourceName: narrows retrieval to one source (the drill-down phase).
 - limit: caps results (max 50). Retrieval defaults to 10; the listing levels return all unless set.
 
 ## Response
-A JSON object with a results array whose items carry a kind field. For retrieval, each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName. When the server is configured with an embedding provider, retrieval is ranked by semantic similarity: the payload then carries a retrieval field ("semantic", or "lexical" when the provider is unavailable) and each semantic entity a score.
+A JSON object with a results array. Each retrieved entity has kind (source / view / query / dimension / measure / join), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName. A join carries a relationship ("one", "many", "cross"), is traversed as joinName.fieldName, and its source is the source declaring it. When the server is configured with an embedding provider, retrieval is ranked by semantic similarity: the payload then carries a retrieval field ("semantic", or "lexical" when the provider is unavailable) and each semantic entity a score.
 
 ## Worked example
 { "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
@@ -309,7 +339,7 @@ function contextError(uri: string, identifier: string, error: unknown) {
  * with no environment it lists environments, with an environment but no package
  * it lists packages, with a package but no query it lists the package's sources,
  * and with a query it runs lexical (lunr/BM25) retrieval over the package's model
- * entities (sources, views, dimension/measure fields, named queries). The entity
+ * entities (sources, views, dimension/measure fields, joins, named queries). The entity
  * index is built once per Package and cached (see getPackageIndex), rebuilding
  * automatically when the package reloads.
  */
@@ -608,6 +638,9 @@ export function registerGetContextTool(
                               packageName,
                               modelPath: e.modelPath,
                               doc: e.doc,
+                              ...(e.relationship
+                                 ? { relationship: e.relationship }
+                                 : {}),
                               score: Math.round(hit.score * 10_000) / 10_000,
                            },
                         ];
@@ -665,6 +698,7 @@ export function registerGetContextTool(
                packageName,
                modelPath: e.modelPath,
                doc: e.doc,
+               ...(e.relationship ? { relationship: e.relationship } : {}),
             }));
 
          return jsonResource(

@@ -164,14 +164,33 @@ function textBlock(result: { content: Content }) {
    return result.content.find((b) => b.type === "text")?.text;
 }
 
-// A model with one source (order_items) carrying one dimension (state).
+// A model with one source (order_items) carrying one dimension (state) and one
+// declared join (current_building). The join's own schema carries a field with
+// a distinctive token so a no-recursion pin can assert it is never indexed.
 const mockModel = {
    getSourceInfos: () => [
       {
          name: "order_items",
          annotations: [],
          schema: {
-            fields: [{ kind: "dimension", name: "state", annotations: [] }],
+            fields: [
+               { kind: "dimension", name: "state", annotations: [] },
+               {
+                  kind: "join",
+                  name: "current_building",
+                  relationship: "one",
+                  annotations: ["#(doc) Building this asset sits in."],
+                  schema: {
+                     fields: [
+                        {
+                           kind: "dimension",
+                           name: "building_name",
+                           annotations: ["#(doc) Zzyzx joined-source field."],
+                        },
+                     ],
+                  },
+               },
+            ],
          },
       },
    ],
@@ -536,6 +555,65 @@ describe("get_context discovery tiers", () => {
       ).toBe(true);
    });
 
+   it("tier 4: retrieves a declared join, carrying its cardinality", async () => {
+      // Joins were skipped by the collector, so an agent could not see that
+      // the model declared one and concluded it had to bridge the tables
+      // itself. The join's #(doc) was likewise unreachable.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockPackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "building",
+         }),
+      );
+      const join = results.find(
+         (r: { name: string }) => r.name === "current_building",
+      );
+      expect(join).toBeDefined();
+      expect(join.kind).toBe("join");
+      expect(join.relationship).toBe("one");
+      // `source` names the source that DECLARES the join, so a drill-down on
+      // that source sees it.
+      expect(join.source).toBe("order_items");
+      expect(join.doc).toBe("Building this asset sits in.");
+   });
+
+   it("tier 4: does not recurse into a join's own schema", async () => {
+      // The joined source's fields are already indexed under that source.
+      // Recursing would re-index every one of them once per join that
+      // reaches it, which is the redundancy this tool can least afford.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockPackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "Zzyzx",
+         }),
+      );
+      expect(results).toEqual([]);
+   });
+
+   it("tier 3: a package listing still returns only sources, not joins", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockPackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      expect(results.map((r: { kind: string }) => r.kind)).toEqual(["source"]);
+   });
+
    it("tier 1: surfaces a listEnvironments failure as a tool error", async () => {
       const handler = captureHandler({
          listEnvironments: async () => {
@@ -614,11 +692,16 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(null);
    });
 
-   // Entity texts are humanize(name) [+ doc]: "order items" and "state".
+   // Entity texts are humanize(name) [+ doc]. A missing entry throws, so this
+   // map doubles as a pin on exactly which entities get embedded: the join is
+   // here because it is indexed, and the field inside its schema is absent
+   // because it is not.
    const VECTORS: Record<string, number[]> = {
       "order items": [0, 1],
       state: [1, 0],
+      "current building: Building this asset sits in.": [0, 1],
       "where do customers live": [1, 0],
+      "what building is this in": [0, 1],
    };
 
    function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
@@ -696,6 +779,33 @@ describe("get_context semantic retrieval", () => {
             (r: { name: string }) => r.name === "order_items",
          ),
       ).toBe(false);
+   });
+
+   it("ranks a join semantically and writes it to the embedding index", async () => {
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "join-pkg",
+         query: "what building is this in",
+      });
+      const join = payload.results.find(
+         (r: { name: string }) => r.name === "current_building",
+      );
+      expect(join).toBeDefined();
+      expect(join.kind).toBe("join");
+      expect(join.relationship).toBe("one");
+      expect(join.score).toBeCloseTo(1.0, 3);
+
+      // The vector cache holds it under its own kind, so it survives a
+      // restart and takes part in the incremental hash diff like any other
+      // entity.
+      const rows = await db.all<{ n: number }>(
+         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
+          WHERE package_name = ? AND entity_kind = 'join' AND entity_name = ?`,
+         ["join-pkg", "current_building"],
+      );
+      expect(rows[0].n).toBe(1);
    });
 
    it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
