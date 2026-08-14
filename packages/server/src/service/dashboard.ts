@@ -48,6 +48,7 @@ import {
    tagNumeric,
    tagText,
    unwrapFilterLiteral,
+   UNSAFE_TO_PARSE,
 } from "./motly";
 
 // Re-exported because the MOTLY primitives moved to `motly.ts` but read as part
@@ -917,7 +918,11 @@ export function lintUndiscoveredDashboard(
    const findings = errors.map((message) => ({
       subject,
       message:
-         `Tag does not parse (${message}), so the whole tag is discarded and ` +
+         (message === UNSAFE_TO_PARSE
+            ? `Tag was refused rather than parsed (${message}), which can be ` +
+              `caused by something outside this file, so the whole tag is ` +
+              `discarded and `
+            : `Tag does not parse (${message}), so the whole tag is discarded and `) +
          `this file is treated as a shared include rather than a dashboard.`,
       severity: "error" as const,
    }));

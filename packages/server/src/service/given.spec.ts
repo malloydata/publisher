@@ -624,6 +624,36 @@ describe("readAutorun", () => {
  * level or inside a dashboard's artifact tag.
  */
 describe("readStartingGivens", () => {
+   /**
+    * A `date` given must publish the day the author WROTE, whatever the
+    * server's timezone. The ISO form is the trap: MOTLY accepts
+    * `@2024-03-01T23:30`, still reports `scalarType() === "date"`, and hydrates
+    * it in LOCAL time before rendering as UTC, so slicing the first ten
+    * characters off that rendering reported 2024-03-02 in America/Los_Angeles
+    * and 2024-02-29 in Asia/Tokyo. A dashboard opened on the wrong day and
+    * nothing reported it, because the tag parses.
+    *
+    * All four forms must agree. Note what this test can and cannot catch: run
+    * under TZ=UTC it passes even against the old implementation, because UTC is
+    * the one zone where the bug is invisible. The timezone dimension was
+    * verified by running this same set under UTC, America/Los_Angeles,
+    * Asia/Tokyo and Pacific/Kiritimati (UTC+14), all four correct; re-check that
+    * way rather than trusting a green run in one zone.
+    */
+   it("publishes the authored day for every date literal form", () => {
+      for (const literal of [
+         "@2024-03-01",
+         "@2024-03-01T10:30:15",
+         "@2024-03-01T23:30",
+         "@2024-03-01T00:30",
+      ]) {
+         expect([
+            literal,
+            readStartingGivens(motlyTag([`## givens { X=${literal} }`])),
+         ]).toEqual([literal, { X: "2024-03-01" }]);
+      }
+   });
+
    it("reads a notebook's file-level block", () => {
       expect(
          readStartingGivens(

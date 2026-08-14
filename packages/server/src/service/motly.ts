@@ -172,11 +172,13 @@ function pollutionTargets(): object[] | undefined {
          // `Object.prototype` itself, means this cannot know what a parse would
          // touch, and the annotation is refused. Fail closed. The cost is that a
          // deployment which extends `Object.prototype` with an accessor gets no
-         // control contracts at all. That is the safer failure, but be clear it is
-         // not a loud one: nothing calls {@link motlyParseErrors} yet, so the
-         // refusal shows up only as absent control fields. Wiring that reader is
-         // what would make it visible, and it belongs with the slice that owns
-         // package warnings.
+         // control contracts at all. That is the safer failure, and as of the
+         // dashboards slice it is no longer a silent one: {@link motlyParseErrors}
+         // now has callers, so a refusal surfaces as a package warning naming the
+         // file rather than only as absent control fields. Note the warning's
+         // wording says the tag does not parse, which is true of the annotation
+         // as presented to the parser but can mislead when the real cause is a
+         // process-wide refusal triggered by another package.
          // Fail closed if the reference is missing as well as if it differs. It
          // is `undefined` under `node --disable-proto=delete`, which a hardened
          // deployment may well set, and a setter-only accessor also has an
@@ -206,7 +208,14 @@ function pollutionTargets(): object[] | undefined {
  * Surfaced through {@link motlyParseErrors} so the reader a later slice builds
  * has something to report rather than a silent empty tag.
  */
-const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
+/**
+ * Exported so a reader reporting a refusal can tell it apart from a genuine
+ * syntax error in the annotation. The distinction matters to the author: a
+ * syntax error is in their file, whereas this refusal can be triggered by
+ * something entirely outside it, including another package on the same worker
+ * having already polluted the prototype through an unguarded parse.
+ */
+export const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
 
 /**
  * `parseAnnotation`, with any damage it does to the shared prototypes undone.
@@ -804,6 +813,37 @@ function scalarTypeOf(tag: Tag | undefined): string | undefined {
    }
 }
 
+/**
+ * The calendar day a MOTLY `date` literal was written as, independent of the
+ * server's timezone.
+ *
+ * Which field set is authoritative depends on how the value was hydrated, and
+ * the two forms differ. A bare `@2024-03-01` is hydrated at UTC midnight in
+ * every zone, so its UTC fields carry the authored day. An ISO
+ * `@2024-03-01T23:30` is hydrated in LOCAL time, so its LOCAL fields do.
+ * Exact-UTC-midnight is what tells them apart.
+ *
+ * One residual, stated rather than hidden: an ISO literal that lands exactly on
+ * UTC midnight (`@2024-03-01T16:00` in America/Los_Angeles) is indistinguishable
+ * from a bare date at this layer, because the `Tag` keeps only the hydrated
+ * `Date` and not the source text, so it takes the UTC day and can be one day
+ * off. Closing that needs the literal, which means threading the annotation
+ * text down here. Every other case is exact.
+ */
+function authoredDay(isoText: string): string {
+   const value = new Date(isoText);
+   if (Number.isNaN(value.getTime())) return isoText.slice(0, 10);
+   const atUtcMidnight =
+      value.getUTCHours() === 0 &&
+      value.getUTCMinutes() === 0 &&
+      value.getUTCSeconds() === 0 &&
+      value.getUTCMilliseconds() === 0;
+   const year = atUtcMidnight ? value.getUTCFullYear() : value.getFullYear();
+   const month = atUtcMidnight ? value.getUTCMonth() : value.getMonth();
+   const day = atUtcMidnight ? value.getUTCDate() : value.getDate();
+   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 export function readStartingGivens(
    tag: Tag | undefined,
 ): Record<string, string> | undefined {
@@ -825,14 +865,24 @@ export function readStartingGivens(
       // string, so a caller who deliberately quoted a full timestamp keeps
       // exactly what they wrote.
       //
-      // `date` is the only temporal literal that reaches here: MOTLY's grammar
-      // stops at the space in `@2024-03-01 10:00` ("Expected '{', found '0'"),
-      // so a timestamp starting value has to be written as a quoted string.
-      // That is not a silent loss: the parse error discards the whole tag, and
-      // `lintUndiscoveredDashboard` reports it against the file.
+      // Taking the first ten characters of that ISO string is NOT sufficient, and
+      // an earlier version of this comment claimed it was, on the grounds that
+      // `@2024-03-01 10:00` is a parse error so only a bare date can reach here.
+      // The space form is indeed refused, but the ISO form `@2024-03-01T23:30`
+      // is accepted, still reports `scalarType() === "date"`, and hydrates in
+      // LOCAL time before being rendered as UTC. Measured across three zones:
+      //
+      //   literal                 TZ                   rendered        sliced
+      //   @2024-03-01             any                  ...T00:00Z      2024-03-01  ok
+      //   @2024-03-01T23:30       America/Los_Angeles  2024-03-02T07:30Z  2024-03-02  WRONG DAY
+      //   @2024-03-01T00:30       Asia/Tokyo           2024-02-29T15:30Z  2024-02-29  WRONG DAY
+      //
+      // Nothing reports it, because the tag parses: a dashboard just opens on
+      // the wrong day depending on the worker's TZ. So the day is rebuilt from
+      // calendar fields rather than sliced off the UTC rendering.
       collected[name] =
          scalarTypeOf(tag) === "date"
-            ? text.slice(0, 10)
+            ? authoredDay(text)
             : unwrapFilterLiteral(text);
    }
    return Object.keys(collected).length > 0 ? collected : undefined;
