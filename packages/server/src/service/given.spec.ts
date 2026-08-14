@@ -633,13 +633,48 @@ describe("readStartingGivens", () => {
     * and 2024-02-29 in Asia/Tokyo. A dashboard opened on the wrong day and
     * nothing reported it, because the tag parses.
     *
-    * All four forms must agree. Note what this test can and cannot catch: run
-    * under TZ=UTC it passes even against the old implementation, because UTC is
-    * the one zone where the bug is invisible. The timezone dimension was
-    * verified by running this same set under UTC, America/Los_Angeles,
-    * Asia/Tokyo and Pacific/Kiritimati (UTC+14), all four correct; re-check that
-    * way rather than trusting a green run in one zone.
+    * All four forms must agree. This assertion alone cannot catch the bug,
+    * though: run under TZ=UTC it passes against the OLD implementation too,
+    * because UTC is the one zone where the bug is invisible, and nothing in this
+    * repo pins the suite's zone. The sibling test below is the one that pins it,
+    * by running the check in a subprocess under a fixed non-UTC zone.
     */
+   /**
+    * The zone-pinned half. The unit suite runs at whatever TZ the machine has,
+    * and CI is UTC, so the assertion above cannot fail there even against the
+    * pre-fix code. This runs the same read in a subprocess under Asia/Tokyo,
+    * where the old `text.slice(0, 10)` produced 2024-02-29 for a value written
+    * as March 1, and asserts the authored day survives.
+    *
+    * The literal has to match the zone: under Asia/Tokyo it is the EARLY time
+    * that rolls back a day (00:30 local is 15:30 UTC on Feb 29), while under
+    * America/Los_Angeles it is the late one. A first version of this test used
+    * 23:30 under Tokyo, which is 14:30 UTC the same day, so it passed against
+    * the broken code and pinned nothing.
+    */
+   it("publishes the authored day under a non-UTC zone as well", () => {
+      const service = import.meta.dir;
+      const proc = Bun.spawnSync({
+         cmd: [
+            "bun",
+            "-e",
+            `const m = await import("${service}/motly.ts");
+             console.log(
+                JSON.stringify(
+                   m.readStartingGivens(
+                      m.motlyTag(["## givens { X=@2024-03-01T00:30 }"]),
+                   ),
+                ),
+             );`,
+         ],
+         env: { ...process.env, TZ: "Asia/Tokyo" },
+      });
+      expect(proc.exitCode).toBe(0);
+      expect(JSON.parse(proc.stdout.toString().trim())).toEqual({
+         X: "2024-03-01",
+      });
+   });
+
    it("publishes the authored day for every date literal form", () => {
       for (const literal of [
          "@2024-03-01",

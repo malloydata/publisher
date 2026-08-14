@@ -189,7 +189,8 @@ export function dashboardSlug(modelPath: string): string {
 }
 
 /**
- * Whether a name matches the `dashboardName` pattern `api-doc.yaml` documents.
+ * Whether a name matches the naming CONVENTION `api-doc.yaml` describes in
+ * prose. There is no pattern on the parameter; see below.
  *
  * ADVISORY ONLY. It does not decide whether a dashboard is served. Curation
  * does, and can withhold one (see `Package.isQueryableEntryPoint`); what this
@@ -599,11 +600,11 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
       name: declaration.name,
       type: declaration.type,
       default: declaration.default,
-      // App-route (`#(…)`) annotations, exactly as `malloyGivenToApi` carries
-      // them on the model and notebook surfaces. Without this a dashboard
-      // control silently lost the `#(description="…")` helper text that the
-      // shipped `GivenInput` renders from `annotations`, while the spec said a
-      // dashboard and a notebook render the same control for the same given.
+      // App-route annotations in the `#(…)` form. This exists so a dashboard
+      // control does not lose the `#(description="…")` helper text the shipped
+      // `GivenInput` renders from `annotations`, which is what the spec means
+      // when it says a dashboard and a notebook render the same control for the
+      // same given.
       //
       // The paren app route only, and that is NARROWER than the model surface
       // rather than parity with it. Say so plainly, because two attempts to
@@ -631,9 +632,6 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
       // that field from another repo (`MalloyReport.tsx` via
       // `parseNotebookFilterAnnotation`), so widening it reintroduces a live bug
       // in a consumer this repo cannot see.
-      // Matched on the prefix rather than
-      // re-derived, because re-implementing that classifier by hand is what
-      // went wrong repeatedly in the module this borrows from.
       annotations: declaration.annotations.filter((text) =>
          /^##?\(/.test(text),
       ),
@@ -700,8 +698,20 @@ export function buildDashboardManifest(
          // A composite's control row is the union across its tiles: each tile
          // runs with only the givens it references, but the row a viewer shows
          // is every given any tile can filter by.
+         //
+         // A tile discovery cannot resolve statically (a refinement, a
+         // multi-stage pipeline) carries no `givenNames`, and taking the union
+         // of the resolved ones alone would drop its givens from the row
+         // entirely: no control, and the tile filtered at the given's default
+         // with nothing said. That is the same silent filtering the source-level
+         // `where:` handling exists to prevent, so ONE unresolvable tile widens
+         // the row to the file's whole surfaced given set instead. That is also
+         // what `DashboardTile.givenNames` tells a client to do ("send the whole
+         // control row"), which only works if the row actually contains them.
          givens: buildGivenSpecs(
-            tiles.flatMap((tile) => tile.givenNames ?? []),
+            tiles.some((tile) => tile.givenNames === undefined)
+               ? Array.from(facts.givens.keys())
+               : tiles.flatMap((tile) => tile.givenNames ?? []),
             facts.givens,
          ),
       };

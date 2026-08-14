@@ -3472,7 +3472,11 @@ components:
             control actually needs to re-run. Running a tile with the
             dashboard's whole control row also works, because an unreferenced
             given is ignored. Absent when the tile expression is not one
-            discovery can resolve, in which case send the whole control row.
+            discovery can resolve, a refinement or a multi-stage pipeline for
+            instance, in which case send the whole control row. One such tile
+            widens `DashboardManifest.givens` to every given the entry file
+            surfaces, rather than the union over the resolvable tiles, so that
+            the row actually contains the givens that tile filters by.
 
     DataApp:
       type: object

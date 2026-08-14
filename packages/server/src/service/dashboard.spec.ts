@@ -379,6 +379,40 @@ describe("service/dashboard given specs (the control contract)", () => {
 });
 
 describe("service/dashboard manifest (composite form)", () => {
+   /**
+    * A tile discovery cannot resolve statically contributes no `givenNames`, so
+    * a union over the resolved tiles alone would publish NO control for a given
+    * its refinement still filters by, and the tile would run at that given's
+    * default with nothing reported. One unresolvable tile therefore widens the
+    * row to the file's whole surfaced set. This is also what
+    * `DashboardTile.givenNames` tells a client to do when it is absent, which
+    * only works if the row contains them.
+    *
+    * The pre-existing unresolvable-tile test pairs the refinement with a
+    * resolvable tile supplying the same given, so it cannot distinguish the two
+    * behaviours; this one deliberately gives the refinement a given no other
+    * tile mentions.
+    */
+   it("widens the control row when a tile cannot be resolved", () => {
+      const manifest = build(
+         facts({
+            modelAnnotations: [
+               '## artifact { tiles=["orders -> by_brand + { limit: 5 }"] }\n',
+            ],
+            givens: new Map([
+               given("BRAND", "filter<string>", []),
+               given("REGION", "filter<string>", []),
+            ]),
+         }),
+      );
+      // Neither given is discoverable from the refinement, so both must appear
+      // rather than neither.
+      expect((manifest?.givens ?? []).map((g) => g.name).sort()).toEqual([
+         "BRAND",
+         "REGION",
+      ]);
+   });
+
    it("reads tiles and the grid width off the model-level tag", () => {
       const manifest = build(
          facts({
