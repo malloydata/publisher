@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isExcluded } from "./exclusions";
+import { locateFrontmatterClose } from "./frontmatter";
 
 const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
@@ -59,18 +60,19 @@ for (const entry of copied) {
    // outcome than the staleness this stamp exists to expose. Upstream owns
    // these files (skills/README.md), so a synced skill can grow its own
    // `version:` without anyone here noticing; fail the pack instead.
-   const close = text.startsWith("---\n") ? text.indexOf("\n---", 4) : -1;
-   if (close === -1) {
+   const location = locateFrontmatterClose(text);
+   if (!location) {
       unstampable.push(`${entry.name} (no frontmatter block)`);
       continue;
    }
+   const { index: close, newline } = location;
    if (/^version:/m.test(text.slice(0, close))) {
       unstampable.push(`${entry.name} (frontmatter already declares version)`);
       continue;
    }
    fs.writeFileSync(
       skillFile,
-      `${text.slice(0, close)}\nversion: ${version}${text.slice(close)}`,
+      `${text.slice(0, close)}${newline}version: ${version}${text.slice(close)}`,
    );
 }
 
