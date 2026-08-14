@@ -171,7 +171,7 @@ const mockModel = {
    getSourceInfos: () => [
       {
          name: "order_items",
-         annotations: [],
+         annotations: ["#(doc) One row per product sold on an order."],
          schema: {
             fields: [
                { kind: "dimension", name: "state", annotations: [] },
@@ -236,6 +236,25 @@ const envWith = (
       getPackage,
       getStaleCompileErrors: () => staleCompileErrors,
    }) as never;
+// A source whose doc is longer than SOURCE_DOC_MAX_CHARS, and one that
+// declares no joins at all, to pin the truncation and the empty-joins signal.
+const LONG_SOURCE_DOC = `Rooms in the facilities inventory. ${"Grain caveats and population rules go here. ".repeat(20)}`;
+const mockLongDocModel = {
+   getSourceInfos: () => [
+      {
+         name: "rooms",
+         annotations: [`#(doc) ${LONG_SOURCE_DOC}`],
+         schema: {
+            fields: [{ kind: "dimension", name: "room_key", annotations: [] }],
+         },
+      },
+   ],
+   getQueries: () => [],
+};
+const mockLongDocPackage = {
+   listModels: async () => [{ path: "rooms.malloy" }],
+   getModel: () => mockLongDocModel,
+};
 
 describe("get_context discovery tiers", () => {
    it("tier 1: no environment lists environments with their package names", async () => {
@@ -435,7 +454,14 @@ describe("get_context discovery tiers", () => {
             environmentName: "malloy-samples",
             packageName: "ecommerce",
             modelPath: "ecommerce.malloy",
-            doc: "",
+            doc: "One row per product sold on an order.",
+            joins: [
+               {
+                  name: "current_building",
+                  relationship: "one",
+                  doc: "Building this asset sits in.",
+               },
+            ],
          },
       ]);
    });
@@ -561,7 +587,7 @@ describe("get_context discovery tiers", () => {
       // itself. The join's #(doc) was likewise unreachable.
       const handler = captureHandler({
          getEnvironment: async () =>
-            ({ getPackage: async () => mockPackage }) as never,
+            envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -588,7 +614,7 @@ describe("get_context discovery tiers", () => {
       // reaches it, which is the redundancy this tool can least afford.
       const handler = captureHandler({
          getEnvironment: async () =>
-            ({ getPackage: async () => mockPackage }) as never,
+            envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -603,7 +629,7 @@ describe("get_context discovery tiers", () => {
    it("tier 3: a package listing still returns only sources, not joins", async () => {
       const handler = captureHandler({
          getEnvironment: async () =>
-            ({ getPackage: async () => mockPackage }) as never,
+            envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -612,6 +638,115 @@ describe("get_context discovery tiers", () => {
          }),
       );
       expect(results.map((r: { kind: string }) => r.kind)).toEqual(["source"]);
+   });
+
+   it("delivers the parent source's doc and joins alongside a field hit", async () => {
+      // A field hit used to arrive with only its own doc: the source's grain
+      // and population rules reached the agent only when the source itself
+      // happened to rank for the same query, so guidance placement depended
+      // on query phrasing rather than on where the modeller wrote it.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => mockPackage),
+      });
+      const { results, sources } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "state",
+         }),
+      );
+      // The hit itself is a field, carrying only its own (empty) doc...
+      expect(results[0].kind).toBe("dimension");
+      expect(results[0].doc).toBe("");
+      // ...and the source context arrives regardless.
+      expect(sources).toEqual([
+         {
+            name: "order_items",
+            modelPath: "ecommerce.malloy",
+            doc: "One row per product sold on an order.",
+            joins: [
+               {
+                  name: "current_building",
+                  relationship: "one",
+                  doc: "Building this asset sits in.",
+               },
+            ],
+         },
+      ]);
+   });
+
+   it("reports each source once, however many of its entities matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => mockPackage),
+      });
+      const { results, sources } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            // Matches the source, the join, and (via the source doc) more.
+            query: "order building state",
+         }),
+      );
+      expect(results.length).toBeGreaterThan(1);
+      expect(sources).toHaveLength(1);
+      expect(sources[0].name).toBe("order_items");
+   });
+
+   it("truncates a long source doc in context but not in the result itself", async () => {
+      // The context copy exists to deliver the caveat, not to reproduce the
+      // model file; a source that is itself the hit still returns in full.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => mockLongDocPackage),
+      });
+      const { results, sources } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "rooms",
+         }),
+      );
+      const sourceHit = results.find(
+         (r: { kind: string }) => r.kind === "source",
+      );
+      expect(sourceHit.doc).toBe(LONG_SOURCE_DOC.trim());
+      expect(sourceHit.doc.length).toBeGreaterThan(500);
+
+      expect(sources[0].doc.length).toBeLessThanOrEqual(501);
+      expect(sources[0].doc.endsWith("…")).toBe(true);
+      expect(sources[0].doc).toStartWith("Rooms in the facilities inventory.");
+   });
+
+   it("reports an empty joins list for a source that declares none", async () => {
+      // The authoritative negative: without it an agent cannot tell "no joins
+      // declared" from "joins exist but were not returned", and we watched
+      // agents spend queries probing for a relationship that was never there.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => mockLongDocPackage),
+      });
+      const { results } = parse(
+         await handler({ environmentName: "e", packageName: "p" }),
+      );
+      expect(results[0].joins).toEqual([]);
+   });
+
+   it("omits the sources block entirely when nothing matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "Zzyzx",
+         }),
+      );
+      expect(payload.results).toEqual([]);
+      expect(payload).not.toHaveProperty("sources");
    });
 
    it("tier 1: surfaces a listEnvironments failure as a tool error", async () => {
@@ -661,7 +796,9 @@ describe("get_context discovery tiers", () => {
          }),
       );
       expect(payload.retrieval).toBeUndefined();
-      expect(Object.keys(payload)).toEqual(["results"]);
+      // `sources` is metadata every caller benefits from, so it rides on the
+      // unconfigured payload too; the marker and scores stay provider-only.
+      expect(Object.keys(payload)).toEqual(["results", "sources"]);
       for (const r of payload.results) {
          expect(r.score).toBeUndefined();
       }
@@ -697,7 +834,7 @@ describe("get_context semantic retrieval", () => {
    // here because it is indexed, and the field inside its schema is absent
    // because it is not.
    const VECTORS: Record<string, number[]> = {
-      "order items": [0, 1],
+      "order items: One row per product sold on an order.": [0, 1],
       state: [1, 0],
       "current building: Building this asset sits in.": [0, 1],
       "where do customers live": [1, 0],
@@ -806,6 +943,38 @@ describe("get_context semantic retrieval", () => {
          ["join-pkg", "current_building"],
       );
       expect(rows[0].n).toBe(1);
+   });
+
+   it("delivers a source's doc even when the source itself scores below the floor", async () => {
+      // The §5 fix, on the path that produced it. "where do customers live"
+      // is orthogonal to the order_items source entity, so the source is
+      // dropped by MIN_SIMILARITY and, before this, its doc went with it —
+      // the agent got a field with no idea of the source's grain. The doc now
+      // rides on the response regardless of how the source itself scored.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "context-pkg",
+         query: "where do customers live",
+      });
+      expect(
+         payload.results.some((r: { kind: string }) => r.kind === "source"),
+      ).toBe(false);
+      expect(payload.sources).toEqual([
+         {
+            name: "order_items",
+            modelPath: "ecommerce.malloy",
+            doc: "One row per product sold on an order.",
+            joins: [
+               {
+                  name: "current_building",
+                  relationship: "one",
+                  doc: "Building this asset sits in.",
+               },
+            ],
+         },
+      ]);
    });
 
    it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
