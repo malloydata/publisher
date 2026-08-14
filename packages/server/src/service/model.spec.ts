@@ -1461,6 +1461,35 @@ describe("service/model", () => {
          expect(attached.class).toBe("interactive");
       });
 
+      it("reports the model file's own declaration, and parses it once", async () => {
+         // The publish gate reads this per model, and `getPackageMetadata()` runs
+         // once per package inside listPackages — so recomputing would walk the
+         // import closure and re-parse every `##` note on a listing. A compiled
+         // model's annotations never change, so the memo needs no invalidation;
+         // identity is the cheapest proof it is a memo and not a fresh parse.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            modelNotes: ['## materialization.queryMetadata.tier="silver"\n'],
+         });
+
+         const first = model.getDeclaredQueryMetadata();
+         expect(first).toEqual({ tier: "silver" });
+         expect(model.getDeclaredQueryMetadata()).toBe(first);
+      });
+
+      it("reports no declaration as null, and does not re-derive it", async () => {
+         // `null` is a computed answer, not "unknown" — so the memo has to
+         // distinguish it from "not yet computed" or every call re-parses.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         expect(model.getDeclaredQueryMetadata()).toBeNull();
+         expect(model.getDeclaredQueryMetadata()).toBeNull();
+      });
+
       it("returns servedFrom and an execution time to the caller", async () => {
          // A storage-served answer is byte-identical to a live one, so without
          // these two a caller cannot tell that materialization did anything.
