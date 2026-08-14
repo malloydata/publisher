@@ -169,7 +169,8 @@ export function GivenInput({
    // `date` or `boolean` given would receive a string that `givensToRequest`
    // forwards verbatim for Malloy to refuse. Falling through gives the given the
    // widget its type implies, which is the behaviour before `control=` existed.
-   // Nothing populates `control` today, so this closes the hole before the slice
+   // No picker renders unless a given carries `control`, so this closes the hole
+   // before the slice
    // that opens it rather than after.
    const pickableType = type === "string" || filterInnerType(type) === "string";
    const filterIsPickable =
@@ -275,7 +276,7 @@ export function GivenInput({
             // FORECLOSED by choosing revert: a reader cannot override a
             // DECLARED default with "match everything", because the only
             // gesture for it now means revert. Unreachable today (nothing
-            // populates `control`, so no picker renders), and the honest fix is
+            // carries `control`, so no picker renders here), and the honest fix is
             // a separate affordance rather than two meanings for one ×. Worth
             // settling before `control=` is wired up server-side.
             onChange(null);
@@ -402,7 +403,7 @@ export function GivenInput({
            : undefined;
       // Same hazard as the number and date branches: a value that cannot be
       // placed on the track would otherwise read as "Any" while still being
-      // sent. Latent today, because nothing populates `rangeMin`/`rangeMax` yet,
+      // sent. Unreachable without `rangeMin`/`rangeMax` on the given,
       // which is exactly why it is worth closing before anything does.
       if (
          current === undefined &&
@@ -425,9 +426,11 @@ export function GivenInput({
       // counting it unset had hidden that an override was in force at all.
       const emptyFilterOverride = numericFilter && value === "";
       const isOverridden = current !== undefined || emptyFilterOverride;
-      // TWO LIMITATIONS here, both latent while nothing populates `rangeMin`
-      // or `rangeMax`, and both about the plain `number` arm rather than the
-      // filter arm. An unset control rests its thumb at `rangeMin` while the
+      // TWO LIMITATIONS here, both reachable as soon as a given carries
+      // `rangeMin`/`rangeMax`, and both about the plain `number` arm rather than
+      // the filter arm. Written when no server populated those fields; slice 6
+      // now does, so treat these as live rather than theoretical.
+      // An unset control rests its thumb at `rangeMin` while the
       // readout shows the model default, so the two disagree whenever the
       // default is not the floor; and MUI fires no onChange for a click at the
       // thumb's existing position, so the floor cannot be selected from the

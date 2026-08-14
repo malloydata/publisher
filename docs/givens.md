@@ -231,8 +231,11 @@ The example above ships in Publisher's default `examples` environment — open [
 The UI can also render a slider for a `filter<number>` lower bound and a
 single- or multi-pick dropdown for a `filter<string>`, driven by the `label`,
 `control`, `rangeMin`, `rangeMax` and `suggest` fields on a given. Those fields
-are specified but **no endpoint populates them yet**, so a model cannot ask for
-either control today and every given falls to the table above. When they do
+are specified, and whether a model can ask for either control depends on the
+server it is talking to: as of this release no endpoint populates them, so every
+given falls to the table above, and the dashboard work that fills them in is
+landing separately. Where they are absent the control degrades to its row in the
+table rather than failing. When they do
 arrive, a slider or dropdown appears only where it can represent the filter
 faithfully: a `filter<number>` holding a range or a negation, or a
 `filter<string>` holding anything but a plain list of values, keeps the text box
