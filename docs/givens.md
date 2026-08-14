@@ -240,8 +240,12 @@ rather than showing a control that would rewrite the author's filter on first
 use.
 
 `#(description="...")` annotations render as MUI helper text beneath the input. A
-**Reset** button appears next to the "Parameters" heading whenever any input has a
-non-default value.
+**Reset** button appears next to the "Parameters" heading whenever any given has a
+value set, whether it was typed, picked, or carried in by the URL. A given left
+unset does not count. Whether an empty parameter (`?REGION=`) counts depends on
+the type: for a `string` or a `filter<…>` the empty string is a real value (the
+empty filter, i.e. "All"), so it counts; for a `number`, `boolean` or date type
+there is no empty value to mean, so it reads as unset and does not.
 
 Reset clears every control, and a cleared given is left out of the request
 entirely rather than sent as an empty value. A given declared with a default
