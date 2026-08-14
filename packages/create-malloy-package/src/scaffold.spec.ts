@@ -193,6 +193,7 @@ describe("scaffold: default package", () => {
       for (const file of [
          "sales/publisher.json",
          "sales/sales.malloy",
+         "sales/index.malloy",
          "sales/data/sales.csv",
          "publisher.config.json",
          "package.json",
@@ -207,7 +208,59 @@ describe("scaffold: default package", () => {
 
    test("publisher.json is just the name", () => {
       run();
+      // Deliberately no "explores": the index.malloy below is what declares the
+      // surface now, and a redundant key here would earn a load-time warning.
       expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
+   });
+
+   test("a package named 'index' keeps its starter model", () => {
+      // The model file IS index.malloy here, so writing the surface template
+      // would replace the only model with a file importing itself.
+      const result = run({ name: "index" });
+      const index = fs.readFileSync(
+         path.join(tmp, "index/index.malloy"),
+         "utf8",
+      );
+      expect(index).toContain("source: index is duckdb.table");
+      expect(index).not.toContain(`import "index.malloy"`);
+      // It is still the published surface, it just does not need a second file.
+      expect(result.indexFile).toBe("index.malloy");
+      expect(result.modelFile).toBe("index.malloy");
+   });
+
+   test("a package named 'Index' still gets the canonical filename", () => {
+      // The lowercase case cannot pin this: `${sourceName}.malloy` is already
+      // "index.malloy" there, so removing the normalization is a no-op. Only a
+      // capitalised name shows it. Without it the model lands in Index.malloy
+      // and the surface template in index.malloy, which on a case-insensitive
+      // filesystem is the same path (one destroys the other), and on a
+      // case-sensitive one leaves a package the server never curates, because
+      // its convention test is an exact match on "index.malloy".
+      const result = run({ name: "Index" });
+      const malloys = fs
+         .readdirSync(path.join(tmp, "Index"))
+         .filter((f) => f.endsWith(".malloy"));
+      expect(malloys).toEqual(["index.malloy"]);
+      expect(result.modelFile).toBe("index.malloy");
+      const model = fs.readFileSync(
+         path.join(tmp, "Index/index.malloy"),
+         "utf8",
+      );
+      expect(model).toContain("source: Index is duckdb.table");
+      expect(model).not.toContain(`import "index.malloy"`);
+   });
+
+   test("index.malloy imports the model and exports its source", () => {
+      const result = run();
+      expect(result.indexFile).toBe("index.malloy");
+      const index = fs.readFileSync(
+         path.join(tmp, "sales/index.malloy"),
+         "utf8",
+      );
+      expect(index).toContain(`import "sales.malloy"`);
+      expect(index).toContain("export { sales }");
+      // No stray {{placeholders}} left behind.
+      expect(index).not.toContain("{{");
    });
 
    test("registers the package in the config", () => {

@@ -38,9 +38,21 @@ If it doesn't exist, create one. Suggest a package name based on the model conte
 
 ### Curating discovery & the query boundary (optional)
 
-By default a package exposes **everything**: every model is listed and every source is directly queryable. That's the right behavior for most packages, and it's the safe default: **omit these fields and nothing changes.** Reach for them when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on (or querying) them directly.
+A package with no `index.malloy` and no `explores` exposes **everything**: every model is listed and every source is directly queryable.
 
-Two optional fields opt the package into curation:
+The simplest way to curate is to add an **`index.malloy`** at the package root. Publisher reads it as the package's published surface, so listings return that file and whatever it exports, with no manifest field to set:
+
+```malloy
+// index.malloy
+import "order_analysis.malloy"
+import "staging.malloy"
+
+export { orders, customers }
+```
+
+Every other source still compiles, imports, and joins, and stays queryable by name. The convention curates what agents *land on*; it never takes access away.
+
+Two optional manifest fields go further, and an explicit `explores` overrides the convention:
 
 ```json
 {
@@ -52,12 +64,12 @@ Two optional fields opt the package into curation:
 }
 ```
 
-- **`explores`** (`string[]`) - an allowlist of **model file paths** (relative to the package root, not source or view names) whose models agents should discover and land on. Declaring it is the single opt-in for all discovery curation. With `explores` set, listings narrow to those files, and within each file to its `export { ... }` closure (below), so anything a listed file doesn't export is also dropped. Other files still compile, and can still be imported or joined, but are hidden from listings. Leaving `explores` **absent or empty** means every model is listed, unchanged from today, so existing packages don't break when this field is added. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`; publishing a package that has any is rejected, so fix the path before publishing.
-- **`queryableSources`** (`"declared"` | `"all"`, default `"declared"`) - the query boundary. Only takes effect once `explores` is set. `"declared"` makes queryable == discoverable: only the `explores` files and their `export {}` closure are valid top-level query targets; other sources still compile, import, and join, but a direct query against one is denied. `"all"` curates discovery only: every compiled source stays queryable even though `explores` narrows what's listed.
+- **`explores`** (`string[]`) - an allowlist of **model file paths** (relative to the package root, not source or view names) whose models agents should discover and land on. Use it when the surface spans several files, which an `index.malloy` cannot express. With `explores` set, listings narrow to those files, and within each file to its `export { ... }` closure (below), so anything a listed file doesn't export is also dropped. Other files still compile, and can still be imported or joined, but are hidden from listings. A package is uncurated, with every model listed, in two cases: no `explores` key and no `index.malloy`, or an explicit `"explores": []`. The empty array counts as a deliberate "do not curate" and suppresses the convention, which is the one-key way to keep an existing package exactly as it was after adding an `index.malloy`. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`; publishing a package that has any is rejected, so fix the path before publishing.
+- **`queryableSources`** (`"declared"` | `"all"`, default `"declared"`) - the query boundary. Only takes effect once `explores` is set **explicitly**; an `index.malloy` alone never enables it, because the denial is a 404 that looks identical to "does not exist" and no author should lose query access by adding a file. `"declared"` makes queryable == discoverable: only the `explores` files and their `export {}` closure are valid top-level query targets; other sources still compile, import, and join, but a direct query against one is denied. `"all"` curates discovery only: every compiled source stays queryable even though `explores` narrows what's listed.
 
 **About `export { … }`:** `explores` filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, the two compose. You usually don't write it: a file with **no** `export` exposes all of its own top-level sources. Add `export { orders, customers }` to a file to expose only those and keep imported/scaffolding helpers out of discovery (it must appear after the definitions it names). See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
 
-**Why curate here:** declaring `explores` routes agents to the well-documented curated sources instead of raw tables, and `queryableSources: "declared"` keeps them from reaching the hidden sources by name. The two axes compose: list a file in `explores` for its models to be discoverable, and `export` a source within that file for it to be a landing point.
+**Why curate here:** an `index.malloy` (or `explores`) routes agents to the well-documented curated sources instead of raw tables, and an explicit `explores` plus `queryableSources: "declared"` keeps them from reaching the hidden sources by name. The two axes compose: put a file in the surface for its models to be discoverable, and `export` a source within that file for it to be a landing point.
 
 > **Not access control.** `queryableSources` gates the query surface (query / compile / MCP), not raw file retrieval by exact path, and it doesn't restrict *who* may query, only *what* is queryable by name. To gate access by caller-supplied identity/role, use `#(authorize)` on the source, see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and `#(authorize)` are independent layers.
 

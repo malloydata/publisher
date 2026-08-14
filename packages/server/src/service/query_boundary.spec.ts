@@ -597,7 +597,10 @@ export { \`customer-orders\` }`,
    // -- no explores declared (boundary inert) -----------------------------
 
    it("declared default + no explores: everything stays queryable (backward compatible)", async () => {
-      writeManifest(); // no explores → no curated surface to enforce
+      // No explicit explores. This fixture DOES have an index.malloy, so the
+      // discovery convention supplies a surface, but the boundary is only
+      // enforced for a surface the author declared, so nothing is gated.
+      writeManifest();
       writeLayeredModels();
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
@@ -606,11 +609,77 @@ export { \`customer-orders\` }`,
             .getModel("base.malloy")!
             .getQueryResults("base_source", "v", undefined);
          expect(base.result.data).toBeDefined();
-         // `helper` is non-exported, but with no explores there is no boundary.
+         // `helper` is non-exported and now outside the curated surface, and it
+         // is still queryable: curation moved, access did not.
          const helper = await pkg
             .getModel("index.malloy")!
             .getQueryResults("helper", "hv", undefined);
          expect(helper.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("convention: curating the surface must not silently revoke query access", async () => {
+      // The reason the convention deliberately does NOT set the boundary. The
+      // denial is a 404 indistinguishable from "does not exist", so inferring
+      // it from the presence of a filename would take query access away from a
+      // package whose author never edited a config and give them no error they
+      // could act on. Declaring `explores` is the explicit opt-in.
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.exploresAreFromConvention()).toBe(true);
+
+         // Curated for discovery: base.malloy is no longer listed.
+         const listed = (await pkg.listModels()).map((m) => m.path).sort();
+         expect(listed).not.toContain("base.malloy");
+
+         // Yet still queryable by name. This is the whole departure.
+         const base = await pkg
+            .getModel("base.malloy")!
+            .getQueryResults("base_source", "v", undefined);
+         expect(base.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("convention: an explicit queryableSources cannot switch the boundary on by itself", async () => {
+      // "declared" is already the default, so a package that writes it out has
+      // changed nothing. It must not become the second half of an accidental
+      // opt-in when combined with a convention-derived surface.
+      writeManifest({ queryableSources: "declared" });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const base = await pkg
+            .getModel("base.malloy")!
+            .getQueryResults("base_source", "v", undefined);
+         expect(base.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("convention: declaring the same surface explicitly DOES close the boundary", async () => {
+      // The other side of the rule, and the reason it is teachable: the author
+      // writes the exact set the convention would have picked, and that act of
+      // declaring it is what opts them into enforcement.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(pkg.exploresAreFromConvention()).toBe(false);
+         await expect(
+            pkg
+               .getModel("base.malloy")!
+               .getQueryResults("base_source", "v", undefined),
+         ).rejects.toBeInstanceOf(NotQueryableError);
       } finally {
          await duckdb.close();
       }
@@ -622,7 +691,7 @@ export { \`customer-orders\` }`,
       // Nothing here is about hiding `helper` — it is legitimately queryable in
       // this mode — it is that a request naming ONE source must not run a
       // statement naming another.
-      writeManifest(); // no explores → boundary inert
+      writeManifest(); // no declared explores → boundary inert
       writeLayeredModels();
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {

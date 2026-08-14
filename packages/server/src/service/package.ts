@@ -30,6 +30,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { isExploresConventionWarning } from "./package_manifest";
 import { formatDuration, logger } from "../logger";
 import {
    recordBuildPlanComputeDuration,
@@ -207,6 +208,36 @@ export class Package {
     * package: it is a property of the manifest text, not of the loaded package.
     */
    private manifestWarnings: string[] = [];
+   /**
+    * Warnings raised AFTER load, by an API request rather than by parsing the
+    * manifest. Kept separate from {@link manifestWarnings} because that array
+    * is replaced wholesale from the worker on every reload, and a reload can
+    * happen inside the very request that raised the warning: any PATCH
+    * carrying `manifestLocation` triggers one, and every GET emits
+    * `manifestLocation: null`, so a client that round-trips the whole object
+    * always sends it. Storing these here means a warning cannot be destroyed
+    * by the same request that produced it.
+    *
+    * Every entry describes a surface that came from the convention, so they are
+    * cleared wherever the origin becomes declared, and that is BOTH places the
+    * origin can change: `setPackageMetadata` (a PATCH) and `reloadAllModels` (a
+    * re-read of publisher.json), which sets the flag directly and so needs its
+    * own clear. A rejected PATCH restores them, because `setPackageMetadata`
+    * runs before validation and its filter is destructive.
+    */
+   private postLoadWarnings: string[] = [];
+   /**
+    * True when `explores` was defaulted from the `index.malloy` convention
+    * rather than declared in publisher.json.
+    *
+    * Deliberately a field on the Package rather than part of `packageMetadata`:
+    * `setPackageMetadata` replaces that object wholesale (see
+    * Environment.updatePackageMetadata), so a name-only PATCH would drop the
+    * flag and silently promote a convention-derived surface into an explicit
+    * one, which would switch the query boundary on. Refreshed on load and
+    * reload, exactly like {@link manifestWarnings}.
+    */
+   private exploresFromConvention = false;
    private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -228,6 +259,13 @@ export class Package {
       databases: ApiDatabase[],
       models: Map<string, Model>,
       malloyConfig: MalloyConfig = new MalloyConfig({ connections: {} }),
+      /**
+       * Whether `explores` came from the `index.malloy` convention. A
+       * constructor parameter rather than a post-construction assignment
+       * because the two policy pushes below read it, so setting it afterwards
+       * would compute the query boundary as if the surface were explicit.
+       */
+      exploresFromConvention = false,
    ) {
       this.environmentName = environmentName;
       this.packageName = packageName;
@@ -236,23 +274,36 @@ export class Package {
       this.databases = databases;
       this.models = models;
       this.malloyConfig = malloyConfig;
+      this.exploresFromConvention = exploresFromConvention;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
    }
 
-   /**
-    * Push the discovery-curation policy down onto each Model. Curation (file
-    * listing via `explores` and within-file `export {}` filtering) is enabled
-    * only when `explores` is declared in publisher.json — absent/empty
-    * `explores` preserves legacy listings. Re-derived on reload and metadata
-    * PATCH (the inputs can change there).
-    */
-   /** True when the package opts into curated discovery via a non-empty
-    *  `explores`. Single source of truth so the curation/boundary/listing
-    *  derivations can't drift out of sync. */
+   /** True when the package has a non-empty discovery surface, from either
+    *  source. Single source of truth for the curation/listing derivations so
+    *  they can't drift out of sync. NOT the query-boundary predicate: see
+    *  {@link boundaryDeclared}, which is deliberately narrower. */
    private exploresDeclared(): boolean {
       const explores = this.packageMetadata.explores;
       return !!(explores && explores.length > 0);
+   }
+
+   /**
+    * True when the package opts into the QUERY BOUNDARY, which requires an
+    * `explores` the author actually wrote in publisher.json.
+    *
+    * This is narrower than {@link exploresDeclared} on purpose, and it is the
+    * one place the two axes diverge. A surface defaulted from the
+    * `index.malloy` convention curates listings but must not gate queries: the
+    * boundary denies with a 404 that is deliberately indistinguishable from
+    * "does not exist" (see errors.ts), so switching it on because a file with
+    * a particular name appeared would revoke query access on an existing
+    * package with no config edit and no actionable error. Declaring `explores`
+    * is the explicit opt-in; the convention only ever adds curation, never
+    * takes access away.
+    */
+   private boundaryDeclared(): boolean {
+      return this.exploresDeclared() && !this.exploresFromConvention;
    }
 
    /** The declared explore set, or null when discovery is uncurated. */
@@ -261,6 +312,17 @@ export class Package {
       return explores && explores.length > 0 ? new Set(explores) : null;
    }
 
+   /**
+    * Push the discovery-curation policy down onto each Model. Curation (file
+    * listing plus within-file `export {}` filtering) is enabled whenever the
+    * package has a surface, from EITHER source: a declared `explores` or the
+    * `index.malloy` convention. Only a package with neither keeps the legacy
+    * uncurated listings. Re-derived on reload and metadata PATCH, since the
+    * inputs can change there.
+    *
+    * Note this is the listing axis only. Access is {@link boundaryDeclared},
+    * which counts the declared source alone.
+    */
    private applyDiscoveryPolicyToModels(): void {
       const curationEnabled = this.exploresDeclared();
       for (const model of this.models.values()) {
@@ -277,20 +339,24 @@ export class Package {
     * manifest is (re)read.
     *
     * Policy: queryable == discoverable. The boundary is inert unless `explores`
-    * is declared (no curated surface ⇒ nothing to restrict) AND
-    * `queryableSources` is "declared" (the default; "all" decouples the axes).
-    * When active, a model file is a query entry point only if it is listed in
-    * `explores`; within-file curation (`export {}`) is read off each Model.
+    * is declared IN publisher.json (no curated surface ⇒ nothing to restrict,
+    * and a surface defaulted from the `index.malloy` convention does not
+    * count; see {@link boundaryDeclared}) AND `queryableSources` is "declared"
+    * (the default; "all" decouples the axes). When active, a model file is a
+    * query entry point only if it is listed in `explores`; within-file
+    * curation (`export {}`) is read off each Model.
     */
    private applyQueryBoundaryToModels(): void {
-      const exploresDeclared = this.exploresDeclared();
-      const exploreSet = this.exploreSet();
+      // Both derive from the boundary predicate, not the listing one: under the
+      // convention every model stays a valid query entry point.
+      const boundaryDeclared = this.boundaryDeclared();
+      const exploreSet = boundaryDeclared ? this.exploreSet() : null;
       const mode =
          this.packageMetadata.queryableSources === "all" ? "all" : "declared";
       for (const [modelPath, model] of this.models) {
          model.setQueryBoundary({
             mode,
-            exploresDeclared,
+            exploresDeclared: boundaryDeclared,
             isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
          });
       }
@@ -589,9 +655,11 @@ export class Package {
          databases,
          models,
          malloyConfig,
+         outcome.packageMetadata.exploresFromConvention ?? false,
       );
       pkg.renderTagWarnings = renderTagWarnings;
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+      pkg.logExploresConvention();
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
@@ -766,6 +834,13 @@ export class Package {
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
          buildPlan: this.buildPlan,
+         // Read-only, and written LAST so a value that somehow reached
+         // `packageMetadata` from a request body cannot survive: the private
+         // field is the only authority. Present so an operator can inventory
+         // convention-curated packages with a query instead of reloading each
+         // one and reading the log, and so a client can tell a derived surface
+         // from a declared one before assuming the boundary is enforced.
+         exploresFromConvention: this.exploresFromConvention,
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -795,7 +870,12 @@ export class Package {
             sources: this.buildPlan?.sources
                ? Object.values(this.buildPlan.sources)
                : [],
-            manifestWarnings: this.manifestWarnings,
+            // Both channels, so a warning raised by the request in flight is
+            // reported even when that same request triggered a reload.
+            manifestWarnings: [
+               ...this.manifestWarnings,
+               ...this.postLoadWarnings,
+            ],
          }),
       ];
       if (allWarnings.length > 0) {
@@ -1662,7 +1742,26 @@ export class Package {
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
-      // reflect edited explores without a full Package.create.
+      // reflect edited explores without a full Package.create. The convention
+      // flag is re-read with them: adding or deleting an index.malloy, or
+      // adding an explicit `explores`, changes which source the surface came
+      // from, and a stale flag here would leave the boundary applied (or not)
+      // against the wrong one.
+      this.exploresFromConvention =
+         outcome.packageMetadata.exploresFromConvention ?? false;
+      if (!this.exploresFromConvention) {
+         // Every post-load warning describes a surface that came from the
+         // convention, so a reload that finds a declared one makes all of them
+         // false. This matters in the INVERSE direction to the usual worry: the
+         // author who reads "the boundary is NOT enforced", declares `explores`
+         // in publisher.json and reloads would otherwise keep being told it is
+         // off while it is now on. Cleared here as well as in
+         // setPackageMetadata because this path sets the flag directly and
+         // never goes through it.
+         this.postLoadWarnings = this.postLoadWarnings.filter(
+            (w) => !isExploresConventionWarning(w),
+         );
+      }
       this.packageMetadata.explores = outcome.packageMetadata.explores;
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
@@ -1670,6 +1769,7 @@ export class Package {
          outcome.packageMetadata.manifestLocation ?? null;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      this.logExploresConvention();
       // Remember what we just bound so /compile can route identically and
       // /status can report the binding. An empty map reverts to live (unbound).
       // Retains the full freshness entries so the serve-path gate can evaluate
@@ -1948,9 +2048,117 @@ export class Package {
       this.environmentName = environmentName;
    }
 
-   public setPackageMetadata(packageMetadata: ApiPackage) {
+   /**
+    * Replace the wire metadata and re-derive both policies from it.
+    *
+    * `exploresFromConvention` is REQUIRED and separate, because it is not part
+    * of the wire object. Required rather than defaulted: the safe value depends
+    * entirely on what the caller is doing (a PATCH carrying its own `explores`
+    * makes the surface explicit and must pass false; one that does not must
+    * pass the previous value), and a caller who forgot it on the first of those
+    * would leave the query boundary off on a surface the operator just
+    * declared. A missing argument is a compile error instead.
+    */
+   public setPackageMetadata(
+      packageMetadata: ApiPackage,
+      exploresFromConvention: boolean,
+   ) {
+      const originChanged =
+         this.exploresFromConvention !== exploresFromConvention;
       this.packageMetadata = packageMetadata;
+      this.exploresFromConvention = exploresFromConvention;
+      if (originChanged) {
+         // The convention warnings describe where the surface came from, so
+         // they are false the moment that changes. The manifest is only re-read
+         // on reload, so drop them here rather than serve a warning that
+         // contradicts the behavior now in force (notably "queryableSources has
+         // no effect", right after the PATCH that gave it effect).
+         this.manifestWarnings = this.manifestWarnings.filter(
+            (w) => !isExploresConventionWarning(w),
+         );
+         // Same reasoning for the post-load ones: every warning in that array
+         // describes a surface that came from the convention, so a change of
+         // origin makes all of them false.
+         this.postLoadWarnings = this.postLoadWarnings.filter(
+            (w) => !isExploresConventionWarning(w),
+         );
+      }
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+   }
+
+   /** Whether the current `explores` came from the `index.malloy` convention. */
+   public exploresAreFromConvention(): boolean {
+      return this.exploresFromConvention;
+   }
+
+   /**
+    * Append a warning raised after load (today, only the PATCH path). Goes to
+    * {@link postLoadWarnings} so a reload inside the same request cannot
+    * discard it. De-duplicated, because a client that round-trips repeatedly
+    * would otherwise stack the same sentence up on every call.
+    *
+    * `supersedesPrefix` drops any existing warning starting with it before
+    * appending. Needed where the same question can be answered differently by
+    * successive requests: two PATCHes setting different `queryableSources`
+    * values would otherwise leave both remedies on the package, and only one
+    * of them can be right for the value now in force.
+    */
+   public addPostLoadWarning(warning: string, supersedesPrefix?: string): void {
+      if (supersedesPrefix !== undefined) {
+         this.postLoadWarnings = this.postLoadWarnings.filter(
+            (w) => !w.startsWith(supersedesPrefix),
+         );
+      }
+      if (!this.postLoadWarnings.includes(warning)) {
+         this.postLoadWarnings.push(warning);
+      }
+   }
+
+   /**
+    * Both warning lists, for a caller that may roll back. BOTH, because
+    * `setPackageMetadata` filters both on an origin change: snapshotting only
+    * the manifest one would let a rejected PATCH permanently delete a post-load
+    * warning it had no business touching, and the package would then be serving
+    * a surface with no warning that its boundary is unenforced.
+    */
+   public snapshotWarnings(): { manifest: string[]; postLoad: string[] } {
+      return {
+         manifest: [...this.manifestWarnings],
+         postLoad: [...this.postLoadWarnings],
+      };
+   }
+
+   /**
+    * Put back warnings a rolled-back edit dropped. `setPackageMetadata`'s filter
+    * is destructive and runs again on the way back, so restoring the metadata
+    * alone would leave the package quietly missing a warning whose condition
+    * never changed.
+    */
+   public restoreWarnings(snapshot: {
+      manifest: string[];
+      postLoad: string[];
+   }): void {
+      this.manifestWarnings = [...snapshot.manifest];
+      this.postLoadWarnings = [...snapshot.postLoad];
+   }
+
+   /**
+    * Say at load which file the convention picked, so a discovery surface that
+    * nothing in publisher.json mentions is never invisible to an operator
+    * reading the logs to work out why a model stopped being listed.
+    */
+   private logExploresConvention(): void {
+      if (!this.exploresFromConvention) {
+         return;
+      }
+      logger.info("Package discovery surface defaulted from convention", {
+         environmentName: this.environmentName,
+         packageName: this.packageName,
+         explores: this.packageMetadata.explores,
+         // Named so the log answers the operator's actual next question:
+         // "did this also close the query boundary?"
+         queryBoundaryEnforced: false,
+      });
    }
 }

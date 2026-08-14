@@ -5,6 +5,16 @@ export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
+/**
+ * Conventional name for the model file that declares a package's published
+ * surface. A package that has one and declares no `explores` gets its
+ * discovery surface defaulted to this file. See {@link resolveExplores}.
+ *
+ * Hardcoded rather than configurable, matching Malloyyo, whose project entry
+ * point is the same fixed filename. The point of a convention is that a reader
+ * can predict it without opening the manifest.
+ */
+export const INDEX_MODEL_NAME = "index.malloy";
 
 /**
  * Normalize a package-relative model path so author-written `explores`

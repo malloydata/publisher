@@ -282,7 +282,8 @@ export class Model {
    private authorizeReferencedGivenNames: Set<string> = new Set();
    /** Whether discovery accessors curate to the `export {}` closure. Pushed
     *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
-    *  true only when the package declares `explores` in publisher.json.
+    *  true when the package has a discovery surface, whether declared as
+    *  `explores` in publisher.json or derived from an `index.malloy`.
     *  Defaults to false (legacy listings) so a Model created outside a
     *  Package matches pre-opt-in behavior. */
    private discoveryCurationEnabled = false;
@@ -1631,8 +1632,9 @@ export class Model {
     * the app renders), so the publisher-extracted `sources`/`queries` stay
     * consistent with `modelInfo` within a single response. A model with no
     * `export { … }` has `exports` = all top-level names, so this is a no-op
-    * there. Only active when the package declares `explores` (see
-    * `discoveryCurationEnabled`). `this.sources`/`this.queries` stay complete so
+    * there. Only active when the package has a discovery surface, declared or
+    * derived from an `index.malloy` (see `discoveryCurationEnabled`).
+    * `this.sources`/`this.queries` stay complete so
     * #(authorize)/filter enforcement and join/extend resolution are unaffected.
     * Whether a non-exported source is also non-*queryable* depends on the
     * package's `queryableSources` policy — see {@link assertQueryBoundaryEarly}.
@@ -1699,7 +1701,10 @@ export class Model {
     * the fix is to re-export what should be visible (`export { name }`).
     */
    public hasEmptyDiscoverySurface(): boolean {
-      // No curation (no `explores`) ⇒ legacy listings include imported sources.
+      // No curation at all ⇒ legacy listings include imported sources, so an
+      // empty export closure hides nothing. Curation here means a surface from
+      // EITHER source, so this warning does fire for a convention-derived one,
+      // which is the aggregator shape the release note calls out.
       if (!this.discoveryCurationEnabled) return false;
       if (this.modelType !== "model" || !this.modelDef) return false;
       const exports = this.modelDef.exports;

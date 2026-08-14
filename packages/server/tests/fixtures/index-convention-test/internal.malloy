@@ -1,0 +1,4 @@
+source: internal_scratch is duckdb.sql("select 1 as id, 7 as n") extend {
+  measure: total_n is n.sum()
+  view: v is { aggregate: total_n }
+}

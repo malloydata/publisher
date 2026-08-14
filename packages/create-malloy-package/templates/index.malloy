@@ -1,0 +1,15 @@
+// index.malloy: this package's published surface.
+//
+// Publisher treats a package's index.malloy as the list of what it publishes.
+// Because this file is here, you do not need an "explores" key in
+// publisher.json: the discovery surface is whatever this file exports.
+//
+// `export { ... }` is the curation. Add a source here to publish it; leave one
+// out to keep it as an internal building block that other models can still
+// import and join. Everything stays queryable by name either way. To also make
+// the surface a query boundary, so unlisted sources cannot be queried at all,
+// declare "explores" explicitly in publisher.json (see docs/discovery-and-access.md).
+
+import "{{modelFile}}"
+
+export { {{sourceName}} }

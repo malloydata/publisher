@@ -235,6 +235,8 @@ export interface LoadPackageOutcome {
       name?: string;
       description?: string;
       explores?: string[];
+      /** See {@link LoadPackageResult.packageMetadata.exploresFromConvention}. */
+      exploresFromConvention?: boolean;
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
       materialization?: PackageMaterializationConfig | null;

@@ -22,6 +22,13 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import {
+   EXPLORES_PATCH_IGNORED_PREFIX,
+   exploresPatchIgnoredUnderConvention,
+   QUERYABLE_SOURCES_INERT_PREFIX,
+   queryableSourcesInertUnderConvention,
+   resolvePatchedExploresOrigin,
+} from "./package_manifest";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
@@ -2077,6 +2084,26 @@ export class Environment {
             normalizedExplores !== undefined
                ? normalizedExplores
                : existing.explores;
+         // A body that carries its own `explores` makes the surface explicit,
+         // which is what opts the package into the query boundary. A PATCH that
+         // does not mention it leaves the surface (and its origin) alone, so a
+         // name-only edit cannot promote a convention-derived surface into a
+         // declared one and silently start returning 404s. Captured before the
+         // write so the rejection path below can put it back.
+         // ...with one exception for the round trip, which the shared rule
+         // owns; see resolvePatchedExploresOrigin.
+         const previousFromConvention = _package.exploresAreFromConvention();
+         const fromConvention = resolvePatchedExploresOrigin({
+            previousFromConvention,
+            patchedExplores: normalizedExplores,
+            existingExplores: existing.explores,
+         });
+         // The body named a surface and we kept treating it as convention. That
+         // is right for the echo it usually is, but if the caller meant it as a
+         // declaration their boundary is not enforced, so say so rather than
+         // let them believe queries are gated.
+         const declarationIgnored =
+            normalizedExplores !== undefined && fromConvention;
          const queryableSources =
             body.queryableSources !== undefined
                ? body.queryableSources
@@ -2110,17 +2137,24 @@ export class Environment {
          const materialization = materializationProvided
             ? body.materialization
             : existing.materialization;
-         _package.setPackageMetadata({
-            name: body.name,
-            description: body.description,
-            resource: body.resource,
-            location: body.location,
-            explores,
-            queryableSources,
-            manifestLocation,
-            materialization,
-            scope,
-         });
+         // Snapshot before the write: setPackageMetadata drops the convention
+         // warnings when the origin changes, and the rejection path below has
+         // to put back everything it rolled back, not just the metadata.
+         const previousWarnings = _package.snapshotWarnings();
+         _package.setPackageMetadata(
+            {
+               name: body.name,
+               description: body.description,
+               resource: body.resource,
+               location: body.location,
+               explores,
+               queryableSources,
+               manifestLocation,
+               materialization,
+               scope,
+            },
+            fromConvention,
+         );
 
          // Strict-reject, symmetric with the publish path
          // (package.controller.addPackage): validate the resulting explores
@@ -2140,14 +2174,46 @@ export class Environment {
             .filter(Boolean)
             .join("\n");
          if (invalidMsg) {
-            _package.setPackageMetadata(existing);
+            _package.setPackageMetadata(existing, previousFromConvention);
+            _package.restoreWarnings(previousWarnings);
             throw new BadRequestError(invalidMsg);
+         }
+         if (declarationIgnored) {
+            // Supersede for the same reason the inert warning does: the two
+            // variants of this string differ only in their remedy, so exact
+            // de-dupe keeps both and one of them is wrong for the
+            // `queryableSources` now in force.
+            _package.addPostLoadWarning(
+               exploresPatchIgnoredUnderConvention(queryableSources),
+               EXPLORES_PATCH_IGNORED_PREFIX,
+            );
+         }
+         // A `queryableSources` sent at a package whose surface came from the
+         // convention does nothing, and the load-time warning that says so is
+         // only derived when the manifest is next parsed. The PATCH response is
+         // the moment the operator is looking, so say it now too.
+         if (fromConvention && body.queryableSources !== undefined) {
+            // Supersede rather than accumulate: two PATCHes setting different
+            // values would otherwise leave both remedies on the package, and
+            // only one can be right for the value now in force.
+            _package.addPostLoadWarning(
+               queryableSourcesInertUnderConvention(body.queryableSources),
+               QUERYABLE_SOURCES_INERT_PREFIX,
+            );
          }
 
          await this.writePackageManifest(packageName, {
             name: packageName,
             description: body.description,
-            explores: normalizedExplores,
+            // Never persist a surface that is still convention-derived. The
+            // origin lives only in memory, so writing the resolved
+            // `["index.malloy"]` out would make disk say "declared" while the
+            // running server says "convention": the boundary would stay off
+            // now and switch ON at the next reload, long after the PATCH that
+            // caused it and with nothing linking the two. Leaving the key
+            // absent keeps disk and runtime agreeing, and the convention
+            // re-derives the same surface on every load.
+            explores: fromConvention ? undefined : normalizedExplores,
             queryableSources: body.queryableSources,
             manifestLocation: body.manifestLocation,
             // Only write when explicitly provided (non-null): mirrors the
