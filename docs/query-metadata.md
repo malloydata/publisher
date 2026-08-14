@@ -59,7 +59,9 @@ Most specific wins, property by property:
 
 **Any source can be tagged, not only a persisted one.** `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than a key inside it, so layer 4 applies to a source that is never materialized — its tags ride every query that reads it.
 
-**The `materialization.` spelling is deprecated at layers 2 and 3.** `materialization.queryMetadata` in `publisher.json` and `## materialization.queryMetadata.*` in a model file both still work, and both warn. Neither was ever a build-only setting: the properties ride served queries too, so declaring them inside the build-policy block described a scope the feature does not have and sent authors hunting through build settings for a way to label their traffic. At layer 2, the two homes declaring different bags warns and the root wins — unlike a conflicting `scope`, which fails the load, because a tag must never be the reason a package refuses to load.
+**The `materialization.` spelling is deprecated at layers 2 and 3.** `materialization.queryMetadata` in `publisher.json`, `## materialization.queryMetadata.*` in a model file, and `materialization.queryMetadata` on the package API all still work, and all warn. None was ever a build-only setting: the properties ride served queries too, so declaring them inside the build-policy block described a scope the feature does not have and sent authors hunting through build settings for a way to label their traffic. At layer 2, the two homes declaring different bags warns and the root wins — unlike a conflicting `scope`, which fails the load, because a tag must never be the reason a package refuses to load.
+
+The package API carries both homes for as long as the old one is supported: `queryMetadata` on a `Package` is canonical, both are populated on read, both are accepted on write, and the canonical one wins if a request sends both. Omitting it on a PATCH preserves the package's existing tags, and so does sending null — a client that serializes unset fields as null must not untag a package by accident. An empty object clears.
 
 ```json
 // publisher.json — every statement this package's sources issue

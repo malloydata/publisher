@@ -495,6 +495,12 @@ export class Package {
             schedule: null,
             freshness: null,
          },
+         // The canonical home for the package's declared tags, mirrored from the
+         // block above — which is where the wire originally carried them. Both
+         // are populated for as long as the deprecated home is supported, so a
+         // client migrates when it chooses rather than when this ships.
+         queryMetadata:
+            outcome.packageMetadata.materialization?.queryMetadata ?? null,
          // Package-level persist scope mode, applied uniformly to every persist
          // source/index. Defaults to "package" (cross-version reuse) when the
          // manifest omits it.
@@ -752,14 +758,19 @@ export class Package {
     * The package's declared `queryMetadata` — the least specific author-declared
     * layer, and the counterpart to {@link Model.getDeclaredQueryMetadata}.
     *
-    * Reads through the materialization block because that is where the WIRE
-    * shape still carries it, which is a separate migration from the manifest's:
-    * an author now declares it at the manifest root, and the control plane still
-    * reads it under `materialization`. Callers should not know that — they want
-    * the package's bag, not its build policy.
+    * Prefers the canonical top-level field and falls back to the deprecated
+    * `materialization.queryMetadata`. The fallback is not dead code: a PATCH may
+    * still set the block (an un-migrated client), and metadata assembled by
+    * anything that predates the top-level field carries only the block. Callers
+    * want the package's bag, not its build policy, and should not have to know
+    * which home it arrived in.
     */
    public getDeclaredQueryMetadata(): QueryMetadata | null {
-      return this.packageMetadata.materialization?.queryMetadata ?? null;
+      return (
+         this.packageMetadata.queryMetadata ??
+         this.packageMetadata.materialization?.queryMetadata ??
+         null
+      );
    }
 
    /**

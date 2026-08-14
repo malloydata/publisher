@@ -1944,6 +1944,7 @@ export class Environment {
          queryableSources?: "declared" | "all";
          manifestLocation?: string | null;
          scope?: ApiPackage["scope"];
+         queryMetadata?: ApiPackage["queryMetadata"];
          materialization?: ApiPackage["materialization"];
       },
    ): Promise<void> {
@@ -2019,13 +2020,28 @@ export class Environment {
          // deprecated. Same dual-write rule and the same reason — writing only
          // the root would leave an older publisher, which reads only the
          // envelope, serving untagged statements for a package that asked to be
-         // tagged. A caller expresses tags through the materialization block
-         // (the only home the wire shape has), so what it sends is mirrored out
-         // to the root rather than the other way round.
-         const resolvedQueryMetadata =
+         // tagged.
+         //
+         // A caller can express tags at either wire home, so precedence follows
+         // the same order the manifest resolver uses: the canonical top-level
+         // field, then the deprecated block, then what is already on disk. A
+         // client that has not migrated keeps working; one that has is not
+         // overruled by a block it did not send.
+         //
+         // Absent means undefined, not null: an explicit null is a CLEAR and has
+         // to win over the on-disk value. Falling through it (`??`) would let a
+         // manifest written in the canonical form resurrect the bag the caller
+         // just cleared through the block, leaving the package tagged by the
+         // very field the loader prefers.
+         const queryMetadataCandidates = [
+            metadata.queryMetadata,
             (materializationBlock as { queryMetadata?: unknown } | undefined)
-               ?.queryMetadata ??
-            (existingManifest as { queryMetadata?: unknown }).queryMetadata;
+               ?.queryMetadata,
+            (existingManifest as { queryMetadata?: unknown }).queryMetadata,
+         ];
+         const resolvedQueryMetadata = queryMetadataCandidates.find(
+            (candidate) => candidate !== undefined,
+         );
 
          // Update with new metadata. `explores`/`queryableSources` are only
          // overwritten when the caller explicitly provides them; otherwise the
@@ -2048,8 +2064,19 @@ export class Environment {
             ...(resolvedQueryMetadata !== undefined
                ? { queryMetadata: resolvedQueryMetadata }
                : {}),
-            ...(materializationBlock !== undefined
-               ? { materialization: materializationBlock }
+            // Mirrored into the deprecated home too, so a package tagged
+            // through the canonical field still reads as tagged on a publisher
+            // that only knows the envelope.
+            ...(materializationBlock !== undefined ||
+            resolvedQueryMetadata !== undefined
+               ? {
+                    materialization: {
+                       ...(materializationBlock ?? {}),
+                       ...(resolvedQueryMetadata !== undefined
+                          ? { queryMetadata: resolvedQueryMetadata }
+                          : {}),
+                    },
+                 }
                : {}),
          };
 
@@ -2126,6 +2153,17 @@ export class Environment {
          const materialization = materializationProvided
             ? body.materialization
             : existing.materialization;
+         // Preserved unless provided, for the same reason as scope: this
+         // replaces the whole metadata object, so omitting it would make a
+         // name/description-only PATCH silently untag every query the package
+         // emits until the next reload. A null is treated as omitted for the
+         // same reason as scope — a client that serializes unset fields as null
+         // must not thereby untag a package. Clearing is an empty bag, which no
+         // such client produces by accident.
+         const queryMetadata =
+            body.queryMetadata != null
+               ? body.queryMetadata
+               : existing.queryMetadata;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
@@ -2135,6 +2173,7 @@ export class Environment {
             queryableSources,
             manifestLocation,
             materialization,
+            queryMetadata,
             scope,
          });
 
@@ -2170,6 +2209,7 @@ export class Environment {
             // null-as-absent rule above, so a rebind PATCH neither wipes the
             // persisted policy nor writes a stray `scope: null`.
             scope: scopeProvided ? body.scope : undefined,
+            queryMetadata: body.queryMetadata ?? undefined,
             materialization: materializationProvided
                ? body.materialization
                : undefined,
