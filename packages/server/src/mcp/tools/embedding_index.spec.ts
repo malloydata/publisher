@@ -23,9 +23,11 @@ import {
    CHUNK_MAX_CHARS,
    EmbeddableEntity,
    MAX_DOC_CHUNKS,
+   MAX_EMBEDDED_ENTITIES,
    MIN_SIMILARITY,
    chunkDoc,
    entityFacets,
+   getEmbeddingIndexStatus,
    SemanticSearchResult,
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
@@ -345,6 +347,68 @@ describe("trySemanticSearch", () => {
          "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
       );
       expect(rows[0].n).toBe(3);
+   });
+
+   it("reports index readiness without taking locks or writing", async () => {
+      // Before this, "is the index warm?" was answerable only by scraping a
+      // server log line, so a harness measuring retrieval had no supported
+      // way to wait for a fair measurement.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: documented": [0, 1, 0],
+      });
+      const entities = [
+         entity("alpha", "src", "documented"),
+         entity("beta", "src"),
+      ];
+      const args = {
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "status",
+         query: "find alpha",
+         limit: 10,
+         entities,
+      };
+
+      const cold = await getEmbeddingIndexStatus(
+         db,
+         "env",
+         "status",
+         entities.length,
+      );
+      expect(cold.status).toBe("indexing");
+      expect(cold.embeddedRows).toBe(0);
+      expect(cold.lastSyncedAt).toBeUndefined();
+
+      await searchReady(args);
+
+      const warm = await getEmbeddingIndexStatus(
+         db,
+         "env",
+         "status",
+         entities.length,
+      );
+      expect(warm.status).toBe("ready");
+      // alpha contributes a name row and a doc row, beta only a name row, so
+      // rows exceed entities on a documented model.
+      expect(warm.embeddedRows).toBe(3);
+      expect(warm.totalEntities).toBe(2);
+      expect(warm.lastSyncedAt).toBeDefined();
+   });
+
+   it("reports a package past the embedding cap as oversize, not as indexing", async () => {
+      // A permanent condition an operator must act on, not a transient one to
+      // wait out: reporting it as "indexing" would poll forever.
+      const status = await getEmbeddingIndexStatus(
+         db,
+         "env",
+         "huge",
+         MAX_EMBEDDED_ENTITIES + 1,
+      );
+      expect(status.status).toBe("oversize");
    });
 
    it("counts the entities that matched only below the floor", async () => {

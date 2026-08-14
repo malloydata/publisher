@@ -205,7 +205,15 @@ What to know before turning it on:
   first boot after the upgrade, and re-embeds each package on its next question.
 - First query per package: the first question kicks off the embedding sync in the background and
   answers lexically; once the sync lands, later questions are ranked semantically. Responses carry
-  a `retrieval` field (`"semantic"` or `"lexical"`) whenever the provider is configured.
+  a `retrieval` field (`"semantic"` or `"lexical"`) whenever the provider is configured, and a
+  lexical one adds `retrievalReason` saying why: `indexing` (still building — clears on its own,
+  worth one retry), `cooldown` (a recent provider failure is being short-circuited),
+  `too-many-entities`, `provider-error`, or `unavailable`. Only `indexing` is worth retrying.
+- Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
+  carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` / `oversize`),
+  `embeddedRows`, `totalEntities`, and `lastSyncedAt`. Poll it until `ready` before measuring
+  retrieval quality, so you are not measuring a half-built index. It is absent when no provider is
+  configured, and reading it takes no locks, so polling cannot slow an indexing run.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
   to lexical (with a warning in the server log) and retries after a cool-down. A package with more
   than 5,000 entities stays lexical.

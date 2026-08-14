@@ -17,8 +17,11 @@ import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
 import {
    entityRowKey,
+   getEmbeddingIndexStatus,
    humanizeName,
    trySemanticSearch,
+   type EmbeddingIndexStatus,
+   type SemanticUnavailableReason,
 } from "./embedding_index";
 
 /**
@@ -116,6 +119,34 @@ export const SIBLING_SCORE_EPSILON = 0.03;
  * window, and this bounds the scan it can ask for.
  */
 const SEMANTIC_MAX_LIMIT = 50;
+
+/**
+ * Why a server that HAS an embedding provider answered lexically. Reported
+ * so an agent can act on it: "indexing" is a cold index that clears on its
+ * own within seconds and is worth one retry, while the rest are conditions
+ * an immediate retry cannot fix.
+ */
+type RetrievalReason =
+   | "indexing"
+   | "cooldown"
+   | "too-many-entities"
+   | "provider-error"
+   | "unavailable";
+
+/**
+ * The index's internal reasons, mapped to the wire vocabulary. "error" is
+ * widened to "provider-error" because from the caller's side that is what it
+ * is: the embedding endpoint failed, not this tool.
+ */
+const REASON_BY_UNAVAILABLE: Record<
+   SemanticUnavailableReason,
+   RetrievalReason
+> = {
+   indexing: "indexing",
+   cooldown: "cooldown",
+   "too-many-entities": "too-many-entities",
+   error: "provider-error",
+};
 
 /**
  * Collapse the same concept appearing in parallel sources into one row that
@@ -558,12 +589,12 @@ All optional; supply what you know.
 - + packageName: that package's sources, each with its joins.
 - + query: what you need, in plain English; returns the most relevant sources, views, queries, joins and fields.
 - sourceName: drill down into one source. Without a query it lists that source with its fields, views and queries, so [] means no such source; with a query it ranks within that source, so [] means nothing matched. Its doc and joins always arrive in sources.
-- limit: caps results (max 50; retrieval defaults to 10). Listing levels return all unless set.
+- limit: caps results (max 50; retrieval defaults to 10).
 
 ## Response
-results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or named query as queryName with sourceName. A join adds relationship, traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs.
+results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or query as queryName with sourceName. A join adds relationship, traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs.
 sources[]: per source behind a result — its doc (may be truncated) and full joins.
-With an embedding provider, ranking is semantic: entities carry a score, and belowCutoffCount counts those below the floor — 0 with no results means nothing here is related, so rephrase rather than retry.
+With an embedding provider, ranking is semantic and entities carry a score. belowCutoffCount counts matches below the floor: 0 with no results means nothing is related. A "lexical" retrieval adds a retrievalReason; only "indexing" is worth retrying.
 
 ## Worked example
 {"environmentName":"examples","packageName":"storefront","query":"revenue by product category"}`;
@@ -859,11 +890,16 @@ export function registerGetContextTool(
          const scoped = Boolean(sourceName);
          let semanticResults: ResultEntity[] | undefined;
          let belowCutoffCount = 0;
+         // Why a configured server answered lexically. Without it "lexical"
+         // is a dead end: an agent cannot tell a cold index, which clears in
+         // seconds and is worth retrying, from a down provider, which is not.
+         let retrievalReason: RetrievalReason | undefined;
          if (configured) {
             let provider: EmbeddingProvider | null = null;
             try {
                provider = getEmbeddingProvider();
             } catch (error) {
+               retrievalReason = "unavailable";
                logger.warn(
                   "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
                   {
@@ -932,12 +968,16 @@ export function registerGetContextTool(
                         ? ranked.slice(0, max)
                         : groupSiblings(ranked, max);
                      belowCutoffCount = semantic.belowCutoffCount;
+                  } else {
+                     retrievalReason =
+                        REASON_BY_UNAVAILABLE[semantic.unavailable];
                   }
                } catch (error) {
                   // Defensive: trySemanticSearch does not throw, but the
                   // storage handle lookup can (e.g. before initialization
                   // or under a partial test double). Semantic retrieval
                   // must never take tier 4 down with it.
+                  retrievalReason = "unavailable";
                   logger.warn(
                      "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
                      {
@@ -999,9 +1039,45 @@ export function registerGetContextTool(
          return jsonResource(
             uri,
             configured
-               ? { retrieval: "lexical", results, ...context, ...noteFor() }
+               ? {
+                    retrieval: "lexical",
+                    ...(retrievalReason ? { retrievalReason } : {}),
+                    results,
+                    ...context,
+                    ...noteFor(),
+                 }
                : { results, ...context, ...noteFor() },
          );
       },
+   );
+}
+
+/**
+ * The semantic index state for one package, or undefined when this server has
+ * no embedding provider and therefore no index to describe.
+ *
+ * Composed here rather than in the controller because `totalEntities` means
+ * "entities this package exposes to retrieval", which is exactly what
+ * collectEntities decides — including the joins it now indexes and the
+ * aliases it collapses. Reusing the same cached index keeps the number
+ * honest instead of letting a second definition of "entity" drift from the
+ * one retrieval actually uses.
+ */
+export async function getPackageEmbeddingStatus(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   packageName: string,
+): Promise<EmbeddingIndexStatus | undefined> {
+   if (!embeddingConfigured()) return undefined;
+   const pkgIndex = await getPackageIndex(
+      environmentStore,
+      environmentName,
+      packageName,
+   );
+   return getEmbeddingIndexStatus(
+      environmentStore.storageManager.getDuckDbConnection(),
+      environmentName,
+      packageName,
+      pkgIndex.entityCount,
    );
 }
