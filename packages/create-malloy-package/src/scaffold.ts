@@ -350,14 +350,25 @@ function withAlternatePorts(command: string, viaNpmScript: boolean): string {
  * dialect/duckdb/table-path-parser.ts), on the premise that Publisher
  * absolutizes the model's relative `duckdb.table('data/sales.csv')` against the
  * package directory before that check runs. Measured against the current
- * server, that premise does not hold: the per-package DuckDB sandbox resolves
- * the model's RELATIVE path through its workingDirectory, reaching DuckDB as a
- * quoted `SET FILE_SEARCH_PATH` literal, so workspace-path characters never
- * reach the path parser. Verified end-to-end (install, load, query a CSV) under
- * paths containing a space, an apostrophe, and a double quote — and a full QA
- * session served a 784 MB CSV from a `YYYY-MM-DD Project Name` path, the exact
- * convention the old refusal turned away with an incorrect explanation. Those
- * are all printable ASCII, and they are now accepted.
+ * server, that premise does not hold on the query path: the per-package
+ * DuckDB sandbox resolves the model's RELATIVE path through its
+ * workingDirectory, reaching DuckDB as a quoted `SET FILE_SEARCH_PATH`
+ * literal, so workspace-path characters never reach the path parser there.
+ * Verified end-to-end (install, load, query a CSV) under paths containing a
+ * space, an apostrophe, and a double quote — and a full QA session served a
+ * 784 MB CSV from a `YYYY-MM-DD Project Name` path, the exact convention the
+ * old refusal turned away with an incorrect explanation. Those are all
+ * printable ASCII, and they are now accepted.
+ *
+ * One server code path still absolutizes: Package.getDatabaseInfo builds a
+ * `duckdb.table('<absolute path>')` literal for the databases endpoint's
+ * schema probe, which DOES reach the path parser, so a spaced/quoted
+ * workspace still loses row counts and column types there (the entry carries
+ * `error` instead of `info`; the package still loads and queries fine, and
+ * status still reports no load errors). Pre-existing server behavior, known
+ * gap, tracked as a follow-up — not a reason to keep the old refusal, since
+ * refusing the whole workspace over a degraded schema panel is the worse
+ * trade.
  *
  * The old rule was still right about ONE thing, for a reason that has nothing
  * to do with DuckDB: assertSafeEnvironmentPath rejects a path outside printable
@@ -942,12 +953,14 @@ function installWorkspaceSkills(cwd: string, result: ScaffoldResult): void {
 
 /**
  * Refuse a workspace path Publisher would not mount a package from. Spaces,
- * apostrophes, and quotes are all fine — the served data path is the model's
- * RELATIVE `duckdb.table('data/…')`, resolved against the package's working
- * directory, so workspace-path characters never reach DuckDB's path parser.
- * What is refused is anything outside printable ASCII, which is the server's
- * own rule for a path it mounts, plus the control characters that would corrupt
- * what this tool prints (see the note on {@link isServablePathCharacter}).
+ * apostrophes, and quotes are all fine on the query path — the served data
+ * path is the model's RELATIVE `duckdb.table('data/…')`, resolved against the
+ * package's working directory, so workspace-path characters never reach
+ * DuckDB's path parser there (one server code path still absolutizes and
+ * degrades gracefully instead; see {@link isServablePathCharacter}). What is
+ * refused is anything outside printable ASCII, which is the server's own rule
+ * for a path it mounts, plus the control characters that would corrupt what
+ * this tool prints (see the note on {@link isServablePathCharacter}).
  */
 function assertServablePath(cwd: string): void {
    const absolute = path.resolve(cwd);

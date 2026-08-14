@@ -365,14 +365,20 @@ package's built-in DuckDB sandbox, so no database credentials are required.
 
 ### The workspace path
 
-Spaces, apostrophes, and quotes in the workspace path are fine: the model's data
-references are relative (`data/sales.csv`) and Publisher's per-package DuckDB sandbox
-resolves them against the package's working directory, so the workspace path never
-reaches DuckDB's path parser. `~/Documents/My Projects`, `~/Google Drive`,
-`~/OneDrive - Company`, and a `2026-08-13 Project Name` directory all work — verified
-end-to-end (load and query a CSV) under paths containing a space, an apostrophe, and a
-double quote. An earlier version of this tool refused all of them on a premise that
-does not hold against the current server.
+Spaces, apostrophes, and quotes in the workspace path are fine for querying data: the
+model's data references are relative (`data/sales.csv`) and Publisher's per-package
+DuckDB sandbox resolves them against the package's working directory, so the workspace
+path never reaches DuckDB's path parser on that path. `~/Documents/My Projects`,
+`~/Google Drive`, `~/OneDrive - Company`, and a `2026-08-13 Project Name` directory all
+work — verified end-to-end (load and query a CSV) under paths containing a space, an
+apostrophe, and a double quote. An earlier version of this tool refused all of them on a
+premise that does not hold against the current server.
+
+One server code path is an exception: the databases endpoint's schema probe builds an
+absolute path literal and does reach the path parser, so a spaced/quoted workspace path
+still loses row counts and column types there (the package still loads and queries
+correctly). Pre-existing server behavior, tracked separately — not a reason to avoid
+these paths.
 
 What is refused is a path outside **printable ASCII** — an accent, an emoji, any
 non-ASCII character, and every control character. This is the server's own rule, not

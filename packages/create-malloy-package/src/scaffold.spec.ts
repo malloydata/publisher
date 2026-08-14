@@ -698,22 +698,44 @@ describe("scaffold: malformed existing config", () => {
 });
 
 describe("scaffold: unservable workspace path", () => {
+   // Windows refuses the mkdir itself (EINVAL) for a name carrying a
+   // control character or a reserved character (`< > : " / \ | ? *`), so
+   // those hazards cannot even be staged there; this guards the POSIX
+   // filesystems that allow the name.
+   const posixOnlyTest = process.platform === "win32" ? test.skip : test;
+
    test("accepts a path containing a space (the YYYY-MM-DD Project Name convention)", () => {
       // The old refusal's premise — that the workspace path reaches DuckDB's
       // path parser — does not hold: the served path is the model's RELATIVE
       // data/… reference, resolved against the package working directory.
       // Verified end-to-end against the server (load + query a CSV) under
-      // paths containing a space, an apostrophe, and a double quote.
+      // paths containing a space, an apostrophe, and a double quote. One
+      // exception: Package.getDatabaseInfo builds an absolute duckdb.table(...)
+      // literal and does reach the path parser, so a spaced path still loses
+      // row counts/column types on the databases endpoint (pre-existing
+      // server behavior, degrades gracefully, tracked separately).
       const spaced = path.join(tmp, "my data dir");
       fs.mkdirSync(spaced);
       expect(run({ cwd: spaced }).packageCreated).toBe(true);
    });
 
-   test("accepts an apostrophe and a double quote", () => {
-      // The other two characters verified end-to-end against the server. This
-      // tool never hands the workspace path to a shell, which is the only
-      // place they would have mattered.
-      const quoted = path.join(tmp, `jim's "data"`);
+   test("accepts an apostrophe", () => {
+      // Verified end-to-end against the server. This tool never hands the
+      // workspace path to a shell, which is the only place it would have
+      // mattered. Legal on Windows, and the character most likely to show up
+      // in a real path (~/Users/O'Brien), so this one runs everywhere.
+      const quoted = path.join(tmp, "jim's data");
+      fs.mkdirSync(quoted);
+      expect(run({ cwd: quoted }).packageCreated).toBe(true);
+   });
+
+   // `"` is a reserved filename character on Windows, so the hazard cannot
+   // even be staged there.
+   posixOnlyTest("accepts a double quote", () => {
+      // Verified end-to-end against the server. This tool never hands the
+      // workspace path to a shell, which is the only place it would have
+      // mattered.
+      const quoted = path.join(tmp, 'jim "data"');
       fs.mkdirSync(quoted);
       expect(run({ cwd: quoted }).packageCreated).toBe(true);
    });
@@ -734,10 +756,7 @@ describe("scaffold: unservable workspace path", () => {
       expect(fs.readdirSync(accented)).toEqual([]);
    });
 
-   // Windows refuses the mkdir itself (EINVAL), so the hazard cannot even be
-   // staged there; the guard is for the POSIX filesystems that allow the name.
-   const controlCharTest = process.platform === "win32" ? test.skip : test;
-   controlCharTest(
+   posixOnlyTest(
       "refuses a control character, naming it by codepoint",
       () => {
          // The escape rather than the raw byte, which is invisible in a diff: a
@@ -750,7 +769,7 @@ describe("scaffold: unservable workspace path", () => {
       },
    );
 
-   controlCharTest("names an escape character without emitting it", () => {
+   posixOnlyTest("names an escape character without emitting it", () => {
       // The refusal is printed to a terminal, so interpolating the character
       // being refused would send the ESC to it instead of showing it.
       const esc = path.join(tmp, "esc\u001Bhere");
