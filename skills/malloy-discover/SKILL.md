@@ -125,7 +125,7 @@ run: orders -> {
   aggregate:
     total is count()
     same_date is count() { where: created_at::date = submitted_at::date }
-    max_gap_days is max(days(submitted_at - created_at))
+    max_gap_days is max(days(created_at to submitted_at))
 }
 ```
 

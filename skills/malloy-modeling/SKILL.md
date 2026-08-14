@@ -22,7 +22,7 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 1. **Backtick reserved words:** `` `Date` ``, `` `Hour` ``, `` `Timestamp` ``, `` `Type` ``, `` `number` ``, `` `source` ``
 2. **Use `having:` for aggregate filters**: not `where:` on measures
 3. **Alias joined fields in `group_by`** if using them in `order_by`
-4. **Use `count(x)` not `count(distinct x)`**: Malloy's count() is always distinct
+4. **`count()` counts rows; `count(x)` counts distinct values of `x`**: `count(distinct x)` is deprecated, write `count(x)`
 5. **One tag per line**: `# label="Revenue"` and `# currency` on separate lines
 6. **No fixed scale on measures**: use `# currency` not `# currency=usd0m`
 7. **Cast strings for aggregates:** `avg(score::number)` not `avg(score)`

@@ -56,21 +56,34 @@ created_at.date                   created_at.day     // truncate to day
                                    created_at::date   // cast to a date
 ```
 
-## Interval Functions: Only `seconds` / `minutes` / `hours` / `days`
+## Interval Functions: `unit(start to end)`, and the unit decides the operand type
 
-`weeks()`, `months()`, `quarters()`, `years()` are **documented but don't work** in this build; only `seconds`, `minutes`, `hours`, `days` actually function. Compute in days and derive the larger unit: a *units conversion*, not a calendar-floored duration:
+An interval is `unit(start to end)`. Two rules, both enforced by the compiler:
+
+- **Never subtract.** `days(a - b)` fails with `Can not offset time by 'date'`. The `to` form is the only one.
+- **Both endpoints must be the same time type.** Mixing them fails with `Cannot measure from date to timestamp`, so cast the odd one out (`::date`, `::timestamp`). `now` is a timestamp.
+
+Which units accept what:
+
+| Units | Kind | Operands |
+|-------|------|----------|
+| `seconds`, `minutes`, `hours`, `days` | clock | timestamps or dates |
+| `weeks`, `months`, `quarters`, `years` | calendar | **dates only**: on timestamps they fail with `Cannot measure interval using 'month' for 'timestamp' values; calendar interval measurement requires dates` |
 
 ```malloy
-// WRONG: weeks()/months() don't compile
-dimension: weeks_open is weeks(opened_at to closed_at)
+// WRONG: subtraction, and a calendar unit applied to timestamp columns
+dimension: gap is days(closed_at - opened_at)
+dimension: months_open is months(opened_at to closed_at)
 
-// RIGHT: measure in days, convert (documents that it's approximate)
-dimension: days_open  is days(opened_at to closed_at)
-dimension: weeks_open is days(opened_at to closed_at) / 7      // ≈ weeks
-dimension: months_open is days(opened_at to closed_at) / 30.44 // ≈ months
+// WRONG: approximating a calendar unit that exists
+dimension: months_open is days(opened_at to closed_at) / 30.44
+
+// RIGHT
+dimension: days_open   is days(opened_at to closed_at)
+dimension: months_open is months(opened_at::date to closed_at::date)
 ```
 
-(Contrast: `search_malloy_docs` gets this right when asked narrowly; trust the docs on the supported units, not on the missing ones.)
+The calendar units are real and exact. If one fails, read the message: it is telling you to cast the operands, not to divide by 30.44.
 
 ## Safe Division: Always `nullif`
 
@@ -136,14 +149,14 @@ run: order_items -> { aggregate: sd is stddev(sale_price) }
 source: items is order_items extend { measure: price_stddev is stddev(sale_price) }
 ```
 
-## Field Management: `extend {}` vs `include {}` Don't Compose
+## Field Management: `extend {}` and `include {}`, in that order
 
-Malloy has two field-management mechanisms for base sources. **`include {}` is the curated default; `extend { except / accept / rename }` is the fallback when a `rename:` is unavoidable.** They have different capabilities and **do not combine**.
+Malloy has two field-management mechanisms for base sources. **`include {}` is the curated default; `extend { except / accept / rename }` handles the renames.** They do compose, but only in one order: the `extend {}` that renames must come **before** the `include {}`, and `include {}` must name the field as it is *after* the rename.
 
-| Mechanism | Where it lives | Keywords | Compatible with `rename:`? | Experimental flag? |
-|---|---|---|---|---|
-| Access modifiers (default) | `include {}` | `public:` / `internal:` / `private:` | **No** | Yes (`##! experimental.access_modifiers`) |
-| Field management (fallback) | `extend {}` | `accept:` / `except:` / `rename:` | Yes (same block) | No |
+| Mechanism | Where it lives | Keywords | Experimental flag? |
+|---|---|---|---|
+| Access modifiers (default) | `include {}` | `public:` / `internal:` / `private:` | Yes (`##! experimental.access_modifiers`) |
+| Field management | `extend {}` | `accept:` / `except:` / `rename:` | No |
 
 ### Default: `include {}` for documented, curated base sources
 
@@ -165,22 +178,29 @@ source: orders is conn.table('orders') include {
 }
 ```
 
-### When `rename:` is unavoidable: fall back to `extend {}`
+### When a `rename:` is needed: rename first, then `include {}`
 
-`include {}` does not compose with `rename:`. The combination errors with `Can't find field 'X' to set access modifier` because `rename:` runs first and leaves no `X` for `include` to attach a modifier to. There's also a collision inside `include {}` itself: a measure cannot share a name with a raw column, even one tagged `internal:` (`Cannot redefine 'X'`), and the natural fix for that is `rename:`, which then triggers the first error.
-
-When a rename is genuinely required (most often during `conn.sql()` to `conn.table()` migration where a SQL alias matches a measure name that's already in heavy use downstream), drop `include {}` and curate the source with `extend { except: ... }` + `rename:` instead. You forfeit `#(doc)` on raw columns and the `public/internal/private` tiers, but keep column gating and the rename.
+The usual reason is a collision inside `include {}`: a measure cannot share a name with a raw column, even one tagged `internal:`, and the compiler says so (`Cannot redefine 'revenue' 'revenue' is internal`). The fix is to rename the raw column out of the way, which frees the name for the measure. Order is what makes it work:
 
 ```malloy
-// RIGHT: rename is required to free `revenue` for the measure
-extend {
-  except: legacy_status_code   // hide garbage column without include {}
-  rename: raw_revenue is revenue
-  measure: revenue is raw_revenue.sum()
-}
+##! experimental.access_modifiers
+// RIGHT: rename frees `revenue`, include curates what is left, measure takes the name
+source: orders is conn.table('orders')
+  extend { rename: raw_revenue is revenue }
+  include {
+    #(doc) Revenue as loaded, before adjustments
+    internal: raw_revenue
+    public: order_id, user_id
+  }
+  extend { measure: revenue is raw_revenue.sum() }
 ```
 
-If you can rename the measure or split the source instead, prefer that: it preserves `include {}` and the curated surface.
+Two ways to get the order wrong, with the errors they produce:
+
+- **`include {}` before the renaming `extend {}`** fails with `Can't find field 'X' to set access modifier`, currently surfaced as an internal compiler error. `include` runs against names that no longer exist by the time the rename is applied.
+- **Naming the pre-rename column inside `include {}`** fails with `` `revenue` not found 'revenue' is not defined ``. After a rename only the new name exists; use it.
+
+You do not have to give up `include {}` to get a rename: the curated surface, `#(doc)` on raw columns, and the `public/internal/private` tiers all survive. Renaming the *measure* instead is still worth considering when the raw column name is the one people know, but it is a modeling preference, not a workaround for a limitation.
 
 ### `extend {}` clauses (reference)
 
@@ -381,6 +401,6 @@ Call `search_malloy_docs` BEFORE first use of any of these. Don't guess the synt
 - `pick` expressions
 - Window functions (`calculate`)
 - `percentile` or statistical functions: but see the hard limit above, raw-SQL aggregates (`sql_number` / `is_aggregate` / `percentile_cont!`) do **not** compile as measures in this build; there is no scalar median (`stddev` is the exception and does work as a measure)
-- Time interval functions (`days()`, `seconds()`): only `seconds`/`minutes`/`hours`/`days` exist (see above)
+- Time interval functions (`days()`, `months()`): always `unit(start to end)`, and calendar units need date operands (see above)
 - Query-based sources (`from()`)
 - `!` operator / `sql_number()`
