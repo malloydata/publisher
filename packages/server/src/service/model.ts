@@ -39,6 +39,7 @@ import {
    getDefaultQueryRowLimit,
    getMaxQueryRows,
    getMaxResponseBytes,
+   getQueryMetadataMode,
 } from "../config";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
@@ -75,6 +76,7 @@ import { URL_READER } from "../utils";
 import {
    modelAnnotations,
    ownLevelNoteTexts,
+   ownModelAnnotations,
    ownModelNotes,
 } from "./annotations";
 import {
@@ -2832,7 +2834,16 @@ export class Model {
             // indirectly, and ad-hoc text resolves through the same surface-syntax
             // path. Reusing the gate's answer also keeps one definition of "which
             // source is this query against" rather than a second, weaker one.
-            earlySource,
+            //
+            // The COMPILED target specifically, for the reason the authorize gate
+            // treats it as the source of truth: `extractRunTargetSourceName`
+            // reads the FIRST `run:` and Malloy executes the LAST, so `run:
+            // cheap\nrun: expensive` would execute one source while tagging
+            // another's team and tier — attribution that is not merely missing
+            // but wrong, and wrong in the direction of blaming the cheap query.
+            // Falls back to the surface-syntax answer when the compiled one is
+            // unresolved, the same degradation the gate accepts.
+            compiledSource ?? earlySource,
          );
 
          queryResults = await runnable.run({
@@ -2987,7 +2998,9 @@ export class Model {
             appliedQueryMetadata = this.resolveQueryMetadata(
                queryMetadataInput,
                livePrepared.connectionName,
-               earlySource,
+               // Same compiled run target as the primary path — the retry runs
+               // the same query, so it must not tag a different source.
+               compiledSource ?? earlySource,
             );
             queryResults = await liveRunnable!.run({
                rowLimit,
@@ -3203,6 +3216,15 @@ export class Model {
       connectionName: string | undefined,
       sourceName?: string,
    ): QueryMetadata | undefined {
+      // Nothing below is observable when the feature is off: `mergeQueryMetadata`
+      // early-returns, so every layer assembled here is discarded. Assembling
+      // them anyway made a default deployment — the mode is off unless an
+      // operator turns it on — pay an annotation walk and a connection lookup on
+      // every query for a bag nobody reads. Read per statement rather than per
+      // boot for the same reason `mergeQueryMetadata` reads it there: the mode
+      // is allowed to change under a running server.
+      if (getQueryMetadataMode() === "off") return undefined;
+
       let connectionLayers: {
          default?: QueryMetadata | null;
          enforced?: QueryMetadata | null;
@@ -3246,11 +3268,21 @@ export class Model {
     * parse. Read off `modelDef`, which survives the worker serialization
     * boundary — so this works for a freshly-compiled model and a deserialized
     * one alike, the same reason `fileLevelAuthorize` is derived there.
+    *
+    * The file's OWN notes, not the folded import lineage. `modelAnnotations`
+    * folds deliberately, but only because a file-level `##(authorize)` gate an
+    * import could shed would be no gate at all; `annotations.ts` says to read
+    * through `ownModelNotes` for everything that is not a policy gate. A tag is
+    * not a gate, and folding one would let a shared include attribute every
+    * importing file's traffic to the include's team — the same misattribution
+    * {@link safeSourceTag} already refuses for a derivation base. It would also
+    * report the resulting publish warning against the importer's path, sending
+    * an author to a file that does not contain the line.
     */
    private safeModelFileTag(): ReadableTag | undefined {
       if (!this.modelDef) return undefined;
       try {
-         return new Annotations(modelAnnotations(this.modelDef)).parseAsTag()
+         return new Annotations(ownModelAnnotations(this.modelDef)).parseAsTag()
             .tag as ReadableTag;
       } catch {
          return undefined;
@@ -3492,6 +3524,13 @@ export class Model {
                   maxRows: cellMaxRows,
                },
             );
+            // The compiled run target, preferred over the cell's surface syntax
+            // for the reason getQueryResults prefers it: `extractRunTargetSourceName`
+            // reads the first `run:` and Malloy executes the last, so a cell
+            // holding more than one would tag the wrong source. The prepared
+            // query is read again below, so this costs nothing new.
+            const cellCompiledSource =
+               await this.resolveAuthorizeSourceFromRunnable(runnableToExecute);
             const result = await runnableToExecute.run({
                rowLimit,
                givens: cellSurfaceGivens,
@@ -3502,7 +3541,7 @@ export class Model {
                   preparedCell.connectionName,
                   // Same resolution the cell's own filter lookup uses, so a
                   // notebook cell carries the source's declared layer too.
-                  extractRunTargetSourceName(cell.text),
+                  cellCompiledSource ?? extractRunTargetSourceName(cell.text),
                ),
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
