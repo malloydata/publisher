@@ -32,19 +32,26 @@ import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
  * because `parseAsTag` would skip {@link quoteFilterLiterals} and reintroduce
  * the bare-filter-literal failure below. Take it together with a fix for that.
  */
+/**
+ * Whether an annotation is on the MOTLY route, separate from whether it should
+ * be read. One definition, because `parseMotly` needs to tell "not MOTLY" from
+ * "MOTLY but dropped for `@env.`" in order to report the second, and a second
+ * copy of the route rule is how these drift.
+ */
+function onMotlyRoute(text: string): boolean {
+   const afterSigil = text.replace(/^##?\|?/, "");
+   // `[ \t\r\n]` rather than `\s`, matching Malloy's separator class exactly.
+   // JS `\s` is wider (U+00A0, \f, \v, U+2000, U+3000 and more), so a stray
+   // non-breaking space from a copy-paste would be admitted here and then NOT
+   // stripped by the parser's own narrower prefix rule, which swallows
+   // `# label="Region"` as the route and reads only what follows. The given
+   // keeps its `control` and silently loses its `label`. Malloy classifies that
+   // line `malformed-route` and drops it, so dropping it here agrees.
+   return afterSigil === "" || /^[ \t\r\n]/.test(afterSigil);
+}
+
 export function motlyAnnotations(texts: readonly string[]): string[] {
-   return texts.filter((text) => {
-      const afterSigil = text.replace(/^##?\|?/, "");
-      // `[ \t\r\n]` rather than `\s`, matching Malloy's separator class exactly.
-      // JS `\s` is wider (U+00A0, \f, \v, U+2000, U+3000 and more), so a stray
-      // non-breaking space from a copy-paste would be admitted here and then
-      // NOT stripped by the parser's own narrower prefix rule, which swallows
-      // `# label="Region"` as the route and reads only what follows. The given
-      // keeps its `control` and silently loses its `label`. Malloy classifies
-      // that line `malformed-route` and drops it, so dropping it here agrees.
-      const onMotlyRoute = afterSigil === "" || /^[ \t\r\n]/.test(afterSigil);
-      return onMotlyRoute && !hasEnvReference(text);
-   });
+   return texts.filter((text) => onMotlyRoute(text) && !hasEnvReference(text));
 }
 
 /**
@@ -103,6 +110,15 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
  * nothing in this repo writes `@env.` in a tag today. Detection is exact
  * (`@env.` is case-sensitive, and `@ENV.` or `@env .` are parse errors rather
  * than references), so this cannot silently miss the form it guards against.
+ *
+ * The drop is per LINE, not per file, and that is worth stating because the
+ * blast radius reads worse than it is. `## artifact { tiles=[…] }` on one line
+ * and `## note=@env.X` on another still produces the dashboard; only an `@env.`
+ * on the SAME line as the artifact tag removes it. Measured both ways.
+ *
+ * Reported since the dashboards slice: the drop is upstream of the parse, so
+ * without {@link ENV_REFERENCE_DROPPED} a dashboard whose tag carries one would
+ * simply not exist, with no finding anywhere.
  */
 export function hasEnvReference(annotation: string): boolean {
    return annotation.includes("@env.");
@@ -202,6 +218,19 @@ function pollutionTargets(): object[] | undefined {
    }
    return targets;
 }
+
+/**
+ * Message used when an annotation was dropped for carrying an `@env.` reference.
+ *
+ * Fixed text, like {@link UNSAFE_TO_PARSE}, because the annotation is never
+ * parsed and there is nothing else honest to say about it. Reported rather than
+ * dropped in silence: the guard is upstream of the parse, so without this a
+ * dashboard whose artifact tag carries one simply does not exist, with no
+ * finding anywhere. That was tolerable while the cost was a missing control; it
+ * is not once the cost is the whole dashboard.
+ */
+export const ENV_REFERENCE_DROPPED =
+   "annotation dropped for carrying an @env. reference";
 
 /**
  * Message used when an annotation cannot be parsed without collateral damage.
@@ -698,14 +727,21 @@ function parseMotly(texts: readonly string[]): {
    tag: Tag | undefined;
    errors: string[];
 } {
-   const motly = motlyAnnotations(texts);
-   if (motly.length === 0) return { tag: undefined, errors: [] };
+   // Split rather than filtered once, so the env drop can be REPORTED. The set
+   // handed to the parser is byte-identical to what `motlyAnnotations` returns;
+   // this only recovers which lines it removed, and why.
+   const onRoute = texts.filter(onMotlyRoute);
+   const motly = onRoute.filter((text) => !hasEnvReference(text));
+   const envDropped = onRoute.length - motly.length;
+   const envErrors: string[] = envDropped > 0 ? [ENV_REFERENCE_DROPPED] : [];
+   if (motly.length === 0) return { tag: undefined, errors: envErrors };
 
    // The common case is one parse of the whole set. Only a failure pays for the
    // per-line rescue below, so an entity whose annotations are all well formed
    // is not charged for a workaround it does not need.
    const direct = parseGuarded(motly);
-   if (direct.messages.length === 0) return { tag: direct.tag, errors: [] };
+   if (direct.messages.length === 0)
+      return { tag: direct.tag, errors: envErrors };
 
    const rescued = motly.map((text) => {
       if (parseGuarded([text]).messages.length === 0) return text;
@@ -901,6 +937,14 @@ function authoredDay(isoText: string): string {
  */
 export function readStartingGivens(
    tag: Tag | undefined,
+   /**
+    * The declared type of a given by name, so a `filter<…>` value can be
+    * unwrapped and nothing else touched. Required rather than optional: without
+    * it this cannot tell `NOTE :: string is f'x'`, where `f'x'` IS the value,
+    * from `REGION :: filter<string> is f'US'`, where it is a wrapper. Unwrapping
+    * blindly published `x` for the first and posted it back as a filter.
+    */
+   declaredType: (name: string) => string | undefined,
 ): Record<string, string> | undefined {
    const entries = tag?.tag("givens");
    if (!entries) return undefined;
@@ -938,7 +982,9 @@ export function readStartingGivens(
       collected[name] =
          scalarTypeOf(tag) === "date"
             ? authoredDay(text)
-            : unwrapFilterLiteral(text);
+            : declaredType(name)?.startsWith("filter<")
+              ? unwrapFilterLiteral(text)
+              : text;
    }
    return Object.keys(collected).length > 0 ? collected : undefined;
 }

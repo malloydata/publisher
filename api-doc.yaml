@@ -3814,10 +3814,13 @@ components:
 
         The role it names: a surface's URL parameters and the starting values a
         document declares share this shape, so the two can merge and then be
-        decoded once against the declarations and sent as `GivenValues`. No
-        endpoint returns it yet. `RawNotebook.startingGivens` is the first field
-        typed as it, and nothing populates that field so far, so today this
-        schema documents the contract rather than describing live traffic. The
+        decoded once against the declarations and sent as `GivenValues`.
+        `RawNotebook.startingGivens` and `DashboardManifest.startingGivens` are
+        both typed as it and both populated, so this schema now describes live
+        traffic rather than only the contract. A `filter<…>` value is unwrapped
+        to its body and every other type is published as declared, keyed on the
+        declared type, so a plain string default that reads like `f'x'` survives
+        untouched. The
         `givens` query parameter is not an instance of it: that carries a
         JSON-encoded `GivenValues`, with values typed rather than stringified.
       additionalProperties:

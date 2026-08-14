@@ -299,10 +299,18 @@ describe("service/dashboard manifest (single-query form)", () => {
                   givens: [],
                },
             ],
+            // Declared, because the unwrap is keyed on the type: MANUFACTURER is
+            // a filter so `f'…'` is a wrapper, PERIOD is a string so its value
+            // is whatever it says. Without the declarations neither is unwrapped.
+            givens: new Map([
+               given("MANUFACTURER", "filter<string>", []),
+               given("PERIOD", "string", []),
+            ]),
          }),
       );
       expect(manifest?.autorun).toBe(false);
-      // Starting values arrive in run shape — the filter body, not the literal.
+      // Starting values arrive in run shape: the filter body, not the literal,
+      // and the string given untouched.
       expect(manifest?.startingGivens).toEqual({
          MANUFACTURER: "Ford Motor Company",
          PERIOD: "30 days",
@@ -1350,9 +1358,46 @@ describe("service/dashboard inherits the annotation guards", () => {
                ],
             }),
          );
+         // Three assertions, because the obvious one proves nothing on its own.
+         // `manifest` is undefined for an `@env` tag, so a `not.toContain` over
+         // `JSON.stringify(manifest ?? {})` runs against the string "{}" and
+         // passes whether the guard worked or the whole dashboard vanished. An
+         // earlier version of this test did exactly that.
+         //
+         // So: the value must be absent, the drop must be REPORTED rather than
+         // silent, and a sibling tag carrying no `@env` must still build.
          expect(JSON.stringify(manifest ?? {})).not.toContain(
             "super-secret-value",
          );
+         expect(
+            lintUndiscoveredDashboard(
+               facts({
+                  modelAnnotations: [],
+                  queries: [
+                     {
+                        name: "overview",
+                        annotations: [
+                           "# artifact { title=@env.SLICE6_PROBE_SECRET }\n",
+                        ],
+                        givens: [],
+                     },
+                  ],
+               }),
+            ).map((f) => f.message),
+         ).toEqual([expect.stringContaining("@env.")]);
+         expect(
+            build(
+               facts({
+                  queries: [
+                     {
+                        name: "overview",
+                        annotations: ['# artifact { title="Plain" }\n'],
+                        givens: [],
+                     },
+                  ],
+               }),
+            )?.title,
+         ).toBe("Plain");
       } finally {
          delete process.env.SLICE6_PROBE_SECRET;
       }

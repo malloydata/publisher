@@ -3680,8 +3680,20 @@ export class Model {
          // on a notebook and `# artifact { autorun=false }` on a dashboard
          // arrive as the same field with the same default. Same for
          // `## givens { … }` and the artifact tag's `givens { … }`.
+         // Known gap, measured: an `@env.` anywhere on the SAME line takes the
+         // whole tag, so `## title=@env.X autorun=false` arrives as
+         // `autorun=true`, the default, with the flag silently lost. The same
+         // holds for an ordinary malformed `##` line, because nothing calls
+         // `motlyParseErrors` on a notebook's model-level tags at all, so the
+         // parse error it already produces has no reader. Dashboards report both
+         // through the package lint; notebooks have no equivalent channel yet.
+         // Not closed here: it needs a notebook warnings surface, which is its
+         // own change. Filed as a follow-up.
          autorun: readAutorun(notebookTag),
-         startingGivens: readStartingGivens(notebookTag),
+         startingGivens: readStartingGivens(
+            notebookTag,
+            (name) => (this.givens ?? []).find((g) => g.name === name)?.type,
+         ),
          notebookCells,
       };
       return notebook;

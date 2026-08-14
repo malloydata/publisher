@@ -384,7 +384,10 @@ describe("readGivenControlSpec", () => {
       // Still parsing normally afterwards, which is what pollution would break.
       expect(readGivenControlSpec([`# label="ok"`])).toEqual({ label: "ok" });
       expect(
-         readStartingGivens(motlyTag([`## givens { __proto__=x }`])),
+         readStartingGivens(
+            motlyTag([`## givens { __proto__=x }`]),
+            () => "filter<string>",
+         ),
       ).toBeUndefined();
       expect(polluted()).toBe(false);
    });
@@ -468,7 +471,10 @@ describe("parse-first rescue", () => {
 
    it("still rescues the documented filter-literal form", () => {
       expect(
-         readStartingGivens(motlyTag([`## givens { REGION=f'US' }`])),
+         readStartingGivens(
+            motlyTag([`## givens { REGION=f'US' }`]),
+            () => "filter<string>",
+         ),
       ).toEqual({ REGION: "US" });
    });
 });
@@ -674,7 +680,10 @@ describe("readStartingGivens", () => {
       ]) {
          expect([
             literal,
-            readStartingGivens(motlyTag([`## givens { X=${literal} }`])),
+            readStartingGivens(
+               motlyTag([`## givens { X=${literal} }`]),
+               () => "filter<string>",
+            ),
          ]).toEqual([literal, { X: "2024-03-01" }]);
       }
    });
@@ -683,6 +692,7 @@ describe("readStartingGivens", () => {
       expect(
          readStartingGivens(
             motlyTag([`## givens { SINCE="2024-03-01" REGION=f'US' }`]),
+            (name) => (name === "REGION" ? "filter<string>" : "string"),
          ),
       ).toEqual({ SINCE: "2024-03-01", REGION: "US" });
    });
@@ -691,6 +701,7 @@ describe("readStartingGivens", () => {
       expect(
          readStartingGivens(
             motlyTag([`## givens { REGION=f'us-east, us-west' }`]),
+            () => "filter<string>",
          )?.REGION,
       ).toBe("us-east, us-west");
    });
@@ -699,14 +710,26 @@ describe("readStartingGivens", () => {
       const artifact = motlyTag([
          `# artifact { givens { REGION=f'US' } }`,
       ])?.tag("artifact");
-      expect(readStartingGivens(artifact)).toEqual({ REGION: "US" });
+      expect(readStartingGivens(artifact, () => "filter<string>")).toEqual({
+         REGION: "US",
+      });
    });
 
    it("is undefined with no block, and with an empty one", () => {
-      expect(readStartingGivens(undefined)).toBeUndefined();
       expect(
-         readStartingGivens(motlyTag([`## autorun=false`])),
+         readStartingGivens(undefined, () => "filter<string>"),
       ).toBeUndefined();
-      expect(readStartingGivens(motlyTag([`## givens { }`]))).toBeUndefined();
+      expect(
+         readStartingGivens(
+            motlyTag([`## autorun=false`]),
+            () => "filter<string>",
+         ),
+      ).toBeUndefined();
+      expect(
+         readStartingGivens(
+            motlyTag([`## givens { }`]),
+            () => "filter<string>",
+         ),
+      ).toBeUndefined();
    });
 });

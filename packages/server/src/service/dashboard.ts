@@ -226,11 +226,14 @@ interface ArtifactTagData {
    autorun: boolean;
 }
 
-function readArtifactTag(tag: Tag): ArtifactTagData | undefined {
+function readArtifactTag(
+   tag: Tag,
+   declaredType: (name: string) => string | undefined,
+): ArtifactTagData | undefined {
    const artifact = tag.tag("artifact");
    if (!artifact) return undefined;
 
-   const givens = readStartingGivens(artifact);
+   const givens = readStartingGivens(artifact, declaredType);
    const autorun = readAutorun(artifact);
 
    return {
@@ -677,7 +680,10 @@ export function buildDashboardManifest(
    };
 
    const modelTag = motlyTag(facts.modelAnnotations);
-   const composite = modelTag ? readArtifactTag(modelTag) : undefined;
+   const declaredType = (name: string) => facts.givens.get(name)?.type;
+   const composite = modelTag
+      ? readArtifactTag(modelTag, declaredType)
+      : undefined;
    if (composite?.tiles?.length) {
       const tiles = composite.tiles.map((query) => {
          const givenNames = resolveTileGivens(query, facts);
@@ -724,7 +730,7 @@ export function buildDashboardManifest(
 
    for (const query of facts.queries) {
       const tag = motlyTag(query.annotations);
-      const artifact = tag ? readArtifactTag(tag) : undefined;
+      const artifact = tag ? readArtifactTag(tag, declaredType) : undefined;
       if (!artifact) continue;
       const doc = docCommentTitleAndDescription(
          query.annotations,
