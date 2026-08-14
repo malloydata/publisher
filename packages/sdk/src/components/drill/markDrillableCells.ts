@@ -64,18 +64,19 @@ export function drillableFieldNames(
 
    for (const field of fields) {
       if (!field || !canDrill(field)) continue;
-      // Both spellings, because a header shows the label when there is one and
-      // the field name otherwise, and this set is matched against header TEXT.
+      // The ONE spelling this field can render, by the same rule `taken` uses
+      // above. Adding the raw `name` as well whenever a field had a label put a
+      // key in here that this field can never put on screen, so its only
+      // possible effect was to match some OTHER column whose header happened to
+      // equal this field's name, and paint that column as a link that does
+      // nothing. The two loops now agree about what a header shows.
       //
       // A spelling some non-drillable field also renders is dropped rather than
       // marked. Matching on text cannot tell those two columns apart, and this
-      // file would rather lose an affordance than paint a link that does
-      // nothing when clicked, which is the same reason `canDrill` filters at
-      // all. Costs the affordance on the drillable column in that case.
-      const label = field.tag?.text("label");
-      for (const spelling of label ? [field.name, label] : [field.name]) {
-         if (!taken.has(spelling)) names.add(spelling);
-      }
+      // file would rather lose an affordance than paint a dead link, which is
+      // the same reason `canDrill` filters at all.
+      const rendered = field.tag?.text("label") ?? field.name;
+      if (!taken.has(rendered)) names.add(rendered);
       // KNOWN LIMITATION that remains: `markDrillableCells` walks every
       // `.malloy-table` in the result, nested ones included, and matches this
       // one flat set against all of them. Two fields that render the same text
@@ -88,10 +89,19 @@ export function drillableFieldNames(
 }
 
 /**
- * The renderer gives a cell no field identity, but it does lay every table out
- * on a CSS grid with an inline `grid-column: N / …` per cell, so a header cell
- * naming a drillable field identifies that field's column by number, and the
- * body cells sharing the number are its values.
+ * The renderer gives a cell no field identity, but its normal and pivot tables
+ * lay out on a CSS grid with an inline `grid-column: N / …` per cell, so a
+ * header cell naming a drillable field identifies that field's column by
+ * number, and the body cells sharing the number are its values.
+ *
+ * NOT every table. A `# transpose` result sets `grid-template-columns` on the
+ * container and no `grid-column` on any cell (checked against the renderer's
+ * own bundle: zero such calls on that path against nine elsewhere), so this
+ * returns undefined for every cell and a transposed table is left unmarked.
+ * Its clicks still resolve, because the renderer hands them to `onClick`
+ * regardless, so the drill WORKS there and is simply undiscoverable. Marking it
+ * needs a second strategy keyed on the transpose layout rather than a patch to
+ * this one.
  */
 function gridColumnStart(element: HTMLElement): string | undefined {
    const match = /^\s*(\d+)/.exec(element.style?.gridColumn ?? "");
@@ -137,10 +147,17 @@ export function markDrillableCells(
       )) {
          if (!ownedByTable(cell)) continue;
          const column = gridColumnStart(cell);
+         // A cell with nothing in it is not marked. `resolveDrill` refuses a
+         // null or empty value (clicking a blank cell is far likelier a misclick
+         // than a request for the rows with no value), so painting one as a link
+         // promised a click that was then dropped in silence.
+         const hasValue =
+            (cell.textContent ?? "").replace(/\u200b/g, "").trim() !== "";
          // Leaf value cells only: a cell wrapping a nested table is structure,
          // and its click lands on the inner cell anyway.
          if (
             column &&
+            hasValue &&
             columns.has(column) &&
             !cell.querySelector(".malloy-table")
          ) {

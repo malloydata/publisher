@@ -30,10 +30,12 @@ describe("drillableFieldNames", () => {
    const navigateOnly = (f: DrillField) =>
       drillDestinations(f).some((destination) => destination !== "self");
 
-   it("collects a drillable field's name and its label", () => {
-      // Both, because the header this is matched against renders `getLabel()`,
-      // the label when the author set one, the name otherwise, and the marking
-      // cannot tell which from the DOM.
+   it("collects the one spelling a drillable field renders", () => {
+      // The label when the author set one, the name otherwise, which is what
+      // the header this is matched against actually shows. Adding the raw name
+      // as WELL used to look defensive and was not: a labelled field never puts
+      // its name on screen, so that key could only ever match some other
+      // column and paint it as a link that does nothing.
       const names = drillableFieldNames(
          viz([
             field("category", ['# drill { to=overview } label="Category"\n']),
@@ -41,7 +43,7 @@ describe("drillableFieldNames", () => {
          ]),
          navigateOnly,
       );
-      expect([...names].sort()).toEqual(["Category", "category"]);
+      expect([...names].sort()).toEqual(["Category"]);
    });
 
    it("leaves out a drill this surface cannot honor", () => {
@@ -85,7 +87,10 @@ describe("drillableFieldNames", () => {
          ]),
          navigateOnly,
       );
-      expect([...names].sort()).toEqual(["region"]);
+      // Nothing marked: the drillable field's only rendered spelling is the
+      // one the non-drillable field also renders, so the affordance is given up
+      // rather than painted on a column whose click does nothing.
+      expect([...names].sort()).toEqual([]);
    });
 
    it("still marks a label no other field renders", () => {
@@ -96,6 +101,6 @@ describe("drillableFieldNames", () => {
          ]),
          navigateOnly,
       );
-      expect([...names].sort()).toEqual(["Region", "region"]);
+      expect([...names].sort()).toEqual(["Region"]);
    });
 });

@@ -116,10 +116,15 @@ export function humanizeSlug(slug: string): string {
  */
 export function drillGivenName(field: DrillField): string {
    // The field name verbatim, NOT upper-cased. Given names are stored as the
-   // model spells them and matched exactly, so upper-casing meant a `to=self`
-   // on a lowercase-named dimension resolved to a given that does not exist
-   // and the click was dropped in silence. An upper-case convention is common
-   // enough that it hid this: `given: REGION` worked, `given: region` did not.
+   // model spells them, so upper-casing meant a `to=self` on a lowercase-named
+   // dimension resolved to a given that does not exist and the click was
+   // dropped in silence. An upper-case convention is common enough that it hid
+   // this: `given: REGION` worked, `given: region` did not.
+   //
+   // How the name is then MATCHED is the caller's business, and Notebook folds
+   // case before looking it up, so a tag naming `region` still finds a declared
+   // `REGION`. That is a courtesy at the lookup, not a licence to re-spell the
+   // name here: the value has to be set under the name the model declares.
    return field.tag?.tag("drill")?.text("given") ?? field.name;
 }
 
@@ -258,17 +263,38 @@ function isNonEmpty(value: string | undefined): value is string {
 export function encodeDrillValue(
    rawValue: unknown,
    targetType: string | undefined,
-): string | number | boolean | undefined {
+): string | number | boolean | Date | undefined {
    if (targetType !== undefined && !isFilterType(targetType)) {
       // Returned in the given's OWN type, not stringified. `givensToRequest`
       // converts only `Date`, so a string sent for a `number` or `boolean` given
       // travels as a string and Malloy refuses the query.
       if (targetType === "number") {
-         const parsed =
-            typeof rawValue === "number" ? rawValue : Number(rawValue);
-         return typeof rawValue === "boolean" || !Number.isFinite(parsed)
-            ? undefined
-            : parsed;
+         // Only a number, or a string that spells one. `Number()` accepts far
+         // more than that and every extra it accepts is a wrong filter rather
+         // than a refused one: a clicked Date became its epoch milliseconds
+         // (1709646300000 for 2024-03-05) and a null cell became 0, so the
+         // notebook re-ran filtered to a value nobody clicked and returned
+         // nothing, with no error to explain it.
+         if (typeof rawValue === "number") {
+            return Number.isFinite(rawValue) ? rawValue : undefined;
+         }
+         if (typeof rawValue !== "string" || rawValue.trim() === "") {
+            return undefined;
+         }
+         const parsed = Number(rawValue);
+         return Number.isFinite(parsed) ? parsed : undefined;
+      }
+      if (
+         targetType === "date" ||
+         targetType === "timestamp" ||
+         targetType === "timestamptz"
+      ) {
+         // The Date itself, so `givensToRequest` can spell it per type. Falling
+         // through to `drillValueToFilter` truncated it to `YYYY-MM-DD` first,
+         // which is the right spelling for a `date` given and drops the time of
+         // day for a `timestamp` one: the drill then filtered to midnight
+         // rather than to the instant in the cell.
+         return rawValue instanceof Date ? rawValue : undefined;
       }
       if (targetType === "boolean") {
          if (typeof rawValue === "boolean") return rawValue;

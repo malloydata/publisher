@@ -273,6 +273,36 @@ describe("encodeDrillValue", () => {
       expect(encodeDrillValue("a, b", undefined)).toBe("a\\,\\ b");
    });
 
+   it("declines a value that is not a number for a `number` given", () => {
+      // `Number()` accepts far more than numbers, and every extra it accepted
+      // became a WRONG filter rather than a refused one: a clicked Date
+      // encoded to its epoch milliseconds and a null cell to 0, so the notebook
+      // re-ran filtered to a value nobody clicked and returned nothing.
+      expect(
+         encodeDrillValue(new Date("2024-03-05T13:45:00Z"), "number"),
+      ).toBeUndefined();
+      expect(encodeDrillValue(null, "number")).toBeUndefined();
+      expect(encodeDrillValue(true, "number")).toBeUndefined();
+      expect(encodeDrillValue("", "number")).toBeUndefined();
+      expect(encodeDrillValue(" ", "number")).toBeUndefined();
+      // A number, and a string that spells one, still pass.
+      expect(encodeDrillValue(12, "number")).toBe(12);
+      expect(encodeDrillValue("12", "number")).toBe(12);
+   });
+
+   it("hands a temporal given the Date, so it keeps its time of day", () => {
+      // Falling through to `drillValueToFilter` truncated to `YYYY-MM-DD`
+      // first, which is right for a `date` given and drops the time of day for
+      // a `timestamp` one, so the drill filtered to midnight rather than to the
+      // instant in the cell. `givensToRequest` spells it per type instead.
+      const clicked = new Date("2024-03-05T13:45:00Z");
+      for (const type of ["date", "timestamp", "timestamptz"]) {
+         expect(encodeDrillValue(clicked, type)).toEqual(clicked);
+      }
+      // A filter-typed target still takes the day, which is its own rule.
+      expect(encodeDrillValue(clicked, "filter<date>")).toBe("2024-03-05");
+   });
+
    it("declines a value with no spelling", () => {
       expect(encodeDrillValue(null, "string")).toBeUndefined();
       expect(encodeDrillValue(undefined, "filter<string>")).toBeUndefined();

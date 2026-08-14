@@ -498,22 +498,36 @@ function RenderedResultInner({
             // appears after it. Hence the observer, which re-marks (batched to
             // a frame) as cards arrive.
             const binding = drillRef.current;
-            if (binding) {
-               const names = drillableFieldNames(viz, binding.canDrill);
-               const mark = () => markDrillableCells(stageNode, names);
-               mark();
-               if (names.size > 0 && typeof MutationObserver !== "undefined") {
-                  drillObserver = new MutationObserver(() => {
-                     cancelAnimationFrame(drillFrame);
-                     drillFrame = requestAnimationFrame(mark);
-                  });
-                  // childList only: marking writes classes, and observing
-                  // attributes would have it retrigger itself every frame.
-                  drillObserver.observe(stageNode, {
-                     childList: true,
-                     subtree: true,
-                  });
+            // Isolated from the render above. The chart has already rendered by
+            // this point, and a throw in here would reach the same catch and
+            // replace a working result with an error message: the affordance
+            // would be taking the chart down with it. `drillableFieldNames`
+            // already guards its own metadata read on the same principle.
+            try {
+               if (binding) {
+                  const names = drillableFieldNames(viz, binding.canDrill);
+                  const mark = () => markDrillableCells(stageNode, names);
+                  mark();
+                  if (
+                     names.size > 0 &&
+                     typeof MutationObserver !== "undefined"
+                  ) {
+                     drillObserver = new MutationObserver(() => {
+                        cancelAnimationFrame(drillFrame);
+                        drillFrame = requestAnimationFrame(mark);
+                     });
+                     // childList only: marking writes classes, and observing
+                     // attributes would have it retrigger itself every frame.
+                     drillObserver.observe(stageNode, {
+                        childList: true,
+                        subtree: true,
+                     });
+                  }
                }
+            } catch (drillError) {
+               // No affordance, and the result stands. Clicks still resolve,
+               // because the renderer routes those itself.
+               console.warn("Drill affordance skipped:", drillError);
             }
 
             viz.onReady(promote);

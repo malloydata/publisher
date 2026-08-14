@@ -70,9 +70,11 @@ interface NotebookProps {
     * That is every committed change, and today every change is committed: the
     * Apply batching `useGivensState` implements is not reachable here while
     * `autorun` is hardcoded true, so typing in a text control reports per
-    * keystroke and starts a run per keystroke. Only the last completes: each
-    * run aborts the one before it, but a host doing something expensive per
-    * call should debounce.
+    * keystroke. It does NOT run per keystroke: a changed value waits
+    * `GIVEN_SETTLE_MS` before anything is dispatched, so a burst of typing
+    * produces one run. A run that does start supersedes and aborts the one
+    * before it. The REPORTS are still per keystroke, so a host doing something
+    * expensive per call should debounce.
     *
     * `managed` names every given this notebook declares, set or not. A host
     * writing to a shared query string needs it: `givens` alone says which
@@ -137,6 +139,12 @@ export default function Notebook({
       [],
    );
    const [isExecuting, setIsExecuting] = useState(false);
+   // A run is scheduled but its settle window has not elapsed. Separate from
+   // `isExecuting`, which covers only a run actually in flight.
+   const [runScheduled, setRunScheduled] = useState(false);
+   // The document the last run belonged to, for abandoning its requests when
+   // the reader moves to another notebook without this component unmounting.
+   const lastDocumentRef = useRef<string | undefined>(undefined);
    const [executionError, setExecutionError] = useState<Error | null>(null);
 
    // Model-level `given:` declarations, and the state behind their controls.
@@ -524,6 +532,21 @@ export default function Notebook({
    useEffect(() => {
       const documentKey = `${resourceUri}|${notebookGen}`;
       const runKey = `${documentKey}|${buildGivens(applied) ?? ""}`;
+
+      // Abandon the previous notebook's requests when the document changes.
+      // The abort-on-unmount effect does not cover this: navigating from one
+      // notebook to another REUSES this component, so nothing unmounts and a
+      // twelve-cell notebook left twelve requests running against a document
+      // the reader had already left.
+      if (
+         lastDocumentRef.current !== undefined &&
+         lastDocumentRef.current !== documentKey
+      ) {
+         inFlightRef.current?.abort();
+         inFlightRef.current = null;
+      }
+      lastDocumentRef.current = documentKey;
+
       const plan = planRun({
          ready: isSuccess && !!notebook?.notebookCells,
          lastRunKey: lastRunRef.current,
@@ -535,11 +558,13 @@ export default function Notebook({
       if (plan.cancelPending) {
          clearTimeout(pendingRunRef.current?.timer);
          pendingRunRef.current = undefined;
+         setRunScheduled(false);
       }
       if (plan.dispatch === "none") return;
 
       const start = () => {
          pendingRunRef.current = undefined;
+         setRunScheduled(false);
          lastRunRef.current = runKey;
          void executeCells(applied);
       };
@@ -548,6 +573,12 @@ export default function Notebook({
          start();
          return;
       }
+      // Flagged while the settle timer runs, so the cells say a run is coming.
+      // Without it the window was invisible: `isExecuting` is false until the
+      // timer fires, so a changed control sat above the PREVIOUS values with
+      // nothing on screen to say they were stale, and a reader who kept typing
+      // kept extending the window.
+      setRunScheduled(true);
       pendingRunRef.current = {
          key: runKey,
          timer: setTimeout(start, GIVEN_SETTLE_MS),
@@ -595,7 +626,7 @@ export default function Notebook({
                         index={index}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
-                        isExecuting={isExecuting}
+                        isExecuting={isExecuting || runScheduled}
                         onNavigate={onNavigate}
                         onDrillSelf={
                            declaredGivens.length > 0 ? onDrillSelf : undefined
