@@ -2,11 +2,51 @@
 
 The Malloy Publisher Server is an Express.js server that provides an API for managing and accessing Malloy data models, packages, and queries
 
+## Quick start
+
+Everything below is self-contained: this README ships in the npm tarball, where the repository's other files do not, so nothing here links outside the package.
+
+**New workspace?** One command scaffolds a package, the server config, the MCP wiring, and the agent skills:
+
+```bash
+npm create @malloy-publisher/malloy-package@latest sales -- --data ./yourfile.csv
+npm start
+```
+
+Keep the `@latest`: `npm create` resolves through the npx cache, and an unversioned name silently reuses whatever old copy is on the machine.
+
+**Existing directory of models?** Write a `publisher.config.json` beside a package directory that holds a `publisher.json`, then run the server pointing at it:
+
+```bash
+npx @malloy-publisher/server --server_root . --config ./publisher.config.json --watch-env local
+```
+
+```json
+{
+  "frozenConfig": false,
+  "environments": [
+    {
+      "name": "local",
+      "packages": [{ "name": "sales", "location": "./sales" }],
+      "connections": []
+    }
+  ]
+}
+```
+
+Three facts that are easy to get wrong:
+
+- **A flat-file (CSV/Parquet/XLSX) package needs no `connections` entry at all.** Every loaded package automatically gets its own DuckDB sandbox connection named `duckdb`, which is what `duckdb.table('data/file.csv')` resolves against. That name is reserved: an environment-level connection named `duckdb` fails the whole environment at init (call an env-level DuckDB connection `shared_duckdb` or similar).
+- **A package `location` is local only when it starts with `./`, `../`, `~/`, or `/`.** A bare `sales` is silently not local; write `./sales`.
+- **Local authoring means `--watch-env <env>`.** Without it the server copies each local package into `publisher_data/` at boot and serves the copy, so edits to your source directory are never read.
+
+Poll `curl -s http://localhost:4000/api/v0/status` until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded). The MCP endpoint for agents is `http://localhost:4040/mcp`.
+
 ## Configuration
 
 `publisher.config.json` lives in this directory. The repository root also contains a symlink (`/publisher.config.json` → `./packages/server/publisher.config.json`) so that running the server from either location picks up the same config. Edit one and you've edited both.
 
-For the BigQuery-enabled variant, see [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) and the [Quick Start in the repo root README](../../README.md#quick-start).
+Two example configs ship with the package: [`publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (the GitHub-hosted sample packages, no connection block) and [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) (adds a BigQuery connection).
 
 ### Remaining deprecation warnings
 
@@ -15,7 +55,7 @@ Removing the unused `trino` CLI direct dep (it pulled in `@google-cloud/translat
 - **npm CLI tooling**: `npmlog`, `gauge`, `are-we-there-yet`, `glob@7/8/10`, `rimraf@3`, `tar@6.2.1`, `inflight`, `@npmcli/move-file`, `node-domexception`, `querystring` — pulled in by npm itself and by `node-pre-gyp`/`node-gyp`. Not actionable from this repo.
 - **`uuid@8.x` / `uuid@9.x`**: surfaced across multiple transitives (Malloy, AWS SDKs, others). Resolves when each upstream bumps to `uuid@11`.
 - **`q@1.5.1`**: pulled in via `thrift` → `@databricks/sql` → `@malloydata/db-databricks`. Resolves when Databricks upgrades `@databricks/sql` past the thrift dep, or when we replace the Databricks driver.
-- **`aws-sdk@2.1693.0`**: listed as a direct dep in `packages/server/package.json` but not imported anywhere in source — leftover, candidate for removal in a follow-up PR. The actual consumer is `@aws-sdk/client-s3` v3.
+- **`aws-sdk@2.1693.0`**: no longer a direct dep (removed from `packages/server/package.json`); anything still surfacing it is transitive. The actual S3 consumer is `@aws-sdk/client-s3` v3.
 
 ## K6 Test Presets
 

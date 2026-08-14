@@ -2753,8 +2753,14 @@ components:
         location:
           type: string
           description:
-            Package location, can be an absolute path or URI (e.g. github, s3,
-            gcs, etc.)
+            Package location. A LOCAL path must start with `./`, `../`, `~/`,
+            or `/` (a bare name like `sales` is silently not treated as local);
+            relative paths resolve against the config file's directory. Remote
+            locations are URIs (github, s3, gcs, https). At boot a local
+            package is COPIED into publisher_data/ and the copy is served, so
+            edits to the source directory are not read; starting the server
+            with `--watch-env <env>` mounts local packages in place (symlink)
+            and live-reloads them instead.
         scope:
           type: string
           enum:
@@ -3799,7 +3805,14 @@ components:
           description: Resource path to the connection
         name:
           type: string
-          description: Name of the connection
+          description:
+            Name of the connection. The name `duckdb` is RESERVED for the
+            per-package DuckDB sandbox every loaded package gets automatically;
+            declaring an environment-level connection with that name fails the
+            whole environment at init. A flat-file (CSV/Parquet/XLSX) package
+            needs no connection entry at all — its models reach the sandbox as
+            `duckdb.table('data/…')`. Name an environment-level DuckDB
+            connection something else (e.g. `shared_duckdb`).
         type:
           type: string
           description: Type of database connection

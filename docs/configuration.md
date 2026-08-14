@@ -49,6 +49,11 @@ Do not author packages under `publisher_data/`. That is storage Publisher manage
 copies each configured package in (or symlinks it, under `--watch-env`), and `--init` deletes the
 whole tree.
 
+The copy is the part that surprises people: **without `--watch-env`, a local package is served
+from its boot-time copy, so edits to your source directory are never read**, however many times
+you save or reload. Local authoring means starting the server with `--watch-env <env>`, which
+mounts the environment's local packages in place and live-reloads them.
+
 A `location` can also be a `https://github.com/...`, `gs://`, or `s3://` URL, which Publisher
 downloads. Only local directories are eligible for `--watch-env`.
 

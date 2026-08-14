@@ -35,4 +35,34 @@ if (copied.length === 0) {
    process.exit(1);
 }
 
-console.log(`Copied ${copied.length} skills to ${destination}`);
+// Stamp each SKILL.md's frontmatter with the package version at pack time, so
+// a copy installed months ago is identifiable on disk. Without this, a stale
+// install and a current one are byte-identical in every way that matters to a
+// reader, and a QA session lost real time to skills that named tools the
+// server no longer serves with nothing saying how old they were (field notes
+// F3). Pack-time only: the repo's source skills stay unstamped so the
+// upstream-sync copies remain byte-identical in both directions.
+const version = (
+   JSON.parse(
+      fs.readFileSync(path.join(packageDir, "package.json"), "utf8"),
+   ) as { version: string }
+).version;
+let stamped = 0;
+for (const entry of copied) {
+   const skillFile = path.join(destination, entry.name, "SKILL.md");
+   const text = fs.readFileSync(skillFile, "utf8");
+   // Insert into the existing frontmatter block rather than appending a new
+   // one; a SKILL.md without frontmatter is left alone rather than guessed at.
+   if (!text.startsWith("---\n")) continue;
+   const close = text.indexOf("\n---", 4);
+   if (close === -1) continue;
+   fs.writeFileSync(
+      skillFile,
+      `${text.slice(0, close)}\nversion: ${version}${text.slice(close)}`,
+   );
+   stamped += 1;
+}
+
+console.log(
+   `Copied ${copied.length} skills to ${destination} (stamped ${stamped} with version ${version})`,
+);
