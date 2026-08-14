@@ -344,6 +344,82 @@ describe("trySemanticSearch", () => {
       expect(rows[0].n).toBe(3);
    });
 
+   it("counts the entities that matched only below the floor", async () => {
+      // gamma is orthogonal to the query and dropped by the floor. Without a
+      // count, an agent cannot tell "dropped as irrelevant" from "not
+      // modelled here at all", and we watched analysts conclude the latter.
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "cutoff",
+         query: "find alpha",
+         limit: 10,
+         entities: [
+            entity("alpha", "src"),
+            entity("beta", "src"),
+            entity("gamma", "src"),
+         ],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
+      expect(result.belowCutoffCount).toBe(1);
+   });
+
+   it("reports a true negative as no hits and nothing below the floor", async () => {
+      // The distinction the count exists for: an empty result with a zero
+      // count means the package genuinely models nothing related.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "find something absent": [0, 1, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "true-negative",
+         query: "find something absent",
+         limit: 10,
+         entities: [entity("alpha", "src")],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits).toEqual([]);
+      // alpha scored 0 against an orthogonal query: below the floor, so it
+      // is counted rather than silently absent.
+      expect(result.belowCutoffCount).toBe(1);
+   });
+
+   it("counts within the drill-down scope, not the whole package", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "scoped-cutoff",
+         query: "find alpha",
+         limit: 10,
+         entities: [
+            entity("alpha", "a"),
+            entity("gamma", "a"),
+            entity("gamma", "b"),
+         ],
+      };
+      await searchReady({ ...base, pkg: {} as unknown as Package });
+      const scoped = await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         sourceName: "a",
+      });
+      if (!("hits" in scoped)) throw new Error("expected hits");
+      // Only source `a`'s gamma is below the floor here; `b`'s is out of
+      // scope entirely, exactly as it is for the ranked query.
+      expect(scoped.belowCutoffCount).toBe(1);
+   });
+
    it("retrieves a fact buried mid-doc by that fact's own content", async () => {
       // Symptom B of the same finding: on a ~300-word source doc, a rare
       // token retrieved the source at rank 1 but near-verbatim business
@@ -900,7 +976,7 @@ describe("trySemanticSearch", () => {
       // the cool-down so the failed sync has fully settled. This
       // converges with or without the finally bump, so it does not mask
       // the pin below.
-      let settled: SemanticSearchResult = { hits: [] };
+      let settled: SemanticSearchResult = { hits: [], belowCutoffCount: 0 };
       for (let i = 0; i < 200; i++) {
          settled = await trySemanticSearch({
             ...base,

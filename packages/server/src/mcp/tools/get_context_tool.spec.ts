@@ -1129,6 +1129,30 @@ describe("get_context semantic retrieval", () => {
       ]);
    });
 
+   it("reports belowCutoffCount on semantic responses, never on lexical ones", async () => {
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         environmentName: "specs",
+         packageName: "cutoff-pkg",
+         query: "where do customers live",
+      };
+
+      // Cold start answers lexically: there is no floor on that path, so
+      // reporting a count would be meaningless.
+      const first = parse(await handler(params));
+      expect(first.retrieval).toBe("lexical");
+      expect(first).not.toHaveProperty("belowCutoffCount");
+
+      // order_items and its join are orthogonal to this query, so they are
+      // dropped by the floor and counted rather than silently missing.
+      const payload = await callUntilSemantic(handler, params);
+      expect(payload.results.map((r: { name: string }) => r.name)).toEqual([
+         "state",
+      ]);
+      expect(payload.belowCutoffCount).toBe(2);
+   });
+
    it("collapses the same concept across sibling sources into one marked row", async () => {
       // The measured worst case: "site of the building" returned SITE at an
       // identical 0.96 from fac_building, fclt_building and
