@@ -178,9 +178,15 @@ The Docker image sets `PUBLISHER_NO_MCP_CONFIG=1`, since no agent session starts
 By default, `malloy_getContext`'s question retrieval is lexical (lunr/BM25) over the model's own
 text, so a query only matches entities that share tokens with it (`departure delay` never finds a
 field named `dep_delay`). Setting `EMBEDDING_API_KEY` switches ranking to embedding similarity:
-each package's entities (source, view, named query, dimension, and measure names plus their
-annotation text) are embedded once and searched by cosine similarity, so synonyms and `snake_case`
+each package's entities (source, view, named query, join, dimension, and measure names plus their
+annotation text) are embedded and searched by cosine similarity, so synonyms and `snake_case`
 names match by meaning.
+
+An entity's name and its documentation are embedded **separately**, and an entity scores as its
+best-matching part. That is deliberate: with one vector per entity, a long `#(doc)` dominated the
+average and the entity stopped matching the plain name of the concept it described, so documenting
+a field well made it harder to find. Scoring on the best part means more documentation can add
+recall but never costs an entity precision on its own name.
 
 What to know before turning it on:
 
@@ -190,9 +196,12 @@ What to know before turning it on:
   `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM) to keep everything
   on-machine; with a local server, also set `EMBEDDING_MODEL` to a model that server actually
   serves, since the default names an OpenAI model.
-- Storage: vectors are cached in the server's own `publisher.db`, keyed by a content hash, so only
-  new or changed entities re-embed, across restarts too. `--init` wipes the cache along with the
-  rest of persisted storage; the only cost of a wipe is re-embedding.
+- Storage: vectors are cached in the server's own `publisher.db`, keyed by a content hash per
+  embedded part, so only new or changed ones re-embed, across restarts too — editing a source's
+  documentation re-embeds that documentation and leaves its name vector alone. `--init` wipes the
+  cache along with the rest of persisted storage; the only cost of a wipe is re-embedding. A server
+  upgrading from a release that embedded one vector per entity discards its cache once, on the
+  first boot after the upgrade, and re-embeds each package on its next question.
 - First query per package: the first question kicks off the embedding sync in the background and
   answers lexically; once the sync lands, later questions are ranked semantically. Responses carry
   a `retrieval` field (`"semantic"` or `"lexical"`) whenever the provider is configured.

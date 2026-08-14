@@ -687,21 +687,60 @@ async function dropStoreBlindIncrementalLedger(
 }
 
 /**
+ * Drop a pre-`facet` embedding cache so the faceted key can be created.
+ *
+ * Same shape, and the same justification, as
+ * dropPackageKeyedIncrementalLedger above: DuckDB cannot re-key in place and
+ * this schema has no migration framework. It is safest of all here, because
+ * this table is purely a vector cache whose own docstring notes that wiping
+ * it only ever costs re-embedding. Reading the key rather than a schema
+ * version makes it self-limiting: once no database carries the old key, it
+ * never fires again.
+ */
+async function dropPreFacetEntityEmbeddings(
+   db: DuckDBConnection,
+): Promise<void> {
+   const present = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_embeddings'",
+   );
+   if (!present || present.length === 0) {
+      return;
+   }
+   const columns = await db.all<{ name: string }>(
+      "PRAGMA table_info('entity_embeddings')",
+   );
+   if (columns.some((column) => column.name === "facet")) {
+      return;
+   }
+   logger.info(
+      "Re-keying the semantic entity cache onto (…, facet) so an entity's name " +
+         "and documentation are embedded separately; each package re-embeds " +
+         "once on its next getContext call",
+   );
+   await db.run("DROP TABLE IF EXISTS entity_embeddings");
+}
+
+/**
  * Vector cache for semantic `malloy_getContext` retrieval (see
- * mcp/tools/embedding_index.ts). One row per discoverable model entity;
- * the primary key mirrors the tool's in-memory dedup key. Rows are
- * content-addressed: the index sync compares `content_hash` (over the
- * embedded text) plus `embedding_model` and re-embeds on mismatch, while
- * a dimensionality change is detected at query time by the stale-row
- * heal, so staleness always self-corrects and wiping the table only
- * ever costs re-embedding. `embedding` is a LIST column searched with
- * list_cosine_similarity; at the entity counts a single Publisher
- * serves, a brute-force scan is faster and simpler than a vector-index
- * extension.
+ * mcp/tools/embedding_index.ts). One row per (entity, facet): an entity's
+ * name is embedded separately from its documentation, and long docs are
+ * split across `doc:N` facets, so a hit is scored on its best-matching
+ * facet rather than on one averaged vector. That is what stops a long doc
+ * from burying the entity's own name — see embedding_index.entityFacets.
+ *
+ * Rows are content-addressed per facet: the index sync compares
+ * `content_hash` (over that facet's embedded text) plus `embedding_model`
+ * and re-embeds on mismatch, so editing a doc re-embeds only the doc
+ * facets. A dimensionality change is detected at query time by the
+ * stale-row heal, so staleness always self-corrects and wiping the table
+ * only ever costs re-embedding. `embedding` is a LIST column searched with
+ * list_cosine_similarity; at the entity counts a single Publisher serves, a
+ * brute-force scan is faster and simpler than a vector-index extension.
  */
 export async function createEntityEmbeddingsTable(
    db: DuckDBConnection,
 ): Promise<void> {
+   await dropPreFacetEntityEmbeddings(db);
    await db.run(`
     CREATE TABLE IF NOT EXISTS entity_embeddings (
       environment_name VARCHAR NOT NULL,
@@ -709,13 +748,14 @@ export async function createEntityEmbeddingsTable(
       entity_kind VARCHAR NOT NULL,
       entity_source VARCHAR NOT NULL,
       entity_name VARCHAR NOT NULL,
+      facet VARCHAR NOT NULL,
       model_path VARCHAR NOT NULL,
       content_hash VARCHAR NOT NULL,
       embedding_model VARCHAR NOT NULL,
       dims INTEGER NOT NULL,
       embedding FLOAT[] NOT NULL,
       updated_at TIMESTAMP NOT NULL,
-      PRIMARY KEY (environment_name, package_name, entity_kind, entity_source, entity_name)
+      PRIMARY KEY (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
     )
   `);
 }
