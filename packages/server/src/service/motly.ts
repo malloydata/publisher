@@ -388,21 +388,77 @@ export function docCommentText(texts: readonly string[]): string | undefined {
 }
 
 /**
+ * A doc comment split where a title fallback would cut it: the first non-empty
+ * line, and whatever prose follows it.
+ *
+ * One function because the two halves have to agree about where the cut is. The
+ * rule "a title is the first non-empty line" lives here and nowhere else, so a
+ * caller that takes the title cannot disagree with a caller that takes the rest.
+ */
+function splitDocComment(texts: readonly string[]): {
+   title?: string;
+   body?: string;
+} {
+   const text = docCommentText(texts);
+   if (text === undefined) return {};
+   const lines = text.split("\n");
+   const titleLine = lines.findIndex((line) => line.trim().length > 0);
+   // `docCommentText` returns undefined when every line is blank, so a comment
+   // that got here has one. Guarded anyway rather than indexed with -1.
+   if (titleLine === -1) return {};
+   const body = lines
+      .slice(titleLine + 1)
+      .join("\n")
+      // Leading blank lines are the separator between the title line and the
+      // paragraph after it, and belong to neither.
+      .replace(/^[ \t\r\n]+/, "")
+      .trimEnd();
+   return {
+      title: lines[titleLine].trim(),
+      body: body.length > 0 ? body : undefined,
+   };
+}
+
+/**
  * The first non-empty line of a doc comment, for a field that must be one line.
  *
  * {@link docCommentText} joins with newlines on purpose, because that route
  * carries markdown and authors write one line per source line. A title is not
  * markdown and is rendered on one line everywhere, so using the whole comment
- * as a title fallback published an embedded newline. Every title fallback in
- * the codebase goes through this, so the two cannot drift: there are three of
- * them (a notebook listing, a composite dashboard, a single-query dashboard)
- * and fixing only the first is how this was a defect twice.
+ * as a title fallback published an embedded newline.
  */
 export function docCommentTitle(texts: readonly string[]): string | undefined {
-   return docCommentText(texts)
-      ?.split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
+   return splitDocComment(texts).title;
+}
+
+/**
+ * The title and description a document publishes, resolved together.
+ *
+ * Separately, they printed the same words twice. `description` was the whole doc
+ * comment and `title` fell back to its first line, so a one-line `#" Orders by
+ * region` with no `title=` produced a heading and a subtitle reading identically,
+ * which is what the dashboard page rendered. Deriving both here means the line
+ * the title took is the line the description does not repeat.
+ *
+ * An explicit `title=` changes that: it did not consume any of the comment, so
+ * the comment stays the description in full.
+ *
+ * Every title fallback in the codebase goes through this, so the two cannot
+ * drift: there are three of them (a notebook listing, a composite dashboard, a
+ * single-query dashboard) and fixing only the first is how this was a defect
+ * twice. Neither field gets a final fallback here, because the callers do not
+ * share one: a dashboard falls back to its slug, a notebook to its first
+ * markdown heading.
+ */
+export function docCommentTitleAndDescription(
+   texts: readonly string[],
+   explicitTitle: string | undefined,
+): { title?: string; description?: string } {
+   if (explicitTitle !== undefined) {
+      return { title: explicitTitle, description: docCommentText(texts) };
+   }
+   const { title, body } = splitDocComment(texts);
+   return { title, description: body };
 }
 
 /**

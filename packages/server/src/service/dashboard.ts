@@ -38,7 +38,7 @@ import {
 } from "./given";
 import {
    docCommentText,
-   docCommentTitle,
+   docCommentTitleAndDescription,
    motlyAnnotations,
    motlyParseErrors,
    motlyTag,
@@ -55,6 +55,7 @@ import {
 // of the dashboard grammar from the outside.
 export {
    docCommentText,
+   docCommentTitleAndDescription,
    motlyAnnotations,
    quoteFilterLiterals,
    unwrapFilterLiteral,
@@ -682,11 +683,14 @@ export function buildDashboardManifest(
          const givenNames = resolveTileGivens(query, facts);
          return givenNames ? { query, givenNames } : { query };
       });
+      const doc = docCommentTitleAndDescription(
+         facts.modelAnnotations,
+         composite.title,
+      );
       return {
          ...base,
-         title:
-            composite.title ?? docCommentTitle(facts.modelAnnotations) ?? name,
-         description: docCommentText(facts.modelAnnotations),
+         title: doc.title ?? name,
+         description: doc.description,
          tiles,
          dashboardColumns: composite.dashboardColumns,
          startingGivens: composite.givens,
@@ -722,12 +726,14 @@ export function buildDashboardManifest(
       const tag = motlyTag(query.annotations);
       const artifact = tag ? readArtifactTag(tag) : undefined;
       if (!artifact) continue;
-      const doc = docCommentText(query.annotations);
-      const docTitle = docCommentTitle(query.annotations);
+      const doc = docCommentTitleAndDescription(
+         query.annotations,
+         artifact.title,
+      );
       return {
          ...base,
-         title: artifact.title ?? docTitle ?? name,
-         description: doc,
+         title: doc.title ?? name,
+         description: doc.description,
          query: query.name,
          dashboardColumns: artifact.dashboardColumns,
          startingGivens: artifact.givens,

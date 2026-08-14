@@ -93,8 +93,7 @@ import {
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
-   docCommentText,
-   docCommentTitle,
+   docCommentTitleAndDescription,
    motlyTag,
    readAutorun,
    readStartingGivens,
@@ -2302,15 +2301,15 @@ export class Model {
       // This notebook's own `##` only: a title belongs to one document, so an
       // imported model's `## title=` or `#"` doc comment must not become it.
       const annotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
-      const description = docCommentText(annotations);
+      // Both fields together, so the line the title falls back to is not also
+      // printed as the description; see `docCommentTitleAndDescription`.
+      const doc = docCommentTitleAndDescription(
+         annotations,
+         tagText(motlyTag(annotations), "title"),
+      );
       return {
-         // A title is one line; see `docCommentTitle`. The full text stays on
-         // `description`.
-         title:
-            tagText(motlyTag(annotations), "title") ??
-            docCommentTitle(annotations) ??
-            this.firstMarkdownHeading(),
-         description,
+         title: doc.title ?? this.firstMarkdownHeading(),
+         description: doc.description,
       };
    }
 

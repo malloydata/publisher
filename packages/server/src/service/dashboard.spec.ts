@@ -4,6 +4,7 @@ import {
    normalizeTileExpression,
    dashboardSlug,
    docCommentText,
+   docCommentTitleAndDescription,
    filterPublisherOwnedRenderLogs,
    isDashboardModelPath,
    matchesDocumentedDashboardName,
@@ -100,6 +101,60 @@ describe("service/dashboard annotation routing", () => {
       expect(docCommentText(["# artifact\n", "#(doc) not this\n"])).toBe(
          undefined,
       );
+   });
+});
+
+describe("service/dashboard title and description together", () => {
+   // The defect this exists to prevent: `description` was the whole doc comment
+   // while `title` fell back to its first line, so a one-line comment with no
+   // `title=` published the same words twice and the page rendered a heading
+   // with an identical subtitle under it.
+   it("does not repeat the title line in the description", () => {
+      expect(
+         docCommentTitleAndDescription(['#" Orders by region\n'], undefined),
+      ).toEqual({ title: "Orders by region", description: undefined });
+   });
+
+   it("keeps the prose after the title line as the description", () => {
+      expect(
+         docCommentTitleAndDescription(
+            ['#" Orders by region\n', '#"\n', '#" Updated nightly.\n'],
+            undefined,
+         ),
+      ).toEqual({
+         title: "Orders by region",
+         description: "Updated nightly.",
+      });
+   });
+
+   // An explicit title consumed none of the comment, so the comment stays whole.
+   it("keeps the whole comment when the title was written out", () => {
+      expect(
+         docCommentTitleAndDescription(
+            ['#" Orders by region\n'],
+            "Regional sales",
+         ),
+      ).toEqual({
+         title: "Regional sales",
+         description: "Orders by region",
+      });
+   });
+
+   it("has neither when there is no comment and no title", () => {
+      expect(
+         docCommentTitleAndDescription(["# artifact\n"], undefined),
+      ).toEqual({ title: undefined, description: undefined });
+   });
+
+   // A blank line between the title and the body separates them and belongs to
+   // neither, but a blank line INSIDE the body is a paragraph break and stays.
+   it("keeps paragraph breaks inside the description", () => {
+      expect(
+         docCommentTitleAndDescription(
+            ['#" Title\n', '#" First.\n', '#"\n', '#" Second.\n'],
+            undefined,
+         ).description,
+      ).toBe("First.\n\nSecond.");
    });
 });
 
@@ -200,7 +255,9 @@ describe("service/dashboard manifest (single-query form)", () => {
          }),
       );
       expect(withDoc?.title).toBe("Business health at a glance.");
-      expect(withDoc?.description).toBe("Business health at a glance.");
+      // And NOT also the description. The title took the only line there was,
+      // so repeating it would print the same words twice on the page.
+      expect(withDoc?.description).toBe(undefined);
 
       const bare = build(
          facts({
@@ -894,7 +951,10 @@ describe("service/dashboard multi-line doc comment as a title", () => {
       );
       expect(m?.title).toBe("Business Overview");
       expect(m?.title ?? "").not.toContain("\n");
-      expect(m?.description).toBe("Business Overview\nUpdated nightly.");
+      // The description is what the title did NOT take. Asserting the whole
+      // comment here is what pinned the duplicate: the first line was published
+      // twice, as the heading and again under it.
+      expect(m?.description).toBe("Updated nightly.");
    });
 
    it("takes only the first line on the composite form", () => {
@@ -910,7 +970,10 @@ describe("service/dashboard multi-line doc comment as a title", () => {
       );
       expect(m?.title).toBe("Business Overview");
       expect(m?.title ?? "").not.toContain("\n");
-      expect(m?.description).toBe("Business Overview\nUpdated nightly.");
+      // The description is what the title did NOT take. Asserting the whole
+      // comment here is what pinned the duplicate: the first line was published
+      // twice, as the heading and again under it.
+      expect(m?.description).toBe("Updated nightly.");
    });
 });
 
