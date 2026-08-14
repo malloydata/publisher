@@ -1129,6 +1129,47 @@ describe("get_context semantic retrieval", () => {
       ]);
    });
 
+   it("says WHY a configured server answered lexically, and stops once semantic", async () => {
+      // "lexical" alone is a dead end: an agent cannot tell a cold index,
+      // which clears in seconds and is worth one retry, from a down provider,
+      // which is not. Only the first is actionable, so only naming it helps.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         environmentName: "specs",
+         packageName: "reason-pkg",
+         query: "where do customers live",
+      };
+      const first = parse(await handler(params));
+      expect(first.retrieval).toBe("lexical");
+      expect(first.retrievalReason).toBe("indexing");
+
+      const warm = await callUntilSemantic(handler, params);
+      expect(warm).not.toHaveProperty("retrievalReason");
+   });
+
+   it("reports a dead provider as provider-error, then as cooldown", async () => {
+      // Two different remedies behind one "lexical": the first call learns the
+      // endpoint is down, and every call in the window after it is being
+      // short-circuited deliberately rather than re-probing.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         environmentName: "specs",
+         packageName: "dead-provider-pkg",
+         query: "where do customers live",
+      };
+      await callUntilSemantic(handler, params);
+
+      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
+      const failed = parse(await handler(params));
+      expect(failed.retrieval).toBe("lexical");
+      expect(failed.retrievalReason).toBe("provider-error");
+
+      const cooled = parse(await handler(params));
+      expect(cooled.retrievalReason).toBe("cooldown");
+   });
+
    it("reports belowCutoffCount on semantic responses, never on lexical ones", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());

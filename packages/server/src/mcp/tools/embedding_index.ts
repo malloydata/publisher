@@ -1007,3 +1007,62 @@ export async function trySemanticSearch(args: {
       return { unavailable: "error" };
    }
 }
+
+/** What a package's semantic index is currently doing. */
+export interface EmbeddingIndexStatus {
+   status: "indexing" | "ready" | "cooldown" | "oversize";
+   /** Rows cached for this package, across all entities and facets. */
+   embeddedRows: number;
+   /** Entities the package currently exposes to retrieval. */
+   totalEntities: number;
+   /** Most recent row write, absent when nothing is cached yet. */
+   lastSyncedAt?: string;
+}
+
+/**
+ * Report a package's embedding-index state for the REST Package resource.
+ *
+ * The state existed only as a debug log line ("Synced entity embeddings"),
+ * so anything wanting to wait for a warm index — a harness measuring
+ * retrieval, an operator checking an upgrade re-embedded — had to scrape the
+ * server log. This reads the same state the search path uses.
+ *
+ * Derived, never authoritative: it takes no mutex and writes nothing, so
+ * calling it cannot perturb or serialize behind a sync in flight.
+ */
+export async function getEmbeddingIndexStatus(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+   entityCount: number,
+): Promise<EmbeddingIndexStatus> {
+   const row = await db.get<{ n: number; last: string | null }>(
+      `SELECT CAST(COUNT(*) AS INTEGER) AS n,
+              CAST(MAX(updated_at) AS VARCHAR) AS last
+       FROM entity_embeddings
+       WHERE environment_name = ? AND package_name = ?`,
+      [environmentName, packageName],
+   );
+   const embeddedRows = row?.n ?? 0;
+   const lastSyncedAt = row?.last ?? undefined;
+   const meta = syncMeta.get(metaKey(environmentName, packageName));
+
+   const status: EmbeddingIndexStatus["status"] =
+      entityCount > MAX_EMBEDDED_ENTITIES
+         ? "oversize"
+         : meta && inCooldown(meta)
+           ? "cooldown"
+           : // Rows exist and nothing is mid-write: the cache is serving.
+             // An entity with no doc has one row, so a synced package always
+             // has at least as many rows as entities.
+             embeddedRows >= entityCount && !meta?.mutex.isLocked()
+             ? "ready"
+             : "indexing";
+
+   return {
+      status,
+      embeddedRows,
+      totalEntities: entityCount,
+      ...(lastSyncedAt ? { lastSyncedAt } : {}),
+   };
+}
