@@ -7,6 +7,7 @@ import {
    isSourceDef,
    MalloyConfig,
    MalloyError,
+   Annotations,
    ModelDef,
    modelDefToModelInfo,
    ModelMaterializer,
@@ -76,6 +77,11 @@ import {
    ownLevelNoteTexts,
    ownModelNotes,
 } from "./annotations";
+import {
+   composeDeclaredQueryMetadata,
+   type ReadableTag,
+   type WirePackageMaterialization,
+} from "./build_plan";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -148,6 +154,13 @@ export interface ModelQueryMetadataInput {
       default?: QueryMetadata | null;
       enforced?: QueryMetadata | null;
    } | null;
+   /**
+    * The package manifest's `materialization` block, for its
+    * `queryMetadata` — the least specific author-declared layer. Supplied by the
+    * controller, which owns the package; the model knows only its own file and
+    * its package's NAME.
+    */
+   packageMaterialization?: WirePackageMaterialization | null;
 }
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -3091,6 +3104,7 @@ export class Model {
          appliedQueryMetadata = this.resolveQueryMetadata(
             queryMetadataInput,
             preparedResult.connectionName,
+            sourceName,
          );
 
          queryResults = await runnable.run({
@@ -3248,6 +3262,7 @@ export class Model {
             appliedQueryMetadata = this.resolveQueryMetadata(
                queryMetadataInput,
                livePrepared.connectionName,
+               sourceName,
             );
             queryResults = await liveRunnable!.run({
                rowLimit,
@@ -3435,17 +3450,33 @@ export class Model {
     * default, the caller's request override, and the server's context (which
     * package, which model, which class of work), merged most-specific-wins.
     *
-    * There is no model-side layer here. `materialization.queryMetadata` describes
-    * how a persist source is BUILT; a live query against the model is a different
-    * unit of work, and inheriting a build's tags would attribute interactive
-    * traffic to the build that happens to share the source.
+    * The author-declared layers ARE included, composed by
+    * {@link composeDeclaredQueryMetadata} exactly as the build path composes
+    * them. This reverses an earlier decision to omit them, which read
+    * `materialization.queryMetadata` as describing only how a persist source is
+    * BUILT and reasoned that a live query is a different unit of work.
+    *
+    * What that reasoning missed is which properties the layer actually carries.
+    * The build-identifying properties — `run_id`, `trigger`, `source`, `class` —
+    * come from the CONTEXT layer, which is per-statement and never inherited, so
+    * a served query cannot be mistaken for a build no matter what the author
+    * declared. The declared layer carries the author's own vocabulary (a team, a
+    * cost centre, a data tier), which describes the SOURCE and is as true of a
+    * query reading it as of the build writing it. Omitting it meant a deployment
+    * could attribute its builds and not the interactive traffic that is most of
+    * its warehouse bill.
+    *
+    * The block is named `materialization.queryMetadata` for historical reasons;
+    * the name is narrower than the thing it declares.
     *
     * Fails open, like every other metadata path: a connection whose config can't
-    * be read contributes no default rather than failing the query.
+    * be read contributes no default rather than failing the query, and an
+    * unparseable annotation contributes no layer rather than throwing.
     */
    private resolveQueryMetadata(
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,
+      sourceName?: string,
    ): QueryMetadata | undefined {
       let connectionLayers: {
          default?: QueryMetadata | null;
@@ -3461,6 +3492,11 @@ export class Model {
       const resolved = mergeQueryMetadata({
          connection: connectionLayers?.default,
          enforced: connectionLayers?.enforced,
+         model: composeDeclaredQueryMetadata({
+            packageMaterialization: input?.packageMaterialization,
+            modelTag: this.safeModelFileTag(),
+            sourceTag: this.safeSourceTag(sourceName),
+         }),
          request: input?.request,
          context: {
             queryClass: input?.queryClass ?? "interactive",
@@ -3478,6 +3514,52 @@ export class Model {
          });
       }
       return resolved.metadata;
+   }
+
+   /**
+    * The model file's own `##` tag, or undefined if it is absent or fails to
+    * parse. Read off `modelDef`, which survives the worker serialization
+    * boundary — so this works for a freshly-compiled model and a deserialized
+    * one alike, the same reason `fileLevelAuthorize` is derived there.
+    */
+   private safeModelFileTag(): ReadableTag | undefined {
+      if (!this.modelDef) return undefined;
+      try {
+         return new Annotations(modelAnnotations(this.modelDef)).parseAsTag()
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * The named source's own `#@` tag, or undefined when the request named no
+    * source, the name is not a top-level source, or the annotation fails to
+    * parse.
+    *
+    * A request that does not name a source (ad-hoc query text, a notebook cell)
+    * gets the package and model-file layers but not this one: with no source
+    * named there is no single annotation to read, and a query may touch several
+    * sources whose declarations disagree. Guessing one would attribute a
+    * statement to a source the caller never asked for, which is worse than
+    * carrying one layer fewer.
+    */
+   private safeSourceTag(
+      sourceName: string | undefined,
+   ): ReadableTag | undefined {
+      if (!sourceName || !this.modelDef) return undefined;
+      try {
+         const contents = this.modelDef.contents as Record<
+            string,
+            { annotations?: unknown } | undefined
+         >;
+         const def = contents?.[sourceName];
+         if (!def?.annotations) return undefined;
+         return new Annotations(def.annotations).parseAsTag("@")
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
    }
 
    private getStandardModel(): ApiCompiledModel {

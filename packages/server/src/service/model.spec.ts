@@ -1190,6 +1190,76 @@ describe("service/model", () => {
          expect(result.queryCorrelationId).toBe("corr-1");
       });
 
+      it("carries the package's declared properties onto a SERVED query", async () => {
+         // The gap this closes: declared properties reached materialization
+         // statements and nothing else, so a deployment could attribute its
+         // builds and not the interactive traffic that is most of its warehouse
+         // bill. A served query arrived carrying the platform's context and none
+         // of the author's own vocabulary.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-2",
+               packageMaterialization: {
+                  queryMetadata: { team: "finance", tier: "bronze" },
+               },
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.team).toBe("finance");
+         expect(attached.tier).toBe("bronze");
+         // Context still applies on top, and is what distinguishes a served
+         // statement from a build of the same source.
+         expect(attached.class).toBe("interactive");
+      });
+
+      it("lets the request override a declared property, and keeps the rest", async () => {
+         // Precedence across the two layers that were never composed together
+         // before: a caller's per-request bag is more specific than anything the
+         // author declared, but must not evict what it does not mention.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-3",
+               request: { tier: "platinum" },
+               packageMaterialization: {
+                  queryMetadata: { team: "finance", tier: "bronze" },
+               },
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.tier).toBe("platinum");
+         expect(attached.team).toBe("finance");
+      });
+
       it("returns servedFrom and an execution time to the caller", async () => {
          // A storage-served answer is byte-identical to a live one, so without
          // these two a caller cannot tell that materialization did anything.
