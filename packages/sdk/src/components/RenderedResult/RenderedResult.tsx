@@ -157,18 +157,17 @@ function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
 }
 
 /**
- * The renderer puts its DOM inside a Shadow Root (attachShadow), so a
- * `<style>` tag in `document.head` cannot reach `.dashboard-item` or any
- * of the renderer's other internal classes — Shadow DOM blocks selector
- * matching across the boundary. CSS variables DO cross the boundary
- * (that's why `--malloy-render--background` already paints the top-level
- * `.malloy-render` container), but selectors don't.
+ * CSS overrides for the renderer's own hardcoded colours.
  *
- * The renderer's own API for "add a stylesheet that takes effect inside
- * the shadow root" is `MalloyViz.addStylesheet()`. We register our
- * overrides through that path once, at module load, before any viz is
- * constructed. The renderer dedupes by identity, so calling it multiple
- * times in dev (HMR) is safe.
+ * These are appended as a `<style>` in `document.head` by
+ * `injectRendererOverrides` below, which is the mechanism actually in use and
+ * is described where it happens. An earlier version of this block said the
+ * renderer puts its DOM in a Shadow Root and that we register through
+ * `MalloyViz.addStylesheet()`. Neither is true of this code: nothing here calls
+ * that API, and were the boundary real a `document.head` stylesheet could not
+ * reach `.malloy-dashboard` at all, which is precisely what these rules do and
+ * what the theming tests check. Selectors are written at higher specificity
+ * than the renderer's own so they win regardless of stylesheet order.
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
 /* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard
@@ -506,7 +505,18 @@ function RenderedResultInner({
             try {
                if (binding) {
                   const names = drillableFieldNames(viz, binding.canDrill);
-                  const mark = () => markDrillableCells(stageNode, names);
+                  // Guarded INSIDE, not just at the first call. The try
+                  // below wraps this function's definition, not the frames the
+                  // observer schedules it on, so a throw on a re-mark escaped
+                  // to the window and the isolation only ever covered the
+                  // synchronous pass.
+                  const mark = () => {
+                     try {
+                        markDrillableCells(stageNode, names);
+                     } catch (markError) {
+                        console.warn("Drill affordance skipped:", markError);
+                     }
+                  };
                   mark();
                   if (
                      names.size > 0 &&

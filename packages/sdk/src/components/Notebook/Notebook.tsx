@@ -276,8 +276,20 @@ export default function Notebook({
          // knowable here and is not knowable at the click. Set under the name
          // the MODEL declares, not the one the tag spelled, so the value goes
          // into the URL and the request under the one name the server knows.
-         const value = encodeDrillValue(rawValue, declaredTypes.get(declared));
-         if (value === undefined) return;
+         const declaredType = declaredTypes.get(declared);
+         const value = encodeDrillValue(rawValue, declaredType);
+         if (value === undefined) {
+            // Say so. Returning in silence left a whole column painted as
+            // clickable while every click did nothing, and a `given=` pointing
+            // at a type the clicked value cannot become is an authoring
+            // mistake the author has no other way to see. The sibling refusal
+            // in `resolveDrill` warns for the same reason.
+            console.warn(
+               `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
+                  (declaredType ? ` of type ${declaredType}` : ""),
+            );
+            return;
+         }
          setGiven(declared, value);
       },
       [declaredTypes, notebookPath, resolveGiven, setGiven],

@@ -59,8 +59,17 @@ export function drillableFieldNames(
    const taken = new Set<string>();
    for (const field of fields) {
       if (!field || canDrill(field)) continue;
+      // A `# hidden` field renders no header, so it cannot be confused with
+      // anything and must not suppress a drillable field's spelling. Counting
+      // it gave up the affordance on a column nothing else could collide with.
+      if (field.tag?.tag("hidden") !== undefined) continue;
       taken.add(field.tag?.text("label") ?? field.name);
    }
+   // STILL over-broad for nests: `getAllFields` is flat, so a field inside a
+   // nested view that renders no header of its own in THIS table is counted
+   // here too. Narrowing that needs the nesting structure, which this flat list
+   // does not carry, and erring toward suppression costs an affordance rather
+   // than painting a dead link.
 
    for (const field of fields) {
       if (!field || !canDrill(field)) continue;
@@ -156,9 +165,15 @@ export function markDrillableCells(
          // the renderer draws a null cell as the glyph `∅` inside a
          // `.value-null` span, so its `textContent` is not empty and every null
          // cell stayed marked, which is the exact case this guard was added for.
+         // The U+200B strip is for the renderer's own soft-wrap hints inside
+         // long HEADER names, not for values, and stripping it here made this
+         // disagree with the resolver in the other direction: a cell whose
+         // value IS a zero-width space is refused an affordance while
+         // `drillValueToFilter` accepts it and drills fine. `trim()` already
+         // leaves U+200B alone, which is the boundary `filterValue` documents.
          const hasValue =
             !cell.querySelector(".value-null") &&
-            (cell.textContent ?? "").replace(/\u200b/g, "").trim() !== "";
+            (cell.textContent ?? "").trim() !== "";
          // Leaf value cells only: a cell wrapping a nested table is structure,
          // and its click lands on the inner cell anyway.
          if (

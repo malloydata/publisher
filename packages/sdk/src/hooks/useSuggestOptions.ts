@@ -165,8 +165,14 @@ export function useSuggestOptions(
       return byName;
       // `results` is a fresh array each render; its data identity is what
       // matters, so depend on that rather than the wrapper objects.
+      //
+      // `JSON.stringify`, not `join("|")`. `join` flattens a nested array with
+      // commas and renders undefined as empty, so genuinely different option
+      // lists produced the SAME key: `[["a","b"]]` and `[["a,b"]]` both give
+      // `a,b`, and `[undefined]`, `[[]]` and `[[""]]` all give `""`. A refetch
+      // between two colliding lists left the previous dropdown in place.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [suggestable, results.map((result) => result.data).join("|")]);
+   }, [suggestable, JSON.stringify(results.map((result) => result.data))]);
 
    const failed = useMemo(() => {
       const names = new Set<string>();

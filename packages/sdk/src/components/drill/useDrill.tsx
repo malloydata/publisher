@@ -175,19 +175,25 @@ export function useDrill({
             <ListSubheader sx={{ lineHeight: "32px" }}>
                {menu ? `${menu.intent.label} →` : ""}
             </ListSubheader>
-            {(menu?.destinations ?? []).map((destination) => (
-               <MenuItem
-                  key={destination}
-                  onClick={() => {
-                     close();
-                     if (menu) go(menu.intent, destination, menu.event);
-                  }}
-               >
-                  {destination === DRILL_SELF
-                     ? selfLabel
-                     : humanizeSlug(destination)}
-               </MenuItem>
-            ))}
+            {/* Deduplicated: `# drill { to=[overview, overview] }` is a typo
+                rather than a request for two identical rows, and React keys
+                these by destination, so the duplicate warned as well as
+                rendered twice. */}
+            {Array.from(new Set(menu?.destinations ?? [])).map(
+               (destination) => (
+                  <MenuItem
+                     key={destination}
+                     onClick={() => {
+                        close();
+                        if (menu) go(menu.intent, destination, menu.event);
+                     }}
+                  >
+                     {destination === DRILL_SELF
+                        ? selfLabel
+                        : humanizeSlug(destination)}
+                  </MenuItem>
+               ),
+            )}
          </Menu>
       ),
    };
