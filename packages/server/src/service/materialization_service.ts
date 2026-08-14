@@ -344,6 +344,29 @@ function collectSensitiveValues(value: unknown, out: Set<string>): void {
  * account JSON / connection strings a federation or attach error can echo. Only
  * the concrete secret values are removed, not the message structure.
  */
+/**
+ * How many sources a run built, failed on, and reused, counted from what the
+ * build returned rather than from what it was asked to do.
+ *
+ * Two things make the instruction list the wrong denominator: an instruction can
+ * be skipped without building (no matching compiled source), and a source that
+ * failed is recorded as an entry carrying its reason -- so counting instructions
+ * would report both as built.
+ */
+export function tallySources(
+   entries: Record<string, ManifestEntry>,
+   carried: Record<string, ManifestEntry>,
+): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
+   const returned = Object.values(entries);
+   return {
+      sourcesBuilt: returned.filter(
+         (e) => !isFailedEntry(e) && !carried[e.sourceEntityId!],
+      ).length,
+      sourcesFailed: returned.filter(isFailedEntry).length,
+      sourcesReused: Object.keys(carried).length,
+   };
+}
+
 export function redactConnectionSecrets(
    message: string,
    ...connections: unknown[]
@@ -842,14 +865,10 @@ export class MaterializationService {
             incremental,
          );
 
-         // Counted from what the build actually returned, not from what it was
-         // asked to do: a source that failed is recorded in the manifest with its
-         // reason, so instructions.length would report it as built.
-         const sourcesFailed = Object.values(entries).filter((e) =>
-            isFailedEntry(e as ManifestEntry),
-         ).length;
-         const sourcesBuilt = instructions.length - sourcesFailed;
-         const sourcesReused = Object.keys(carried).length;
+         const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
+            entries,
+            carried,
+         );
          const durationMs = Date.now() - startedAt;
          await this.commitManifest(id, entries, {
             forceRefresh: opts.forceRefresh,
