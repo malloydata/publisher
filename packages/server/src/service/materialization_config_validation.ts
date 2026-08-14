@@ -26,6 +26,7 @@ import type { components } from "../api";
 import {
    queryMetadataAdvisoryWarnings,
    queryMetadataBudgetWarning,
+   queryMetadataReservedWarnings,
    queryMetadataViolations,
    type QueryMetadata,
 } from "./query_metadata";
@@ -63,6 +64,7 @@ function metadataWarnings(
    return [
       ...queryMetadataViolations(metadata),
       ...queryMetadataAdvisoryWarnings(metadata),
+      ...queryMetadataReservedWarnings(metadata),
       ...(budget ? [budget] : []),
    ].map((message) => ({
       // The level is in the message because a reader needs to know WHICH

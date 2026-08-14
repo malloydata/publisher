@@ -157,6 +157,26 @@ export function queryMetadataAdvisoryWarnings(meta: QueryMetadata): string[] {
 }
 
 /**
+ * Declared properties whose names the server owns, and which
+ * {@link mergeQueryMetadata} therefore drops from a declaration.
+ *
+ * Separate from {@link queryMetadataAdvisoryWarnings} because the failure is a
+ * different one: an advisory property is attached and then discarded by ONE
+ * backend, while a reserved one is never attached at all. Both belong at a
+ * declaration boundary rather than in a metric — a `queryMetadata` block naming
+ * `model` publishes clean, vanishes on every statement, and reports it only as a
+ * counter tick, which is the shape of thing an author cannot debug.
+ */
+export function queryMetadataReservedWarnings(meta: QueryMetadata): string[] {
+   return Object.keys(meta)
+      .filter((name) => RESERVED_NAMES.has(name))
+      .map(
+         (name) =>
+            `queryMetadata property '${name}' is a name the server sets itself, so it is dropped rather than attached; rename it (for example '${name}_label')`,
+      );
+}
+
+/**
  * The budget warning for a declaration of `declared` properties, or undefined
  * when it fits.
  *
