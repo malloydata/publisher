@@ -172,7 +172,16 @@ export type ModelType = "model" | "notebook";
  * the virtual-source transform. `live_fallback` = it routed, then a run-time
  * store failure degraded it to the live warehouse — a success the caller cannot
  * distinguish from a storage hit, which is exactly why it is reported
- * separately. Absent means the query never had a storage binding to consider.
+ * separately.
+ *
+ * Absent covers three cases, not one: the query never had a storage binding to
+ * consider; it was answered from a COLOCATED materialized table, which this type
+ * does not describe at all (manifest substitution never reaches the routing
+ * decision below); or the transform was ineligible for this query and it was
+ * served live. That last case is counted as
+ * `publisher_storage_serve_routing_total{outcome=live_fallback}` — a different
+ * meaning of that token from the `live_fallback` in this type, which the metric
+ * calls `runtime_live_fallback`.
  */
 export type ServedFrom = "storage" | "live_fallback";
 type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
