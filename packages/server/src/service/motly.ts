@@ -789,18 +789,6 @@ export function readAutorun(tag: Tag | undefined): boolean {
 }
 
 /**
- * Starting values for a document's controls, from a `givens { … }` block.
- *
- * Values come back in the shape the query endpoint takes, so a `filter<…>` is
- * the filter body rather than the `f'…'` literal it is written as (see
- * {@link unwrapFilterLiteral}). URL parameters override these.
- *
- * Shared so a notebook's `## givens { REGION=f'US' }` and a dashboard's
- * `# artifact { givens { REGION=f'US' } }` mean the same thing. Like
- * `autorun`, where a document starts is a property of the document, not of the
- * surface presenting it.
- */
-/**
  * A tag value's scalar type, or undefined. Guarded like {@link tagText}: this
  * one does not stringify, so it cannot throw on a bad literal, but it is kept
  * beside its sibling so every read of a tag goes through one shape.
@@ -844,6 +832,18 @@ function authoredDay(isoText: string): string {
    return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+/**
+ * Starting values for a document's controls, from a `givens { … }` block.
+ *
+ * Values come back in the shape the query endpoint takes, so a `filter<…>` is
+ * the filter body rather than the `f'…'` literal it is written as (see
+ * {@link unwrapFilterLiteral}). URL parameters override these.
+ *
+ * Shared so a notebook's `## givens { REGION=f'US' }` and a dashboard's
+ * `# artifact { givens { REGION=f'US' } }` mean the same thing. Like
+ * `autorun`, where a document starts is a property of the document, not of the
+ * surface presenting it.
+ */
 export function readStartingGivens(
    tag: Tag | undefined,
 ): Record<string, string> | undefined {

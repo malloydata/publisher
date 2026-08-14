@@ -191,9 +191,11 @@ export function dashboardSlug(modelPath: string): string {
 /**
  * Whether a name matches the `dashboardName` pattern `api-doc.yaml` documents.
  *
- * ADVISORY ONLY. It does not decide whether a dashboard is served: every
- * dashboard is served, and its name is percent-encoded into the published URL,
- * so the route resolves whatever the name contains. The spec declares no
+ * ADVISORY ONLY. It does not decide whether a dashboard is served. Curation
+ * does, and can withhold one (see `Package.isQueryableEntryPoint`); what this
+ * governs is that a name is never the reason. A served dashboard's name is
+ * percent-encoded into the published URL, so the route resolves whatever the
+ * name contains. The spec declares no
  * pattern on `dashboardName` either, deliberately, because the name comes from
  * a filename rather than being chosen. What this governs is the CONVENTION,
  * which is worth reporting because a name outside it has to be percent-encoded
@@ -567,7 +569,15 @@ function referencedTileGivens(
    );
 }
 
-/** Build the control row for a set of given names, in declaration-tag order. */
+/**
+ * Build the control row for a set of given names, in the order the NAMES arrive,
+ * which is the order the query references them rather than the order the model
+ * declares them. Two dashboards over the same givens can therefore order their
+ * controls differently, tracking where the author wrote the `where:` clauses.
+ * Both fixtures happen to declare and reference alike, so no test distinguishes
+ * the two; an earlier version of this line claimed declaration order and was
+ * wrong.
+ */
 function buildGivenSpecs(
    names: readonly string[],
    declarations: Map<string, DashboardGivenDeclaration>,
@@ -595,13 +605,19 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
       // shipped `GivenInput` renders from `annotations`, while the spec said a
       // dashboard and a notebook render the same control for the same given.
       //
-      // A bracketed route is what `isReservedRoute` admits: it is the only
-      // shape here carrying a letter or digit in its route, since the reserved
-      // ones are plain `#`, `#"` and `##!`. Matched on the prefix rather than
+      // Every non-reserved route shape, not just `#(`. `parsePrefix` admits four
+      // bracket pairs plus the block sigil, so `#<doc>`, `#[doc]` and the
+      // multi-line `#|(description) … |#` are non-reserved too and
+      // `malloyGivenToApi` carries all of them. An earlier version matched only
+      // `#(`, which made this claim of parity false: the same declaration
+      // returned four annotations from `/models/{path}` and one from a
+      // dashboard manifest, and the block form is how multi-line helper text is
+      // written. The reserved ones stay out because none of them opens with a
+      // bracket: plain `#`, `#"`, `##!` and `#@`. Matched on the prefix rather than
       // re-derived, because re-implementing that classifier by hand is what
       // went wrong repeatedly in the module this borrows from.
       annotations: declaration.annotations.filter((text) =>
-         /^##?\(/.test(text),
+         /^##?[(<[|]/.test(text),
       ),
       ...readGivenControlSpec(declaration.annotations),
    };

@@ -2352,10 +2352,8 @@ export class Package {
                message:
                   `"${modelPath}" carries an artifact tag but could not be ` +
                   `read, so it is not served and there is no dashboard ` +
-                  `"${name}". Deliberately says nothing about whose fault it ` +
-                  `is: the read threw, and the throw may come from Publisher ` +
-                  `or from something in the file itself. The cause is in the ` +
-                  `server log. Reload the package to try again.`,
+                  `"${name}". The cause is in the server log. Reload the ` +
+                  `package to try again.`,
                severity: "error",
             });
          }

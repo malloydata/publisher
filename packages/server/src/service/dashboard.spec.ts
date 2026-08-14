@@ -879,8 +879,11 @@ describe("service/dashboard single-query given lint", () => {
 });
 
 describe("service/dashboard name matches the documented pattern", () => {
-   // This predicate no longer gates anything: every dashboard is served and its
-   // name is percent-encoded into the published URL. What it decides is whether
+   // This predicate no longer gates anything. Curation still can withhold a
+   // dashboard; what this settles is that a NAME is never the reason, and a
+   // served one has its name percent-encoded into the published URL. An earlier
+   // version of this comment said "every dashboard is served", which the
+   // curation tests in this same suite falsify. What it decides is whether
    // the name matches the pattern the API documents, which is what a client
    // generated from the spec will accept, so a mismatch is advisory only.
    it("reports a name outside the documented pattern", () => {
@@ -930,12 +933,16 @@ describe("service/dashboard silent-vanish lint", () => {
       );
    });
 
-   // A `date` is the only temporal literal MOTLY's grammar reaches: it stops at
+   // MOTLY's grammar stops at the SPACE in `@2024-03-01 10:00`, which is what
+   // this covers. It does NOT stop at the ISO `T` form, which parses fine and is
+   // handled in `readStartingGivens`; an earlier version of this comment claimed
+   // otherwise and the claim was false. What is pinned here is only that the
+   // space form is reported rather than silently dropped: it stops at
    // the space in `@2024-03-01 10:00`, which discards the WHOLE artifact tag,
    // dashboard and all. Pinned because that is a natural thing to write next to
    // a timestamp given, and the reason it is acceptable is that it is reported
    // here rather than lost. `readStartingGivens` says so and this is the proof.
-   it("reports a timestamp starting value, which the grammar cannot parse", () => {
+   it("reports a space-separated timestamp, which the grammar cannot parse", () => {
       expect(
          messages(
             facts({

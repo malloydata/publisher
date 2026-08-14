@@ -1,8 +1,9 @@
-// The layout recipe from docs/dashboards.md, as a fixture: `columns=12`,
-// colspans summing to 12 on each row, and a `# break` so the tiles get a row of
-// their own instead of flowing in beside the KPI cards. The browser suite
-// measures the result, since "the cards and the tiles line up" is a claim about
-// pixels that no manifest assertion can make.
+// The layout recipe as a fixture: `columns=12`, colspans summing to 12 on each
+// row, and a `# break` so the tiles get a row of their own instead of flowing in
+// beside the KPI cards. Nothing here measures the rendered result: this slice
+// ships no UI, so what is pinned is only that the manifest carries the numbers
+// through. "The cards and the tiles line up" is a claim about pixels and belongs
+// to whichever slice builds the browser surface.
 //
 // The tiles are inline rather than the model's `by_brand` / `by_region`, whose
 // own `where:` clauses would add controls this page is not about.

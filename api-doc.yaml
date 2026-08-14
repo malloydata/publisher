@@ -1818,8 +1818,10 @@ paths:
           in: path
           description: >-
             The dashboard's name: its filename basename. Conventionally letters,
-            digits, "-" and "_", and a package is warned when one of its
-            dashboards falls outside that. It is NOT constrained to it, because
+            digits, "-" and "_", and a package is warned when one of its SERVED
+            dashboards falls outside that. A dashboard withheld by curation gets
+            no naming finding, because the naming check runs after the curation
+            gate and a withheld dashboard is already reported as withheld. It is NOT constrained to it, because
             the name comes from a filename rather than being chosen: a file such
             as `dashboards/v1.2.malloy` is served, and its published `resource`
             carries the name percent-encoded. Send it percent-encoded.
@@ -3062,8 +3064,10 @@ components:
                   sits on (`by_carrier`, `flights -> by_carrier`), the source a
                   materialization finding belongs to, or, for a dashboard
                   finding, the dashboard's name or the `source.dimension` a
-                  `# drill` is declared on. Absent when a finding spans several,
-                  in which case the message names them.
+                  `# drill` is declared on. Absent when a finding sits on none
+                  of those, either because it spans several, in which case the
+                  message names them, or because it is about the lint itself
+                  rather than about any one dashboard.
               message:
                 type: string
                 description: A description of the problem.
@@ -3400,9 +3404,13 @@ components:
           description: Error message if the dashboard file failed to compile
         query:
           type: string
-          description:
+          description: >-
             Name of the tagged query to run. Present for the single-query form
-            only; a composite dashboard carries `tiles` instead.
+            only; a composite dashboard carries `tiles` instead. A NAME rather
+            than an expression, so it goes in the `queryName` field of a
+            `POST …/models/{path}/query` body. A tile's `query` is the other
+            shape and is not interchangeable with this one; see
+            `DashboardTile.query`.
         tiles:
           type: array
           description:
@@ -3448,9 +3456,12 @@ components:
       properties:
         query:
           type: string
-          description:
-            The run expression exactly as written in `tiles=[…]`, e.g.
-            "orders -> by_month"
+          description: >-
+            The run expression exactly as written in `tiles=[…]`, for example
+            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
+            the `query` field of a `POST …/models/{path}/query` body, prefixed
+            with `run:`. Sending it in `queryName`, the field
+            `DashboardManifest.query` takes, is rejected.
         givenNames:
           type: array
           items:
