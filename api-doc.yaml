@@ -5125,27 +5125,65 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of sourceEntityId to manifest entry.
+          description: >-
+            Map of sourceEntityId to manifest entry, for the sources that BUILT.
+            A source that failed is in `failures` instead and never here, so
+            every entry names a table that exists and a consumer resolving one
+            to a real table needs no further check.
+        failures:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SourceFailure"
+          description: >-
+            Map of sourceEntityId to the reason that source failed to
+            materialize, for the sources that did NOT build. A build that loses
+            some of its sources still returns the ones that succeeded in
+            `entries`, so this is how a consumer tells a partial failure from a
+            clean run and learns which source failed. Empty or absent on a run
+            where every source built.
         strict:
           type: boolean
           description: Whether unresolved references should error.
 
+    SourceFailure:
+      type: object
+      description: >-
+        One source that failed to materialize, and why. Kept beside `entries`
+        rather than inside a manifest entry because a failed source names no
+        table that exists: an entry carries a required `physicalTableName`, so
+        putting a failure there would hand every consumer a table name it must
+        know not to resolve.
+      required: [sourceEntityId, reason]
+      properties:
+        sourceEntityId:
+          type: string
+          description: The source's content address, as `entries` would have keyed it.
+        sourceName:
+          type: string
+          description: The persist source's declared name, for reporting.
+        reason:
+          type: string
+          description: >-
+            Why this source failed, in the words the warehouse or compiler
+            reported, redacted against that source's own connection.
+        physicalTableName:
+          type: string
+          description: >-
+            The table this source was HEADED for, echoing the instruction. NOT a
+            table that exists -- the build that would have created it is what
+            failed. Present for correlating the failure with the request; a
+            consumer must never resolve or read it.
+
     ManifestEntry:
       type: object
-      description: A single entry in the build manifest.
+      description: >-
+        A single entry in the build manifest, for a source that BUILT. A source
+        that failed is reported in `BuildManifest.failures`, never here, so every
+        field below describes a table that exists.
       required: [sourceEntityId, physicalTableName]
       properties:
         sourceEntityId:
           type: string
-        error:
-          type: [string, "null"]
-          description: >-
-            Why this source failed to materialize, in the words the warehouse or
-            compiler reported. Present only on a source that failed; absent on one
-            that built, whose table the remaining fields describe. A build that
-            loses some of its sources still returns the ones that succeeded, so an
-            entry carrying this is how a consumer tells a failed source from a
-            healthy one.
         sourceName:
           type: string
         materializedTableId:

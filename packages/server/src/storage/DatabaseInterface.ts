@@ -254,17 +254,17 @@ export interface IncrementalLedgerEntry {
 export type IncrementalStrategy = "merge" | "range_replace";
 
 /**
- * Whether a manifest entry records a source that failed to build.
+ * One source that failed to build, reported beside `entries` rather than inside
+ * one.
  *
- * A failed entry still carries the identifying fields it was instructed with,
- * including `physicalTableName`, so presence of a table name is not evidence a
- * table exists. Anything that resolves an entry to a real table -- serve
- * bindings, reuse decisions, seeds for a downstream build -- has to exclude
- * these, or it will name a table that was never created.
+ * A failure carries the identifying fields it was instructed with, including the
+ * `physicalTableName` it was HEADED for, so a table name here is not evidence a
+ * table exists. Keeping these out of `entries` is what lets every consumer that
+ * resolves an entry to a real table -- serve bindings, reuse decisions, seeds for
+ * a downstream build -- do so without a per-entry check: a failed source is not
+ * in the collection they iterate.
  */
-export function isFailedEntry(entry: Pick<ManifestEntry, "error">): boolean {
-   return Boolean(entry?.error);
-}
+export type SourceFailure = components["schemas"]["SourceFailure"];
 
 export interface MaterializationUpdate {
    status?: MaterializationStatus;

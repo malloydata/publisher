@@ -28,13 +28,13 @@ import {
    BuildPlan,
    FreshnessManifest,
    LedgerEntry,
-   isFailedEntry,
    Materialization,
    MaterializationStatus,
    MaterializationUpdate,
    ManifestEntry,
    ManifestReference,
    ResourceRepository,
+   SourceFailure,
 } from "../storage/DatabaseInterface";
 import { DuplicateActiveMaterializationError } from "../storage/duckdb/MaterializationRepository";
 import { errMessage } from "../utils";
@@ -348,21 +348,20 @@ function collectSensitiveValues(value: unknown, out: Set<string>): void {
  * How many sources a run built, failed on, and reused, counted from what the
  * build returned rather than from what it was asked to do.
  *
- * Two things make the instruction list the wrong denominator: an instruction can
- * be skipped without building (no matching compiled source), and a source that
- * failed is recorded as an entry carrying its reason -- so counting instructions
- * would report both as built.
+ * The instruction list is the wrong denominator because an instruction can be
+ * skipped without building (no matching compiled source), so counting
+ * instructions would report a skip as built.
  */
 export function tallySources(
    entries: Record<string, ManifestEntry>,
+   failures: Record<string, SourceFailure>,
    carried: Record<string, ManifestEntry>,
 ): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
-   const returned = Object.values(entries);
    return {
-      sourcesBuilt: returned.filter(
-         (e) => !isFailedEntry(e) && !carried[e.sourceEntityId!],
+      sourcesBuilt: Object.values(entries).filter(
+         (e) => !carried[e.sourceEntityId!],
       ).length,
-      sourcesFailed: returned.filter(isFailedEntry).length,
+      sourcesFailed: Object.keys(failures).length,
       sourcesReused: Object.keys(carried).length,
    };
 }
@@ -833,7 +832,7 @@ export class MaterializationService {
             ));
          }
 
-         const entries = await this.executeInstructedBuild(
+         const { entries, failures } = await this.executeInstructedBuild(
             compiled,
             environment,
             instructions,
@@ -867,10 +866,11 @@ export class MaterializationService {
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
             entries,
+            failures,
             carried,
          );
          const durationMs = Date.now() - startedAt;
-         await this.commitManifest(id, entries, {
+         await this.commitManifest(id, entries, failures, {
             forceRefresh: opts.forceRefresh,
             sourceNames: opts.sourceNames ?? null,
             mode,
@@ -1027,10 +1027,6 @@ export class MaterializationService {
             if (
                !deltaEligible &&
                prior &&
-               // A prior entry that records a failure names no table that exists:
-               // carrying it forward would retire the source from every later run,
-               // so a transient warehouse error would never be retried.
-               !isFailedEntry(prior) &&
                prior.physicalTableName &&
                (prior.storageDestinationName ?? undefined) === destination
             ) {
@@ -1248,14 +1244,7 @@ export class MaterializationService {
          // putting one here would make the original model try to substitute the
          // source with a table on its OWN (source) connection, which doesn't
          // exist there. Only colocated entries go into the tableName manifest.
-         // A failed source names no table that was built; binding it would rewrite
-         // queries to a table that does not exist, or to the generation this run
-         // failed to replace.
-         if (
-            !isFailedEntry(entry) &&
-            entry.physicalTableName &&
-            !entry.storageDestinationName
-         ) {
+         if (entry.physicalTableName && !entry.storageDestinationName) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // Carried so the bind step can quote the physical path for the
@@ -1513,7 +1502,10 @@ export class MaterializationService {
       // The run's incremental context, when any source declared incremental
       // refresh. Undefined leaves every source on the full-rebuild path.
       incremental?: IncrementalRunContext,
-   ): Promise<Record<string, ManifestEntry>> {
+   ): Promise<{
+      entries: Record<string, ManifestEntry>;
+      failures: Record<string, SourceFailure>;
+   }> {
       const { graphs, sources, connectionDigests, connections } = compiled;
 
       // Index instructions by sourceID (the stable per-source handle) so the
@@ -1543,9 +1535,7 @@ export class MaterializationService {
       manifest.strict = strict;
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
-         // A seeded entry that records a failure names no table that was built,
-         // so it must not reach a downstream source's FROM.
-         if (!isFailedEntry(entry) && entry.physicalTableName) {
+         if (entry.physicalTableName) {
             // The build Manifest feeds a downstream persist's `FROM` verbatim,
             // so a seeded upstream must carry the SAME quoting the builder
             // CREATEd it with — else the downstream CREATE misses the
@@ -1569,7 +1559,7 @@ export class MaterializationService {
       // names a table an earlier successful run built and a live manifest may still
       // serve, so dropping one would be data loss rather than cleanup.
       const builtThisRun: ManifestEntry[] = [];
-      const failedSources: string[] = [];
+      const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
       const builtSources: string[] = [];
       try {
@@ -1697,15 +1687,17 @@ export class MaterializationService {
                      physicalTableName: instruction.physicalTableName,
                      reason,
                   });
-                  failedSources.push(persistSource.name);
                   failedReasons.push(`${persistSource.name}: ${reason}`);
-                  entries[sourceEntityId] = {
+                  // Beside `entries`, never in it: the table this source was
+                  // headed for was not created, and an entry's
+                  // `physicalTableName` is required, so recording it as an entry
+                  // would hand every consumer a name it must know not to resolve.
+                  failures[sourceEntityId] = {
                      sourceEntityId,
                      sourceName: persistSource.name,
                      physicalTableName: instruction.physicalTableName,
-                     materializedTableId: instruction.materializedTableId,
-                     error: reason,
-                  } as ManifestEntry;
+                     reason,
+                  };
                   continue;
                }
                builtSources.push(persistSource.name);
@@ -1720,7 +1712,7 @@ export class MaterializationService {
          // one source is usable. Thrown from inside the try so a run that wrote
          // nothing reclaimable still takes the same cleanup path as any other
          // total failure.
-         if (builtSources.length === 0 && failedSources.length > 0) {
+         if (builtSources.length === 0 && failedReasons.length > 0) {
             throw new Error(failedReasons.join("; "));
          }
       } catch (err) {
@@ -1742,7 +1734,7 @@ export class MaterializationService {
          throw err;
       }
 
-      return entries;
+      return { entries, failures };
    }
 
    /**
@@ -3015,12 +3007,17 @@ export class MaterializationService {
    private async commitManifest(
       id: string,
       entries: Record<string, ManifestEntry>,
+      failures: Record<string, SourceFailure>,
       metadata: Record<string, unknown>,
    ): Promise<void> {
       await this.transition(id, "MANIFEST_ROWS_READY");
       const manifest: BuildManifestResult = {
          builtAt: new Date().toISOString(),
          entries,
+         // Omitted entirely on a clean run rather than written as {}: a manifest
+         // that records no failures and one that records an empty set are the
+         // same fact, and the absent key is the one every earlier manifest has.
+         ...(Object.keys(failures).length > 0 ? { failures } : {}),
          strict: false,
       };
       await this.transition(id, "MANIFEST_FILE_READY", {
