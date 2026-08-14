@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
+   materializationWithQueryMetadata,
    packageMaterializationWarnings,
    parsePackageMaterialization,
    parsePackageScope,
+   resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "./package_manifest";
 
@@ -225,6 +227,91 @@ describe("service/package_manifest", () => {
             }),
          ).toEqual([]);
          expect(packageMaterializationWarnings(undefined)).toEqual([]);
+      });
+   });
+
+   describe("resolvePackageQueryMetadata", () => {
+      it("reads the canonical root home with no warning", () => {
+         expect(
+            resolvePackageQueryMetadata({ team: "finance" }, undefined),
+         ).toEqual({ queryMetadata: { team: "finance" }, warnings: [] });
+      });
+
+      it("still honors the enveloped form, with a deprecation warning", () => {
+         const resolved = resolvePackageQueryMetadata(undefined, {
+            queryMetadata: { team: "finance" },
+         });
+         expect(resolved.queryMetadata).toEqual({ team: "finance" });
+         expect(resolved.warnings).toHaveLength(1);
+         expect(resolved.warnings[0]).toMatch(/deprecated/i);
+      });
+
+      it("accepts both homes agreeing without a warning", () => {
+         // The transition state the server writes itself: the root for this
+         // build, the envelope for an older publisher that reads only that.
+         expect(
+            resolvePackageQueryMetadata(
+               { team: "finance" },
+               { queryMetadata: { team: "finance" } },
+            ),
+         ).toEqual({ queryMetadata: { team: "finance" }, warnings: [] });
+      });
+
+      it("warns and prefers the root when the homes disagree", () => {
+         // Deliberately unlike `scope`, which throws. Scope decides whether an
+         // artifact is version-owned; a tag decides a label. Failing a package
+         // load over a label would break the rule the feature rests on.
+         const resolved = resolvePackageQueryMetadata(
+            { team: "finance" },
+            { queryMetadata: { team: "marketing" } },
+         );
+         expect(resolved.queryMetadata).toEqual({ team: "finance" });
+         expect(resolved.warnings[0]).toMatch(/conflicting/i);
+      });
+
+      it("declares nothing when neither home does", () => {
+         expect(resolvePackageQueryMetadata(undefined, undefined)).toEqual({
+            queryMetadata: undefined,
+            warnings: [],
+         });
+         expect(
+            resolvePackageQueryMetadata(undefined, { schedule: "0 6 * * *" }),
+         ).toEqual({ queryMetadata: undefined, warnings: [] });
+      });
+   });
+
+   describe("materializationWithQueryMetadata", () => {
+      it("builds a config for a manifest with tags and no build policy", () => {
+         // The shape the canonical form produces: a package that declares tags
+         // at the root has no `materialization` block to put them in, and its
+         // tags must not be lost for want of one.
+         expect(
+            materializationWithQueryMetadata(null, { team: "finance" }),
+         ).toEqual({
+            schedule: null,
+            freshness: null,
+            queryMetadata: { team: "finance" },
+         });
+      });
+
+      it("keeps the build policy while replacing the tags", () => {
+         expect(
+            materializationWithQueryMetadata(
+               parsePackageMaterialization({
+                  schedule: "0 6 * * *",
+                  queryMetadata: { team: "marketing" },
+               }),
+               { team: "finance" },
+            ),
+         ).toEqual({
+            schedule: "0 6 * * *",
+            freshness: null,
+            queryMetadata: { team: "finance" },
+         });
+      });
+
+      it("is null only when neither a policy nor a tag exists", () => {
+         expect(materializationWithQueryMetadata(null, undefined)).toBeNull();
       });
    });
 });

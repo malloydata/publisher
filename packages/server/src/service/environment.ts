@@ -2014,6 +2014,19 @@ export class Environment {
                ? { ...(materializationBase ?? {}), scope: resolvedScope }
                : materializationBase;
 
+         // `queryMetadata` has two homes as well, migrating the opposite way to
+         // `scope`: the manifest ROOT is canonical and the envelope is
+         // deprecated. Same dual-write rule and the same reason — writing only
+         // the root would leave an older publisher, which reads only the
+         // envelope, serving untagged statements for a package that asked to be
+         // tagged. A caller expresses tags through the materialization block
+         // (the only home the wire shape has), so what it sends is mirrored out
+         // to the root rather than the other way round.
+         const resolvedQueryMetadata =
+            (materializationBlock as { queryMetadata?: unknown } | undefined)
+               ?.queryMetadata ??
+            (existingManifest as { queryMetadata?: unknown }).queryMetadata;
+
          // Update with new metadata. `explores`/`queryableSources` are only
          // overwritten when the caller explicitly provides them; otherwise the
          // existing on-disk value is preserved via the spread (an undefined here
@@ -2032,6 +2045,9 @@ export class Environment {
                ? { manifestLocation: metadata.manifestLocation }
                : {}),
             ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
+            ...(resolvedQueryMetadata !== undefined
+               ? { queryMetadata: resolvedQueryMetadata }
+               : {}),
             ...(materializationBlock !== undefined
                ? { materialization: materializationBlock }
                : {}),

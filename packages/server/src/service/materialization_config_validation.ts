@@ -52,6 +52,19 @@ export interface MaterializationConfigInput {
     */
    modelDeclarations?: { modelPath: string; queryMetadata: QueryMetadata }[];
    /**
+    * A NON-persist source's own `#@ queryMetadata.*`, keyed by source name.
+    *
+    * `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than
+    * a key inside it, so a source that persists nothing can declare tags and
+    * they ride every query against it. Persist sources are excluded because
+    * {@link sources} already carries them in resolved form — including both
+    * would report one declaration twice, under two different labels.
+    */
+   nonPersistSourceDeclarations?: {
+      sourceName: string;
+      queryMetadata: QueryMetadata;
+   }[];
+   /**
     * Deprecations the manifest parse tolerated (e.g. a root-level `scope`), which
     * a load keeps working but a publish should report.
     */
@@ -117,6 +130,16 @@ export function materializationConfigWarnings(
             "## materialization.queryMetadata",
             declaration.queryMetadata,
             declaration.modelPath,
+         ),
+      );
+   }
+
+   for (const declaration of input.nonPersistSourceDeclarations ?? []) {
+      warnings.push(
+         ...metadataWarnings(
+            "#@ queryMetadata",
+            declaration.queryMetadata,
+            declaration.sourceName,
          ),
       );
    }

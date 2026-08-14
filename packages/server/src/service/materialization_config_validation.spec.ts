@@ -113,6 +113,22 @@ describe("materializationConfigWarnings", () => {
       expect(warnings[0].message).toContain("dropped rather than attached");
    });
 
+   it("checks a source that persists nothing", () => {
+      // `queryMetadata` is a sibling of `persist` in the `#@` namespace, so a
+      // source that is never materialized can declare tags — and they ride every
+      // query against it. Nothing in the build plan carries those declarations,
+      // so this level is their only validation path.
+      const warnings = materializationConfigWarnings({
+         nonPersistSourceDeclarations: [
+            { sourceName: "orders_live", queryMetadata: { run_id: "x" } },
+         ],
+      });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].subject).toBe("orders_live");
+      expect(warnings[0].message).toContain("#@ queryMetadata");
+      expect(warnings[0].message).toContain("dropped rather than attached");
+   });
+
    it("checks a model file that persists nothing", () => {
       // The case this level exists for. A `##` declaration in a file with no
       // persist source has no source to surface under, and still rides every

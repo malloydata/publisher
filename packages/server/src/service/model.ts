@@ -292,6 +292,10 @@ export class Model {
     * `null` = computed and nothing declared.
     */
    private declaredQueryMetadataMemo: QueryMetadata | null | undefined;
+   /** Memo for {@link getDeclaredSourceQueryMetadata}. */
+   private declaredSourceQueryMetadataMemo:
+      | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- the file-level gate, every top-level
     *  source's own gate, and every gate a top-level source carries in from
@@ -1673,6 +1677,41 @@ export class Model {
          });
       }
       return this.declaredQueryMetadataMemo;
+   }
+
+   /**
+    * Each top-level source's OWN `#@ queryMetadata.*`, for the sources that
+    * declare one.
+    *
+    * `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than
+    * a key inside it, so a source that persists nothing can declare tags and
+    * they ride every query against it. The publish gate reads persist sources
+    * from the build plan, so those declarations had no validation path — a
+    * reserved or malformed name published clean and vanished with only a metric
+    * behind it.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}: the
+    * caller runs once per package inside `listPackages`.
+    */
+   public getDeclaredSourceQueryMetadata(): {
+      sourceName: string;
+      queryMetadata: QueryMetadata;
+   }[] {
+      if (this.declaredSourceQueryMetadataMemo === undefined) {
+         const contents = (this.modelDef?.contents ?? {}) as Record<
+            string,
+            unknown
+         >;
+         this.declaredSourceQueryMetadataMemo = Object.keys(contents).flatMap(
+            (sourceName) => {
+               const queryMetadata = composeDeclaredQueryMetadata({
+                  sourceTag: this.safeSourceTag(sourceName),
+               });
+               return queryMetadata ? [{ sourceName, queryMetadata }] : [];
+            },
+         );
+      }
+      return this.declaredSourceQueryMetadataMemo;
    }
 
    /**

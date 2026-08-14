@@ -804,6 +804,22 @@ export class Package {
                   ? [{ modelPath: model.getPath(), queryMetadata }]
                   : [];
             }),
+            // A source's own `#@ queryMetadata.*` where the source persists
+            // nothing. Persist sources are filtered out because `sources` above
+            // already carries them in resolved form; reporting both would say
+            // the same thing twice under two labels.
+            nonPersistSourceDeclarations: (() => {
+               const persisted = new Set(
+                  Object.values(this.buildPlan?.sources ?? {}).map(
+                     (source) => source.name,
+                  ),
+               );
+               return [...this.models.values()].flatMap((model) =>
+                  model
+                     .getDeclaredSourceQueryMetadata()
+                     .filter(({ sourceName }) => !persisted.has(sourceName)),
+               );
+            })(),
             manifestWarnings: this.manifestWarnings,
          }),
       ];

@@ -2865,6 +2865,25 @@ components:
             URI (gs:// or s3://) of the externally-computed manifest for this package.
             On (re)load the publisher reads it and binds persist references
             (sourceEntityId -> physicalTableName). Null = serve live.
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: |
+            The package-level layer of per-query metadata, declared at the
+            manifest root. Applies to every statement the package's sources
+            issue — a served query as much as a build — and is overridden per
+            property by a model-file, source or per-request declaration.
+
+            This is the canonical home. `materialization.queryMetadata` is the
+            original one and still works, with a deprecation warning: the
+            properties are not a build setting, so declaring them inside the
+            build-policy block described a scope the feature does not have. The
+            two homes declaring different bags warns and the root wins, rather
+            than failing the load the way a conflicting `scope` does — a tag is
+            observability only, and must never be the reason a package refuses
+            to load. The server writes both homes while the old one is
+            supported, so an older publisher still reads the right value.
         materialization:
           oneOf:
             - $ref: "#/components/schemas/PackageMaterializationConfig"

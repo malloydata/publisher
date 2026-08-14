@@ -100,6 +100,69 @@ const SCOPE_ROOT_DEPRECATION =
    `older publisher still reads the right value.`;
 
 /**
+ * Resolve the package's per-query metadata from its two homes: the manifest root
+ * (canonical) and `materialization.queryMetadata` (the original home, now
+ * deprecated).
+ *
+ * The move is the opposite direction to {@link resolvePackageScope}, for the
+ * opposite reason. Scope is a build knob, so it belongs with the build knobs.
+ * Query metadata is not one: the properties ride every statement the package's
+ * sources issue, a served query as much as a build. Declaring them inside
+ * `materialization` describes a scope the feature does not have, and sends an
+ * author hunting through build settings for a way to label their traffic.
+ *
+ * A conflict WARNS and prefers the root, where scope THROWS. Scope decides
+ * whether an artifact is version-owned, so guessing could reuse a table across
+ * versions that was never meant to be shared — worth failing a load over. A tag
+ * is observability only, excluded from `sourceEntityId` and from build identity,
+ * so the worst a wrong guess yields is a mislabelled statement. Failing a load
+ * over a label would break the rule the whole feature rests on: a tag must never
+ * be the reason something refuses to run.
+ */
+export function resolvePackageQueryMetadata(
+   rootRaw: unknown,
+   materializationRaw: unknown,
+): { queryMetadata: unknown; warnings: string[] } {
+   const envelopeRaw =
+      materializationRaw && typeof materializationRaw === "object"
+         ? (materializationRaw as { queryMetadata?: unknown }).queryMetadata
+         : undefined;
+   const rootDeclared = rootRaw !== undefined && rootRaw !== null;
+   const envelopeDeclared = envelopeRaw !== undefined && envelopeRaw !== null;
+
+   if (rootDeclared && envelopeDeclared) {
+      // Both homes agreeing is the transition state the server itself writes,
+      // so it is not worth a word to an operator who cannot act on it.
+      if (JSON.stringify(rootRaw) === JSON.stringify(envelopeRaw)) {
+         return { queryMetadata: rootRaw, warnings: [] };
+      }
+      return { queryMetadata: rootRaw, warnings: [QUERY_METADATA_CONFLICT] };
+   }
+   if (envelopeDeclared) {
+      return {
+         queryMetadata: envelopeRaw,
+         warnings: [QUERY_METADATA_ENVELOPE_DEPRECATION],
+      };
+   }
+   return { queryMetadata: rootRaw, warnings: [] };
+}
+
+const QUERY_METADATA_ENVELOPE_DEPRECATION =
+   `"queryMetadata" inside "materialization" is deprecated: declare it at the ` +
+   `manifest root instead. It is not a build setting — the properties ride ` +
+   `every statement the package's sources issue, including served queries. The ` +
+   `enveloped form still works and will be removed in a future release; until ` +
+   `then the server keeps both homes in sync when it writes the manifest, so an ` +
+   `older publisher still reads the right value.`;
+
+const QUERY_METADATA_CONFLICT =
+   `Conflicting "queryMetadata" in publisher.json: the manifest root and ` +
+   `"materialization.queryMetadata" declare different bags, and the root wins. ` +
+   `Delete "materialization": { "queryMetadata": ... } — the server rewrites ` +
+   `both homes on its next manifest write, so an older publisher still reads ` +
+   `the right value.`;
+
+/**
  * The manifest's `materialization.freshness` block, surfaced verbatim for the
  * control plane (which owns the scheduling and query-time gating logic).
  * Fields are kept only when valid — an invalid value is dropped, never
@@ -238,4 +301,32 @@ export function packageMaterializationWarnings(raw: unknown): string[] {
    }
    const { queryMetadata } = raw as { queryMetadata?: unknown };
    return parseQueryMetadata(queryMetadata).warnings;
+}
+
+/**
+ * The package's materialization config with `queryMetadata` taken from whichever
+ * home won (see {@link resolvePackageQueryMetadata}), so every consumer keeps
+ * reading one accessor and no caller has to know there are two homes.
+ *
+ * Returns a config even when the manifest has NO `materialization` block, which
+ * is the shape the canonical form produces: a package that declares tags at the
+ * root and nothing else has no build policy to express. Null only when neither
+ * home declares anything.
+ */
+export function materializationWithQueryMetadata(
+   parsed: PackageMaterializationConfig | null,
+   queryMetadataRaw: unknown,
+): PackageMaterializationConfig | null {
+   const queryMetadata = parseQueryMetadata(queryMetadataRaw).metadata;
+   if (!parsed && !queryMetadata) return null;
+   return {
+      schedule: parsed?.schedule ?? null,
+      freshness: parsed?.freshness ?? null,
+      queryMetadata,
+   };
+}
+
+/** Properties the winning `queryMetadata` home declared but could not keep. */
+export function queryMetadataParseWarnings(raw: unknown): string[] {
+   return parseQueryMetadata(raw).warnings;
 }
