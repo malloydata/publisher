@@ -10,7 +10,7 @@ import {
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
 import { EnvironmentStore } from "../../service/environment_store";
-import { type ErrorDetails } from "../error_messages";
+import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
    buildMalloyUri,
    classifyToolError,
@@ -52,7 +52,7 @@ const executeQueryShape = {
       .string()
       .optional()
       .describe(
-         "Ad-hoc Malloy query code. Runs in restricted mode: no raw SQL (duckdb.sql/connection.sql), no import, no ##! flags, no new sources from connection.table(...) — put those in a model file and reload instead.",
+         `Ad-hoc Malloy query code. Runs in restricted mode: it may not use ${RESTRICTED_CONSTRUCTS} — put those in a model file and reload instead.`,
       ),
    sourceName: z
       .string()

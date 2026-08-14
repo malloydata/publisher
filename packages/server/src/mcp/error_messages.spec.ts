@@ -107,6 +107,30 @@ describe("getMalloyErrorDetails — restricted-mode branch", () => {
       expect(details.suggestions[0]).toContain("restricted mode");
    });
 
+   /**
+    * The suggestion is the only place a caller learns the rule, so a construct
+    * missing from it reads as permission. `str_to_date!date(...)` and the
+    * `sql_*` family were both refused by the compiler while absent from this
+    * list: an agent was told "raw SQL, import, ##!, connection.table" after
+    * doing none of those. Each entry below is a refusal reachable from ad-hoc
+    * text, verified against the real compiler.
+    */
+   it.each([
+      ["raw SQL", "duckdb.sql(...)"],
+      ["direct SQL function calls", "name!type(...)"],
+      ["the sql_* family", "sql_number"],
+      ["imports", "import statements"],
+      ["compiler flags", "##! flags"],
+      ["table access", "connection.table(...)"],
+   ])("names %s in the rule it hands the caller", (_label, needle) => {
+      const details = getMalloyErrorDetails(
+         "executeQuery",
+         "env/pkg/model.malloy",
+         new Error("`x` cannot be used in a restricted query"),
+      );
+      expect(details.suggestions[0]).toContain(needle);
+   });
+
    it("does not hijack an error that merely mentions a restricted-looking name", () => {
       const details = getMalloyErrorDetails(
          "executeQuery",

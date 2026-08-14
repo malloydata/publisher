@@ -43,6 +43,23 @@ export function getInternalError(
 }
 
 /**
+ * Every construct restricted mode refuses in ad-hoc query text, in one place
+ * because two surfaces state it: the suggestion below, which a caller reads
+ * only after tripping the rule, and `malloy_executeQuery`'s `query` param doc,
+ * which it reads before. Two hand-maintained copies drift, and a rule that is
+ * missing from the list an agent is handed reads as permission.
+ *
+ * These mirror the compiler's `restricted-construct-forbidden` sites. Two more
+ * exist and are deliberately absent: `given:` declarations sit behind the
+ * `givens` experiment, whose `##!` flag restricted mode refuses first, so that
+ * diagnostic is unreachable here — documenting it would describe a rule no
+ * caller can trip. (The `sql_*` family IS listed: its restriction is checked
+ * before its experiment gate, so unlike `given:` it is reachable.)
+ */
+export const RESTRICTED_CONSTRUCTS =
+   "raw SQL (duckdb.sql(...) / connection.sql(...)), direct SQL function calls (name!type(...)), the sql_* function family (sql_number, sql_string, sql_date, sql_timestamp, sql_boolean), import statements, ##! flags, or new sources from connection.table(...)";
+
+/**
  * Generates detailed error information for Malloy compilation or query execution errors.
  * @param operation The operation that failed (e.g., 'executeQuery (load model)', 'executeQuery').
  * @param modelIdentifier A path or URI identifying the model/notebook involved.
@@ -101,7 +118,7 @@ export function getMalloyErrorDetails(
          return {
             message: `Error during ${operation} for resource '${modelIdentifier}': ${causes}`,
             suggestions: [
-               "Suggestion: This query ran in restricted mode: ad-hoc query text may not use raw SQL (duckdb.sql(...) / connection.sql(...)), import statements, ##! flags, or define new sources from connection.table(...). These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with malloy_compile, save, call malloy_reloadPackage, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.",
+               `Suggestion: This query ran in restricted mode: ad-hoc query text may not use ${RESTRICTED_CONSTRUCTS}. These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with malloy_compile, save, call malloy_reloadPackage, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.`,
             ],
          };
       }
