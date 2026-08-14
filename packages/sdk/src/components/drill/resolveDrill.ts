@@ -202,7 +202,24 @@ export function drillValueToFilter(value: unknown): string | undefined {
    if (value instanceof Date) {
       // Malloy's date filter literal. Deliberately day-granularity: seeding a
       // timestamp to the millisecond would filter to a single row nobody asked
-      // for, and the clicked cell was a truncated date in the first place.
+      // for, and for a `date` column the clicked cell was a truncated date in
+      // the first place.
+      //
+      // KNOWN LIMITATION for a TIMESTAMP column feeding a `filter<…>` given.
+      // This truncates on the UTC day, and the renderer prints a timestamp in
+      // the query timezone, so the two disagree whenever that zone crosses
+      // midnight away from UTC: an instant of `2024-03-06T04:00:00Z` shows as
+      // `2024-03-05 20:00` under US-Pacific and seeds `2024-03-06`, the day
+      // AFTER the one on screen. Plain `date`/`timestamp` givens route around
+      // this entirely (`encodeDrillValue` hands them the Date and lets
+      // `givensToRequest` spell it per type); only the filter-typed targets
+      // land here, because a filter's value must be text.
+      //
+      // Not fixed rather than fixed wrongly: the correct day is the one the
+      // CELL displayed, which needs the query timezone, and that is not on the
+      // click payload or anywhere else this function can see. Guessing the
+      // browser's zone would be a second wrong answer that happens to be right
+      // more often, which is harder to diagnose than a consistent one.
       const iso = value.toISOString();
       return iso.slice(0, iso.indexOf("T"));
    }
@@ -333,6 +350,23 @@ export function encodeDrillValue(
       return Number.isFinite(rawValue)
          ? encodeFilterList([String(rawValue)])
          : undefined;
+   }
+   // A `filter<number>` takes the NUMBER grammar, so a string belongs to it only
+   // if it spells a number. Falling through emitted STRING filter syntax for it:
+   // a click on a text cell seeded `filter<number>` with `West`, a boolean with
+   // `true`, and a Date with a `YYYY-MM-DD` day, each of which that grammar
+   // refuses, so the server failed EVERY cell and the reader got an error
+   // notebook rather than a declined click. The non-filter `number` branch above
+   // already refuses exactly these; this is the same rule for the filter arm,
+   // which is where the two copies had drifted.
+   if (filterInnerType(targetType) === "number") {
+      if (typeof rawValue === "number") {
+         return Number.isFinite(rawValue) ? String(rawValue) : undefined;
+      }
+      if (typeof rawValue !== "string" || rawValue.trim() === "") {
+         return undefined;
+      }
+      return Number.isFinite(Number(rawValue)) ? rawValue.trim() : undefined;
    }
    return drillValueToFilter(rawValue);
 }

@@ -443,6 +443,13 @@ export function givensToRequest(
    for (const [name, value] of values) {
       if (names && !names.has(name)) continue;
       if (value === null || value === undefined) continue;
+      // Arrays are refused HERE too, not just in `givenToParam`. `GivenValue`
+      // no longer admits one, but the two functions are the URL side and the
+      // REQUEST side of the same rule, and fixing only the URL side left an
+      // array from a JavaScript caller filtering every query while being
+      // invisible in the address bar: the two disagreed about the same value,
+      // which is the drift this pair exists to avoid.
+      if (Array.isArray(value)) continue;
       request[name] =
          value instanceof Date
             ? dateToRequest(value, declaredTypes.get(name))

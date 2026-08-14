@@ -100,8 +100,15 @@ export function encodeFilterList(values: readonly string[]): string {
    // everything. `unparse` emits the whitespace as-is, `parse` returns a null
    // clause with an EMPTY log rather than an error, and Malloy compiles a null
    // clause to the SQL constant `true`. So a picked or drilled `\u00a0`, which
-   // is ordinary in pasted and scraped data, silently selected every row. 22
-   // codepoints reach this, pinned in the spec.
+   // is ordinary in pasted and scraped data, silently selected every row.
+   //
+   // Counted rather than guessed: 24 codepoints up to U+3000 satisfy `trim()`,
+   // 23 of them parse to a null clause, and the single exception is U+0020,
+   // the ASCII space the escaper does cover. All 24 are dropped here anyway,
+   // for the uniformity reason in the docstring above. The spec asserts those
+   // three numbers, so a change on either side of the boundary fails a test
+   // rather than quietly making this comment wrong, which is what happened to
+   // the number that used to sit here.
    const present = values.filter((value) => value.trim() !== "");
    if (present.length === 0) return "";
    return StringFilterExpression.unparse({

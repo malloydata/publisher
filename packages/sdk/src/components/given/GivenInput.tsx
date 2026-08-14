@@ -335,7 +335,7 @@ export function GivenInput({
                   placeholder={
                      selected.length !== 0
                         ? undefined
-                        : filtered && value === ""
+                        : value === ""
                           ? "All"
                           : (defaultDisplay ?? "All")
                   }
@@ -419,8 +419,21 @@ export function GivenInput({
       // filter can mean, and `givensToRequest` sends it. Counting it as unset
       // drew "Any" with no clear affordance, so the reader could see neither
       // that an override was in force nor any way back to the model's default.
-      const isOverridden =
-         current !== undefined || (numericFilter && value === "");
+      // An explicit empty filter is an override with NO threshold, which is a
+      // third state: not unset, and not `≥ position` either. Printing
+      // `≥ rangeMin` for it asserted a lower bound nobody had chosen, just as
+      // counting it unset had hidden that an override was in force at all.
+      const emptyFilterOverride = numericFilter && value === "";
+      const isOverridden = current !== undefined || emptyFilterOverride;
+      // TWO LIMITATIONS here, both latent while nothing populates `rangeMin`
+      // or `rangeMax`, and both about the plain `number` arm rather than the
+      // filter arm. An unset control rests its thumb at `rangeMin` while the
+      // readout shows the model default, so the two disagree whenever the
+      // default is not the floor; and MUI fires no onChange for a click at the
+      // thumb's existing position, so the floor cannot be selected from the
+      // resting state. Fixing either means seeding the thumb from the default,
+      // which needs a default that parses as a number and a decision about what
+      // to show when it does not.
       return (
          <FormControl fullWidth>
             {/* A slider is the one control with no box around it, so it has to
@@ -453,9 +466,11 @@ export function GivenInput({
                         ? numericFilter
                            ? "Any"
                            : (defaultDisplay ?? "Unset")
-                        : numericFilter
-                          ? `≥ ${position}`
-                          : String(position)}
+                        : emptyFilterOverride
+                          ? "Any"
+                          : numericFilter
+                            ? `≥ ${position}`
+                            : String(position)}
                   </Typography>
                   {isOverridden && (
                      <IconButton
@@ -522,12 +537,20 @@ export function GivenInput({
       dateFilterInner === "timestamp" ||
       dateFilterInner === "timestamptz";
    // Only a bare `YYYY-MM-DD` is the picker's own spelling; anything else is a
-   // filter expression the picker cannot represent. Unset and the empty filter
-   // are both fine, since the picker simply shows nothing.
+   // filter expression the picker cannot represent. Unset is fine, since the
+   // picker simply shows nothing.
+   //
+   // An explicit `""` is NOT fine and used to be allowed here. It is the empty
+   // filter, a live override that `givensToRequest` sends, and a DatePicker
+   // renders it byte-identical to unset: blank field, `Default: …` helper, and
+   // no clear button, because MUI emits none for a field with no value. So the
+   // screen said the model default was in force while the query matched every
+   // row, and there was no way back. Falling through to the text box is the
+   // remedy this file already uses for a filter a control cannot represent:
+   // there the value is visible as written and the × reverts it.
    const bareDate =
       typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
-   const dateIsPickable =
-      value === undefined || value === null || value === "" || bareDate;
+   const dateIsPickable = value === undefined || value === null || bareDate;
    // An unrepresentable date filter falls through to the text box below, for the
    // same reason a non-list string filter does: a range like
    // `2024-01-01 to 2024-02-01` handed whole to `dayjs.utc` parses as its

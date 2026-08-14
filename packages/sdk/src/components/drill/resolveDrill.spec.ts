@@ -273,6 +273,26 @@ describe("encodeDrillValue", () => {
       expect(encodeDrillValue("a, b", undefined)).toBe("a\\,\\ b");
    });
 
+   it("declines a non-numeric value for a `filter<number>` given", () => {
+      // The number branch for PLAIN givens already refused these; the filter
+      // arm fell through to string-filter syntax, so a click on a text cell
+      // seeded `filter<number>` with `West`, which its own parser refuses, and
+      // the server failed every cell in the notebook.
+      for (const value of [
+         "West",
+         true,
+         new Date("2024-03-05T00:00:00Z"),
+         "",
+      ]) {
+         expect(encodeDrillValue(value, "filter<number>")).toBeUndefined();
+      }
+      // A number, or a string spelling one, still passes through bare, which is
+      // correct for the NUMBER grammar.
+      expect(encodeDrillValue(42, "filter<number>")).toBe("42");
+      expect(encodeDrillValue("42", "filter<number>")).toBe("42");
+      expect(encodeDrillValue(-5, "filter<number>")).toBe("-5");
+   });
+
    it("escapes a number drilled into a `filter<string>` given", () => {
       // The two filter grammars disagree about a leading `-`: the NUMBER
       // grammar reads `-5` as the value, the STRING grammar reads it as a

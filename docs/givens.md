@@ -276,7 +276,7 @@ A source annotated like this:
 
 ```malloy
 #(filter) dimension=region type=in
-#(filter) dimension=amount type=gte required
+#(filter) dimension=amount type=greater_than required
 source: sales is orders_base extend { }
 ```
 
@@ -288,13 +288,20 @@ becomes two givens and one `where:`:
 #(description="Region to focus on — leave empty for all regions")
 given: REGION :: filter<string> is f''
 
-#(description="Only include orders at or above this amount (USD)")
+#(description="Only include orders above this amount (USD)")
 given: MIN_AMOUNT :: number is 0
 
 source: sales is orders_base extend {
-  where: region ~ $REGION and amount >= $MIN_AMOUNT
+  where: region ~ $REGION and amount > $MIN_AMOUNT
 }
 ```
+
+**Mind the boundary when you convert a comparison.** `type=greater_than` builds
+`dimension > value`, exclusive, so writing `>=` here would quietly admit the rows
+sitting exactly on the threshold that the annotation excluded. `type=less_than`
+is exclusive in the same way. There is no inclusive comparator, so a `>=` filter
+was already being expressed some other way and should keep whatever spelling it
+had.
 
 Three things worth knowing while converting:
 

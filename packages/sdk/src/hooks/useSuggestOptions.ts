@@ -238,8 +238,17 @@ export function readOptionValues(
       if (row === null || typeof row !== "object") continue;
       const record = row as Record<string, unknown>;
       const keys = Object.keys(record);
+      // `hasOwnProperty`, not `in`: `record` comes from `JSON.parse`, so `in`
+      // walks its prototype and reports `constructor`, `toString` and friends
+      // as present. A dimension with one of those names would select a
+      // function off the prototype instead of falling back to the first
+      // column. The same hazard was fixed in the app's URL merge; this is the
+      // other place the rule lives.
       const key =
-         dimension !== undefined && dimension in record ? dimension : keys[0];
+         dimension !== undefined &&
+         Object.prototype.hasOwnProperty.call(record, dimension)
+            ? dimension
+            : keys[0];
       const value = key === undefined ? undefined : record[key];
       if (value === null || value === undefined) continue;
       const text = String(value);

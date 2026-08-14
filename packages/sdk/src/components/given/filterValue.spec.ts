@@ -135,13 +135,36 @@ describe("a value that is entirely whitespace", () => {
    });
 
    it("pins the codepoints that reach the null-clause path", () => {
-      // 22 of them, and U+00A0 is ordinary in pasted or scraped data.
-      const reaching: string[] = [];
-      for (let cp = 1; cp < 0x3000; cp++) {
+      // The COUNTS are asserted, not just the behaviour. A comment above
+      // `encodeFilterList` used to state a number that was wrong in both
+      // readings, and this test could not catch it because it asserted no
+      // count at all. The loop also stopped one short of U+3000, so it missed
+      // the ideographic space that the module's own docstring names.
+      const whitespace: string[] = [];
+      for (let cp = 1; cp <= 0x3000; cp++) {
          const ch = String.fromCodePoint(cp);
-         if (ch.trim() === "") reaching.push(ch);
+         if (ch.trim() === "") whitespace.push(ch);
       }
-      for (const ch of reaching) expect(encodeFilterList([ch])).toBe("");
+      expect(whitespace.length).toBe(24);
+
+      // Every one of them is dropped, U+00A0 included: it is ordinary in
+      // pasted or scraped data and would otherwise select every row.
+      for (const ch of whitespace) expect(encodeFilterList([ch])).toBe("");
+
+      // And 23 of the 24 genuinely reach the null clause. The one that does
+      // not is the ASCII space, which the escaper covers and which round-trips
+      // faithfully, so dropping THAT one is the uniformity choice the
+      // docstring describes rather than a necessity.
+      const nullClause = whitespace.filter(
+         (ch) =>
+            StringFilterExpression.parse(
+               StringFilterExpression.unparse({ operator: "=", values: [ch] }),
+            ).parsed === null,
+      );
+      expect(nullClause.length).toBe(23);
+      expect(whitespace.filter((ch) => !nullClause.includes(ch))).toEqual([
+         " ",
+      ]);
    });
 });
 
