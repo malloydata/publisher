@@ -37,11 +37,21 @@ describe("readOptionValues", () => {
       expect(readOptionValues(rows, "year")).toEqual(["2024", "2025"]);
    });
 
-   it("is empty rather than throwing on anything unexpected", () => {
+   it("is empty for the shapes that legitimately mean no values", () => {
+      // `result` is optional in the API contract, so an absent one is a
+      // response the server is allowed to send, and an empty list plainly
+      // means no values.
       expect(readOptionValues(undefined, undefined)).toEqual([]);
-      expect(readOptionValues("not json", undefined)).toEqual([]);
-      expect(readOptionValues('{"not":"an array"}', undefined)).toEqual([]);
       expect(readOptionValues("[]", undefined)).toEqual([]);
+   });
+
+   it("throws on a response it cannot read, rather than reporting no values", () => {
+      // This used to return `[]` for both, which collapsed "the query failed"
+      // into "this dimension is empty": the control said "No matching values"
+      // about a populated dimension. Throwing is what reaches `failed` and
+      // puts "Options unavailable" on the control instead.
+      expect(() => readOptionValues("not json", undefined)).toThrow();
+      expect(() => readOptionValues('{"not":"an array"}', undefined)).toThrow();
    });
 });
 

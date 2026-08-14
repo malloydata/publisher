@@ -192,6 +192,21 @@ describe("drillValueToFilter", () => {
       }
    });
 
+   it("refuses a cell that would encode to the EMPTY filter", () => {
+      // The empty filter matches every row, so a drill producing one hands back
+      // the whole dataset dressed up as a drilled view. `encodeFilterList`
+      // drops any value with no non-whitespace character, and this guard used
+      // to test the input against `""` instead of asking the encoder, so it
+      // fell out of step the moment that rule grew past the empty string.
+      for (const blank of ["", " ", "  ", "\t", "\u00a0", "\u3000"]) {
+         expect(drillValueToFilter(blank)).toBeUndefined();
+      }
+      // A value that merely LOOKS blank but does encode is still a drill: the
+      // refusal is "encodes to nothing", not "looks empty".
+      expect(drillValueToFilter("\u200b")).toBe("\u200b");
+      expect(drillValueToFilter(" Nike ")).toBe("\\ Nike\\ ");
+   });
+
    it("leaves a number bare, which the number grammar reads as the value", () => {
       // Not a negation: checked against the real parser, because `-2.5` looks
       // exactly like the `-` that negates in the *string* grammar.
@@ -277,10 +292,25 @@ describe("a drill on an empty cell", () => {
       expect(encodeDrillValue("", undefined)).toBeUndefined();
    });
 
-   it("still resolves a cell that only looks empty", () => {
-      expect(drillValueToFilter(" ")).toBeDefined();
+   it("does not over-refuse a falsy value that is a real one", () => {
+      // The refusal is about values with no filter spelling, not about values
+      // that look empty. A zero and a false are ordinary cells.
       expect(drillValueToFilter(0)).toBe("0");
       expect(drillValueToFilter(false)).toBe("false");
+   });
+
+   it("refuses whitespace too, which it did not always", () => {
+      // This case used to assert the opposite, that `" "` still produced a
+      // drill, and it passed for the worst possible reason: the value it got
+      // back was `""`, the match-everything filter, and `toBeDefined()` is
+      // satisfied by it. The assertion was too weak to tell a working drill
+      // from the exact catastrophe the block above exists to prevent.
+      //
+      // The encoder cannot carry a whitespace-only value in this grammar (see
+      // filterValue.ts), so refusing is the only faithful option: a drill that
+      // widens to every row is worse than one that does nothing.
+      expect(drillValueToFilter(" ")).toBeUndefined();
+      expect(encodeDrillValue(" ", "filter<string>")).toBeUndefined();
    });
 });
 

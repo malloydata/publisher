@@ -173,12 +173,17 @@ export interface DrillIntent {
  */
 export function drillValueToFilter(value: unknown): string | undefined {
    if (typeof value === "string") {
-      // An empty cell is refused, like null below. `encodeFilterList` drops an
-      // empty value, so encoding one yields the EMPTY filter, which matches
-      // every row: a drill that silently widened instead of narrowing. Refusing
-      // is both safer and consistent with how the null case is treated.
-      if (value === "") return undefined;
-      return encodeFilterList([value]);
+      // Refused when it ENCODES to nothing, not when it IS the empty string.
+      // `encodeFilterList` drops any value with no non-whitespace character,
+      // and the empty filter matches every row, so a drill producing one would
+      // silently widen instead of narrowing. Testing the input against `""`
+      // duplicated the encoder's rule and then fell out of step with it the
+      // moment that rule grew to cover whitespace: clicking a blank-looking
+      // cell (a space, a tab, an NBSP, all ordinary in pasted data) handed back
+      // the whole dataset dressed up as a drilled view. Asking the encoder is
+      // the one form of this that cannot drift again.
+      const encoded = encodeFilterList([value]);
+      return encoded === "" ? undefined : encoded;
    }
    if (typeof value === "boolean") return String(value);
    if (typeof value === "number") {

@@ -811,6 +811,22 @@ describe("whitespace, which is not the same as empty", () => {
       }
    });
 
+   it("reads leading whitespace the same way whether or not a `+` was eaten", () => {
+      // These two differ only in whether the URL ate an offset, and they used
+      // to disagree: the restoring path trimmed and the non-restoring path did
+      // not, so a leading space was fatal to one and harmless to the other.
+      expect(paramToGiven("timestamp", " 2024-01-05T10:30:00Z")).toEqual(
+         new Date("2024-01-05T10:30:00.000Z"),
+      );
+      expect(paramToGiven("timestamp", " 2024-01-05T10:30:00 05:00")).toEqual(
+         new Date("2024-01-05T05:30:00.000Z"),
+      );
+      // Trailing was always fine, and stays fine.
+      expect(paramToGiven("date", "2024-01-05 ")).toEqual(
+         new Date("2024-01-05T00:00:00.000Z"),
+      );
+   });
+
    it("still puts back a `+` the address bar ate", () => {
       // The trim above exists for this, so it has to keep working.
       expect(paramToGiven("timestamptz", "2024-03-01 12:30 05:30")).toEqual(

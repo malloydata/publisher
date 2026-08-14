@@ -109,16 +109,20 @@ const TEMPORAL =
  */
 function restoreUrlPlus(raw: string): string {
    const trimmed = raw.trim();
-   const restored = trimmed.replace(
+   // Whitespace and nothing else: hand back `raw` untouched. Trimming it yields
+   // `""`, which has already passed the empty-means-unset check above, so the
+   // given was sent as an empty date while its control read as unset.
+   //
+   // Only that case. An earlier form of this guard returned `raw` whenever no
+   // `+` was restored, which stopped trimming ordinary values too: ` 2024-01-05`
+   // was then refused while ` 2024-01-05T10:30:00 05:00` still parsed, since the
+   // restoring path trimmed and the non-restoring path no longer did. Same
+   // leading space, opposite answers, decided by whether the URL had eaten a `+`.
+   if (trimmed === "") return raw;
+   return trimmed.replace(
       /^(\d{4}-\d{1,2}-\d{1,2}[T\s]+\d{1,2}:\d{2}(?::\d{2})?(?:\.\d{1,9})?)\s+(\d{2}:?\d{2}|\d{2})$/,
       "$1+$2",
    );
-   // `raw` when there was no `+` to put back, so this never REMOVES text. The
-   // trim exists to line the pattern up, and returning the trimmed text made a
-   // whitespace-only parameter collapse to `""`, which had already passed the
-   // unset check above and so was sent as the given's value: the control read
-   // as unset while the query ran with an empty date.
-   return restored === trimmed ? raw : restored;
 }
 
 /**

@@ -357,4 +357,62 @@ describe("useGivensState: swapping documents", () => {
       expect(entries(result.current.applied)).toEqual({});
       expect(reported.at(-1)).toEqual({});
    });
+
+   it("keeps edits to the givens a model reload did not drop", () => {
+      // `prune` exists to drop values for givens that no longer exist while
+      // keeping the rest. It never got the chance: `initialKey` was built from
+      // `initial`, which is already filtered by `declaredTypes`, so removing
+      // one given re-keyed everything and discarded the reader's edits to the
+      // givens that survived. A declaration change is not a new starting point.
+      const { result, rerender } = renderHook(
+         (props: { types: Map<string, string> }) =>
+            useGivensState({
+               declaredTypes: props.types,
+               startingValues: { STATUS: "open" },
+               documentKey: "orders.malloynb",
+               autorun: true,
+            }),
+         {
+            initialProps: {
+               types: new Map([
+                  ["REGION", "string"],
+                  ["STATUS", "string"],
+               ]),
+            },
+         },
+      );
+
+      act(() => result.current.setGiven("REGION", "east"));
+      expect(entries(result.current.applied)).toEqual({
+         STATUS: "open",
+         REGION: "east",
+      });
+
+      // The model author removes STATUS and the package reloads.
+      rerender({ types: new Map([["REGION", "string"]]) });
+      expect(entries(result.current.applied)).toEqual({ REGION: "east" });
+   });
+
+   it("is not re-keyed by the ORDER a host lists its parameters in", () => {
+      // `URLSearchParams` iterates in the query string's own order, so a host
+      // rewriting `?A=1&B=2` as `?B=2&A=1` would otherwise look like a new
+      // starting point and throw the reader's edits away for nothing.
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: new Map([
+                  ["A", "string"],
+                  ["B", "string"],
+               ]),
+               params: props.params,
+               documentKey: "orders.malloynb",
+               autorun: true,
+            }),
+         { initialProps: { params: { A: "1", B: "2" } } },
+      );
+
+      act(() => result.current.setGiven("A", "edited"));
+      rerender({ params: { B: "2", A: "1" } });
+      expect(entries(result.current.applied)).toEqual({ A: "edited", B: "2" });
+   });
 });

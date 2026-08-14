@@ -202,14 +202,29 @@ export function readOptionValues(
    result: string | undefined,
    dimension: string | undefined,
 ): string[] {
+   // Absent is tolerated: `result` is optional in the API contract, so a
+   // missing one is a shape the server is allowed to send and "no values" is
+   // the honest reading of it.
    if (!result) return [];
+
+   // Corrupt is NOT tolerated, and the difference matters. This hook exists to
+   // separate "this dimension has no values" from "the option query failed",
+   // and returning `[]` for a response that could not be read collapsed the
+   // second into the first: the control rendered "No matching values" and told
+   // the reader a populated dimension was empty. Thrown, so react-query marks
+   // the query errored and `failed` reports it, which is what puts "Options
+   // unavailable" on the control.
    let rows: unknown;
    try {
       rows = JSON.parse(result);
    } catch {
-      return [];
+      throw new Error("Suggest query returned a result that is not JSON.");
    }
-   if (!Array.isArray(rows)) return [];
+   if (!Array.isArray(rows)) {
+      throw new Error(
+         "Suggest query returned JSON that is not a list of rows.",
+      );
+   }
 
    const values: string[] = [];
    const seen = new Set<string>();

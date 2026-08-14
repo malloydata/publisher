@@ -94,6 +94,16 @@ function prune(
    return next;
 }
 
+/**
+ * Entries in a fixed order, so the key below depends on the values and not on
+ * the order a host happened to build its object in. `URLSearchParams` iterates
+ * in the query string's own order, so `?B=2&A=1` and `?A=1&B=2` would otherwise
+ * be different starting points and re-key the reader's edits for nothing.
+ */
+function stableEntries(source: Record<string, string> | undefined) {
+   return Object.entries(source ?? {}).sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
 /** Same entries, same values: enough for state whose values are primitives. */
 function sameParams(
    a: Record<string, string>,
@@ -141,10 +151,23 @@ export function useGivensState({
    // filtered the second, while `lastReported` (equal to them already)
    // suppressed the report that would have put them in the URL: the address bar
    // and the running cells disagreed, and copying the URL reproduced neither.
+   //
+   // Built from the INPUTS that define a starting point, not from `initial`,
+   // which is those inputs already filtered by `declaredTypes`. Keying on the
+   // filtered map made the set of declared givens part of the key, so a model
+   // reload that merely dropped one given re-keyed everything and discarded the
+   // reader's edits to the givens that SURVIVED, which is the opposite of what
+   // `prune` below is written to do. Dropping stale values is `prune`'s job; a
+   // declaration change is not a new starting point.
    const initialKey = useMemo(
       () =>
-         JSON.stringify([documentKey ?? null, Array.from(initial.entries())]),
-      [documentKey, initial],
+         JSON.stringify([
+            documentKey ?? null,
+            stableEntries(startingValues),
+            stableEntries(params),
+         ]),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [documentKey, JSON.stringify(startingValues), JSON.stringify(params)],
    );
 
    // KNOWN LIMITATION, latent today. A given that has a starting value cannot be

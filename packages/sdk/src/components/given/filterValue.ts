@@ -63,11 +63,16 @@ export function filterInnerType(type: string | undefined): string | undefined {
  *   `"a\t"` comes back as `"a"`: a filter for a different single value, not a
  *   broader one. A space in the same position is escaped and does round-trip,
  *   and a tab INSIDE a value is untouched.
- * - **An embedded newline collapses the list.** `["a\nb", "c"]` comes back as
- *   the single value `"a\nb, c"`, because the grammar excludes a bare newline
- *   from a match string and the separator stops being read as one. Escaping it
- *   is not the fix: the library's `unescape` is `/\\(.)/g` and `.` does not
- *   match a newline, so the value would return carrying a stray backslash.
+ * - **An embedded newline makes the whole filter unparseable.** The grammar
+ *   excludes a bare newline from a match string, so `["a\nb", "c"]` emits
+ *   `"a\nb, c"` and the parser refuses it outright: `parsed` is null and the
+ *   log reads `Expected "," … but "\n" found`. The query then errors where the
+ *   reader can see it, which is the good failure. `decodeFilterList` hands that
+ *   string back as one opaque value, but that is its display fallback for a
+ *   filter it cannot represent, NOT a filter that runs and matches the wrong
+ *   thing. Escaping is not the fix: the library's `unescape` is `/\\(.)/g` and
+ *   `.` does not match a newline, so the value would return carrying a stray
+ *   backslash.
  * - **A value that is ENTIRELY whitespace is refused**, rather than encoded.
  *   It has to be: `parse` returns a null clause for it with an empty log, not an
  *   error, and Malloy compiles a null clause to the SQL constant `true`, so

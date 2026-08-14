@@ -256,9 +256,20 @@ export function GivenInput({
    ) {
       const commit = (next: string[]) => {
          if (next.length === 0) {
-            // No selection is "All", which for a filter is the empty filter and
-            // for anything else is simply no override.
-            onChange(filtered ? "" : null);
+            // `null` for every type, which is what the × means everywhere else
+            // in this file: drop the override and let the model's own value
+            // stand. This arm used to send `""` for a filter, the empty filter,
+            // meaning "match everything" as an explicit override. Same button,
+            // same given, opposite result set from the text box's ×, and
+            // nothing on screen said which one you were about to get.
+            //
+            // FORECLOSED by choosing revert: a reader cannot override a
+            // DECLARED default with "match everything", because the only
+            // gesture for it now means revert. Unreachable today (nothing
+            // populates `control`, so no picker renders), and the honest fix is
+            // a separate affordance rather than two meanings for one ×. Worth
+            // settling before `control=` is wired up server-side.
+            onChange(null);
             return;
          }
          // One value for a non-filter given, never the array. `GivenValue`
@@ -282,6 +293,11 @@ export function GivenInput({
             // Free text keeps the control from being a cage: the suggest query
             // returns the common values, not necessarily every legal one.
             freeSolo
+            // Keeps text the reader typed but did not pick from the list. A
+            // `freeSolo` Autocomplete without this discards it on blur, so a
+            // value that is legal but absent from `suggest` could be typed and
+            // then silently vanish.
+            autoSelect
             options={options ?? []}
             loading={optionsLoading}
             noOptionsText={
@@ -302,7 +318,15 @@ export function GivenInput({
                   {...params}
                   label={label}
                   size="small"
-                  placeholder={selected.length === 0 ? "All" : undefined}
+                  // The model's own default when it has one, as a ghost, the
+                  // way every other unset control shows it. A hardcoded "All"
+                  // told the reader nothing would be filtered while the query
+                  // was about to run on the declared default.
+                  placeholder={
+                     selected.length === 0
+                        ? (defaultDisplay ?? "All")
+                        : undefined
+                  }
                   error={optionsFailed}
                   helperText={
                      optionsFailed ? (
@@ -408,7 +432,13 @@ export function GivenInput({
                      <IconButton
                         size="small"
                         aria-label="clear value"
-                        onClick={() => onChange(numericFilter ? "" : null)}
+                        // `null`, like every other × in this file: revert the
+                        // override. It used to send `""` for a filter, which
+                        // `decodeAtLeast` reads back as undefined, so the
+                        // control redrew as "Any" and hid this button while the
+                        // given was still explicitly set to the empty filter.
+                        // The reader could neither see the override nor undo it.
+                        onClick={() => onChange(null)}
                         sx={{ p: 0 }}
                      >
                         <ClearIcon fontSize="small" />
@@ -428,11 +458,15 @@ export function GivenInput({
                   sx={{ py: 0, mt: 0.5 }}
                   onChange={(_event, next) => {
                      const picked = Array.isArray(next) ? next[0] : next;
-                     // Back at the floor is no threshold at all, not `>= min`,
-                     // so dragging left the whole way clears rather than
-                     // leaving a filter that reads as a constraint.
-                     if (picked <= rangeMin) {
-                        onChange(numericFilter ? "" : null);
+                     // Back at the floor is no threshold at all for a FILTER,
+                     // not `>= min`, so dragging left the whole way clears
+                     // rather than leaving a filter that reads as a constraint.
+                     //
+                     // A plain `number` given is not a threshold, so its floor
+                     // is an ordinary value and clearing there made the minimum
+                     // the one number on the scale the reader could not pick.
+                     if (numericFilter && picked <= rangeMin) {
+                        onChange(null);
                         return;
                      }
                      onChange(numericFilter ? encodeAtLeast(picked) : picked);
