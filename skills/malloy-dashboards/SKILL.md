@@ -24,26 +24,29 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
    `malloy_getContext` if you have it, otherwise the REST model endpoint or the `.malloy` files.
-   Never guess a name. A guessed field in a query is a compile error that stops the whole package
-   loading; a guessed tile or suggest source is quieter, and only shows up in the package warnings.
+   Never guess a name. A guessed field in a query fails the whole package load, not just that one
+   dashboard; a guessed tile or suggest source is quieter, and only shows up in the package warnings.
 2. **DECIDE THE FORM** (below): single-query if the page is one filtered result with parts;
    composite if the views already exist and the job is choosing which to show together.
 3. **DECLARE THE GIVENS** the dashboard will filter by, in the model (usually `givens.malloy`), with
    their control tags. Skip if they already exist, since a given is a model concern and dashboards
    share them.
-4. **WRITE THE FILE** in `dashboards/`, following the template below. Import every given it filters
-   by, and every source or query any of those givens names in a `suggest`. Both are per-file, and
-   getting the suggest wrong does not error. The control still looks like a picker, dropdown arrow
-   and all, but has no options and reads "Could not load the options for this control" underneath, so
-   glancing at the shape of the widget will not tell you. The package warnings name it exactly.
-5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`) before saving anything
-   else. Cheaper than a reload, and it catches a wrong field or source name outright. It does not
-   catch every tag mistake, so a clean compile is not a working dashboard: step 6 is where those
-   surface.
-6. **RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
-   `GET …/packages/<pkg>?reload=true`. Package warnings are where dashboards report the failures
-   that are otherwise silent. See "Read the lint" below.
+4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
+   Import every given it filters by, and every source or query any of those givens names in a
+   `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
+   looks like a picker but has no options, and only the package warnings name it.
+5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
+   before you save. Cheaper than a reload, and it catches a wrong field or source name outright. A
+   clean compile is not a working dashboard: some tag mistakes surface at step 6, and some only when
+   you look at the page in step 7.
+6. **SAVE IT, THEN RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
+   `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
+   a 424 means the package did not load and your edit is not live. See "Read the lint" below.
 7. **OPEN IT AND LOOK.** Not optional; see "What 'done' means".
+
+Compiling before you save is worth the extra step: compile against a path that already holds the
+file and every source in it collides with itself, which reports as a wall of redefinition errors that
+look like a problem with your Malloy rather than with the order you did things in.
 
 ## The two forms
 
@@ -91,6 +94,10 @@ query: overview is order_items -> {
 }
 ```
 
+The `#"` line above the tag is a doc comment, and it is the page's description. If you leave `title=`
+off the artifact tag, it becomes the title instead, so write it as one, not as a sentence about the
+page.
+
 **Composite:** a list of views that already exist, each run separately into one grid. The tag is
 model-level (`##`) because there is no query of its own to hang a `#` tag on.
 
@@ -102,11 +109,22 @@ import { products } from '../storefront.malloy'
 import { CATEGORY, SINCE } from '../givens.malloy'
 ```
 
-A composite has no query, so the filtering it applies must live in what it composes. Put a
-given-scoped source in an untagged `dashboards/_shared.malloy`, which discovery treats as a shared
-include rather than a dashboard. Its tiles are equal-width (there is no per-tile colspan), so pick a
-`dashboard_columns` the tile list divides evenly, and use the single-query form when one tile deserves
-more room than the others.
+A composite has no query, so the filtering it applies must live in what it composes: a source that
+already has the givens applied. Put it in an untagged `dashboards/_shared.malloy`, which discovery
+treats as a shared include rather than a dashboard:
+
+```malloy
+##! experimental.givens
+import { order_items } from '../storefront.malloy'
+import { CATEGORY } from '../givens.malloy'
+
+source: scoped_sales is order_items extend {
+  where: products.category ~ $CATEGORY
+}
+```
+
+Its tiles are equal-width (there is no per-tile colspan), so pick a `dashboard_columns` the tile list
+divides evenly, and use the single-query form when one tile deserves more room than the others.
 
 ## Layout: the four tags that make a page line up
 
@@ -169,9 +187,8 @@ its rows.
 - **In a `# dashboard` view, fields render by role.** A top-level `aggregate:` measure is a KPI card,
   so do not nest a `# big_value` view to get one. Each `nest:` is a tile. Give every KPI a
   `# label=`, or the card is headed `total_sales`.
-- **Only table cells drill.** The renderer emits a click payload for a table cell and for a whole
-  tile, and none for a chart mark, so a chart is not clickable however it is tagged. If a dashboard
-  is meant to be clicked, give it at least one untagged (table) tile.
+- **Only table cells drill.** A chart mark emits no click, so a chart is not clickable however it is
+  tagged. If a dashboard is meant to be clicked, give it at least one untagged (table) tile.
 
 `skill:malloy-gotchas-rendering` covers the renderer tags in depth; `skill:malloy-charts` covers
 choosing them.
@@ -224,16 +241,16 @@ dimension: category is products.category
 `to=<slug>` navigates to that dashboard with the clicked value written into the named given;
 `to=self` filters in place; two or more destinations pop a menu.
 
+Declaring it on the dimension is the point: every result that groups by it becomes clickable, in a
+dashboard tile and in a notebook cell alike. So when a view is meant to be drilled, group by the
+tagged dimension. Declaring `dimension: category is products.category` and grouping by `category`
+gives the identical output field name and the identical numbers, and carries the tag.
+
 **Always write `given=`.** Without it the given name is the dimension name **verbatim**, so a
 `dimension: category` seeds a given called `category`, which does not match a declared
 `given: CATEGORY`. Nothing errors: the `to=self` is quietly not offered, and a `to=<slug>` still
 navigates and still looks like it worked, but arrives as `?category=…`, which the destination drops,
 so you land on an unfiltered page. The lint upper-cases when it checks, so it stays green.
-
-Declaring it on the dimension is the point: every result that groups by it becomes clickable, in a
-dashboard tile and in a notebook cell alike. So when a view is meant to be drilled, group by the
-tagged dimension. Declaring `dimension: category is products.category` and grouping by `category`
-gives the identical output field name and the identical numbers, and carries the tag.
 
 A drill only lands somewhere useful if the destination declares a control for the given being
 seeded. **No lint checks that.** It verifies that the target slug is a dashboard in the package, and
@@ -255,21 +272,26 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
   be empty, so import it.
 - A tile that does not resolve to a real view, or a non-positive `dashboard_columns`.
 
-One dashboard that fails to compile takes the whole listing down: the dashboards endpoint returns a
-424 carrying the compile error, and none of the package's dashboards are listed, healthy ones
-included. So if everything has vanished at once, read the error rather than looking for what is wrong
-with the dashboard you were working on. If the others are listed and yours is not, discovery skipped
-the file instead, usually a missing or misspelled `# artifact` tag, which is the same mechanism that
-deliberately skips an untagged shared include.
+**Read the status the reload itself returns, not the listing.** One dashboard that fails to compile
+fails the whole package load, and the reload answers **424** with the compile error. A package that
+was already serving then keeps serving its previous version, so the listing still answers 200 and
+looks perfectly healthy while your edit has silently not taken effect. That is the usual case and the
+one to watch for: a 424 you did not read, and a page that has not changed. Only a package that never
+loaded at all, on a fresh boot or when newly added, answers 424 on the listing too.
+
+If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
+usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
+an untagged shared include.
 
 **A clean reload is not proof the tags are right.** The tag lint is syntax only: it carries no
-position, says nothing about a name that does not resolve, and is silent on a line that only parses
-after Publisher rescues it. It catches *a* malformed tag; its absence is not evidence there are none.
-That is why the last step is opening the page, not reading the warning list.
+position and says nothing about a name that does not resolve. It catches *a* malformed tag; its
+absence is not evidence there are none. That is why the last step is opening the page, not reading
+the warning list.
 
 ## What "done" means
 
 - Every source, view, and field name came from the model you read in step 1.
+- The reload returned **200**, not 424. A 424 means the page you are about to look at is the old one.
 - The package reloads with **zero** dashboard warnings.
 - You opened the page and every tile shows real numbers: not stuck loading, not an error, not an
   empty state you did not intend.
