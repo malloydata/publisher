@@ -414,12 +414,12 @@ export function readDashboardModelFacts(
    for (const given of Object.values(registry)) {
       if (!surfaced.has(given.name)) continue;
       const type = given.type;
+      const isFilter = type.type === "filter expression";
       givens.set(given.name, {
          name: given.name,
-         type:
-            type.type === "filter expression"
-               ? `filter<${type.filterType}>`
-               : type.type,
+         type: isFilter ? `filter<${type.filterType}>` : type.type,
+         // Raw as declared. `givenSpec` unwraps a filter literal at the point it
+         // publishes the field, so the two forms are not both in flight here.
          default: given.defaultText,
          annotations: (given.annotations?.blockNotes ?? [])
             .concat(given.annotations?.notes ?? [])
@@ -600,7 +600,22 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
    return {
       name: declaration.name,
       type: declaration.type,
-      default: declaration.default,
+      // The BODY the query endpoint takes, not the `f'…'` literal a filter given
+      // is declared as. Published raw, `default` was a value that could not be
+      // used as a default: sent back verbatim it matched zero rows, with no
+      // error to search for.
+      //
+      // Keyed on the declared type, not applied blindly, because only a filter
+      // given carries the wrapper and a plain string default that happens to
+      // read `f'x'` must survive untouched. Done HERE rather than upstream
+      // because this is the one place the published field is produced, so it
+      // holds however the facts were built. `unwrapFilterLiteral` is a no-op on
+      // an already-unwrapped value, so it stays correct if that changes.
+      default:
+         declaration.type.startsWith("filter<") &&
+         declaration.default !== undefined
+            ? unwrapFilterLiteral(declaration.default)
+            : declaration.default,
       // The `#(…)` app route only. This is NARROWER than the model surface, on
       // purpose: `malloyGivenToApi` classifies by the parsed route, this by the
       // opening character, and `parsePrefix` has four bracket pairs, so

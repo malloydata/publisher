@@ -254,6 +254,37 @@ describe("service/dashboard manifest (single-query form)", () => {
 });
 
 describe("service/dashboard given specs (the control contract)", () => {
+   /**
+    * `default` must be usable AS a default, so a filter given publishes the BODY
+    * the query endpoint takes rather than the `f'…'` literal it is declared as.
+    * Publishing the literal made this a field that silently matched zero rows.
+    *
+    * Type-conditional, and this pins that half too: only a filter given carries
+    * the wrapper, so a plain string whose default merely READS like one must
+    * survive untouched.
+    */
+   it("unwraps a filter default and leaves a look-alike plain default alone", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["FILTERED", "PLAIN"],
+               },
+            ],
+            givens: new Map([
+               given("FILTERED", "filter<string>", [], "f'Nike'"),
+               given("PLAIN", "string", [], "f'Nike'"),
+            ]),
+         }),
+      );
+      const byName = Object.fromEntries(
+         (manifest?.givens ?? []).map((g) => [g.name, g.default]),
+      );
+      expect(byName).toEqual({ FILTERED: "Nike", PLAIN: "f'Nike'" });
+   });
+
    it("builds one control per given the query references, from its tags", () => {
       const manifest = build(
          facts({
@@ -289,7 +320,7 @@ describe("service/dashboard given specs (the control contract)", () => {
          {
             name: "BRAND",
             type: "filter<string>",
-            default: "f''",
+            default: "",
             annotations: [],
             label: "Brand",
             control: "select",
@@ -301,7 +332,7 @@ describe("service/dashboard given specs (the control contract)", () => {
          {
             name: "MIN_PRICE",
             type: "filter<number>",
-            default: "f''",
+            default: "",
             annotations: [],
             label: "Min price",
             rangeMin: 0,

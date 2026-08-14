@@ -243,7 +243,9 @@ describe("Dashboard discovery (E2E)", () => {
          label: "Brand",
          control: "select",
          suggest: { source: "orders", dimension: "brand" },
-         default: "f''",
+         // Unwrapped: the fixture declares `f'Nike'`, and the manifest
+         // publishes the body the query endpoint takes.
+         default: "Nike",
       });
       expect(specs.find((s) => s.name === "MIN_AMOUNT")).toMatchObject({
          type: "filter<number>",
@@ -413,7 +415,11 @@ describe("Dashboard discovery (E2E)", () => {
 
       // A slider: `>= N` on a filter<number>. Only order 3 (Levi's, 50) is
       // below 100, so Levi's total drops from 550 to 500 while Nike's stands.
-      const res = await run({ MIN_AMOUNT: ">= 100" });
+      // BRAND cleared explicitly. The fixture gives it a real default (`f'Nike'`)
+      // so the manifest has a non-empty `default` to publish, and this assertion
+      // is about MIN_AMOUNT, so it must not inherit a brand filter. It used to
+      // pass only because BRAND's default happened to be empty.
+      const res = await run({ MIN_AMOUNT: ">= 100", BRAND: "" });
       expect(res.status).toBe(200);
       const rows = JSON.parse(
          ((await res.json()) as { result?: string }).result ?? "[]",
@@ -575,6 +581,40 @@ describe("Dashboard discovery (E2E)", () => {
        * proves is refused. The fixture writes the literal form deliberately;
        * quoting it, as it used to, dodged the path entirely.
        */
+      /**
+       * `default` has to be usable AS a default. A filter given is declared as
+       * the literal `f'Nike'` and the query endpoint takes the body `Nike`, so
+       * publishing the literal made this a field that silently matches zero rows
+       * when a client substitutes it, with no error to search for.
+       *
+       * Both halves in one test: the filter given must be unwrapped, and the
+       * plain string whose default READS like a literal must not be, because
+       * only a filter-typed given carries the wrapper.
+       */
+      it("publishes a default the query endpoint accepts, unwrapped only for filter givens", async () => {
+         const manifest = await getManifest("overview");
+         const byName = Object.fromEntries(
+            (manifest.givens ?? []).map((g) => [g.name, g]),
+         );
+         expect(byName["BRAND"]?.default).toBe("Nike");
+
+         // And it round-trips: the advertised default actually runs and matches.
+         const res = await fetch(apiUrl(`/models/${manifest.path}/query`), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+               queryName: manifest.query,
+               givens: { BRAND: byName["BRAND"]?.default },
+               compactJson: true,
+            }),
+         });
+         expect(res.status).toBe(200);
+         const rows = JSON.parse(
+            ((await res.json()) as { result: string }).result,
+         ) as unknown[];
+         expect(rows.length).toBeGreaterThan(0);
+      });
+
       it("publishes a date starting given the query endpoint will accept", async () => {
          const res = await fetch(apiUrl("/notebooks/orders-start.malloynb"));
          expect(res.status).toBe(200);

@@ -3454,6 +3454,15 @@ components:
             the given itself, so a dashboard and a notebook render the same
             control for the same given, `#(description=…)` helper text
             included.
+
+            ONE DELIBERATE DIVERGENCE from `Given` as the model surface sends
+            it: `default` here is the value the QUERY ENDPOINT takes, not the
+            Malloy source literal. A `filter<…>` given declared `f'West'`
+            publishes `West`. As the literal it could not be used as a default
+            at all, since sending it back verbatim matches zero rows silently,
+            with no error to search for. Only filter-typed givens are unwrapped,
+            so a plain string default that merely reads like `f'x'` is
+            untouched. `startingGivens` uses the same shape for the same reason.
           items:
             $ref: "#/components/schemas/Given"
 
