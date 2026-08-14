@@ -348,7 +348,16 @@ export type RowLevelGateClassification =
    // entry points a gate's fields must resolve at is already answered by
    // compiling the probe there, which is the authority. A second, weaker
    // classifier beside that one is how two security bugs got in here already.
-   | { shape: "row_level"; givenNames: string[] }
+   //
+   // `literalAtoms` is the reconstructed source text of every `<given> <op>
+   // <literal>` atom the walk accepted (e.g. `$ROLE != 'admin'` from the
+   // admin-override idiom) — self-contained Malloy boolean expressions,
+   // independently probeable. A gate is a per-request filter, so any one of
+   // these being TRUE under the given's own DECLARATION DEFAULT (the value a
+   // caller who supplies nothing gets) makes the whole disjunction it sits in
+   // admit every row for that caller — see `validateAuthorizeProbes`'s
+   // default-value probe, which is what actually evaluates these.
+   | { shape: "row_level"; givenNames: string[]; literalAtoms: string[] }
    | { shape: "rejected"; cause: RowLevelGateRejectionCause; detail: string };
 
 /**
@@ -427,6 +436,7 @@ export function classifyAuthorizeGate(
       return { shape: "given_only" };
    }
    const givenNames: string[] = [];
+   const literalAtoms: string[] = [];
    let rejection: RowLevelGateClassification | undefined;
 
    const reject = (
@@ -464,6 +474,31 @@ export function classifyAuthorizeGate(
             n.node === "true" ||
             n.node === "false")
       );
+   };
+
+   /**
+    * Render an {@link isLiteralOperand} node back to Malloy source text, so
+    * an accepted atom can be re-probed on its own (see `literalAtoms` on
+    * {@link RowLevelGateClassification}). `stringLiteral`'s `.literal` is the
+    * raw string VALUE (confirmed against `@malloydata/malloy`'s
+    * `expr-string.js`, which sets it from the author's unescaped source), not
+    * already-quoted Malloy syntax, so it is re-quoted here; `numberLiteral`'s
+    * `.literal` is already valid Malloy numeric source text and is emitted
+    * verbatim. Returns `null` for anything `isLiteralOperand` did not accept
+    * — callers only reach this after that check passes, so `null` here would
+    * mean the two functions disagree.
+    */
+   const literalOperandText = (node: unknown): string | null => {
+      const n = asNode(node);
+      if (!n) return null;
+      if (n.node === "true" || n.node === "false") return n.node;
+      if (n.node === "numberLiteral" && typeof n.literal === "string") {
+         return n.literal;
+      }
+      if (n.node === "stringLiteral" && typeof n.literal === "string") {
+         return `'${n.literal.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+      }
+      return null;
    };
 
    /** The declared type of a given, or a rejection if it is not reachable. */
@@ -571,6 +606,18 @@ export function classifyAuthorizeGate(
             // row-level gates existed. Legal as an ATOM inside a row-level
             // gate.
             givenNames.push(given);
+            const literalText = literalOperandText(otherSide);
+            if (literalText !== null) {
+               // Side order matters for a non-commutative operator (`>`,
+               // `<`, `>=`, `<=`): reconstruct `$given op literal` when the
+               // given was on the left, `literal op $given` when it was on
+               // the right, rather than always writing the given first.
+               literalAtoms.push(
+                  left !== null
+                     ? `$${given} ${kind} ${literalText}`
+                     : `${literalText} ${kind} $${given}`,
+               );
+            }
             return true;
          }
          givenNames.push(given);
@@ -627,7 +674,7 @@ export function classifyAuthorizeGate(
             "source's own `where:`",
       };
    }
-   return { shape: "row_level", givenNames };
+   return { shape: "row_level", givenNames, literalAtoms };
 }
 
 /**
@@ -1046,6 +1093,78 @@ async function runOneRowProbeOrThrow(
 }
 
 /**
+ * Malloy's own wording (`expression_compiler.js`) when a given is referenced
+ * with no caller-supplied value and no declared default — the ONE safe
+ * outcome for {@link assertNoVacuousDefaultAtom}'s no-givens probe: a given
+ * with no default cannot silently resolve to anything at request time
+ * either, so there is no vacuous-default hazard to refuse. Matched by
+ * substring rather than parsed structurally: this module has no access to
+ * Malloy's internal error types, and the message is the only stable surface.
+ */
+const NO_DEFAULT_GIVEN_PATTERN = /has no value and no default/;
+
+/**
+ * Refuse a row-level gate whose accepted literal atom(s) (`literalAtoms` from
+ * {@link classifyAuthorizeGate} — a `<given> <op> <literal>` comparison like
+ * the admin-override `$ROLE != 'admin'`) evaluate TRUE against the given's
+ * own DECLARATION DEFAULT — the value a caller who supplies nothing gets.
+ * `docs/row-level-authorize-spike-findings.md`'s admin-override idiom is an
+ * OR disjunct specifically so a caller need not name every non-admin role;
+ * the flip side is that the atom's truth is then decided by whichever value
+ * the given resolves to when the caller supplies nothing, and the documented
+ * convention is an EMPTY default. A `!=` (or any comparison the empty/zero
+ * default doesn't happen to satisfy) atom is vacuously true there, and an
+ * OR'd atom that is always true makes the whole disjunction — the whole row
+ * filter — admit every row for that caller. This is the same failure mode a
+ * negated membership test (`not in`) was refused for in
+ * {@link classifyAuthorizeGate}: an authoring mistake to catch at load time,
+ * not a runtime condition to document as a trap.
+ *
+ * Probes with NO supplied givens (`{}`), so each atom's own given resolves to
+ * its declared default exactly as it would for a caller who supplied
+ * nothing. A given with NO default at all cannot be vacuous this way — a
+ * caller must supply a value or the request itself fails the identical "no
+ * value and no default" way — so that one outcome is not a refusal; see
+ * {@link NO_DEFAULT_GIVEN_PATTERN}. Any OTHER probe failure (a given the
+ * classify walk already proved reachable should not fail its OWN atom's
+ * probe) still fails the load — fail closed, matching every other check in
+ * this function.
+ */
+async function assertNoVacuousDefaultAtom(
+   executor: AuthorizeProbeExecutor,
+   sourceName: string,
+   literalAtoms: string[],
+): Promise<void> {
+   for (const atom of literalAtoms) {
+      let vacuous: boolean;
+      try {
+         vacuous = await runProbe(executor, buildAuthorizeProbe([atom]), {});
+      } catch (err) {
+         const detail = err instanceof Error ? err.message : String(err);
+         if (NO_DEFAULT_GIVEN_PATTERN.test(detail)) continue;
+         throw new ModelCompilationError({
+            message:
+               `Invalid #(authorize) annotation on source "${sourceName}": ` +
+               `the atom \`${atom}\` could not be evaluated against its ` +
+               `given's declared default (${detail}).`,
+         });
+      }
+      if (vacuous) {
+         throw new ModelCompilationError({
+            message:
+               `Invalid #(authorize) annotation on source "${sourceName}": ` +
+               `the atom \`${atom}\` evaluates to TRUE when a caller supplies ` +
+               `no givens (its given's own declared default). An OR'd atom ` +
+               `that is true by default makes the whole row filter admit ` +
+               `every row for that caller. Give the given a default this ` +
+               `atom evaluates false against, or declare it with no default ` +
+               `so a caller must supply one explicitly.`,
+         });
+      }
+   }
+}
+
+/**
  * Translation-time validation. Type mismatches such as `$ROLE = 5` are NOT
  * Malloy compile errors, so they are not caught here — they fail closed at
  * the runtime gate.
@@ -1174,7 +1293,13 @@ async function runOneRowProbeOrThrow(
  * compile paths validate identically.
  */
 export async function validateAuthorizeProbes(
-   compiler: AuthorizeProbeCompiler,
+   // Widened from `AuthorizeProbeCompiler` to also RUN a probe, not just
+   // compile one: `assertNoVacuousDefaultAtom` (below) evaluates a
+   // `row_level` gate's literal atom against its given's declared default,
+   // which needs `.run()`, not just `.getPreparedQuery()`. Both real callers
+   // (`Model.create`, the package-load worker) already pass a full
+   // `ModelMaterializer`, which supports both.
+   compiler: AuthorizeProbeCompiler & AuthorizeProbeExecutor,
    options: {
       authorizeMap?: AuthorizeMap;
       declaredTypes?: Map<string, string>;
@@ -1260,7 +1385,14 @@ export async function validateAuthorizeProbes(
          });
       }
       // shape === "row_level": the probe compiled at this entry point, so
-      // the gate's field(s) resolved here. Valid.
+      // the gate's field(s) resolved here. Still verify any literal atom it
+      // carries isn't vacuously true at its given's declared default before
+      // calling it valid — see `assertNoVacuousDefaultAtom`'s doc.
+      await assertNoVacuousDefaultAtom(
+         compiler,
+         sourceName,
+         classification.literalAtoms,
+      );
       for (const note of ownNotesOf.get(sourceName) ?? []) {
          provenNoteObjects.add(note);
       }

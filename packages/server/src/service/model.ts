@@ -1468,7 +1468,14 @@ export class Model {
                modelDef,
                graftScope,
             );
-            if (resolution.kind === "row_level") return true;
+            // Anything other than `given_only` must block routing here, not
+            // just `row_level`: `deny` means a gate exists and could not be
+            // applied (an unexpressible shape after `rename:`/`except:`/
+            // `accept:`, an unresolvable graft target, a lift that threw),
+            // which is exactly the case a routed query must never be served
+            // from — the serve shape carries no `#(authorize)` annotation
+            // bytes for anything downstream to catch the miss.
+            if (resolution.kind !== "given_only") return true;
          }
          return false;
       } catch {

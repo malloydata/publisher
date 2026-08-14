@@ -64,8 +64,8 @@ discovered:
   [authorize.md § Security model](authorize.md#security-model)).
 - **403 becomes 200-with-zero-rows.** A caller a whole-source gate would have rejected outright
   now gets a successful, empty response from a row-level gate instead. That is wire-visible: a
-  consumer keying its own logic on the 403 status must be checked and updated before this flag
-  flips in a deployment it serves.
+  consumer keying its own logic on the 403 status must be checked and updated before upgrading a
+  deployment it serves to a version carrying row-level gates.
 - **Fail-closed is the only backstop.** A row filter has no boolean admission to fall back on the
   way a whole-source gate does, so every path that cannot *apply* the filter denies instead — a
   gate whose column doesn't resolve at the entry point, an unresolved given, a compile that

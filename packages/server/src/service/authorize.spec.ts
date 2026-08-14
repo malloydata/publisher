@@ -305,6 +305,7 @@ describe("classifyAuthorizeGate", () => {
       expect(result).toEqual({
          shape: "row_level",
          givenNames: ["GROUPS"],
+         literalAtoms: [],
       });
    });
 
@@ -318,6 +319,7 @@ describe("classifyAuthorizeGate", () => {
       expect(result).toEqual({
          shape: "row_level",
          givenNames: ["BOB"],
+         literalAtoms: [],
       });
    });
 
@@ -368,6 +370,7 @@ describe("classifyAuthorizeGate", () => {
       expect(result).toEqual({
          shape: "row_level",
          givenNames: ["GROUPS", "ROLE"],
+         literalAtoms: ["$ROLE = 'admin'"],
       });
    });
 

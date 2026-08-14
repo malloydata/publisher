@@ -151,6 +151,9 @@ interface ModelInternals {
            }
          | undefined,
    ): Promise<{ kind: string }>;
+   queryEntryPointHasRowLevelGate(runnable: {
+      getPreparedQuery(): Promise<unknown>;
+   }): Promise<boolean>;
    modelDef?: ModelDef;
 }
 
@@ -2864,6 +2867,237 @@ source: X is duckdb.table('parent') extend {
             process.env.PERSIST_STORAGE_MODE = originalMode;
          }
          await duckdb.close();
+      }
+   });
+
+   it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (Finding 1: `queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
+      const originalMode = process.env.PERSIST_STORAGE_MODE;
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
+      try {
+         // `W_except` inherits `X`'s gate by reference but drops the gated
+         // column with its own `except:` — the documented way to make
+         // `resolveGateShape` return `deny` rather than `row_level`
+         // (load-time scoping's "W_rename / W_except / W_accept" test above
+         // pins the same shape denying at request time on the LIVE query;
+         // this test is about the routing PRE-CHECK, not that path).
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+
+source: W_except is X extend { except: org_id }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeUndefined();
+
+         // A storage binding for W_except that, if routed to, would answer
+         // with a value ("999") no correctly-denied request could ever
+         // produce.
+         await duckdb.runSQL(
+            "CREATE OR REPLACE TABLE mz_real AS SELECT 999 AS n",
+         );
+         const connMap = new Map<string, Connection>([["duckdb", duckdb]]);
+         const serveConfig = new MalloyConfig({ connections: {} });
+         serveConfig.wrapConnections(
+            () => new FixedConnectionMap(connMap, "duckdb"),
+         );
+         model.setServeDestinationConfig(() => serveConfig);
+         model.setServeBindings([
+            {
+               sourceName: "W_except",
+               destinationName: "duckdb",
+               virtualHandle: "h",
+               tablePath: "mz_real",
+               schema: [{ name: "n", type: "BIGINT" }],
+            },
+         ]);
+
+         const result = await model
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: W_except -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            )
+            .catch((e) => e);
+         // `W_except`'s own gate resolution denies this request regardless of
+         // storage routing (a second, independent defense — see the surface-
+         // syntax early gate at `getQueryResults`' `earlySource` check, which
+         // also resolves this same `deny` before compilation). This assertion
+         // is the OBSERVABLE the finding calls for; it is NOT, on its own,
+         // proof that `queryEntryPointHasRowLevelGate`'s predicate is what
+         // caused it — the isolated unit test below is what pins that.
+         expect(result).toBeInstanceOf(AccessDeniedError);
+      } finally {
+         if (originalMode === undefined) {
+            delete process.env.PERSIST_STORAGE_MODE;
+         } else {
+            process.env.PERSIST_STORAGE_MODE = originalMode;
+         }
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("CRITICAL — queryEntryPointHasRowLevelGate itself returns true (blocks routing) for a `deny` resolution, not just `row_level` (Finding 1, isolated)", async () => {
+      // The end-to-end test above denies the request either way, because
+      // `getQueryResults`' surface-syntax early gate (`earlySource`) ALSO
+      // resolves `W_except` by name and denies before compilation even
+      // starts — so it cannot, on its own, tell a fixed predicate apart from
+      // the original bug for a directly-named top-level source. This test
+      // isolates the ONE method Finding 1 is about and calls it directly
+      // (same idiom as the `resolveGateShape`/`resolveGraftTarget` tests
+      // above, which reach past the public surface via `ModelInternals`),
+      // so it fails specifically when `queryEntryPointHasRowLevelGate`'s own
+      // predicate regresses to admitting a `deny` resolution — independent of
+      // any other gate in the request path that happens to also catch it.
+      const { internals, mm, duckdb } = await buildGatedModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+
+source: W_except is X extend { except: org_id }
+`);
+      try {
+         const runnable = mm.loadRestrictedQuery(
+            "run: W_except -> { aggregate: n is count() }",
+         );
+         const blocksRouting =
+            await internals.queryEntryPointHasRowLevelGate(runnable);
+         expect(blocksRouting).toBe(true);
+      } finally {
+         await duckdb.close();
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Vacuous default atom — Finding 3, docs/row-level-authorize-spike-
+// findings.md's follow-ups
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — vacuous default atom (Finding 3)", () => {
+   /**
+    * Load `text` through the real `Model.create` — same idiom as the
+    * "load-time scoping" describe block's own `createModel`, duplicated
+    * (not imported) because that helper is local to its own `describe`
+    * body. `assertNoVacuousDefaultAtom` is a LOAD-TIME check inside
+    * `validateAuthorizeProbes`, so `buildGatedModel` (used by the sibling
+    * "grammar" describe block above) cannot exercise it — that harness
+    * deliberately SKIPS `Model.create`'s pre-flight validation (see its own
+    * doc comment).
+    */
+   async function createModel(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-vacuous-"));
+      fs.writeFileSync(path.join(dir, "m.malloy"), text);
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   function compilationErrorOf(model: Model): Error | undefined {
+      return (model as unknown as { compilationError?: Error })
+         .compilationError;
+   }
+
+   it("CRITICAL — `$ROLE != 'admin'` OR'd with a row-level gate, ROLE defaulting to '', is refused at load (vacuously true for a caller supplying nothing)", async () => {
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  ROLE :: string is ''
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS or $ROLE != 'admin'"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/ROLE.*!=.*'admin'/);
+         expect(err?.message).toMatch(/evaluates to TRUE/i);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("`$ROLE = 'admin'` OR'd with a row-level gate, ROLE defaulting to '', still loads and works as an admin-override (false at the default, not vacuous)", async () => {
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  ROLE :: string is ''
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS or $ROLE = 'admin'"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // A caller who omits ROLE gets its declared default (''), which is
+         // not 'admin' — the atom is false, so the gate falls through to the
+         // GROUPS membership test exactly as if the atom were absent. GROUPS
+         // has no default (`docs/givens.md`: an array given can't declare
+         // one), so it must still be supplied.
+         const noRole = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [] },
+         );
+         const noRoleRows = noRole.compactResult as unknown as {
+            n: number;
+         }[];
+         expect(noRoleRows[0].n).toBe(0);
+         // The admin override still works when a caller DOES supply it.
+         const admin = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { ROLE: "admin", GROUPS: [] },
+         );
+         const adminRows = admin.compactResult as unknown as { n: number }[];
+         expect(adminRows[0].n).toBe(4);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 });
