@@ -756,18 +756,15 @@ describe("scaffold: unservable workspace path", () => {
       expect(fs.readdirSync(accented)).toEqual([]);
    });
 
-   posixOnlyTest(
-      "refuses a control character, naming it by codepoint",
-      () => {
-         // The escape rather than the raw byte, which is invisible in a diff: a
-         // reviewer reads the directory name as plain ASCII and reads this test as
-         // one that cannot fire. U+0001 is SOH.
-         const weird = path.join(tmp, "soh\u0001here");
-         fs.mkdirSync(weird);
-         expect(() => run({ cwd: weird })).toThrow(/U\+0001/);
-         expect(fs.readdirSync(weird)).toEqual([]);
-      },
-   );
+   posixOnlyTest("refuses a control character, naming it by codepoint", () => {
+      // The escape rather than the raw byte, which is invisible in a diff: a
+      // reviewer reads the directory name as plain ASCII and reads this test as
+      // one that cannot fire. U+0001 is SOH.
+      const weird = path.join(tmp, "soh\u0001here");
+      fs.mkdirSync(weird);
+      expect(() => run({ cwd: weird })).toThrow(/U\+0001/);
+      expect(fs.readdirSync(weird)).toEqual([]);
+   });
 
    posixOnlyTest("names an escape character without emitting it", () => {
       // The refusal is printed to a terminal, so interpolating the character
