@@ -304,7 +304,6 @@ describe("classifyAuthorizeGate", () => {
       );
       expect(result).toEqual({
          shape: "row_level",
-         fieldPaths: [["org_id"]],
          givenNames: ["GROUPS"],
       });
    });
@@ -318,7 +317,6 @@ describe("classifyAuthorizeGate", () => {
       );
       expect(result).toEqual({
          shape: "row_level",
-         fieldPaths: [["childtable", "name"]],
          givenNames: ["BOB"],
       });
    });
@@ -369,7 +367,6 @@ describe("classifyAuthorizeGate", () => {
       );
       expect(result).toEqual({
          shape: "row_level",
-         fieldPaths: [["org_id"]],
          givenNames: ["GROUPS", "ROLE"],
       });
    });

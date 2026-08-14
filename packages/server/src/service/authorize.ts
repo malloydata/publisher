@@ -338,7 +338,17 @@ export type RowLevelGateRejectionCause =
 
 export type RowLevelGateClassification =
    | { shape: "given_only" }
-   | { shape: "row_level"; fieldPaths: string[][]; givenNames: string[] }
+   // `givenNames` is the walker's own record of which givens the gate compared,
+   // and it earns its place by driving the `no_given_reference` rejection below.
+   // A companion list of the FIELD paths the walk visited is deliberately NOT
+   // returned: nothing enforces on field identity — a gate is applied by
+   // grafting its whole compiled condition and proving that landed — and both
+   // uses such a list invites are foreclosed. Naming a field to the caller is
+   // what the error-scrubbing posture forbids, and deciding at load time which
+   // entry points a gate's fields must resolve at is already answered by
+   // compiling the probe there, which is the authority. A second, weaker
+   // classifier beside that one is how two security bugs got in here already.
+   | { shape: "row_level"; givenNames: string[] }
    | { shape: "rejected"; cause: RowLevelGateRejectionCause; detail: string };
 
 /**
@@ -416,7 +426,6 @@ export function classifyAuthorizeGate(
    if (!Array.isArray(fieldUsage) || fieldUsage.length === 0) {
       return { shape: "given_only" };
    }
-   const fieldPaths: string[][] = [];
    const givenNames: string[] = [];
    let rejection: RowLevelGateClassification | undefined;
 
@@ -560,8 +569,7 @@ export function classifyAuthorizeGate(
             // it is an all-rows-or-no-rows term inside the `where:`, exactly
             // like the whole-source boolean this gate would have been before
             // row-level gates existed. Legal as an ATOM inside a row-level
-            // gate; it contributes no field reference of its own, so it
-            // doesn't get pushed to `fieldPaths`.
+            // gate.
             givenNames.push(given);
             return true;
          }
@@ -586,7 +594,6 @@ export function classifyAuthorizeGate(
             }\` is not a field reference`,
          );
       }
-      fieldPaths.push(n.path.map(String));
       return true;
    };
 
@@ -620,7 +627,7 @@ export function classifyAuthorizeGate(
             "source's own `where:`",
       };
    }
-   return { shape: "row_level", fieldPaths, givenNames };
+   return { shape: "row_level", givenNames };
 }
 
 /**
