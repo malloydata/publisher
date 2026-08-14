@@ -124,11 +124,51 @@ export default function Package({
    });
    const dataApps = dataAppsQuery.data?.data ?? [];
 
+   // No versionId, for the same reason as data apps: the dashboards endpoint
+   // takes only env + package.
+   const dashboardsQuery = useQueryWithApiError({
+      queryKey: ["dashboards", environmentName, packageName],
+      queryFn: async () => {
+         try {
+            return await apiClients.dashboards.listDashboards(
+               environmentName,
+               packageName,
+            );
+         } catch (e) {
+            // Non-fatal for the same reasons as the data-apps list above: an
+            // older Publisher without the route should render a package page
+            // without a Dashboards section, not an error.
+            const status = (e as { response?: { status?: number } })?.response
+               ?.status;
+            if (status === 404 || status === undefined) {
+               return { data: [] } as Awaited<
+                  ReturnType<typeof apiClients.dashboards.listDashboards>
+               >;
+            }
+            throw e;
+         }
+      },
+   });
+   const dashboards = (dashboardsQuery.data?.data ?? [])
+      .slice()
+      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+
    const notebooks = (notebooksQuery.data?.data ?? [])
       .slice()
       .sort((a, b) => a.path.localeCompare(b.path));
+   // A dashboard is listed once, under Dashboards. Its file is a model like any
+   // other, so it would otherwise appear a second time under Semantic Models
+   // where clicking it opens the Explorer rather than the dashboard. Untagged
+   // shared includes in `dashboards/` are not dashboards and stay in the model
+   // list, which is where they belong.
+   const dashboardPaths = new Set(
+      dashboards
+         .map((dashboard) => dashboard.path)
+         .filter((path): path is string => path !== undefined),
+   );
    const models = (modelsQuery.data?.data ?? [])
       .slice()
+      .filter((model) => !dashboardPaths.has(model.path))
       .sort((a, b) => a.path.localeCompare(b.path));
    const databases = (databasesQuery.data?.data ?? [])
       .slice()
@@ -201,6 +241,44 @@ export default function Package({
 
          {!isLoading && (
             <>
+               {/* First: the at-a-glance artifact a visitor most likely wants,
+                   ahead of the notebooks and models it is built on. Hidden when
+                   empty, like Data Apps. */}
+               {dashboards.length > 0 && (
+                  <PackageSection title="Dashboards" count={dashboards.length}>
+                     {dashboards.map((dashboard) => {
+                        // A title equal to the slug is what the server falls
+                        // back to when the file names itself neither way, so
+                        // showing both would print the same word twice.
+                        const hasTitle =
+                           !!dashboard.title &&
+                           dashboard.title !== dashboard.name;
+                        return (
+                           <PackageItemRow
+                              key={dashboard.name}
+                              icon={<ContentTypeIcon type="dashboard" />}
+                              tint={MALLOY_BRAND.teal}
+                              label={
+                                 hasTitle ? dashboard.title! : dashboard.name!
+                              }
+                              rightLabel={hasTitle ? dashboard.name : undefined}
+                              onClick={(event) =>
+                                 onClick(
+                                    `/${environmentName}/${packageName}/dashboards/` +
+                                       // The slug comes from a filename, which
+                                       // can hold characters that would read as
+                                       // structure in a path. The server encodes
+                                       // it in `resource` for the same reason.
+                                       encodeURIComponent(dashboard.name ?? ""),
+                                    event,
+                                 )
+                              }
+                           />
+                        );
+                     })}
+                  </PackageSection>
+               )}
+
                <PackageSection title="Notebooks" count={notebooks.length}>
                   {notebooks.map((notebook) => (
                      <PackageItemRow

@@ -10,6 +10,7 @@ import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
 import { Navigate, useLocation, useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
+import DashboardPage from "../DashboardPage/DashboardPage";
 import NotebookPage from "../NotebookPage/NotebookPage";
 
 function ModelPage() {
@@ -73,6 +74,27 @@ function ModelPage() {
    }
 
    const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
+
+   // Dashboard viewer. `dashboards/overview` is the dashboard; the file it is
+   // declared in, `dashboards/overview.malloy`, keeps opening in the Model
+   // view, which is the author's "view the Malloy" path. Branching on the
+   // extension here rather than declaring a literal `dashboards/:name` route
+   // is what keeps those two apart: a route param matches any single segment,
+   // dots included, so the literal route would have swallowed the file path
+   // too. Same reasoning as the `data-apps/` branch below.
+   if (
+      modelPath?.startsWith("dashboards/") &&
+      !modelPath.endsWith(".malloy") &&
+      !modelPath.endsWith(".malloynb")
+   ) {
+      return (
+         <DashboardPage
+            environmentName={params.environmentName}
+            packageName={params.packageName}
+            dashboardName={modelPath.slice("dashboards/".length)}
+         />
+      );
+   }
 
    // In-package HTML data app (embedded view). The Data Apps section in
    // <Package> routes clicks to `data-apps/<file>` so this branch picks them
