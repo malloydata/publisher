@@ -273,6 +273,19 @@ describe("encodeDrillValue", () => {
       expect(encodeDrillValue("a, b", undefined)).toBe("a\\,\\ b");
    });
 
+   it("declines a blank cell for a plain `string` given too", () => {
+      // The same reason `drillValueToFilter` refuses one: a blank cell is far
+      // likelier a misclick than a request for the rows that are blank. This
+      // used to test only `""`, so a space or a tab drilled to a value matching
+      // essentially nothing and the reader got an empty notebook instead of a
+      // declined click.
+      for (const blank of ["", " ", "\t", "\u00a0"]) {
+         expect(encodeDrillValue(blank, "string")).toBeUndefined();
+      }
+      // Padding around a real value is not blank, and is kept as clicked.
+      expect(encodeDrillValue(" Nike ", "string")).toBe(" Nike ");
+   });
+
    it("declines a value that is not a number for a `number` given", () => {
       // `Number()` accepts far more than numbers, and every extra it accepted
       // became a WRONG filter rather than a refused one: a clicked Date

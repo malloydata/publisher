@@ -302,11 +302,15 @@ export function encodeDrillValue(
          if (rawValue === "false") return false;
          return undefined;
       }
-      // An empty cell is refused here too, for the same reason as in
+      // A blank cell is refused here too, for the same reason as in
       // `drillValueToFilter`: on a plain given it is a real but almost certainly
-      // unintended value, and clicking a blank cell is far more likely a misclick.
+      // unintended value, and clicking a blank cell is far more likely a
+      // misclick. Whitespace counts as blank, which is what makes that reason
+      // and this test agree: refusing only `""` left a space, a tab or an NBSP
+      // drilling to a value that matches essentially nothing, so the reader got
+      // an empty notebook rather than the click being declined.
       if (typeof rawValue === "string")
-         return rawValue === "" ? undefined : rawValue;
+         return rawValue.trim() === "" ? undefined : rawValue;
       if (typeof rawValue === "number") {
          return Number.isFinite(rawValue) ? String(rawValue) : undefined;
       }
