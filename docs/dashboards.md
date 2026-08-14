@@ -324,12 +324,16 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   dimension name before checking while the click does not.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
-underlined under the pointer — plain text at rest, a link when you reach for them. That is the only
-signal a cell does anything, so it is worth knowing what turns it off: a destination the surface
-cannot reach is not offered and not marked, deliberately, since a dead link is worse than none. A
-`to=self` drill read in a document that declares no control for its given is the usual case, and it
-stays plain text rather than swallowing the click. The same rule decides the menu, so what looks
-clickable and what a click does can't drift apart.
+underlined under the pointer: plain text at rest, a link when you reach for them. They are also in
+the tab order and carry a button role, so a keyboard reaches them and Enter or Space fires the drill,
+with focus styled the way hover is. That matters because a pointer cursor and a hover colour are the
+two things a keyboard or touch user can never produce.
+
+Those signals are the only thing saying a cell does anything, so it is worth knowing what turns them
+off: a destination the surface cannot reach is not offered and not marked, deliberately, since a dead
+link is worse than none. A `to=self` drill read in a document that declares no control for its given
+is the usual case, and it stays plain text rather than swallowing the click. The same rule decides
+the menu, so what looks clickable and what a click does cannot drift apart.
 
 Declaring it on the dimension is what makes it work everywhere: any result that groups by that
 dimension is clickable, in a dashboard tile and in a **notebook cell** alike, with no per-document
