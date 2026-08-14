@@ -4838,10 +4838,13 @@ components:
             attached: a property whose name the server owns (`class`,
             `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
             `query_id`, `version`) appears here and is then dropped rather than
-            attached, so copying this bag onto a request verbatim can carry a
-            name the publisher will not accept. Observability only: excluded from
-            `sourceEntityId`, so editing it never re-addresses the source or
-            orphans its table.
+            attached. Copying this bag onto a request does NOT reproduce that
+            drop: the reservation covers a MODEL-SIDE declaration only, so a
+            `source`, `trigger` or `run_id` sent on a request layer ATTACHES, and
+            the statement then reads, in the backend's own history, exactly like
+            a build of this source. Strip the server-owned names before reusing
+            it. Observability only: excluded from `sourceEntityId`, so editing it
+            never re-addresses the source or orphans its table.
         columns:
           type: array
           description: Output schema of the source.
