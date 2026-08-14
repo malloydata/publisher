@@ -67,10 +67,10 @@ interface NotebookProps {
     * with what the cells actually ran with, which is what makes the URL a link
     * that reproduces the view.
     *
-    * That is every committed change, and today every change is committed: the
-    * Apply batching `useGivensState` implements is not reachable here while
-    * `autorun` is hardcoded true, so typing in a text control reports per
-    * keystroke. It does NOT run per keystroke: a changed value waits
+    * That is every committed change. Under `## autorun=false` a change is
+    * committed on Apply, so reports are batched; otherwise every change is
+    * committed and typing in a text control reports per keystroke. It does NOT
+    * run per keystroke: a changed value waits
     * `GIVEN_SETTLE_MS` before anything is dispatched, so a burst of typing
     * produces one run. A run that does start supersedes and aborts the one
     * before it. The REPORTS are still per keystroke, so a host doing something
@@ -185,14 +185,17 @@ export default function Notebook({
       [isSuccess, onGivensChange, declaredTypes],
    );
 
-   // Always on for now, and deliberately not read off the notebook. Batching
+   // Read off the notebook now that the server derives it: a file-level
+   // `## autorun=false` arrives as `RawNotebook.autorun`, the same field with
+   // the same default that a dashboard's `# artifact { autorun=false }`
+   // produces. This was hardcoded true while nothing populated the field, on
+   // the grounds that a spec declaring one nothing produces is a spec that
+   // lies; the reader has landed, so this is the follow-up that comment named.
+   //
+   // Absent means autorun, so only an explicit `false` batches. Batching
    // matters more here than on a dashboard: one control change re-runs every
-   // cell in the document, and `useGivensState` implements it, but the
-   // file-level `## autorun=false` that would turn it off has no reader on the
-   // server yet, so `RawNotebook` carries no `autorun` field. Declaring one
-   // nothing produces would be a spec that lies. When the reader lands, this
-   // becomes `notebook?.autorun !== false` and the Apply button appears.
-   const autorun = true;
+   // cell in the document.
+   const autorun = notebook?.autorun !== false;
    const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
       declaredTypes,
       // Where the controls start, from a file-level `## givens { … }`. A URL

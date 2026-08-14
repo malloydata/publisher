@@ -280,20 +280,29 @@ export default function Package({
                )}
 
                <PackageSection title="Notebooks" count={notebooks.length}>
-                  {notebooks.map((notebook) => (
-                     <PackageItemRow
-                        key={notebook.path}
-                        icon={<ContentTypeIcon type="report" />}
-                        tint={MALLOY_BRAND.teal}
-                        label={notebook.path}
-                        onClick={(event) =>
-                           onClick(
-                              `/${environmentName}/${packageName}/${notebook.path}`,
-                              event,
-                           )
-                        }
-                     />
-                  ))}
+                  {notebooks.map((notebook) => {
+                     // Named the way dashboards and data apps are: a notebook
+                     // that titles itself is listed by that title, with the
+                     // filename kept as the secondary label so the path a
+                     // reader needs to find the file is never lost.
+                     const hasTitle =
+                        !!notebook.title && notebook.title !== notebook.path;
+                     return (
+                        <PackageItemRow
+                           key={notebook.path}
+                           icon={<ContentTypeIcon type="report" />}
+                           tint={MALLOY_BRAND.teal}
+                           label={hasTitle ? notebook.title! : notebook.path}
+                           rightLabel={hasTitle ? notebook.path : undefined}
+                           onClick={(event) =>
+                              onClick(
+                                 `/${environmentName}/${packageName}/${notebook.path}`,
+                                 event,
+                              )
+                           }
+                        />
+                     );
+                  })}
                   {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
                </PackageSection>
 
