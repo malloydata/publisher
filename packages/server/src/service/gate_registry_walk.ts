@@ -42,7 +42,7 @@
  */
 
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
-import { ownLevelNoteTexts } from "./annotations";
+import { ownLevelNotes, ownLevelNoteTexts } from "./annotations";
 import { collectAuthorizeExprs } from "./authorize";
 
 /**
@@ -216,48 +216,73 @@ export function resolveCompositeResolvedBase(
  * `Model.collectEntryPointGates`) has no separate recursion of its own to
  * take either hop.
  *
- * A base that cannot be resolved denies (`["false"]`) rather than reporting
+ * Returns GROUPS, not one flat expression list — see `authorize.ts`'s
+ * `AuthorizeMap` doc for why. The query-source base's own gate and the
+ * composite-member's own gate are two DIFFERENT declaring sources' gates,
+ * which must AND, not OR; concatenating them into one `string[]` (the
+ * pre-groups shape) silently turned that AND into an OR the moment either hop
+ * fired, which is the row-level authorization leak this grouping exists to
+ * close. Each hop below contributes at most one group.
+ *
+ * A base that cannot be resolved denies (`[["false"]]`) rather than reporting
  * "no gate": a `query_source` derives from something by construction, so
  * failing to read its base is IR this walk failed to follow, not evidence
  * the source is ungated — same posture as `collectEntryPointGates`'s
  * identical case. The composite-member hop has no equivalent deny: it is
  * additive, so a query-source with no composite member to resolve simply
  * contributes nothing extra, exactly as `collectEntryPointGates` treats it.
+ *
+ * Malloy's composite resolver copies the query-source base's OWN annotation
+ * NOTE OBJECTS onto the resolved member struct's OWN `blockNotes`, by
+ * reference, alongside the member's own notes (confirmed against
+ * `@malloydata/malloy` — the same by-reference copy this module's header
+ * documents for `extend {}`). Reading the member's own notes without
+ * excluding that copy would fold the base's gate INTO the member's own group
+ * — one source's disjunction polluted with another source's condition, which
+ * reintroduces the identical AND-becomes-OR leak one level down even after
+ * the two hops are kept as separate groups. `parentOwnNotes` — the base's own
+ * notes, by IDENTITY — is subtracted from the member's own notes before they
+ * are read, exactly the discriminator `Model.findSourceByOwnAnnotationIdentity`
+ * (`service/model.ts`) already uses for the analogous join-field question.
  */
 export function effectiveAncestorGateExprs(
    struct: SourceDef,
    modelDef: ModelDef | undefined,
    seen: Set<SourceDef> = new Set(),
-): string[] {
+): string[][] {
    const direct = ancestorGateExprs(struct, modelDef, new Set(seen));
-   if (direct.length > 0) return direct;
+   if (direct.length > 0) return [direct];
    if (seen.has(struct)) return [];
    seen.add(struct);
-   const exprs: string[] = [];
+   const groups: string[][] = [];
    const base = resolveQuerySourceBase(struct, modelDef);
    if (!base) {
       const duck = struct as unknown as { type: string };
-      if (duck.type === "query_source") exprs.push("false");
+      if (duck.type === "query_source") groups.push(["false"]);
    } else if (!seen.has(base)) {
       const ownExprs = collectAuthorizeExprs(
          ownLevelNoteTexts(base.annotations),
       );
-      exprs.push(
+      groups.push(
          ...(ownExprs.length > 0
-            ? ownExprs
+            ? [ownExprs]
             : effectiveAncestorGateExprs(base, modelDef, seen)),
       );
    }
    const composite = resolveCompositeResolvedBase(struct);
    if (composite && !seen.has(composite)) {
-      const compositeOwn = collectAuthorizeExprs(
-         ownLevelNoteTexts(composite.annotations),
+      const parentOwnNotes = base ? ownLevelNotes(base.annotations) : [];
+      const compositeOwnNotes = ownLevelNotes(composite.annotations).filter(
+         (note) => !parentOwnNotes.includes(note),
       );
-      exprs.push(
+      const compositeOwn = collectAuthorizeExprs(
+         compositeOwnNotes.map((note) => note.text),
+      );
+      groups.push(
          ...(compositeOwn.length > 0
-            ? compositeOwn
+            ? [compositeOwn]
             : effectiveAncestorGateExprs(composite, modelDef, seen)),
       );
    }
-   return exprs;
+   return groups;
 }

@@ -111,10 +111,18 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   authors write from now on — check any consumer that keys logic on the 403 status. See
   [docs/security-posture.md](docs/security-posture.md).
 - **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED.** This DOES break
-  existing packages: such a package builds and serves frozen rows TODAY, which is the leak being
-  closed. A package that has one will fail to build where it previously succeeded. Drop
-  `#@ persist` from the source, or move the gate to a source that is not materialized. See
-  [docs/materialization.md](docs/materialization.md).
+  existing packages — one that has this will fail to build where it previously succeeded — so it is
+  worth being precise about what it does and does not close. It is **not** closing an unfiltered
+  leak: measured, a colocated substitution replaces only the source's relation SQL, while the gate
+  is applied as the reading query's own `WHERE`, so the two compose and rows come back filtered.
+  What it refuses is authorization decided against a **frozen** copy of the gating column. The
+  artifact is built once; a row whose `org_id` changes in the warehouse keeps being served to its
+  old owner and stays hidden from its new one. Nor does adding a gate refresh anything — the
+  content address does not include the annotation, so a pre-gate artifact stays addressable
+  indefinitely while every rebuild is refused. Note also that the check's reach is deliberately
+  wider than that: it also refuses a source that merely *joins* a gated source, which entry-point
+  semantics never enforced anyway. Drop `#@ persist` from the source, or move the gate to a source
+  that is not materialized. See [docs/materialization.md](docs/materialization.md).
 - **An `#(authorize)` in a position nothing enforces now fails the model load** — a top-level
   `query:` statement, or a field (`dimension:`/`measure:`/`view:`) inside a source. This also
   breaks existing packages, also deliberately: today such a gate silently protects nothing. Move
@@ -150,9 +158,11 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
 
 - A gate on a joined field turns a `join_one` LEFT JOIN into an INNER JOIN — a parent row with no
   matching child drops out rather than surviving with nulls.
-- A gate must resolve at every entry point the declaring source is reached through. `rename:`,
-  `except:`, and `accept:` can remove the field a gate was written against; package load fails,
-  naming the source.
+- A gate must resolve at every entry point the declaring source is reached through, and an entry
+  point where it cannot is closed rather than opened. `rename:`, `except:`, and `accept:` can remove
+  the field a gate was written against. Where the entry point declares its **own** gate, package
+  load fails with a 424 naming the source; where it only **inherits** one, load succeeds with a
+  warning and that entry point denies every request, leaving the rest of the model serving.
 - Entry-point-only semantics are unchanged: a gate on a source reached only through a join still
   does not fire. A gate may now *reference* a joined field from the entry point's own expression —
   that is not the same thing.

@@ -62,6 +62,13 @@
  * The protocol uses plain structured-clonable POJOs so the
  * `postMessage` transfer goes through V8's structured clone — much
  * cheaper than `JSON.stringify` for the multi-MB modelDef payloads.
+ *
+ * Structured clone also PRESERVES INTERNAL ALIASING, and `#(authorize)`
+ * enforcement depends on that: a note object shared by two structs stays
+ * shared across this boundary, which is what lets an inherited gate be told
+ * apart from an independently authored one by reference identity. Switching
+ * this transport to JSON would silently turn every such check into a
+ * fail-closed deny, with no test naming the reason.
  */
 
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";

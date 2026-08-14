@@ -3097,3 +3097,169 @@ source: X is duckdb.table('parent') extend {
       }
    });
 });
+
+// ---------------------------------------------------------------------------
+// P0 — composite resolution copies a composite parent's OWN #(authorize) note
+// OBJECT onto the resolved member struct's own blockNotes, alongside the
+// member's own note. Reading that merged set as one source's own OR list
+// (the pre-fix shape) folds a DIFFERENT declaring source's condition into
+// this source's disjunction, silently turning this file's own AND-across-
+// sources rule into an OR the moment a query-source base resolves through a
+// composite. `effectiveAncestorGateExprs` (`gate_registry_walk.ts`) and
+// `Model.collectEntryPointGates`/`gateExprsForOwnAnnotations` (`model.ts`)
+// now IDENTITY-SUBTRACT the parent's own notes before reading the member's,
+// and keep the two sources' gates as separate GROUPS rather than one
+// concatenated list (`AuthorizeMap`, `authorize.ts`) — see those modules' doc
+// comments for the mechanics.
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — composite gate grouping (P0 leak, fixed)", () => {
+   async function createModel(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-composite-group-"),
+      );
+      fs.writeFileSync(path.join(dir, "m.malloy"), text);
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   function compilationErrorOf(model: Model): Error | undefined {
+      return (model as unknown as { compilationError?: Error })
+         .compilationError;
+   }
+
+   // THE LEAK: `combo`'s own gate (`region = $REGION`) and `member_a`'s own
+   // gate (`org_id in $GROUPS`) are declared on two DIFFERENT sources and
+   // must AND. Before the fix, Malloy's by-reference copy of `combo`'s note
+   // onto the resolved `member_a` struct made `member_a`'s "own" list read
+   // as `["region = $REGION", "org_id in $GROUPS"]` — one OR'd disjunction —
+   // so the whole condition collapsed to `(region=$REGION) AND ((region=
+   // $REGION) OR (org_id in $GROUPS))`, which a truthful `region` term alone
+   // satisfies regardless of `org_id`. Every assertion below is load-bearing:
+   // dropping (a) would let a fix "solve" this by failing the load; dropping
+   // (c) would let a fix that denies every caller (destroying the feature)
+   // pass.
+   it("CRITICAL — a composite parent's gate and its resolved member's gate AND; they do not fold into one OR", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `##! experimental.composite_sources
+##! experimental.givens
+
+given:
+  REGION :: string
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: member_a is duckdb.sql("SELECT 7 as org_id, 'us' as region UNION ALL SELECT 8, 'us'") extend {}
+
+source: member_b is duckdb.sql("SELECT 99 as org_id, 'eu' as region") extend {}
+
+#(authorize) "region = $REGION"
+source: combo is compose(member_a, member_b)
+
+source: qs is combo -> { group_by: org_id, region }
+`,
+      );
+      try {
+         // (a) the fix must not "solve" the leak by failing the load.
+         expect(compilationErrorOf(model)).toBeUndefined();
+
+         // (b) a caller whose GROUPS names neither org gets EXACTLY ZERO
+         // rows — pre-fix, `combo`'s own gate (`region = 'us'`, true here)
+         // made the whole disjunction true regardless of GROUPS, leaking
+         // every `region='us'` row.
+         const denied = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: qs -> { select: org_id, region }",
+            {},
+            true,
+            { REGION: "us", GROUPS: [999] },
+         );
+         expect((denied.compactResult as unknown[]).length).toBe(0);
+
+         // (c) a caller whose GROUPS names the org gets EXACTLY that row —
+         // without this, a fix that makes `qs` deny every caller would also
+         // pass (a) and (b) while destroying the feature.
+         const allowed = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: qs -> { select: org_id, region }",
+            {},
+            true,
+            { REGION: "us", GROUPS: [7] },
+         );
+         const rows = allowed.compactResult as unknown as {
+            org_id: number;
+            region: string;
+         }[];
+         expect(rows).toEqual([{ org_id: 7, region: "us" }]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   // THE LOAD-SIDE FAILURE: before groups, `qs`'s effective gate concatenated
+   // `combo`'s given-only atom with `member_a`'s row-level condition into ONE
+   // OR'd list — `["$ROLE != 'admin'", "$ROLE != 'admin'", "org_id in
+   // $GROUPS"]` (the ancestor copy doubling it) — which classified as
+   // row_level (a field IS referenced, by the `org_id` disjunct) and handed
+   // the given-only atom to the vacuous-default check, which threw: `ROLE`
+   // defaults to `''`, and `'' != 'admin'` is vacuously true. Keeping the two
+   // sources' gates as separate groups means `combo`'s atom is classified
+   // and validated entirely on its own — `given_only`, exactly the
+   // whole-source boolean it always was — and never reaches the row-level
+   // vacuous-atom check at all.
+   it("CRITICAL — a composite gate and its resolved member's row-level gate load independently, with no vacuous-atom false positive", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `##! experimental.composite_sources
+##! experimental.givens
+
+given:
+  ROLE :: string is ''
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: member_a is duckdb.sql("SELECT 7 as org_id UNION ALL SELECT 8 as org_id") extend {}
+
+source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
+
+#(authorize) "$ROLE != 'admin'"
+source: combo is compose(member_a, member_b)
+
+source: qs is combo -> { group_by: org_id }
+`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: qs -> { select: org_id }",
+            {},
+            true,
+            // ROLE is supplied explicitly (not relying on its declared
+            // default) — a self-contained gate denies unless every given it
+            // references is explicitly bound (see `evaluateSelfContainedFirst`
+            // in `authorize.ts`), a separate, pre-existing constraint this
+            // test isn't exercising. The vacuous-default behavior IS
+            // exercised, but only at LOAD time (the `compilationError`
+            // assertion above), which probes with no supplied givens.
+            { ROLE: "analyst", GROUPS: [7] },
+         );
+         const rows = result.compactResult as unknown as { org_id: number }[];
+         expect(rows).toEqual([{ org_id: 7 }]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});

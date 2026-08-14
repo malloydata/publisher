@@ -75,6 +75,7 @@ import type {
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
+   ownLevelNotes,
    ownLevelNoteTexts,
    ownModelAnnotations,
    ownModelNotes,
@@ -1262,6 +1263,12 @@ export class Model {
                modelDef,
                seen,
                true,
+               undefined,
+               // Identity-subtract `struct`'s (the composite's) own notes —
+               // Malloy copies them onto the resolved member's own
+               // `blockNotes` by reference; see `collectEntryPointGates`'s
+               // `excludeNotes` doc.
+               struct ? ownLevelNotes(struct.annotations) : [],
             ),
          );
       }
@@ -1452,6 +1459,11 @@ export class Model {
                   modelDef,
                   seen,
                   true,
+                  undefined,
+                  // Identity-subtract `struct`'s own notes — see
+                  // `collectAuthorizeEntryPointGates`'s identical exclusion
+                  // and `collectEntryPointGates`'s `excludeNotes` doc.
+                  struct ? ownLevelNotes(struct.annotations) : [],
                ),
             );
          }
@@ -1689,16 +1701,30 @@ export class Model {
     * (see {@link collectEntryPointGates}'s `selfContained`): an ancestor's gate
     * lives in a different source, and possibly a different given namespace, even
     * when the struct carrying it is the entry point.
+    *
+    * `excludeNotes` is subtracted, by object IDENTITY, from `struct`'s own
+    * notes before they are read — see {@link collectEntryPointGates}'s doc for
+    * why: Malloy's composite resolver copies a `query_source` base's own
+    * annotation note OBJECTS onto its resolved member struct's own
+    * `blockNotes`, alongside the member's own notes. Reading them unfiltered
+    * folds the base's gate into the member's own OR group — a different
+    * declaring source's condition landing in THIS source's disjunction, which
+    * is the AND-becomes-OR leak this parameter exists to close. Empty for
+    * every caller except the composite-member recursion in
+    * {@link collectEntryPointGates}.
     */
    private gateExprsForOwnAnnotations(
       struct: SourceDef,
       modelDef?: ModelDef,
+      excludeNotes: readonly AnnotationNote[] = [],
    ): { exprs: string[]; fromAncestor: boolean } {
       // Both note keys: which one a gate lands in is decided by the author's
       // syntax, not by scope. See {@link ownLevelNoteTexts}.
-      const ownNotes = ownLevelNoteTexts(struct.annotations);
+      const ownNotes = ownLevelNotes(struct.annotations).filter(
+         (note) => !excludeNotes.includes(note),
+      );
       try {
-         const own = collectAuthorizeExprs(ownNotes);
+         const own = collectAuthorizeExprs(ownNotes.map((note) => note.text));
          if (own.length > 0) {
             return { exprs: own, fromAncestor: false };
          }
@@ -1736,6 +1762,18 @@ export class Model {
     *
     * `seen` (struct-identity keyed) guards cycles and repeat structs.
     *
+    * `excludeNotes` — forwarded to {@link gateExprsForOwnAnnotations} — is the
+    * IDENTITY-subtraction the composite-member recursion below needs (see
+    * that method's doc): Malloy copies a `query_source` base's own annotation
+    * note OBJECTS onto its resolved composite member's own `blockNotes`,
+    * alongside the member's own notes, so reading the member's own gate
+    * without excluding the base's copy would fold two different declaring
+    * sources' gates into one OR group instead of the two separate
+    * (AND'd) `GateEntry` results this function already produces for the
+    * plain base-vs-composite split. Every OTHER recursive call passes none:
+    * a query-source's own base (as opposed to that base's composite-resolved
+    * member) carries no such copy to subtract.
+    *
     * `QuerySourceDef` isn't re-exported from the package root (same situation as
     * `given.ts`'s `MalloyGiven` duck type), so query-source detection checks
     * `.type` and reaches `.query.structRef` through a local shape rather than
@@ -1768,6 +1806,11 @@ export class Model {
       // derivation (`Z is X -> {...}`), which snapshotted its base at
       // declaration time.
       entryPointStruct: SourceDef | undefined = struct,
+      // See this function's doc. Non-empty only for the composite-member
+      // recursion below, which passes the query-source base's own notes so
+      // Malloy's by-reference copy of them onto the member's own `blockNotes`
+      // doesn't fold the base's gate into the member's own OR group.
+      excludeNotes: readonly AnnotationNote[] = [],
    ): GateEntry[] {
       if (!struct || !modelDef || seen.has(struct)) return [];
       seen.add(struct);
@@ -1777,6 +1820,7 @@ export class Model {
       const { exprs: ownExprs, fromAncestor } = this.gateExprsForOwnAnnotations(
          struct,
          modelDef,
+         excludeNotes,
       );
       if (ownExprs.length > 0) {
          results.push({
@@ -1857,6 +1901,9 @@ export class Model {
                   seen,
                   false,
                   entryPointStruct,
+                  // Identity-subtract the base's own notes — see this
+                  // function's `excludeNotes` doc.
+                  base ? ownLevelNotes(base.annotations) : [],
                ),
             );
          }

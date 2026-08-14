@@ -1437,15 +1437,41 @@ source: qs is combo -> { group_by: locked_flag, region, name }
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("the query_source itself denies EVERY caller once its concatenated gate is unexpressible — the load-time relaxation trades an aborted load for a request-time fail-closed deny, never a leak", async () => {
+   // Two gates authored on two DIFFERENT sources reach this query_source: the
+   // composite's own boolean and the member's row-level filter. They must AND.
+   // This previously denied every caller, which read as fail-closed but was an
+   // accident: the two were concatenated into ONE source's gate list, whose
+   // semantics are OR, and the merged list was rejected wholesale by the
+   // row-level grammar (`not (...)` is not an accepted node) into a
+   // deny-everything escape. Grouping them by declaring source lets each
+   // classify on its own — the boolean by probe, the filter by graft.
+   it("a composite's own gate and its member's row-level gate AND rather than OR — an admitted caller gets only their own rows, an excluded one is denied", async () => {
       await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
       const query = "run: qs -> { group_by: region, name }";
-      await expect(
-         runGated("c_composite_qs.malloy", query, {
-            ROLE: "analyst",
-            REGION: "us-west",
-         }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+
+      const { result } = await runGated("c_composite_qs.malloy", query, {
+         ROLE: "analyst",
+         REGION: "us-west",
+      });
+      const west = JSON.stringify(result.data);
+      expect(west).toContain("us-west");
+      // The leak this pins: OR-ing the two gates satisfied the boolean and
+      // dropped the filter, returning every region.
+      expect(west).not.toContain("us-east");
+
+      // Same caller, other region — proves the filter tracks the given rather
+      // than admitting one fixed slice.
+      const { result: eastResult } = await runGated(
+         "c_composite_qs.malloy",
+         query,
+         { ROLE: "analyst", REGION: "us-east" },
+      );
+      const east = JSON.stringify(eastResult.data);
+      expect(east).toContain("us-east");
+      expect(east).not.toContain("us-west");
+
+      // The composite's own boolean still denies outright. Becoming a row
+      // filter must never soften a whole-source gate into one.
       await expect(
          runGated("c_composite_qs.malloy", query, {
             ROLE: "blocked",

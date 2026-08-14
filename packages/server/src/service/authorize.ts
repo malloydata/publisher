@@ -220,8 +220,33 @@ export function describeMisplacedJoinAuthorizeWarnings(
    );
 }
 
-/** source name → effective authorize expressions (its own, else inherited). */
-export type AuthorizeMap = Map<string, string[]>;
+/**
+ * source name → effective authorize GROUPS (its own, else inherited).
+ *
+ * A group is one declaring source's own OR disjunction — unchanged from
+ * before groups existed. The outer array is what's new: when an entry point's
+ * effective gate is assembled from MORE THAN ONE declaring source (a
+ * `query_source` base plus, separately, the composite member Malloy resolved
+ * that base to — see `gate_registry_walk.ts`'s `effectiveAncestorGateExprs`),
+ * each source's own list is kept as its OWN group rather than concatenated
+ * into one. Concatenating them was the bug: this file's own rule (see
+ * `Model`'s doc on `collectAuthorizeEntryPointGates`) is AND across gates
+ * from different sources, OR only within one source's own list — flattening
+ * two sources' lists into one `string[]` silently turned that AND into an OR,
+ * because `validateAuthorizeProbes`/`gateFilterText` treat any one `string[]`
+ * as a single source's own disjunction. `validateAuthorizeProbes` classifies
+ * and validates each group independently for exactly this reason.
+ *
+ * A source that declares its own `#(authorize)` (possibly more than one,
+ * genuinely OR'd) still gets exactly ONE group — grouping only ever splits
+ * apart gates that came from DIFFERENT declaring sources, never a single
+ * source's own annotations.
+ *
+ * The WIRE shape (`sources[].authorize`) stays a flat `string[]` for
+ * introspection — see `extractSourcesFromModelDef`, which flattens the groups
+ * before setting it. This map is internal-only.
+ */
+export type AuthorizeMap = Map<string, string[][]>;
 
 /** A `given:` declaration to prepend to a probe so it compiles standalone. */
 export interface ProbeGivenDecl {
@@ -1170,9 +1195,12 @@ async function assertNoVacuousDefaultAtom(
  * the runtime gate.
  *
  * Validation is shape-aware: it works from `options.authorizeMap` (source
- * name → EFFECTIVE gates, inheritance included, from
- * `extractSourcesFromModelDef`) — the full entry-point list, not just the
- * declaring source. A gate's field reference can resolve at the source that
+ * name → EFFECTIVE gate GROUPS, inheritance included, from
+ * `extractSourcesFromModelDef` — see {@link AuthorizeMap}'s doc for why a
+ * source name maps to more than one group) — the full entry-point list, not
+ * just the declaring source. Each group is classified and validated on its
+ * own, never merged with a sibling group from the same entry point. A gate's
+ * field reference can resolve at the source that
  * declares it and still fail at an entry point that renamed, excluded, or
  * projected the field away (`rename:`, `except:`, `accept:`, a `->`
  * projection) — and loading the model successfully is NOT evidence this
@@ -1337,64 +1365,76 @@ export async function validateAuthorizeProbes(
    const pending: Array<{ sourceName: string; exprs: string[]; err: unknown }> =
       [];
 
-   for (const [sourceName, exprs] of options.authorizeMap ?? []) {
-      if (exprs.length === 0) continue;
+   // One `sourceName` may carry MORE THAN ONE group — see `AuthorizeMap`'s
+   // doc. Each group is classified and validated INDEPENDENTLY, exactly as a
+   // single-group source always was: that independence is what keeps two
+   // groups' AND semantics intact instead of silently flattening them into
+   // one OR'd disjunction (the bug this grouping exists to fix).
+   for (const [sourceName, groups] of options.authorizeMap ?? []) {
+      for (const exprs of groups) {
+         if (exprs.length === 0) continue;
 
-      let condition: CompiledGateCondition;
-      try {
-         condition = await liftRowLevelCondition(compiler, sourceName, exprs);
-      } catch (err) {
-         pending.push({ sourceName, exprs, err });
-         continue;
-      }
+         let condition: CompiledGateCondition;
+         try {
+            condition = await liftRowLevelCondition(
+               compiler,
+               sourceName,
+               exprs,
+            );
+         } catch (err) {
+            pending.push({ sourceName, exprs, err });
+            continue;
+         }
 
-      const classification = classifyAuthorizeGate(condition, declaredTypes);
-      if (classification.shape === "given_only") {
-         await runOneRowProbeOrThrow(compiler, sourceName, exprs);
+         const classification = classifyAuthorizeGate(condition, declaredTypes);
+         if (classification.shape === "given_only") {
+            await runOneRowProbeOrThrow(compiler, sourceName, exprs);
+            for (const note of ownNotesOf.get(sourceName) ?? []) {
+               provenNoteObjects.add(note);
+            }
+            continue;
+         }
+         if (classification.shape === "rejected") {
+            options.onRowLevelGateRejected?.(classification.cause);
+            // A source-level gate concatenates its own ancestor gates with
+            // its composite-resolved base gates into one probed expression
+            // list (`effectiveAncestorGateExprs`) before it ever reaches
+            // this function, so the text rejected here was not necessarily
+            // authored by `sourceName` itself. When this entry carries no
+            // annotation of its own at all — a `query_source` struct has no
+            // `annotations` by construction — the rejection cannot be
+            // blamed on an author sitting at this entry point; it is
+            // exactly the synthesized-predicate case, not a hand-written
+            // bad gate. Route it the same way pass 2 already routes a
+            // note-less compile failure: warn and deny at runtime
+            // (`Model.resolveGateShape` still refuses every request against
+            // this shape) instead of failing the whole load.
+            const ownNotes = ownNotesOf.get(sourceName) ?? [];
+            if (ownNotes.length === 0) {
+               options.onRowLevelGateUnexpressible?.(
+                  sourceName,
+                  classification.detail,
+               );
+               continue;
+            }
+            throw new ModelCompilationError({
+               message:
+                  `Invalid #(authorize) annotation on source "${sourceName}" ` +
+                  `[${exprs.join(" | ")}]: ${classification.detail}`,
+            });
+         }
+         // shape === "row_level": the probe compiled at this entry point, so
+         // the gate's field(s) resolved here. Still verify any literal atom
+         // it carries isn't vacuously true at its given's declared default
+         // before calling it valid — see `assertNoVacuousDefaultAtom`'s doc.
+         await assertNoVacuousDefaultAtom(
+            compiler,
+            sourceName,
+            classification.literalAtoms,
+         );
          for (const note of ownNotesOf.get(sourceName) ?? []) {
             provenNoteObjects.add(note);
          }
-         continue;
-      }
-      if (classification.shape === "rejected") {
-         options.onRowLevelGateRejected?.(classification.cause);
-         // A source-level gate concatenates its own ancestor gates with its
-         // composite-resolved base gates into one probed expression list
-         // (`effectiveAncestorGateExprs`) before it ever reaches this
-         // function, so the text rejected here was not necessarily authored
-         // by `sourceName` itself. When this entry carries no annotation of
-         // its own at all — a `query_source` struct has no `annotations` by
-         // construction — the rejection cannot be blamed on an author sitting
-         // at this entry point; it is exactly the synthesized-predicate case,
-         // not a hand-written bad gate. Route it the same way pass 2 already
-         // routes a note-less compile failure: warn and deny at runtime
-         // (`Model.resolveGateShape` still refuses every request against this
-         // shape) instead of failing the whole load.
-         const ownNotes = ownNotesOf.get(sourceName) ?? [];
-         if (ownNotes.length === 0) {
-            options.onRowLevelGateUnexpressible?.(
-               sourceName,
-               classification.detail,
-            );
-            continue;
-         }
-         throw new ModelCompilationError({
-            message:
-               `Invalid #(authorize) annotation on source "${sourceName}" ` +
-               `[${exprs.join(" | ")}]: ${classification.detail}`,
-         });
-      }
-      // shape === "row_level": the probe compiled at this entry point, so
-      // the gate's field(s) resolved here. Still verify any literal atom it
-      // carries isn't vacuously true at its given's declared default before
-      // calling it valid — see `assertNoVacuousDefaultAtom`'s doc.
-      await assertNoVacuousDefaultAtom(
-         compiler,
-         sourceName,
-         classification.literalAtoms,
-      );
-      for (const note of ownNotesOf.get(sourceName) ?? []) {
-         provenNoteObjects.add(note);
       }
    }
 

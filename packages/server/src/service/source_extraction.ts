@@ -358,15 +358,29 @@ export function extractSourcesFromModelDef(
          // shared walk also follows. A hand-rolled copy that covered only the
          // annotations chain is exactly how `Z`'s gate went missing from this
          // extraction while still being enforced at request time.
-         const inheritedGates =
+         //
+         // `inheritedGroups` may hold MORE THAN ONE group (a query-source base
+         // gate and, separately, its composite-member's own gate) — see
+         // `AuthorizeMap`'s doc for why those stay separate groups rather than
+         // one concatenated list. `effectiveGroups` is always exactly one
+         // group when `ownGates` is used: a source's own annotations are
+         // genuinely one disjunction, grouping only ever splits gates that
+         // came from different declaring sources.
+         const inheritedGroups =
             ownGates.length === 0
                ? effectiveAncestorGateExprs(struct as SourceDef, modelDef)
                : [];
-         const effective = ownGates.length > 0 ? ownGates : inheritedGates;
+         const effectiveGroups =
+            ownGates.length > 0 ? [ownGates] : inheritedGroups;
          let authorize: string[] | undefined;
-         if (effective.length > 0) {
-            authorizeMap.set(sourceName, effective);
-            authorize = effective;
+         if (effectiveGroups.length > 0) {
+            authorizeMap.set(sourceName, effectiveGroups);
+            // The wire shape stays a flat `string[]` for introspection — see
+            // `AuthorizeMap`'s doc. Flattening here (rather than keeping
+            // groups on the wire) is safe because nothing downstream of this
+            // field re-derives enforcement from it; only `authorizeMap`
+            // (kept internal) drives `validateAuthorizeProbes`.
+            authorize = effectiveGroups.flat();
          }
          const views: ExtractedView[] = struct.fields
             .filter((field) => field.type === "turtle")

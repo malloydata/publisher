@@ -55,9 +55,16 @@ source — cannot be persisted, in either mode:
   reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
   a materialized-once table is served frozen to every caller, and the served shape carries no gate
   to re-evaluate.
-- **A colocated `#@ persist`** (no `storage=`) refuses the same way: a colocated build is just as
-  frozen as a `storage=` build, so the same leak applies. Drop `#@ persist` from the source, or
-  move the gate to a source that is not materialized.
+- **A colocated `#@ persist`** (no `storage=`) refuses too, though not for the same reason. Here the
+  gate is not lost: the substitution swaps only the source's relation SQL, the gate applies as the
+  reading query's own `WHERE`, and rows come back filtered. What is frozen is the data the gate
+  DECIDES AGAINST, so a row that changes hands keeps being served to its former owner — and because
+  the content address does not include the annotation, an artifact built before the gate was added
+  stays addressable while every rebuild is refused. Drop `#@ persist` from the source, or move the
+  gate to a source that is not materialized.
+
+The check is deliberately broader than that hazard: it also refuses a source that merely *joins* a
+gated source, whose gate entry-point semantics never enforced in the first place.
 
 Both refusals name the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
