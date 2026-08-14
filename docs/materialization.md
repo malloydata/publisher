@@ -213,7 +213,7 @@ The same package definition behaves differently depending on who drives material
 
 ## Attribute a build's cost
 
-`materialization.queryMetadata` (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — so the backend's own reporting can separate build cost from query traffic. Publisher adds `class=materialize` plus the package, source, trigger and run id by itself. See [query-metadata.md](query-metadata.md).
+`materialization.queryMetadata` (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. The block is named for materialization historically; it declares what the source is, not only how it is built. See [query-metadata.md](query-metadata.md).
 
 ## Tune for cost and performance
 

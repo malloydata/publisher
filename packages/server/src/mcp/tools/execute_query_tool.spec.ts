@@ -53,6 +53,9 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
          ({
             assertCanAdmitQuery: () => undefined,
             getPackage: async () => ({
+               // The tool reads the package manifest for the least-specific
+               // author-declared metadata layer.
+               getMaterializationConfig: () => null,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
@@ -95,6 +98,9 @@ function storeCapturingMetadata(
                return connection;
             },
             getPackage: async () => ({
+               // The tool reads the package manifest for the least-specific
+               // author-declared metadata layer.
+               getMaterializationConfig: () => null,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),

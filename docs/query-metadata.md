@@ -39,6 +39,8 @@ Publisher attaches its own context to every statement, so attribution needs no m
 
 Context wins over a declared property of the same name: a caller cannot label its own query as a build, and cannot supply its own `query_id`.
 
+The context names are also **reserved against a declaration**. Context only overwrites a name it has a value for, and a served query has no `source`, `trigger` or `run_id` — so a package, model file or source declaring one would otherwise stamp it on interactive traffic, where it reads in the warehouse's own history exactly like a build. A declared context name is dropped and metered (`reason=reserved_name`) rather than applied.
+
 Everything except `query_id` is a property of the unit of work rather than of the individual call, so a repeated query produces the same values. `query_id` is per call by definition, which on a backend with no native tag mechanism makes the statement text unique and so bypasses an exact-text result cache. That is the deliberate cost of being able to find one query again.
 
 `PUBLISHER_QUERY_METADATA=off`, the default, attaches nothing at all — including caller-supplied properties. Leave it off for a deployment that wants its statements left exactly as Malloy compiles them, or if you would rather have the result cache than the correlation id.
@@ -73,7 +75,9 @@ Most specific wins, property by property:
 source: order_rollup is orders -> { aggregate: revenue is sum(amount) }
 ```
 
-Layers 2–4 describe how a source is **built**. A live query against the model is a different unit of work and does not inherit them — otherwise interactive traffic would be attributed to the build that happens to share the source.
+Layers 2–4 ride **every statement touching the source**, a build and a served query alike. They describe what the source _is_ — whose it is, what it costs, which tier it belongs to — and that is as true of a query reading it as of the build writing it. What distinguishes the two units of work is the context layer: a build carries `class=materialize` with a `source`, `trigger` and `run_id`, and a served query carries `class=interactive` with none of them. Those names are reserved, so no declaration can blur the distinction.
+
+A served query resolves layer 4 from the source it runs against, which the server already resolves for the authorize gate. A statement with no resolvable source — some notebook cells — carries layers 2 and 3 only.
 
 Under pressure — the 20-property cap, or Snowflake's tag limit — properties are given up least-specific-first, so a per-request property outlives a connection-wide one and the server's context outlives both.
 
