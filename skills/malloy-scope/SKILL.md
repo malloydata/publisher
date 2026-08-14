@@ -11,7 +11,7 @@ description: Present discovery findings and propose an analytical scope before m
 
 **Goal:** Present what you found and recommend an analytical focus. The user selects a direction.
 
-Ground yourself first with `get_context`: it returns the package's sources, views, and fields, so it tells you what data exists, how it relates, and what is already modeled. Query the data with `execute_query` to get row counts and spot data-quality issues. Record the proposal and the user's decision in `modeling-notes.md` when the workflow keeps one (see your modeling workflow); otherwise keep them in the conversation.
+Ground yourself first with `get_context`: it returns the package's sources, views, and fields, so it tells you what data exists, how it relates, and what is already modeled. Query the data with `execute_query` to get row counts and spot data-quality issues. Record the proposal and the user's decision in your modeling workflow's `modeling-notes.md`.
 
 **Scope is "which questions", not just "which tables".** A single A/B/C question about table inclusion is step 3's architecture question wearing step 2's clothes. The scope proposal must establish what the model is *for*: a model aimed at recommendation looks different from one aimed at catalog analysis over the same tables.
 
@@ -83,7 +83,7 @@ The user will:
 
 ## After User Confirms
 
-Restate the confirmed scope in the conversation so it's clear what you'll model next, and record it (with the skip list and reasons) in `modeling-notes.md` when the workflow keeps one. A useful shape to summarize:
+Restate the confirmed scope in the conversation so it's clear what you'll model next, and record it (with the skip list and reasons) in `modeling-notes.md`. A useful shape to summarize:
 
 - **Connection / schema**: the connection name and schema the sources draw from.
 - **Tables in scope**: table, row count, role (Fact/Dimension/Bridge), and any notes.
@@ -101,4 +101,4 @@ Then hand off to modeling: use your modeling workflow to turn the confirmed scop
 
 ## Done
 
-Scope confirmed (in the conversation, and in `modeling-notes.md` when the workflow keeps one): tables in scope, analytical focus, model kind and what it rules out, and what's deferred. Continue with your modeling workflow.
+Scope confirmed, in the conversation and in `modeling-notes.md`: tables in scope, analytical focus, model kind and what it rules out, and what's deferred. Continue with your modeling workflow.

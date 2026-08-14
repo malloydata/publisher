@@ -128,7 +128,7 @@ These supplemental skills may also be loaded as needed:
 
 ## Publisher MCP Tools
 
-Ensure the Publisher MCP tools are configured before modeling. No server yet? `skill:malloy-getting-started` covers setup, including the one-command scaffolder (`npm create @malloy-publisher/malloy-package@latest <name>`). For local authoring, start the server with `--watch-env <env>`: without it Publisher copies each local package into `publisher_data/` at boot and serves the copy, so edits to your source directory are never read.
+Ensure the Publisher MCP tools are configured before modeling. No server yet? `skill:malloy-getting-started` covers setup, including the one-command scaffolder (`npm create @malloy-publisher/malloy-package@latest <name>`) and why local authoring needs `--watch-env <env>`: start the server without it and your saved edits are never read.
 
 | Tool | Purpose |
 |------|---------|
