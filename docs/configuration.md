@@ -161,11 +161,12 @@ each package's entities (source, view, named query, join, dimension, and measure
 annotation text) are embedded and searched by cosine similarity, so synonyms and `snake_case`
 names match by meaning.
 
-An entity's name and its documentation are embedded **separately**, and an entity scores as its
-best-matching part. That is deliberate: with one vector per entity, a long `#(doc)` dominated the
-average and the entity stopped matching the plain name of the concept it described, so documenting
-a field well made it harder to find. Scoring on the best part means more documentation can add
-recall but never costs an entity precision on its own name.
+An entity's name and its documentation are embedded **separately**, a long doc is split into
+several parts, and an entity scores as its best-matching part. That is deliberate: with one vector
+per entity, a long `#(doc)` dominated the average, so the entity stopped matching the plain name of
+the concept it described and individual facts inside the doc — the grain caveats and population
+rules modellers write there — could not be found by their own wording either. Scoring on the best
+part means more documentation can add recall but never costs an entity precision on its own name.
 
 What to know before turning it on:
 
