@@ -36,6 +36,9 @@ function showError(where, error) {
    el("errors").appendChild(box);
 }
 
+/** Errors belong to the render that produced them, so a retry starts clean. */
+const clearErrors = () => el("errors").replaceChildren();
+
 // ---- URL <-> state -----------------------------------------------------------
 
 function readUrl() {
@@ -229,6 +232,7 @@ async function render() {
 
    const run = ++generation;
    const givens = activeGivens();
+   clearErrors();
    panel.section.dataset.busy = "true";
 
    const work = [];
@@ -310,12 +314,23 @@ window.addEventListener("popstate", () => {
 
 async function main() {
    buildTabs();
+   // First read keeps every parameter, because nothing yet says which names the
+   // model declares. That is deliberate: it gets tiles on screen a round trip
+   // sooner. It also means this first render can be running with a given the
+   // model does not have, which the server rejects for the whole query.
    readUrl();
+   const optimistic = JSON.stringify(state.givens);
    render();
 
    try {
       contracts = await loadGivenContracts(MODEL);
+      // Second read drops anything undeclared. If that changed the set, the
+      // render above asked a question the server refused, and every tile is
+      // sitting on that error: ask again with the set the model accepts. A
+      // stale link or an appended tracking parameter is enough to reach this,
+      // so it is not only a hostile-URL path.
       readUrl();
+      if (JSON.stringify(state.givens) !== optimistic) render();
       controls = buildControls(el("filters"), {
          modelPath: MODEL,
          contracts,
