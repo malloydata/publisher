@@ -129,9 +129,9 @@ export interface DashboardManifest {
    /** Package-relative path of the file the tag was read from. */
    entryFile: string;
    /**
-    * The control row. One entry per given the query references, except on a
-    * composite with an unresolvable tile, which widens to the entry file's
-    * whole surfaced set (see `buildDashboardManifest`).
+    * The control row: the givens the dashboard runs with. A single query's
+    * references, or the union over a composite's tiles, widened to the entry
+    * file's surfaced set when a tile cannot be resolved.
     *
     * `givens` is the declarations, here as everywhere else. Values keyed by
     * name are {@link startingGivens}; a bare list of names is `givenNames`.
@@ -573,14 +573,12 @@ function referencedTileGivens(
 }
 
 /**
- * Build the control row for a set of given names, in the order the NAMES
- * arrive. What that order IS depends on the caller: from a query's references
- * it is reference order, so two dashboards over the same givens can order their
- * controls differently, tracking where the author wrote the `where:` clauses;
- * from the widened composite path it is `facts.givens` insertion order, which is
- * declaration order. This line has been wrong in both directions, once claiming
- * declaration order and once reference order, because it described the caller
- * rather than the function.
+ * Build the control row for a set of given names, preserving the order the
+ * NAMES arrive in. It imposes no order of its own, which is the only thing this
+ * function decides; the three callers each supply a different one (a query's
+ * `givenUsage`, the per-tile lists concatenated, or `facts.givens` insertion
+ * order on the widened path). Earlier versions of this line named one of those
+ * as though it were the rule and were wrong in both directions.
  */
 function buildGivenSpecs(
    names: readonly string[],
@@ -603,38 +601,18 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
       name: declaration.name,
       type: declaration.type,
       default: declaration.default,
-      // App-route annotations in the `#(…)` form. This exists so a dashboard
-      // control does not lose the `#(description="…")` helper text the shipped
-      // `GivenInput` renders from `annotations`, which is what the spec means
-      // when it says a dashboard and a notebook render the same control for the
-      // same given.
+      // The `#(…)` app route only. This is NARROWER than the model surface, on
+      // purpose: `malloyGivenToApi` classifies by the parsed route, this by the
+      // opening character, and `parsePrefix` has four bracket pairs, so
+      // `#<doc>`, `#[doc]` and `#{doc}` are carried there and dropped here.
+      // Widening it by character class was tried and was wrong in both
+      // directions; the only exact test is the route, and deriving that from raw
+      // text reimplements `parsePrefix`. `#(` is what the shipped `GivenInput`
+      // reads, so nothing a consumer sees is lost.
       //
-      // The paren app route only, and that is NARROWER than the model surface
-      // rather than parity with it. Say so plainly, because two attempts to
-      // claim parity here were both false.
-      //
-      // `malloyGivenToApi` classifies by the PARSED ROUTE
-      // (`!isReservedRoute(note.route)`); this classifies by the opening
-      // character, and the two are not the same function. `parsePrefix` has
-      // four bracket pairs, `()`, `<>`, `[]` and `{}`, so `#<doc>`, `#[doc]`
-      // and `#{doc}` are carried on the model surface and dropped here. A first
-      // attempt widened the class to `[(<[|]` and got it wrong in BOTH
-      // directions: it still missed `{`, and `|` is the block SIGIL rather than
-      // a bracket, so a plain multi-line `#| label="x" … |#` has the empty
-      // MOTLY route, is reserved, and was newly carried here and nowhere else.
-      //
-      // Not re-derived properly because the only exact test is the route, and
-      // deriving that from raw text is reimplementing `parsePrefix`, which this
-      // module already says is what goes wrong. `#(` is what the shipped
-      // `GivenInput` reads (it re-filters to `#(` itself), so the widening
-      // bought nothing a consumer sees. Closing the gap for real means carrying
-      // the already-filtered API annotations down here instead of raw texts,
-      // which MATCHES the model surface rather than widening past it. Read that
-      // as narrow-preserving, not as a note to widen later: the API
-      // `annotations` narrowing is permanent, because Credible's app consumes
-      // that field from another repo (`MalloyReport.tsx` via
-      // `parseNotebookFilterAnnotation`), so widening it reintroduces a live bug
-      // in a consumer this repo cannot see.
+      // Do not read this as a note to widen later. The API `annotations`
+      // narrowing is permanent: Credible's app consumes that field from another
+      // repo, so widening reintroduces a live bug this repo cannot see.
       annotations: declaration.annotations.filter((text) =>
          /^##?\(/.test(text),
       ),

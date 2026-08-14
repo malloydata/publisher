@@ -388,10 +388,11 @@ describe("service/dashboard manifest (composite form)", () => {
     * `DashboardTile.givenNames` tells a client to do when it is absent, which
     * only works if the row contains them.
     *
-    * The pre-existing unresolvable-tile test pairs the refinement with a
-    * resolvable tile supplying the same given, so it cannot distinguish the two
-    * behaviours; this one deliberately gives the refinement a given no other
-    * tile mentions.
+    * Deliberately MIXED, because a single-tile fixture cannot distinguish `some`
+    * from `every`, and the older mixed test pairs its refinement with a
+    * resolvable tile supplying the SAME given, so both branches agree there.
+    * Here the file surfaces two givens no tile mentions, so only `some` yields
+    * them.
     */
    it("widens the control row when ANY tile cannot be resolved", () => {
       const manifest = build(

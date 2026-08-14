@@ -625,36 +625,13 @@ describe("readAutorun", () => {
  */
 describe("readStartingGivens", () => {
    /**
-    * A `date` given must publish the day the author WROTE, whatever the
-    * server's timezone. The ISO form is the trap: MOTLY accepts
-    * `@2024-03-01T23:30`, still reports `scalarType() === "date"`, and hydrates
-    * it in LOCAL time before rendering as UTC, so slicing the first ten
-    * characters off that rendering reported 2024-03-02 in America/Los_Angeles
-    * and 2024-02-29 in Asia/Tokyo. A dashboard opened on the wrong day and
-    * nothing reported it, because the tag parses.
+    * The zone-pinned half, and the only one of the two that can fail in CI.
     *
-    * All four forms must agree. This assertion alone cannot catch the bug,
-    * though: run under TZ=UTC it passes against the OLD implementation too,
-    * because UTC is the one zone where the bug is invisible, and nothing in this
-    * repo pins the suite's zone. The sibling test below is the one that pins it,
-    * by running the check in a subprocess under a fixed non-UTC zone.
-    */
-   /**
-    * The zone-pinned half. The unit suite runs at whatever TZ the machine has,
-    * and CI is UTC, so the assertion above cannot fail there even against the
-    * pre-fix code. This runs the same read in a subprocess under Asia/Tokyo,
-    * where the old `text.slice(0, 10)` produced 2024-02-29 for a value written
-    * as March 1, and asserts the authored day survives.
-    *
-    * BOTH literals, and the zone is America/Los_Angeles, because `authoredDay`
-    * has two halves and one zone plus one literal pins only one of them. The
-    * bare date exercises the UTC-midnight branch: west of UTC, UTC midnight is
-    * the previous local day, so forcing the local branch turns `@2024-03-01`
-    * into 2024-02-29. The ISO literal exercises the local branch: 23:30 local
-    * is 07:30 UTC the next day, so slicing the rendering turns it into
-    * 2024-03-02. East of UTC neither mutation shows, which is why an earlier
-    * version under Asia/Tokyo pinned only half, and an earlier one still used
-    * 23:30 under Tokyo (14:30 UTC, same day) and pinned nothing at all.
+    * `authoredDay` has two branches and this pins both, which needs a zone WEST
+    * of UTC and both literals. Under America/Los_Angeles: the bare date is UTC
+    * midnight, so forcing the local branch reads it as the previous day; the
+    * ISO 23:30 is 07:30Z the next day, so slicing the rendering reads it as the
+    * next one. East of UTC neither shows.
     */
    it("publishes the authored day under a non-UTC zone as well", () => {
       const service = import.meta.dir;
@@ -683,6 +660,11 @@ describe("readStartingGivens", () => {
       ]);
    });
 
+   /**
+    * All four literal forms must agree. Cannot fail on its own: CI is UTC, and
+    * UTC is the one zone where slicing the ISO rendering is already correct.
+    * The subprocess test above is what pins it.
+    */
    it("publishes the authored day for every date literal form", () => {
       for (const literal of [
          "@2024-03-01",

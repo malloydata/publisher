@@ -3437,8 +3437,10 @@ components:
         givens:
           type: array
           description: |
-            The control row. Normally one entry per given the dashboard's query
-            references AND the entry file can bind. A composite widens it to
+            The control row. Normally one entry per given the dashboard runs
+            with, which is what its `query` references on the single-query form
+            and the union over `tiles` on a composite, and which the entry file
+            can bind. A composite widens it to
             every given the entry file surfaces when any tile is one discovery
             cannot resolve, because that tile's givens are otherwise absent from
             the row it filters by; see `DashboardTile.givenNames`. So an entry
