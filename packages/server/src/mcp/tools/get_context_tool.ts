@@ -15,7 +15,11 @@ import {
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { entityRowKey, trySemanticSearch } from "./embedding_index";
+import {
+   entityRowKey,
+   humanizeName,
+   trySemanticSearch,
+} from "./embedding_index";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
@@ -37,6 +41,9 @@ interface Entity {
    // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
    // traversing the join fans out (many) before it writes a query against it.
    relationship?: Relationship;
+   // Other spellings of this same field in the same source that were
+   // collapsed into it (see collapseAliases). Present only when non-empty.
+   aliases?: string[];
 }
 
 /** One tier-4 result. `score` (cosine) rides only on semantic results. */
@@ -49,6 +56,10 @@ interface ResultEntity {
    modelPath: string;
    doc: string;
    relationship?: Relationship;
+   /** Other spellings of this field in its own source, collapsed into it. */
+   aliases?: string[];
+   /** Other sources carrying this same concept, when near-identically scored. */
+   alsoIn?: string[];
    score?: number;
 }
 
@@ -89,6 +100,65 @@ interface SourceContextEntry {
     * what an agent needs to stop probing for one and write it inline.
     */
    joins: SourceContextJoin[];
+}
+
+/**
+ * How close two sibling scores must be before they are treated as the same
+ * concept found in parallel sources rather than as two ranked answers.
+ * Tuned against get_context_eval.ts; deliberately tight, so a sibling that
+ * is genuinely a worse match keeps its own row.
+ */
+export const SIBLING_SCORE_EPSILON = 0.03;
+
+/**
+ * Ceiling on what the semantic query may fetch, matching the `limit`
+ * parameter's own maximum. Sibling collapsing over-fetches to refill the
+ * window, and this bounds the scan it can ask for.
+ */
+const SEMANTIC_MAX_LIMIT = 50;
+
+/**
+ * Collapse the same concept appearing in parallel sources into one row that
+ * names the others.
+ *
+ * A model with sibling source families returns the same field from each of
+ * them at effectively the same score: `"site of the building"` returned
+ * `SITE` at 0.96 from all three of `fac_building`, `fclt_building` and
+ * `fclt_building_hist` — identical scores, presented as peers, with nothing
+ * in the response to tell an agent they were near-duplicates or how to
+ * choose. Agents picked one arbitrarily, and choosing wrong between sibling
+ * families was the single largest failure class measured.
+ *
+ * Collapsing does double duty: it returns the wasted slots to genuinely
+ * different concepts, and `alsoIn` makes the ambiguity explicit instead of
+ * leaving it to be inferred from three rows that look independent. Only
+ * near-identical scores group — a sibling that really is a worse match is a
+ * ranked answer, not a duplicate.
+ */
+function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
+   const keptByConcept = new Map<string, ResultEntity>();
+   const kept: ResultEntity[] = [];
+   for (const r of results) {
+      const key = `${r.kind}|${humanizeName(r.name)}`;
+      const peer = keptByConcept.get(key);
+      if (
+         peer &&
+         r.source &&
+         peer.source !== r.source &&
+         Math.abs((peer.score ?? 0) - (r.score ?? 0)) <= SIBLING_SCORE_EPSILON
+      ) {
+         peer.alsoIn = [...(peer.alsoIn ?? []), r.source];
+         continue;
+      }
+      // Keep scanning the over-fetch after the window is full: a later hit
+      // can still be the sibling that makes an already-kept row's ambiguity
+      // visible, and dropping it would report a lone confident answer where
+      // the model actually offers three.
+      if (kept.length >= limit) continue;
+      keptByConcept.set(key, r);
+      kept.push(r);
+   }
+   return kept;
 }
 
 /**
@@ -297,12 +367,80 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
    // model that extends another), which surfaces the same entity twice. Keep the
    // first occurrence per (kind, source, name).
    const seen = new Set<string>();
-   return entities.filter((e) => {
+   const deduped = entities.filter((e) => {
       const key = entityRowKey(e.kind, e.source ?? "", e.name);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
    });
+   return collapseAliases(deduped);
+}
+
+/**
+ * Collapse entities within one source that differ only in the spelling of
+ * the same name, keeping the documented one and recording the rest.
+ *
+ * A model that renames a physical column without hiding the original leaves
+ * both in the schema — `SITE` and `site` are one column, indexed twice — and
+ * both then compete for the same scarce result slots. Measured across 8
+ * representative queries on a 42-source model, 34% of returned slots were a
+ * concept the same result set already contained, and the worst case spent
+ * six of eight slots on one concept, three of them a raw column sitting
+ * beside its own alias.
+ *
+ * Detection is by humanized name, and it has to be: the stable Malloy
+ * interface gives a dimension only `{name, type, annotations}`, with no
+ * expression, so there is no way to prove `site` is a rename of `SITE`
+ * rather than a derivation. The heuristic covers the measured case (a pure
+ * case/separator respelling inside one source) and stops there. Two
+ * genuinely distinct fields whose names humanize identically would collapse,
+ * but they would also have embedded near-identically, so what is lost is a
+ * near-duplicate rather than a distinct concept — and the dropped name is
+ * still reported in `aliases`.
+ *
+ * The real fix belongs in the model: Malloy's `include { internal: ... }`
+ * hides the raw column outright, and the indexer already honours it, because
+ * the compiler drops non-public fields before this code ever sees them (see
+ * the access-modifier spec). This collapse is what the tool can do for the
+ * models that have not done that.
+ */
+function collapseAliases(entities: Entity[]): Entity[] {
+   const groups = new Map<string, Entity[]>();
+   for (const e of entities) {
+      // Sources are their own namespace, and joins name a relationship
+      // rather than a column; only fields within one source can be two
+      // spellings of one thing.
+      if (e.kind !== "dimension" && e.kind !== "measure") continue;
+      const key = `${e.kind}|${e.source ?? ""}|${humanizeName(e.name)}`;
+      const group = groups.get(key);
+      if (group) group.push(e);
+      else groups.set(key, [e]);
+   }
+
+   const dropped = new Map<string, Entity>();
+   for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      // Prefer the documented spelling: a modeller who wrote a #(doc) said
+      // which name they meant an agent to use. Failing that, prefer the
+      // lowercase-looking one (`site` over `SITE`), then be deterministic.
+      const [keep, ...rest] = [...group].sort((a, b) => {
+         if (Boolean(b.embedDoc) !== Boolean(a.embedDoc)) {
+            return b.embedDoc ? 1 : -1;
+         }
+         const aRaw = a.name === a.name.toUpperCase();
+         const bRaw = b.name === b.name.toUpperCase();
+         if (aRaw !== bRaw) return aRaw ? 1 : -1;
+         return a.name.localeCompare(b.name);
+      });
+      keep.aliases = rest.map((e) => e.name);
+      for (const e of rest) {
+         dropped.set(entityRowKey(e.kind, e.source ?? "", e.name), e);
+      }
+   }
+   if (dropped.size === 0) return entities;
+   return entities.filter(
+      (e) => !dropped.has(entityRowKey(e.kind, e.source ?? "", e.name)),
+   );
 }
 
 interface PackageIndex {
@@ -423,9 +561,9 @@ All optional; supply what you know.
 - limit: caps results (max 50; retrieval defaults to 10). Listing levels return all unless set.
 
 ## Response
-results[]: kind (source / view / query / dimension / measure / join), name, source, modelPath, doc. These map onto malloy_executeQuery; pass a view or named query as queryName with sourceName. A join adds relationship ("one"/"many"/"cross") and is traversed as joinName.fieldName.
-sources[]: one per source behind a result, with its doc (may be truncated) and complete joins.
-With an embedding provider, ranking is semantic and the payload adds retrieval ("semantic", or "lexical" when unavailable) plus a per-entity score.
+results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or named query as queryName with sourceName. A join adds relationship ("one"/"many"/"cross"), traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs rather than taking the first.
+sources[]: per source behind a result — its doc (may be truncated) and complete joins.
+With an embedding provider, ranking is semantic and each entity carries a score.
 
 ## Worked example
 { "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
@@ -716,6 +854,9 @@ export function registerGetContextTool(
          // provider is configured, so the unconfigured payload stays
          // byte-identical to the lexical-only releases.
          const configured = embeddingConfigured();
+         // A drill-down is confined to one source, so no two hits can be the
+         // same concept in parallel sources and there is nothing to collapse.
+         const scoped = Boolean(sourceName);
          let semanticResults: ResultEntity[] | undefined;
          if (configured) {
             let provider: EmbeddingProvider | null = null;
@@ -742,7 +883,14 @@ export function registerGetContextTool(
                      packageName,
                      entities: Array.from(byId.values()),
                      query: query ?? sanitized,
-                     limit: max,
+                     // Over-fetch so sibling collapsing can refill the
+                     // window with genuinely different concepts instead of
+                     // returning fewer results than asked for. A drill-down
+                     // is already confined to one source, so nothing there
+                     // can collapse and the extra rows would be waste.
+                     limit: scoped
+                        ? max
+                        : Math.min(SEMANTIC_MAX_LIMIT, max * 3),
                      // "" means no drill-down, matching the lexical
                      // path's truthiness filter.
                      sourceName: sourceName || undefined,
@@ -757,7 +905,7 @@ export function registerGetContextTool(
                      // Rows are only a vector cache: modelPath and doc
                      // come from the live entity, and a hit with no live
                      // entity (deleted since the last sync) is dropped.
-                     semanticResults = semantic.hits.flatMap((hit) => {
+                     const ranked = semantic.hits.flatMap((hit) => {
                         const e = byKey.get(
                            entityRowKey(hit.kind, hit.source ?? "", hit.name),
                         );
@@ -774,10 +922,14 @@ export function registerGetContextTool(
                               ...(e.relationship
                                  ? { relationship: e.relationship }
                                  : {}),
+                              ...(e.aliases ? { aliases: e.aliases } : {}),
                               score: Math.round(hit.score * 10_000) / 10_000,
                            },
                         ];
                      });
+                     semanticResults = scoped
+                        ? ranked.slice(0, max)
+                        : groupSiblings(ranked, max);
                   }
                } catch (error) {
                   // Defensive: trySemanticSearch does not throw, but the
@@ -834,6 +986,7 @@ export function registerGetContextTool(
                modelPath: e.modelPath,
                doc: e.doc,
                ...(e.relationship ? { relationship: e.relationship } : {}),
+               ...(e.aliases ? { aliases: e.aliases } : {}),
             }));
 
          const sources = contextForResults(results, sourceContext);

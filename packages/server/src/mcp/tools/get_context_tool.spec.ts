@@ -239,6 +239,52 @@ const envWith = (
       getPackage,
       getStaleCompileErrors: () => staleCompileErrors,
    }) as never;
+// A source carrying a raw physical column beside its own documented alias,
+// which is what a model that renames without hiding produces.
+const mockAliasModel = {
+   getSourceInfos: () => [
+      {
+         name: "fclt_building",
+         annotations: [],
+         schema: {
+            fields: [
+               { kind: "dimension", name: "SITE", annotations: [] },
+               {
+                  kind: "dimension",
+                  name: "site",
+                  annotations: ["#(doc) Campus site the building sits on."],
+               },
+               { kind: "dimension", name: "height", annotations: [] },
+            ],
+         },
+      },
+   ],
+   getQueries: () => [],
+};
+const mockAliasPackage = {
+   listModels: async () => [{ path: "b.malloy" }],
+   getModel: () => mockAliasModel,
+};
+
+// Three parallel sources carrying the same concept, the shape that produced
+// the largest measured failure class.
+const SIBLING_SOURCES = ["fac_building", "fclt_building", "fclt_building_hist"];
+const mockSiblingModel = {
+   getSourceInfos: () =>
+      SIBLING_SOURCES.map((name) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "dimension", name: "site", annotations: [] }],
+         },
+      })),
+   getQueries: () => [],
+};
+const mockSiblingPackage = {
+   listModels: async () => [{ path: "sib.malloy" }],
+   getModel: () => mockSiblingModel,
+};
+
 // A source whose doc is longer than SOURCE_DOC_MAX_CHARS, and one that
 // declares no joins at all, to pin the truncation and the empty-joins signal.
 const LONG_SOURCE_DOC = `Rooms in the facilities inventory. ${"Grain caveats and population rules go here. ".repeat(20)}`;
@@ -786,6 +832,94 @@ describe("get_context discovery tiers", () => {
       expect(payload).not.toHaveProperty("sources");
    });
 
+   it("collapses a raw column into its documented alias, naming the raw one", async () => {
+      // `SITE` and `site` are one physical column indexed twice, and both
+      // competed for the same scarce slots: 34% of returned slots were a
+      // concept the result set already held. The documented spelling wins,
+      // because a modeller who wrote the #(doc) said which name they meant.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockAliasPackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "site",
+         }),
+      );
+      const sites = results.filter(
+         (r: { name: string }) => r.name.toLowerCase() === "site",
+      );
+      expect(sites).toHaveLength(1);
+      expect(sites[0].name).toBe("site");
+      expect(sites[0].doc).toBe("Campus site the building sits on.");
+      expect(sites[0].aliases).toEqual(["SITE"]);
+   });
+
+   it("leaves genuinely distinct fields in a source alone", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockAliasPackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "height",
+         }),
+      );
+      const height = results.find((r: { name: string }) => r.name === "height");
+      expect(height).toBeDefined();
+      expect(height.aliases).toBeUndefined();
+   });
+
+   it("never sees a field the model hid with an access modifier", async () => {
+      // The modelling-side fix for the same redundancy, and the reason this
+      // tool needs no opt-out: Malloy drops non-public fields before the
+      // compiled SourceInfo exists, so `include { internal: SITE }` removes
+      // the raw twin from retrieval outright. Pinned because the collapse
+      // heuristic above would otherwise look like the only defence.
+      const hiddenModel = {
+         getSourceInfos: () => [
+            {
+               name: "fclt_building",
+               annotations: [],
+               schema: {
+                  fields: [
+                     {
+                        kind: "dimension",
+                        name: "site",
+                        annotations: ["#(doc) Campus site."],
+                     },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               getPackage: async () => ({
+                  listModels: async () => [{ path: "h.malloy" }],
+                  getModel: () => hiddenModel,
+               }),
+            }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "site",
+         }),
+      );
+      expect(results.some((r: { name: string }) => r.name === "SITE")).toBe(
+         false,
+      );
+      expect(results[0].aliases).toBeUndefined();
+   });
+
    it("tier 1: surfaces a listEnvironments failure as a tool error", async () => {
       const handler = captureHandler({
          listEnvironments: async () => {
@@ -1003,7 +1137,12 @@ describe("get_context semantic retrieval", () => {
       "what building is this in": [0, 1],
    };
 
-   function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
+   /** A provider over an explicit text -> vector map. Unknown text throws, */
+   /** so the map pins exactly which facets get embedded. */
+   function stubProviderFor(
+      vectors: Record<string, number[]>,
+      options: { fail?: boolean } = {},
+   ): EmbeddingProvider {
       const fetchStub = (async (
          _url: RequestInfo | URL,
          init?: RequestInit,
@@ -1011,7 +1150,7 @@ describe("get_context semantic retrieval", () => {
          if (options.fail) return new Response("down", { status: 500 });
          const body = JSON.parse(String(init?.body)) as { input: string[] };
          const data = body.input.map((text, index) => {
-            const embedding = VECTORS[text];
+            const embedding = vectors[text];
             if (!embedding) throw new Error(`no stub vector for "${text}"`);
             return { index, embedding };
          });
@@ -1027,18 +1166,26 @@ describe("get_context semantic retrieval", () => {
       );
    }
 
-   /** A store whose package is a fresh instance, backed by the temp DB. */
-   function semanticStore(): Partial<EnvironmentStore> {
-      const pkg = {
-         listModels: async () => [{ path: "ecommerce.malloy" }],
-         getModel: () => mockModel,
-      };
+   function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
+      return stubProviderFor(VECTORS, options);
+   }
+
+   /** A store over the given package, backed by the temp DB. */
+   function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
       return {
          getEnvironment: async () => envWith(async () => pkg),
          storageManager: {
             getDuckDbConnection: () => db,
          } as never,
       };
+   }
+
+   /** A store whose package is a fresh instance, backed by the temp DB. */
+   function semanticStore(): Partial<EnvironmentStore> {
+      return semanticStoreFor({
+         listModels: async () => [{ path: "ecommerce.malloy" }],
+         getModel: () => mockModel,
+      });
    }
 
    async function callUntilSemantic(
@@ -1139,6 +1286,61 @@ describe("get_context semantic retrieval", () => {
             ],
          },
       ]);
+   });
+
+   it("collapses the same concept across sibling sources into one marked row", async () => {
+      // The measured worst case: "site of the building" returned SITE at an
+      // identical 0.96 from fac_building, fclt_building and
+      // fclt_building_hist, presented as three peers with nothing to choose
+      // between them. Agents picked arbitrarily, and choosing wrong between
+      // sibling families was the largest single failure class. One row now,
+      // naming the alternatives, so the ambiguity is stated rather than
+      // inferred — and the freed slots go to different concepts.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            site: [1, 0],
+            "fac building": [0, 1],
+            "fclt building": [0, 1],
+            "fclt building hist": [0, 1],
+            "site of the building": [1, 0],
+         }),
+      );
+      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "sibling-pkg",
+         query: "site of the building",
+      });
+      const sites = payload.results.filter(
+         (r: { name: string }) => r.name === "site",
+      );
+      expect(sites).toHaveLength(1);
+      expect(sites[0].alsoIn).toHaveLength(2);
+      expect([sites[0].source, ...sites[0].alsoIn].sort()).toEqual(
+         [...SIBLING_SOURCES].sort(),
+      );
+   });
+
+   it("keeps siblings separate under a drill-down, where they cannot be duplicates", async () => {
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            site: [1, 0],
+            "fac building": [0, 1],
+            "fclt building": [0, 1],
+            "fclt building hist": [0, 1],
+            "site of the building": [1, 0],
+         }),
+      );
+      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "sibling-scoped-pkg",
+         query: "site of the building",
+         sourceName: "fclt_building",
+      });
+      expect(payload.results).toHaveLength(1);
+      expect(payload.results[0].source).toBe("fclt_building");
+      expect(payload.results[0].alsoIn).toBeUndefined();
    });
 
    it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
