@@ -257,10 +257,12 @@ seeded. **No lint checks that.** It verifies that the target slug is a dashboard
 for `to=self` that some model declares the given, and stops there. Nothing reads the destination's
 own givens, so click it and look.
 
-Cells in a drillable **table** column show it: pointer cursor, and a blue underline on hover. Chart
-marks get no such affordance in either Publisher or Malloyyo, so a dashboard meant to be drilled
-wants at least one table tile. A destination the surface cannot honor is not marked and not offered,
-which is why a `to=self` reads as plain text in a document that declares no control for its given.
+Cells in a drillable **table** column show it: pointer cursor, and a blue underline on hover. They
+are in the tab order and carry a button role too, so a keyboard reaches them, focus is styled the way
+hover is, and Enter or Space fires the drill. Chart marks get no such affordance in either Publisher
+or Malloyyo, so a dashboard meant to be drilled wants at least one table tile. A destination the
+surface cannot honor is not marked and not offered, which is why a `to=self` reads as plain text in a
+document that declares no control for its given.
 
 ## Read the lint
 
