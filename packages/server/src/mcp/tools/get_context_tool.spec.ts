@@ -227,6 +227,7 @@ describe("get_context discovery tiers", () => {
                listPackages: async () => [
                   { name: "ecommerce", description: "Ecommerce demo" },
                ],
+               getFailedPackages: () => new Map(),
             }) as never,
       });
       const { results } = parse(
@@ -240,6 +241,31 @@ describe("get_context discovery tiers", () => {
             environmentName: "malloy-samples",
          },
       ]);
+   });
+
+   it("tier 2: lists a failed package with its load error instead of omitting it", async () => {
+      // listPackages() drops packages that failed to load, which reads as
+      // "does not exist" to an agent. The listing must carry them with an
+      // error marker so a broken package is distinguishable from an absent one.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               listPackages: async () => [{ name: "good" }],
+               getFailedPackages: () =>
+                  new Map([["broken", "Compile failed: unexpected token"]]),
+            }) as never,
+      });
+      const { results } = parse(
+         await handler({ environmentName: "malloy-samples" }),
+      );
+      expect(results).toHaveLength(2);
+      expect(results[0]).toMatchObject({ kind: "package", name: "good" });
+      expect(results[1]).toEqual({
+         kind: "package",
+         name: "broken",
+         environmentName: "malloy-samples",
+         error: "Compile failed: unexpected token",
+      });
    });
 
    it("tier 2: surfaces an unresolved environment as a tool error", async () => {
@@ -324,6 +350,45 @@ describe("get_context discovery tiers", () => {
             doc: "",
          },
       ]);
+   });
+
+   it("tier 3: a populated listing carries no note", async () => {
+      // The note is for the ambiguous empty case only; the populated payload
+      // must stay byte-identical to what it was before the note existed.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockPackage }) as never,
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      expect("note" in payload).toBe(false);
+   });
+
+   it("tier 3: an empty listing says it is a curation gap, not an empty database", async () => {
+      // A package that loaded but exposes nothing and a package with no data
+      // produce the same results: []. The note is what tells an agent the
+      // difference (a failed load never gets here: getPackage throws).
+      const emptyPackage = {
+         listModels: async () => [{ path: "importer.malloy" }],
+         getModel: () => ({ getSourceInfos: () => [], getQueries: () => [] }),
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => emptyPackage }) as never,
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "curated-empty",
+         }),
+      );
+      expect(payload.results).toEqual([]);
+      expect(payload.note).toContain("curation gap");
+      expect(payload.note).toContain("malloy_getStatus");
    });
 
    it("tier 4: a query retrieves the matching entity", async () => {

@@ -371,12 +371,31 @@ export function registerGetContextTool(
                   false,
                );
                const packages = await environment.listPackages();
-               const results = packages.map((pkg) => ({
+               const results: Array<{
+                  kind: "package";
+                  name: string | undefined;
+                  description?: string;
+                  environmentName: string;
+                  error?: string;
+               }> = packages.map((pkg) => ({
                   kind: "package" as const,
                   name: pkg.name,
                   description: pkg.description,
                   environmentName,
                }));
+               // listPackages() omits packages that failed to load, which
+               // reads as "does not exist" to an agent. List them with their
+               // load error instead, so a broken package is distinguishable
+               // from an absent one. (Messages are already secret-redacted
+               // where they are recorded.)
+               for (const [name, message] of environment.getFailedPackages()) {
+                  results.push({
+                     kind: "package" as const,
+                     name,
+                     environmentName,
+                     error: message,
+                  });
+               }
                return jsonResource(
                   buildMalloyUri(
                      { environment: environmentName },
@@ -451,6 +470,18 @@ export function registerGetContextTool(
                   modelPath: e.modelPath,
                   doc: e.doc,
                }));
+            // An empty enumeration is ambiguous to an agent: "no data here" and
+            // "the package exposes nothing" look identical. The package DID
+            // load (a failed load throws out of getPackageIndex above), so an
+            // empty result means its models expose no sources: a curation gap
+            // (explores/export {}), not an empty database. Say so, only in the
+            // empty case, so the populated payload stays byte-identical.
+            if (results.length === 0 && !sourceName) {
+               return jsonResource(uri, {
+                  results,
+                  note: "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
+               });
+            }
             return jsonResource(uri, { results });
          }
 

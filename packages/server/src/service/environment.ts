@@ -191,6 +191,24 @@ export class Environment {
     * typo'd `location` sends the reader hunting in the wrong place.
     */
    private mountErrors: Map<string, string> = new Map();
+   /**
+    * Why a SERVING package's most recent reload failed to compile, keyed by
+    * package name.
+    *
+    * Separate from {@link failedPackages} because the package is NOT failed:
+    * a failed reload keeps the last good compiled model serving (see
+    * {@link _loadOrGetPackageLocked}), so `getFailedPackages()` and the
+    * serving counters must not include it. What this records is staleness:
+    * the model answering queries is older than the files on disk. Without it
+    * a watch-mode recompile failure is visible only on stderr, and /status
+    * keeps reporting a healthy server while queries answer from the previous
+    * model. Read by EnvironmentStore.getStatus, which reports each entry as a
+    * loadErrors item with `stale: true`.
+    */
+   private staleCompileErrors: Map<
+      string,
+      { message: string; failedAt: string }
+   > = new Map();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -1371,6 +1389,20 @@ export class Environment {
             // the caller surface the error instead of evicting the package and
             // leaving the environment with nothing to answer from.
             this.setPackageStatus(packageName, PackageStatus.SERVING);
+            // Serving the last good model is right, but it must not be silent:
+            // this is the only record that the served model is now older than
+            // the files on disk, and it is what makes a failed watch-mode
+            // recompile visible to /status at all (the watch controller only
+            // logs to stderr). Cleared on the next successful load via
+            // clearPackageLoadFailure. Recording here, not in the watch
+            // controller, covers every reload caller: the chokidar watcher,
+            // MCP malloy_reloadPackage, and REST ?reload=true.
+            this.staleCompileErrors.set(packageName, {
+               message: redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               ),
+               failedAt: new Date().toISOString(),
+            });
          } else {
             this.packages.delete(packageName);
             this.packageStatuses.delete(packageName);
@@ -2213,6 +2245,7 @@ export class Environment {
    private clearPackageLoadFailure(packageName: string): void {
       this.failedPackages.delete(packageName);
       this.mountErrors.delete(packageName);
+      this.staleCompileErrors.delete(packageName);
    }
 
    /** Packages configured for this environment that did not load, and why. */
@@ -2221,6 +2254,19 @@ export class Environment {
       // Mount errors last, so the specific cause overwrites the generic
       // manifest error that the un-mounted package produces on its lazy load.
       return new Map([...this.failedPackages, ...this.mountErrors]);
+   }
+
+   /**
+    * SERVING packages whose most recent reload failed to compile: the served
+    * model is stale relative to the files on disk. Disjoint from
+    * {@link getFailedPackages} by construction (a successful load clears the
+    * entry; a failed first load lands in failedPackages instead).
+    */
+   public getStaleCompileErrors(): ReadonlyMap<
+      string,
+      { message: string; failedAt: string }
+   > {
+      return this.staleCompileErrors;
    }
 
    public setPackageStatus(packageName: string, status: PackageStatus): void {
