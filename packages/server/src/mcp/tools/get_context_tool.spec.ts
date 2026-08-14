@@ -829,13 +829,16 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(null);
    });
 
-   // Entity texts are humanize(name) [+ doc]. A missing entry throws, so this
-   // map doubles as a pin on exactly which entities get embedded: the join is
-   // here because it is indexed, and the field inside its schema is absent
-   // because it is not.
    const VECTORS: Record<string, number[]> = {
+      // An entity's name and its doc embed as separate facets, so both need
+      // a stub vector. A missing entry throws, which is what makes this map
+      // double as a pin on exactly what gets embedded: the join's facets are
+      // here because it is indexed, and the field inside its schema is
+      // absent because it is not.
+      "order items": [0, 1],
       "order items: One row per product sold on an order.": [0, 1],
       state: [1, 0],
+      "current building": [0, 1],
       "current building: Building this asset sits in.": [0, 1],
       "where do customers live": [1, 0],
       "what building is this in": [0, 1],
@@ -936,13 +939,15 @@ describe("get_context semantic retrieval", () => {
 
       // The vector cache holds it under its own kind, so it survives a
       // restart and takes part in the incremental hash diff like any other
-      // entity.
-      const rows = await db.all<{ n: number }>(
-         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
-          WHERE package_name = ? AND entity_kind = 'join' AND entity_name = ?`,
+      // entity — including being faceted, so a join's doc cannot bury the
+      // join's own name.
+      const rows = await db.all<{ facet: string }>(
+         `SELECT facet FROM entity_embeddings
+          WHERE package_name = ? AND entity_kind = 'join' AND entity_name = ?
+          ORDER BY facet`,
          ["join-pkg", "current_building"],
       );
-      expect(rows[0].n).toBe(1);
+      expect(rows.map((r) => r.facet)).toEqual(["doc:0", "name"]);
    });
 
    it("delivers a source's doc even when the source itself scores below the floor", async () => {

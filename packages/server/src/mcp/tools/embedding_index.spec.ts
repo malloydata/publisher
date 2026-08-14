@@ -243,16 +243,90 @@ describe("trySemanticSearch", () => {
             entity("beta", "src"),
          ],
       });
+      // Only the NEW doc facet is embedded. alpha's name facet is unchanged
+      // by documenting it, so it is not re-embedded, and neither is beta.
       expect(counts.get("alpha: now documented")).toBe(1);
+      expect(counts.get("alpha")).toBe(1);
       expect(counts.get("beta")).toBe(1);
-      if (!("hits" in changed)) throw new Error("expected hits");
-      // alpha's new vector is orthogonal to the query, so beta leads now.
-      expect(changed.hits.map((h) => h.name)).toEqual(["beta"]);
 
+      // The point of faceting: documenting alpha must not cost alpha its own
+      // name. Its doc vector here is orthogonal to the query, which under a
+      // single averaged vector per entity is exactly what used to sink it
+      // below beta. Scored on its best facet, alpha still leads.
+      if (!("hits" in changed)) throw new Error("expected hits");
+      expect(changed.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
+      expect(changed.hits[0].score).toBeCloseTo(1.0, 3);
+
+      // Three rows: alpha's name and doc, beta's name. One row per entity
+      // still comes back from the search, because scoring groups by entity.
       const rows = await db.all<{ n: number }>(
          "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
       );
-      expect(rows[0].n).toBe(2);
+      expect(rows[0].n).toBe(3);
+   });
+
+   it("keeps a documented entity findable by its own name", async () => {
+      // The measured §3 failure, reduced: on a real 42-source model a field
+      // with a 547-char doc ranked 10th for its own plain name while
+      // short-doc siblings ranked 1st. Here alpha's doc points away from the
+      // query and its short-doc'd sibling beta points at it; alpha must
+      // still win on the name it is named.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: a long aside about unrelated matters": [0, 0, 1],
+         "beta: alpha-ish": [0.9, 0.4, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "dilution",
+         query: "find alpha",
+         limit: 10,
+         entities: [
+            entity("alpha", "src", "a long aside about unrelated matters"),
+            entity("beta", "src", "alpha-ish"),
+         ],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits[0].name).toBe("alpha");
+      expect(result.hits[0].score).toBeCloseTo(1.0, 3);
+   });
+
+   it("drops a doc facet when the doc is removed, keeping the name facet", async () => {
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: documented": [0, 1, 0],
+      });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "undoc",
+         query: "find alpha",
+         limit: 10,
+      };
+      // A fresh Package per call: the sync memo is per instance, exactly as
+      // a reload swaps the instance in production.
+      await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src", "documented")],
+      });
+      await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src")],
+      });
+
+      const rows = await db.all<{ facet: string }>(
+         `SELECT facet FROM entity_embeddings
+          WHERE environment_name = 'env' AND package_name = 'undoc'`,
+      );
+      expect(rows.map((r) => r.facet)).toEqual(["name"]);
    });
 
    it("re-embeds everything on a model switch without a key collision", async () => {
@@ -672,6 +746,9 @@ describe("trySemanticSearch", () => {
          },
       });
       const changed = mapProvider({
+         // Name facets included: rewording a doc leaves alpha's name facet
+         // alone, but beta is new here and needs both of its facets.
+         ...ENTITY_VECTORS,
          ...QUERY_VECTORS,
          "alpha: reworded": [0, 1, 0],
          "beta: new": [0, 0, 1],
