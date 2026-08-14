@@ -83,7 +83,14 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
     * cannot self-correct without. See docs/agent-skills/tool-description-template.md.
     */
    it("keeps every tool description under the truncation budget", async () => {
-      const BUDGET = 2000;
+      // Raised from 2000 once malloy_getContext's contract outgrew it, after
+      // restructuring rather than extending the description. 2150 still sits
+      // ~120 chars below 2271, the only length ever observed truncating, so
+      // the margin is smaller but not gone. Raise it again only after the
+      // same exercise: cut reference material first, and keep the contract
+      // rules ahead of it (see the ordering test below, which is the defense
+      // that actually matters).
+      const BUDGET = 2150;
       const { tools } = await client.listTools();
       const oversized = tools
          .filter((t) => (t.description ?? "").length > BUDGET)
@@ -104,6 +111,25 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
                expect(contract).toBeLessThan(index);
             }
          }
+      }
+   });
+
+   it("states the getContext response contract the payload actually ships", async () => {
+      // Fields have shipped before the description explained them, which is
+      // the expensive half: an agent cannot act on `sources` or on an empty
+      // `joins` list it was never told about. Pin the contract terms to the
+      // description so a new response field cannot land silently.
+      const { tools } = await client.listTools();
+      const description =
+         tools.find((t) => t.name === "malloy_getContext")?.description ?? "";
+      for (const term of [
+         "kind",
+         "sources",
+         "joins",
+         "sourceName",
+         "relationship",
+      ]) {
+         expect(description).toContain(term);
       }
    });
 

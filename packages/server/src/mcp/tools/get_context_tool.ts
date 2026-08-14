@@ -52,6 +52,74 @@ interface ResultEntity {
    score?: number;
 }
 
+/**
+ * Caps on doc text carried as CONTEXT rather than as a result. A source's own
+ * doc arrives in full when the source is itself a hit; these caps apply only
+ * to the copy that rides along with a field hit, where the point is to deliver
+ * the grain caveat, not to reproduce the model file.
+ */
+export const SOURCE_DOC_MAX_CHARS = 500;
+export const JOIN_DOC_MAX_CHARS = 200;
+
+/** A join as reported in source context: enough to write the traversal. */
+interface SourceContextJoin {
+   name: string;
+   relationship: Relationship;
+   doc?: string;
+}
+
+/**
+ * The parent-source context for one source represented in `results`.
+ *
+ * A field hit alone tells an agent nothing about the grain, population rule,
+ * or reporting convention its source carries, because a source's `#(doc)` only
+ * reached the agent when the source itself independently cleared the relevance
+ * floor for that query. That made whether guidance arrived a function of query
+ * phrasing. Every source behind a result now reports its doc and its complete
+ * join list exactly once per response.
+ */
+interface SourceContextEntry {
+   name: string;
+   modelPath: string;
+   /** Truncated to SOURCE_DOC_MAX_CHARS; the model file has the full text. */
+   doc: string;
+   /**
+    * Every join the source declares, not just retrieved ones. An empty array
+    * is therefore an authoritative "this source declares no joins", which is
+    * what an agent needs to stop probing for one and write it inline.
+    */
+   joins: SourceContextJoin[];
+}
+
+/**
+ * The source-context entries for a result set: one per distinct source behind
+ * a result, in the order those sources first appear, so the most relevant
+ * source's guidance reads first. Keyed on the sources present rather than on
+ * "the first hit", so re-ranking never moves which entry carries what.
+ */
+function contextForResults(
+   results: ResultEntity[],
+   sourceContext: Map<string, SourceContextEntry>,
+): SourceContextEntry[] {
+   const seen = new Set<string>();
+   const entries: SourceContextEntry[] = [];
+   for (const r of results) {
+      if (!r.source || seen.has(r.source)) continue;
+      seen.add(r.source);
+      const entry = sourceContext.get(r.source);
+      if (entry) entries.push(entry);
+   }
+   return entries;
+}
+
+/** Cut over-long context text on a word boundary, marking that it was cut. */
+function truncateDoc(doc: string, max: number): string {
+   if (doc.length <= max) return doc;
+   const cut = doc.slice(0, max);
+   const lastSpace = cut.lastIndexOf(" ");
+   return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
 const getContextShape = {
    environmentName: z
       .string()
@@ -242,6 +310,41 @@ interface PackageIndex {
    byId: Map<string, Entity>;
    index: lunr.Index;
    entityCount: number;
+   /** Per-source context, keyed by source name. Built once with the index. */
+   sourceContext: Map<string, SourceContextEntry>;
+}
+
+/**
+ * Derive per-source context from the collected entities: the source's own doc
+ * and every join declared on it. Built once per package alongside the index,
+ * so attaching it to a response costs a lookup rather than a model walk.
+ */
+function buildSourceContext(
+   entities: Entity[],
+): Map<string, SourceContextEntry> {
+   const context = new Map<string, SourceContextEntry>();
+   for (const e of entities) {
+      if (e.kind !== "source") continue;
+      context.set(e.name, {
+         name: e.name,
+         modelPath: e.modelPath,
+         doc: truncateDoc(e.doc, SOURCE_DOC_MAX_CHARS),
+         joins: [],
+      });
+   }
+   for (const e of entities) {
+      if (e.kind !== "join" || !e.relationship) continue;
+      // A join declared on a source the collector never emitted (defensive:
+      // every join reaches us through its source) has nowhere to hang.
+      const parent = e.source ? context.get(e.source) : undefined;
+      if (!parent) continue;
+      parent.joins.push({
+         name: e.name,
+         relationship: e.relationship,
+         ...(e.doc ? { doc: truncateDoc(e.doc, JOIN_DOC_MAX_CHARS) } : {}),
+      });
+   }
+   return context;
 }
 
 // Cache the built entity index per Package instance. environment.getPackage()
@@ -284,6 +387,7 @@ async function getPackageIndex(
       byId,
       index,
       entityCount: entities.length,
+      sourceContext: buildSourceContext(entities),
    };
    indexCache.set(pkg, built);
    logger.debug("[MCP Tool getContext] Built and cached entity index", {
@@ -293,24 +397,35 @@ async function getPackageIndex(
    return built;
 }
 
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in what the model defines, not a guess. Start here when you do not know those names.
+/**
+ * Kept under the truncation budget pinned by server.protocol.spec.ts: a client
+ * was observed cutting this description off mid-sentence, and a tail cut takes
+ * whatever is last. So the contract rules an agent cannot self-correct come
+ * first and the reference material last, and the reference stays terse to buy
+ * room for it. Full prose belongs in docs/ai-agents.md, not here.
+ */
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in names the model actually defines. Start here when you do not know the environment, package, or model names.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
 - Start broad and narrow down: environments, then packages, then sources, then a query.
 - An error, stale, or note field means the data did not load or predates the files: read it before trusting a number.
+- A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probing for one.
+- Read a source's doc before querying it: it carries grain and population rules its fields do not.
 
 ## Parameters
-All optional; supply what you know. Each combination answers at its own level.
-- none: lists the environments, each with its package names.
-- environmentName: lists that environment's packages, with descriptions.
-- + packageName: lists that package's sources.
-- + query: a plain-English description of what you need; returns the most relevant sources, views, queries, joins, and dimension/measure fields.
-- sourceName: narrows to one source. Without a query it lists that source and its fields, views and queries, led by the source's own row, so [] means no such source. With a query it ranks within that source, so [] means nothing matched, not a missing source.
-- limit: caps results (max 50). Retrieval defaults to 10; listing levels return all unless set. The drill-down's source row counts.
+All optional; supply what you know.
+- none: the environments and their package names.
+- environmentName: that environment's packages.
+- + packageName: that package's sources, each with its joins.
+- + query: what you need, in plain English; returns the most relevant sources, views, named queries, joins and fields.
+- sourceName: drill down into one source. Without a query it lists that source with its fields, views and queries, so [] means no such source; with a query it ranks within that source, so [] means nothing matched. Its doc and joins always arrive in sources.
+- limit: caps results (max 50; retrieval defaults to 10). Listing levels return all unless set.
 
 ## Response
-A JSON object with a results array. Each entity has kind (source / view / query / dimension / measure / join), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map onto malloy_executeQuery; pass a view or query as queryName with sourceName. A join carries a relationship ("one", "many", "cross"), is traversed as joinName.fieldName, and its source is the source that declares it. With an embedding provider, retrieval is ranked semantically: the payload carries a retrieval field ("semantic", or "lexical" if it is down) plus a per-entity score. With no provider both are absent, not an error.
+results[]: kind (source / view / query / dimension / measure / join), name, source, modelPath, doc. These map onto malloy_executeQuery; pass a view or named query as queryName with sourceName. A join adds relationship ("one"/"many"/"cross") and is traversed as joinName.fieldName.
+sources[]: one per source behind a result, with its doc (may be truncated) and complete joins.
+With an embedding provider, ranking is semantic and the payload adds retrieval ("semantic", or "lexical" when unavailable) plus a per-entity score.
 
 ## Worked example
 { "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
@@ -496,7 +611,7 @@ export function registerGetContextTool(
             );
          }
 
-         const { byId, index } = pkgIndex;
+         const { byId, index, sourceContext } = pkgIndex;
          const uri = buildMalloyUri(
             { environment: environmentName, package: packageName },
             "get-context",
@@ -570,6 +685,10 @@ export function registerGetContextTool(
                   packageName,
                   modelPath: e.modelPath,
                   doc: e.doc,
+                  // The overview is where an agent decides how to combine
+                  // sources, so each one states its relationships here rather
+                  // than making that a second call. Empty means none declared.
+                  joins: sourceContext.get(e.name)?.joins ?? [],
                }));
             // An empty enumeration is ambiguous to an agent: "no data here" and
             // "the package exposes nothing" look identical. The package DID
@@ -679,9 +798,11 @@ export function registerGetContextTool(
          }
 
          if (semanticResults !== undefined) {
+            const sources = contextForResults(semanticResults, sourceContext);
             return jsonResource(uri, {
                retrieval: "semantic",
                results: semanticResults,
+               ...(sources.length > 0 ? { sources } : {}),
                ...noteFor(),
             });
          }
@@ -715,11 +836,13 @@ export function registerGetContextTool(
                ...(e.relationship ? { relationship: e.relationship } : {}),
             }));
 
+         const sources = contextForResults(results, sourceContext);
+         const context = sources.length > 0 ? { sources } : {};
          return jsonResource(
             uri,
             configured
-               ? { retrieval: "lexical", results, ...noteFor() }
-               : { results, ...noteFor() },
+               ? { retrieval: "lexical", results, ...context, ...noteFor() }
+               : { results, ...context, ...noteFor() },
          );
       },
    );
