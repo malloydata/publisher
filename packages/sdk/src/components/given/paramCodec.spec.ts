@@ -64,6 +64,13 @@ describe("pickedDayToUtc", () => {
       // crosses midnight, so at UTC they are vacuous and CI runs at UTC. This
       // one holds the invariant everywhere: the fields that went in are the UTC
       // fields that come out.
+      //
+      // Measured, rather than assumed, by reverting `pickedDayToUtc` to the
+      // `toDate()` it replaced and counting failures in this file: UTC 3,
+      // Asia/Kolkata 3, America/Los_Angeles 4, Australia/Sydney 5. So the zone
+      // tests do discriminate (Sydney catches two that a UTC run cannot), and a
+      // half-hour offset adds nothing over UTC at these hours: the useful pair
+      // is one zone ahead of UTC and one behind.
       const day = { year: () => 2024, month: () => 0, date: () => 5 };
       const stored = pickedDayToUtc(day);
       expect([
