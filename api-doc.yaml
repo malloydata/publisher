@@ -3682,12 +3682,16 @@ components:
         `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
         `query_id`, `version`) is applied on top and cannot be overwritten — it
         is what the server is actually doing, and a caller must not be able to
-        relabel it. Those names are also RESERVED against a declaration: a
-        connection, package, model file or source declaring one has it DROPPED
-        rather than attached. Context only overwrites a name it has a value for,
-        and a served query has no `source`, `trigger` or `run_id` — so a declared
-        one would otherwise ride interactive traffic and read, in the backend's
-        own history, exactly like a build. Put no secrets or personal data here: a tag is visible to
+        relabel it. Those names are also RESERVED against a MODEL-SIDE
+        declaration: a package block, a model file or a `#@ persist` annotation
+        declaring one has it DROPPED rather than attached. Context only
+        overwrites a name it has a value for, and a served query has no
+        `source`, `trigger` or `run_id` — so a declared one would otherwise ride
+        interactive traffic and read, in the backend's own history, exactly like
+        a build. A connection default and a per-request bag are not covered: a
+        request setting `queryClass` is a caller describing its own call, while a
+        model-side declaration rides every query against that source, including
+        ones its author never sees. Put no secrets or personal data here: a tag is visible to
         anyone who can read the backend's query history, and on a backend with no
         native tag mechanism it is visible in the statement text.
 

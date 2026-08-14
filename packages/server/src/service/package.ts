@@ -891,6 +891,15 @@ export class Package {
             sources: this.buildPlan?.sources
                ? Object.values(this.buildPlan.sources)
                : [],
+            // Every model file's own `##` declaration, including files that
+            // persist nothing: the declaration rides queries served from them,
+            // so it needs checking whether or not a build ever reads it.
+            modelDeclarations: [...this.models.values()].flatMap((model) => {
+               const queryMetadata = model.getDeclaredQueryMetadata();
+               return queryMetadata
+                  ? [{ modelPath: model.getPath(), queryMetadata }]
+                  : [];
+            }),
             manifestWarnings: this.manifestWarnings,
          }),
       ];

@@ -41,6 +41,17 @@ export interface MaterializationConfigInput {
    /** The compiled plan's sources, carrying each one's RESOLVED metadata. */
    sources?: WirePersistSourcePlan[];
    /**
+    * Each model file's OWN `## materialization.queryMetadata.*`, keyed by path.
+    *
+    * Separate from {@link sources} because the two answer different questions. A
+    * source carries its RESOLVED bag, so a model-file property appears there
+    * attributed to the source and labelled `#@ persist queryMetadata` — which
+    * sends an author to a line that does not contain it. And a model file that
+    * persists nothing has no source to appear under at all, while still
+    * contributing a layer to every query served from it.
+    */
+   modelDeclarations?: { modelPath: string; queryMetadata: QueryMetadata }[];
+   /**
     * Deprecations the manifest parse tolerated (e.g. a root-level `scope`), which
     * a load keeps working but a publish should report.
     */
@@ -99,6 +110,16 @@ export function materializationConfigWarnings(
          input.packageMaterialization?.queryMetadata,
       ),
    );
+
+   for (const declaration of input.modelDeclarations ?? []) {
+      warnings.push(
+         ...metadataWarnings(
+            "## materialization.queryMetadata",
+            declaration.queryMetadata,
+            declaration.modelPath,
+         ),
+      );
+   }
 
    for (const source of input.sources ?? []) {
       warnings.push(
