@@ -1134,11 +1134,22 @@ async function runOneRowProbeOrThrow(
  * insertion order — not guaranteed to put a clean entry point before a
  * renamed/excepted/accepted one:
  *  1. Compile+classify every entry. A `rejected` classification throws
- *     immediately, unconditionally — the compiled condition's SHAPE (an
- *     `and`/`or`/`inGiven` tree) does not depend on which entry point it was
- *     probed from, only on whether it compiles there at all, so a grammar
- *     violation is invalid wherever it is found, full stop. `given_only`
- *     and `row_level` both count as this entry SUCCEEDING — its own
+ *     immediately UNLESS this entry carries no `#(authorize)` note of its
+ *     own (`options.authorizeOwnNotes` empty for `sourceName` — a
+ *     `query_source` struct, which has no `annotations` whatsoever, is
+ *     always this case): the probed text there was synthesized by
+ *     concatenating ancestor and composite-resolved base gates
+ *     (`effectiveAncestorGateExprs`), so a grammar violation in it is not an
+ *     authoring mistake AT THIS entry point, and it is warned via
+ *     `onRowLevelGateUnexpressible` instead of failing the load — the same
+ *     escape pass 2 uses for a note-less PENDING failure, since
+ *     `Model.resolveGateShape` denies every request against this shape
+ *     regardless. An entry that DOES carry its own note still throws:
+ *     the compiled condition's SHAPE (an `and`/`or`/`inGiven` tree) does not
+ *     depend on which entry point it was probed from, only on whether it
+ *     compiles there at all, so a grammar violation in an author's OWN gate
+ *     is invalid wherever it is found, full stop. `given_only` and
+ *     `row_level` both count as this entry SUCCEEDING — its own
  *     `#(authorize)`-tagged note objects (`options.authorizeOwnNotes`, from
  *     `extractSourcesFromModelDef`) are added to a set of "proven" note
  *     objects. A compile failure is recorded as PENDING (source name, exprs,
@@ -1222,6 +1233,26 @@ export async function validateAuthorizeProbes(
       }
       if (classification.shape === "rejected") {
          options.onRowLevelGateRejected?.(classification.cause);
+         // A source-level gate concatenates its own ancestor gates with its
+         // composite-resolved base gates into one probed expression list
+         // (`effectiveAncestorGateExprs`) before it ever reaches this
+         // function, so the text rejected here was not necessarily authored
+         // by `sourceName` itself. When this entry carries no annotation of
+         // its own at all — a `query_source` struct has no `annotations` by
+         // construction — the rejection cannot be blamed on an author sitting
+         // at this entry point; it is exactly the synthesized-predicate case,
+         // not a hand-written bad gate. Route it the same way pass 2 already
+         // routes a note-less compile failure: warn and deny at runtime
+         // (`Model.resolveGateShape` still refuses every request against this
+         // shape) instead of failing the whole load.
+         const ownNotes = ownNotesOf.get(sourceName) ?? [];
+         if (ownNotes.length === 0) {
+            options.onRowLevelGateUnexpressible?.(
+               sourceName,
+               classification.detail,
+            );
+            continue;
+         }
          throw new ModelCompilationError({
             message:
                `Invalid #(authorize) annotation on source "${sourceName}" ` +

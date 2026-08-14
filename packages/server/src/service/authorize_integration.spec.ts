@@ -1368,6 +1368,91 @@ source: combo_locked_first is compose(locked_src, open_src)
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
+
+   // `effectiveAncestorGateExprs` concatenates a query-source's base gates
+   // (`combo`'s own composite gate) and its composite-resolved base gates
+   // (`locked_src`'s row-level gate) into ONE probed expression list for
+   // `qs`, which — as a `query_source` — carries no `#(authorize)` note of
+   // its own. Neither gate is invalid standing alone (see the tests just
+   // above and `row-level authorize — grammar` in
+   // `row_level_authorize.integration.spec.ts`), but the CONCATENATION has
+   // field usage (from `region`) and so is walked under the row-level
+   // grammar, where `combo`'s `not (...)` is refused. `validateAuthorizeProbes`
+   // pass 1 used to throw on that rejection unconditionally, which emptied
+   // the WHOLE model's source list — not just `qs`'s — on load.
+   const COMPOSITE_QS_MODEL = `##! experimental.composite_sources
+##! experimental.givens
+
+given:
+  ROLE :: string
+  REGION :: string
+
+source: open_src is duckdb.table('customers') extend {
+  measure: c is count()
+  dimension: open_flag is 1
+}
+
+#(authorize) "region = $REGION"
+source: locked_src is duckdb.table('customers') extend {
+  measure: c is count()
+  dimension: locked_flag is 1
+}
+
+#(authorize) "not ($ROLE = 'blocked')"
+source: combo is compose(open_src, locked_src)
+
+source: qs is combo -> { group_by: locked_flag, region, name }
+`;
+
+   it("CRITICAL — a composite gate concatenated with a member's row-level gate onto a query_source loads, with every other source intact", async () => {
+      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "c_composite_qs.malloy",
+         getConnections(),
+      );
+      expect(model.getNotebookError()).toBeUndefined();
+      const names = model.getSources()?.map((s) => s.name);
+      expect(names).toContain("open_src");
+      expect(names).toContain("locked_src");
+      expect(names).toContain("combo");
+      expect(names).toContain("qs");
+   });
+
+   it("the composite's OWN gate — untouched by the relaxation above — still admits a caller it allows and denies one it excludes", async () => {
+      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
+      const { result } = await runGated(
+         "c_composite_qs.malloy",
+         "run: combo -> { aggregate: c is count() }",
+         { ROLE: "analyst", REGION: "us-west" },
+      );
+      expect(result.data).toBeDefined();
+      await expect(
+         runGated(
+            "c_composite_qs.malloy",
+            "run: combo -> { aggregate: c is count() }",
+            { ROLE: "blocked", REGION: "us-west" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("the query_source itself denies EVERY caller once its concatenated gate is unexpressible — the load-time relaxation trades an aborted load for a request-time fail-closed deny, never a leak", async () => {
+      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
+      const query = "run: qs -> { group_by: region, name }";
+      await expect(
+         runGated("c_composite_qs.malloy", query, {
+            ROLE: "analyst",
+            REGION: "us-west",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await expect(
+         runGated("c_composite_qs.malloy", query, {
+            ROLE: "blocked",
+            REGION: "us-west",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
 });
 
 // The sharpest consequence of entry-point-only evaluation, pinned deliberately
