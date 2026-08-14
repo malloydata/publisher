@@ -219,12 +219,16 @@ The `include { … private: * }` layer is what controls which base columns each 
 
 ## Enforcement
 
-The gate runs, fail-closed, on every query entry point — **before** any filter injection or compilation, so a denial is a clean 403 and never masked by a later error. There is one documented exception, [the authorize bypass](#authorize-bypass-for-trusted-data-management-callers), which applies to `POST /…/query` only:
+The gate runs, fail-closed, on every query entry point — **before** any filter injection or compilation, so a denial is never masked by a later error.
+
+**What a denial looks like on the wire depends on the kind of gate, and the two differ.** A given-only gate is a whole-source decision and denies with a clean **403**, as it always has. A [row-level gate](#row-level-gates) is a filter, so a caller it admits nowhere gets **200 with zero rows** — the request succeeds and returns nothing. Both are denials and neither returns a row the caller may not read, but only one is visible as a status code. Anything keying on 403 to mean "denied" — an alert, a retry rule, a client branch — will not see a row-level denial at all. The table below reads `deny` in that sense: 403 for a whole-source gate, an empty result for a row-level one.
+
+There is one documented exception, [the authorize bypass](#authorize-bypass-for-trusted-data-management-callers), which applies to `POST /…/query` only:
 
 | Entry point | Behavior |
 | --- | --- |
-| `POST /…/query` | Gate the run-target source; deny → 403. Skipped entirely when the request carries `x-publisher-bypass-authorize: true`. |
-| `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is 403 there regardless. Use the `/environments/…` route. |
+| `POST /…/query` | Gate the run-target source; deny → 403 (whole-source) or zero rows (row-level). Skipped entirely when the request carries `x-publisher-bypass-authorize: true`. |
+| `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is denied there regardless. Use the `/environments/…` route. |
 | Notebook cell `GET` | Gate each cell that runs a query. Accepts no bypass. |
 | `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling — so compile errors can't be used as a schema oracle — plus a compiled-source backstop). Accepts no bypass. |
 | MCP `malloy_executeQuery` | Routes through the query path; a denial surfaces as `isError: true` naming the source. Sends no bypass. |
