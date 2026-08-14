@@ -6,9 +6,16 @@
 
 All three are artifacts that live _inside a package_, ship with the model, and run on the same
 engine: the same governed query endpoints, the same [givens](givens.md), the same
-`@malloydata/render` renderer, the same authorize gates and query caps. Nothing about correctness
-or governance changes when you pick one over another. What changes is the **reading mode** you're
-authoring for, and **how much control you take on**.
+`@malloydata/render` renderer, the same authorize gates and query caps. Ask any of them the same
+question and the numbers come back the same. What changes is the **reading mode** you're authoring
+for, **how much control you take on**, and one thing that is easy to miss:
+
+> **An HTML data app runs author-written JavaScript with the viewer's authority. Notebooks and
+> dashboards execute no author code.** That is the one axis on which the three are not
+> interchangeable, and it is why the declarative two are reviewable in a pull request and safely
+> agent-authorable. [security-posture.md](security-posture.md) spells out what it means: page
+> JavaScript can call any same-origin endpoint directly, `Publisher.query` is a convenience wrapper
+> rather than a capability boundary, and those documents carry no `script-src`.
 
 The one-line version:
 
@@ -23,7 +30,7 @@ The one-line version:
 | **What it is**       | A `.malloynb` file: markdown prose + live query cells                                                          | A `dashboards/*.malloy` file: a tagged Malloy query that _is_ the dashboard                                     | A `public/` directory of HTML/CSS/JS, served as-is                                                             |
 | **Reading mode**     | Narrative: a data story, read top to bottom in author order                                                    | Operational: one grid behind a filter row, scanned at a glance                                                  | Whatever you design                                                                                            |
 | **Layout**           | Vertical document flow                                                                                         | Column grid via tags (`# colspan`, `# break`)                                                                   | Fully custom                                                                                                   |
-| **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: Malloy + layout tags (`# artifact`, `# dashboard {columns}`)                                         | Code: HTML/CSS/JS, no build step. Expect an AI agent to write it, guided by the `malloy-html-data-apps` skills |
+| **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: Malloy + layout tags (`# artifact`, `# dashboard {columns}`)                                         | Code: HTML/CSS/JS, hand-written or agent-written, no build step. The `malloy-html-data-apps` skills guide an agent through it |
 | **Portability**      | Malloy's notebook format: the same file the VS Code extension authors and runs                                 | Plain Malloy, byte-compatible with [Malloyyo](https://github.com/malloydata/malloyyo)                           | Standard web page; the `Publisher.*` runtime is Publisher-specific                                             |
 | **Filters**          | Auto-rendered from the givens the file imports: select, slider, date picker                                    | Auto-rendered from the givens the query references: select, slider, date picker                                 | You build the controls and pass givens through `Publisher.query` yourself                                      |
 | **Interactivity**    | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                       | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                        | Anything the web platform can do                                                                               |
@@ -119,10 +126,10 @@ KPIs) filtered live by whoever's looking. If the reader scans rather than reads,
 ## HTML data apps: the product
 
 An HTML data app is a custom page in the package's `public/` directory, served by Publisher with
-no build step, calling `Publisher.query` for data. **The expected authoring path is an AI agent,
-not hand-written code**: the bundled skills (`malloy-html-data-apps`, plus its runtime and
-embedding companions) teach an agent the page structure, the `Publisher.*` runtime, filter
-wiring, and error handling. Describe the app you want and iterate on the result. Guide:
+no build step, calling `Publisher.query` for data. You write the HTML, CSS and JavaScript, and an
+AI agent is a well-supported way to write it: the bundled skills (`malloy-html-data-apps`, plus its
+runtime and embedding companions) teach an agent the page structure, the `Publisher.*` runtime,
+filter wiring, and error handling. Guide:
 [html-data-apps.md](html-data-apps.md). Try
 `http://localhost:4000/environments/examples/packages/storefront/`.
 
@@ -134,7 +141,10 @@ wiring, and error handling. Describe the app you want and iterate on the result.
   no-build loop (edit the file, reload; live-reload under watch mode) makes iteration fast.
 - The strongest embedding story today: `Publisher.embed` drops it into any host page with
   auto-resizing and cross-origin support.
-- Still governed: every byte of data flows through the same query API as everything else.
+- Governed the same way at the data layer: `#(authorize)` gates, given-scoped filtering and query
+  caps all still apply, because the page asks the same endpoints every other surface asks. What it
+  does **not** inherit is the no-author-code property; see
+  [security-posture.md](security-posture.md).
 
 **Cons**
 

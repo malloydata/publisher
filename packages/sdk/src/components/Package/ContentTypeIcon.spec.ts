@@ -45,7 +45,8 @@ const GRANDFATHERED: ContentType[] = ["report"];
 
 describe("CONTENT_TINT contrast", () => {
    /**
-    * Every tint sits behind a white glyph at 32px, so it has to clear 3:1
+    * Every tint fills a 32px backplate behind an 18px white glyph, so it has
+    * to clear 3:1
     * against white, WCAG's minimum for a graphical object. Asserted rather than
     * written down, because the failure is invisible: a lighter colour looks fine
     * in a screenshot and the icon simply stops being readable.

@@ -66,15 +66,27 @@ export default function ContentTypeIcon({
             ...sx,
          }}
       >
-         {type === "report" && <FileChartPath />}
-         {type === "model" && <BoxTopPath />}
-         {type === "data" && <TablePath />}
-         {type === "materialization" && <StackPath />}
-         {type === "dataApp" && <BrowserWindowPath />}
-         {type === "dashboard" && <DashboardGridPath />}
+         {CONTENT_GLYPH[type]()}
       </SvgIcon>
    );
 }
+
+/**
+ * The glyph for each content type, a `Record` for the same reason
+ * `CONTENT_TINT` is one. This was a chain of `type === "x" && <Path />`, which
+ * type-checks with no arm for a new content type and renders an empty `<svg>`
+ * on a coloured backplate: the colour half of the signal failed loudly at
+ * compile time and the glyph half failed silently at runtime. Two halves of one
+ * signal should fail the same way.
+ */
+const CONTENT_GLYPH: Record<ContentType, () => React.ReactElement> = {
+   report: FileChartPath,
+   model: BoxTopPath,
+   data: TablePath,
+   materialization: StackPath,
+   dataApp: BrowserWindowPath,
+   dashboard: DashboardGridPath,
+};
 
 /** File outline with a folded top-right corner and three chart bars inside. */
 function FileChartPath() {

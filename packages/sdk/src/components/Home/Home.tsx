@@ -33,8 +33,8 @@ interface HomeProps {
 
 /**
  * What this server can do, in the order someone meets it: exploring first, then
- * the three artifacts a package can hold, then the endpoint agents come in
- * through and the rules that govern all of it. Anything that does not earn a
+ * the three analytics surfaces a package can hold, then the endpoint agents come
+ * in through and the rules that govern all of it. Anything that does not earn a
  * card is named in the closing paragraph rather than crowding this list.
  */
 const FEATURES: Array<{ title: string; body: string; href: string }> = [
@@ -45,7 +45,7 @@ const FEATURES: Array<{ title: string; body: string; href: string }> = [
    },
    {
       title: "Notebooks",
-      body: "A data story: markdown and live query cells in one file, versioned beside the model it reads, behind a panel of filter controls the model defines.",
+      body: "A data story: markdown and live query cells in one file, versioned beside the model it reads. Any givens it imports become a panel of filter controls above the cells.",
       href: DOC_LINKS.surfaces,
    },
    {
@@ -81,7 +81,11 @@ function InlineLink({
    children,
 }: {
    href: string;
-   /** The API spec is served by this same server, so it stays in the tab. */
+   /**
+    * Set false for a target on the Publisher server rather than off-site. That
+    * is usually this page's origin but need not be, so it is a statement about
+    * where the link points rather than a guarantee of same-origin.
+    */
    external?: boolean;
    children: React.ReactNode;
 }) {
@@ -143,6 +147,12 @@ export default function Home({ onClickEnvironment }: HomeProps) {
             </Typography>
          </Box>
 
+         {/* Two columns at every width above the phone breakpoint, and
+             deliberately not the three the environment grid below uses: these
+             bodies are prose rather than a name. Measured at 1440px, two across
+             gives every card a 410px column and a uniform three lines; three
+             across gives 284px, four lines, and one card at five, so the row
+             heights stop matching. */}
          <Grid container spacing={4} sx={{ mb: 5 }}>
             {FEATURES.map((feature) => (
                <Grid size={{ xs: 12, sm: 6 }} key={feature.title}>
@@ -255,10 +265,11 @@ export default function Home({ onClickEnvironment }: HomeProps) {
             sx={{ maxWidth: 720, lineHeight: 1.6 }}
          >
             {/* Six of the ten types in the api-doc.yaml enum. connections.md
-                gives eight of them prose; the two named nowhere are Databricks
-                and MotherDuck. "And more" rather than a full list, because a
-                list that reads as complete while omitting Databricks is worse
-                than a short one that says it is short. */}
+                gives eight of them prose and never names Databricks or
+                MotherDuck, though the docs site does cover MotherDuck. "And
+                more" rather than a full list, because a list that reads as
+                complete while omitting Databricks is worse than a short one
+                that says it is short. */}
             Also here:{" "}
             <InlineLink href={DOC_LINKS.connections}>connections</InlineLink> to
             BigQuery, Snowflake, Postgres, MySQL, Trino, DuckDB and more;{" "}

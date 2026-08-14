@@ -214,7 +214,7 @@ The `Given` control contract shipped in 0.0.242 as a schema with no reader: the 
 ## [Unreleased]: the Console says what this server can do
 
 The home page described a three-feature Publisher, the package page gave four of its six kinds of
-content the same colour, and six features documented only in `docs/` had nothing linking to them.
+content the same colour, and Publisher's in-repo reference docs had nothing linking to them.
 
 ### What changed
 
@@ -224,7 +224,8 @@ content the same colour, and six features documented only in `docs/` had nothing
   linked the publishing setup guide. A closing paragraph names connections, materialized tables and
   the REST API, which have docs but do not earn a card.
 - **`DOC_LINKS` gains a `REPO_DOCS` block**, six links to Publisher's own reference docs, which live
-  in the repo rather than on the docs site and for some features are the only write-up there is. A
+  in the repo rather than on the docs site and for several features are the only write-up there is.
+  A
   spec checks each target exists, so a doc renamed or deleted fails the test suite instead of shipping
   a 404 on the home page.
 - **`docs/choosing-a-surface.md`**, a comparison of notebooks, dashboards and HTML data apps with a
@@ -235,8 +236,8 @@ content the same colour, and six features documented only in `docs/` had nothing
   kinds out of six. The row now derives both from one `type` prop, which is why it cannot drift
   again. The three added colours each clear WCAG's 3:1 against white, measured, since they sit behind
   a white glyph.
-- **`Add Connection` is a contained button with an icon**, matching the add-triggers on the
-  environment and package screens. It was the only one of the three still outlined.
+- **`Add Connection` is a contained button with an icon**, matching the add-triggers on the home
+  and environment screens. It was the only one of the three still outlined.
 
 ### For SDK consumers
 
