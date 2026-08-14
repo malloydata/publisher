@@ -2530,10 +2530,12 @@ components:
           description:
             Configured packages and environments that did not load, and why. A
             load failure is not fatal to the server, so operationalState stays
-            serving and the affected packages are simply absent from
-            environments; this is the only place that difference is reported, so
-            check it before treating a serving server as complete. Present only
-            when something failed to load, so a healthy server omits the field.
+            serving and the affected packages are absent from environments,
+            unless the entry carries stale = true, in which case the package is
+            still listed and still serving its last successful compile. This is
+            the only place either difference is reported, so check it before
+            treating a serving server as complete or current. Present only when
+            something failed, so a healthy server omits the field.
           items:
             type: object
             properties:
@@ -2551,6 +2553,24 @@ components:
               message:
                 type: string
                 description: Why it did not load.
+              stale:
+                type: boolean
+                description:
+                  When true, the package did load earlier and is still serving
+                  that last successful compile; the message is why its most
+                  recent reload (a watch-mode save, malloy_reloadPackage, or
+                  reload=true) failed. The served model is older than the files
+                  on disk. Absent on ordinary load failures. This array is the
+                  only place staleness is reported, because the package's entry
+                  under environments, and its own package resource, both read
+                  SERVING; join on the package name here to tell a current
+                  package from a stale one.
+              failedAt:
+                type: string
+                format: date-time
+                description:
+                  When the failed reload happened. Only present alongside
+                  stale = true.
         frozenConfig:
           type: boolean
           description:
