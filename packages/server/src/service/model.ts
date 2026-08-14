@@ -1919,6 +1919,32 @@ export class Model {
       throw new NotQueryableError("Query target is not queryable.");
    }
 
+   /**
+    * Boundary re-check for /compile's authorize-denial conversion (see
+    * `denyHiddenAsNotQueryable` in service/environment.ts). /compile itself is
+    * exempt from the boundary; this runs only AFTER an authorize denial, to
+    * decide whether the 403 would confirm a hidden source exists. It settles
+    * the COMPILED run target — the source Malloy actually executes — because
+    * the early text gate resolves only the first `run:` statement, so
+    * converting on it alone lets a multi-statement decoy
+    * (`run: visible\nrun: hidden_gated`) or a derivation alias keep a 403 that
+    * names the hidden source. Same admission rule as the query surface
+    * (curated, or derives from curated via the submitted text), so the 403 is
+    * masked exactly where the query surface answers 404. No-ops when the
+    * boundary is inert.
+    */
+   public async assertCompiledTargetQueryable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      query?: string,
+   ): Promise<void> {
+      const { mode, exploresDeclared } = this.queryBoundary;
+      if (mode === "all" || !exploresDeclared) return;
+      this.assertQueryBoundaryCompiled(
+         await this.resolveAuthorizeSourceFromRunnable(runnable),
+         query,
+      );
+   }
+
    /** Source names in THIS model's export-curated discovery surface. The
     *  package-wide closure is applied separately and identity-checked (see
     *  {@link isCuratedSource}); it is deliberately not merged in here, so this

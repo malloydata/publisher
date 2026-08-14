@@ -230,13 +230,14 @@ given:
 #(authorize) "$ROLE = 'analyst'"
 source: hidden_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
          );
-         // Listed file with a gated source that IS exported (visible).
+         // Listed file with a gated source that IS exported (visible). It also
+         // imports the hidden file, so the evasion probes below can resolve
+         // hidden_gated in a LISTED model's namespace; the import does not
+         // export it, so it stays boundary-hidden.
          await fs.writeFile(
             path.join(stagingPath, "index.malloy"),
             `##! experimental.givens
-
-given:
-  ROLE :: string
+import "secret.malloy"
 
 #(authorize) "$ROLE = 'analyst'"
 source: visible_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
@@ -282,6 +283,53 @@ export { customers, visible_gated }`,
             "pkg",
             "index.malloy",
             "run: visible_gated -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("a multi-statement decoy cannot keep the 403 that names the hidden source", async () => {
+      // The early text gate resolves only the FIRST run: statement (the
+      // curated decoy), so converting the denial on surface syntax alone let
+      // this probe through with `Access denied for source "hidden_gated"` —
+      // the verbatim existence proof the mask exists to withhold. The
+      // conversion settles the COMPILED run target instead.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "run: customers -> { aggregate: c }\nrun: hidden_gated -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("a derivation alias over the hidden source is masked too", async () => {
+      // `probe` is the caller's own alias, so the denial names it rather than
+      // hidden_gated — but a 403 here still separates exists-and-gated from
+      // nonexistent (which fails as a compile error), so it enumerates the
+      // hidden namespace all the same. The compiled-target conversion walks
+      // the same derivation rule as the query surface: probe derives from a
+      // non-curated source, so the query surface answers 404, and so must this.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "source: probe is hidden_gated extend {}\nrun: probe -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("a derivation alias over the VISIBLE gated source keeps its 403", async () => {
+      // The guard against over-tightening: deriving from a curated gated
+      // source is admitted by the query surface (derivesFromCurated), so the
+      // informative denial must survive the conversion.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "source: mine is visible_gated extend {}\nrun: mine -> { aggregate: c }",
             false,
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);

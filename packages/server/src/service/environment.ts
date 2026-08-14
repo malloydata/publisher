@@ -53,7 +53,7 @@ import {
    splitManifestEntries,
    type FetchedManifest,
 } from "./manifest_loader";
-import { ApiConnection, Model } from "./model";
+import { ApiConnection } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 
@@ -178,15 +178,20 @@ export function resetAdmissionTelemetryForTesting(): void {
  * informative 403.
  */
 async function denyHiddenAsNotQueryable(
-   gateModel: { assertQueryBoundaryEarly: Model["assertQueryBoundaryEarly"] },
-   source: string,
+   convert: () => void | Promise<void>,
    gate: () => Promise<void>,
 ): Promise<void> {
    try {
       await gate();
    } catch (error) {
       if (error instanceof AccessDeniedError) {
-         gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
+         // The conversion must resolve the target at least as well as the gate
+         // that denied it: the pre-compile text gate converts on surface
+         // syntax, but the compiled gate must convert on the COMPILED run
+         // target, or a multi-statement decoy / derivation alias keeps a 403
+         // that names the hidden source. Each call site passes the matching
+         // boundary check.
+         await convert();
       }
       throw error;
    }
@@ -564,8 +569,15 @@ export class Environment {
             // non-exported source's schema (and, with includeSql, SQL) —
             // sources whose confidentiality matters are gated by
             // `#(authorize)`, which still applies here in full.
-            await denyHiddenAsNotQueryable(gateModel, source, () =>
-               gateModel.assertAuthorizedForText(source, givens ?? {}),
+            await denyHiddenAsNotQueryable(
+               () => {
+                  gateModel.assertQueryBoundaryEarly(
+                     undefined,
+                     undefined,
+                     source,
+                  );
+               },
+               () => gateModel.assertAuthorizedForText(source, givens ?? {}),
             );
          }
 
@@ -626,11 +638,17 @@ export class Environment {
             // derivation walk it runs are cheap no-ops for an ungated model.
             if (queryMaterializer && gateModel) {
                const materializer = queryMaterializer;
-               await denyHiddenAsNotQueryable(gateModel, source, () =>
-                  gateModel.assertAuthorizedForRunnable(
-                     materializer,
-                     givens ?? {},
-                  ),
+               await denyHiddenAsNotQueryable(
+                  () =>
+                     gateModel.assertCompiledTargetQueryable(
+                        materializer,
+                        source,
+                     ),
+                  () =>
+                     gateModel.assertAuthorizedForRunnable(
+                        materializer,
+                        givens ?? {},
+                     ),
                );
             }
 
