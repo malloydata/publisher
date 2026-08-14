@@ -30,7 +30,7 @@ const appliedCounter = lazyCounter(
 );
 const droppedCounter = lazyCounter(
    "publisher_query_metadata_properties_dropped_total",
-   "Metadata properties dropped while resolving a bag. Label: reason ('invalid_name'|'invalid_value'|'property_cap'|'serialized_cap').",
+   "Metadata properties dropped while resolving a bag. Label: reason ('invalid_name'|'invalid_value'|'reserved_name'|'property_cap'|'serialized_cap').",
 );
 
 /** One query's metadata reached the connector. */

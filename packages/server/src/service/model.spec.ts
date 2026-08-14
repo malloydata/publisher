@@ -1082,6 +1082,8 @@ describe("service/model", () => {
           */
          modelNotes?: string[];
          sourceNotes?: Record<string, string[]>;
+         /** Named queries, for the `queryName` request shape. */
+         queries?: { name: string; sourceName: string }[];
       }) {
          const storageErr = new Error("store table missing");
          const storageRunnable = {
@@ -1155,7 +1157,9 @@ describe("service/model", () => {
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
             } as any,
             undefined,
-            undefined,
+            // queries: how a `queryName` request resolves to its source.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            opts.queries as any,
             undefined,
             undefined,
             undefined,
@@ -1354,10 +1358,42 @@ describe("service/model", () => {
          expect(attached.team).toBe("finance");
       });
 
-      it("resolves the source layer for a query that names no source directly", async () => {
-         // A `queryName` request names exactly one source, indirectly. Passing
-         // the raw `sourceName` param would drop its declared layer — and that is
-         // the dominant REST and MCP call shape, not an edge case.
+      it("resolves the source layer from a named query, which supplies no sourceName", async () => {
+         // The dominant REST and MCP shape: `queryName` alone. `sourceName` is
+         // optional on that branch despite what the request-shape error string
+         // says, so passing the raw param would drop the declared layer for the
+         // call shape most callers use. Resolves through
+         // `queries.find(q => q.name === queryName)?.sourceName`.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            queries: [{ name: "daily_view", sourceName: "daily" }],
+            sourceNotes: {
+               daily: ['#@ persist queryMetadata.tier="gold"\n'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            "daily_view",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-7",
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("gold");
+      });
+
+      it("resolves the source layer from ad-hoc query text", async () => {
+         // The other branch of the same resolution: surface syntax on the run
+         // target, for a request that names nothing at all.
          process.env.PUBLISHER_QUERY_METADATA = "on";
          const { model, liveRun } = routedModel({
             shapeBindings: [binding("daily", "live")],

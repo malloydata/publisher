@@ -3086,9 +3086,11 @@ components:
           description: >-
             The manifest's `materialization.queryMetadata` block, verbatim. Null
             = none declared. The package-level layer of per-query metadata: it
-            applies to every statement the package's sources issue, and a
-            model-file, source or per-request declaration overrides it property
-            by property.
+            applies to every statement the package's sources issue — a build and
+            a served query alike — and a model-file, source or per-request
+            declaration overrides it property by property. Named for
+            materialization historically; it declares what the package's sources
+            ARE, not only how they are built.
 
     Freshness:
       type: object
@@ -3678,9 +3680,14 @@ components:
         `## materialization.queryMetadata.*` < `#@ persist queryMetadata.*` <
         per-request `queryMetadata`. The publisher's own context (`class`,
         `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
-        `query_id`) is applied on top and cannot be overwritten by a declaration
-        — it is what the server is actually doing, and a caller must not be able
-        to relabel it. Put no secrets or personal data here: a tag is visible to
+        `query_id`, `version`) is applied on top and cannot be overwritten — it
+        is what the server is actually doing, and a caller must not be able to
+        relabel it. Those names are also RESERVED against a declaration: a
+        connection, package, model file or source declaring one has it DROPPED
+        rather than attached. Context only overwrites a name it has a value for,
+        and a served query has no `source`, `trigger` or `run_id` — so a declared
+        one would otherwise ride interactive traffic and read, in the backend's
+        own history, exactly like a build. Put no secrets or personal data here: a tag is visible to
         anyone who can read the backend's query history, and on a backend with no
         native tag mechanism it is visible in the statement text.
 
@@ -4994,10 +5001,16 @@ components:
             `## materialization.queryMetadata.*` > package
             `materialization.queryMetadata`). Null = declared at no level. The
             publisher attaches it — merged under its own context — to every
-            statement it issues while building this source, and reports it here so
-            a caller can see how a build will be tagged and tag its own queries
-            the same way. Observability only: excluded from `sourceEntityId`, so
-            editing it never re-addresses the source or orphans its table.
+            statement it issues while building this source AND to every query
+            served from it, and reports it here so a caller can see how the
+            source's traffic will be tagged. Reported as DECLARED, not as
+            attached: a property whose name the server owns (`class`,
+            `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
+            `query_id`, `version`) appears here and is then dropped rather than
+            attached, so copying this bag onto a request verbatim can carry a
+            name the publisher will not accept. Observability only: excluded from
+            `sourceEntityId`, so editing it never re-addresses the source or
+            orphans its table.
         columns:
           type: array
           description: Output schema of the source.

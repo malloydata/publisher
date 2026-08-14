@@ -37,9 +37,11 @@ Publisher attaches its own context to every statement, so attribution needs no m
 | `trigger`, `run_id`      | what started a build, and which run it belongs to (also the run whose tables a drop is retiring) |
 | `query_id`               | identifies this one query; the response hands it back (see below)                                |
 
-Context wins over a declared property of the same name: a caller cannot label its own query as a build, and cannot supply its own `query_id`.
+Context wins over a property of the same name: a _declaration_ cannot label the statements it describes as a build, and nothing can supply its own `query_id`.
 
-The context names are also **reserved against a declaration**. Context only overwrites a name it has a value for, and a served query has no `source`, `trigger` or `run_id` — so a package, model file or source declaring one would otherwise stamp it on interactive traffic, where it reads in the warehouse's own history exactly like a build. A declared context name is dropped and metered (`reason=reserved_name`) rather than applied.
+The context names are also **reserved against a model-side declaration** — a package block, a model file or a `#@ persist` annotation. Context only overwrites a name it has a value for, and a served query has no `source`, `trigger` or `run_id`; without the reservation a declaration of one would stamp it on interactive traffic, where it reads in the warehouse's own history exactly like a build. A declared context name is dropped and metered (`reason=reserved_name`) rather than applied, and reported at publish so it arrives as a message rather than a counter tick.
+
+The connection default and the per-request bag are **not** covered, which is deliberate and pre-existing: a request setting `queryClass` is a caller describing its own call, and narrowing either is a compatibility decision of its own. The reservation covers the layer that describes _someone else's_ statements — a model-side declaration rides every query against that source, including queries its author never sees.
 
 Everything except `query_id` is a property of the unit of work rather than of the individual call, so a repeated query produces the same values. `query_id` is per call by definition, which on a backend with no native tag mechanism makes the statement text unique and so bypasses an exact-text result cache. That is the deliberate cost of being able to find one query again.
 
