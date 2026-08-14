@@ -6,7 +6,7 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { useDrill, type DrillNavigation } from "../drill";
+import { encodeDrillValue, useDrill, type DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
@@ -133,17 +133,60 @@ export function Dashboard({
       failed: optionsFailed,
    } = useSuggestOptions(environmentName, packageName, manifest?.path, specs);
 
+   // A drill tag names its given as the model spells it, and `# drill` with no
+   // `given=` falls back to the DIMENSION's spelling, which need not match. The
+   // notebook folds case rather than picking a side, and this folds it the same
+   // way so one tag behaves identically on both surfaces.
+   const givenNamesByFold = useMemo(() => {
+      const byFold = new Map<string, string>();
+      for (const name of declaredTypes.keys()) {
+         // First declaration wins, so a model with `REGION` and `region` keeps
+         // the one it declared first rather than silently flipping.
+         if (!byFold.has(name.toLowerCase()))
+            byFold.set(name.toLowerCase(), name);
+      }
+      return byFold;
+   }, [declaredTypes]);
+
+   /** The declared given a drill tag's name refers to, or undefined. */
+   const resolveGiven = useCallback(
+      (given: string) =>
+         declaredTypes.has(given)
+            ? given
+            : givenNamesByFold.get(given.toLowerCase()),
+      [declaredTypes, givenNamesByFold],
+   );
+
    // `to=self` filters in place, which only works for a given this dashboard
    // actually surfaces: sending one it cannot bind would fail every tile's
    // query. Asked here rather than checked after the click, so a cell that
    // cannot be honoured is never painted as clickable in the first place.
    const canSelf = useCallback(
-      (given: string) => declaredTypes.has(given),
-      [declaredTypes],
+      (given: string) => resolveGiven(given) !== undefined,
+      [resolveGiven],
    );
+
+   const onSelf = useCallback(
+      (given: string, rawValue: unknown) => {
+         const declared = resolveGiven(given);
+         if (declared === undefined) return;
+         // Encoded against the DECLARED type, which is knowable here and is not
+         // knowable at the click: `useDrill` hands over the raw cell value for
+         // exactly this reason. Passing it straight to `setGiven` skipped the
+         // encoder, so a clicked date reached a `number` given as epoch
+         // milliseconds and a filter value went unescaped. Set under the name
+         // the MODEL declares, so the value reaches the URL and the request
+         // under the one name the server knows.
+         const value = encodeDrillValue(rawValue, declaredTypes.get(declared));
+         if (value === undefined) return;
+         setGiven(declared, value);
+      },
+      [declaredTypes, resolveGiven, setGiven],
+   );
+
    const { drill, drillMenu } = useDrill({
       onNavigate,
-      onSelf: setGiven,
+      onSelf,
       canSelf,
       selfLabel: "Filter this dashboard",
    });

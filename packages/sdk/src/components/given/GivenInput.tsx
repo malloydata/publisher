@@ -169,9 +169,8 @@ export function GivenInput({
    // `date` or `boolean` given would receive a string that `givensToRequest`
    // forwards verbatim for Malloy to refuse. Falling through gives the given the
    // widget its type implies, which is the behaviour before `control=` existed.
-   // No picker renders unless a given carries `control`, so this closes the hole
-   // before the slice
-   // that opens it rather than after.
+   // `control=` IS populated now, by `readGivenControlSpec` on the server, so
+   // this guard is live rather than pre-emptive.
    const pickableType = type === "string" || filterInnerType(type) === "string";
    const filterIsPickable =
       !isFilterType(type) ||
@@ -275,10 +274,10 @@ export function GivenInput({
             //
             // FORECLOSED by choosing revert: a reader cannot override a
             // DECLARED default with "match everything", because the only
-            // gesture for it now means revert. Unreachable today (nothing
-            // carries `control`, so no picker renders here), and the honest fix is
-            // a separate affordance rather than two meanings for one ×. Worth
-            // settling before `control=` is wired up server-side.
+            // gesture for it now means revert. The honest fix is a separate
+            // affordance rather than two meanings for one ×. This is now
+            // REACHABLE: `control=` is populated server-side and pickers render,
+            // so a given with a declared default and a picker hits it.
             onChange(null);
             return;
          }
@@ -413,8 +412,8 @@ export function GivenInput({
            : undefined;
       // Same hazard as the number and date branches: a value that cannot be
       // placed on the track would otherwise read as "Any" while still being
-      // sent. Unreachable without `rangeMin`/`rangeMax` on the given,
-      // which is exactly why it is worth closing before anything does.
+      // sent. Live rather than latent: `readGivenControlSpec` populates
+      // `rangeMin`/`rangeMax` from the declaration's own tags.
       if (
          current === undefined &&
          value !== undefined &&

@@ -316,7 +316,12 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 - `to=<slug>` navigates to that dashboard with the clicked value written into the named given.
 - `to=self` filters wherever the click came from, without leaving the page.
 - More than one destination pops a menu, because a choice is not a guess.
-- `given=` names the given to seed. Without it the given is the dimension name upper-cased.
+- `given=` names the given to seed. **Write it.** Without it the given is the dimension name
+  exactly as the model spells it, so a lowercase `dimension: category` looks for a given called
+  `category`. A dashboard whose model declares `CATEGORY` does not match it, and the failure is
+  quiet: the cell still reads as clickable, and the click lands on an unfiltered page with an
+  empty control. Note the load-time lint does not catch this, because it upper-cases the
+  dimension name before checking while the click does not.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
 underlined under the pointer — plain text at rest, a link when you reach for them. That is the only
@@ -336,7 +341,11 @@ interaction which kind of document they are in — only the menu's `to=self` ent
 this notebook" against "Filter this dashboard").
 
 A drill only lands somewhere useful if the destination declares a control for the given being
-seeded — that is where the value goes. Publisher checks both halves at package load (below).
+seeded, since that is where the value goes. **Publisher does not check that half.** The load-time
+lint checks that the destination slug is a dashboard in the package, and for `to=self` that some
+model in the package declares the given at all; nothing reads the destination dashboard's own
+givens. So a drill can pass the lint and still land on a page with no control for the value it
+carried.
 
 Two practical notes. Drill fires from **table cells** reliably; chart marks depend on the renderer's
 own hit testing, and carry no hover affordance either way, so a reader has no way to know a bar is
