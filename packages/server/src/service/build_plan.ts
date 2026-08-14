@@ -29,7 +29,7 @@ type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type WireColumn = components["schemas"]["Column"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
-type WirePackageMaterialization =
+export type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
 type QueryMetadata = components["schemas"]["QueryMetadata"];
 
@@ -48,7 +48,7 @@ interface FreshnessLayer {
  * reads by path, plus the subtree read that a property collection like
  * `queryMetadata { … }` needs.
  */
-interface ReadableTag {
+export interface ReadableTag {
    text(...path: string[]): string | undefined;
    tag(...path: string[]): ReadableTag | undefined;
    entries?(): Iterable<[string, { text(): string | undefined }]>;
@@ -391,16 +391,44 @@ export function resolveQueryMetadata(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): QueryMetadata | null {
+   return composeDeclaredQueryMetadata({
+      packageMaterialization,
+      modelTag: safeModelTag(source),
+      sourceTag: safeSourceTag(source),
+   });
+}
+
+/**
+ * The author-declared layers of one statement's metadata, composed
+ * most-specific-wins PER PROPERTY: source `#@ persist queryMetadata.*` >
+ * model-file `## materialization.queryMetadata.*` (bare `## queryMetadata.*`
+ * underneath) > package `materialization.queryMetadata`.
+ *
+ * Takes tags rather than a {@link PersistSource} so the SERVE path can compose
+ * the same layers from a loaded model, where no `PersistSource` exists. A
+ * declaration describes the source's traffic, not only its build, so a served
+ * query carries it too; {@link resolveQueryMetadata} is the build-path caller,
+ * which still reads both tags off the persist source it is building.
+ *
+ * A layer whose tag is absent contributes nothing rather than clearing what a
+ * less specific layer set — so a package-wide `team` survives a source that only
+ * overrides `workload`, and a model with no `##` tag does not erase the package
+ * default. Null when no layer declares anything, so absence always means
+ * "declared nowhere" rather than "declared empty".
+ */
+export function composeDeclaredQueryMetadata(layers: {
+   packageMaterialization?: WirePackageMaterialization | null;
+   modelTag?: ReadableTag;
+   sourceTag?: ReadableTag;
+}): QueryMetadata | null {
    // Least specific first, so a more specific layer overwrites property by
    // property.
-   const layers: QueryMetadata[] = [
-      packageMaterialization?.queryMetadata ?? {},
-      ...modelTagLayers(safeModelTag(source))
-         .map(tagQueryMetadataLayer)
-         .reverse(),
-      tagQueryMetadataLayer(safeSourceTag(source)),
+   const ordered: QueryMetadata[] = [
+      layers.packageMaterialization?.queryMetadata ?? {},
+      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer).reverse(),
+      tagQueryMetadataLayer(layers.sourceTag),
    ];
-   const resolved: QueryMetadata = Object.assign({}, ...layers);
+   const resolved: QueryMetadata = Object.assign({}, ...ordered);
    return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
