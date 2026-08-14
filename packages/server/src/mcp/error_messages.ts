@@ -67,6 +67,45 @@ export function getMalloyErrorDetails(
 
    // Attempt to extract more specific info if it's a MalloyError or similar
    if (error instanceof Error) {
+      // Restricted-mode rejection: checked FIRST, and it returns early with
+      // ONLY the restricted diagnostics. One forbidden construct (e.g.
+      // `conn.table(...)` in ad-hoc text) cascades into several downstream
+      // diagnostics ("'X' is not defined", "Reference to undefined object")
+      // because the construct was refused, and those read top-down send the
+      // caller hunting for column typos in the warehouse — entirely the wrong
+      // place. The compiler marks the real cause with a structured problem
+      // code ('restricted-construct-forbidden'); a message sniff is the
+      // fallback for re-wrapped errors (see restricted_mode.spec.ts, which
+      // documents both shapes).
+      const problems = (
+         error as { problems?: Array<{ code?: string; message?: string }> }
+      ).problems;
+      const restrictedProblems = Array.isArray(problems)
+         ? problems.filter((p) => (p.code ?? "").includes("restricted"))
+         : [];
+      // Deliberately narrower than the spec helper's includes("restricted"):
+      // this one CLASSIFIES (a match suppresses other diagnostics), so a
+      // user's own identifier containing the word must not trip it. The
+      // compiler's phrasing is "… cannot be used in a restricted query".
+      const restrictedBySniff =
+         restrictedProblems.length === 0 &&
+         /cannot be used in a restricted/i.test(error.message);
+      if (restrictedProblems.length > 0 || restrictedBySniff) {
+         const causes =
+            restrictedProblems.length > 0
+               ? restrictedProblems
+                    .map((p) => p.message)
+                    .filter(Boolean)
+                    .join(" ")
+               : error.message;
+         return {
+            message: `Error during ${operation} for resource '${modelIdentifier}': ${causes}`,
+            suggestions: [
+               "Suggestion: This query ran in restricted mode: ad-hoc query text may not use raw SQL (duckdb.sql(...) / connection.sql(...)), import statements, ##! flags, or define new sources from connection.table(...). These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with malloy_compile, save, call malloy_reloadPackage, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.",
+            ],
+         };
+      }
+
       // Prepend the specific error message
       baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${error.message}`;
 
