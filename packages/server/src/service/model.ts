@@ -1638,6 +1638,23 @@ export class Model {
    }
 
    /**
+    * This file's own `## materialization.queryMetadata.*` declaration, or null
+    * if it declares none.
+    *
+    * Exposed for the publish gate. That gate walks the package manifest and the
+    * build plan's persist sources, so a model file's declaration was only ever
+    * visible through a source that inherited it — and a file with NO persist
+    * source was invisible entirely. Since a model-file declaration now rides
+    * served queries whether or not the file persists anything, it needs a
+    * validation path of its own.
+    */
+   public getDeclaredQueryMetadata(): QueryMetadata | null {
+      return composeDeclaredQueryMetadata({
+         modelTag: this.safeModelFileTag(),
+      });
+   }
+
+   /**
     * Restrict a list of named objects to the model's re-export closure
     * (`modelDef.exports`) for discovery. This mirrors what Malloy's stable
     * `modelDefToModelInfo` already does for `modelInfo`/`sourceInfos` (and what
