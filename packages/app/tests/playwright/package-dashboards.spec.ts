@@ -243,7 +243,7 @@ test.describe("package-dashboards", () => {
       }
    });
 
-   test("the grid lines up: colspans that sum, and a break between the rows", async ({
+   test("the grid lines up: two rows of two, each pair equal and flush", async ({
       page,
    }) => {
       await openDashboard(page, "grid");
@@ -254,40 +254,71 @@ test.describe("package-dashboards", () => {
       // Cards and tiles are the same kind of grid item, which is the point: two
       // cards at 6 and two tiles at 6 have to come out as two rows that end in
       // the same place. What "the dashboard looks janky" reduces to is this
-      // failing — a KPI card at its natural width, or a tile flowing in beside
-      // the cards because the break is missing.
+      // failing, a KPI card at its natural width or a row that does not reach
+      // the same edge as the one above it.
+      //
+      // It does NOT pin the `# break`, despite what this test used to be called.
+      // Measured: removing the break from the fixture changes nothing, because
+      // two cards at 6 already fill a 12-column row and the next item wraps on
+      // its own. That is the documented rule ("a break is for interrupting a row
+      // that would otherwise be shared"), so pinning the break needs a fixture
+      // whose first row does not fill, which this one deliberately is not.
       const items = page.locator(".dashboard-item");
-      await expect(items).toHaveCount(4, { timeout: 30_000 });
-      const boxes = await items.evaluateAll((elements) =>
-         elements.map((element) => {
-            const rect = element.getBoundingClientRect();
-            return {
-               left: Math.round(rect.left),
-               right: Math.round(rect.right),
-               top: Math.round(rect.top),
-               width: Math.round(rect.width),
-            };
-         }),
-      );
 
-      const rows = [...new Set(boxes.map((box) => box.top))].sort(
-         (a, b) => a - b,
-      );
-      expect(rows).toHaveLength(2);
-      for (const top of rows) {
-         const row = boxes.filter((box) => box.top === top);
-         expect(row).toHaveLength(2);
-         // Half the grid each, so the seam between them is in the same place on
-         // both rows.
-         expect(Math.abs(row[0].width - row[1].width)).toBeLessThanOrEqual(1);
-      }
-      const [cards, tiles] = rows.map((top) =>
-         boxes.filter((box) => box.top === top),
-      );
-      expect(Math.abs(cards[0].left - tiles[0].left)).toBeLessThanOrEqual(1);
-      expect(
-         Math.abs(cards.at(-1)!.right - tiles.at(-1)!.right),
-      ).toBeLessThanOrEqual(1);
+      // Retried as a block, because waiting for the four items to EXIST is not
+      // waiting for them to be laid out. The grid items are in the DOM before
+      // their results render, and in that window all four report `top: 0`, so a
+      // measurement taken then sees one row rather than two and the test fails
+      // against a page that is about to be correct. Observed at roughly one run
+      // in four by the slice stacked on this one, whose failure output showed
+      // exactly that: four items, every top zero.
+      //
+      // `toPass` rather than a sleep or a height gate: the assertions below are
+      // unchanged and still have to hold, so a genuinely broken grid still
+      // fails, it just gets the layout a chance to settle first. A height gate
+      // would be a second rule about when the grid is ready, and this file
+      // would then own two of them.
+      await expect(async () => {
+         await expect(items).toHaveCount(4);
+         const boxes = await items.evaluateAll((elements) =>
+            elements.map((element) => {
+               const rect = element.getBoundingClientRect();
+               return {
+                  left: Math.round(rect.left),
+                  right: Math.round(rect.right),
+                  top: Math.round(rect.top),
+                  width: Math.round(rect.width),
+                  height: Math.round(rect.height),
+               };
+            }),
+         );
+
+         // The precondition the old version left implicit. A collapsed item has
+         // no height, and its top is whatever the container's edge happens to
+         // be, which is what made every row look like row one.
+         for (const box of boxes) expect(box.height).toBeGreaterThan(0);
+
+         const rows = [...new Set(boxes.map((box) => box.top))].sort(
+            (a, b) => a - b,
+         );
+         expect(rows).toHaveLength(2);
+         for (const top of rows) {
+            const row = boxes.filter((box) => box.top === top);
+            expect(row).toHaveLength(2);
+            // Half the grid each, so the seam between them is in the same place
+            // on both rows.
+            expect(Math.abs(row[0].width - row[1].width)).toBeLessThanOrEqual(
+               1,
+            );
+         }
+         const [cards, tiles] = rows.map((top) =>
+            boxes.filter((box) => box.top === top),
+         );
+         expect(Math.abs(cards[0].left - tiles[0].left)).toBeLessThanOrEqual(1);
+         expect(
+            Math.abs(cards.at(-1)!.right - tiles.at(-1)!.right),
+         ).toBeLessThanOrEqual(1);
+      }).toPass({ timeout: 30_000 });
    });
 
    /**
