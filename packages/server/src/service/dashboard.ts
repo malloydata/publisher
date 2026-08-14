@@ -129,7 +129,9 @@ export interface DashboardManifest {
    /** Package-relative path of the file the tag was read from. */
    entryFile: string;
    /**
-    * The control row: one entry per given the dashboard's query references.
+    * The control row. One entry per given the query references, except on a
+    * composite with an unresolvable tile, which widens to the entry file's
+    * whole surfaced set (see `buildDashboardManifest`).
     *
     * `givens` is the declarations, here as everywhere else. Values keyed by
     * name are {@link startingGivens}; a bare list of names is `givenNames`.
@@ -571,13 +573,14 @@ function referencedTileGivens(
 }
 
 /**
- * Build the control row for a set of given names, in the order the NAMES arrive,
- * which is the order the query references them rather than the order the model
- * declares them. Two dashboards over the same givens can therefore order their
- * controls differently, tracking where the author wrote the `where:` clauses.
- * Both fixtures happen to declare and reference alike, so no test distinguishes
- * the two; an earlier version of this line claimed declaration order and was
- * wrong.
+ * Build the control row for a set of given names, in the order the NAMES
+ * arrive. What that order IS depends on the caller: from a query's references
+ * it is reference order, so two dashboards over the same givens can order their
+ * controls differently, tracking where the author wrote the `where:` clauses;
+ * from the widened composite path it is `facts.givens` insertion order, which is
+ * declaration order. This line has been wrong in both directions, once claiming
+ * declaration order and once reference order, because it described the caller
+ * rather than the function.
  */
 function buildGivenSpecs(
    names: readonly string[],
@@ -708,6 +711,11 @@ export function buildDashboardManifest(
          // the row to the file's whole surfaced given set instead. That is also
          // what `DashboardTile.givenNames` tells a client to do ("send the whole
          // control row"), which only works if the row actually contains them.
+         //
+         // Unenumerated side effect, stated because it is not obvious:
+         // `lintDashboard` walks `manifest.givens`, so a widened row also widens
+         // the suggest lint. A composite with one unresolvable tile can emit a
+         // suggest finding for a given no tile references.
          givens: buildGivenSpecs(
             tiles.some((tile) => tile.givenNames === undefined)
                ? Array.from(facts.givens.keys())

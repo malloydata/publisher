@@ -3437,8 +3437,13 @@ components:
         givens:
           type: array
           description: |
-            The control row: one entry per given the dashboard's query
-            references AND the entry file can bind. A given reachable only
+            The control row. Normally one entry per given the dashboard's query
+            references AND the entry file can bind. A composite widens it to
+            every given the entry file surfaces when any tile is one discovery
+            cannot resolve, because that tile's givens are otherwise absent from
+            the row it filters by; see `DashboardTile.givenNames`. So an entry
+            here is always bindable, but on a widened row it is not necessarily
+            referenced by any tile. A given reachable only
             through an import chain the entry file does not import itself
             cannot be bound at query time, so no control is offered for it and
             it stays at its default; that case is reported in the package's

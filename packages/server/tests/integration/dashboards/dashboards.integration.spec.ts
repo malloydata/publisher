@@ -453,8 +453,12 @@ describe("Dashboard discovery (E2E)", () => {
    it("accepts a surfaced given a tile does not reference, and rejects an unsurfaced one", async () => {
       // Bindability follows the entry file's given surface, not what the tile
       // references: a surfaced-but-unused given is ignored, while a name the file
-      // never imported fails closed. This is why the manifest's control row is
-      // the model's surface and the per-tile lists are only for re-run scoping.
+      // never imported fails closed. That is what makes the per-tile lists safe
+      // as re-run scoping only. It is NOT a statement that the control row is
+      // the model's surface: the row is the union over tiles, widened to the
+      // surfaced set only when a tile cannot be resolved. This fixture's union
+      // happens to equal its surface, which is why the two are easy to conflate
+      // here.
       const manifest = await getManifest("combined");
       const run = (givens: Record<string, string>) =>
          fetch(apiUrl(`/models/${manifest.path}/query`), {

@@ -646,33 +646,41 @@ describe("readStartingGivens", () => {
     * where the old `text.slice(0, 10)` produced 2024-02-29 for a value written
     * as March 1, and asserts the authored day survives.
     *
-    * The literal has to match the zone: under Asia/Tokyo it is the EARLY time
-    * that rolls back a day (00:30 local is 15:30 UTC on Feb 29), while under
-    * America/Los_Angeles it is the late one. A first version of this test used
-    * 23:30 under Tokyo, which is 14:30 UTC the same day, so it passed against
-    * the broken code and pinned nothing.
+    * BOTH literals, and the zone is America/Los_Angeles, because `authoredDay`
+    * has two halves and one zone plus one literal pins only one of them. The
+    * bare date exercises the UTC-midnight branch: west of UTC, UTC midnight is
+    * the previous local day, so forcing the local branch turns `@2024-03-01`
+    * into 2024-02-29. The ISO literal exercises the local branch: 23:30 local
+    * is 07:30 UTC the next day, so slicing the rendering turns it into
+    * 2024-03-02. East of UTC neither mutation shows, which is why an earlier
+    * version under Asia/Tokyo pinned only half, and an earlier one still used
+    * 23:30 under Tokyo (14:30 UTC, same day) and pinned nothing at all.
     */
    it("publishes the authored day under a non-UTC zone as well", () => {
       const service = import.meta.dir;
+      const read = (literal: string) =>
+         `m.readStartingGivens(m.motlyTag(["## givens { X=${literal} }"]))`;
       const proc = Bun.spawnSync({
          cmd: [
             "bun",
             "-e",
-            `const m = await import("${service}/motly.ts");
+            `const m = await import(${JSON.stringify(`${service}/motly.ts`)});
              console.log(
-                JSON.stringify(
-                   m.readStartingGivens(
-                      m.motlyTag(["## givens { X=@2024-03-01T00:30 }"]),
-                   ),
-                ),
+                JSON.stringify([
+                   ${read("@2024-03-01")},
+                   ${read("@2024-03-01T23:30")},
+                ]),
              );`,
          ],
-         env: { ...process.env, TZ: "Asia/Tokyo" },
+         env: { ...process.env, TZ: "America/Los_Angeles" },
       });
-      expect(proc.exitCode).toBe(0);
-      expect(JSON.parse(proc.stdout.toString().trim())).toEqual({
-         X: "2024-03-01",
-      });
+      // Surface the child's stderr, or a startup failure reports as an
+      // unhelpful `expected 1 to be 0` followed by JSON.parse("").
+      expect([proc.exitCode, proc.stderr.toString().trim()]).toEqual([0, ""]);
+      expect(JSON.parse(proc.stdout.toString().trim())).toEqual([
+         { X: "2024-03-01" },
+         { X: "2024-03-01" },
+      ]);
    });
 
    it("publishes the authored day for every date literal form", () => {

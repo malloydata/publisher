@@ -393,22 +393,32 @@ describe("service/dashboard manifest (composite form)", () => {
     * behaviours; this one deliberately gives the refinement a given no other
     * tile mentions.
     */
-   it("widens the control row when a tile cannot be resolved", () => {
+   it("widens the control row when ANY tile cannot be resolved", () => {
       const manifest = build(
          facts({
             modelAnnotations: [
-               '## artifact { tiles=["orders -> by_brand + { limit: 5 }"] }\n',
+               '## artifact { tiles=["orders -> by_month", "orders -> by_brand + { limit: 5 }"] }\n',
             ],
+            queries: [
+               { name: "by_month", annotations: [], givens: ["MONTHLY"] },
+            ],
+            viewGivens: new Map([["orders -> by_month", ["MONTHLY"]]]),
             givens: new Map([
                given("BRAND", "filter<string>", []),
+               given("MONTHLY", "filter<string>", []),
                given("REGION", "filter<string>", []),
             ]),
          }),
       );
-      // Neither given is discoverable from the refinement, so both must appear
-      // rather than neither.
+      // Deliberately MIXED: one resolvable tile contributing MONTHLY, one
+      // refinement contributing nothing. `some` must widen to the file's whole
+      // surfaced set, so REGION and BRAND appear even though no resolvable tile
+      // names them. With `every` this yields only MONTHLY, which is the
+      // mutation the single-tile version of this test could not catch, since
+      // `some` and `every` agree when there is one tile.
       expect((manifest?.givens ?? []).map((g) => g.name).sort()).toEqual([
          "BRAND",
+         "MONTHLY",
          "REGION",
       ]);
    });
