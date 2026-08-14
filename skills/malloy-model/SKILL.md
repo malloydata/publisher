@@ -181,6 +181,7 @@ source: customer_health is customers extend {
 - **Check for duplicate rows** before building measures
 - When both a combined table (all types) and filtered/split tables exist, prefer the split tables
 - **DRY: define measures/dimensions in base source files, not inline in views**
+- **Never write a threshold, tier boundary, or bucket cutoff you chose yourself.** Every boundary in a `pick` expression or filtered measure is user-supplied, distribution-derived (query `min`/`p25`/`p50`/`p75`/`p95` first and show the evidence; see `skill:malloy-define` § Data-driven tiers), or explicitly flagged as an assumption in its `#(doc)`. A hardcoded cutoff nobody confirmed is a business decision shipped as fact.
 
 ## Parameterizing sources with `given:` (preferred)
 

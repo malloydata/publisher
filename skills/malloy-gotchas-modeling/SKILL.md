@@ -331,6 +331,30 @@ run: source -> { group_by: pk_field, aggregate: n is count(), having: n > 1, lim
 
 Symptoms: `sum()` returns astronomical values. Causes: event tables, batch retries, merged sources.
 
+## Mixed-Grain Joins: A Pre-Aggregated Source Ignores Your Filters
+
+Joining an aggregate-grain source (a decade/month/region summary table) into a detail-grain source produces values that do **not** respond to the query's filters. Malloy's symmetric aggregates prevent fan-out; they cannot prevent this, because the joined value is unfiltered *by construction*: it was computed over the whole population before the query ran.
+
+```
+run: track_analysis -> {
+  where: genre = 'Rock'
+  group_by: decade
+  aggregate: track_count                    // filtered: Rock only     -> 701
+  group_by: decade_trends.decade_track_count // unfiltered population  -> 1,088
+}
+```
+
+Two count-shaped numbers side by side, one filtered and one not; read as "701 of 1,088 Rock tracks" it is simply wrong: 1,088 is every genre. Two legitimate resolutions:
+
+- **Keep the join as a population baseline** when comparing a row to the whole population is the intent (e.g. `energy_vs_decade`). Then every joined field's `#(doc)` must say it is a fixed population value that does not respond to filters, and count-shaped fields with no comparison purpose (like `decade_track_count`) should be `internal:`; they only invite the misreading.
+- **Compute the aggregate as a query-based source from the detail table** so it derives from one source of truth and the derivation is visible.
+
+This is the modeling-time consequence of ignoring `skill:malloy-scope`'s advice to skip pre-aggregated snapshot tables and compute fresh in Malloy instead.
+
+## Thresholds Are Decisions, Not Syntax
+
+Before writing a `pick` expression or filtered measure with a numeric cutoff, see `skill:malloy-model` § Key Rules: every boundary must be user-supplied, distribution-derived (query the percentiles first), or explicitly flagged as an assumption in its `#(doc)`. Never invent one silently.
+
 ## `except:` Removes Fields From Namespace Entirely
 
 `except:` in `include {}` completely removes fields: dimensions and measures cannot reference excluded fields. Use `internal:` instead when derived dimensions need the raw column.

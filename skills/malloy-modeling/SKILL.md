@@ -31,13 +31,28 @@ description: Build semantic models with Malloy for the Malloy Publisher. Read th
 
 ## Planning and `modeling-notes.md`
 
-If the IDE has a native plan mode, use it for the high-level approach: do data exploration during planning, then present a concrete plan for user approval before writing any files. Once approved, you can write a `modeling-notes.md` during execution to record decisions (scope, sources, key choices, prior art, gaps). This file persists alongside the model. Otherwise, keep the proposal and decisions in the conversation; Publisher has no separate workspace document store to write them to.
+If the IDE has a native plan mode, use it for the high-level approach: do data exploration during planning, then present a concrete plan for user approval before writing any files.
+
+`modeling-notes.md` is an expected output of the workflow, not an optional extra. Start it at step 2 (Propose Scope) and grow it as you work: it persists alongside the model, and its value is as the thing the user argues with at step 3, before source files exist; written after the build it can only document decisions already baked in. Record findings and problems as they are found during discovery (`skill:malloy-discover`), and every unconfirmed decision as an open item. Only when there is no writable workspace do the notes live in the conversation instead.
+
+Keep it compact, with these sections:
+
+```markdown
+# Modeling notes - <package>
+## Scope           what was confirmed, what the model is FOR, skip list with reasons
+## Grain and keys  proven by query, not by column name
+## Coverage        coverage cliffs; columns excluded for nullity
+## Decisions       each with its evidence
+## Open decisions  ASSUMPTIONS, NOT CONFIRMED: every threshold or definition the user
+                   has not settled, one entry each, mirrored by a hedge in its #(doc)
+## Validation      reconciliation checks performed, and their results
+```
 
 ## 8-Step Modeling Workflow
 
-The agent orchestrates all steps. Steps marked **(user)** pause for input. Each step has a dedicated skill with full instructions; load the relevant skill when needed.
+The agent orchestrates all steps. Steps marked **(user)** pause for input. Each step has a dedicated skill with full instructions. Read each step's skill **before starting that step**, including the decision skills for steps 1–4 (`skill:malloy-discover`, `skill:malloy-scope`, `skill:malloy-define`). They govern what the model says; skipping them to reach the build skills is how unreviewed business logic ships.
 
-**A field is not complete until it has its definition, `#(doc)` tag, and rendering tags.** Documentation is part of defining a field, not a separate activity. Read `skill:malloy-document` for full documentation standards (doc string writing, tag ordering).
+**A field is not complete until it has its definition, `#(doc)` tag, and rendering tags, and any threshold or business convention in it is user-confirmed, distribution-derived, or explicitly flagged in its `#(doc)`** (see `skill:malloy-document` § Mark conventions as conventions). Documentation is part of defining a field, not a separate activity. Read `skill:malloy-document` for full documentation standards (doc string writing, tag ordering).
 
 ```
 DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED → REVIEW → CURATE
@@ -52,8 +67,25 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 | 4. Propose Definitions | `skill:malloy-define` | Propose fields per base source, user confirms logic |
 | 5. Build Base Sources | `skill:malloy-model` | Write fully documented base source files (one per table), check diagnostics. Read `skill:malloy-document` for doc standards. |
 | 6. Build Joined Sources | `skill:malloy-model` | Write fully documented joined source files, validate. Read `skill:malloy-document` for doc standards. |
-| 7. Review | (none) | Present structure, assumptions, and doc coverage; user confirms |
-| 8. Curate | `skill:malloy-model` | Propose access controls, user approves: optional, ask user |
+| 7. Review | (none) | Present the review checklist below; user confirms or corrects |
+| 8. Curate | `skill:malloy-model` | Propose access controls (`explores`, `queryableSources`, access modifiers); always propose, the user decides whether to apply |
+
+### The pauses are the point
+
+These are governed semantic models: the business decisions in them must be confirmed by a human subject-matter expert, and the **(user)** steps exist to collect that confirmation. They are real stops, not progress reports. A model can be complete, compiling, and fully documented and still be wrong everywhere it guessed; a capable agent can build the whole thing without pausing once, which is exactly the failure mode this workflow exists to prevent.
+
+When a decision goes unanswered (the user explicitly declines to decide, or nobody is there to ask), do not silently proceed as if it were settled. Take your best-supported position, label it an assumption in the field's own `#(doc)` (see `skill:malloy-document` § Mark conventions as conventions), record it under "Open decisions" in `modeling-notes.md`, and raise it again at Review. An unlabeled assumption is indistinguishable from a confirmed fact, and misleads everyone downstream.
+
+### Step 7 Review is a checklist, not a summary
+
+Present these to the user, with answers:
+
+- **Which definitions did the user actually confirm?** List them; everything else is an assumption.
+- **Which thresholds and bucket boundaries did you choose?** For each: the evidence (distribution query, metadata, prior art) and the `#(doc)` hedge that marks it.
+- **Which questions were left unanswered?** Each must already carry a labeled assumption and an "Open decisions" entry.
+- **Does the headline metric have more than one defensible definition?** If yes, that is a blocking question: put the candidate definitions to the user with their counts side by side, not in a footnote.
+
+The user confirming this checklist is what makes the model governed. A summary of what you built is not a checkpoint.
 
 Publishing is out of scope for open-source v1. Self-hosters move a finished model into a served package via git and the host's publish path; see `skill:malloy-publish` for the local-to-served handoff.
 
@@ -73,7 +105,7 @@ After analysis completes, **always recommend formalizing into a model.**
 
 **Present choices as A/B/C.** When asking the user to choose, use lettered options with one-line descriptions. Mark your recommendation.
 
-**Complete all workflow steps.** Once modeling begins, complete through review. A field without documentation is not finished. If you lose track, re-read the model and your notes. Suggest notebooks at the end.
+**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. Suggest notebooks at the end.
 
 ## Route by Intent
 
@@ -96,7 +128,7 @@ These supplemental skills may also be loaded as needed:
 
 ## Publisher MCP Tools
 
-Ensure the Publisher MCP tools are configured before modeling.
+Ensure the Publisher MCP tools are configured before modeling. No server yet? `skill:malloy-getting-started` covers setup, including the one-command scaffolder (`npm create @malloy-publisher/malloy-package@latest <name>`). For local authoring, start the server with `--watch-env <env>`: without it Publisher copies each local package into `publisher_data/` at boot and serves the copy, so edits to your source directory are never read.
 
 | Tool | Purpose |
 |------|---------|
