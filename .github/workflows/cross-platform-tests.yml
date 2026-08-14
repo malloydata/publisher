@@ -82,6 +82,40 @@ jobs:
         run: bun run --cwd packages/sdk test
         shell: bash
 
+      # Runners are UTC, the one zone where a local-vs-UTC date bug is invisible.
+      # Reverting GivenInput's `dayjs.utc` to `dayjs` fails 0 tests under UTC, 3
+      # under a zone ahead of it and 1 under a zone behind it.
+      #
+      # Both directions are needed, and they are not redundant: a date fixture
+      # only crosses midnight for zones on one side of UTC, so an ahead zone and
+      # a behind zone fail *different* tests. Running only ahead-of-UTC zones
+      # leaves the early-in-the-UTC-day test unable to fail anywhere it runs.
+      # Any zone ahead scores the same as any other, and likewise behind, so
+      # these two are representatives rather than special: do not add more for
+      # symmetry, and do not swap one for a zone picked for being unusual.
+      #
+      # Extra runs rather than a matrix entry: the suite is ~0.3s, a matrix would
+      # double the whole job, and setting TZ on the existing run would trade away
+      # UTC coverage instead of adding to it.
+      # Each run prints the zone the runtime actually resolved before testing in
+      # it. If TZ were ignored, these runs would silently become duplicate UTC
+      # ones: still green, still fast, detecting nothing, which is the same
+      # silhouette as a suite that collects no tests. The line makes that
+      # visible instead. It deliberately does not assert, because whether Bun
+      # honours TZ on the Windows leg is unverified; once a run confirms it, the
+      # echo can become a check.
+      - name: Run SDK tests east of UTC
+        run: |
+          TZ=Australia/Sydney bun -e 'console.log("resolved timezone:", Intl.DateTimeFormat().resolvedOptions().timeZone)'
+          TZ=Australia/Sydney bun run --cwd packages/sdk test
+        shell: bash
+
+      - name: Run SDK tests west of UTC
+        run: |
+          TZ=America/Los_Angeles bun -e 'console.log("resolved timezone:", Intl.DateTimeFormat().resolvedOptions().timeZone)'
+          TZ=America/Los_Angeles bun run --cwd packages/sdk test
+        shell: bash
+
       # The skills package copies a directory tree and resolves it back by
       # path, so it is exactly the kind of code that breaks on Windows only.
       - name: Run skills package tests
