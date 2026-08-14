@@ -297,7 +297,7 @@ This is a **breaking release for SDK consumers**: five removals and one narrowed
 ### What changed
 
 - **A notebook's parameters live in its URL.** `Notebook` takes `givens` and `onGivensChange`, and the Console wires them to the query string. Opening a notebook at `?REGION=West` runs every cell with that value on the first pass rather than running bare and running again. The host is handed the names the notebook manages alongside the values, so it can update its own query string without disturbing parameters that are not its business.
-- **`# drill { to=self }` works in a notebook cell.** A cell that groups by a dimension carrying the tag becomes clickable and filters the notebook in place with the clicked value, provided the notebook declares the given the tag names: one that names a given the document does not declare stays plain rather than offering a click that cannot be honoured. Drillable cells read as links on hover, via a new mode-keyed `drillLink` theme colour. Two cases are deliberately left unmarked: a blank cell, whose click is refused anyway (a blank value is far likelier a misclick than a request for the rows that are blank), and every cell of a `# transpose` table, because the renderer lays that layout out without the per-cell `grid-column` the marking matches on. A transposed table's drill still WORKS when clicked; it is undiscoverable, which is the one place on this surface where the affordance and the behaviour disagree. A drill naming a *dashboard* destination is deliberately inert for now: the route it would navigate to does not exist yet, and painting a cell as a link to a page that answers "Nothing to open at this path" is worse than leaving it plain, so those cells are not marked either. The primitives handle it; the surface will honour it once the dashboard route lands.
+- **`# drill { to=self }` works in a notebook cell.** A cell that groups by a dimension carrying the tag becomes clickable and filters the notebook in place with the clicked value, provided the notebook declares the given the tag names: one that names a given the document does not declare stays plain rather than offering a click that cannot be honoured. Drillable cells read as links on hover, via a new mode-keyed `drillLink` theme colour. Two cases are deliberately left unmarked: a blank cell, whose click is refused anyway (a blank value is far likelier a misclick than a request for the rows that are blank), and every cell of a `# transpose` table, because the renderer lays that layout out without the per-cell `grid-column` the marking matches on. A transposed table's drill still WORKS when clicked; it is undiscoverable, which is the one place on this surface where the affordance and the behaviour disagree. A drill naming a *dashboard* destination is honoured too, now that the dashboard route exists: the cell is marked, and clicking it opens that dashboard with the value seeded. On a host that has not wired the navigation the destination stays unmarked and inert rather than painting a cell as a link to a page that answers "Nothing to open at this path".
 - **`select` / `multiselect` controls backed by `suggest`.** The option list comes from an ordinary query on the governed query endpoint, so row caps and `#(authorize)` gates apply to a dropdown exactly as they do to the surface's own queries. A suggest query that fails now says so on the control instead of rendering as a dimension with no values, and the generated query carries an explicit `limit:` and ordering rather than relying on the server's default row cap to truncate it in whatever order the warehouse returned.
 - **Filter values are escaped by Malloy's own filter package.** A `filter<…>` value picked in a control is now printed with `@malloydata/malloy-filter`'s `StringFilterExpression.unparse`, and read back with its parser. The previous scheme wrapped values in double quotes, which Malloy's string-filter grammar has no notion of: backslash is its only escape, so the quoting escaped nothing and several ordinary values silently meant something else. Measured against the `storefront` model, filtering its `category` dimension: a picked `-Outerwear` ran as a negation and returned 22,821 of 25,356 rows instead of the 2,535 that category holds; `%` bypassed the filter and returned all 25,356; `null` hit the null operator and returned 0; and `Ben & Jerry, Inc` was read as two brands. All of these now match themselves, pinned by a round-trip test against the real parser.
 - **The notebook's controls are `given:` only.** The Filters panel that rendered `#(filter)` and `##(filters)` annotations is gone, and the notebook no longer sends `filterParams`. **This is a behaviour change for a model that uses `#(filter)`, and the deprecation note under 0.0.201 said otherwise.** Concretely: a cell fails when its run target is a source that declares a `required` filter, because the server still refuses one with no value and there is no longer a UI that can supply it. That is narrower than "every cell" in two ways worth knowing before you audit a model: enforcement is per run-target source, so cells querying a source with no filters are unaffected, and a **block-form** `#(filter) … required` is not collected at all, so it never raised the error in the first place (`source_extraction.ts` documents that gap deliberately). A model with only optional `#(filter)` annotations still runs, but is no longer filterable from the notebook. The REST parameters, the `Deprecation` header, and the server-side enforcement are all unchanged: this is the UI half of the migration landing ahead of the server half. Migrate to `given:`: [docs/givens.md](docs/givens.md) has a **"Coming from `#(filter)`"** section with a worked conversion and the three things that do not map across.
@@ -375,6 +375,56 @@ A production deployment answers it **404 as JSON**, so a client sees a clean err
 Why the REST path breaks cleanly while the browser URL gets a grace period: the two have different costs and different owners. Carrying both spellings in the spec would mean two paths, two operationIds and two generated client methods for one listing, with every future change to it made twice, and the one known consumer of the endpoint reviewed this change and chose the clean break, having already accepted the short window during a rollout where some of its machines answer 404. A bookmark has no owner to consult, and the person who saved it is not reading these notes, so that surface redirects for one release rather than failing. The endpoint is documented (in [docs/html-data-apps.md](docs/html-data-apps.md) and [docs/api-overview.md](docs/api-overview.md), both updated here), so the REST break is a real one for anyone who took it up rather than a quiet one. If that trade is wrong for your deployment, say so on the PR.
 
 One more consequence of the SPA route move, easy to miss: the app now claims the `data-apps` segment, so `/{env}/{pkg}/data-apps/<file>` is no longer redirected to the static route. Clicking a data app in the Console is unaffected, because the listing already includes the file's path relative to `public/`. What changes is a hand-written URL of that shape: it opens the embedded viewer one segment down, on `public/<file>`, rather than redirecting. A package that itself ships a `public/data-apps/` directory is the case to know about, since its files are addressed as `/{env}/{pkg}/data-apps/data-apps/<file>`; the standalone URL `/environments/{env}/packages/{pkg}/data-apps/<file>` serves them unchanged either way. This mirrors what `public/pages/` had before, so it is not a new class of collision, but `data-apps` is a likelier directory name than `pages` was.
+
+## [Unreleased]: dashboards render, and the Console serves them
+
+The server half of dashboards had no UI. It has one now: a package's dashboards are listed on its
+page and open at `/{env}/{package}/dashboards/{name}`, and `<Dashboard>` is a public SDK export so an
+embedding host renders the same component the Console does.
+
+### What changed
+
+- **A dashboard page.** `<Dashboard>` reads the manifest and renders either form: a single query
+  whose result is the page, or a composite whose tiles each run on their own and combine into one
+  `dashboardColumns` grid. A tile owning its own query is what lets one broken tile show its error in
+  place while the rest of the grid still renders. It takes props rather than reading a router, so the
+  Console and an external React app differ only in what they do with `onNavigate` and
+  `onGivensChange`.
+- **Control state is URL state.** Filtering replaces history so Back leaves the dashboard rather than
+  walking through every value tried; drilling pushes it so Back returns to where the drill started.
+  A `# artifact { autorun=false }` dashboard batches changes behind Apply.
+- **A Dashboards section on the package page**, listed first because it is the at-a-glance artifact a
+  visitor most likely wants, and hidden when the package has none. A dashboard's own file is filtered
+  out of Semantic Models so it is listed once; untagged shared includes under `dashboards/` are not
+  dashboards and stay in the model list. Notebooks are now listed by title too, with the filename as
+  the secondary label.
+- **`## autorun=false` is honoured in notebooks**, which had hardcoded it true while nothing produced
+  the field. The server derives it now, so a notebook gets the same Apply batching a dashboard does.
+- **A `# drill` naming a dashboard navigates from a notebook cell**, which completes the primitive
+  that shipped inert. Where a tag offers two destinations, the click opens a menu naming the
+  dashboard and the current surface.
+- **Drill is reachable without a mouse.** Marked cells take `tabindex` and `role="button"`, focus is
+  styled the way hover is, and Enter or Space activates. Previously the only signals a cell did
+  anything were a pointer cursor and a hover colour, neither of which a keyboard or touch user can
+  produce.
+- **A `select` control looks like one.** MUI hides the dropdown arrow whenever a combobox accepts
+  free text, which it must here since a `suggest` returns the common values rather than every legal
+  one, so a picker rendered as a plain text box and its option list was undiscoverable.
+
+### Two things to know when authoring
+
+- **Write `given=` on a `# drill` tag.** Without it the given is the dimension name exactly as the
+  model spells it, so a lowercase `dimension: category` looks for a given called `category`. A
+  dashboard declaring `CATEGORY` does not match, the cell still reads as clickable, and the click
+  lands on an unfiltered page. The load-time lint does not catch it, because it upper-cases the
+  dimension name before checking while the click does not.
+- **A file that does not compile fails the whole package.** Loading aborts on the first model error,
+  so the dashboards endpoint answers 424 and none of that package's dashboards are served, including
+  the ones that compiled. A failed `?reload=true` is refused the same way and leaves the previously
+  compiled package serving, which is the behaviour to rely on while editing.
+
+`docs/dashboards.md` is the guide. No bundled example ships a `dashboards/` directory yet; that
+arrives with the examples change that follows this one.
 
 ## [Unreleased]: dashboards are discovered and served over REST
 
