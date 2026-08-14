@@ -140,10 +140,23 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
    // No allowlist: the three reference files that carried the last of the
    // drift were rewritten upstream and copied back, so every entry in the
    // bundle now honours the house style and a new em-dash fails outright.
+   //
+   // Descriptions count as well as bodies. A SKILL.md's frontmatter
+   // description is not part of its body, and it ships as the MCP prompt's
+   // description, so it is bundle text like any other.
    it("carries no em-dashes (house style)", () => {
-      const offenders = skills
-         .filter((s) => s.body.includes("—"))
-         .map((s) => s.name);
+      const hasEmDash = (s: SkillEntry) =>
+         s.body.includes("—") || s.description.includes("—");
+
+      // Positive control. With the allowlist gone this assertion runs against
+      // a clean tree, so it would pass for free if the predicate ever stopped
+      // detecting; the deleted allowlist test proved that incidentally, by
+      // asserting the listed entries still held one.
+      expect(
+         hasEmDash({ name: "control", description: "", body: "a — b" }),
+      ).toBe(true);
+
+      const offenders = skills.filter(hasEmDash).map((s) => s.name);
       expect(offenders).toEqual([]);
    });
 });
