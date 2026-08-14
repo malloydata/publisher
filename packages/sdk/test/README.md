@@ -86,10 +86,12 @@ rerender({ types: new Map() });   // props change, effects flush
 than destructuring off it. Wrap anything that sets state in `act()`.
 
 `src/hooks/useGivensState.spec.ts` is the worked example, and two things in it
-are worth copying. Its last test renders the hook with deliberately unmemoized
-arguments to prove it settles instead of re-rendering forever; that is a real
-defect class here, and it is invisible to a test that only ever passes stable
-inputs. And its `renderWithUrlHost` helper feeds the hook's own output back in
+are worth copying. The test named "settles when its inputs are fresh objects on
+every render" passes deliberately unmemoized arguments to prove the hook settles
+instead of re-rendering forever; that is a real defect class here, and it is
+invisible to a test that only ever passes stable inputs. Named rather than
+pointed at by position, because "its last test" stopped being that one the first
+time a test was appended. And its `renderWithUrlHost` helper feeds the hook's own output back in
 as props, the way the page hosts do through the URL. Several defects in that
 hook only appear on the second half of that loop, so a spec that treats the
 props as constant cannot see them.

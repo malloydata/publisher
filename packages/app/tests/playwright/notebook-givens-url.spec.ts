@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 
 /**
@@ -13,6 +13,29 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  * the multiselect works end to end.
  */
 const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/orders.malloynb`;
+
+/**
+ * A count that has stopped moving, rather than the first count seen.
+ *
+ * The notebook renders its cells over several frames, so sampling as soon as
+ * the first result appears pins a partial render and lets a later assertion
+ * pass over a notebook that came back mostly blank.
+ */
+async function settledCount(locator: Locator): Promise<number> {
+   let last = -1;
+   for (let i = 0; i < 40; i++) {
+      const current = await locator.count();
+      if (current === last && current > 0) return current;
+      last = current;
+      await locator.page().waitForTimeout(250);
+   }
+   return last;
+}
+
+/** Everything the rendered results say, as one string. */
+async function resultsText(page: Page): Promise<string> {
+   return (await page.locator(".malloy-render").allInnerTexts()).join("\u0001");
+}
 
 /** The panel is only rendered once the notebook's sources have loaded. */
 async function openNotebook(page: Page, search = "") {
@@ -56,7 +79,10 @@ test.describe("notebook givens are URL-addressable", () => {
       await openNotebook(page);
       const results = page.locator(".malloy-table.root, .malloy-render");
       await expect(results.first()).toBeVisible({ timeout: 60_000 });
-      const before = await results.count();
+      // Wait for the count to STOP moving before sampling it. Taking it as soon
+      // as the first result appeared pinned a partial render, so `toHaveCount`
+      // below could be satisfied by a notebook that came back mostly blank.
+      const before = await settledCount(results);
       expect(before).toBeGreaterThan(0);
 
       // Latch onto a node from the PRE-change render. `{cell.result && …}`
@@ -86,12 +112,32 @@ test.describe("notebook givens are URL-addressable", () => {
    test("a value in the URL arrives applied, so a link reproduces a view", async ({
       page,
    }) => {
-      await openNotebook(page, "?MIN_AMOUNT=500");
+      // The unfiltered notebook first, as the baseline this has to differ from.
+      await openNotebook(page);
+      const results = page.locator(".malloy-table.root, .malloy-render");
+      await expect(results.first()).toBeVisible({ timeout: 60_000 });
+      await settledCount(results);
+      const unfiltered = await resultsText(page);
 
+      await openNotebook(page, "?MIN_AMOUNT=500");
       await expect(page.getByLabel("MIN_AMOUNT")).toHaveValue("500");
       // And it is still there once the cells have run, rather than being
       // cleared by the panel reporting its own empty state on mount.
       await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
+
+      // The assertion this test was named for and did not make. Checking the
+      // control's text and the URL says nothing about what the CELLS ran with,
+      // so the "runs bare, then runs again" regression the release notes claim
+      // to fix would have passed here.
+      await expect(results.first()).toBeVisible({ timeout: 60_000 });
+      await settledCount(results);
+      const filtered = await resultsText(page);
+      expect(unfiltered.length).toBeGreaterThan(0);
+      // Different numbers on screen. A row count cannot be used: these cells
+      // render as charts and expose no rows to the page (`.malloy-table`
+      // matches nothing here), which is why the first attempt at this
+      // assertion counted zero of everything and passed vacuously.
+      expect(filtered).not.toBe(unfiltered);
    });
 
    test("an unrelated query parameter survives a control change", async ({

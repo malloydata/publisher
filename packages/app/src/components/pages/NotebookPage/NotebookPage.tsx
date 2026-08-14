@@ -60,6 +60,13 @@ export default function NotebookPage({
    // in any copied link and silently re-applying if the given is ever
    // re-declared. Anything we put there is ours to take back out.
    //
+   // With one hole, documented in `useGivensState`: when the manifest is
+   // already cached the hook fires no INITIAL report, so a name that was only
+   // ever carried in by the URL never reaches this set. If a later reload drops
+   // that given, its parameter is left behind. Inert, because `paramsToGivens`
+   // ignores a name the model does not declare, and the alternative wipes a
+   // shared link's parameters on mount.
+   //
    // Deliberately NOT reset when `notebookPath` changes: a parameter this page
    // wrote for the previous notebook is the stale one the next should clear, and
    // resetting here would reintroduce the orphan across a navigation instead of

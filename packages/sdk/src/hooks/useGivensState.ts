@@ -205,6 +205,21 @@ export function useGivensState({
    const [edits, setEdits] = useState<Edits | null>(null);
    const active = edits?.key === initialKey ? edits : null;
 
+   // Edits whose key no longer matches are DISCARDED, not merely ignored. The
+   // line above stops reading them, which is enough until the key comes back:
+   // the key space is small (document plus starting values plus params) and is
+   // revisited routinely, so `a` -> `b` -> `a` from a clean link matched the
+   // abandoned edits again and re-applied a filter the URL did not carry, to a
+   // reader who had just opened the notebook fresh. Browser Back and a drill
+   // pushing a URL equal to an earlier one do the same thing.
+   //
+   // In an effect rather than during render: `active` already ignores them, so
+   // this cannot change what this render shows, and clearing is idempotent if
+   // React runs it more than once.
+   useEffect(() => {
+      if (edits !== null && edits.key !== initialKey) setEdits(null);
+   }, [edits, initialKey]);
+
    // Drop values for givens that no longer exist, which is what a model reload
    // can do while the page is open. Sending one the model no longer declares
    // fails the query outright ("unknown given"), so a value outliving its

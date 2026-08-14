@@ -258,6 +258,57 @@ nothing populates those yet, so today clearing is all it does. Either way it is
 not "back to how I found it": a notebook opened from a shared link starts on the
 link's values, and Reset discards those too.
 
+## Coming from `#(filter)`
+
+The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
+`##(filters)` annotations is no longer filterable from a notebook, and one with
+a `required` filter cannot be satisfied there at all. The annotations still work
+everywhere else: the REST `filterParams` parameter and the server-side
+enforcement are unchanged. This is the UI half of the migration.
+
+There is no automatic conversion, because the two mechanisms are different
+shapes. A `#(filter)` annotation marks an existing dimension as filterable and
+the server builds the `where:` clause. A given is a declared parameter that the
+model itself uses, so you write the `where:` yourself and gain control over what
+it means.
+
+A source annotated like this:
+
+```malloy
+#(filter) dimension=region type=in
+#(filter) dimension=amount type=gte required
+source: sales is orders_base extend { }
+```
+
+becomes two givens and one `where:`:
+
+```malloy
+##! experimental.givens
+
+#(description="Region to focus on — leave empty for all regions")
+given: REGION :: filter<string> is f''
+
+#(description="Only include orders at or above this amount (USD)")
+given: MIN_AMOUNT :: number is 0
+
+source: sales is orders_base extend {
+  where: region ~ $REGION and amount >= $MIN_AMOUNT
+}
+```
+
+Three things worth knowing while converting:
+
+- **`type=in` and `type=equal` become `filter<string>`**, whose value is filter
+  syntax rather than a bare value, so one control can carry several values. The
+  empty filter `f''` is the natural "no constraint" starting point.
+- **A `required` filter has no direct equivalent.** A given always has a value,
+  its default, so "the reader must choose" is expressed by picking a default
+  that is safe to run, or by using `#(authorize)` where the requirement is
+  really about access rather than about filtering. See
+  [Row-level access](row-level-access.md).
+- **The name is the reader-facing label**, so it appears in the Parameters panel
+  and in the URL. `#(description=…)` supplies the helper text underneath.
+
 ### Parameters live in the URL
 
 A notebook's parameters are part of its address. Change a control and the URL

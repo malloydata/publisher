@@ -415,4 +415,32 @@ describe("useGivensState: swapping documents", () => {
       rerender({ params: { B: "2", A: "1" } });
       expect(entries(result.current.applied)).toEqual({ A: "edited", B: "2" });
    });
+
+   it("does not resurrect an abandoned edit when the key returns", () => {
+      // The edits were only IGNORED on a key mismatch, never discarded, and the
+      // key space is small enough to revisit: notebook a -> b -> a from a clean
+      // link matched the abandoned edits again and re-applied a filter the URL
+      // did not carry, to a reader who had just opened it fresh. Browser Back
+      // and a drill pushing an earlier URL do the same.
+      const { result, rerender } = renderHook(
+         (props: { doc: string; params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: new Map([["REGION", "string"]]),
+               params: props.params,
+               documentKey: props.doc,
+               autorun: true,
+            }),
+         { initialProps: { doc: "a.malloynb", params: {} } },
+      );
+
+      act(() => result.current.setGiven("REGION", "East"));
+      // The host echoes it into the URL, then the reader navigates away.
+      rerender({ doc: "a.malloynb", params: { REGION: "East" } });
+      rerender({ doc: "b.malloynb", params: {} });
+      expect(entries(result.current.applied)).toEqual({});
+
+      // Back to the first notebook from a link carrying no query string.
+      rerender({ doc: "a.malloynb", params: {} });
+      expect(entries(result.current.applied)).toEqual({});
+   });
 });

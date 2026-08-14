@@ -177,9 +177,9 @@ export function GivenInput({
       typeof value !== "string" ||
       isPlainFilterList(value);
    // And multi-pick only for a `filter<…>`, which is the one type that can carry
-   // several values in one string. A plain `string` given would receive a real
-   // array, and the URL codec cannot round-trip one: `givenToParam` joins on
-   // `,` while reading it back yields the joined string, not the list. So a
+   // several values in one string. A plain `string` given cannot hold a list at
+   // all: `GivenValue` admits no array, and `givenToParam` refuses one rather
+   // than joining it, because the codec cannot read a join back. So a
    // `multiselect` on a plain string given renders as a single-pick instead of
    // emitting something that cannot survive the address bar.
    /**
@@ -327,10 +327,17 @@ export function GivenInput({
                   // way every other unset control shows it. A hardcoded "All"
                   // told the reader nothing would be filtered while the query
                   // was about to run on the declared default.
+                  //
+                  // Except when an explicit `""` is in force. That is the EMPTY
+                  // filter, so the default is precisely what is NOT running,
+                  // and showing it as a ghost made the control assert one
+                  // filter while the query used another.
                   placeholder={
-                     selected.length === 0
-                        ? (defaultDisplay ?? "All")
-                        : undefined
+                     selected.length !== 0
+                        ? undefined
+                        : filtered && value === ""
+                          ? "All"
+                          : (defaultDisplay ?? "All")
                   }
                   error={optionsFailed}
                   helperText={
@@ -407,7 +414,13 @@ export function GivenInput({
       }
       // An unset control rests at the low end, which is the no-op threshold.
       const position = current ?? rangeMin;
-      const isOverridden = current !== undefined;
+      // `""` on a filter given is an explicit "no threshold" OVERRIDE, not an
+      // absence: `paramToGiven` keeps it because the empty string is a value a
+      // filter can mean, and `givensToRequest` sends it. Counting it as unset
+      // drew "Any" with no clear affordance, so the reader could see neither
+      // that an override was in force nor any way back to the model's default.
+      const isOverridden =
+         current !== undefined || (numericFilter && value === "");
       return (
          <FormControl fullWidth>
             {/* A slider is the one control with no box around it, so it has to
@@ -431,7 +444,18 @@ export function GivenInput({
                      {label}
                   </Typography>
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                     {isOverridden ? `≥ ${position}` : "Any"}
+                     {/* `≥ N` only for a FILTER, whose value IS a lower
+                         bound. A plain `number` given is an ordinary value, and
+                         the onChange below says so by committing `picked`
+                         rather than a threshold, so labelling it `≥` described
+                         a query nobody was running. */}
+                     {!isOverridden
+                        ? numericFilter
+                           ? "Any"
+                           : (defaultDisplay ?? "Unset")
+                        : numericFilter
+                          ? `≥ ${position}`
+                          : String(position)}
                   </Typography>
                   {isOverridden && (
                      <IconButton
@@ -546,12 +570,12 @@ export function GivenInput({
       // passes through on purpose. Without this the checkbox rendered the model
       // DEFAULT for it, so the box said one thing while `givensToRequest` sent
       // "yes" and every cell failed, with nothing on screen to explain why.
-      if (
-         !isOverridden &&
-         value !== undefined &&
-         value !== null &&
-         value !== ""
-      ) {
+      // No `value !== ""` carve-out here, unlike the number branch it was copied
+      // from. `paramToGiven` returns null for an empty `boolean` parameter, so
+      // `""` cannot reach a checkbox from a URL or a host; if one ever did, a
+      // checkbox has no empty state to show it in, and saying so beats drawing
+      // the model default over a value that is still being sent.
+      if (!isOverridden && value !== undefined && value !== null) {
          return unrepresentable("true or false");
       }
       const defaultChecked = given.default?.trim() === "true";

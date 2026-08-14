@@ -74,14 +74,23 @@ export function filterInnerType(type: string | undefined): string | undefined {
  *   `.` does not match a newline, so the value would return carrying a stray
  *   backslash.
  * - **A value that is ENTIRELY whitespace is refused**, rather than encoded.
- *   It has to be: `parse` returns a null clause for it with an empty log, not an
- *   error, and Malloy compiles a null clause to the SQL constant `true`, so
- *   encoding it would match every row. That is the same silent widening this
- *   module exists to prevent, so it is dropped like `""` above. The test is
- *   JavaScript's `trim()`, which is where this stops: it treats NBSP and the
- *   ideographic space as whitespace but NOT U+200B, so a zero-width space
- *   survives as an ordinary value. Harmless, since it filters for something
- *   useless rather than for everything, but worth knowing the boundary.
+ *   For a tab or an NBSP it HAS to be: the escaper does not cover them, `parse`
+ *   returns a null clause with an empty log rather than an error, and Malloy
+ *   compiles a null clause to the SQL constant `true`, so encoding one would
+ *   match every row. That is the silent widening this module exists to prevent.
+ *
+ *   For a run of ASCII SPACES it is a choice, not a necessity, and the earlier
+ *   wording here claimed otherwise. Measured: `unparse({operator:"=", values:
+ *   [" "]})` gives `"\ "` and parses straight back to `[" "]`, so spaces do
+ *   round-trip. They are dropped anyway to keep ONE rule. The alternative
+ *   carries spaces and drops tabs, and nothing on screen distinguishes them,
+ *   so a reader could not predict which of two identical-looking values
+ *   filtered and which quietly matched everything.
+ *
+ *   The test is JavaScript's `trim()`, which is where this stops: it treats
+ *   NBSP and the ideographic space as whitespace but NOT U+200B, so a
+ *   zero-width space survives as an ordinary value. Harmless, since it filters
+ *   for something useless rather than for everything, but worth the boundary.
  *
  * All three are pinned in the spec so a future change to either side is visible.
  */

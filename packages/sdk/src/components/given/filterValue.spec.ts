@@ -204,6 +204,32 @@ describe("decodeFilterList", () => {
       expect(valuesMalloyWillMatch(encodeFilterList([" a "]))).toEqual([" a "]);
    });
 
+   it("drops a space by CHOICE, and a tab by necessity", () => {
+      // The docstring used to say the all-whitespace refusal was forced by the
+      // grammar. It is forced only for the values the escaper does not cover.
+      // An ASCII space round-trips faithfully through the real parser, so
+      // dropping it is a uniformity choice, and this pins the difference the
+      // prose now turns on.
+      const space = StringFilterExpression.unparse({
+         operator: "=",
+         values: [" "],
+      });
+      expect(StringFilterExpression.parse(space).parsed).toEqual({
+         operator: "=",
+         values: [" "],
+      });
+      // A tab does NOT: it parses to a null clause, which Malloy compiles to
+      // `true`, i.e. every row. That is the case the rule cannot bend for.
+      const tab = StringFilterExpression.unparse({
+         operator: "=",
+         values: ["\t"],
+      });
+      expect(StringFilterExpression.parse(tab).parsed).toBeNull();
+      // Both are dropped, because one rule beats two indistinguishable ones.
+      expect(encodeFilterList([" "])).toBe("");
+      expect(encodeFilterList(["\t"])).toBe("");
+   });
+
    it("does not drop a zero-width space, which is where `trim()` stops", () => {
       // The all-whitespace refusal tests with JavaScript's `trim()`, which
       // treats NBSP and the ideographic space as whitespace but not U+200B. So
