@@ -2037,6 +2037,7 @@ describe("row-level authorize — other", () => {
             },
          },
          declaredTypes,
+         new Map(),
       );
       expect(rejectedEq.shape).toBe("rejected");
    });
@@ -3068,6 +3069,172 @@ source: X is duckdb.table('parent') extend {
          );
          const adminRows = admin.compactResult as unknown as { n: number }[];
          expect(adminRows[0].n).toBe(4);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Field-vs-given comparison against a given carrying a declared default — the
+// SCALAR_COMPARISON_NODES sibling of the `not in $GROUPS` hazard: `org_id in
+// $GROUPS` is refused when negated because an empty default admits every row,
+// but `tenant != $EXCLUDED` / `amount > $FLOOR` carry the IDENTICAL hazard at
+// the documented default convention ('' / 0) and were previously accepted —
+// `assertNoVacuousDefaultAtom` only probes a `<given> <op> <literal>` atom,
+// never a `<field> <op> <given>` comparison, so it structurally cannot catch
+// these. `classifyAuthorizeGate` now refuses a field comparison outright when
+// its given carries ANY declared default, regardless of operator — see its
+// doc comment for why this is about the DEFAULT, not the operator, and the
+// anti-narrowing test below for why narrowing to `=`/`in` instead would be
+// wrong (a `<=`/`>=` no-read-up gate against a given with NO default is
+// legitimate and stays accepted).
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — field comparison against a defaulted given", () => {
+   /** Same idiom as the "vacuous default atom" describe block's own
+    *  `createModel` (duplicated, not imported, for the same reason). */
+   async function createModel(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-field-default-"));
+      fs.writeFileSync(path.join(dir, "m.malloy"), text);
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   function compilationErrorOf(model: Model): Error | undefined {
+      return (model as unknown as { compilationError?: Error })
+         .compilationError;
+   }
+
+   it("CRITICAL — `amount > $FLOOR`, FLOOR defaulting to 0, is refused at load (a caller supplying nothing admits ~every row)", async () => {
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  FLOOR :: number is 0
+
+#(authorize) "amount > $FLOOR"
+source: X is duckdb.table('parent') extend {
+   dimension: amount is id
+   measure: n is count()
+}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/FLOOR/);
+         expect(err?.message).toMatch(/default/i);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("CRITICAL — `tenant != $EXCLUDED`, EXCLUDED defaulting to '', is refused at load", async () => {
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  EXCLUDED :: string is ''
+
+#(authorize) "tenant != $EXCLUDED"
+source: X is duckdb.table('parent') extend {
+   dimension: tenant is val
+   measure: n is count()
+}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/EXCLUDED/);
+         expect(err?.message).toMatch(/default/i);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("ANTI-NARROWING GUARD — `clearance <= $MAXLVL`, MAXLVL with NO default, loads cleanly and filters rows (a no-read-up gate must not be refused merely for using a comparison operator)", async () => {
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  MAXLVL :: number
+
+#(authorize) "clearance <= $MAXLVL"
+source: X is duckdb.table('parent') extend {
+   dimension: clearance is org_id
+   measure: n is count()
+}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // org_id=1 rows are ids 1,2 (clearance=1); org_id=2 rows are ids 3,4
+         // (clearance=2). MAXLVL=1 admits only the clearance=1 rows; MAXLVL=2
+         // admits all four — two different values, two different real row
+         // counts, so a fix that refused every comparison operator (not just
+         // ones whose given carries a default) would fail this test loudly.
+         const low = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { MAXLVL: 1 },
+         );
+         const lowRows = low.compactResult as unknown as { n: number }[];
+         expect(lowRows[0].n).toBe(2);
+
+         const high = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { MAXLVL: 2 },
+         );
+         const highRows = high.compactResult as unknown as { n: number }[];
+         expect(highRows[0].n).toBe(4);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("`org_id in $GROUPS`, a caller supplying an empty array, loads cleanly and returns zero rows (the fail-closed empty-array case, unaffected by this refusal since `in` is not a field-vs-given SCALAR_COMPARISON_NODES comparison)", async () => {
+      // An array-typed given can't declare a default at all (Malloy grammar
+      // rejects `:: number[] is []` — confirmed against this suite's own
+      // compiler), so there is no declared-default hazard on this shape to
+      // begin with; the fail-closed behavior below is `in`'s existing
+      // empty-array handling, not something this refusal touches.
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [] },
+         );
+         const rows = result.compactResult as unknown as { n: number }[];
+         expect(rows[0].n).toBe(0);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });

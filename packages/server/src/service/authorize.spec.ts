@@ -240,6 +240,10 @@ const TYPES = new Map<string, string>([
    ["ROLE", "string"],
 ]);
 
+/** No given in this suite's fixtures declares a default; classifyAuthorizeGate's
+ *  third argument is exercised separately by the field-given-default tests below. */
+const DEFAULTS = new Map<string, string>();
+
 /** `{node:'field', path:[…]}` — a row or joined field reference. */
 const field = (...path: string[]) => ({ node: "field", path });
 /** `{node:'given', refName}` — a declared given reference. */
@@ -288,18 +292,22 @@ describe("classifyAuthorizeGate", () => {
                refSummary: { fieldUsage: [], givenUsage: [{ id: "given/x" }] },
             },
             TYPES,
+            DEFAULTS,
          ),
       ).toEqual({ shape: "given_only" });
    });
 
    it("treats an absent refSummary as given-only rather than guessing", () => {
-      expect(classifyAuthorizeGate({}, TYPES)).toEqual({ shape: "given_only" });
+      expect(classifyAuthorizeGate({}, TYPES, DEFAULTS)).toEqual({
+         shape: "given_only",
+      });
    });
 
    it("accepts `field in $ARRAY`", () => {
       const result = classifyAuthorizeGate(
          condition(inGiven(field("org_id"), "GROUPS"), [["org_id"]]),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toEqual({
          shape: "row_level",
@@ -314,6 +322,7 @@ describe("classifyAuthorizeGate", () => {
             ["childtable", "name"],
          ]),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toEqual({
          shape: "row_level",
@@ -333,6 +342,7 @@ describe("classifyAuthorizeGate", () => {
             [["org_id"], ["val"]],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result.shape).toBe("row_level");
    });
@@ -342,6 +352,7 @@ describe("classifyAuthorizeGate", () => {
          classifyAuthorizeGate(
             condition(binary("=", given("BOB"), field("owner")), [["owner"]]),
             TYPES,
+            DEFAULTS,
          ).shape,
       ).toBe("row_level");
    });
@@ -365,6 +376,7 @@ describe("classifyAuthorizeGate", () => {
             [["org_id"]],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toEqual({
          shape: "row_level",
@@ -389,6 +401,7 @@ describe("classifyAuthorizeGate", () => {
             [],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toEqual({ shape: "given_only" });
    });
@@ -407,6 +420,7 @@ describe("classifyAuthorizeGate", () => {
             [["owner"]],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toMatchObject({
          shape: "rejected",
@@ -420,6 +434,7 @@ describe("classifyAuthorizeGate", () => {
       const result = classifyAuthorizeGate(
          condition(binary("=", field("org_id"), given("GROUPS")), [["org_id"]]),
          TYPES,
+         DEFAULTS,
       );
       expect(result.shape).toBe("rejected");
       expect(result).toMatchObject({ cause: "array_given_needs_in" });
@@ -429,6 +444,7 @@ describe("classifyAuthorizeGate", () => {
       const result = classifyAuthorizeGate(
          condition(inGiven(field("owner"), "BOB"), [["owner"]]),
          TYPES,
+         DEFAULTS,
       );
       expect(result.shape).toBe("rejected");
       expect(result).toMatchObject({ cause: "scalar_given_rejects_in" });
@@ -440,6 +456,7 @@ describe("classifyAuthorizeGate", () => {
       const result = classifyAuthorizeGate(
          condition(inGiven(field("org_id"), "FARAWAY"), [["org_id"]]),
          TYPES,
+         DEFAULTS,
       );
       expect(result.shape).toBe("rejected");
       expect(result).toMatchObject({ cause: "unreachable_given" });
@@ -455,6 +472,7 @@ describe("classifyAuthorizeGate", () => {
             [["name"]],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toMatchObject({
          shape: "rejected",
@@ -476,6 +494,7 @@ describe("classifyAuthorizeGate", () => {
             [["val"]],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toMatchObject({
          shape: "rejected",
@@ -493,6 +512,7 @@ describe("classifyAuthorizeGate", () => {
             [["org_id"]],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toMatchObject({
          shape: "rejected",
@@ -511,6 +531,7 @@ describe("classifyAuthorizeGate", () => {
             ["org_id"],
          ]),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toMatchObject({
          shape: "rejected",
@@ -522,6 +543,7 @@ describe("classifyAuthorizeGate", () => {
       const result = classifyAuthorizeGate(
          condition(inGiven(field("org_id"), "GROUPS", true), [["org_id"]]),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toMatchObject({
          shape: "rejected",
@@ -539,6 +561,7 @@ describe("classifyAuthorizeGate", () => {
             [["name"]],
          ),
          TYPES,
+         DEFAULTS,
       );
       expect(result).toMatchObject({
          shape: "rejected",
@@ -549,12 +572,13 @@ describe("classifyAuthorizeGate", () => {
    it("rejects an unreadable condition rather than passing it", () => {
       // Fail closed: a shape we cannot read is not a gate we can enforce.
       expect(
-         classifyAuthorizeGate(condition(null, [["org_id"]]), TYPES),
+         classifyAuthorizeGate(condition(null, [["org_id"]]), TYPES, DEFAULTS),
       ).toMatchObject({ shape: "rejected" });
       expect(
          classifyAuthorizeGate(
             condition({ notANode: true }, [["org_id"]]),
             TYPES,
+            DEFAULTS,
          ),
       ).toMatchObject({ shape: "rejected" });
    });
@@ -563,7 +587,7 @@ describe("classifyAuthorizeGate", () => {
       let deep: unknown = inGiven(field("org_id"), "GROUPS");
       for (let i = 0; i < 80; i++) deep = { node: "()", e: deep };
       expect(
-         classifyAuthorizeGate(condition(deep, [["org_id"]]), TYPES),
+         classifyAuthorizeGate(condition(deep, [["org_id"]]), TYPES, DEFAULTS),
       ).toMatchObject({ shape: "rejected", cause: "unsupported_node" });
    });
 });

@@ -824,6 +824,27 @@ export class Model {
    }
 
    /**
+    * Given name → declared default (rendered Malloy source text), mirroring
+    * {@link givenDeclaredTypes} — same cache-once-per-`Model` treatment, same
+    * `givens` surface. Feeds {@link classifyAuthorizeGate}'s `declaredDefaults`
+    * on the request-time graft re-classification ({@link resolveGateShape}),
+    * so a field-vs-given gate reached through a join/derivation is refused
+    * the same way `validateAuthorizeProbes` refuses it at load time — needed
+    * here too because a grafted gate can resolve against a DIFFERENT model's
+    * given surface than the one `validateAuthorizeProbes` validated.
+    */
+   private givenDeclaredDefaultsCache: Map<string, string> | undefined;
+
+   private givenDeclaredDefaults(): Map<string, string> {
+      this.givenDeclaredDefaultsCache ??= new Map(
+         (this.givens ?? [])
+            .filter((g) => g.name != null && g.default != null)
+            .map((g) => [g.name, g.default as string] as [string, string]),
+      );
+      return this.givenDeclaredDefaultsCache;
+   }
+
+   /**
     * Effective authorize expressions gating a source: its own `#(authorize)`,
     * evaluated as one OR disjunction at request time. Empty array means
     * unrestricted. Reads the per-source list surfaced on `sources` (which
@@ -2051,6 +2072,7 @@ export class Model {
          const classification = classifyAuthorizeGate(
             condition,
             this.givenDeclaredTypes(),
+            this.givenDeclaredDefaults(),
          );
          cached = { classification, condition };
          this.gateShapeCache.set(cacheKey, cached);
@@ -2697,9 +2719,15 @@ export class Model {
                   .filter((g) => g.name != null && g.type != null)
                   .map((g) => [g.name, g.type] as [string, string]),
             );
+            const declaredGivenDefaults = new Map(
+               (givens ?? [])
+                  .filter((g) => g.name != null && g.default != null)
+                  .map((g) => [g.name, g.default as string] as [string, string]),
+            );
             await validateAuthorizeProbes(modelMaterializer, {
                authorizeMap: sourceResult.authorizeMap,
                declaredTypes: declaredGivenTypes,
+               declaredDefaults: declaredGivenDefaults,
                authorizeOwnNotes: sourceResult.authorizeOwnNotes,
                onRowLevelGateRejected: recordRowLevelGateRejected,
                // A gate genuinely inherited (not declared) at this entry

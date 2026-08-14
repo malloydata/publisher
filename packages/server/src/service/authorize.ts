@@ -340,7 +340,7 @@ export type AuthorizeGateShape = "given_only" | "row_level";
 /**
  * Why a row-level gate was refused at publish. Also the metric label.
  *
- * The first five come from {@link classifyAuthorizeGate}: the gate's compiled
+ * The first six come from {@link classifyAuthorizeGate}: the gate's compiled
  * condition IS readable and is not an allowed shape — invalid IN ITSELF,
  * wherever it is probed from. `entry_point_unexpressible` is different in
  * kind: the gate is a valid, allowed shape, but at one entry point that did
@@ -356,6 +356,7 @@ export type AuthorizeGateShape = "given_only" | "row_level";
 export type RowLevelGateRejectionCause =
    | "array_given_needs_in"
    | "scalar_given_rejects_in"
+   | "field_given_has_default"
    | "unsupported_node"
    | "no_given_reference"
    | "unreachable_given"
@@ -446,11 +447,30 @@ export interface CompiledGateCondition {
  * would otherwise silently bind that given's declaration DEFAULT at request
  * time.
  *
+ * `declaredDefaults` is this model's given surface again, but the DECLARED
+ * DEFAULT text rather than the type — the value a caller who supplies nothing
+ * gets. A `<field> <op> $GIVEN` comparison (a real row-level gate, as opposed
+ * to the `<given> <op> <literal>` admin-override atom handled separately) is
+ * refused outright when `$GIVEN` carries one: `tenant != $EXCLUDED` with
+ * `EXCLUDED` defaulting to `''` compiles to `WHERE tenant != ''`, which admits
+ * nearly every row for a caller who supplies nothing, and the same failure
+ * mode hits `>`/`>=` against a numeric zero default. This is not about the
+ * OPERATOR — `<=`/`>=` against a given with NO default (e.g. a no-read-up
+ * `clearance <= $MAXLVL`) is a legitimate gate and stays accepted; a given
+ * with no default has no hazard at all, since an unsupplied one fails the
+ * request outright ("has no value and no default") rather than silently
+ * resolving to anything. See `assertNoVacuousDefaultAtom` for the sibling
+ * check on the literal-atom side, which this doesn't overlap with: that one
+ * PROBES an atom's truth against its default; this one refuses at the shape
+ * level because a field comparison can't be probed the same way (the
+ * "default" side is a fixed value, but the FIELD side ranges over every row).
+ *
  * Fails CLOSED: an unreadable condition is a rejection, never a pass.
  */
 export function classifyAuthorizeGate(
    condition: CompiledGateCondition,
    declaredTypes: Map<string, string>,
+   declaredDefaults: Map<string, string>,
 ): RowLevelGateClassification {
    const fieldUsage = condition.refSummary?.fieldUsage;
    // Malloy's own reference-tracking walker populated this. Absent or empty
@@ -644,6 +664,26 @@ export function classifyAuthorizeGate(
                );
             }
             return true;
+         }
+         // A real row-level comparison — the given's other side is a FIELD,
+         // which ranges over every row. Refuse it outright if `$given` carries
+         // a declared default: a caller who supplies nothing gets whatever
+         // rows that default admits (`> 0`, `!= ''`, … each admit nearly every
+         // row), and there is no way to probe a field-vs-given comparison the
+         // way `assertNoVacuousDefaultAtom` probes a literal atom, because the
+         // FIELD side isn't a fixed value to evaluate against. A given with NO
+         // default carries no such hazard — see the function doc — so only a
+         // DECLARED default is refused here, not the comparison operator.
+         if (declaredDefaults.has(given)) {
+            return reject(
+               "field_given_has_default",
+               `\`${kind}\` compares row field data against \`$${given}\`, ` +
+                  `which is declared with a default (\`${declaredDefaults.get(given)}\`). ` +
+                  `A caller who supplies no value for \`$${given}\` gets that ` +
+                  `default, and the comparison then applies to every row — ` +
+                  `admitting rows it was meant to exclude. Declare \`$${given}\` ` +
+                  `with no default so a caller must supply one explicitly`,
+            );
          }
          givenNames.push(given);
          return walkFieldOperand(otherSide);
@@ -1332,6 +1372,15 @@ export async function validateAuthorizeProbes(
       authorizeMap?: AuthorizeMap;
       declaredTypes?: Map<string, string>;
       /**
+       * Given name → declared default (rendered Malloy source text, from
+       * `ApiGiven.default` / `malloyGivenToApi`). Passed to
+       * {@link classifyAuthorizeGate} so a field-vs-given row-level
+       * comparison can be refused when its given carries one — see that
+       * function's doc for why a declared default is a vacuous-admission
+       * hazard there in a way a probe can't catch structurally.
+       */
+      declaredDefaults?: Map<string, string>;
+      /**
        * source name → the source's OWN-level `#(authorize)`-tagged note
        * objects (from `extractSourcesFromModelDef`) — empty when the struct
        * carries no annotation of its own at all (e.g. a `query_source`,
@@ -1356,6 +1405,8 @@ export async function validateAuthorizeProbes(
    },
 ): Promise<void> {
    const declaredTypes = options.declaredTypes ?? new Map<string, string>();
+   const declaredDefaults =
+      options.declaredDefaults ?? new Map<string, string>();
    // Note objects that validated successfully somewhere in this model — see
    // the function doc for why this, not gate TEXT, is the safe discriminator
    // for "is a pending failure elsewhere's genuinely inherited copy".
@@ -1386,7 +1437,11 @@ export async function validateAuthorizeProbes(
             continue;
          }
 
-         const classification = classifyAuthorizeGate(condition, declaredTypes);
+         const classification = classifyAuthorizeGate(
+            condition,
+            declaredTypes,
+            declaredDefaults,
+         );
          if (classification.shape === "given_only") {
             await runOneRowProbeOrThrow(compiler, sourceName, exprs);
             for (const note of ownNotesOf.get(sourceName) ?? []) {
