@@ -39,7 +39,15 @@ export function givenToParam(
    // address bar, and the query then re-ran at midnight against a different
    // instant than the reader had chosen.
    if (value instanceof Date) return dateToRequest(value, type);
-   if (Array.isArray(value)) return value.map(String).join(",");
+   // Refused, not joined. `GivenValue` used to admit `string[]` and this joined
+   // on `,` with no escaping, which this codec cannot undo: `paramToGiven`
+   // never returns an array for any type, so the list came back as one string,
+   // and a value CONTAINING a comma ("Ben & Jerry, Inc") could not even be
+   // split back to the right count. The type no longer promises arrays; this
+   // stays as a guard for a JavaScript caller the types cannot reach, where
+   // dropping the parameter is at least visible as "unset" rather than sending
+   // a value the reader never chose.
+   if (Array.isArray(value)) return undefined;
    return String(value);
 }
 

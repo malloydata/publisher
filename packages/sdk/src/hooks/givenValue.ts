@@ -7,11 +7,4 @@
  * speaks it, and it should not have to be imported from whichever hook happens
  * to be canonical this week.
  */
-export type GivenValue =
-   | string
-   | number
-   | boolean
-   | Date
-   | string[]
-   | number[]
-   | null;
+export type GivenValue = string | number | boolean | Date | null;

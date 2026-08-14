@@ -234,11 +234,9 @@ export function GivenInput({
         ? typeof value === "string"
            ? decodeFilterList(value)
            : []
-        : Array.isArray(value)
-          ? value.map(String)
-          : typeof value === "string" && value !== ""
-            ? [value]
-            : [];
+        : typeof value === "string" && value !== ""
+          ? [value]
+          : [];
 
    if (
       pickerControl &&

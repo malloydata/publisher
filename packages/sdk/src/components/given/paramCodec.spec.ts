@@ -32,7 +32,25 @@ describe("givenToParam", () => {
       expect(givenToParam(new Date("2024-03-01T00:00:00Z"), "date")).toBe(
          "2024-03-01",
       );
-      expect(givenToParam(["a", "b"], "string")).toBe("a,b");
+   });
+
+   it("refuses an array rather than joining it into one parameter", () => {
+      // `GivenValue` used to admit `string[]`, and this joined on `,` with no
+      // escaping, which the codec cannot undo: `paramToGiven` never returns an
+      // array for ANY type, so the list came back as a single string. Sha-Bang's
+      // case is the one that shows it is not merely lossy but unrecoverable,
+      // because the value itself contains the separator: `["Ben & Jerry, Inc",
+      // "Nike"]` joined to `Ben & Jerry, Inc,Nike`, which splits back to three
+      // values, not two.
+      //
+      // The type no longer promises arrays. Cast here because this pins the
+      // runtime guard for a JavaScript caller the types cannot reach.
+      const asGiven = (value: unknown) => value as never;
+      expect(givenToParam(asGiven(["a", "b"]), "string")).toBeUndefined();
+      expect(
+         givenToParam(asGiven(["Ben & Jerry, Inc", "Nike"]), "string"),
+      ).toBeUndefined();
+      expect(givenToParam(asGiven([1, 2]), "number")).toBeUndefined();
    });
 });
 
