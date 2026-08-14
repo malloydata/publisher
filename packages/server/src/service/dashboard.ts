@@ -1084,6 +1084,28 @@ export function lintDrillTargets(
 }
 
 /**
+ * The given a `# drill` seeds, by the SAME rule the runtime uses.
+ *
+ * The runtime is `packages/sdk/src/components/drill/resolveDrill.ts`, which
+ * returns `field.tag?.tag("drill")?.text("given") ?? field.name`, the field name
+ * VERBATIM. It carries a comment recording the upper-cased spelling as a bug it
+ * fixed: on a lowercase-named dimension it resolved to a given that does not
+ * exist and the click was dropped in silence.
+ *
+ * This copy exists only because the server cannot import the SDK resolver. It
+ * has one job, to track that function, and it is the one place the rule lives on
+ * this side so the next drift is visible here rather than spread across call
+ * sites. If they disagree, the resolver wins: the lint is the copy.
+ *
+ * Getting this wrong is worse than not linting. A lint that is silent tells an
+ * author nothing; a lint that is GREEN tells them the drill is wired, and their
+ * next move is to stop checking.
+ */
+function drillGivenName(drill: DashboardDrill): string {
+   return drill.given ?? drill.dimension;
+}
+
+/**
  * Validate every `# drill { to=self }` against the givens the package's
  * documents actually surface.
  *
@@ -1112,16 +1134,31 @@ export function lintSelfDrills(
    for (const file of facts) {
       for (const drill of file.drills) {
          if (!drill.to.includes("self")) continue;
-         const given = drill.given ?? drill.dimension.toUpperCase();
+         const given = drillGivenName(drill);
          if (surfaced.has(given)) continue;
          const where = `${drill.source}.${drill.dimension}`;
+         // A case-only mismatch is worth its own message. It is the shape an
+         // author is most likely to hit and least likely to diagnose, because
+         // the same tag WORKS in a notebook: `Notebook` folds case at lookup and
+         // a dashboard does not, so `# drill` on `region` finds a declared
+         // `REGION` there and silently finds nothing here.
+         const caseOnly = Array.from(surfaced).find(
+            (name) => name.toLowerCase() === given.toLowerCase(),
+         );
          findings.set(where, {
             subject: where,
-            message:
-               `# drill on ${where} has to=self, but no model in this ` +
-               `package declares a given "${given}" for the clicked value to ` +
-               `filter on, so the drill cannot fire anywhere. Declare it, or ` +
-               `point the tag at a given that exists with given=.`,
+            message: caseOnly
+               ? `# drill on ${where} has to=self and seeds a given named ` +
+                 `"${given}", the dimension exactly as spelled, but this ` +
+                 `package declares "${caseOnly}". The names differ only in ` +
+                 `case, which a notebook forgives at lookup and a dashboard ` +
+                 `does not, so the click silently filters nothing here. Rename ` +
+                 `the given to "${given}", or point the tag at it with ` +
+                 `given=${caseOnly}.`
+               : `# drill on ${where} has to=self, but no model in this ` +
+                 `package declares a given "${given}" for the clicked value to ` +
+                 `filter on, so the drill cannot fire anywhere. Declare it, or ` +
+                 `point the tag at a given that exists with given=.`,
             severity: "error",
          });
       }

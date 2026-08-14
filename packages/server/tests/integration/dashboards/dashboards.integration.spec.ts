@@ -964,7 +964,7 @@ describe("Dashboard discovery (E2E)", () => {
          expect(messages).toContainEqual(
             expect.stringContaining(
                "# drill on shipping.warehouse has to=self, but no model in " +
-                  'this package declares a given "WAREHOUSE"',
+                  'this package declares a given "warehouse"',
             ),
          );
          // The self drill that names a declared given is silent, so the rule

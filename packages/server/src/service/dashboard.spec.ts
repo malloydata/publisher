@@ -871,7 +871,7 @@ describe("service/dashboard lint", () => {
             {
                subject: "orders.warehouse",
                severity: "error",
-               message: expect.stringContaining('a given "WAREHOUSE"'),
+               message: expect.stringContaining('a given "warehouse"'),
             },
          ]);
       });
@@ -882,6 +882,39 @@ describe("service/dashboard lint", () => {
          expect(
             lintSelfDrills([
                facts({ drills: [selfDrill("region")] }),
+               surfacing("region"),
+            ]),
+         ).toEqual([]);
+      });
+
+      /**
+       * The runtime seeds the dimension name EXACTLY as spelled
+       * (`resolveDrill.ts`, `drillGivenName`), and no dashboard consumer folds
+       * case. So `# drill` on `region` against a declared `REGION` sets a value
+       * under a name nothing reads, and the click filters nothing.
+       *
+       * This is the shape hardest to diagnose, because the same tag WORKS in a
+       * notebook, which does fold case at lookup. An earlier version of this
+       * suite asserted the lint stays SILENT here, which pinned the defect as
+       * correct: a green lint told the author the drill was wired.
+       */
+      it("flags a given that differs from the dimension only in case", () => {
+         const findings = lintSelfDrills([
+            facts({ drills: [selfDrill("region")] }),
+            surfacing("REGION"),
+         ]);
+         expect(findings).toHaveLength(1);
+         expect(findings[0]?.message).toContain('declares "REGION"');
+         expect(findings[0]?.message).toContain("differ only in");
+         expect(findings[0]?.severity).toBe("error");
+      });
+
+      it("stays silent on an upper-case dimension whose given matches", () => {
+         // The other half: the fix must not start flagging the conventional
+         // spelling that already worked.
+         expect(
+            lintSelfDrills([
+               facts({ drills: [selfDrill("REGION")] }),
                surfacing("REGION"),
             ]),
          ).toEqual([]);
