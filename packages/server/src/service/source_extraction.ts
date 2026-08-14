@@ -80,18 +80,6 @@ export interface ExtractedSource {
    authorize: string[] | undefined;
 }
 
-/**
- * A source paired with the authorize expressions DECLARED on it, which is
- * the input `validateAuthorizeProbes` wants. Deliberately not part of
- * {@link ExtractedSource}: that object is cast to the wire/API `Source`
- * shape and serialized, and this is an internal load-time detail, not a field the
- * API promises.
- */
-export interface OwnAuthorizeSource {
-   name: string;
-   authorize: string[];
-}
-
 export interface ExtractedQuery {
    name: string;
    sourceName: string | undefined;
@@ -193,15 +181,14 @@ function joinFieldNamesUnresolvableDeclaration(
  * author asked for. Closing it would start rejecting requests that live models
  * have been serving, so it is left for a change that can carry that break.
  *
- * Two lists come out of this, and the distinction is load-bearing:
- *  - `authorize` is the EFFECTIVE gate (own-or-inherited), evaluated as one OR
- *    disjunction at request time. This is what introspection reports, so it must
- *    not understate what gates a source.
- *  - `ownAuthorizeSources` is the subset DECLARED here, and is the only thing
- *    handed to `validateAuthorizeProbes` — see its note on why load-time
- *    validation deliberately does not widen to inherited gates.
+ * `authorize` (and its `authorizeMap` twin) is the EFFECTIVE gate
+ * (own-or-inherited), evaluated as one OR disjunction at request time. It is
+ * both what introspection reports — so it must not understate what gates a
+ * source — and what `validateAuthorizeProbes` validates, per entry point;
+ * `authorizeOwnNotes` is the companion that tells it which of those entry
+ * points DECLARED the gate rather than inheriting it.
  *
- * A THIRD list, `misplacedAuthorize`, is not about a source's gate at all: it
+ * A separate list, `misplacedAuthorize`, is not about a source's gate at all: it
  * is every `#(authorize)` annotation this walk found attached to a
  * `dimension:`/`measure:`/`view:` FIELD rather than the `source:` line itself
  * — a position nothing here, or anywhere else, ever reads for enforcement.
@@ -231,7 +218,6 @@ export function extractSourcesFromModelDef(
    sources: ExtractedSource[];
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
-   ownAuthorizeSources: OwnAuthorizeSource[];
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
    /** `#(authorize)` found on a `join_one:`/`join_many:` field that looks
     *  author-written rather than Malloy's by-reference copy — see the
@@ -241,7 +227,6 @@ export function extractSourcesFromModelDef(
 } {
    const filterMap = new Map<string, FilterDefinition[]>();
    const authorizeMap: AuthorizeMap = new Map();
-   const ownAuthorizeSources: OwnAuthorizeSource[] = [];
    // `#(authorize)` written one line too low — on a `dimension:`/`measure:`/
    // `join_one:`/`view:` INSIDE a source rather than on the `source:` line
    // itself — lands on that FIELD's own annotations, which nothing walks for
@@ -298,10 +283,16 @@ export function extractSourcesFromModelDef(
    // `modelAnnotations` (folded across the import lineage), matching where
    // this used to collect file-level gates from, so a `##(authorize)` in an
    // IMPORTED file is refused too — not just one written in the local file.
-   for (const note of modelAnnotations(modelDef).notes ?? []) {
-      if (containsAuthorizeAnnotationTag([note.text])) {
-         misplacedAuthorize.push({ kind: "file" });
-      }
+   // At most ONE finding however many `##(authorize)` notes are folded in: a
+   // `"file"`-kind finding carries no name to tell two of them apart, so
+   // pushing one per note would only repeat the same bullet line N times in
+   // the refusal message.
+   if (
+      containsAuthorizeAnnotationTag(
+         (modelAnnotations(modelDef).notes ?? []).map((note) => note.text),
+      )
+   ) {
+      misplacedAuthorize.push({ kind: "file" });
    }
 
    const sources: ExtractedSource[] = Object.values(modelDef.contents)
@@ -377,21 +368,6 @@ export function extractSourcesFromModelDef(
             authorizeMap.set(sourceName, effective);
             authorize = effective;
          }
-         // Validation scope: own gate only. An inherited gate is NOT added —
-         // it belongs to the base, whose own given namespace may not be
-         // reachable from here (Malloy merges one import level, so a base two or
-         // more hops away can reference a given this model cannot see). Probing
-         // it against THIS model would report a perfectly good annotation as
-         // invalid and fail the load with a 424. It still fails CLOSED at request
-         // time: `Model.gateExprsForOwnAnnotations` turns a parse failure into a
-         // single unsatisfiable `"false"`.
-         if (ownGates.length > 0) {
-            ownAuthorizeSources.push({
-               name: sourceName,
-               authorize: ownGates,
-            });
-         }
-
          const views: ExtractedView[] = struct.fields
             .filter((field) => field.type === "turtle")
             .filter((turtle) =>
@@ -495,7 +471,6 @@ export function extractSourcesFromModelDef(
       sources,
       filterMap,
       authorizeMap,
-      ownAuthorizeSources,
       misplacedAuthorize,
       joinMisplacedAuthorize,
       authorizeOwnNotes,

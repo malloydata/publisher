@@ -102,7 +102,6 @@ import {
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
-   type OwnAuthorizeSource,
 } from "../service/source_extraction";
 import { type AnnotationNote } from "../service/annotations";
 import {
@@ -603,7 +602,6 @@ function extractSources(
    sources: ApiSourceWire[];
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
-   ownAuthorizeSources: OwnAuthorizeSource[];
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
    joinMisplacedAuthorize: MisplacedAuthorizeAnnotation[];
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
@@ -612,7 +610,6 @@ function extractSources(
       sources,
       filterMap,
       authorizeMap,
-      ownAuthorizeSources,
       misplacedAuthorize,
       joinMisplacedAuthorize,
       authorizeOwnNotes,
@@ -621,7 +618,6 @@ function extractSources(
       sources: sources as unknown as ApiSourceWire[],
       filterMap,
       authorizeMap,
-      ownAuthorizeSources,
       misplacedAuthorize,
       joinMisplacedAuthorize,
       authorizeOwnNotes,

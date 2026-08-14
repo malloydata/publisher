@@ -1622,18 +1622,25 @@ export class MaterializationService {
                   getPersistStorageMode() !== "off"
                ) {
                   assertMaterializationEligible(persistSource);
+               } else {
+                  // The gate refusal above only fires for a STORAGE-targeted
+                  // build, so on its own it leaves every other instruction —
+                  // the colocated one with no destination, and any build while
+                  // the mode is off — putting a gated source into a frozen
+                  // table that carries no gate. An orchestrated host chooses
+                  // the destination, so this path reaches that case with no
+                  // `#@ persist`-vs-`storage=` distinction to lean on; refuse
+                  // a gated source however it was instructed. `else` rather
+                  // than an unconditional call: `assertMaterializationEligible`
+                  // already runs the identical `referencesAuthorize` IR walk,
+                  // so calling both on the storage path would walk every
+                  // persist source's whole `SourceDef` twice per build for an
+                  // answer the first call has already acted on. Before
+                  // computeSourceEntityId for the reason the comment above
+                  // gives: it calls getSQL(), which throws opaquely for a gate
+                  // that references a given, losing the clean 422.
+                  assertColocatedPersistNotAuthorizeGated(persistSource);
                }
-
-               // The gate refusal above only fires for a STORAGE-targeted build,
-               // so on its own it leaves the colocated instruction — the one with
-               // no destination — building a gated source into a frozen table that
-               // carries no gate. An orchestrated host chooses the destination, so
-               // this path reaches that case with no `#@ persist`-vs-`storage=`
-               // distinction to lean on; refuse a gated source however it was
-               // instructed. Before computeSourceEntityId for the reason the
-               // comment above gives: it calls getSQL(), which throws opaquely for
-               // a gate that references a given, losing the clean 422.
-               assertColocatedPersistNotAuthorizeGated(persistSource);
 
                // The manifest is keyed by the content sourceEntityId — what Malloy
                // recomputes to resolve upstream persist references during SQL

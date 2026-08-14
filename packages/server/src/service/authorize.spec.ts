@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
    classifyAuthorizeGate,
    collectAuthorizeExprs,
+   containsAuthorizeAnnotationTag,
    isProbeTrue,
    parseAuthorizeAnnotation,
    referencedGivenNames,
@@ -115,6 +116,64 @@ describe("parseAuthorizeAnnotation", () => {
       expect(() => parseAuthorizeAnnotation(`#(authorize)`)).toThrow(
          /double-quoted/,
       );
+   });
+});
+
+describe("containsAuthorizeAnnotationTag", () => {
+   it("detects the tag at the start of a note, source- or file-level", () => {
+      expect(containsAuthorizeAnnotationTag([`#(authorize) "false"`])).toBe(
+         true,
+      );
+      expect(containsAuthorizeAnnotationTag([`##(authorize) "false"`])).toBe(
+         true,
+      );
+   });
+
+   it("tolerates the trailing newline Malloy keeps on note text", () => {
+      expect(containsAuthorizeAnnotationTag([`#(authorize) "false"\n`])).toBe(
+         true,
+      );
+   });
+
+   it("does NOT match a note that merely mentions the tag inside its own body", () => {
+      // Anchored after trimming, matching `parseAuthorizeAnnotation`: a note
+      // is one annotation, so the tag only counts as a declaration at its
+      // start. A `##(description)` note that quotes `#(authorize)` in prose
+      // is documentation, not a gate, and must not be mistaken for one — see
+      // this function's doc for the fail-closed cost of getting this wrong.
+      expect(
+         containsAuthorizeAnnotationTag([
+            `##(description) "see the #(authorize) tag docs"`,
+         ]),
+      ).toBe(false);
+      expect(
+         containsAuthorizeAnnotationTag([
+            `# note: this used to declare #(authorize) here, now removed`,
+         ]),
+      ).toBe(false);
+   });
+
+   it("still matches when the tag is preceded only by whitespace (the trim() half)", () => {
+      // Malloy itself never hands this function leading whitespace before
+      // the tag (it strips source indentation when it records note text),
+      // so this exercises `.trim()` directly rather than through a
+      // compiled fixture — a note object built any other way (e.g. a
+      // future caller that assembles notes programmatically) must not
+      // let indentation smuggle a gate past detection.
+      expect(containsAuthorizeAnnotationTag([`  #(authorize) "false"\n`])).toBe(
+         true,
+      );
+   });
+
+   it("returns false for a non-authorize annotation", () => {
+      expect(containsAuthorizeAnnotationTag([`# bar_chart`])).toBe(false);
+      expect(containsAuthorizeAnnotationTag([`#(filter) x=1`])).toBe(false);
+   });
+
+   it("checks every text in the list", () => {
+      expect(
+         containsAuthorizeAnnotationTag([`# bar_chart`, `#(authorize) "true"`]),
+      ).toBe(true);
    });
 });
 

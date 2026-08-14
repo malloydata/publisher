@@ -85,10 +85,12 @@ import {
    assertNoCallerAuthorizeAnnotation,
    assertNoMisplacedAuthorizeAnnotations,
    buildAuthorizeProbe,
+   buildRowLevelProbe,
    classifyAuthorizeGate,
    collectAuthorizeExprs,
    describeMisplacedJoinAuthorizeWarnings,
    evaluateAuthorize,
+   gateFilterText,
    referencedGivenNames,
    validateAuthorizeProbes,
    type AuthorizeMap,
@@ -132,7 +134,6 @@ import {
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
-   type OwnAuthorizeSource,
 } from "./source_extraction";
 import {
    recordAuthorizeBypass,
@@ -808,13 +809,21 @@ export class Model {
     * declared within one import hop of this model — a gate on a source
     * reached through a deeper transitive import isn't on this surface, so
     * that case still falls back to inferring from the value.
+    *
+    * Built once and reused: {@link givens} is fixed for the life of a `Model`
+    * (a package reload constructs a fresh one), and this is on the per-gate
+    * request path — every `resolveGateShape` and every `assertAuthorizedExprs`
+    * asks for it.
     */
+   private givenDeclaredTypesCache: Map<string, string> | undefined;
+
    private givenDeclaredTypes(): Map<string, string> {
-      return new Map(
+      this.givenDeclaredTypesCache ??= new Map(
          (this.givens ?? [])
             .filter((g) => g.name != null && g.type != null)
             .map((g) => [g.name, g.type] as [string, string]),
       );
+      return this.givenDeclaredTypesCache;
    }
 
    /**
@@ -991,6 +1000,15 @@ export class Model {
                : ({ kind: "given_only" } as const);
             if (resolution.kind === "row_level") continue;
             if (resolution.kind === "deny") {
+               // Same decision counter `authorizeAndBindRunnable` books for
+               // its own fail-closed refusals: a deny is a deny wherever the
+               // gate was resolved, and an operator reading
+               // `publisher_authorize_row_level_total{decision=
+               // "denied_by_gate"}` must not have a whole class of them
+               // (every gate refused at SHAPE resolution) silently missing.
+               // `cause` is the separate, finer rejection label, not a
+               // substitute for it.
+               recordRowLevelGateDecision("denied_by_gate");
                if (resolution.cause)
                   recordRowLevelGateRejected(resolution.cause);
                throw new AccessDeniedError(
@@ -1358,6 +1376,11 @@ export class Model {
             continue;
          }
          if (resolution.kind === "deny") {
+            // Booked here as well as in `authorizeAndBindRunnable` — see the
+            // identical call in `assertAuthorized`: a gate refused at SHAPE
+            // resolution is still a fail-closed deny, and leaving it out
+            // would make the decision counter under-report every one of them.
+            recordRowLevelGateDecision("denied_by_gate");
             if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
             throw new AccessDeniedError(
                `Access denied for source "${entry.label}".`,
@@ -1410,7 +1433,17 @@ export class Model {
       try {
          const { struct, modelDef, compositeResolvedSourceDef } =
             await this.resolveRunTargetStruct(runnable);
-         if (!modelDef) return false;
+         // The SAME "cannot tell" the catch below refuses, not a "no gate
+         // here": `resolveRunTargetStruct` SWALLOWS a `getPreparedQuery()`
+         // throw and reports it as `{struct: undefined, modelDef: undefined}`
+         // rather than rethrowing, so a failed compile of the LIVE query
+         // lands here and never reaches that catch. Returning false would
+         // admit exactly what the catch exists to block: the live compile
+         // failed so this walk found nothing, while the serve shape's own
+         // (different, annotation-free) compile can still succeed and answer
+         // from frozen, unfiltered rows with nothing left downstream to
+         // discover the gate.
+         if (!modelDef) return true;
          const seen = new Set<SourceDef>();
          const gates = this.collectEntryPointGates(
             struct,
@@ -1947,7 +1980,7 @@ export class Model {
       if (!graftTarget) {
          return this.classifyWithoutGraft(entry, graftScope.materializer);
       }
-      const filterText = entry.exprs.map((e) => `(${e})`).join(" or ");
+      const filterText = gateFilterText(entry.exprs);
       const cacheKey = `${graftScope.cacheScope}\u0000${graftTarget}\u0000${filterText}`;
 
       let cached = this.gateShapeCache.get(cacheKey);
@@ -2237,8 +2270,12 @@ export class Model {
       filterText: string,
       materializer: ModelMaterializer,
    ): Promise<FilterCondition> {
+      // Shared with load-time validation's own lift (`./authorize`'s
+      // `liftRowLevelCondition`) rather than spelled out twice: both read the
+      // compiled `FilterCondition` back out of `_query.structRef.filterList`,
+      // which only works while the two probe shapes stay byte-identical.
       const probe = materializer.loadQuery(
-         `run: ${quoteMalloyIdentifier(graftTarget)} extend { where: ${filterText} } -> { select: __authorize_probe is 1; limit: 1 }`,
+         buildRowLevelProbe(graftTarget, filterText),
       );
       const prepared = (await probe.getPreparedQuery()) as {
          _query?: { structRef?: { filterList?: FilterCondition[] } };
@@ -4166,7 +4203,21 @@ export class Model {
          // comment on this method), so this only ever short-circuits for the
          // same trusted data-management path that already bypasses the
          // authoritative gate below.
+         //
+         // Ordered AFTER the routing preconditions rather than before them:
+         // this pre-check exists only to veto storage routing, so a
+         // deployment that cannot route at all (mode off/write-only, no
+         // serve bindings, no destination config) has nothing for it to
+         // decide — and it is not free, being a full entry-point walk plus,
+         // on a cold `gateShapeCache`, a probe compile. Evaluating it first
+         // would put that on every query in every deployment, including the
+         // overwhelming majority that never route.
+         const storageRoutingPossible =
+            getPersistStorageMode() === "on" &&
+            this.serveBindings.length > 0 &&
+            !!this.serveDestinationConfig;
          const routingBlockedByRowLevelGate =
+            storageRoutingPossible &&
             !bypassAuthorize &&
             (await this.queryEntryPointHasRowLevelGate(runnable));
 
@@ -4180,12 +4231,7 @@ export class Model {
          // for anything the transform can't yet reproduce. Off / write-only and
          // packages with no storage bindings skip this entirely — and so does a
          // row-level-gated entry point, per the pre-check just above.
-         if (
-            !routingBlockedByRowLevelGate &&
-            getPersistStorageMode() === "on" &&
-            this.serveBindings.length > 0 &&
-            this.serveDestinationConfig
-         ) {
+         if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
             try {
                const shaped = await this.loadServeShapeQuery(queryString);
                runnable = shaped.runnable;
@@ -5144,10 +5190,6 @@ export class Model {
             const cellFilters = effectiveSource
                ? this.getFilters(effectiveSource)
                : [];
-            const filterClause =
-               cellFilters.length > 0
-                  ? buildFilterClause(cellFilters, filterParams ?? {})
-                  : undefined;
 
             // Pre-refinement gate call (Finding 2, docs/row-level-authorize-
             // spike-findings.md's follow-ups): probe `cell.runnable` — the
@@ -5171,23 +5213,38 @@ export class Model {
             // it: the post-refinement call below is the one authoritative
             // enforcement point.
             //
-            // Skipped entirely when `filterClause` is falsy: with no
-            // refinement to rebuild `cell.runnable` into, the post-refinement
-            // authoritative bind below runs against that SAME unrefined
-            // runnable, so this call would evaluate the identical gate a
-            // second time for nothing — doubling `assertAuthorizedExprs`
+            // Skipped entirely when this cell has no `#(filter)` refinement
+            // to apply: with nothing to rebuild `cell.runnable` into, the
+            // post-refinement authoritative bind below runs against that SAME
+            // unrefined runnable, so this call would evaluate the identical
+            // gate a second time for nothing — doubling `assertAuthorizedExprs`
             // calls and, for a `given_only` gate, a real warehouse round
             // trip too. This is also what keeps behavior byte-identical to
             // the prior release for the common (no `#(filter)` refinement)
-            // cell: with `filterClause` always falsy on that path, this call
-            // never ran before either.
-            if (cell.modelMaterializer && filterClause) {
+            // cell: with no filters on that path, this call never ran before
+            // either.
+            //
+            // Keyed on `cellFilters.length` rather than on a built
+            // `filterClause`, and placed BEFORE `buildFilterClause` runs, for
+            // the same reason the call exists at all: `buildFilterClause`
+            // itself throws `FilterValidationError` on a bad `filterParams`,
+            // which the catch below turns into a 400. Building the clause
+            // first would let malformed filter params preempt the gate and
+            // turn a denied caller's 403 into that 400 — the same
+            // security-path error-code regression this call was added to
+            // prevent, just one step earlier in the sequence.
+            if (cell.modelMaterializer && cellFilters.length > 0) {
                await this.probeEntryPointGates(
                   cell.runnable,
                   givens ?? {},
                   graftScope,
                );
             }
+
+            const filterClause =
+               cellFilters.length > 0
+                  ? buildFilterClause(cellFilters, filterParams ?? {})
+                  : undefined;
 
             // If filters need to be applied, rebuild the query with the
             // refinement computed above.
@@ -5516,7 +5573,6 @@ export class Model {
       sources: ApiSource[];
       filterMap: Map<string, FilterDefinition[]>;
       authorizeMap: AuthorizeMap;
-      ownAuthorizeSources: OwnAuthorizeSource[];
       misplacedAuthorize: MisplacedAuthorizeAnnotation[];
       joinMisplacedAuthorize: MisplacedAuthorizeAnnotation[];
       authorizeOwnNotes: Map<string, AnnotationNote[]>;
@@ -5527,7 +5583,6 @@ export class Model {
          sources,
          filterMap,
          authorizeMap,
-         ownAuthorizeSources,
          misplacedAuthorize,
          joinMisplacedAuthorize,
          authorizeOwnNotes,
@@ -5541,7 +5596,6 @@ export class Model {
          sources: sources as unknown as ApiSource[],
          filterMap,
          authorizeMap,
-         ownAuthorizeSources,
          misplacedAuthorize,
          joinMisplacedAuthorize,
          authorizeOwnNotes,

@@ -207,6 +207,31 @@ source: inherited_gate is duckdb.table('customers') extend {
       expect(err?.message).toMatch(/file level/i);
    });
 
+   it("loads successfully when a note merely MENTIONS the tag rather than declaring it", async () => {
+      // `containsAuthorizeAnnotationTag` anchors after trimming, matching
+      // `parseAuthorizeAnnotation` — so a note whose body happens to quote
+      // the tag (documenting it, not declaring it) is not mistaken for a
+      // misplaced gate. An unanchored scan would find "#(authorize)" as a
+      // substring of this `##(description)` note's body and refuse the
+      // whole load over an annotation the author never wrote.
+      await writeModel(
+         "mentions_only.malloy",
+         `##(description) "see the #(authorize) tag docs"
+
+source: plain is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "mentions_only.malloy",
+         getConnections(),
+      );
+
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(model.getSources()).toBeDefined();
+   });
+
    it("fails model load on a malformed authorize annotation (no silent drop)", async () => {
       await writeModel(
          "malformed.malloy",
@@ -2813,12 +2838,12 @@ source:
    });
 
    it("fails model load for a block-form gate naming an undeclared given", async () => {
-      // The `source_extraction.ts` half of the read, isolated. `ownAuthorizeSources`
-      // is the ONLY consumer of the extractor's own-gate answer that survives the
-      // Model constructor (which overwrites `sources[].authorize` from the
-      // enforcement walk in model.ts), so this is what pins the reporting half:
-      // with a `blockNotes`-only extractor the bad gate is invisible at load and
-      // the model compiles clean.
+      // The `source_extraction.ts` half of the read, isolated. Load-time
+      // validation works from the extractor's `authorizeMap`, and the Model
+      // constructor later overwrites `sources[].authorize` from the
+      // enforcement walk in model.ts — so this test is what pins the reporting
+      // half: with a `blockNotes`-only extractor the bad gate is invisible at
+      // load and the model compiles clean.
       await writeModel(
          "block_validate.malloy",
          `##! experimental.givens

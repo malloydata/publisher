@@ -97,9 +97,21 @@ export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
  * reads it FROM at all (see {@link MisplacedAuthorizeAnnotation}), where the
  * fact worth catching is that the author wrote the tag, not whether its body
  * happens to parse.
+ *
+ * Anchored after trimming, exactly as {@link parseAuthorizeAnnotation} anchors,
+ * because each `text` here is ONE annotation note rather than a document. The
+ * unanchored spelling belongs to {@link assertNoCallerAuthorizeAnnotation},
+ * whose input is a whole caller-submitted model where the tag may sit on any
+ * line. Sharing that form here would fail the WHOLE package load over a note
+ * that merely MENTIONS the tag — a `##(description) "see the #(authorize) tag"`,
+ * or a doc comment quoting it — naming as a gate an annotation the author never
+ * wrote. Matching the parser is what keeps the two honest in both directions: a
+ * spelling only the detector recognizes refuses a package over text the parser
+ * would never have enforced, and one only the parser recognizes lets a real
+ * misplaced gate through.
  */
 export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
-   return texts.some((text) => AUTHORIZE_ANNOTATION_ANYWHERE.test(text));
+   return texts.some((text) => AUTHORIZE_ANNOTATION_PREFIX.test(text.trim()));
 }
 
 /**
@@ -208,7 +220,7 @@ export function describeMisplacedJoinAuthorizeWarnings(
    );
 }
 
-/** source name → effective authorize expressions (file-level then source-level). */
+/** source name → effective authorize expressions (its own, else inherited). */
 export type AuthorizeMap = Map<string, string[]>;
 
 /** A `given:` declaration to prepend to a probe so it compiles standalone. */
@@ -309,8 +321,7 @@ export type AuthorizeGateShape = "given_only" | "row_level";
  * kind: the gate is a valid, allowed shape, but at one entry point that did
  * not itself declare it — a derived source (an `extend` that
  * renamed/excluded/projected away the field, or a `query_source` projection)
- * inheriting a source's gate, or a source sharing a FILE-level `##(authorize)`
- * with a sibling that resolves it — the field it reads did not resolve at
+ * inheriting a source's gate — the field it reads did not resolve at
  * all, so there was no condition to classify. That case does not fail the
  * load — see `validateAuthorizeProbes`'s doc, in particular for how it
  * confirms the gate is genuinely inherited rather than an
@@ -936,9 +947,23 @@ function quoteMalloyIdentifier(name: string): string {
  * lockstep with it: both need the SAME shape to read back the compiled
  * `FilterCondition` from `_query.structRef.filterList`).
  */
-function buildRowLevelProbe(sourceName: string, exprs: string[]): string {
-   const filterText = exprs.map((e) => `(${e})`).join(" or ");
-   return `run: ${quoteMalloyIdentifier(sourceName)} extend { where: ${filterText} } -> { select: __authorize_probe is 1; limit: 1 }`;
+export function buildRowLevelProbe(
+   graftTarget: string,
+   filterText: string,
+): string {
+   return `run: ${quoteMalloyIdentifier(graftTarget)} extend { where: ${filterText} } -> { select: __authorize_probe is 1; limit: 1 }`;
+}
+
+/**
+ * The ONE spelling of a gate entry's whole expression list as a single Malloy
+ * boolean: `exprs.map(e => "(" + e + ")").join(" or ")`. Shared with
+ * `Model.resolveGateShape`'s `filterText` so the text this module probes and
+ * the text the request path grafts can never drift apart — they are compared
+ * against each other, by string, in {@link liftRowLevelCondition} and
+ * `Model.liftGateCondition`.
+ */
+export function gateFilterText(exprs: readonly string[]): string {
+   return exprs.map((e) => `(${e})`).join(" or ");
 }
 
 /**
@@ -948,14 +973,26 @@ function buildRowLevelProbe(sourceName: string, exprs: string[]): string {
  * unreachable given, or — the case this exists to catch — a field the gate
  * references that this entry point renamed, excluded, or projected away) or
  * if the compiled shape carries no filter at all.
+ *
+ * Both properties that make it safe to trust the LAST entry are asserted
+ * rather than assumed, exactly as in `Model.liftGateCondition` (keep the two
+ * in lockstep): its `code` must be the `filterText` this probe just asked
+ * for, and `isSourceFilter` must be true. Without the first, a source that
+ * carries its OWN `where:` — or a Malloy ordering change — hands this
+ * function the AUTHOR's condition instead of the gate's, and
+ * {@link classifyAuthorizeGate} then decides the gate's enforcement shape
+ * from a filter that is not the gate: a genuine row-level gate reads as
+ * `given_only`, and a plain author filter (no given reference) reads as
+ * `rejected`, failing the load of a package whose gate is perfectly good.
  */
 async function liftRowLevelCondition(
    compiler: AuthorizeProbeCompiler,
    sourceName: string,
    exprs: string[],
 ): Promise<CompiledGateCondition> {
+   const filterText = gateFilterText(exprs);
    const prepared = (await compiler
-      .loadQuery(buildRowLevelProbe(sourceName, exprs))
+      .loadQuery(buildRowLevelProbe(sourceName, filterText))
       .getPreparedQuery()) as {
       _query?: { structRef?: { filterList?: CompiledGateCondition[] } };
    };
@@ -965,7 +1002,18 @@ async function liftRowLevelCondition(
          `row-level probe for "${sourceName}" carries no filter condition`,
       );
    }
-   return filterList[filterList.length - 1];
+   const lifted = filterList[filterList.length - 1];
+   if (lifted.code !== filterText) {
+      throw new Error(
+         `row-level probe for "${sourceName}" carries the wrong condition — expected "${filterText}", got "${lifted.code ?? ""}"`,
+      );
+   }
+   if (!lifted.isSourceFilter) {
+      throw new Error(
+         `row-level probe for "${sourceName}" carries a condition that is not a source filter`,
+      );
+   }
+   return lifted;
 }
 
 /**
@@ -1068,12 +1116,11 @@ async function runOneRowProbeOrThrow(
  * else), there is no ancestor to blame it on: the load fails exactly as it
  * always has.
  *
- * `options.authorizeOwnNotes` (from `extractSourcesFromModelDef`) folds a
- * FILE-level `##(authorize)`'s own note object into every source's entry —
- * the same object for all of them, since there is exactly one file-level
- * annotation list — for the identical reason: a file-level gate is authored
- * once but applies everywhere, so proving it sound at one source has to
- * downgrade it everywhere else it fails, not just for a source-level gate.
+ * `options.authorizeOwnNotes` (from `extractSourcesFromModelDef`) carries
+ * only a struct's OWN-level authorize-tagged notes. There is no file-level
+ * entry folded in: a `##(authorize)` never reaches this function at all, as
+ * `assertNoMisplacedAuthorizeAnnotations` refuses the load for one before
+ * this runs.
  *
  * TWO PASSES over `authorizeMap`, because that answer isn't known until every
  * entry has been tried, and entry order is `Object.values(modelDef.contents)`
@@ -1115,11 +1162,9 @@ export async function validateAuthorizeProbes(
       declaredTypes?: Map<string, string>;
       /**
        * source name → the source's OWN-level `#(authorize)`-tagged note
-       * objects (from `extractSourcesFromModelDef`) PLUS the file-level
-       * `##(authorize)` note objects, which every source carries the SAME
-       * object for — empty only when the struct carries no annotation of its
-       * own at all AND the file declares no `##(authorize)` (e.g. a
-       * `query_source` in a file with no file-level gate). This is the
+       * objects (from `extractSourcesFromModelDef`) — empty when the struct
+       * carries no annotation of its own at all (e.g. a `query_source`,
+       * which has no `annotations` by construction). This is the
        * note-object identity the two-pass escape decision below keys on —
        * see the function doc for why gate TEXT is not safe for this and
        * object identity is what's left.
