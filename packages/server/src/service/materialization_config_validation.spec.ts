@@ -100,8 +100,7 @@ describe("materializationConfigWarnings", () => {
       // counter tick behind it. The level is what makes the message actionable.
       const warnings = materializationConfigWarnings({
          declarations: [
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { level: "package", queryMetadata: { model: "marts" } as any },
+            { level: "package", queryMetadata: { model: "marts" } },
          ],
       });
       expect(warnings).toHaveLength(1);
@@ -115,17 +114,15 @@ describe("materializationConfigWarnings", () => {
       // canonical spelling rather than the deprecated `materialization.` one.
       const warnings = materializationConfigWarnings({
          declarations: [
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             {
                level: "model",
                subject: "marts.malloy",
-               queryMetadata: { run_id: "x" } as any,
+               queryMetadata: { run_id: "x" },
             },
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             {
                level: "source",
                subject: "orders_live",
-               queryMetadata: { run_id: "x" } as any,
+               queryMetadata: { run_id: "x" },
             },
          ],
       });
@@ -146,8 +143,7 @@ describe("materializationConfigWarnings", () => {
             {
                level: "source",
                subject: "orders_live",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               queryMetadata: { run_id: "x" } as any,
+               queryMetadata: { run_id: "x" },
             },
          ],
       });
