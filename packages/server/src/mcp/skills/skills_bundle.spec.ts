@@ -137,35 +137,13 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       });
    });
 
-   /**
-    * Pre-existing drift, bounded rather than exempted. Every SKILL.md honours
-    * the house style; these three reference files never did, because nothing
-    * checked them until they entered the bundle. Fixing 23 prose em-dashes in
-    * three SHARED skills is an upstream-first change of its own, not something
-    * to bundle into the build-time asset that surfaced it.
-    *
-    * Listed by name so a NEW violation still fails: shrink this list as the
-    * files are fixed, and delete it when it is empty.
-    */
-   const EM_DASH_DRIFT = new Set([
-      "malloy-html-data-apps/lazy-load",
-      "malloy-html-data-apps/verification-harness",
-      "malloy-lookml-review/build-derived-tables",
-   ]);
-
+   // No allowlist: the three reference files that carried the last of the
+   // drift were rewritten upstream and copied back, so every entry in the
+   // bundle now honours the house style and a new em-dash fails outright.
    it("carries no em-dashes (house style)", () => {
       const offenders = skills
-         .filter((s) => !EM_DASH_DRIFT.has(s.name) && s.body.includes("—"))
+         .filter((s) => s.body.includes("—"))
          .map((s) => s.name);
       expect(offenders).toEqual([]);
-   });
-
-   it("the em-dash allowlist names only entries that still need fixing", () => {
-      // Stops the list outliving the drift: an entry that has been cleaned up,
-      // or renamed away, has to leave the list.
-      const stillDrifting = skills
-         .filter((s) => EM_DASH_DRIFT.has(s.name) && s.body.includes("—"))
-         .map((s) => s.name);
-      expect([...EM_DASH_DRIFT].sort()).toEqual(stillDrifting.sort());
    });
 });
