@@ -202,13 +202,26 @@ function joinFieldNamesUnresolvableDeclaration(
  * collected as a gate — see the check ahead of the per-source walk below.
  *
  * A `join_one:`/`join_many:` FIELD carrying a note this walk cannot identify
- * as that copy is handled separately, in `joinMisplacedAuthorize`: it is
- * NEVER added to `misplacedAuthorize` (so it never fails the load), because
- * this walk has twice proved unable to tell an authored join-line annotation
- * from Malloy's by-reference copy of a gate declared beyond this model's own
- * `contents`/`sourceRegistry` — a source imported selectively, or two import
- * levels away (Malloy merges only one). See `joinFieldNamesUnresolvableDeclaration`'s
- * doc for the exact test and what it costs in false negatives.
+ * as that copy is routed by whether its declaration resolves INSIDE this
+ * model. When `joinFieldNamesUnresolvableDeclaration` says the declaration is
+ * beyond this model's own `contents`/`sourceRegistry` — a source imported
+ * selectively, or two import levels away (Malloy merges only one) — it is
+ * silently dropped (never added to `misplacedAuthorize`, so it never fails
+ * the load): this walk has twice proved unable to tell an authored join-line
+ * annotation from Malloy's by-reference copy of a gate declared out of sight.
+ * See that helper's doc for the exact test and what it costs in false
+ * negatives. When the declaration DOES resolve inside this model,
+ * `gatedSourceOwnAuthorizeNotes` is authoritative — an inherited copy would
+ * have matched it — so a still-mismatched note is author-written and is
+ * added to `misplacedAuthorize`, failing the load like any other misplaced
+ * annotation: leaving it a warning would let the containing source's own
+ * gate silently vanish (it lands on the field, which nothing enforces).
+ * `joinMisplacedAuthorize` is consequently never populated any more. It stays in
+ * the return shape because callers outside this file still consume it, and
+ * because the undecidable case it used to carry — a join whose declaration
+ * resolves nowhere in this model — is now ignored silently rather than warned:
+ * every legitimate cross-file join of a gated source reaches that branch, so a
+ * warning there fires on correct packages (pinned by the cross-file tests).
  */
 export function extractSourcesFromModelDef(
    modelDef: ModelDef,
@@ -260,6 +273,26 @@ export function extractSourcesFromModelDef(
    for (const obj of Object.values(modelDef.contents)) {
       if (!isSourceDef(obj)) continue;
       for (const note of ownLevelNotes((obj as StructDef).annotations)) {
+         if (containsAuthorizeAnnotationTag([note.text])) {
+            gatedSourceOwnAuthorizeNotes.add(note);
+         }
+      }
+   }
+   // Also walk `sourceRegistry` entries that are themselves an inline
+   // `SourceDef` — a `source_registry_reference` names something already
+   // covered by the `contents` loop above, but a non-reference entry IS the
+   // declared source and can be reachable from a join's `referenceID`/
+   // `sourceID` while being absent from `modelDef.contents` entirely (the
+   // two-import-hops shape `joinFieldNamesUnresolvableDeclaration`'s doc
+   // cites). Without this, such a source is simultaneously "resolvable" (its
+   // registry entry IS a real `SourceDef`) and "identity-mismatched" (its own
+   // gate note was never added to this set) — a false positive for the
+   // resolvable-and-mismatched fatal check below.
+   for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
+      const entry = value.entry;
+      if (entry.type === "source_registry_reference") continue;
+      if (!isSourceDef(entry)) continue;
+      for (const note of ownLevelNotes((entry as StructDef).annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
          }
@@ -424,12 +457,16 @@ export function extractSourcesFromModelDef(
             // A join is never traced for authorize purposes either way (see
             // `assertNoMisplacedAuthorizeAnnotations`'s message), so gating
             // one has no effect regardless of whether the note here is
-            // authored or copied — but the false-positive cost of GUESSING
-            // wrong is a whole package refusing to load, twice proved for
-            // real import shapes (see the function doc). So a join field
-            // never reaches `misplacedAuthorize`: a note this walk cannot
-            // explain as Malloy's copy of a declaration BEYOND this model's
-            // visibility still only warns.
+            // authored or copied. But the false-positive cost of GUESSING
+            // "author-written" wrong when the declaration is beyond this
+            // model's own visibility is a whole package refusing to load,
+            // twice proved for real import shapes (see the function doc) — so
+            // ONLY a note this walk cannot resolve to a declaration inside
+            // this model is let through (`joinFieldNamesUnresolvableDeclaration`
+            // below); a resolvable one falls through to the same fatal
+            // `misplacedAuthorize` every other misplaced annotation gets,
+            // because there the identity check is authoritative and a
+            // mismatch means the annotation really is author-written here.
             //
             // `isJoined` alone is not enough: it is `'join' in def`, which is
             // also true of an array- or record-typed dimension (Malloy's IR
@@ -454,10 +491,24 @@ export function extractSourcesFromModelDef(
                   // this model's registry doesn't reach (a selective import
                   // of just the joiner, or a source two-plus hops away).
                   // Presumed Malloy's copy of a gate declared out of sight,
-                  // not authored here — see the helper's doc.
+                  // not authored here — see the helper's doc. Ignored
+                  // SILENTLY, not warned: the identity set cannot speak for a
+                  // declaration it never saw, and every legitimate cross-file
+                  // join of a gated source lands here, so a warning would fire
+                  // on correct packages as a matter of course. The residual
+                  // cost is real and accepted — a gate the author DID type on
+                  // such a join line goes unenforced with no signal.
                   continue;
                }
-               joinMisplacedAuthorize.push({
+               // The join's declaration resolves INSIDE this model (in
+               // `contents` or `sourceRegistry`), so `gatedSourceOwnAuthorizeNotes`
+               // is authoritative for it — an inherited (by-reference) copy
+               // would have matched there. A note that still doesn't match is
+               // freshly parsed, i.e. author-written directly on the join
+               // line: the containing source's own gate silently vanishes
+               // (it lands on the field, which nothing enforces) unless this
+               // fails the load like every other misplaced annotation.
+               misplacedAuthorize.push({
                   kind: "field",
                   name: sourceName,
                   fieldName,

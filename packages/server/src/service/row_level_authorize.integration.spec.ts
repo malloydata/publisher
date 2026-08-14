@@ -742,20 +742,20 @@ source: headcount_by_dept is duckdb.sql("select 1 as id") extend {
       }
    });
 
-   it("an #(authorize) an author writes directly ON a join_one: line (Malloy replaces, no by-reference copy) WARNS and loads — a join is never fatal (fix1)", async () => {
+   it("CRITICAL — an #(authorize) an author writes directly ON a join_one: line of an UNGATED source FAILS the load (the join's declaration resolves in this model, so a mismatched note is author-written)", async () => {
       // `salaries` is UNGATED here, so `headcount_by_dept`'s join-line
       // annotation cannot be Malloy's by-reference copy of anything — it is
-      // unambiguously author-written. Before fix1 this failed the load
-      // outright; after, a join-typed field this walk can EXPLAIN as
-      // author-written warns instead of failing (see `source_extraction.ts`'s
-      // doc) — NOT every join-typed field: one this walk cannot resolve to a
-      // declaration in this model at all (the cross-file shapes below) is
-      // silently dropped with no warning, a different branch entirely. The
-      // false-positive cost of guessing wrong has twice proved to be a whole
-      // package refusing to load. The gated variant (same text / different
-      // text) is covered by the "Task C fix1/fix3" describe block below.
-      const warnSpy = spyOn(logger, "warn");
-      warnSpy.mockClear();
+      // unambiguously author-written, and its declaration (`salaries`)
+      // resolves inside this model's own `contents`, so
+      // `gatedSourceOwnAuthorizeNotes` is authoritative for it. Leaving this
+      // a warning would be exactly the bug this fix closes: the annotation
+      // lands on the join FIELD, so `headcount_by_dept` itself ends up with
+      // no gate at all and serves every row unfiltered. Only a join whose
+      // declaration this walk cannot resolve INSIDE this model at all (the
+      // cross-file shapes below) still gets the benefit of the doubt and
+      // warns instead — see `source_extraction.ts`'s doc. The gated variant
+      // (same text / different text) is covered by the "Task C fix1/fix3"
+      // describe block below.
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-join-authored-"));
       try {
@@ -782,19 +782,10 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          );
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
-         expect(err).toBeUndefined();
-         expect(
-            warnSpy.mock.calls.some((call) => {
-               const [message] = call as unknown as [string];
-               return (
-                  typeof message === "string" &&
-                  message.includes(
-                     'field "salaries" of source "headcount_by_dept"',
-                  ) &&
-                  message.includes("join_one:/join_many:")
-               );
-            }),
-         ).toBe(true);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(
+            /field "salaries" of source "headcount_by_dept"/,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -1005,11 +996,16 @@ source: top is mid extend {}
 // a GATED source. Malloy REPLACES the joined struct's annotations outright
 // when the join line carries one of its own (no `inherits`, no by-reference
 // copy — see `gate_registry_walk.ts`'s doc), so this note is never identity-
-// matched to the source's own gate, same text or not. Before fix1 this failed
-// the load; after, every join-typed field only warns (see
-// `source_extraction.ts`'s doc), so this is exactly the "still looks
-// author-written" case that must warn rather than the cross-file case that
-// is silently excluded.
+// matched to the source's own gate, same text or not. `salaries` is declared
+// in the SAME FILE, so its declaration resolves inside this model's own
+// `contents` and `gatedSourceOwnAuthorizeNotes` is authoritative for it — a
+// mismatched note here is unambiguously author-written. The load therefore
+// FAILS, same as any other misplaced annotation: leaving this a warning is
+// exactly the bug the fix closes, since the annotation lands on the join
+// FIELD and `headcount` itself would end up with no gate at all. Only the
+// cross-file shape (the join's declaration is beyond this model's own
+// visibility) still gets the benefit of the doubt and warns — see the
+// "cross-file join false positive" describe block above.
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — authored annotation on a join line of a gated source (fix1/fix3)", () => {
@@ -1033,23 +1029,6 @@ describe("row-level authorize — authored annotation on a join line of a gated 
          .compilationError;
    }
 
-   function warnedMisplacedJoin(
-      warnSpy: { mock: { calls: unknown[][] } },
-      fieldName: string,
-      sourceName: string,
-   ): boolean {
-      return warnSpy.mock.calls.some((call) => {
-         const [message] = call as [string];
-         return (
-            typeof message === "string" &&
-            message.includes(
-               `field "${fieldName}" of source "${sourceName}"`,
-            ) &&
-            message.includes("join_one:/join_many:")
-         );
-      });
-   }
-
    const GATED_SALARIES = `##! experimental.givens
 
 #(authorize) "false"
@@ -1058,9 +1037,7 @@ source: salaries is duckdb.table('parent') extend {
 }
 `;
 
-   it("CRITICAL — same-text authored annotation on the join line warns and loads (case C)", async () => {
-      const warnSpy = spyOn(logger, "warn");
-      warnSpy.mockClear();
+   it("CRITICAL — same-text authored annotation on the join line FAILS the load (case C)", async () => {
       const { model, duckdb, dir } = await createModel(
          `${GATED_SALARIES}
 source: headcount is duckdb.table('childtable') extend {
@@ -1071,9 +1048,10 @@ source: headcount is duckdb.table('childtable') extend {
 `,
       );
       try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         expect(warnedMisplacedJoin(warnSpy, "salaries", "headcount")).toBe(
-            true,
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(
+            /field "salaries" of source "headcount"/,
          );
       } finally {
          await duckdb.close();
@@ -1081,9 +1059,7 @@ source: headcount is duckdb.table('childtable') extend {
       }
    });
 
-   it("CRITICAL — different-text authored annotation on the join line ALSO warns and loads (case D)", async () => {
-      const warnSpy = spyOn(logger, "warn");
-      warnSpy.mockClear();
+   it("CRITICAL — different-text authored annotation on the join line ALSO FAILS the load (case D)", async () => {
       const { model, duckdb, dir } = await createModel(
          `${GATED_SALARIES}
 source: headcount is duckdb.table('childtable') extend {
@@ -1094,9 +1070,10 @@ source: headcount is duckdb.table('childtable') extend {
 `,
       );
       try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         expect(warnedMisplacedJoin(warnSpy, "salaries", "headcount")).toBe(
-            true,
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(
+            /field "salaries" of source "headcount"/,
          );
       } finally {
          await duckdb.close();
