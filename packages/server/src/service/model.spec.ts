@@ -1050,12 +1050,38 @@ describe("service/model", () => {
        * compiles a transient model — the logic under test is the catch, and the
        * SHAPE'S bindings (not the package's) are what it must consult.
        */
+      /**
+       * A malloy `Note`. The `at` location is required, not decoration: without
+       * it `Annotations.parseAsTag` throws on `line.at.url`, and every reader of
+       * these annotations catches and degrades to "no layer" — so a note without
+       * it produces a green test that proves nothing.
+       */
+      const specNote = (text: string) => ({
+         text,
+         at: {
+            url: "file://mockModel.malloy",
+            range: {
+               start: { line: 0, character: 0 },
+               end: { line: 0, character: 1 },
+            },
+         },
+      });
+
       function routedModel(opts: {
          shapeBindings: unknown[];
          packageBindings?: unknown[];
          storageFailsAt: "prepare" | "run";
          liveRunFails?: boolean;
          livePreparedLimit?: number;
+         /**
+          * Raw `##` note texts for the model file, and `#@` note texts per
+          * source — the same annotation bundle the build path reads through
+          * `PersistSource.annotations`. Without these the modelDef has empty
+          * `contents` and the declared model/source layers resolve to nothing,
+          * which is a test that proves only the package layer.
+          */
+         modelNotes?: string[];
+         sourceNotes?: Record<string, string[]>;
       }) {
          const storageErr = new Error("store table missing");
          const storageRunnable = {
@@ -1103,8 +1129,31 @@ describe("service/model", () => {
             "model",
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             modelMaterializer as any,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { contents: {}, exports: [], queryList: [] } as any,
+            {
+               contents: Object.fromEntries(
+                  Object.entries(opts.sourceNotes ?? {}).map(
+                     ([name, texts]) => [
+                        name,
+                        { annotations: { notes: texts.map(specNote) } },
+                     ],
+                  ),
+               ),
+               exports: [],
+               queryList: [],
+               // The file-level `##` tags come from the modelAnnotations
+               // REGISTRY keyed by modelID, not from a bare `annotation` field —
+               // that indirection exists so an import's tags can be folded in.
+               modelID: "m",
+               modelAnnotations: opts.modelNotes
+                  ? {
+                       m: {
+                          inheritsFrom: [],
+                          ownNotes: { notes: opts.modelNotes.map(specNote) },
+                       },
+                    }
+                  : undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any,
             undefined,
             undefined,
             undefined,
@@ -1258,6 +1307,122 @@ describe("service/model", () => {
          const attached = liveRun.firstCall.args[0].queryMetadata;
          expect(attached.tier).toBe("platinum");
          expect(attached.team).toBe("finance");
+      });
+
+      it("composes all three declared layers, most specific winning", async () => {
+         // The package layer alone is not the claim — a model file's `##` tag and
+         // a source's `#@` tag have to reach a served statement too, with the
+         // same precedence the build path applies. Both are read through casts
+         // into `modelDef`, the shape where a field rename degrades to a silent
+         // no-layer, so an empty-`contents` fixture would pass while proving
+         // neither.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            modelNotes: [
+               '## materialization.queryMetadata.tier="silver"\n',
+               '## materialization.queryMetadata.from_model="yes"\n',
+            ],
+            sourceNotes: {
+               daily: ['#@ persist queryMetadata.tier="gold"\n'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-4",
+               packageMaterialization: {
+                  queryMetadata: { tier: "bronze", team: "finance" },
+               },
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         // source > model file > package, per property.
+         expect(attached.tier).toBe("gold");
+         // Nothing more specific mentions these, so both survive.
+         expect(attached.from_model).toBe("yes");
+         expect(attached.team).toBe("finance");
+      });
+
+      it("resolves the source layer for a query that names no source directly", async () => {
+         // A `queryName` request names exactly one source, indirectly. Passing
+         // the raw `sourceName` param would drop its declared layer — and that is
+         // the dominant REST and MCP call shape, not an edge case.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            sourceNotes: {
+               daily: ['#@ persist queryMetadata.tier="gold"\n'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            // Ad-hoc text whose run target is resolvable from surface syntax.
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-5",
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("gold");
+      });
+
+      it("refuses a declared property that would forge build identity", async () => {
+         // Context only overwrites names it has a VALUE for, and a served query
+         // has no `source`, `trigger` or `run_id`. Without the reserved-name rule
+         // a model file could stamp `source=orders_daily` on interactive traffic,
+         // which in the warehouse's own history reads exactly like a build of
+         // that source — the confusion the declared layer was originally withheld
+         // to prevent.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            sourceNotes: {
+               daily: [
+                  '#@ persist queryMetadata.source="orders_daily" queryMetadata.run_id="forged" queryMetadata.tier="gold"\n',
+               ],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-6",
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.source).toBeUndefined();
+         expect(attached.run_id).toBeUndefined();
+         // The author's own property, which is not a context name, still lands.
+         expect(attached.tier).toBe("gold");
+         expect(attached.class).toBe("interactive");
       });
 
       it("returns servedFrom and an execution time to the caller", async () => {

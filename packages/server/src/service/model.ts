@@ -3104,7 +3104,13 @@ export class Model {
          appliedQueryMetadata = this.resolveQueryMetadata(
             queryMetadataInput,
             preparedResult.connectionName,
-            sourceName,
+            // The run-target source already resolved for the authorize gate, not
+            // the raw `sourceName` param: a `queryName` request names exactly one
+            // source and must not lose its declared layer for having named it
+            // indirectly, and ad-hoc text resolves through the same surface-syntax
+            // path. Reusing the gate's answer also keeps one definition of "which
+            // source is this query against" rather than a second, weaker one.
+            earlySource,
          );
 
          queryResults = await runnable.run({
@@ -3262,7 +3268,7 @@ export class Model {
             appliedQueryMetadata = this.resolveQueryMetadata(
                queryMetadataInput,
                livePrepared.connectionName,
-               sourceName,
+               earlySource,
             );
             queryResults = await liveRunnable!.run({
                rowLimit,
@@ -3533,16 +3539,23 @@ export class Model {
    }
 
    /**
-    * The named source's own `#@` tag, or undefined when the request named no
-    * source, the name is not a top-level source, or the annotation fails to
+    * The run-target source's own `#@` tag, or undefined when no source could be
+    * resolved, the name is not a top-level source, or the annotation fails to
     * parse.
     *
-    * A request that does not name a source (ad-hoc query text, a notebook cell)
-    * gets the package and model-file layers but not this one: with no source
-    * named there is no single annotation to read, and a query may touch several
-    * sources whose declarations disagree. Guessing one would attribute a
-    * statement to a source the caller never asked for, which is worse than
-    * carrying one layer fewer.
+    * Callers pass the source the server ALREADY resolved for the authorize gate,
+    * not the raw `sourceName` request param — a `queryName` request names one
+    * source indirectly and must not lose its declared layer for it, and ad-hoc
+    * text resolves through the same surface-syntax path. What remains
+    * unresolvable is a statement with no single run target (some notebook
+    * cells); those carry the package and model-file layers only.
+    *
+    * Reads the named source's OWN annotations and does not walk its derivation
+    * base, so `source: a is b extend {…}` inherits nothing from `b`'s
+    * declaration. This diverges from {@link ancestorGateExprs}, which walks
+    * ancestors deliberately because a gate an extension could shed would be no
+    * gate at all. A cost label carries no such requirement, and inheriting one
+    * would attribute `a`'s traffic to `b`'s team.
     */
    private safeSourceTag(
       sourceName: string | undefined,
@@ -3775,6 +3788,9 @@ export class Model {
                queryMetadata: this.resolveQueryMetadata(
                   queryMetadataInput,
                   preparedCell.connectionName,
+                  // Same resolution the cell's own filter lookup uses, so a
+                  // notebook cell carries the source's declared layer too.
+                  extractRunTargetSourceName(cell.text),
                ),
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
