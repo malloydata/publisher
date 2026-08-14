@@ -496,8 +496,19 @@ export function planColumnReconcile(
          const withDefault = column.column_default
             ? ` DEFAULT ${column.column_default}`
             : "";
+         // Deliberately NOT `IF NOT EXISTS`. The catalog read above is what
+         // establishes the column is absent, so the guard adds no safety — and
+         // on the DuckDB this pins (1.5.0–1.5.3, duckdb/duckdb#23209) `ADD
+         // COLUMN IF NOT EXISTS ... DEFAULT` against a column that DOES exist
+         // re-applies the default to every row instead of doing nothing,
+         // silently destroying the column's data. It hits fixed-width types —
+         // measured here on BOOLEAN and TIMESTAMP, while VARCHAR, INTEGER and
+         // JSON survive — and TIMESTAMP is most of this schema's non-VARCHAR
+         // columns. Without the guard, a disagreement between the plan and the
+         // catalog raises into the per-column catch and is reported, which is
+         // the outcome this whole path is built around.
          adds.push({
-            sql: `ALTER TABLE "${column.table_name}" ADD COLUMN IF NOT EXISTS "${column.column_name}" ${column.data_type}${withDefault}`,
+            sql: `ALTER TABLE "${column.table_name}" ADD COLUMN "${column.column_name}" ${column.data_type}${withDefault}`,
             description: `${key} ${column.data_type}${withDefault}`,
          });
          continue;

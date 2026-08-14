@@ -316,9 +316,32 @@ describe("planColumnReconcile", () => {
       );
       expect(plan.adds).toHaveLength(1);
       expect(plan.adds[0].sql).toBe(
-         `ALTER TABLE "t" ADD COLUMN IF NOT EXISTS "flag" BOOLEAN DEFAULT CAST('t' AS BOOLEAN)`,
+         `ALTER TABLE "t" ADD COLUMN "flag" BOOLEAN DEFAULT CAST('t' AS BOOLEAN)`,
       );
       expect(plan.needsMigration).toEqual([]);
+   });
+
+   it("never emits IF NOT EXISTS, which DuckDB 1.5.0-1.5.3 turns into a silent overwrite", () => {
+      // duckdb/duckdb#23209: `ADD COLUMN IF NOT EXISTS ... DEFAULT` against a
+      // column that already exists re-applies the default to every row rather
+      // than doing nothing. Reproduced on the pinned engine for BOOLEAN and
+      // TIMESTAMP. The plan's own absence check is the guard, so the clause is
+      // pure downside — pinned here because re-adding it looks like a harmless
+      // safety improvement.
+      const plan = planColumnReconcile(
+         [
+            ...existingTable,
+            col("t", "plain", "VARCHAR"),
+            col("t", "stamped", "TIMESTAMP", { column_default: "now()" }),
+         ],
+         existingTable,
+         new Map(),
+         new Map(),
+      );
+      expect(plan.adds).toHaveLength(2);
+      for (const add of plan.adds) {
+         expect(add.sql).not.toContain("IF NOT EXISTS");
+      }
    });
 
    it("refuses a UNIQUE column, which reports as nullable and would otherwise be added bare", () => {
