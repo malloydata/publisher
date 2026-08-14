@@ -24,7 +24,8 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
    `malloy_getContext` if you have it, otherwise the REST model endpoint or the `.malloy` files.
-   Never guess a name; a guessed one surfaces as an empty tile or a lint warning, not an error.
+   Never guess a name. A guessed field in a query is a compile error that stops the whole package
+   loading; a guessed tile or suggest source is quieter, and only shows up in the package warnings.
 2. **DECIDE THE FORM** (below): single-query if the page is one filtered result with parts;
    composite if the views already exist and the job is choosing which to show together.
 3. **DECLARE THE GIVENS** the dashboard will filter by, in the model (usually `givens.malloy`), with
@@ -32,10 +33,13 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    share them.
 4. **WRITE THE FILE** in `dashboards/`, following the template below. Import every given it filters
    by, and every source or query any of those givens names in a `suggest`. Both are per-file, and
-   getting the suggest wrong does not error: the control degrades to a text box reading "Could not
-   load the options for this control", which is easy to miss while authoring.
+   getting the suggest wrong does not error. The control still looks like a picker, dropdown arrow
+   and all, but has no options and reads "Could not load the options for this control" underneath, so
+   glancing at the shape of the widget will not tell you. The package warnings name it exactly.
 5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`) before saving anything
-   else. Cheaper than a reload, and it catches the tag mistakes in the gotchas section.
+   else. Cheaper than a reload, and it catches a wrong field or source name outright. It does not
+   catch every tag mistake, so a clean compile is not a working dashboard: step 6 is where those
+   surface.
 6. **RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
    `GET …/packages/<pkg>?reload=true`. Package warnings are where dashboards report the failures
    that are otherwise silent. See "Read the lint" below.
@@ -92,7 +96,7 @@ model-level (`##`) because there is no query of its own to hang a `#` tag on.
 
 ```malloy
 ##! experimental.givens
-## artifact { title="Seasonality" tiles=["scoped_sales -> sales_by_month", "scoped_sales -> sales_by_year"] dashboard_columns=3 }
+## artifact { title="Seasonality" tiles=["scoped_sales -> sales_by_month", "scoped_sales -> sales_by_year", "scoped_sales -> seasonality"] dashboard_columns=3 }
 import { scoped_sales } from './_shared.malloy'
 import { products } from '../storefront.malloy'
 import { CATEGORY, SINCE } from '../givens.malloy'
@@ -139,8 +143,9 @@ The last two are upstream renderer behavior, cheap to work around in the model.
 
 The same tags govern a `# dashboard` **view** run in a notebook cell, since both surfaces render
 through the same code, so a view laid out this way looks the same in a cell as on a dashboard page.
-Height is the one thing the surface decides: a dashboard renders at its natural height, and in a
-notebook a chart cell is capped and a table cell hugs its rows.
+Height is the one thing the surface decides: a single-query dashboard renders at its natural height,
+a composite's tiles are each capped, and in a notebook a chart cell is capped and a table cell hugs
+its rows.
 
 ## The rules that actually bite
 
@@ -152,15 +157,21 @@ notebook a chart cell is capped and a table cell hugs its rows.
   that references it lives up an import chain. A composite must import the givens its tiles use.
 - **A suggest's source or query has to resolve in the dashboard file too.** `suggest { source=products … }`
   means the dashboard imports `products`.
-- **`# colspan` does nothing without `# dashboard { columns=N }`.** It is ignored with a warning, and
-  this is the usual reason a grid comes out as one column. See "Layout" above.
-- **A model-level `##` tag must be on one line.** Wrapping a long `## artifact { … }` is a compile
-  error.
+- **`# colspan` does nothing without `# dashboard { columns=N }`.** This is the usual reason a grid
+  comes out as one column. It does warn ("Ignored # colspan on 'x': colspan only applies in columns
+  mode"), but on the query response as a render log, not in the package warnings, so step 6 will not
+  show it. See "Layout" above.
+- **A model-level `##` tag must be on one line.** Wrapping one always breaks it, but how you find
+  out depends on what follows. If the continuation is not valid Malloy you get a compile error. If it
+  happens to be, an `import` say, the file compiles clean, quietly stops being a dashboard and
+  becomes a shared include, and only the package warnings tell you: "Tag does not parse (Unclosed
+  '{')". That second case is why step 5 is not the last step.
 - **In a `# dashboard` view, fields render by role.** A top-level `aggregate:` measure is a KPI card,
   so do not nest a `# big_value` view to get one. Each `nest:` is a tile. Give every KPI a
   `# label=`, or the card is headed `total_sales`.
-- **Charts render to canvas; tables are what reliably drill.** If a dashboard is meant to be
-  clicked, give it at least one untagged (table) tile.
+- **Only table cells drill.** The renderer emits a click payload for a table cell and for a whole
+  tile, and none for a chart mark, so a chart is not clickable however it is tagged. If a dashboard
+  is meant to be clicked, give it at least one untagged (table) tile.
 
 `skill:malloy-gotchas-rendering` covers the renderer tags in depth; `skill:malloy-charts` covers
 choosing them.
@@ -211,8 +222,13 @@ dimension: category is products.category
 ```
 
 `to=<slug>` navigates to that dashboard with the clicked value written into the named given;
-`to=self` filters in place; two or more destinations pop a menu. Without `given=`, the given is the
-dimension name upper-cased.
+`to=self` filters in place; two or more destinations pop a menu.
+
+**Always write `given=`.** Without it the given name is the dimension name **verbatim**, so a
+`dimension: category` seeds a given called `category`, which does not match a declared
+`given: CATEGORY`. Nothing errors: the `to=self` is quietly not offered, and a `to=<slug>` still
+navigates and still looks like it worked, but arrives as `?category=…`, which the destination drops,
+so you land on an unfiltered page. The lint upper-cases when it checks, so it stays green.
 
 Declaring it on the dimension is the point: every result that groups by it becomes clickable, in a
 dashboard tile and in a notebook cell alike. So when a view is meant to be drilled, group by the
@@ -220,7 +236,9 @@ tagged dimension. Declaring `dimension: category is products.category` and group
 gives the identical output field name and the identical numbers, and carries the tag.
 
 A drill only lands somewhere useful if the destination declares a control for the given being
-seeded. The lint checks that.
+seeded. **No lint checks that.** It verifies that the target slug is a dashboard in the package, and
+for `to=self` that some model declares the given, and stops there. Nothing reads the destination's
+own givens, so click it and look.
 
 Cells in a drillable **table** column show it: pointer cursor, and a blue underline on hover. Chart
 marks get no such affordance in either Publisher or Malloyyo, so a dashboard meant to be drilled
@@ -237,8 +255,12 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
   be empty, so import it.
 - A tile that does not resolve to a real view, or a non-positive `dashboard_columns`.
 
-A dashboard that fails to compile is still listed, with its error, so an absent dashboard means
-discovery skipped the file, usually a missing or misspelled `# artifact` tag.
+One dashboard that fails to compile takes the whole listing down: the dashboards endpoint returns a
+424 carrying the compile error, and none of the package's dashboards are listed, healthy ones
+included. So if everything has vanished at once, read the error rather than looking for what is wrong
+with the dashboard you were working on. If the others are listed and yours is not, discovery skipped
+the file instead, usually a missing or misspelled `# artifact` tag, which is the same mechanism that
+deliberately skips an untagged shared include.
 
 **A clean reload is not proof the tags are right.** The tag lint is syntax only: it carries no
 position, says nothing about a name that does not resolve, and is silent on a line that only parses
