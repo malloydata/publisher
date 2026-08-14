@@ -1082,6 +1082,18 @@ describe("service/model", () => {
           */
          modelNotes?: string[];
          sourceNotes?: Record<string, string[]>;
+         /**
+          * `##` notes on a DIFFERENT compilation node that this model inherits
+          * from — i.e. an import. `modelAnnotations` folds these in and
+          * `ownModelNotes` does not, which is the whole difference under test.
+          */
+         importedModelNotes?: string[];
+         /**
+          * The source the COMPILED query reads, as `resolveAuthorizeSourceFromRunnable`
+          * would resolve it off the prepared query. Distinct from whatever the
+          * query TEXT names first.
+          */
+         compiledRunTarget?: string;
          /** Named queries, for the `queryName` request shape. */
          queries?: { name: string; sourceName: string }[];
       }) {
@@ -1108,12 +1120,21 @@ describe("service/model", () => {
          const liveRun = opts.liveRunFails
             ? sinon.stub().rejects(new Error("warehouse down"))
             : sinon.stub().resolves(fakeResult);
+         const preparedQuery = opts.compiledRunTarget
+            ? {
+                 getPreparedQuery: sinon.stub().resolves({
+                    _query: { structRef: opts.compiledRunTarget },
+                 }),
+              }
+            : {};
+         Object.assign(storageRunnable, preparedQuery);
          const liveRunnable = {
             getPreparedResult: sinon.stub().resolves({
                resultExplore: { limit: opts.livePreparedLimit ?? 0 },
                connectionName: "live_pg",
             }),
             run: liveRun,
+            ...preparedQuery,
          };
          sinon
             .stub(API.util, "wrapResult")
@@ -1146,14 +1167,31 @@ describe("service/model", () => {
                // REGISTRY keyed by modelID, not from a bare `annotation` field —
                // that indirection exists so an import's tags can be folded in.
                modelID: "m",
-               modelAnnotations: opts.modelNotes
-                  ? {
-                       m: {
-                          inheritsFrom: [],
-                          ownNotes: { notes: opts.modelNotes.map(specNote) },
-                       },
-                    }
-                  : undefined,
+               modelAnnotations:
+                  opts.modelNotes || opts.importedModelNotes
+                     ? {
+                          m: {
+                             inheritsFrom: opts.importedModelNotes
+                                ? ["file://imported.malloy"]
+                                : [],
+                             ownNotes: {
+                                notes: (opts.modelNotes ?? []).map(specNote),
+                             },
+                          },
+                          ...(opts.importedModelNotes
+                             ? {
+                                  "file://imported.malloy": {
+                                     inheritsFrom: [],
+                                     ownNotes: {
+                                        notes: opts.importedModelNotes.map(
+                                           specNote,
+                                        ),
+                                     },
+                                  },
+                               }
+                             : {}),
+                       }
+                     : undefined,
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
             } as any,
             undefined,
@@ -1241,6 +1279,87 @@ describe("service/model", () => {
          expect(attached.tenant).toBe("acme");
          expect(attached.query_id).toBe("corr-1");
          expect(result.queryCorrelationId).toBe("corr-1");
+      });
+
+      it("tags the source the query RUNS, not the first one its text names", async () => {
+         // Malloy executes the LAST `run:`; `extractRunTargetSourceName` reads
+         // the FIRST. Tagging off the surface syntax therefore attributed an
+         // expensive statement to the cheap source's team and tier — worse than
+         // missing attribution, because the bill lands on a source that never
+         // ran. The authorize gate already resolves the compiled target for
+         // exactly this reason; metadata now reads the same answer.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            compiledRunTarget: "expensive",
+            sourceNotes: {
+               cheap: ['#@ queryMetadata.tier="bronze"'],
+               expensive: ['#@ queryMetadata.tier="platinum"'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: cheap -> x\nrun: expensive -> x",
+         );
+
+         expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("platinum");
+      });
+
+      it("does not fold an IMPORT's model-file tags into the importer", async () => {
+         // `modelAnnotations` folds the import lineage because a file-level
+         // `##(authorize)` gate an import could shed would be no gate at all. A
+         // tag is not a gate: folding one lets a shared include attribute every
+         // importing file's traffic to the include's team, and reports the
+         // resulting publish warning against a file that does not contain the
+         // line.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            importedModelNotes: ['## queryMetadata.team="platform"'],
+            modelNotes: ['## queryMetadata.surface="marts"'],
+         });
+
+         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.surface).toBe("marts");
+         expect(attached.team).toBeUndefined();
+      });
+
+      it("assembles no metadata layers at all when the feature is off", async () => {
+         // `mergeQueryMetadata` early-returns on `off`, so everything assembled
+         // for it is discarded. The mode is off unless an operator turns it on,
+         // so assembling anyway made the DEFAULT deployment pay an annotation
+         // walk and a connection lookup on every query for a bag nobody reads.
+         // The connection lookup is the observable half.
+         process.env.PUBLISHER_QUERY_METADATA = "off";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            modelNotes: ['## queryMetadata.surface="marts"'],
+         });
+         const connectionMetadata = sinon.stub().returns({
+            default: { team: "finance" },
+            enforced: null,
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { connectionMetadata },
+         );
+
+         expect(connectionMetadata.called).toBe(false);
+         expect(liveRun.firstCall.args[0].queryMetadata).toBeUndefined();
       });
 
       it("carries the package's declared properties onto a SERVED query", async () => {
