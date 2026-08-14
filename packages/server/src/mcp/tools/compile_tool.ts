@@ -24,12 +24,19 @@ const compileShape = {
    modelPath: z
       .string()
       .describe(
-         "Path to the .malloy model whose namespace the source compiles against. The source is appended to this model, so its imports, sources, and queries are in scope.",
+         "Path to the .malloy model the check targets: the namespace the source is appended to (scope append), or the file it replaces (scope file / package-with-source).",
       ),
    source: z
       .string()
+      .optional()
       .describe(
-         "The Malloy source to validate. Compiled in the context of modelPath and not executed.",
+         "The Malloy source to validate; never executed. Required at scope append/file; optional at scope package (a what-if replacement for modelPath).",
+      ),
+   scope: z
+      .enum(["append", "file", "package"])
+      .optional()
+      .describe(
+         'What source means. "append" (default): appended to modelPath, for validating NEW definitions (an edit collides with "Cannot redefine"). "file": compiled AS modelPath, replacing its content — validates an edit pre-save at true file coordinates. "package": dry-run every .malloy file as saved (reload\'s reach, none of its effects); with source, importers compile against the edit.',
       ),
    includeSql: z
       .boolean()
@@ -45,24 +52,25 @@ const compileShape = {
       ),
 };
 
-const COMPILE_DESCRIPTION = `Compile-check Malloy source against a model and return structured diagnostics WITHOUT running a query. Use this to validate a model or a change while authoring, instead of firing a throwaway malloy_executeQuery just to see whether it parses.
+const COMPILE_DESCRIPTION = `Compile-check Malloy source against a package and return structured diagnostics WITHOUT running anything. Use this to validate a model or a change while authoring, instead of a throwaway malloy_executeQuery.
+
+## Scopes (the scope parameter)
+- "append" (default): the source is appended to modelPath and compiled in its namespace. For NEW definitions and queries. Resubmitting a definition the model already declares reports "Cannot redefine" — use scope "file" for edits — and diagnostics are positioned in the CONCATENATED file, so a line in your source lands after the model's own line count.
+- "file": the source is compiled AS modelPath, replacing its on-disk content for this check. This is how to validate an EDIT before saving; diagnostics land at true file coordinates.
+- "package": a dry-run of every .malloy file in the package as saved — reload's reach (imports across files) with none of its effects on the served model. An optional source is a what-if replacement for modelPath, so importers compile against the edit. includeSql is not available here. A clean dry-run still requires malloy_reloadPackage after saving for the edit to serve.
 
 ## Parameters
-- environmentName, packageName, modelPath (required): the model whose namespace the source compiles against. The source is appended to that model, so its imports, sources, and queries are in scope, and modelPath is real context, not a label.
-- source (required): the Malloy text to validate. An \`#(authorize)\` annotation in it is rejected with a 400 — gates come only from package files; save and reload to validate one.
-- includeSql (optional): also return the generated SQL when the source ends in a runnable query. The query is still not executed and no data is scanned.
-
-## Checking part of a source
-Your source is APPENDED, so it must stand alone as top-level Malloy: a bare \`view:\`, \`dimension:\` or \`measure:\` does not compile on its own, and resubmitting a source the model already declares reports "Cannot redefine". docs/ai-agents.md gives the two forms that work.
+- environmentName, packageName, modelPath (required). source: required at append/file, optional at package. includeSql (append/file): also return generated SQL when the source ends in a runnable query; never executed, no data scanned. givens: values for the model's given: block and any #(authorize) gate. An #(authorize) annotation in the source itself is rejected — gates come only from package files.
 
 ## Response
-A JSON object with status ("success" or "error") and diagnostics: an array of { severity ("error" / "warn" / "debug"), message, code, line, character, endLine, endCharacter, replacement }. Positions are 0-based (line and character start at 0) and relative to the model file with your source appended to it, so a diagnostic in your submitted source lands after the model's own line count, and a diagnostic may point at pre-existing content in the model rather than at your source. Any wrapper you add counts toward that offset too. A clean compile can still return warnings; status is "error" only when at least one diagnostic has error severity. When status is "error" the response also states the error diagnostics in a plain text block alongside the JSON, so the failure is legible without parsing the payload.`;
+{ status: "success"|"error", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file the diagnostic points at (which can be pre-existing content, not your source). status is "error" only when an error-severity diagnostic exists; errors are also stated in a plain text block.`;
 
 /** The flattened diagnostic shape this tool returns. */
 type CompileDiagnostic = {
    severity: string;
    message: string;
    code?: string;
+   model?: string;
    line?: number;
    character?: number;
 };
@@ -94,7 +102,10 @@ export function formatDiagnosticsText(
             ? ` (line ${d.line}, character ${d.character ?? 0})`
             : "";
       const code = d.code ? ` [${d.code}]` : "";
-      return `- ${d.message}${at}${code}`;
+      // The file tag matters most at scope "package", where one list carries
+      // every model's problems.
+      const model = d.model ? `${d.model}: ` : "";
+      return `- ${model}${d.message}${at}${code}`;
    });
    const noun = shown.length === 1 ? "error" : "errors";
    return `Compile failed with ${shown.length} ${noun} (positions are 0-based):\n\n${lines.join("\n")}`;
@@ -123,6 +134,7 @@ export function registerCompileTool(
             source,
             includeSql,
             givens,
+            scope,
          } = params;
 
          logger.info("[MCP Tool compile] Compiling source", {
@@ -130,6 +142,7 @@ export function registerCompileTool(
             packageName,
             modelPath,
             includeSql: !!includeSql,
+            scope: scope ?? "append",
          });
 
          const uri = buildMalloyUri(
@@ -150,14 +163,19 @@ export function registerCompileTool(
                source,
                includeSql ?? false,
                givens as Record<string, GivenValue> | undefined,
+               scope ?? "append",
             );
 
             // Flatten each LogMessage's nested at.range into line/character so
             // agents do not have to walk it. Positions are 0-based (LSP-style).
+            // `model` is the package-relative file a diagnostic points at —
+            // load-bearing at scope "package", clarifying elsewhere (an
+            // append-scope diagnostic can point at pre-existing content).
             const diagnostics = result.problems.map((p) => ({
                severity: p.severity,
                message: p.message,
                code: p.code,
+               model: p.model,
                line: p.at?.range.start.line,
                character: p.at?.range.start.character,
                endLine: p.at?.range.end.line,

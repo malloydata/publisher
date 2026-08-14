@@ -4562,18 +4562,37 @@ components:
       properties:
         source:
           type: string
-          description: Malloy source code to compile
+          description:
+            Malloy source code to compile; never executed. Required at scope
+            "append" and "file"; optional at scope "package", where it acts as
+            a what-if replacement for the model in the URL.
+        scope:
+          type: string
+          enum: ["append", "file", "package"]
+          default: append
+          description:
+            What the source means, and how far the check reaches. "append"
+            (default, the historical behavior) appends the source to the model
+            in the URL and compiles it in that namespace — right for NEW
+            definitions; an edit to an existing definition collides ("Cannot
+            redefine"), and diagnostic positions land in the concatenated
+            virtual file. "file" compiles the source AS that model, replacing
+            its on-disk content for the check — validates an edit before
+            saving, at true file coordinates. "package" is a dry-run of every
+            .malloy file in the package as saved — a reload's reach (imports
+            across files) with none of its effects on the served model; with a
+            source, importers compile against the replacement. includeSql is
+            not available at "package". An invalid value is rejected with a
+            400 naming the valid set.
         includeSql:
           type: boolean
           default: false
           description:
             If true, returns the generated SQL alongside compilation results
-            (only available when compilation succeeds and the source contains a
-            runnable query).
+            (only available at scope "append"/"file", when compilation succeeds
+            and the source contains a runnable query).
         givens:
           $ref: "#/components/schemas/GivenValues"
-      required:
-        - source
 
     CompileResult:
       type: object
@@ -4610,6 +4629,14 @@ components:
         code:
           type: string
           description: Machine-readable error code
+        model:
+          type: string
+          description:
+            Package-relative path of the model file the problem points at,
+            derived from `at.url`. Load-bearing at scope "package", where one
+            array carries every file's problems; elsewhere it says when a
+            diagnostic points at pre-existing content rather than the
+            submitted source. Absent when the location is not a package file.
         at:
           type: object
           description: Source location of the problem

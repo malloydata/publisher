@@ -1835,6 +1835,10 @@ app.post(
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,
+            // Scope defaults to "append" (the historical behavior); an
+            // invalid value is rejected by compileSource with a 400 naming
+            // the valid set, never silently consumed.
+            req.body.scope ?? "append",
          );
          res.status(200).json(result);
       } catch (error) {

@@ -113,12 +113,15 @@ Never guess field names. Ground yourself with `malloy_getContext` to see the sou
 
 Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until you reload the package. The loop is:
 
-1. **Validate** the change with `malloy_compile`, which reads the model fresh from disk and returns diagnostics without running anything.
+1. **Validate** the change with `malloy_compile`, picking the scope that matches what you are doing:
+   - Adding a new definition or query: the default (`scope: "append"`) compiles your text in the model's namespace. Note its diagnostic positions land in the model-plus-your-text concatenation.
+   - **Editing an existing definition: `scope: "file"`**, with the whole edited file as `source`. It compiles your text AS the file (append would collide with "Cannot redefine"), and diagnostics land at the true line numbers of your text.
+   - Before saving a change other files import: `scope: "package"` with the edited file as `source` dry-runs every model in the package against your edit, so a rename that breaks an importer surfaces now instead of at reload. Each diagnostic carries `model`, the file it points at.
 2. **Save** it to the package's model file.
 3. **Reload** with `malloy_reloadPackage`.
 4. **Run** the new view with `malloy_executeQuery`.
 
-A reload that fails to compile is safe: your files are left alone and the previously compiled model keeps serving, with the compile errors returned to you. Compile first anyway for faster feedback. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these two tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `malloy_executeQuery`.
+A reload that fails to compile is safe: your files are left alone and the previously compiled model keeps serving, with the compile errors returned to you. Compile first anyway for faster feedback, and a `scope: "package"` dry-run with no `source` gives you reload's full validation (imports across files, every file as saved) without touching the served model. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `malloy_executeQuery`. An older Publisher that has `malloy_compile` but rejects `scope` supports only the append behavior.
 
 ## SQL-to-Malloy Quick Reference
 
