@@ -125,6 +125,9 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          "joins",
          "sourceName",
          "relationship",
+         "alsoIn",
+         "belowCutoffCount",
+         "retrievalReason",
       ]) {
          expect(description).toContain(term);
       }

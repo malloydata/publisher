@@ -632,8 +632,7 @@ describe("get_context discovery tiers", () => {
       // the model declared one and concluded it had to bridge the tables
       // itself. The join's #(doc) was likewise unreachable.
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockPackage),
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -659,8 +658,7 @@ describe("get_context discovery tiers", () => {
       // Recursing would re-index every one of them once per join that
       // reaches it, which is the redundancy this tool can least afford.
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockPackage),
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -674,8 +672,7 @@ describe("get_context discovery tiers", () => {
 
    it("tier 3: a package listing still returns only sources, not joins", async () => {
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockPackage),
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const { results } = parse(
          await handler({
@@ -692,8 +689,7 @@ describe("get_context discovery tiers", () => {
       // happened to rank for the same query, so guidance placement depended
       // on query phrasing rather than on where the modeller wrote it.
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockPackage),
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const { results, sources } = parse(
          await handler({
@@ -724,8 +720,7 @@ describe("get_context discovery tiers", () => {
 
    it("reports each source once, however many of its entities matched", async () => {
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockPackage),
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const { results, sources } = parse(
          await handler({
@@ -744,8 +739,7 @@ describe("get_context discovery tiers", () => {
       // The context copy exists to deliver the caveat, not to reproduce the
       // model file; a source that is itself the hit still returns in full.
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockLongDocPackage),
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
       });
       const { results, sources } = parse(
          await handler({
@@ -770,8 +764,7 @@ describe("get_context discovery tiers", () => {
       // declared" from "joins exist but were not returned", and we watched
       // agents spend queries probing for a relationship that was never there.
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockLongDocPackage),
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
       });
       const { results } = parse(
          await handler({ environmentName: "e", packageName: "p" }),
@@ -781,8 +774,7 @@ describe("get_context discovery tiers", () => {
 
    it("omits the sources block entirely when nothing matched", async () => {
       const handler = captureHandler({
-         getEnvironment: async () =>
-            envWith(async () => mockPackage),
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
       const payload = parse(
          await handler({
