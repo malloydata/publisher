@@ -1460,6 +1460,24 @@ export class EnvironmentStore {
                message,
             });
          }
+         // Stale packages are SERVING (they still appear in environments, and
+         // the readiness counters still count them), but the model answering
+         // queries is older than the files on disk because the latest reload
+         // failed to compile. Reported here so the failure is visible off-box:
+         // without it a broken watch-mode save is stderr-only and /status
+         // keeps reading healthy while queries answer from the previous model.
+         for (const [
+            packageName,
+            stale,
+         ] of environment.getStaleCompileErrors()) {
+            loadErrors.push({
+               environment: environmentName,
+               package: packageName,
+               message: stale.message,
+               stale: true,
+               failedAt: stale.failedAt,
+            });
+         }
       }
       // Left unset when nothing failed, so the key is absent from the response
       // and a healthy server's status body is byte-for-byte what it was before
