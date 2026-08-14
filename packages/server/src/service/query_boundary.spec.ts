@@ -239,6 +239,173 @@ export { customers }`,
       }
    });
 
+   // The package-wide union admits a name only when the requesting model
+   // resolves it to the same DECLARATION a listed model exported. Keying the
+   // union on bare names instead let a name curated anywhere clear the gate
+   // everywhere, while Malloy still resolved the declaration in the requested
+   // model's namespace — so a same-named hidden source was served through a
+   // model that never exported it. These pin both axes of that, plus the
+   // legitimate re-export the identity check must NOT break.
+   describe("declared: package-wide union admits by declaration, not by name", () => {
+      // a.malloy (listed) exports its OWN `customers` (1 row) and its own named
+      // query `top`. b.malloy (listed) imports a hidden file declaring a
+      // DIFFERENT `customers` (3 rows) plus its own private `top` over it, and
+      // exports neither. Nothing in b is curated but `safe`.
+      function writeCollidingModels(): void {
+         fs.writeFileSync(
+            path.join(tempDir, "hidden.malloy"),
+            `source: customers is duckdb.sql("select 1 as id union all select 2 union all select 3") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "a.malloy"),
+            `source: customers is duckdb.sql("select 99 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+query: top is customers -> { aggregate: c }
+export { customers, top }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "b.malloy"),
+            `import "hidden.malloy"
+source: safe is duckdb.sql("select 1 as id") extend { measure: c is count() }
+query: top is customers -> { aggregate: c }
+export { safe }`,
+         );
+      }
+
+      it("denies a hidden source that merely shares a name with a sibling explore's export", async () => {
+         writeManifest({
+            explores: ["a.malloy", "b.malloy"],
+            queryableSources: "declared",
+         });
+         writeCollidingModels();
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const b = pkg.getModel("b.malloy")!;
+            // Ad-hoc, explicit sourceName, and the named-view form all resolve
+            // `customers` to hidden.malloy's declaration in b's namespace.
+            await expect(
+               b.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: customers -> { aggregate: c }",
+               ),
+            ).rejects.toBeInstanceOf(NotQueryableError);
+            await expect(
+               b.getQueryResults("customers", "v"),
+            ).rejects.toBeInstanceOf(NotQueryableError);
+            // a.malloy's own export is untouched, and returns ITS row count.
+            const viaOwner = await pkg
+               .getModel("a.malloy")!
+               .getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: customers -> { aggregate: c }",
+               );
+            expect(
+               (viaOwner.compactResult as { c: number }[] | undefined)?.[0].c,
+            ).toBe(1);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("denies a private named query that shares a name with a sibling explore's exported query", async () => {
+         // Worse than the source axis: the pure-queryName path clears without
+         // ever reaching the compiled backstop, so a name-keyed union ran
+         // b.malloy's unexported `top` against its hidden source.
+         writeManifest({
+            explores: ["a.malloy", "b.malloy"],
+            queryableSources: "declared",
+         });
+         writeCollidingModels();
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            await expect(
+               pkg.getModel("b.malloy")!.getQueryResults(undefined, "top"),
+            ).rejects.toBeInstanceOf(NotQueryableError);
+            // The genuine export still runs, over a.malloy's 1-row source.
+            const owned = await pkg
+               .getModel("a.malloy")!
+               .getQueryResults(undefined, "top");
+            expect(
+               (owned.compactResult as { c: number }[] | undefined)?.[0].c,
+            ).toBe(1);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("still admits a source RE-EXPORTED by a listed file from a hidden one", async () => {
+         // The identity check keys on the declaration, which lives in the
+         // hidden file — so this must still pass, through the re-exporting
+         // model AND through a sibling explore that imports the same file.
+         writeManifest({
+            explores: ["reexport.malloy", "other.malloy"],
+            queryableSources: "declared",
+         });
+         fs.writeFileSync(
+            path.join(tempDir, "hidden.malloy"),
+            `source: shared is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "reexport.malloy"),
+            `import "hidden.malloy"
+export { shared }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "other.malloy"),
+            `import "hidden.malloy"
+source: own is duckdb.sql("select 1 as id") extend { measure: c is count() }
+export { own }`,
+         );
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const viaExporter = await pkg
+               .getModel("reexport.malloy")!
+               .getQueryResults("shared", "v");
+            expect(viaExporter.result.data).toBeDefined();
+            // Same declaration reached through a sibling explore: the union's
+            // whole purpose (CR-5), and it survives the identity check.
+            const viaSibling = await pkg
+               .getModel("other.malloy")!
+               .getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: shared -> { aggregate: c }",
+               );
+            expect(viaSibling.result.data).toBeDefined();
+         } finally {
+            await duckdb.close();
+         }
+      });
+   });
+
    it("declared: no-export files listed in explores keep every source queryable, including base files imported by a sibling explore", async () => {
       // The exact shape a QA session shipped and watched break on
       // server 0.0.243 (HANDOFF CR-5): four model files, every one listed in

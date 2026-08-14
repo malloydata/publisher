@@ -270,11 +270,12 @@ export class Package {
 
    /**
     * Push the package-level query-boundary policy down onto each Model so the
-    * query chokepoints can enforce it without a back-reference to the Package:
-    * `Model.getQueryResults` (the HTTP query route and the MCP tool) and the
-    * `/compile` path (via `assertQueryBoundaryForRunnable`). Derived once here
-    * (and on reload) rather than per query: the policy only changes when the
-    * manifest is (re)read.
+    * query chokepoint can enforce it without a back-reference to the Package:
+    * `Model.getQueryResults` (the HTTP query route and the MCP tool). The
+    * `/compile` path is deliberately NOT a chokepoint — it is exempt from the
+    * boundary (see Environment.compileSource); only `#(authorize)` gates it.
+    * Derived once here (and on reload) rather than per query: the policy only
+    * changes when the manifest is (re)read.
     *
     * Policy: queryable == discoverable. The boundary is inert unless `explores`
     * is declared (no curated surface ⇒ nothing to restrict) AND
@@ -293,23 +294,55 @@ export class Package {
       // queryable (its own file is listed in explores) whenever it was
       // addressed through a model that imports it. A client that posts every
       // query to one model path — the observed agent behavior (HANDOFF CR-5) —
-      // then loses every source but that file's own. Union scoping admits
-      // nothing new: each admitted source was already queryable via its own
-      // model path, and the file-level entry-point gate is unchanged.
+      // then loses every source but that file's own.
+      //
+      // Each entry maps a name to the DEFINITION IDENTITIES exported under it,
+      // never to the bare name. Keying on names alone would admit by collision:
+      // listed model A exporting `customers` would clear the gate for the name
+      // everywhere, and listed model B that imports a different, hidden
+      // `customers` would then serve the hidden one, because the gate matched
+      // the name while Malloy resolved the declaration in B's namespace. With
+      // identities, a request is admitted only when the requested model
+      // resolves the name to the very declaration a listed model exported —
+      // which is what makes the union genuinely admit nothing new. A legitimate
+      // re-export still works: the exporting model's closure carries the
+      // declaration's own location, wherever the file it lives in.
       // (Relies on applyDiscoveryPolicyToModels having run first, so
       // getSources()/getQueries() are already export-curated.)
-      let packageCuratedSources: ReadonlySet<string> | undefined;
-      let packageCuratedQueries: ReadonlySet<string> | undefined;
+      let packageCuratedSources:
+         | ReadonlyMap<string, ReadonlySet<string>>
+         | undefined;
+      let packageCuratedQueries:
+         | ReadonlyMap<string, ReadonlySet<string>>
+         | undefined;
       if (mode === "declared" && exploresDeclared && exploreSet) {
-         const sources = new Set<string>();
-         const queries = new Set<string>();
+         const sources = new Map<string, Set<string>>();
+         const queries = new Map<string, Set<string>>();
+         const add = (
+            into: Map<string, Set<string>>,
+            name: string | undefined,
+            identity: string | undefined,
+         ): void => {
+            // No location ⇒ nothing to prove identity with, so contribute
+            // nothing and leave the name to each model's own closure.
+            if (!name || !identity) return;
+            const existing = into.get(name);
+            if (existing) existing.add(identity);
+            else into.set(name, new Set([identity]));
+         };
          for (const [modelPath, model] of this.models) {
+            // Only .malloy files curate a query surface. A notebook listed in
+            // explores is already invalid (getInvalidExplores flags it) but is
+            // served fail-safe, and must not contribute names here — the
+            // sibling loops (listModels, emptyDiscoveryWarnings) filter the
+            // same way.
+            if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
             if (!exploreSet.has(modelPath)) continue;
             for (const source of model.getSources() ?? []) {
-               if (source.name) sources.add(source.name);
+               add(sources, source.name, model.definitionIdentity(source.name));
             }
             for (const query of model.getQueries() ?? []) {
-               if (query.name) queries.add(query.name);
+               add(queries, query.name, model.definitionIdentity(query.name));
             }
          }
          packageCuratedSources = sources;

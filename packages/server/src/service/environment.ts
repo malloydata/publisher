@@ -14,6 +14,7 @@ import {
    README_NAME,
 } from "../constants";
 import {
+   AccessDeniedError,
    BadRequestError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
@@ -52,7 +53,7 @@ import {
    splitManifestEntries,
    type FetchedManifest,
 } from "./manifest_loader";
-import { ApiConnection } from "./model";
+import { ApiConnection, Model } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 
@@ -159,6 +160,36 @@ function getPackageAdmissionRejectionsCounter(): Counter {
 export function resetAdmissionTelemetryForTesting(): void {
    queryAdmissionRejectionsCounter = null;
    packageAdmissionRejectionsCounter = null;
+}
+
+/**
+ * Run a /compile authorize gate, converting an access denial on a
+ * boundary-hidden target into the boundary's generic 404.
+ *
+ * /compile is exempt from the query boundary so a curated package stays
+ * authorable, but the exemption must not turn /compile into an existence
+ * oracle. Without this, an unauthorized caller probing a source that is both
+ * boundary-hidden and `#(authorize)`-gated gets a 403 naming it — proof the
+ * source exists — where the query surface answers a flat 404, letting the
+ * hidden namespace be enumerated one guess at a time. Re-running the boundary
+ * on the denial path only (it throws for a hidden target and otherwise returns
+ * without effect) restores "hidden is indistinguishable from nonexistent" while
+ * leaving compile itself ungated: a target the boundary does not hide keeps its
+ * informative 403.
+ */
+async function denyHiddenAsNotQueryable(
+   gateModel: { assertQueryBoundaryEarly: Model["assertQueryBoundaryEarly"] },
+   source: string,
+   gate: () => Promise<void>,
+): Promise<void> {
+   try {
+      await gate();
+   } catch (error) {
+      if (error instanceof AccessDeniedError) {
+         gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
+      }
+      throw error;
+   }
 }
 
 export class Environment {
@@ -533,7 +564,9 @@ export class Environment {
             // non-exported source's schema (and, with includeSql, SQL) —
             // sources whose confidentiality matters are gated by
             // `#(authorize)`, which still applies here in full.
-            await gateModel.assertAuthorizedForText(source, givens ?? {});
+            await denyHiddenAsNotQueryable(gateModel, source, () =>
+               gateModel.assertAuthorizedForText(source, givens ?? {}),
+            );
          }
 
          // Initialize Runtime with the package's active MalloyConfig so compile
@@ -592,9 +625,12 @@ export class Environment {
             // model.ts assertAuthorizedForAllSources). The own-source probe and
             // derivation walk it runs are cheap no-ops for an ungated model.
             if (queryMaterializer && gateModel) {
-               await gateModel.assertAuthorizedForRunnable(
-                  queryMaterializer,
-                  givens ?? {},
+               const materializer = queryMaterializer;
+               await denyHiddenAsNotQueryable(gateModel, source, () =>
+                  gateModel.assertAuthorizedForRunnable(
+                     materializer,
+                     givens ?? {},
+                  ),
                );
             }
 

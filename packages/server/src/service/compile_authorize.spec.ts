@@ -193,3 +193,110 @@ export { customers }`,
       ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });
+
+describe("compile exemption is not an existence oracle (compileSource)", () => {
+   // The exemption must not let /compile distinguish "this gated source exists"
+   // from "no such name". A source that is BOTH boundary-hidden and
+   // #(authorize)-gated has to answer with the boundary's generic 404, the same
+   // as the query surface — otherwise an unauthorized caller enumerates the
+   // hidden namespace one 403 at a time. A gated source the boundary does NOT
+   // hide keeps its informative 403.
+   let rootDir: string;
+   let env: Environment;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-oracle-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage("pkg", async (stagingPath) => {
+         await fs.mkdir(stagingPath, { recursive: true });
+         await fs.writeFile(
+            path.join(stagingPath, "publisher.json"),
+            JSON.stringify({
+               name: "pkg",
+               explores: ["index.malloy"],
+               queryableSources: "declared",
+            }),
+         );
+         // Hidden file (not in explores) holding a gated source.
+         await fs.writeFile(
+            path.join(stagingPath, "secret.malloy"),
+            `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: hidden_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+         );
+         // Listed file with a gated source that IS exported (visible).
+         await fs.writeFile(
+            path.join(stagingPath, "index.malloy"),
+            `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: visible_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+
+source: customers is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+export { customers, visible_gated }`,
+         );
+      });
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("answers 404, not 403, for a source that is hidden AND gated", async () => {
+      // Pre-exemption this was a NotQueryableError because the boundary ran
+      // first; the exemption must preserve the OUTCOME for a hidden target even
+      // though the boundary no longer blocks compilation itself.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "secret.malloy",
+            "run: hidden_gated -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("masks it with includeSql too (the door worth the most to an attacker)", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "secret.malloy",
+            "run: hidden_gated -> { aggregate: c }",
+            true,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("keeps the informative 403 for a gated source the boundary does NOT hide", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "run: visible_gated -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("still compiles the hidden source once the given satisfies its gate", async () => {
+      // The mask is only on the denial path — authoring against a hidden file
+      // stays possible for a caller who passes the gate.
+      const { problems } = await env.compileSource(
+         "pkg",
+         "secret.malloy",
+         "run: hidden_gated -> { aggregate: c }",
+         false,
+         { ROLE: "analyst" },
+      );
+      expect(problems).toBeDefined();
+   });
+});

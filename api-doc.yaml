@@ -2812,9 +2812,11 @@ components:
             findings: a `storage=` source not served from storage, a `#@ persist`
             source that was not recognized as materializable, a persist-target
             collision, and materialization-config problems that degrade
-            attribution. Server-computed and read-only: ignored on create/update
-            requests and only returned in responses. Present only when there are
-            such findings.
+            attribution. Discovery findings: a model listed in `explores` whose
+            export closure surfaces no sources or named queries, so it lists as
+            empty and renders a blank page. Server-computed and read-only:
+            ignored on create/update requests and only returned in responses.
+            Present only when there are such findings.
           items:
             type: object
             properties:
@@ -2854,11 +2856,18 @@ components:
             entry points, and the queryable sources are the union of those
             files' `export {}` closures — so a source exported by any listed
             file stays queryable whichever listed model path the request
-            addresses it through. Every other source still compiles, imports,
-            joins, and extends but is not directly queryable (denied with 404).
+            addresses it through. Admission is by declaration, not by name: a
+            request clears only when the model it names resolves the name to the
+            very source a listed file exported, so a same-named source declared
+            in a hidden file is not admitted by the coincidence. Every other
+            source still compiles, imports, joins, and extends but is not
+            directly queryable (denied with 404).
             The `/compile` endpoint is exempt (compile is the authoring loop;
             the boundary is discovery curation, not access control — for
-            confidentiality use `#(authorize)`, which gates compile too).
+            confidentiality use `#(authorize)`, which gates compile too). A
+            source that is both hidden and `#(authorize)`-gated still answers
+            `/compile` with the generic 404, so the exemption cannot be used to
+            enumerate gated names.
             `"all"` decouples the axes: `explores`/`export {}` gate discovery
             only and every compiled source stays directly queryable. When
             `explores` is absent there is no curated surface, so both modes are
