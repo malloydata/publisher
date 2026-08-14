@@ -273,6 +273,26 @@ describe("encodeDrillValue", () => {
       expect(encodeDrillValue("a, b", undefined)).toBe("a\\,\\ b");
    });
 
+   it("escapes a number drilled into a `filter<string>` given", () => {
+      // The two filter grammars disagree about a leading `-`: the NUMBER
+      // grammar reads `-5` as the value, the STRING grammar reads it as a
+      // negation. Routing a number bare into a `filter<string>` therefore
+      // filtered to every row EXCEPT the one clicked, silently.
+      const encoded = encodeDrillValue(-5, "filter<string>") as string;
+      expect(StringFilterExpression.parse(encoded).parsed).toEqual({
+         operator: "=",
+         values: ["-5"],
+      });
+      expect(
+         StringFilterExpression.parse(
+            encodeDrillValue(-2.5, "filter<string>") as string,
+         ).parsed,
+      ).toEqual({ operator: "=", values: ["-2.5"] });
+      // A `filter<number>` target keeps the bare spelling, which is correct for
+      // ITS grammar. That difference is the whole point.
+      expect(encodeDrillValue(-5, "filter<number>")).toBe("-5");
+   });
+
    it("declines a blank cell for a plain `string` given too", () => {
       // The same reason `drillValueToFilter` refuses one: a blank cell is far
       // likelier a misclick than a request for the rows that are blank. This

@@ -147,11 +147,17 @@ export function markDrillableCells(
       )) {
          if (!ownedByTable(cell)) continue;
          const column = gridColumnStart(cell);
-         // A cell with nothing in it is not marked. `resolveDrill` refuses a
-         // null or empty value (clicking a blank cell is far likelier a misclick
-         // than a request for the rows with no value), so painting one as a link
+         // A cell with no value is not marked. `resolveDrill` refuses a null or
+         // empty value (clicking a blank cell is far likelier a misclick than a
+         // request for the rows with no value), so painting one as a link
          // promised a click that was then dropped in silence.
+         //
+         // Structure first, TEXT second. Testing the text alone did not work:
+         // the renderer draws a null cell as the glyph `∅` inside a
+         // `.value-null` span, so its `textContent` is not empty and every null
+         // cell stayed marked, which is the exact case this guard was added for.
          const hasValue =
+            !cell.querySelector(".value-null") &&
             (cell.textContent ?? "").replace(/\u200b/g, "").trim() !== "";
          // Leaf value cells only: a cell wrapping a nested table is structure,
          // and its click lands on the inner cell anyway.

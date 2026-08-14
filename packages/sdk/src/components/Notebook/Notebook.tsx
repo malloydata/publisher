@@ -626,7 +626,12 @@ export default function Notebook({
                         index={index}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
-                        isExecuting={isExecuting || runScheduled}
+                        isExecuting={isExecuting}
+                        // Distinct from `isExecuting`: the cell's spinner is
+                        // gated on `!cell.result`, so feeding this through it
+                        // showed nothing on a re-run, which is the only case
+                        // the settle window has to signal.
+                        pendingRerun={runScheduled}
                         onNavigate={onNavigate}
                         onDrillSelf={
                            declaredGivens.length > 0 ? onDrillSelf : undefined

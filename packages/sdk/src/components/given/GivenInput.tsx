@@ -253,7 +253,18 @@ export function GivenInput({
       !(!multiple && selected.length > 1)
    ) {
       const commit = (next: string[]) => {
-         if (next.length === 0) {
+         // ASK the encoder what survived; do not predict it from `next.length`.
+         // `encodeFilterList` drops any value with no non-whitespace character,
+         // so a single blank-looking pick (a run of spaces, a tab, an NBSP, all
+         // ordinary in scraped data and passed through untouched by
+         // `readOptionValues`) has length 1, skipped the revert arm below, and
+         // encoded to `""`: the EMPTY filter, sent as an explicit "match
+         // everything" override while the control redrew showing the model
+         // default as a ghost. This is the identical drift that made a blank
+         // cell drill to every row, at a second call site: `drillValueToFilter`
+         // was fixed to ask the encoder and this one still predicted it.
+         const encoded = filtered ? encodeFilterList(next) : undefined;
+         if (next.length === 0 || encoded === "") {
             // `null` for every type, which is what the × means everywhere else
             // in this file: drop the override and let the model's own value
             // stand. This arm used to send `""` for a filter, the empty filter,
@@ -271,14 +282,10 @@ export function GivenInput({
             return;
          }
          // One value for a non-filter given, never the array. `GivenValue`
-         // admits `string[]`, but the URL codec cannot round-trip one:
-         // `givenToParam` joins on `,` and reading it back yields the joined
-         // string, not the list. An `else if (multiple)` arm sending `next`
-         // used to sit here and was unreachable, since `multiple` requires
-         // `isFilterType`, which is the same test `filtered` makes. Removed
-         // rather than left to be revived by a later surface reusing this
-         // codec, where it would silently corrupt the value.
-         onChange(filtered ? encodeFilterList(next) : next[0]);
+         // admits no array at all now, and the URL codec could not round-trip
+         // one anyway: `givenToParam` refuses it rather than joining on `,`,
+         // because reading it back yields the joined string, not the list.
+         onChange(filtered ? (encoded as string) : next[0]);
       };
 
       return (

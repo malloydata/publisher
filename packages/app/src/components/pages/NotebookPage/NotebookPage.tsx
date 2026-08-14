@@ -4,7 +4,7 @@ import {
    useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 export interface NotebookPageProps {
@@ -34,18 +34,20 @@ export default function NotebookPage({
    // the reader had arrived on. Navigating with an explicit `hash` keeps it.
    const routerNavigate = useNavigate();
    const location = useLocation();
-   // Read through a ref so the callback below stays stable: it is handed to the
-   // notebook as a prop, and a new identity on every URL change would churn the
-   // effect that calls it.
+   // `location` is read from the closure, NOT through a ref. Two earlier shapes
+   // were both wrong: assigning the ref during render keeps a location from a
+   // render React may discard, and assigning it in an effect reads stale,
+   // because the report that calls this arrives from an effect inside
+   // `Notebook`, a CHILD, and React flushes child effects before the parent's.
+   // On an in-app notebook-to-notebook navigation with a warm cache the report
+   // fires on the very commit that changes the notebook, so the merge ran
+   // against the notebook the reader had just left: it carried that page's
+   // fragment and its unrelated parameters onto the new one.
    //
-   // Written in an effect rather than during render. A render React discards
-   // never commits, and a ref assigned in one keeps a location the page is not
-   // showing. The callback only runs from a user interaction, long after the
-   // effect has flushed, so it never reads a stale one.
-   const locationRef = useRef(location);
-   useEffect(() => {
-      locationRef.current = location;
-   }, [location]);
+   // Capturing the value is correct because the callback handed down on a given
+   // render belongs to that render's location. It costs a new callback identity
+   // per URL change, which is harmless: the effect that calls it compares the
+   // values first and does nothing when they match.
 
    const givens = useMemo(
       () => Object.fromEntries(searchParams.entries()),
@@ -89,26 +91,34 @@ export default function NotebookPage({
          // deletes it on the first control change. The SDK takes the same care
          // in the other direction: `paramsToGivens` ignores names the model
          // does not declare, and a wholesale replace here would undo that.
-         const merged = new URLSearchParams(locationRef.current.search);
+         const merged = new URLSearchParams(location.search);
          // Scoped to the names that are ours: what the notebook manages now,
          // plus anything this page wrote earlier. A cleared control has to
          // leave the address bar, and so does a given the model no longer
          // declares. Anything outside that set is left exactly as found, which
          // is the whole point of merging.
          for (const name of ours) {
-            if (!(name in next)) merged.delete(name);
+            // `hasOwnProperty`, not `in`: `next` is a plain object literal, so
+            // `in` walks its prototype and reports `constructor`, `toString`
+            // and friends as present. A given with one of those names could
+            // never satisfy this branch, so clearing its control left the
+            // parameter in the address bar for good, silently re-applying to
+            // anyone who opened the link.
+            if (!Object.prototype.hasOwnProperty.call(next, name)) {
+               merged.delete(name);
+            }
          }
          for (const [name, value] of Object.entries(next)) {
             merged.set(name, value);
          }
          routerNavigate(
-            { search: merged.toString(), hash: locationRef.current.hash },
+            { search: merged.toString(), hash: location.hash },
             // Changing a parameter is not a navigation step: Back should leave
             // the notebook, not walk back through every value the reader tried.
             { replace: true },
          );
       },
-      [routerNavigate],
+      [routerNavigate, location],
    );
 
    return (

@@ -19,7 +19,11 @@
  * which given to which value. Navigating is the host's job.
  */
 
-import { encodeFilterList, isFilterType } from "../given/filterValue";
+import {
+   encodeFilterList,
+   filterInnerType,
+   isFilterType,
+} from "../given/filterValue";
 
 /**
  * The parsed-tag surface this module reads, structurally typed.
@@ -315,6 +319,20 @@ export function encodeDrillValue(
          return Number.isFinite(rawValue) ? String(rawValue) : undefined;
       }
       if (typeof rawValue === "boolean") return String(rawValue);
+   }
+   // A `filter<string>` target takes the STRING grammar, so a bare number is
+   // not safe there: `-5` parses as `{operator:"=", values:["5"], not:true}`,
+   // a NEGATION, so drilling a negative cell filtered to every row EXCEPT the
+   // one clicked, silently. `drillValueToFilter`'s number branch is right for a
+   // `filter<number>`, whose grammar reads `-5` as the value. The spec already
+   // knew the two grammars disagree here and pinned only the number one.
+   if (
+      filterInnerType(targetType) === "string" &&
+      typeof rawValue === "number"
+   ) {
+      return Number.isFinite(rawValue)
+         ? encodeFilterList([String(rawValue)])
+         : undefined;
    }
    return drillValueToFilter(rawValue);
 }

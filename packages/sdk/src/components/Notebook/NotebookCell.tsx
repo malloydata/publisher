@@ -10,6 +10,7 @@ import {
    DialogContent,
    DialogTitle,
    IconButton,
+   LinearProgress,
    Snackbar,
    Stack,
    Tooltip,
@@ -46,6 +47,14 @@ interface NotebookCellProps {
    index: number;
    maxResultSize?: number;
    isExecuting?: boolean;
+   /**
+    * A re-run is coming but has not started, i.e. the given-settle window.
+    * Separate from `isExecuting` because the spinner below is gated on
+    * `!cell.result`, so on a re-run (where a result IS present) it renders
+    * nothing at all, which is exactly the case the settle window needs to
+    * signal: the values on screen are already stale.
+    */
+   pendingRerun?: boolean;
    // Takes the modifier subset rather than a synthetic event, so a drill click
    // (which the Malloy renderer reports as a DOM event) can navigate without
    // being converted into a React one first.
@@ -151,6 +160,7 @@ export function NotebookCell({
    index,
    maxResultSize,
    isExecuting,
+   pendingRerun,
    onNavigate,
    onDrillSelf,
    canDrillSelf,
@@ -624,6 +634,13 @@ export function NotebookCell({
                      {cell.error}
                   </Typography>
                </CleanMetricCard>
+            )}
+
+            {cell.result && pendingRerun && (
+               <LinearProgress
+                  aria-label="a re-run is pending"
+                  sx={{ mb: 1, height: 2, borderRadius: 1 }}
+               />
             )}
 
             {cell.result && (
