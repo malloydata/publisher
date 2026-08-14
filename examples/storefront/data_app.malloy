@@ -8,10 +8,13 @@
 // which is not Malloy's escape at all.
 //
 // It exists as its own file because Malloy's given namespace is per-file: a
-// query can only reference a given the file it runs against imports. The
-// notebook does the same thing in its first cell. This is the data app's copy of
-// that idea, with all five givens rather than a subset, because the page renders
-// one control row that every tab shares.
+// query can only reference a given the file it runs against imports. A notebook
+// does the same thing in its first cell, importing a model whose givens it wants
+// its Parameters panel to offer (examples/governed-analytics/orders.malloynb is
+// the worked example; storefront.malloynb next door imports the plain model and
+// so has no controls). This is the data app's version, with all five givens
+// rather than a subset, because the page renders one control row every tab
+// shares.
 ##! experimental.givens
 import "storefront.malloy"
 import { CATEGORY, BRAND, REGION, SINCE, MIN_SALE } from "givens.malloy"

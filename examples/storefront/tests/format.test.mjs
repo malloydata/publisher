@@ -3,12 +3,12 @@
 //   node --test "examples/storefront/tests/*.test.mjs"
 //   bun run test:examples
 //
-// The filter cases below are the point of this file. Every one of them was a
-// value the page's previous encoder turned into something Malloy matched
-// differently from what the reader picked, and every failure was silent: the
-// page rendered a table either way. They run against the real grammar through
-// the vendored bundle, so they fail if a Malloy bump changes the escaping and
-// the vendored copy has not been regenerated.
+// The filter cases below are the point of this file. Every one of them is a
+// value a hand-rolled encoder turns into something Malloy matches differently
+// from what the reader picked, and every such failure is silent: the page
+// renders a table either way. They run against the real grammar through the
+// vendored bundle, so they fail if a Malloy bump changes the escaping and the
+// vendored copy has not been regenerated.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { StringFilterExpression } from "../public/vendor/malloy-filter.js";
@@ -42,22 +42,23 @@ function valuesMalloyWillMatch(filter) {
    return parsed.values;
 }
 
-// Each of these encoded to something with a different meaning before. The note
-// on each is what the old double-quote encoder actually produced, measured
-// against this same parser.
+// Each of these means something other than itself in the filter grammar. The
+// note on each is what it turns into when it is written out unescaped, or (for
+// the quote cases) wrapped in double quotes, which the string grammar has no
+// notion of. All measured against this same parser.
 const HOSTILE = [
-   ["-Outerwear", "became a negation: everything EXCEPT Outerwear"],
-   ["%", "became a match-anything pattern, so every row came back"],
-   ["50% off", "became a wildcard match"],
-   ["a_b", "became a single-character wildcard match"],
-   ["Ben & Jerry, Inc", "split into two brands on the comma"],
-   ['The "Best" Brand', "left the quote characters inside the matched value"],
-   [`AC${BACKSLASH}DC`, "left the quote characters inside the matched value"],
-   ["null", "became the null operator"],
-   ["empty", "became the empty operator"],
-   ["a;b", "became a conjunction"],
-   ["(x)", "became a grouping"],
-   [" Nike", "left the quote characters inside the matched value"],
+   ["-Outerwear", "is a negation: everything EXCEPT Outerwear"],
+   ["%", "is a match-anything pattern, so every row comes back"],
+   ["50% off", "is a wildcard match"],
+   ["a_b", "is a single-character wildcard match"],
+   ["Ben & Jerry, Inc", "splits into two brands on the comma"],
+   ['The "Best" Brand', "keeps the quote characters inside the matched value"],
+   [`AC${BACKSLASH}DC`, "escapes the character after the backslash"],
+   ["null", "is the null operator"],
+   ["empty", "is the empty operator"],
+   ["a;b", "is a conjunction"],
+   ["(x)", "is a grouping"],
+   [" Nike", "loses the leading space"],
 ];
 
 test("a value Malloy would read as syntax survives as a literal", () => {
@@ -121,15 +122,28 @@ test("no usable values is the empty filter, which means All", () => {
 test("non-strings a control can produce", () => {
    assert.equal(encodeFilterValue(null), "");
    assert.equal(encodeFilterValue(undefined), "");
-   assert.equal(encodeFilterValue(true), "true");
-   assert.equal(encodeFilterValue(42), "42");
    assert.equal(encodeFilterValue(Number.NaN), "");
    assert.equal(encodeFilterValue(Number.POSITIVE_INFINITY), "");
-   assert.equal(
-      encodeFilterValue(new Date("2024-03-05T00:00:00Z")),
-      "2024-03-05",
-   );
    assert.equal(encodeFilterValue(new Date("nope")), "");
+   // What Malloy matches, not what the string looks like: a number and a date
+   // go through the same escaping as a picked string, because the interesting
+   // ones do not print as themselves.
+   assert.deepEqual(valuesMalloyWillMatch(encodeFilterValue(true)), ["true"]);
+   assert.deepEqual(valuesMalloyWillMatch(encodeFilterValue(42)), ["42"]);
+   assert.deepEqual(
+      valuesMalloyWillMatch(encodeFilterValue(new Date("2024-03-05T00:00:00Z"))),
+      ["2024-03-05"],
+   );
+});
+
+test("a negative number is a value, not a negation", () => {
+   // `-5` written out as itself parses as "not 5", so a numeric control that
+   // can reach a negative number would silently return the complement of the
+   // rows the reader asked for. This is the string case's failure in the one
+   // place it is easy to assume cannot have it.
+   for (const n of [-5, -0.5]) {
+      assert.deepEqual(valuesMalloyWillMatch(encodeFilterValue(n)), [String(n)]);
+   }
 });
 
 test("a picker's selection survives the trip through the URL", () => {
@@ -191,6 +205,12 @@ test("cells format the way their field's tags ask", () => {
    assert.equal(formatValue(10.695, "decimal"), "10.7");
    assert.equal(formatValue("2024-03-01T00:00:00.000Z", "month"), "Mar 2024");
    assert.equal(formatValue("Nike"), "Nike");
+   // An untagged column still gets thousands separators, because Malloy hands
+   // a large integer back as a string. `Number` says 0 for an empty string and
+   // 1 for `true` though, so those two must not take that path.
+   assert.equal(formatValue("1234567"), "1,234,567");
+   assert.equal(formatValue(""), "");
+   assert.equal(formatValue(true), "true");
 });
 
 test("month labels", () => {

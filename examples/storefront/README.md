@@ -16,8 +16,13 @@ no conversion step. **No credentials required.**
 | `data/regions.csv` | The 50 states mapped to a sales region. A CSV, not Parquet: it's the kind of small lookup you'd keep in a spreadsheet, and `duckdb.table()` reads either format. |
 | `storefront.malloy` | The model: `order_items` fact joined to `customers`, `products`, and `regions`, with reusable measures and `# dashboard` views. |
 | `storefront.malloynb` | A guided-tour notebook: the business overview dashboard plus growth, seasonality, geography, category, brand, and top-seller views. |
-| `public/index.html` | A no-build [HTML data app](../../docs/html-data-apps.md) — a Chart.js dashboard driven by `Publisher.query`. Served at `/environments/examples/packages/storefront/`. |
+| `givens.malloy` | The data app's filter controls, declared as `given:` parameters with the tags that say how each one renders. |
+| `data_app.malloy` | `scoped_orders`: `order_items` narrowed by those givens. Every tile on the page queries it. |
+| `public/index.html` | A no-build [HTML data app](../../docs/html-data-apps.md): a four-tab Chart.js dashboard. Served at `/environments/examples/packages/storefront/`. |
+| `public/app/` | The page's ES modules (state and rendering, controls, charts, tables, formatting). No build step: the browser loads them directly. |
 | `public/vendor/chart.umd.js` | Chart.js v4.5.0 (MIT), vendored so the page renders where a CDN is blocked. |
+| `public/vendor/malloy-filter.js` | `@malloydata/malloy-filter`, bundled for the browser, so the page escapes filter values with Malloy's own printer. Regenerate with `bun run vendor:malloy-filter`. |
+| `tests/` | `node --test` coverage for the page's pure module (`bun run test:examples`). |
 
 The data is generated deterministically by [`scripts/generate-example-data.mjs`](../../scripts/generate-example-data.mjs)
 (`bun run generate:example-data`) — it has a growth trend and holiday seasonality, so the charts have
@@ -38,10 +43,17 @@ something real to show.
 
 ## The data app
 
-`public/index.html` is a self-contained dashboard — KPI tiles, a revenue-by-category bar chart, a
-monthly trend line, category/state filters, and a top-products table — all served by Publisher and
-driven by `Publisher.query` against the model's views. No build step. See
-[docs/html-data-apps.md](../../docs/html-data-apps.md).
+`public/index.html` is a dashboard with four tabs (overview, category detail, regions, seasonality):
+KPI tiles, charts, and tables, all served by Publisher and driven by `Publisher.queryFull` against
+the model's views. No build step, no framework, no npm.
+
+Its control row is not written by hand. The page reads the model's `given:` declarations from the
+model metadata endpoint and renders the widget each one asks for, so adding a filter is a
+declaration in `givens.malloy` plus an import in `data_app.malloy`, with no edit to `public/app/`.
+Picked values are bound as givens rather than pasted into query text, and the filter syntax a
+`filter<string>` given takes is printed by Malloy's own filter library (vendored in
+`public/vendor/`) rather than by an escaping rule this page maintains. See
+[docs/html-data-apps.md](../../docs/html-data-apps.md) and [docs/givens.md](../../docs/givens.md).
 
 ![The storefront HTML data app](../../docs/screenshots/storefront-data-app.png)
 

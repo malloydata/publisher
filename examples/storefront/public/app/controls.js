@@ -26,7 +26,10 @@ import {
 /** Fetch the given contracts the page's model declares. */
 export async function loadGivenContracts(modelPath) {
    const { environment, package: pkg } = Publisher.context;
-   const url = `/api/v0/environments/${encodeURIComponent(environment)}/packages/${encodeURIComponent(pkg)}/models/${modelPath}`;
+   // The model path is ONE encoded segment, slashes included, which is how
+   // /sdk/publisher.js addresses it: a model in a subfolder must not become two
+   // URL segments.
+   const url = `/api/v0/environments/${encodeURIComponent(environment)}/packages/${encodeURIComponent(pkg)}/models/${encodeURIComponent(modelPath)}`;
    const response = await fetch(url, { credentials: "include" });
    if (!response.ok)
       throw new Error(
@@ -102,7 +105,14 @@ export function buildControls(host, { modelPath, contracts, values, onChange }) 
          widgets.push(multiSelect(host, args));
       } else if (contract.control === "select") {
          widgets.push(singleSelect(host, args));
-      } else if (isFilter(contract) && contract.rangeMax !== undefined) {
+      } else if (
+         isFilter(contract) &&
+         contract.rangeMin !== undefined &&
+         contract.rangeMax !== undefined
+      ) {
+         // Both bounds, per the contract: a slider is what the PAIR signals, so
+         // a lone `range_min` or `range_max` is not one (see `Given.rangeMin` in
+         // api-doc.yaml). Reading one bound alone would invent the other.
          widgets.push(range(host, args));
       } else if (contract.type === "date") {
          widgets.push(date(host, { ...args, value: value || fallback }));
@@ -190,7 +200,17 @@ function multiSelect(
       onChange(contract.name, encodeFilterList(selected));
    };
 
+   // Not `{ once: true }`: a pointerdown INSIDE the panel (ticking a checkbox)
+   // would spend the listener without closing anything, and the popover would
+   // then ignore every later click outside it. The listener is removed when the
+   // panel closes instead, which is the event it is actually paired with.
+   const onOutsidePointerDown = (event) => {
+      if (panel && !panel.contains(event.target) && event.target !== button)
+         close();
+   };
+
    const close = () => {
+      document.removeEventListener("pointerdown", onOutsidePointerDown);
       panel?.remove();
       panel = null;
    };
@@ -221,18 +241,7 @@ function multiSelect(
       }
       button.parentElement.appendChild(panel);
       requestAnimationFrame(() => {
-         document.addEventListener(
-            "pointerdown",
-            (event) => {
-               if (
-                  panel &&
-                  !panel.contains(event.target) &&
-                  event.target !== button
-               )
-                  close();
-            },
-            { once: true },
-         );
+         document.addEventListener("pointerdown", onOutsidePointerDown);
       });
    });
 
@@ -256,8 +265,8 @@ function range(host, { contract, value, description, onChange }) {
    input.type = "range";
    input.id = `given-${contract.name}`;
    input.dataset.given = contract.name;
-   input.min = String(contract.rangeMin ?? 0);
-   input.max = String(contract.rangeMax ?? 100);
+   input.min = String(contract.rangeMin);
+   input.max = String(contract.rangeMax);
    input.value = String(decodeAtLeast(value));
    const readout = document.createElement("output");
    const paint = () => {

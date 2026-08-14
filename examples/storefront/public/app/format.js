@@ -80,10 +80,17 @@ export function formatValue(value, format) {
          return monthLabel(value);
       case "integer":
          return integer(value);
-      default:
-         return typeof value === "number" || !Number.isNaN(Number(value))
-            ? integer(value)
-            : String(value);
+      default: {
+         // An untagged number still reads better grouped, and Malloy hands a
+         // large integer back as a string, so a numeric-looking string counts.
+         // A boolean and an empty string do NOT: `Number` turns those into 1
+         // and 0, which would render a `true` as "1" and a blank cell as "0".
+         if (typeof value === "boolean") return String(value);
+         const text = String(value);
+         return text.trim() !== "" && !Number.isNaN(Number(text))
+            ? integer(text)
+            : text;
+      }
    }
 }
 
@@ -136,13 +143,20 @@ export const plural = (word) => {
 // module (see scripts/vendor-malloy-filter.mjs), so a value goes out through
 // `unparse` and comes back through `parse` and the two agree by construction.
 //
-// This page previously escaped by wrapping a value in double quotes, which the
-// string grammar has no notion of. Measured against the real parser, 13 of 14
-// representative values then matched something other than what was clicked:
-// `-Outerwear` became a NEGATION, `%` became a match-anything pattern that
-// returned every row, `null` and `empty` became operators, `a;b` became a
-// conjunction, and a comma split one brand into two. Those failures are all
-// silent: the page still renders a table, it is just the wrong table.
+// The page this replaced did not write filter syntax at all: it pasted the
+// picked value into the query text as a Malloy string literal, escaping `'` by
+// doubling it, which is not Malloy's escape (Malloy escapes with a backslash).
+// Binding the value as a given instead is the fix for that, and it is what
+// data_app.malloy does. It also moves the escaping problem here, because a
+// `filter<string>` given takes filter syntax rather than a plain value.
+//
+// That is the part worth being careful about, because a naive encoder fails
+// silently. Measured against the parser below, a value wrapped in double quotes
+// (which the string grammar has no notion of) matches the quote characters too,
+// and an unescaped value is worse: `-Outerwear` is a NEGATION, `%` is a
+// match-anything pattern that returns every row, `null` and `empty` are
+// operators, `a;b` is a conjunction, and a comma splits one brand into two. The
+// page still renders a table for each of those. It is just the wrong table.
 
 /**
  * Whether one value survives a round trip through the grammar unchanged.
@@ -195,16 +209,22 @@ export function encodeFilterList(values) {
  * Callers decide whether a value is filterable by looking at what this RETURNS,
  * never by testing the value themselves. Two places predicting the same rule is
  * how the rule drifts, and the prediction is the copy that goes stale.
+ *
+ * Every kind of value lands on the same encoder for the same reason. A number
+ * is only "obviously safe" until it is negative: `-5` printed as itself is a
+ * NEGATION of 5, not a match for it, which is the failure this module exists to
+ * prevent. The non-string branches only reduce a value to the text it stands
+ * for; the escaping is still the grammar's.
  */
 export function encodeFilterValue(value) {
    if (value === null || value === undefined) return "";
-   if (typeof value === "boolean") return String(value);
+   if (typeof value === "boolean") return encodeFilterList([String(value)]);
    if (typeof value === "number")
-      return Number.isFinite(value) ? String(value) : "";
+      return Number.isFinite(value) ? encodeFilterList([String(value)]) : "";
    if (value instanceof Date)
       return Number.isNaN(value.getTime())
          ? ""
-         : value.toISOString().slice(0, 10);
+         : encodeFilterList([value.toISOString().slice(0, 10)]);
    if (typeof value !== "string") return "";
    return encodeFilterList([value]);
 }

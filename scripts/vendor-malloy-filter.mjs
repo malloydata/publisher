@@ -6,8 +6,8 @@
 //
 // Why this exists. The storefront data app writes `filter<string>` and
 // `filter<number>` given values, which are Malloy filter syntax rather than
-// plain values. Getting that escaping wrong does not fail loudly: a value
-// starting with `-` becomes a negation, a value that is `%` becomes a
+// plain values. Getting that escaping wrong does not fail loudly: an unescaped
+// value starting with `-` becomes a negation, a value that is `%` becomes a
 // match-anything pattern, and `null` becomes the null operator. Each of those
 // returns the wrong rows and presents them as the rows you asked for.
 //

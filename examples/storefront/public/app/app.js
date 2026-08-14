@@ -2,7 +2,8 @@
 //
 // State is the current tab plus a value per given, and it lives in the URL:
 // `?tab=regions&REGION=West`. Which means a filtered view of this page is a link
-// someone can send, and Back undoes a filter change.
+// someone can send. A tab change is pushed, so Back returns to the previous tab;
+// a filter change is replaced rather than pushed (see `onGivenChange`).
 
 import {
    barChart,
@@ -330,7 +331,13 @@ async function main() {
       // stale link or an appended tracking parameter is enough to reach this,
       // so it is not only a hostile-URL path.
       readUrl();
-      if (JSON.stringify(state.givens) !== optimistic) render();
+      if (JSON.stringify(state.givens) !== optimistic) {
+         // Rewrite the URL too. Leaving the dropped name in the address bar
+         // leaves the link someone copies asking for a given the model does not
+         // declare, which is the state we just recovered from.
+         writeUrl();
+         render();
+      }
       controls = buildControls(el("filters"), {
          modelPath: MODEL,
          contracts,
