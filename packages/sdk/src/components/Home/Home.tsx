@@ -17,6 +17,7 @@ import {
 import { useState } from "react";
 import { Environment } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import { getEnvironmentDescription } from "../../utils/parsing";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -98,7 +99,7 @@ function InlineLink({
 }
 
 export default function Home({ onClickEnvironment }: HomeProps) {
-   const { apiClients, mutable } = useServer();
+   const { apiClients, mutable, server } = useServer();
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["environments"],
@@ -253,10 +254,11 @@ export default function Home({ onClickEnvironment }: HomeProps) {
             color="text.secondary"
             sx={{ maxWidth: 720, lineHeight: 1.6 }}
          >
-            {/* The six connections.md itself names, and "and more" for the same
-                reason it writes "etc.": the type enum has ten, and a list that
-                reads as complete while omitting Databricks is worse than a
-                short one that says it is short. */}
+            {/* Six of the ten types in the api-doc.yaml enum. connections.md
+                gives eight of them prose; the two named nowhere are Databricks
+                and MotherDuck. "And more" rather than a full list, because a
+                list that reads as complete while omitting Databricks is worse
+                than a short one that says it is short. */}
             Also here:{" "}
             <InlineLink href={DOC_LINKS.connections}>connections</InlineLink> to
             BigQuery, Snowflake, Postgres, MySQL, Trino, DuckDB and more;{" "}
@@ -264,7 +266,15 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                materialized tables
             </InlineLink>{" "}
             built on demand or on a schedule; and a{" "}
-            <InlineLink href="/api-doc.html" external={false}>
+            {/* Built from the configured server rather than written as
+                "/api-doc.html". The spec is a static file off the Publisher
+                server's root, and an SDK consumer's page origin need not be
+                that server: a root-relative href resolves against the host and
+                404s. serverBaseUrl exists for exactly this. */}
+            <InlineLink
+               href={`${serverBaseUrl(server)}/api-doc.html`}
+               external={false}
+            >
                REST API
             </InlineLink>{" "}
             that does everything this console does.
