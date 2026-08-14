@@ -5,6 +5,7 @@ import {
    type DuckDBValue,
 } from "@duckdb/node-api";
 import * as path from "path";
+import { logger } from "../../logger";
 import { DatabaseConnection } from "../DatabaseInterface";
 
 /**
@@ -56,7 +57,10 @@ export class DuckDBConnection implements DatabaseConnection {
             this.instance.closeSync();
             this.instance = null;
          }
-         console.log("DuckDB connection closed");
+         // Debug, not stdout: the schema reconcile opens and closes a scratch
+         // in-memory database on every boot, and an unconditional "closed" line
+         // during startup reads as the real store going away.
+         logger.debug("DuckDB connection closed");
       } catch (err) {
          const message = err instanceof Error ? err.message : String(err);
          throw new Error(`Failed to close DuckDB connection: ${message}`);
