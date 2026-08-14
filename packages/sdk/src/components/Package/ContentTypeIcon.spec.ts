@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { MALLOY_ACCENT } from "../styles";
-import { CONTENT_TINT } from "./ContentTypeIcon";
+import { CONTENT_TINT, type ContentType } from "./ContentTypeIcon";
 
 /** Relative luminance, WCAG 2.x definition. */
 function luminance(hex: string): number {
@@ -31,17 +31,49 @@ describe("CONTENT_TINT", () => {
    });
 });
 
-describe("MALLOY_ACCENT", () => {
+/**
+ * Content types whose colour predates this bar. `report` is backed by
+ * `MALLOY_BRAND.teal` at 2.5:1, which is below it; that is inherited from the
+ * logo and is a brand decision rather than a component one.
+ *
+ * Keyed by content TYPE rather than by colour, which is the whole point. A new
+ * type handed teal is not grandfathered and fails, and fixing teal one day
+ * leaves this entry merely unused rather than turning a correct fix into a red
+ * suite.
+ */
+const GRANDFATHERED: ContentType[] = ["report"];
+
+describe("CONTENT_TINT contrast", () => {
    /**
-    * These sit behind a white glyph, so each has to clear 3:1 against white,
-    * WCAG's minimum for a graphical object. Asserted rather than written down,
-    * because the failure is invisible: a lighter accent looks fine in a
-    * screenshot and the icon simply stops being readable.
+    * Every tint sits behind a white glyph at 32px, so it has to clear 3:1
+    * against white, WCAG's minimum for a graphical object. Asserted rather than
+    * written down, because the failure is invisible: a lighter colour looks fine
+    * in a screenshot and the icon simply stops being readable.
     *
-    * Scoped to the accents deliberately. `MALLOY_BRAND` is taken from the logo
-    * and its teal is 2.5:1, below this bar; that is a brand decision and a
-    * pre-existing one, so asserting it here would fail on day one.
+    * Over `CONTENT_TINT` rather than over `MALLOY_ACCENT`, because the tints are
+    * what actually get painted. Asserting the accent palette alone left three of
+    * the six painted values unchecked.
     */
+   it.each(
+      Object.entries(CONTENT_TINT).filter(
+         ([type]) => !GRANDFATHERED.includes(type as ContentType),
+      ),
+   )("%s clears 3:1 against white", (_type, hex) => {
+      expect(contrastWithWhite(hex)).toBeGreaterThanOrEqual(3);
+   });
+
+   // Guards the exception list itself: if a grandfathered type is removed or
+   // renamed, this says so rather than silently exempting nothing.
+   it("grandfathers only types that exist", () => {
+      for (const type of GRANDFATHERED) {
+         expect(CONTENT_TINT).toHaveProperty(type);
+      }
+   });
+});
+
+describe("MALLOY_ACCENT", () => {
+   // The accents were chosen against this bar, so they hold it even before any
+   // of them is assigned to a content type.
    it.each(Object.entries(MALLOY_ACCENT))(
       "%s clears 3:1 against white",
       (_name, hex) => {

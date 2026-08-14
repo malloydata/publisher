@@ -25,8 +25,10 @@ export default defineConfig({
    // file; separate files still run concurrently, and several of these write to
    // the same shared state. `notebook-givens` and `notebook-authorize` both
    // write fixture files into `publisher_data/examples/storefront` and both POST
-   // `?reload=true` on it, and `packages.spec` adds and removes packages in the
-   // same environment. Observed: a `notebook-givens` navigation timed out
+   // `?reload=true` on it, as does `notebook-readme-links`. `packages.spec`
+   // contends differently: it creates and deletes a whole temporary
+   // environment, which appears and vanishes from the listings other specs
+   // navigate through. Observed: a `notebook-givens` navigation timed out
    // waiting for the storefront tile while another file was mid-reload. It
    // passes 9/9 in isolation, which is the tell that it is contention rather
    // than a broken assertion.

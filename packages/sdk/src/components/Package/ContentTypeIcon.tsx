@@ -14,9 +14,11 @@ export type ContentType =
  * a page that lists all six, a shared color reads as a shared kind, and the
  * glyphs are small enough that color does most of the telling apart.
  *
- * The logo's three go to the three things a package has always held, its models
- * and the notebooks and dashboards built on them, and the accents to the rest,
- * so the brand still leads.
+ * The logo's three go to the three artifacts a reader opens to look at data,
+ * dashboards and notebooks and the models under them, and the accents to the
+ * rest, so the brand leads on the things the page is mostly for. Not a
+ * seniority ranking: dashboards are the newest thing a package can hold, and
+ * Package Data is among the oldest and takes an accent.
  *
  * Exhaustive by type rather than by a default, so adding a `ContentType` is a
  * compile error here instead of a row that silently paints itself the same as
