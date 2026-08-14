@@ -1108,10 +1108,10 @@ const NO_DEFAULT_GIVEN_PATTERN = /has no value and no default/;
  * {@link classifyAuthorizeGate} — a `<given> <op> <literal>` comparison like
  * the admin-override `$ROLE != 'admin'`) evaluate TRUE against the given's
  * own DECLARATION DEFAULT — the value a caller who supplies nothing gets.
- * `docs/row-level-authorize-spike-findings.md`'s admin-override idiom is an
- * OR disjunct specifically so a caller need not name every non-admin role;
- * the flip side is that the atom's truth is then decided by whichever value
- * the given resolves to when the caller supplies nothing, and the documented
+ * The admin-override idiom is an OR disjunct specifically so a caller need
+ * not name every non-admin role; the flip side is that the atom's truth is
+ * then decided by whichever value the given resolves to when the caller
+ * supplies nothing, and the documented
  * convention is an EMPTY default. A `!=` (or any comparison the empty/zero
  * default doesn't happen to satisfy) atom is vacuously true there, and an
  * OR'd atom that is always true makes the whole disjunction — the whole row
@@ -1172,11 +1172,11 @@ async function assertNoVacuousDefaultAtom(
  * Validation is shape-aware: it works from `options.authorizeMap` (source
  * name → EFFECTIVE gates, inheritance included, from
  * `extractSourcesFromModelDef`) — the full entry-point list, not just the
- * declaring source. `docs/row-level-authorize-spike-findings.md` §4 measured
- * that a gate's field reference can resolve at the source that declares it
- * and still fail at an entry point that renamed, excluded, or projected the
- * field away (`rename:`, `except:`, `accept:`, a `->` projection) — and that
- * loading the model successfully is NOT evidence this can't happen; the break
+ * declaring source. A gate's field reference can resolve at the source that
+ * declares it and still fail at an entry point that renamed, excluded, or
+ * projected the field away (`rename:`, `except:`, `accept:`, a `->`
+ * projection) — and loading the model successfully is NOT evidence this
+ * can't happen; the break
  * otherwise surfaces only when a real query touches it. This covers only
  * entry points in THIS model: `compileMalloyModel` compiles each file
  * independently, so an importing model's own entry points get validated when

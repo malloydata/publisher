@@ -17,8 +17,7 @@
  *
  * For an entry point whose OWN field space cannot resolve the gate at all (a
  * `rename:`/`except:`/`accept:`-ed field, or a `query_source` projection that
- * dropped it — same class of break as
- * `docs/row-level-authorize-spike-findings.md` §4), the outcome depends on
+ * dropped it), the outcome depends on
  * WHOSE mistake it is, not just that the probe failed to compile there:
  *  - If the gate is genuinely INHERITED at that entry point — carries no
  *    annotation of its own at all, or its own annotation note object is the
@@ -1295,8 +1294,7 @@ describe("row-level authorize — entry-point matrix", () => {
       // that has both a snapshot of `Z2`'s declaration AND `org_id` in
       // scope, so this is DENY, not a serving-filtered case: the narrow,
       // author-fixable 403 the design's original plan accepted for a gate
-      // column projected out of a query-source entry point. See the
-      // corrected `docs/row-level-authorize-spike-findings.md` §3b.
+      // column projected out of a query-source entry point.
       const { internals, mm, duckdb } = await harness();
       try {
          await expect(
@@ -1726,7 +1724,7 @@ source: X is duckdb.table('parent') extend {
          // a silent, unfiltered success from some fallback path. (This test
          // never configures serve bindings or calls getQueryResults, so it
          // does not itself exercise storage routing — see the "storage
-         // routing (Finding 3)" describe block below for that claim.)
+         // routing" describe block below for that claim.)
          const runnable = mm.loadRestrictedQuery(
             "run: X -> { aggregate: n is count() }",
          );
@@ -2209,8 +2207,8 @@ source: X is duckdb.table('parent') extend {
 });
 
 // ---------------------------------------------------------------------------
-// Notebook cells — Findings 1 and 2, docs/row-level-authorize-spike-
-// findings.md's follow-ups
+// Notebook cells — a cell that both declares a gated source and runs it, and
+// a cell whose `#(filter)` refinement fails to compile.
 // ---------------------------------------------------------------------------
 
 /**
@@ -2233,7 +2231,7 @@ function firstCellResultValue(resultJson: string): unknown {
 }
 
 describe("row-level authorize — notebook cells", () => {
-   it("CRITICAL — a cell that declares its own source under a row-level gate AND runs it returns correctly filtered rows (Finding 1)", async () => {
+   it("CRITICAL — a cell that declares its own source under a row-level gate AND runs it returns correctly filtered rows", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
       try {
@@ -2289,7 +2287,7 @@ run: local2 -> { aggregate: n is count() }
       }
    });
 
-   it("CRITICAL — a cell whose #(filter) refinement does not compile still DENIES (403, not 400) (Finding 2)", async () => {
+   it("CRITICAL — a cell whose #(filter) refinement does not compile still DENIES (403, not 400)", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
       try {
@@ -2632,8 +2630,7 @@ run: gated -> { group_by: id, org_id, childtable.name }
 
          // child_id=10 rows are ids 1 and 3 (parent), which join to name='bob'.
          // The RUN QUERY itself references the joined field (`childtable.name`
-         // in the projection) — see docs/row-level-authorize-spike-
-         // findings.md's residual-limitation note: the joined-field shape
+         // in the projection) — residual limitation: the joined-field shape
          // only proved out on the new (queryDef-repoint) path when the run
          // query's own text already references the joined field, which is
          // what forces the join into the ORIGINALLY compiled queryDef before
@@ -2705,11 +2702,10 @@ run: joiner -> { aggregate: n is count() }
 });
 
 // ---------------------------------------------------------------------------
-// Storage routing — Finding 3, docs/row-level-authorize-spike-findings.md's
-// follow-ups
+// Storage routing — a row-level gated query must not route to storage
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — storage routing (Finding 3)", () => {
+describe("row-level authorize — storage routing", () => {
    it("CRITICAL — a row-level gated query does not route to storage", async () => {
       const originalMode = process.env.PERSIST_STORAGE_MODE;
       process.env.PERSIST_STORAGE_MODE = "on";
@@ -2870,7 +2866,7 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (Finding 1: `queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
+   it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
       const originalMode = process.env.PERSIST_STORAGE_MODE;
       process.env.PERSIST_STORAGE_MODE = "on";
       const duckdb = await newDuckdb();
@@ -2958,13 +2954,13 @@ source: W_except is X extend { except: org_id }
       }
    });
 
-   it("CRITICAL — queryEntryPointHasRowLevelGate itself returns true (blocks routing) for a `deny` resolution, not just `row_level` (Finding 1, isolated)", async () => {
+   it("CRITICAL — queryEntryPointHasRowLevelGate itself returns true (blocks routing) for a `deny` resolution, not just `row_level` (isolated)", async () => {
       // The end-to-end test above denies the request either way, because
       // `getQueryResults`' surface-syntax early gate (`earlySource`) ALSO
       // resolves `W_except` by name and denies before compilation even
       // starts — so it cannot, on its own, tell a fixed predicate apart from
       // the original bug for a directly-named top-level source. This test
-      // isolates the ONE method Finding 1 is about and calls it directly
+      // isolates that ONE method and calls it directly
       // (same idiom as the `resolveGateShape`/`resolveGraftTarget` tests
       // above, which reach past the public surface via `ModelInternals`),
       // so it fails specifically when `queryEntryPointHasRowLevelGate`'s own
@@ -2995,11 +2991,11 @@ source: W_except is X extend { except: org_id }
 });
 
 // ---------------------------------------------------------------------------
-// Vacuous default atom — Finding 3, docs/row-level-authorize-spike-
-// findings.md's follow-ups
+// Vacuous default atom — a literal atom that is TRUE at its given's own
+// declared default admits every row for a caller who supplies nothing.
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — vacuous default atom (Finding 3)", () => {
+describe("row-level authorize — vacuous default atom", () => {
    /**
     * Load `text` through the real `Model.create` — same idiom as the
     * "load-time scoping" describe block's own `createModel`, duplicated

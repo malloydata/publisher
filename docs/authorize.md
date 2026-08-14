@@ -80,7 +80,7 @@ All of the above is refused **at package load**, naming the cause — a broken g
 
 > **A gate on a joined field turns a `join_one` LEFT JOIN into an INNER JOIN.** The filter is applied inside the entry source's own build, before any aggregation, so a parent row with no matching child — and so no value to satisfy the gate — drops out of the result entirely rather than surviving with nulls. That is fail-closed (a row the gate cannot evaluate is a row it does not admit), but it changes cardinality invisibly if you expected the join's usual left-join behavior.
 
-**A row-level gate is not decided by the pre-compile check.** `assertAuthorized` and the entry-point walk (`assertAuthorizedForAllSources`) run before a runnable exists to filter, so a gate they find to be row-level is neither granted nor denied there — it is skipped, deferred to the later pass (`authorizeAndBindRunnable`) that recompiles the query against the grafted, filtered materializer. That deferral is why a row-level gate never produces a 403 from the pre-compile pass: denying there, before the graft has had a chance to run, would refuse every row-level-gated query outright.
+**A row-level gate never produces a 403 from the whole-source check.** That check runs before there is a compiled query to filter, so a gate it finds to be row-level is neither granted nor denied there — the decision waits until the filter can actually be applied. Denying earlier would refuse every row-level-gated query outright.
 
 ## Semantics
 
@@ -290,11 +290,11 @@ Two more counters cover row-level gates specifically:
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.
 - **No per-request caching.** Each gate runs a fresh probe against bundled DuckDB (microseconds); a security decision is intentionally not memoized.
 - **A gate inherited from a base in another file only ever sees caller-supplied given values, never that base's own `given:` defaults.** The isolated probe (`bindProbeGivens`) declares a given only when the caller actually supplied a value for it. This is intentionally conservative: a probe compiled from name-only identity (see [Security model](#security-model)) has no reliable way to attribute a `given:` default to the *specific* source it's gating rather than to an ambient/entry-model given of the same name — so an unsupplied given always denies rather than risk resolving someone else's default. Practical effect: to pass such a gate the caller must supply every given the expression references; a permissive default on the base does not open it up.
-- **A row-level gate's given, unlike an inherited given-only gate's, gets no runtime fallback.** The two limitations above describe an inherited *given-only* gate reaching a given through caller-supplied values at request time. A [row-level gate](#row-level-gates)'s given is checked once, at load: it must be on the gating model's own surface or the gate is refused outright, because the filter is compiled into the query rather than evaluated by a separately-probed condition.
+- **A row-level gate's given, unlike an inherited given-only gate's, gets no runtime fallback.** The two limitations above describe an inherited *given-only* gate reaching a given through caller-supplied values at request time; a [row-level gate](#row-level-gates)'s given is instead checked once, at load.
 - **A notebook cell that both declares a gated source and runs it in the same cell, with a
   joined-field gate, needs the run query to reference the joined field.** A cell's row-level gate
   filters correctly whether it declares the gated source itself or inherits one declared earlier
-  (see `docs/row-level-authorize-spike-findings.md` § 7) — with one narrow exception: when the
+  — with one narrow exception: when the
   gate is on a JOINED field (`#(authorize) "childtable.name in $GROUPS"`) and the cell's own `run:`
   query never itself references that joined field, the cell denies with a 400 rather than serving
   filtered rows (never a leak — no rows are returned either way). Reference the joined field

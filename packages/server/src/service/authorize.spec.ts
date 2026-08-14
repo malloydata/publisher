@@ -218,8 +218,7 @@ describe("collectAuthorizeExprs", () => {
 // ---------------------------------------------------------------------------
 //
 // The fixtures below are the compiled shapes Malloy 0.0.427 actually produces
-// for a source-level `where:`, transcribed from a spike that dumped them (see
-// the publisher's docs/row-level-authorize-spike-findings.md §5). They are
+// for a source-level `where:`, transcribed from a spike that dumped them. They are
 // hand-built here so the decision table can be exercised without standing up a
 // warehouse; `authorize_integration.spec.ts` compiles the real thing, which is
 // what pins these fixtures to reality. If a Malloy bump changes the node names,

@@ -135,22 +135,16 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   markdown, or any later cell in the same shape) — EXCEPT for a joined-field gate whose run query
   does not itself reference the joined field. That one narrow shape denies with a 400 rather than a
   403 (never a leak — no rows are returned either way); reference the joined field in the run
-  query's own projection to avoid it. See
-  [docs/row-level-authorize-spike-findings.md § 7](docs/row-level-authorize-spike-findings.md).
+  query's own projection to avoid it.
 
 ### What changed
 
 - **A gate that references only givens is unaffected.** Most existing gates are this kind. They
   keep the one-row DuckDB probe and the whole-source admit/deny decision unchanged.
-- **The accepted row-level shape is a positive allowlist**: a boolean combination of
-  `<field> <operator> $GIVEN` comparisons, with `in` required for an array-typed given. Function
-  calls, arithmetic, a comparison against a constant, `like`, and `not in` are refused at package
-  load, naming the reason. See
-  [docs/authorize.md § Row-level gates](docs/authorize.md#row-level-gates).
-- **A row-level gate's given must be on the model's own given surface** — declared there, or
-  imported one hop away. Malloy does not flatten a `given:` declaration further than that, so a
-  gate referencing one further away would otherwise silently bind that given's declaration
-  default instead of the caller's value; this is refused at load instead.
+- **The accepted row-level shape is a restricted, positive allowlist**, and anything outside it —
+  including a given that isn't on the model's own given surface — is refused at package load,
+  naming the reason. A broken gate never serves. For exactly what is accepted and refused, and
+  why, see [docs/authorize.md § Row-level gates](docs/authorize.md#row-level-gates).
 
 ### Author-facing behavior worth knowing
 

@@ -245,8 +245,7 @@ interface RunnableNotebookCell {
     *    (modelDef, modelMaterializer) pair, never that later cell's own —
     *    which already contains whatever it itself just declared, so
     *    grafting it and recompiling that cell's own `source:`+`run:` text
-    *    against it fails with "Cannot redefine" (see
-    *    docs/row-level-authorize-spike-findings.md's Finding 1 follow-up).
+    *    against it fails with "Cannot redefine".
     *  - as THIS cell's OWN fallback scope, when no earlier cell can cover
     *    its gate at all (this cell declares AND runs its own gated source):
     *    bound by repointing this cell's already-compiled queryDef via
@@ -675,8 +674,8 @@ export class Model {
     * modelMaterializer) pair, walking back over any markdown cell in
     * between. Never this cell's own scope (see
     * {@link RunnableNotebookCell.modelDef}'s doc) and never this model's
-    * cumulative {@link defaultGraftScope} — see Finding 1 in
-    * `docs/row-level-authorize-spike-findings.md`'s follow-ups.
+    * cumulative {@link defaultGraftScope}, for the same "Cannot redefine"
+    * reason.
     *
     * `undefined` for the first code cell in a notebook, or a code cell
     * preceded only by markdown (nothing EARLIER carries a code cell's
@@ -688,9 +687,7 @@ export class Model {
     * runs its own gated source has an earlier cell, but not one that
     * declared that source). A row-level gate genuinely has nowhere to graft
     * only when NEITHER scope covers it — see
-    * `resolveNotebookCellGraftScope`'s doc for the full decision and
-    * `docs/row-level-authorize-spike-findings.md` for the mechanism that
-    * makes the self-scope fallback safe.
+    * `resolveNotebookCellGraftScope`'s doc for the full decision.
     *
     * `cacheScope` is keyed on the SUPPLYING cell's index (not the requesting
     * cell's), so two different later cells that share the same nearest
@@ -730,8 +727,7 @@ export class Model {
     * (`_loadQueryFromQueryDef` in `executeNotebookCell`) never recompiles
     * the cell's own text, so the "Cannot redefine" collision
     * {@link graftScopeForCell}'s doc describes for an EARLIER-scope graft
-    * never arises here — see `docs/row-level-authorize-spike-findings.md`
-    * for the spike that proved this end to end.
+    * never arises here.
     *
     * `undefined` only when the cell itself has no compiled
     * (modelDef, modelMaterializer) pair of its own — should not happen for
@@ -765,7 +761,7 @@ export class Model {
     *    scope, use it: the recompile step stays the ordinary one
     *    (`mm.loadQuery(cellText)`), because the earlier scope does not yet
     *    hold whatever name this cell's own text declares, so redeclaring it
-    *    during recompile succeeds. This is Finding 1's `local2` case: a cell
+    *    during recompile succeeds. This is the `local2` case: a cell
     *    that declares `local2 is gated extend {}` and runs it, where `gated`
     *    (and its gate) was declared in an EARLIER cell.
     *  - Otherwise — no earlier code cell at all (the first code cell, or one
@@ -1315,8 +1311,7 @@ export class Model {
     * one's.
     *
     * Factored out so `executeNotebookCell` can run a PRE-refinement gate
-    * call on `cell.runnable` (Finding 2, `docs/row-level-authorize-spike-
-    * findings.md`'s follow-ups) that gets the SAME deferred-row-level
+    * call on `cell.runnable` that gets the SAME deferred-row-level
     * treatment `authorizeAndBindRunnable` gives its post-refinement bind,
     * without denying a row-level gate outright (which a raw
     * `authorizeAndBindRunnable` call with no `recompile` would do — correct
@@ -1398,8 +1393,7 @@ export class Model {
 
    /**
     * Whether `runnable`'s entry point carries a row-level `#(authorize)` gate
-    * — used to decide whether to attempt storage-serve routing at all
-    * (Finding 3, `docs/row-level-authorize-spike-findings.md`'s follow-ups).
+    * — used to decide whether to attempt storage-serve routing at all.
     *
     * This IS the security-relevant check for that decision, not a mere
     * performance pre-filter: the serve-shape model a routed query compiles
@@ -1500,11 +1494,10 @@ export class Model {
     * boolean probe at all: `#(authorize) "org_id in $GROUPS"` has no
     * whole-source admit/deny answer, only a set of rows, so enforcing it
     * means recompiling the caller's UNMODIFIED query text against a model
-    * whose entry source carries the condition as a `where:` (see
-    * `docs/row-level-authorize-spike-findings.md` for why that is the only
-    * mechanism that doesn't leak — appending `+ {where: ...}` to the query
-    * text resolves against the caller's own last pipeline stage and can be
-    * neutralized by a caller-controlled projection).
+    * whose entry source carries the condition as a `where:` — the only
+    * mechanism that doesn't leak, since appending `+ {where: ...}` to the
+    * query text resolves against the caller's own last pipeline stage and
+    * can be neutralized by a caller-controlled projection.
     *
     * `bypassAuthorize` short-circuits exactly like the probe-only path does,
     * before any gate is even collected.
@@ -1550,8 +1543,7 @@ export class Model {
           *  {@link GraftScope}. Defaults to this model's own cumulative
           *  scope ({@link defaultGraftScope}), which is correct for every
           *  caller except a notebook cell, which must pass its OWN per-cell
-          *  scope (see `executeNotebookCell`, `graftScopeForCell`) — Finding 1
-          *  in `docs/row-level-authorize-spike-findings.md`'s follow-ups. */
+          *  scope (see `executeNotebookCell`, `graftScopeForCell`). */
          graftScope?: GraftScope;
          /** See {@link assertAuthorizedFromCompiledRunnable}. */
          skipOwnSourceGate?: boolean;
@@ -1774,8 +1766,7 @@ export class Model {
       // from a derivation base applies to THIS entry point as an entry
       // point, and grafting the base instead cannot reach a model-declared
       // derivation (`Z is X -> {...}`), which snapshotted its base at
-      // declaration time — see `docs/row-level-authorize-spike-findings.md`
-      // §3b.
+      // declaration time.
       entryPointStruct: SourceDef | undefined = struct,
    ): GateEntry[] {
       if (!struct || !modelDef || seen.has(struct)) return [];
@@ -2088,10 +2079,11 @@ export class Model {
     * makes this call site P0-safe BY CONSTRUCTION, not just by scoping which
     * gates get collected: the run target is the entry point by definition
     * and is never a source reached through a join, so grafting it can never
-    * make a joined source's gate fire (`docs/row-level-authorize-spike-
-    * findings.md` §3). Do not widen this to graft anything other than the
-    * run target (or its resolved composite branch) — that reintroduces the
-    * exact join-propagation leak §3 measured.
+    * make a joined source's gate fire. Do not widen this to graft anything
+    * other than the run target (or its resolved composite branch) — that
+    * reintroduces the exact join-propagation leak this scoping closes:
+    * grafting a condition onto a SourceDef propagates it into every joined
+    * copy of that source, firing a gate P0 says must not fire.
     *
     * If `struct` IS itself a `contents` entry, the entry point is graftED
     * DIRECTLY — this covers `Y is X extend {}` inheriting `X`'s gate (`Y` is
@@ -2112,8 +2104,7 @@ export class Model {
     *    plain join or an unmodified rename.
     *  - {@link findSourceByOwnAnnotationIdentity} — needed because a
     *    TRIVIAL `extend {}` (no rename/except/accept/dimension/join
-    *    addition) measured in `docs/row-level-authorize-spike-
-    *    findings.md` compiles to a `sourceRegistry` entry that only
+    *    addition) compiles to a `sourceRegistry` entry that only
     *    references ITSELF (`{type: "source_registry_reference", name:
     *    "mine"}`, no `referenceID` at all) — Malloy elides the derivation
     *    entirely rather than recording a link to `X`, so the registry walk
@@ -2250,7 +2241,6 @@ export class Model {
     * with "references a given ... which is not surfaced in this model".
     * Sharing `materializer` is what keeps the lifted condition's given
     * references resolvable against the model it will be grafted onto.
-    * Verified in `docs/row-level-authorize-spike-findings.md`.
     *
     * `__authorize_probe` is a reserved, deliberately obscure select name —
     * same convention as `buildAuthorizeProbe` in `./authorize` — so it is
@@ -2366,8 +2356,7 @@ export class Model {
     * gated child collects no gate for the child, so nothing is grafted here
     * and the child's gate correctly does not fire through the join. Do not
     * "simplify" this by grafting every gated source in the model up front —
-    * that reintroduces exactly the leak this scoping exists to prevent. See
-    * `docs/row-level-authorize-spike-findings.md` §3.
+    * that reintroduces exactly the leak this scoping exists to prevent.
     */
    private buildGraftedMaterializer(
       grafts: ReadonlyArray<{
@@ -4182,8 +4171,8 @@ export class Model {
          // underneath it at RUN time (see the freshnessFallback retry below).
          liveRunnable = runnable;
 
-         // Finding 3, docs/row-level-authorize-spike-findings.md's follow-ups:
-         // decide storage routing eligibility BEFORE attempting it, not after.
+         // Storage-routing eligibility check: decide it BEFORE attempting
+         // routing, not after.
          // The serve-shape's transient model (buildServeShapeModel in
          // materialization_serve_transform.ts, `source: X is <dest>.virtual(…
          // )::<shape>`) carries no `#(authorize)` annotation bytes at all, so
@@ -4381,8 +4370,7 @@ export class Model {
       // onto whatever ends up executing (authorizeAndBindRunnable). This MUST
       // run unconditionally, not just when compiledSource !== earlySource, and
       // its result MUST be assigned back to `runnable`: for a row-level gate,
-      // the reassignment IS the enforcement (see
-      // `docs/row-level-authorize-spike-findings.md`) — a caller that keeps the
+      // the reassignment IS the enforcement — a caller that keeps the
       // pre-gate `runnable` around and runs THAT instead serves unfiltered rows.
       //
       // The early gate now reads the same entry-point walk this does, so for a
@@ -5147,7 +5135,7 @@ export class Model {
             // `usesOwnScope` — HOW to bind it. See
             // `resolveNotebookCellGraftScope`'s doc for the full decision;
             // in short: the nearest EARLIER code cell's own scope when this
-            // cell's run target resolves there (Finding 1's `local2` case —
+            // cell's run target resolves there (the `local2` case —
             // `source: local2 is gated extend {…}` then `run: local2 -> …`,
             // where `gated` was declared earlier), else this cell's OWN
             // post-declaration scope — needed whenever no earlier cell
@@ -5159,9 +5147,7 @@ export class Model {
             // re-parses the `source:` line — true of the model-wide
             // cumulative scope AND of a cell's own scope alike — which is
             // why the own-scope fallback below binds by repointing a
-            // compiled queryDef instead of recompiling any text (see
-            // `docs/row-level-authorize-spike-findings.md` for the spike
-            // that proved that mechanism end to end).
+            // compiled queryDef instead of recompiling any text.
             const { graftScope, usesOwnScope } =
                await this.resolveNotebookCellGraftScope(
                   cellIndex,
@@ -5198,8 +5184,7 @@ export class Model {
                ? this.getFilters(effectiveSource)
                : [];
 
-            // Pre-refinement gate call (Finding 2, docs/row-level-authorize-
-            // spike-findings.md's follow-ups): probe `cell.runnable` — the
+            // Pre-refinement gate call: probe `cell.runnable` — the
             // UNREFINED query — for an entry-point gate BEFORE the
             // `#(filter)` refinement rebuild below, which recompiles the
             // query and can itself throw if the refined text fails to

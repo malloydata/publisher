@@ -678,9 +678,8 @@ alone. One more belongs here and **is enforced**: a source protected by
 `#(authorize)` — directly, or transitively through a join or derivation — is
 refused, because the serve path rebinds it to a virtual source whose shape
 carries no `#(authorize)` annotation, so the gate can't be evaluated on the
-served table. `referencesAuthorize` in `materialization_eligibility.ts` walks the
-compiled source for the gate and fails closed: a source it cannot prove
-gate-free is refused.
+served table. The check walks the compiled source for the gate and fails
+closed: a source it cannot prove gate-free is refused.
 
 A colocated `#@ persist` is refused for the same reason. That case is not about
 rebinding — a colocated build has no virtual source — but about freezing: the
