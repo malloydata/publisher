@@ -1,12 +1,35 @@
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
+import { MALLOY_ACCENT, MALLOY_BRAND } from "../styles";
 
-type ContentType =
+export type ContentType =
    | "report"
    | "model"
    | "data"
    | "materialization"
    | "dataApp"
    | "dashboard";
+
+/**
+ * The backplate color behind each icon. One per content type and no repeats: on
+ * a page that lists all six, a shared color reads as a shared kind, and the
+ * glyphs are small enough that color does most of the telling apart.
+ *
+ * The logo's three go to the three things a package has always held, its models
+ * and the notebooks and dashboards built on them, and the accents to the rest,
+ * so the brand still leads.
+ *
+ * Exhaustive by type rather than by a default, so adding a `ContentType` is a
+ * compile error here instead of a row that silently paints itself the same as
+ * its neighbour.
+ */
+export const CONTENT_TINT: Record<ContentType, string> = {
+   dashboard: MALLOY_BRAND.orange,
+   report: MALLOY_BRAND.teal,
+   model: MALLOY_BRAND.darkBlue,
+   dataApp: MALLOY_ACCENT.violet,
+   data: MALLOY_ACCENT.moss,
+   materialization: MALLOY_ACCENT.magenta,
+};
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
    type: ContentType;
