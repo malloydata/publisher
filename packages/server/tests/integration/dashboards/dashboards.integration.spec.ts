@@ -684,10 +684,13 @@ describe("Dashboard discovery (E2E)", () => {
          // a multi-line comment with newlines on purpose, since that route
          // carries markdown, so the title takes only the first line; using the
          // whole comment put an embedded newline into a single-line field.
+         //
+         // And the description is the REST of the comment, not all of it. It
+         // used to repeat the line the title had already taken, which published
+         // the same words twice on any surface rendering both.
          expect(shipping).toMatchObject({
             title: "Carrier volumes",
-            description:
-               "Carrier volumes\nShipments per carrier, refreshed nightly.",
+            description: "Shipments per carrier, refreshed nightly.",
          });
          expect(shipping?.title ?? "").not.toContain("\n");
       });
