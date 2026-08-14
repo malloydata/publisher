@@ -294,6 +294,12 @@ export class Model {
       mode: "declared" | "all";
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
+      /** The PACKAGE-wide export closure (union over explores-listed models),
+       *  so a source declared queryable by its own file stays queryable when
+       *  addressed through a model that imports it. Absent when the boundary
+       *  is inert. See Package.applyQueryBoundaryToModels. */
+      packageCuratedSources?: ReadonlySet<string>;
+      packageCuratedQueries?: ReadonlySet<string>;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    /** Per-query freshness resolver, pushed down by the owning Package (see
     *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
@@ -1691,20 +1697,24 @@ export class Model {
    }
 
    /**
-    * True when this is an import-only model: it imports other files but
-    * declares and re-exports nothing of its own, so `modelDef.exports` is
-    * empty and its discovery surface lists no sources or queries. Legitimate
-    * as plumbing, but confusing when the model is *listed* — the page renders
-    * blank. Used by the load-time warning (Package.emptyDiscoveryWarnings);
-    * the fix is to re-export what should be visible (`export { name }`).
+    * True when this model's curated discovery surface is empty: its export
+    * closure yields no sources and no named queries. The common cause is an
+    * import-only model (imports other files, declares/re-exports nothing);
+    * an `export {}` that filters everything out, or a genuinely empty file,
+    * reads the same to a browser. Legitimate as plumbing, but confusing when
+    * the model is *listed* — the page renders blank and an agent's listing
+    * comes back []. Used by the load-time warning
+    * (Package.emptyDiscoveryWarnings); the fix is to re-export what should be
+    * visible (`export { name }`) or unlist the file.
     */
    public hasEmptyDiscoverySurface(): boolean {
       // No curation (no `explores`) ⇒ legacy listings include imported sources.
       if (!this.discoveryCurationEnabled) return false;
       if (this.modelType !== "model" || !this.modelDef) return false;
-      const exports = this.modelDef.exports;
-      if (!Array.isArray(exports) || exports.length > 0) return false;
-      return (this.modelDef.imports?.length ?? 0) > 0;
+      return (
+         (this.getSources()?.length ?? 0) === 0 &&
+         (this.getQueries()?.length ?? 0) === 0
+      );
    }
 
    /** Set by the owning Package; see {@link assertQueryBoundaryEarly}. */
@@ -1712,6 +1722,8 @@ export class Model {
       mode: "declared" | "all";
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
+      packageCuratedSources?: ReadonlySet<string>;
+      packageCuratedQueries?: ReadonlySet<string>;
    }): void {
       this.queryBoundary = policy;
    }
@@ -1761,6 +1773,11 @@ export class Model {
       const curatedQueries = new Set(
          (this.getQueries() ?? []).map((q) => q.name).filter(Boolean),
       );
+      // Package-wide closure: a query exported by ANY explores-listed model is
+      // an author-chosen entry point, whichever model path the request names.
+      for (const name of this.queryBoundary.packageCuratedQueries ?? []) {
+         curatedQueries.add(name);
+      }
 
       // A named query/view is an author-exported entry point (the author chose
       // to expose it, even if it reads hidden sources internally) — admit it on
@@ -1855,13 +1872,22 @@ export class Model {
    }
 
    /** Source names in the export-curated discovery surface (= the directly
-    *  queryable set under the "declared" boundary). */
+    *  queryable set under the "declared" boundary). The package-wide closure
+    *  is unioned in: a source whose OWN model file is listed in explores is
+    *  declared queryable, and must stay queryable when the request addresses
+    *  it through a model that merely imports it — denying that admitted
+    *  nothing (the source was reachable via its own path) and broke every
+    *  client that posts all queries to one model path (HANDOFF CR-5). */
    private curatedSourceNames(): Set<string> {
-      return new Set(
+      const names = new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
             .filter((n): n is string => n !== undefined),
       );
+      for (const name of this.queryBoundary.packageCuratedSources ?? []) {
+         names.add(name);
+      }
+      return names;
    }
 
    /** True if `name` reaches a curated source by walking the ad-hoc text's

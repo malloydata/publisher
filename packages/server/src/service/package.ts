@@ -287,11 +287,41 @@ export class Package {
       const exploreSet = this.exploreSet();
       const mode =
          this.packageMetadata.queryableSources === "all" ? "all" : "declared";
+      // The PACKAGE-wide queryable surface: the union of every explores-listed
+      // model's export closure. The source-level gate used to consult only the
+      // requested model's own closure, which denied a source that IS declared
+      // queryable (its own file is listed in explores) whenever it was
+      // addressed through a model that imports it. A client that posts every
+      // query to one model path — the observed agent behavior (HANDOFF CR-5) —
+      // then loses every source but that file's own. Union scoping admits
+      // nothing new: each admitted source was already queryable via its own
+      // model path, and the file-level entry-point gate is unchanged.
+      // (Relies on applyDiscoveryPolicyToModels having run first, so
+      // getSources()/getQueries() are already export-curated.)
+      let packageCuratedSources: ReadonlySet<string> | undefined;
+      let packageCuratedQueries: ReadonlySet<string> | undefined;
+      if (mode === "declared" && exploresDeclared && exploreSet) {
+         const sources = new Set<string>();
+         const queries = new Set<string>();
+         for (const [modelPath, model] of this.models) {
+            if (!exploreSet.has(modelPath)) continue;
+            for (const source of model.getSources() ?? []) {
+               if (source.name) sources.add(source.name);
+            }
+            for (const query of model.getQueries() ?? []) {
+               if (query.name) queries.add(query.name);
+            }
+         }
+         packageCuratedSources = sources;
+         packageCuratedQueries = queries;
+      }
       for (const [modelPath, model] of this.models) {
          model.setQueryBoundary({
             mode,
             exploresDeclared,
             isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
+            packageCuratedSources,
+            packageCuratedQueries,
          });
       }
    }
@@ -777,6 +807,12 @@ export class Package {
          ...this.renderTagWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
+         // A listed model whose curated surface is empty. Advisory (an
+         // import-only file is legitimate and must not block a publish, so it
+         // stays out of exploresWarnings), but it must ride the API: the QA
+         // shape this closes was a package reporting exploresWarnings: none
+         // while listed files surfaced nothing (HANDOFF CR-5).
+         ...this.emptyDiscoveryWarnings(),
          // A within-package persist-target collision spans two or more sources, so
          // there is no single subject field; the message names them. Surfaced here
          // (alongside the load-path log) so an operator can see it on the status
@@ -1401,28 +1437,35 @@ export class Package {
    }
 
    /**
-    * One message per LISTED model whose discovery surface is empty because it
-    * is import-only (imports other files, declares/re-exports nothing). Such a
-    * model renders a blank page, which reads as broken; the fix is an explicit
-    * re-export. Log-only (see loadViaWorker/reloadAllModels) — deliberately
-    * NOT part of exploreWarnings, which is strict-at-publish: import-only
-    * files are a legitimate pattern and must not block a publish. Hidden
-    * (non-listed) models are skipped — nobody browses them, so an empty
-    * surface there is just normal plumbing.
+    * One message per LISTED model whose discovery surface is empty: its export
+    * closure yields no sources and no named queries (an import-only file that
+    * re-exports nothing, an `export {}` that filters everything out, or an
+    * empty file). Such a model renders a blank page and lists as [] to an
+    * agent, which reads as broken; the fix is an explicit re-export, or
+    * unlisting the file. Log-only at load, and surfaced on the package's
+    * warnings array (see getPackageMetadata) — deliberately NOT part of
+    * exploreWarnings, which is strict-at-publish: import-only files are a
+    * legitimate pattern and must not block a publish. Hidden (non-listed)
+    * models are skipped — nobody browses them, so an empty surface there is
+    * just normal plumbing.
     */
-   public emptyDiscoveryWarnings(): string[] {
+   public emptyDiscoveryWarnings(): Array<{ model: string; message: string }> {
       const exploreSet = this.exploreSet();
-      const warnings: string[] = [];
+      const warnings: Array<{ model: string; message: string }> = [];
       for (const [modelPath, model] of this.models) {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
          if (exploreSet && !exploreSet.has(modelPath)) continue;
          if (model.hasEmptyDiscoverySurface()) {
-            warnings.push(
-               `Model "${modelPath}" is listed but exposes nothing: it only ` +
-                  `imports other files and re-exports none of their sources. ` +
-                  `Add e.g. 'export { source_name }' to surface sources on ` +
-                  `this model.`,
-            );
+            warnings.push({
+               model: modelPath,
+               message:
+                  `Model "${modelPath}" is listed in explores but exposes ` +
+                  `nothing: its export closure surfaces no sources or named ` +
+                  `queries (typically an import-only file, or an export {} ` +
+                  `that filters everything out). Add e.g. ` +
+                  `'export { source_name }' to surface sources on this ` +
+                  `model, or remove it from explores.`,
+            });
          }
       }
       return warnings;
@@ -1433,7 +1476,7 @@ export class Package {
       for (const warning of this.emptyDiscoveryWarnings()) {
          logger.warn(`Package ${this.packageName} has a blank-looking model`, {
             packageName: this.packageName,
-            detail: warning,
+            detail: warning.message,
          });
       }
    }

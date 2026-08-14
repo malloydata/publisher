@@ -239,6 +239,104 @@ export { customers }`,
       }
    });
 
+   it("declared: no-export files listed in explores keep every source queryable, including base files imported by a sibling explore", async () => {
+      // The exact shape a QA session shipped and watched break on
+      // server 0.0.243 (HANDOFF CR-5): four model files, every one listed in
+      // explores, queryableSources declared, and NO export{} statement
+      // anywhere. Three base files are imported by the fourth. Observed then:
+      // only the importing file stayed queryable; the three base files 404'd
+      // on query and compile while exploresWarnings said none. The documented
+      // rule ("a file with no export exposes all of its own top-level
+      // sources") requires all four to work.
+      writeManifest({
+         explores: [
+            "track_analysis.malloy",
+            "tracks.malloy",
+            "artists.malloy",
+            "decade_trends.malloy",
+         ],
+         queryableSources: "declared",
+      });
+      const base = (name: string) =>
+         `source: ${name} is duckdb.sql("select 1 as id, 5 as n") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}`;
+      fs.writeFileSync(path.join(tempDir, "tracks.malloy"), base("tracks"));
+      fs.writeFileSync(path.join(tempDir, "artists.malloy"), base("artists"));
+      fs.writeFileSync(
+         path.join(tempDir, "decade_trends.malloy"),
+         base("decade_trends"),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "track_analysis.malloy"),
+         `import "tracks.malloy"
+import "artists.malloy"
+import "decade_trends.malloy"
+source: track_analysis is tracks extend {
+  join_one: a is artists on id = a.id
+  measure: total is n.sum()
+  view: tv is { aggregate: total }
+}`,
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const cases: Array<[string, string]> = [
+            ["tracks.malloy", "tracks"],
+            ["artists.malloy", "artists"],
+            ["decade_trends.malloy", "decade_trends"],
+            ["track_analysis.malloy", "track_analysis"],
+         ];
+         for (const [modelPath, sourceName] of cases) {
+            const model = pkg.getModel(modelPath);
+            expect(model).toBeDefined();
+            // Discoverable: the no-export file exposes its own sources.
+            expect(model!.getSources()?.map((s) => s.name)).toContain(
+               sourceName,
+            );
+            // Queryable: named view and ad-hoc both clear the boundary.
+            const named = await model!.getQueryResults(
+               sourceName,
+               sourceName === "track_analysis" ? "tv" : "v",
+            );
+            expect(named.result.data).toBeDefined();
+            const adhoc = await model!.getQueryResults(
+               undefined,
+               undefined,
+               `run: ${sourceName} -> { aggregate: c is count() }`,
+            );
+            expect(adhoc.result.data).toBeDefined();
+         }
+
+         // The shape that actually broke (root cause of the CR-5 404s): every
+         // query posted through ONE model path — the importer. `tracks` is
+         // declared queryable by its own listed file, so addressing it via
+         // track_analysis.malloy must clear too; the per-model closure used to
+         // deny it here with `No queryable source "tracks"`, which admitted
+         // nothing (it was queryable via tracks.malloy) and broke any client
+         // that pins one model path for all queries.
+         const importer = pkg.getModel("track_analysis.malloy")!;
+         const viaImporterAdhoc = await importer.getQueryResults(
+            undefined,
+            undefined,
+            "run: tracks -> { aggregate: c is count() }",
+         );
+         expect(viaImporterAdhoc.result.data).toBeDefined();
+         const viaImporterNamed = await importer.getQueryResults("tracks", "v");
+         expect(viaImporterNamed.result.data).toBeDefined();
+         // Derivation over a package-curated source clears the backstop too.
+         const viaImporterDerived = await importer.getQueryResults(
+            undefined,
+            undefined,
+            "source: t2 is artists extend { measure: m is n.sum() }\nrun: t2 -> { aggregate: m }",
+         );
+         expect(viaImporterDerived.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("declared: multi-statement is settled by the COMPILED run target (last statement wins)", async () => {
       writeManifest({ explores: ["index.malloy"] });
       writeLayeredModels();

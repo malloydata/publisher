@@ -521,14 +521,18 @@ export class Environment {
          // and compilation surfaces its own error.
          const gateModel = pkg.getModel(modelName);
          if (gateModel) {
-            // Query boundary first (the *what* axis): /compile compiles ad-hoc
-            // text against a model, so gate it like an ad-hoc query — a
-            // non-`explores` model file, or text whose surface-resolved target
-            // is a non-curated model source (under queryableSources:
-            // "declared"), is rejected with a generic 404 before compilation
-            // can leak schema/SQL. Text the early gate can't pin is settled by
-            // the compiled backstop below.
-            gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
+            // Only the authorize gate (the *who* axis) applies to /compile.
+            // The query boundary (`explores`/`queryableSources`, the *what*
+            // axis) deliberately does NOT: compile is the authoring loop
+            // (validate -> save -> reload), and gating it made a curated
+            // package un-authorable — a QA session (HANDOFF CR-5) had every
+            // per-file compile 404 with "Query target is not queryable" the
+            // moment `queryableSources: "declared"` was set. The boundary is
+            // discovery curation, not access control (the skills say so
+            // outright); the accepted trade is that /compile can reveal a
+            // non-exported source's schema (and, with includeSql, SQL) —
+            // sources whose confidentiality matters are gated by
+            // `#(authorize)`, which still applies here in full.
             await gateModel.assertAuthorizedForText(source, givens ?? {});
          }
 
@@ -575,20 +579,9 @@ export class Environment {
             // carries the gate: only a declaration of its OWN `#(authorize)`
             // replaces it, and caller text may not declare one.)
 
-            // Boundary backstop (the *what* axis, 404) before the authorize
-            // one (the *who* axis, 403). /compile text is always ad-hoc — the
-            // early gate can only positively deny, never fully clear — so the
-            // compiled final query's run target is the authority. Self-gates
-            // internally (no-ops when the boundary is inert: "all" / no
-            // explores), so it is deliberately NOT guarded by hasAuthorize().
-            // Text that compiles only source definitions (no final query) has
-            // no run target and nothing to gate.
-            if (queryMaterializer && gateModel) {
-               await gateModel.assertQueryBoundaryForRunnable(
-                  queryMaterializer,
-                  source,
-               );
-            }
+            // No boundary backstop here: /compile is exempt from the query
+            // boundary by design (see the gate comment above). Only the
+            // authorize backstop runs.
 
             // Authorize backstop (the *who* axis, 403). NOT guarded by
             // hasAuthorize(): that reads only top-level modelDef.contents

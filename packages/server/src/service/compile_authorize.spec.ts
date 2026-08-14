@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { AccessDeniedError } from "../errors";
+import { AccessDeniedError, NotQueryableError } from "../errors";
 import { Environment } from "./environment";
 
 // End-to-end gate on the /compile path. Exercises environment.compileSource
@@ -112,5 +112,84 @@ describe("compile-path authorize gate (compileSource)", () => {
             true,
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+});
+
+describe("compile-path is exempt from the query boundary (compileSource)", () => {
+   // /compile is the authoring loop, and the boundary is discovery curation,
+   // not access control. Gating compile made a curated package un-authorable:
+   // the QA session that set explores + queryableSources: "declared" (HANDOFF
+   // CR-5) watched every per-file compile 404 with "Query target is not
+   // queryable". The query path keeps the boundary in full (query_boundary
+   // .spec.ts); authorize keeps gating compile (the suite above).
+   let rootDir: string;
+   let env: Environment;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-compileb-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage("pkg", async (stagingPath) => {
+         await fs.mkdir(stagingPath, { recursive: true });
+         await fs.writeFile(
+            path.join(stagingPath, "publisher.json"),
+            JSON.stringify({
+               name: "pkg",
+               explores: ["index.malloy"],
+               queryableSources: "declared",
+            }),
+         );
+         await fs.writeFile(
+            path.join(stagingPath, "base.malloy"),
+            `source: base_source is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}`,
+         );
+         await fs.writeFile(
+            path.join(stagingPath, "index.malloy"),
+            `import "base.malloy"
+source: helper is duckdb.sql("select 1 as id") extend { measure: hc is count() }
+source: customers is duckdb.sql("select 1 as id") extend { measure: c is count() }
+export { customers }`,
+         );
+      });
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("compiles against a non-explores model file (the per-file authoring loop)", async () => {
+      const { problems } = await env.compileSource(
+         "pkg",
+         "base.malloy",
+         "run: base_source -> { aggregate: c }",
+         false,
+      );
+      expect(problems).toBeDefined();
+   });
+
+   it("compiles text targeting a non-exported source inside the explores file", async () => {
+      const { problems } = await env.compileSource(
+         "pkg",
+         "index.malloy",
+         "run: helper -> { aggregate: hc }",
+         false,
+      );
+      expect(problems).toBeDefined();
+   });
+
+   it("the QUERY path still denies the same hidden targets (exemption is compile-only)", async () => {
+      const pkg = await env.getPackage("pkg");
+      await expect(
+         pkg
+            .getModel("index.malloy")!
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: helper -> { aggregate: hc }",
+            ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });
