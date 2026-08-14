@@ -11,6 +11,7 @@ import { nodeVersionWarning } from "./node_version";
 import { startVersionCheck, staleScaffolderWarning } from "./registry_check";
 import {
    isSpreadsheet,
+   portOverrideCommandFor,
    scaffold,
    type DeclinedScript,
    type Host,
@@ -941,6 +942,18 @@ export function formatSuccess(result: ScaffoldResult): string {
    if (!result.hasStartScript) {
       lines.push(...exposureWarning("npm start", result.declinedStartScript));
    }
+   // The default ports are assumed free everywhere else in this output, and a
+   // machine running another Publisher (or anything on 4000) fails the boot
+   // with EADDRINUSE and no guidance here (QA F6). One line names the fix; the
+   // .mcp.json note is what makes the move survivable, since the file pins the
+   // old MCP port. Uses the same alternates AGENTS.md documents.
+   lines.push(
+      log.dim(
+         `  Port ${result.publisherPort} taken (another Publisher?): boot with\n` +
+            `  ${portOverrideCommandFor(result)}\n` +
+            `  and edit the url in ${result.mcpConfigPath} to the new MCP port.`,
+      ),
+   );
    // Not `open <url>`: that command exists on macOS only, and the line was
    // printed on every platform.
    lines.push(`  ${log.cyan(url)}   ${log.dim("explore in the browser")}`);

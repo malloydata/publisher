@@ -669,21 +669,38 @@ describe("scaffold: malformed existing config", () => {
 });
 
 describe("scaffold: unservable workspace path", () => {
-   test("refuses a path DuckDB cannot read data files from", () => {
+   test("accepts a path containing a space (the YYYY-MM-DD Project Name convention)", () => {
+      // The old refusal's premise — that the workspace path reaches DuckDB's
+      // path parser — does not hold: the served path is the model's RELATIVE
+      // data/… reference, resolved against the package working directory.
+      // Verified end-to-end against the server (load + query a CSV) under
+      // paths containing a space, an apostrophe, and a double quote.
       const spaced = path.join(tmp, "my data dir");
       fs.mkdirSync(spaced);
-      expect(() => run({ cwd: spaced })).toThrow(/a space/);
-      // Nothing was written, so there is no half-scaffolded package to explain.
-      expect(fs.readdirSync(spaced)).toEqual([]);
+      expect(run({ cwd: spaced }).packageCreated).toBe(true);
    });
 
-   test("names a non-ASCII character by codepoint", () => {
+   test("accepts an accented path", () => {
       const accented = path.join(tmp, "josé");
       fs.mkdirSync(accented);
-      expect(() => run({ cwd: accented })).toThrow(/U\+00E9/);
+      expect(run({ cwd: accented }).packageCreated).toBe(true);
    });
 
-   test("accepts the characters DuckDB does accept", () => {
+   // Windows refuses the mkdir itself (EINVAL), so the hazard cannot even be
+   // staged there; the guard is for the POSIX filesystems that allow the name.
+   const controlCharTest = process.platform === "win32" ? test.skip : test;
+   controlCharTest(
+      "refuses a control character, naming it by codepoint",
+      () => {
+         const weird = path.join(tmp, "linefeed");
+         fs.mkdirSync(weird);
+         expect(() => run({ cwd: weird })).toThrow(/U\+0001/);
+         // Nothing was written, so there is no half-scaffolded package to explain.
+         expect(fs.readdirSync(weird)).toEqual([]);
+      },
+   );
+
+   test("accepts the plain safe characters", () => {
       const fine = path.join(tmp, "my-data_dir.v2");
       fs.mkdirSync(fine);
       expect(run({ cwd: fine }).packageCreated).toBe(true);

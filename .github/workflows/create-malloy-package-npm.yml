@@ -210,6 +210,31 @@ jobs:
           fi
           echo "::notice title=Version::$SPEC is not on npm yet"
 
+      # SERVER_VERSION is bumped by hand and nothing else validates it, which is
+      # how the latest scaffolder came to hand every new workspace a server six
+      # patches stale (QA CR-11), and how a scaffolder published AHEAD of its
+      # pinned server would generate workspaces whose `npm start` cannot resolve
+      # at all — under a version that can never be replaced. Two checks: the pin
+      # must exist on npm, and it must be the current `latest`, so a release
+      # that forgot the bump fails here with the exact edit to make.
+      - name: Verify the pinned server version is current on npm
+        run: |
+          SERVER_VERSION="$(sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' packages/create-malloy-package/src/scaffold.ts)"
+          if [ -z "$SERVER_VERSION" ]; then
+            echo "::error title=Server pin::could not read SERVER_VERSION from packages/create-malloy-package/src/scaffold.ts"
+            exit 1
+          fi
+          if ! LATEST="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$LATEST" ]; then
+            printf '%s\n' "$LATEST" | sed 's/^/[npm] /'
+            echo "::error title=Server pin::could not ask npm for @malloy-publisher/server dist-tags.latest"
+            exit 1
+          fi
+          if [ "$SERVER_VERSION" != "$LATEST" ]; then
+            echo "::error title=Server pin::SERVER_VERSION is $SERVER_VERSION but @malloy-publisher/server latest is $LATEST. Bump SERVER_VERSION in packages/create-malloy-package/src/scaffold.ts (and confirm the new server still honours --host) before publishing."
+            exit 1
+          fi
+          echo "::notice title=Server pin::SERVER_VERSION $SERVER_VERSION matches npm latest"
+
       # Read the dependency ranges back out of a real tarball rather than trusting
       # the two steps above, since an npm version cannot be republished. With
       # --publish-ready this re-asks the registry as well, using the ranges the

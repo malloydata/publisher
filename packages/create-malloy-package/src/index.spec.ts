@@ -76,6 +76,12 @@ function offeredCommands(output: string): string[] {
             line.startsWith("npx -y @malloy-publisher/server") ||
             line.startsWith("npm start") ||
             line.startsWith("npm run reset"),
+      )
+      .filter(
+         // The busy-port remedy is printed as a copy-pasteable command too, but
+         // it is not the offered boot: it only applies when the default ports
+         // are taken. Its --mcp_port flag is what distinguishes it.
+         (line) => !line.includes("--mcp_port"),
       );
 }
 
