@@ -7,7 +7,9 @@
       "malloy-publisher": "dist/server.mjs"
    },
    "files": [
-      "dist"
+      "dist",
+      "publisher.config.example.duckdb.json",
+      "publisher.config.example.bigquery.json"
    ],
    "engines": {
       "node": ">=20"

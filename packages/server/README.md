@@ -4,21 +4,21 @@ The Malloy Publisher Server is an Express.js server that provides an API for man
 
 ## Quick start
 
-Everything below is self-contained: this README ships in the npm tarball, where the repository's other files do not, so nothing here links outside the package.
+This section is self-contained: this README ships in the npm tarball, where most of the repository does not, so nothing here needs a file you do not have. Later sections are written for a clone and do point into the repository.
 
 **New workspace?** One command scaffolds a package, the server config, the MCP wiring, and the agent skills:
 
 ```bash
-npm create @malloy-publisher/malloy-package@latest sales -- --data ./yourfile.csv
+npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
 
-Keep the `@latest`: `npm create` resolves through the npx cache, and an unversioned name silently reuses whatever old copy is on the machine.
+Run bare like that, the package comes with a small sample dataset, so there is something to query immediately. To start from a file of your own instead, add `-- --data ./orders.csv`, naming a delimited or Parquet/Excel file you actually have (the `--` is required, and the path is relative to where you run the command). Keep the `@latest`: `npm create` resolves through the npx cache, and an unversioned name silently reuses whatever old copy is on the machine.
 
 **Existing directory of models?** Write a `publisher.config.json` beside a package directory that holds a `publisher.json`, then run the server pointing at it:
 
 ```bash
-npx @malloy-publisher/server --server_root . --config ./publisher.config.json --watch-env local
+npx @malloy-publisher/server --server_root . --watch-env local
 ```
 
 ```json
@@ -34,19 +34,21 @@ npx @malloy-publisher/server --server_root . --config ./publisher.config.json --
 }
 ```
 
+The config is read from `<server_root>/publisher.config.json` by default; `--config <path>` overrides it.
+
 Three facts that are easy to get wrong:
 
 - **A flat-file (CSV/Parquet/XLSX) package needs no `connections` entry at all.** Every loaded package automatically gets its own DuckDB sandbox connection named `duckdb`, which is what `duckdb.table('data/file.csv')` resolves against. That name is reserved: an environment-level connection named `duckdb` fails the whole environment at init (call an env-level DuckDB connection `shared_duckdb` or similar).
-- **A package `location` is local only when it starts with `./`, `../`, `~/`, or `/`.** A bare `sales` is silently not local; write `./sales`.
-- **Local authoring means `--watch-env <env>`.** Without it the server copies each local package into `publisher_data/` at boot and serves the copy, so edits to your source directory are never read.
+- **A package `location` is local only when it starts with `./`, `../`, `~/`, or `/`.** Write `./sales`, not `sales`: a bare name is read as a remote URI, and the package is skipped with `Invalid package path: "sales". Must be an absolute mounted path or a GCS/S3/GitHub URI.` in `loadErrors`. A `./` or `../` path resolves against the config file's directory; `~/` against your home directory.
+- **Local authoring means `--watch-env <env>`.** Without it the server copies each local package into `publisher_data/` at boot and serves the copy, so edits to your source directory are never read — a reload recompiles the copy and still answers 200. Adding the flag to a later boot does not undo a copy already made: pass `--watch-env <env> --init` once to re-mount (it wipes `publisher_data/` and re-syncs from config), then plain `--watch-env` boots keep watching. `publisher_data/<env>/<pkg>` tells you which you got — a symlink is mounted, a real directory is a copy.
 
 Poll `curl -s http://localhost:4000/api/v0/status` until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded). The MCP endpoint for agents is `http://localhost:4040/mcp`.
 
 ## Configuration
 
-`publisher.config.json` lives in this directory. The repository root also contains a symlink (`/publisher.config.json` → `./packages/server/publisher.config.json`) so that running the server from either location picks up the same config. Edit one and you've edited both.
+Two example configs ship in the npm package, beside this README: [`publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (the GitHub-hosted sample packages, no connection block) and [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) (adds a BigQuery connection). Copy either one to `publisher.config.json` and point `--server_root` at its directory.
 
-Two example configs ship with the package: [`publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (the GitHub-hosted sample packages, no connection block) and [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) (adds a BigQuery connection).
+In a clone, the live `publisher.config.json` lives in this directory, and the repository root contains a symlink (`/publisher.config.json` → `./packages/server/publisher.config.json`) so that running the server from either location picks up the same config. Edit one and you've edited both.
 
 ### Remaining deprecation warnings
 
@@ -59,7 +61,7 @@ Removing the unused `trino` CLI direct dep (it pulled in `@google-cloud/translat
 
 ## K6 Test Presets
 
-The Malloy Publisher Server includes several K6 test presets to help you test its performance and stability.
+The Malloy Publisher Server includes several K6 test presets to help you test its performance and stability. These live in the repository, not the npm package, so run them from a clone.
 
 Below is a list of the available test presets:
 
@@ -164,7 +166,7 @@ For more information on how to configure OpenTelemetry collectors, please refer 
 
 ## MCP Prompt Capability
 
-Publisher's MCP interface exposes the bundled agent **skills** (under [`skills/`](../../skills/)) as **LLM-ready prompts**, so hosts that ingest MCP but do not load skill files can pull the same guidance. For authoring or contributing skills, see [`docs/agent-skills/`](../../docs/agent-skills/).
+Publisher's MCP interface exposes the bundled agent **skills** as **LLM-ready prompts**, so hosts that ingest MCP but do not load skill files can pull the same guidance. The skills are published separately as [`@malloy-publisher/skills`](https://www.npmjs.com/package/@malloy-publisher/skills); their source is [`skills/`](https://github.com/malloydata/publisher/tree/main/skills), and authoring guidance is in [`docs/agent-skills/`](https://github.com/malloydata/publisher/tree/main/docs/agent-skills).
 
 List prompts:
 

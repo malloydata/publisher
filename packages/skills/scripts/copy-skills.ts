@@ -47,22 +47,41 @@ const version = (
       fs.readFileSync(path.join(packageDir, "package.json"), "utf8"),
    ) as { version: string }
 ).version;
-let stamped = 0;
+const unstampable: string[] = [];
 for (const entry of copied) {
    const skillFile = path.join(destination, entry.name, "SKILL.md");
    const text = fs.readFileSync(skillFile, "utf8");
-   // Insert into the existing frontmatter block rather than appending a new
-   // one; a SKILL.md without frontmatter is left alone rather than guessed at.
-   if (!text.startsWith("---\n")) continue;
-   const close = text.indexOf("\n---", 4);
-   if (close === -1) continue;
+   // Insert into the existing frontmatter block rather than appending a second
+   // one. Both failures below are the same shape: we cannot say where the
+   // frontmatter is, or a `version:` is already there and a second one would
+   // make the block a duplicate-key YAML error that every strict parser
+   // rejects — which would take the skill out of a host entirely, a far worse
+   // outcome than the staleness this stamp exists to expose. Upstream owns
+   // these files (skills/README.md), so a synced skill can grow its own
+   // `version:` without anyone here noticing; fail the pack instead.
+   const close = text.startsWith("---\n") ? text.indexOf("\n---", 4) : -1;
+   if (close === -1) {
+      unstampable.push(`${entry.name} (no frontmatter block)`);
+      continue;
+   }
+   if (/^version:/m.test(text.slice(0, close))) {
+      unstampable.push(`${entry.name} (frontmatter already declares version)`);
+      continue;
+   }
    fs.writeFileSync(
       skillFile,
       `${text.slice(0, close)}\nversion: ${version}${text.slice(close)}`,
    );
-   stamped += 1;
+}
+
+if (unstampable.length > 0) {
+   console.error(
+      `Cannot stamp ${unstampable.length} of ${copied.length} skills with ` +
+         `version ${version}: ${unstampable.join(", ")}`,
+   );
+   process.exit(1);
 }
 
 console.log(
-   `Copied ${copied.length} skills to ${destination} (stamped ${stamped} with version ${version})`,
+   `Copied and stamped ${copied.length} skills with version ${version} to ${destination}`,
 );

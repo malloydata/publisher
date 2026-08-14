@@ -2754,13 +2754,18 @@ components:
           type: string
           description:
             Package location. A LOCAL path must start with `./`, `../`, `~/`,
-            or `/` (a bare name like `sales` is silently not treated as local);
-            relative paths resolve against the config file's directory. Remote
-            locations are URIs (github, s3, gcs, https). At boot a local
+            or `/`; a `./` or `../` path resolves against the config file's
+            directory, and `~/` against the home directory. Anything else is
+            read as a remote URI (github, s3, gcs, https), so a bare name like
+            `sales` is not local and the package is skipped with
+            "Invalid package path" in the server's loadErrors. At boot a local
             package is COPIED into publisher_data/ and the copy is served, so
             edits to the source directory are not read; starting the server
             with `--watch-env <env>` mounts local packages in place (symlink)
-            and live-reloads them instead.
+            and live-reloads them instead. The mount is chosen when the
+            environment is first loaded from config, so adding `--watch-env`
+            to a later boot needs `--init` to re-mount a package already
+            copied.
         scope:
           type: string
           enum:
