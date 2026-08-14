@@ -36,8 +36,16 @@ export type QueryMetadataLevel = "package" | "model" | "source";
 /** One author's declaration, as declared — not as resolved. */
 export interface QueryMetadataDeclaration {
    level: QueryMetadataLevel;
-   /** The model path or source name to point the author at; absent for a package. */
+   /**
+    * The source to point the author at; absent for a package or a model file.
+    * A source name is not unique across a package, so a source declaration
+    * carries {@link modelPath} as well — without it two models declaring a
+    * same-named source produce identical findings that dedupe to one message
+    * naming neither file.
+    */
    subject?: string;
+   /** The model file the declaration is in; absent for a package. */
+   modelPath?: string;
    queryMetadata: QueryMetadata;
 }
 
@@ -58,6 +66,13 @@ export interface MaterializationConfigInput {
     */
    declarations?: QueryMetadataDeclaration[];
    /**
+    * How many properties each source actually SENDS, after the package, model
+    * file and source layers merge. The declarations above cannot answer this —
+    * each is individually under budget while their merge is over it — and the
+    * budget is a property of the merge.
+    */
+   effectiveBagSizes?: { subject: string; modelPath?: string; size: number }[];
+   /**
     * Deprecations the manifest parse tolerated (e.g. a root-level `scope`), which
     * a load keeps working but a publish should report.
     */
@@ -75,9 +90,19 @@ const DECLARATION_LABELS: Record<QueryMetadataLevel, string> = {
    source: "#@ queryMetadata",
 };
 
-/** One finding, in the shape the wire package's operator warnings array uses. */
+/**
+ * One finding, in the shape the wire package's operator warnings array uses.
+ *
+ * `model` and `subject` are separate because the schema separates them: `model`
+ * is a package-relative model path and `subject` is a source / query / view.
+ * Putting a model path in `subject` made a client filtering by `model` miss the
+ * finding entirely, and rendered `marts.malloy` where a reader expects a source
+ * name.
+ */
 export interface MaterializationConfigWarning {
-   /** The persist source the finding belongs to, absent for a package-level one. */
+   /** The model file the finding is in, absent for a package-level one. */
+   model?: string;
+   /** The source the finding belongs to, absent for package and model levels. */
    subject?: string;
    message: string;
 }
@@ -85,7 +110,7 @@ export interface MaterializationConfigWarning {
 function metadataWarnings(
    level: string,
    metadata: QueryMetadata | null | undefined,
-   subject?: string,
+   location: { model?: string; subject?: string },
 ): MaterializationConfigWarning[] {
    if (!metadata) return [];
    const budget = queryMetadataBudgetWarning(Object.keys(metadata).length);
@@ -98,7 +123,8 @@ function metadataWarnings(
       // The level is in the message because a reader needs to know WHICH
       // declaration to edit, and an inherited property has more than one.
       message: `${level}: ${message}`,
-      ...(subject ? { subject } : {}),
+      ...(location.model ? { model: location.model } : {}),
+      ...(location.subject ? { subject: location.subject } : {}),
    }));
 }
 
@@ -125,16 +151,44 @@ export function materializationConfigWarnings(
          ...metadataWarnings(
             DECLARATION_LABELS[declaration.level],
             declaration.queryMetadata,
-            declaration.subject,
+            { model: declaration.modelPath, subject: declaration.subject },
          ),
       );
+   }
+
+   // The budget is the one rule a single declaration cannot answer. Every check
+   // above is per-declaration on purpose — that is what lets a message name the
+   // line to edit — but the budget is about what a source SENDS, and a source
+   // sends the merge of every layer above it. Package 6 + model 6 is eleven
+   // properties at neither declaration and twelve at the source, which is over
+   // the author budget and sheds context properties on every statement: the
+   // exact failure `queryMetadataBudgetWarning` exists to prevent, published
+   // clean and visible afterwards only as a metric.
+   //
+   // Emitted without a level label because no single line is at fault, and
+   // located at the source so a reader knows which merge overflowed.
+   for (const { subject, modelPath, size } of input.effectiveBagSizes ?? []) {
+      const budget = queryMetadataBudgetWarning(size);
+      if (!budget) continue;
+      warnings.push({
+         message: `queryMetadata (package + model file + source, merged): ${budget}`,
+         ...(modelPath ? { model: modelPath } : {}),
+         ...(subject ? { subject } : {}),
+      });
    }
 
    // Identical findings collapse (the same declaration reaching this function
    // twice must not produce two messages).
    const seen = new Set<string>();
    return warnings.filter((warning) => {
-      const key = `${warning.subject ?? ""}\u0000${warning.message}`;
+      // Keyed on the model path as well as the source: a source name is
+      // unique within a model, not within a package, so keying on the name
+      // alone collapsed two files' findings into one message naming neither.
+      const key = [
+         warning.model ?? "",
+         warning.subject ?? "",
+         warning.message,
+      ].join("\u0000");
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

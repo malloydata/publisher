@@ -1407,10 +1407,19 @@ paths:
         package-level properties. The package must exist and be accessible.
 
         A supplied `materialization` block REPLACES the one on disk, so re-send every
-        field of it you want to keep. Two exceptions, because neither is expressible
-        in the block a caller sends: `scope` (a top-level field) and `queryMetadata`
-        (orthogonal to the schedule and freshness policy this call usually carries) are
-        preserved when omitted. Send `queryMetadata: null` to clear it.
+        field of it you want to keep. Two exceptions are preserved when omitted:
+        `scope`, which is a top-level field and not expressible in the block at all,
+        and `queryMetadata`, which is orthogonal to the schedule and freshness policy
+        this call usually carries — a client setting a schedule has no reason to
+        re-send the package's tags, and dropping them silently untags every statement
+        the package issues.
+
+        `queryMetadata` has two homes: the top-level field, which is canonical, and
+        `materialization.queryMetadata`, which is DEPRECATED and still accepted. The
+        canonical field wins if a request sends both, and both are populated on read.
+        At EITHER home, omitting it preserves the package's tags and so does sending
+        null — a client that serializes unset fields as null must not untag a package
+        by accident. Send an empty object to clear.
       parameters:
         - name: environmentName
           in: path
@@ -3020,13 +3029,20 @@ components:
             - $ref: "#/components/schemas/QueryMetadata"
             - type: "null"
           description: >-
-            The manifest's `materialization.queryMetadata` block, verbatim. Null
-            = none declared. The package-level layer of per-query metadata: it
-            applies to every statement the package's sources issue — a build and
-            a served query alike — and a model-file, source or per-request
-            declaration overrides it property by property. Named for
-            materialization historically; it declares what the package's sources
-            ARE, not only how they are built.
+            DEPRECATED home for the package's per-query metadata; read
+            `Package.queryMetadata`, which is canonical. Null = none declared.
+
+            NOT the manifest's `materialization.queryMetadata` verbatim: it is
+            the RESOLVED winner across both manifest homes, and it is synthesized
+            for a package whose manifest has no `materialization` block at all —
+            a package that declares tags the canonical way has no build policy to
+            carry them, and its tags must not be lost for want of one. Both homes
+            are populated on read, so this and `Package.queryMetadata` agree.
+
+            The package-level layer of per-query metadata: it applies to every
+            statement the package's sources issue — a build and a served query
+            alike — and a model-file, source or per-request declaration overrides
+            it property by property.
 
     Freshness:
       type: object
@@ -3612,9 +3628,10 @@ components:
         grammar while other backends keep it.
 
         Layers, most specific wins per property: connection default < package
-        `materialization.queryMetadata` < model-file
-        `## materialization.queryMetadata.*` < `#@ persist queryMetadata.*` <
-        per-request `queryMetadata`. The publisher's own context (`class`,
+        `queryMetadata` < model-file `## queryMetadata.*` < source
+        `#@ queryMetadata.*` < per-request `queryMetadata`. The `materialization.`
+        spellings of the package and model-file layers are deprecated and still
+        read; where a file declares both, the canonical one wins per property. The publisher's own context (`class`,
         `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
         `query_id`, `version`) is applied on top and cannot be overwritten — it
         is what the server is actually doing, and a caller must not be able to
@@ -4854,9 +4871,10 @@ components:
             - type: "null"
           description: >-
             The source's EFFECTIVE per-query metadata after most-specific-wins
-            resolution per property (`#@ persist queryMetadata.*` > model-file
-            `## materialization.queryMetadata.*` > package
-            `materialization.queryMetadata`). Null = declared at no level. The
+            resolution per property (`#@ queryMetadata.*` > model-file
+            `## queryMetadata.*` > package `queryMetadata`; the deprecated
+            `materialization.` spellings of the last two are still read and lose
+            to the canonical ones). Null = declared at no level. The
             publisher attaches it — merged under its own context — to every
             statement it issues while building this source AND to every query
             served from it, and reports it here so a caller can see how the

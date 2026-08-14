@@ -3347,12 +3347,15 @@ export class Model {
    ): ReadableTag | undefined {
       if (!sourceName || !this.modelDef) return undefined;
       try {
-         const contents = this.modelDef.contents as Record<
-            string,
-            { annotations?: unknown } | undefined
-         >;
-         const def = contents?.[sourceName];
-         if (!def?.annotations) return undefined;
+         const entry = this.modelDef.contents?.[sourceName];
+         // The docstring's "not a top-level source" case, now actually checked.
+         // `contents` also holds NAMED QUERIES, and a `#@` on one of those is
+         // not a source's declaration — reading it resolved a query's tag as
+         // though a source had declared it, and listed the query's name among
+         // the package's tagged sources in the publish warnings.
+         if (!entry || !isSourceDef(entry)) return undefined;
+         const def = entry as unknown as { annotations?: unknown };
+         if (!def.annotations) return undefined;
          return new Annotations(def.annotations).parseAsTag("@")
             .tag as ReadableTag;
       } catch {

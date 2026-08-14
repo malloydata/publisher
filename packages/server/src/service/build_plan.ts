@@ -429,9 +429,17 @@ export function composeDeclaredQueryMetadata(layers: {
 }): QueryMetadata | null {
    // Least specific first, so a more specific layer overwrites property by
    // property.
+   //
+   // `modelTagLayers` yields [envelope, bare], which is most-specific-first for
+   // freshness — there the envelope is the canonical spelling and the bare form
+   // is the legacy one. Query metadata migrates the other way: the bare `##
+   // queryMetadata.*` is canonical and `## materialization.queryMetadata.*` is
+   // deprecated. So the list is consumed as-is rather than reversed, putting the
+   // deprecated spelling underneath. Reversing it let the spelling we tell
+   // authors to stop writing silently override the one we tell them to write.
    const ordered: QueryMetadata[] = [
       layers.packageDeclaration ?? {},
-      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer).reverse(),
+      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer),
       tagQueryMetadataLayer(layers.sourceTag),
    ];
    const resolved: QueryMetadata = Object.assign({}, ...ordered);

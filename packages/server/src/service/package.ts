@@ -795,7 +795,11 @@ export class Package {
                   ? [
                        {
                           level: "model" as const,
-                          subject: model.getPath(),
+                          // The model path goes in `modelPath`, not `subject`:
+                          // the wire schema keeps the two apart, so a client
+                          // filtering findings by model missed every one of
+                          // these while `subject` read like a source name.
+                          modelPath: model.getPath(),
                           queryMetadata: modelDeclaration,
                        },
                     ]
@@ -805,11 +809,47 @@ export class Package {
                   .map(({ sourceName, queryMetadata }) => ({
                      level: "source" as const,
                      subject: sourceName,
+                     // A source name is unique within a model, not within a
+                     // package: without the path, two models declaring a
+                     // same-named source produce identical findings that dedupe
+                     // to a single message naming neither file.
+                     modelPath: model.getPath(),
                      queryMetadata,
                   })),
             ];
          }),
       ];
+   }
+
+   /**
+    * How many properties each tagged source actually SENDS, once the package,
+    * model-file and source layers have merged.
+    *
+    * The budget is the one rule that cannot be checked per declaration: every
+    * layer can sit under the author budget while their merge sits over it, and
+    * it is the merge that rides the statement. Reported per source so a warning
+    * can name the merge that overflowed rather than a line that looks fine.
+    */
+   private queryMetadataEffectiveBagSizes(): {
+      subject: string;
+      modelPath?: string;
+      size: number;
+   }[] {
+      const packageDeclaration = this.getDeclaredQueryMetadata();
+      return [...this.models.values()].flatMap((model) => {
+         const modelDeclaration = model.getDeclaredQueryMetadata();
+         return model
+            .getDeclaredSourceQueryMetadata()
+            .map(({ sourceName, queryMetadata }) => ({
+               subject: sourceName,
+               modelPath: model.getPath(),
+               size: Object.keys({
+                  ...(packageDeclaration ?? {}),
+                  ...(modelDeclaration ?? {}),
+                  ...queryMetadata,
+               }).length,
+            }));
+      });
    }
 
    public getPackageMetadata(): ApiPackage {
@@ -860,6 +900,7 @@ export class Package {
          // deprecated. Advisory by design — none of these blocks a publish.
          ...materializationConfigWarnings({
             declarations: this.queryMetadataDeclarations(),
+            effectiveBagSizes: this.queryMetadataEffectiveBagSizes(),
             manifestWarnings: this.manifestWarnings,
          }),
       ];

@@ -230,9 +230,13 @@ describe("materialization schedule surfacing", () => {
    );
 
    it(
-      "still lets an explicit null clear queryMetadata",
+      "treats an explicit null as omitted, at the deprecated home too",
       async () => {
-         // Preserved-on-omission must not make it unclearable.
+         // Null used to clear HERE while null on the canonical field preserved.
+         // That asymmetry protected a client which serializes unset fields as
+         // null only once it had migrated off this home — precisely the client
+         // that has not. One rule at both homes now: null preserves, an empty
+         // bag clears.
          const env = await Environment.create("testEnv", envPath, []);
          await writePackageDir({
             materialization: {
@@ -249,7 +253,10 @@ describe("materialization schedule surfacing", () => {
 
          expect(
             (await readManifest()).materialization as Record<string, unknown>,
-         ).toMatchObject({ schedule: "0 6 * * *", queryMetadata: null });
+         ).toMatchObject({
+            schedule: "0 6 * * *",
+            queryMetadata: { team: "finance" },
+         });
       },
       { timeout: 20000 },
    );
@@ -311,10 +318,13 @@ describe("materialization schedule surfacing", () => {
             name: "pkg",
             queryMetadata: { team: "fin" },
          });
-         expect(await readManifest()).toMatchObject({
-            queryMetadata: { team: "fin" },
-            materialization: { queryMetadata: { team: "fin" } },
-         });
+         // Canonical home only. The deprecated block is mirrored into when it
+         // already exists or the caller wrote to it — synthesizing one here
+         // would introduce the shape being migrated AWAY from into a manifest
+         // whose author only ever used the canonical field.
+         const afterCanonical = await readManifest();
+         expect(afterCanonical.queryMetadata).toEqual({ team: "fin" });
+         expect(afterCanonical.materialization).toBeUndefined();
 
          await env.updatePackage("pkg", {
             name: "pkg",
@@ -337,7 +347,7 @@ describe("materialization schedule surfacing", () => {
    );
 
    it(
-      "clears a canonically-declared bag through the deprecated home",
+      "clears a canonically-declared bag through the deprecated home, with an empty one",
       async () => {
          // The clear has to reach the root, not just the block it was sent in:
          // a manifest written in the canonical form carries the bag at the root,
@@ -349,13 +359,13 @@ describe("materialization schedule surfacing", () => {
 
          await env.updatePackage("pkg", {
             name: "pkg",
-            materialization: { queryMetadata: null },
+            materialization: { queryMetadata: {} },
          });
 
          const manifest = await readManifest();
-         expect(manifest.queryMetadata).toBeNull();
+         expect(manifest.queryMetadata).toEqual({});
          expect(manifest.materialization).toMatchObject({
-            queryMetadata: null,
+            queryMetadata: {},
          });
 
          const reloaded = await Environment.create("testEnv", envPath, []);
@@ -397,6 +407,69 @@ describe("materialization schedule surfacing", () => {
                await reloaded.getPackage("pkg", false)
             ).getDeclaredQueryMetadata(),
          ).toBeNull();
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "keeps BOTH in-memory homes agreeing after a PATCH",
+      async () => {
+         // The two homes are read by different paths — the serve path takes the
+         // canonical field through `getDeclaredQueryMetadata`, the build path
+         // takes the block — so setting them independently made a PATCH that
+         // touched one tag served queries with the new bag and builds with the
+         // old one. Asserted against the SAME env, not a fresh one: a reload
+         // resolves the manifest and would hide the divergence under test.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            materialization: { queryMetadata: { team: "finance" } },
+         });
+         await env.addPackage("pkg");
+
+         const updated = await env.updatePackage("pkg", {
+            name: "pkg",
+            queryMetadata: { team: "platform" },
+         });
+
+         expect(updated.queryMetadata).toEqual({ team: "platform" });
+         expect(updated.materialization).toMatchObject({
+            queryMetadata: { team: "platform" },
+         });
+
+         const pkg = await env.getPackage("pkg", false);
+         expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "platform" });
+         expect(pkg.getMaterializationConfig()?.queryMetadata).toEqual({
+            team: "platform",
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "does not untag the package when a PATCH edits only the schedule",
+      async () => {
+         // A materialization PATCH replaces the block wholesale, and the block
+         // is what the BUILD path reads. Resolving the bag from the body alone
+         // would drop it, so the next build's statements go out untagged for a
+         // package that asked to be tagged.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            scope: "version",
+            queryMetadata: { team: "finance" },
+         });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "0 6 * * *" },
+         });
+
+         const pkg = await env.getPackage("pkg", false);
+         expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "finance" });
+         expect(pkg.getMaterializationConfig()).toMatchObject({
+            schedule: "0 6 * * *",
+            queryMetadata: { team: "finance" },
+         });
       },
       { timeout: 20000 },
    );

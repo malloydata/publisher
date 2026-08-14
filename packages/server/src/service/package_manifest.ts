@@ -122,7 +122,7 @@ const SCOPE_ROOT_DEPRECATION =
 export function resolvePackageQueryMetadata(
    rootRaw: unknown,
    materializationRaw: unknown,
-): { queryMetadata: unknown; warnings: string[] } {
+): { queryMetadata: unknown; home: QueryMetadataHome; warnings: string[] } {
    const envelopeRaw =
       materializationRaw && typeof materializationRaw === "object"
          ? (materializationRaw as { queryMetadata?: unknown }).queryMetadata
@@ -134,18 +134,35 @@ export function resolvePackageQueryMetadata(
       // Both homes agreeing is the transition state the server itself writes,
       // so it is not worth a word to an operator who cannot act on it.
       if (JSON.stringify(rootRaw) === JSON.stringify(envelopeRaw)) {
-         return { queryMetadata: rootRaw, warnings: [] };
+         return { queryMetadata: rootRaw, home: "root", warnings: [] };
       }
-      return { queryMetadata: rootRaw, warnings: [QUERY_METADATA_CONFLICT] };
+      return {
+         queryMetadata: rootRaw,
+         home: "root",
+         warnings: [QUERY_METADATA_CONFLICT],
+      };
    }
    if (envelopeDeclared) {
       return {
          queryMetadata: envelopeRaw,
+         home: "envelope",
          warnings: [QUERY_METADATA_ENVELOPE_DEPRECATION],
       };
    }
-   return { queryMetadata: rootRaw, warnings: [] };
+   return { queryMetadata: rootRaw, home: "root", warnings: [] };
 }
+
+/**
+ * Which home a resolved bag came from. Carried so a parse warning about one of
+ * its properties can name the home the author actually wrote, rather than a
+ * hardcoded spelling that is wrong for whichever home did not win.
+ */
+export type QueryMetadataHome = "root" | "envelope";
+
+const QUERY_METADATA_HOME_LABELS: Record<QueryMetadataHome, string> = {
+   root: "queryMetadata",
+   envelope: "materialization.queryMetadata",
+};
 
 const QUERY_METADATA_ENVELOPE_DEPRECATION =
    `"queryMetadata" inside "materialization" is deprecated: declare it at the ` +
@@ -234,7 +251,10 @@ function parseFreshness(raw: unknown): PackageFreshnessConfig | null {
  * plausible hand-edit, and without this it disappears with nothing anywhere to
  * point at.
  */
-function parseQueryMetadata(raw: unknown): {
+function parseQueryMetadata(
+   raw: unknown,
+   label = QUERY_METADATA_HOME_LABELS.envelope,
+): {
    metadata: Record<string, string> | null;
    warnings: string[];
 } {
@@ -248,7 +268,7 @@ function parseQueryMetadata(raw: unknown): {
          out[name] = value;
       } else {
          warnings.push(
-            `materialization.queryMetadata: property '${name}' must be a ` +
+            `${label}: property '${name}' must be a ` +
                `string (got ${value === null ? "null" : typeof value}); it is ` +
                `not attached to any statement`,
          );
@@ -290,20 +310,6 @@ export function parsePackageMaterialization(
 }
 
 /**
- * What the `materialization` parse tolerated but could not keep, for the
- * operator warnings array. Reads the same parse as
- * {@link parsePackageMaterialization} rather than re-deriving it, so the two
- * cannot disagree about what was dropped.
- */
-export function packageMaterializationWarnings(raw: unknown): string[] {
-   if (!raw || typeof raw !== "object") {
-      return [];
-   }
-   const { queryMetadata } = raw as { queryMetadata?: unknown };
-   return parseQueryMetadata(queryMetadata).warnings;
-}
-
-/**
  * The package's materialization config with `queryMetadata` taken from whichever
  * home won (see {@link resolvePackageQueryMetadata}), so every consumer keeps
  * reading one accessor and no caller has to know there are two homes.
@@ -326,7 +332,14 @@ export function materializationWithQueryMetadata(
    };
 }
 
-/** Properties the winning `queryMetadata` home declared but could not keep. */
-export function queryMetadataParseWarnings(raw: unknown): string[] {
-   return parseQueryMetadata(raw).warnings;
+/**
+ * Properties the winning `queryMetadata` home declared but could not keep,
+ * named after THAT home. Hardcoding the enveloped spelling pointed the author of
+ * a root-only manifest at a `materialization` block their file does not have.
+ */
+export function queryMetadataParseWarnings(
+   raw: unknown,
+   home: QueryMetadataHome = "root",
+): string[] {
+   return parseQueryMetadata(raw, QUERY_METADATA_HOME_LABELS[home]).warnings;
 }

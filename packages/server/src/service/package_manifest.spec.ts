@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
    materializationWithQueryMetadata,
-   packageMaterializationWarnings,
    parsePackageMaterialization,
    parsePackageScope,
+   queryMetadataParseWarnings,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "./package_manifest";
@@ -206,35 +206,15 @@ describe("service/package_manifest", () => {
       });
    });
 
-   describe("packageMaterializationWarnings", () => {
-      it("names a dropped non-string value", () => {
-         // The drop happens before the config validation that would otherwise
-         // report it, so without this an unquoted `"team": 123` — a plausible
-         // hand-edit — vanishes with nothing anywhere to point at.
-         const warnings = packageMaterializationWarnings({
-            queryMetadata: { team: "finance", retries: 3 },
-         });
-         expect(warnings).toHaveLength(1);
-         expect(warnings[0]).toContain("'retries'");
-         expect(warnings[0]).toContain("got number");
-      });
-
-      it("says nothing about a block that parses cleanly", () => {
-         expect(
-            packageMaterializationWarnings({
-               schedule: "0 6 * * *",
-               queryMetadata: { team: "finance" },
-            }),
-         ).toEqual([]);
-         expect(packageMaterializationWarnings(undefined)).toEqual([]);
-      });
-   });
-
    describe("resolvePackageQueryMetadata", () => {
       it("reads the canonical root home with no warning", () => {
          expect(
             resolvePackageQueryMetadata({ team: "finance" }, undefined),
-         ).toEqual({ queryMetadata: { team: "finance" }, warnings: [] });
+         ).toEqual({
+            queryMetadata: { team: "finance" },
+            home: "root",
+            warnings: [],
+         });
       });
 
       it("still honors the enveloped form, with a deprecation warning", () => {
@@ -242,6 +222,9 @@ describe("service/package_manifest", () => {
             queryMetadata: { team: "finance" },
          });
          expect(resolved.queryMetadata).toEqual({ team: "finance" });
+         // The home is carried so a parse warning about one of these properties
+         // names the spelling this author actually wrote.
+         expect(resolved.home).toBe("envelope");
          expect(resolved.warnings).toHaveLength(1);
          expect(resolved.warnings[0]).toMatch(/deprecated/i);
       });
@@ -254,7 +237,11 @@ describe("service/package_manifest", () => {
                { team: "finance" },
                { queryMetadata: { team: "finance" } },
             ),
-         ).toEqual({ queryMetadata: { team: "finance" }, warnings: [] });
+         ).toEqual({
+            queryMetadata: { team: "finance" },
+            home: "root",
+            warnings: [],
+         });
       });
 
       it("warns and prefers the root when the homes disagree", () => {
@@ -272,11 +259,25 @@ describe("service/package_manifest", () => {
       it("declares nothing when neither home does", () => {
          expect(resolvePackageQueryMetadata(undefined, undefined)).toEqual({
             queryMetadata: undefined,
+            home: "root",
             warnings: [],
          });
          expect(
             resolvePackageQueryMetadata(undefined, { schedule: "0 6 * * *" }),
-         ).toEqual({ queryMetadata: undefined, warnings: [] });
+         ).toEqual({ queryMetadata: undefined, home: "root", warnings: [] });
+      });
+   });
+
+   describe("queryMetadataParseWarnings", () => {
+      it("names the home the author actually wrote", () => {
+         // Hardcoding the enveloped spelling pointed the author of a root-only
+         // manifest at a `materialization` block their file does not have.
+         expect(queryMetadataParseWarnings({ team: 3 }, "root")[0]).toContain(
+            "queryMetadata: property 'team'",
+         );
+         expect(
+            queryMetadataParseWarnings({ team: 3 }, "envelope")[0],
+         ).toContain("materialization.queryMetadata: property 'team'");
       });
    });
 

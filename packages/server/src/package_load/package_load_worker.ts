@@ -446,7 +446,10 @@ async function readPackageMetadata(packagePath: string): Promise<{
       // Report what the WINNING home could not keep. Reading the envelope alone
       // would say nothing about a malformed property declared at the root, which
       // is the home authors are being moved to.
-      ...queryMetadataParseWarnings(queryMetadata.queryMetadata),
+      ...queryMetadataParseWarnings(
+         queryMetadata.queryMetadata,
+         queryMetadata.home,
+      ),
    ];
    return {
       name: parsed.name,

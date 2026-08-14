@@ -116,21 +116,102 @@ describe("materializationConfigWarnings", () => {
          declarations: [
             {
                level: "model",
-               subject: "marts.malloy",
+               modelPath: "marts.malloy",
                queryMetadata: { run_id: "x" },
             },
             {
                level: "source",
                subject: "orders_live",
+               modelPath: "marts.malloy",
                queryMetadata: { run_id: "x" },
             },
          ],
       });
       expect(warnings).toHaveLength(2);
-      expect(warnings[0].subject).toBe("marts.malloy");
+      expect(warnings[0].model).toBe("marts.malloy");
       expect(warnings[0].message).toContain("## queryMetadata");
       expect(warnings[1].subject).toBe("orders_live");
       expect(warnings[1].message).toContain("#@ queryMetadata");
+   });
+
+   it("puts a model path in `model`, never in `subject`", () => {
+      // The wire schema keeps the two apart: `model` is a package-relative model
+      // path and `subject` is a source / query / view. A model path in `subject`
+      // was invisible to a client filtering findings by model, and rendered a
+      // file name where a reader expects a source name.
+      const warnings = materializationConfigWarnings({
+         declarations: [
+            {
+               level: "model",
+               modelPath: "marts.malloy",
+               queryMetadata: { "team.name": "finance" },
+            },
+         ],
+      });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].model).toBe("marts.malloy");
+      expect(warnings[0].subject).toBeUndefined();
+   });
+
+   it("locates a source finding by BOTH its model path and its name", () => {
+      // A source name is unique within a model, not within a package. Without
+      // the path, two models declaring a same-named source produced identical
+      // findings that deduped to one message naming neither file.
+      const warnings = materializationConfigWarnings({
+         declarations: [
+            {
+               level: "source",
+               subject: "orders",
+               modelPath: "a.malloy",
+               queryMetadata: { run_id: "x" },
+            },
+            {
+               level: "source",
+               subject: "orders",
+               modelPath: "b.malloy",
+               queryMetadata: { run_id: "x" },
+            },
+         ],
+      });
+      expect(warnings).toHaveLength(2);
+      expect(warnings.map((w) => w.model)).toEqual(["a.malloy", "b.malloy"]);
+   });
+
+   it("checks the MERGED bag against the budget, which no declaration can", () => {
+      // The author budget is MAX_PROPERTIES minus the context the server adds.
+      // Every layer here is individually under it while the merge is over, so
+      // checking declarations alone let a package publish clean and then shed
+      // context properties on every statement — visible afterwards only as a
+      // metric. No level label: no single line is at fault.
+      const six = (prefix: string) =>
+         Object.fromEntries(
+            Array.from({ length: 6 }, (_, i) => [`${prefix}${i}`, "v"]),
+         );
+      const warnings = materializationConfigWarnings({
+         declarations: [
+            { level: "package", queryMetadata: six("p") },
+            {
+               level: "model",
+               modelPath: "marts.malloy",
+               queryMetadata: six("m"),
+            },
+         ],
+         effectiveBagSizes: [
+            { subject: "orders", modelPath: "marts.malloy", size: 12 },
+         ],
+      });
+      const merged = warnings.filter((w) => w.message.includes("merged"));
+      expect(merged).toHaveLength(1);
+      expect(merged[0].subject).toBe("orders");
+      expect(merged[0].model).toBe("marts.malloy");
+   });
+
+   it("says nothing about a merged bag inside the budget", () => {
+      expect(
+         materializationConfigWarnings({
+            effectiveBagSizes: [{ subject: "orders", size: 3 }],
+         }),
+      ).toEqual([]);
    });
 
    it("checks a source whether or not it persists", () => {
