@@ -76,6 +76,12 @@ function offeredCommands(output: string): string[] {
             line.startsWith("npx -y @malloy-publisher/server") ||
             line.startsWith("npm start") ||
             line.startsWith("npm run reset"),
+      )
+      .filter(
+         // The busy-port remedy is printed as a copy-pasteable command too, but
+         // it is not the offered boot: it only applies when the default ports
+         // are taken. Its --mcp_port flag is what distinguishes it.
+         (line) => !line.includes("--mcp_port"),
       );
 }
 
@@ -322,6 +328,56 @@ describe("formatSuccess: which boot command is offered", () => {
       const output = formatSuccess(result);
       expect(result.hasStartScript).toBe(false);
       expect(offeredCommands(output)).toEqual([result.startCommand]);
+   });
+});
+
+/**
+ * The busy-port remedy (QA F6). Nothing else in this output allows for the
+ * default ports being taken, and the boot the user is handed dies on
+ * EADDRINUSE with no guidance. What makes this worth a test rather than a line
+ * of prose is that the remedy is wrong in two specific ways that both read
+ * fine: a boot without --init where a reset is pending serves the persisted
+ * package list and silently omits the package this run just created, and a
+ * remedy phrased as a fact tells a user whose port is free that it is taken.
+ */
+describe("formatSuccess: the busy-port remedy", () => {
+   test("offers the alternate ports and the .mcp.json edit that follows", () => {
+      const output = formatSuccess(runHere());
+      expect(output).toContain("--port 4100 --mcp_port 4140");
+      expect(output).toContain(".mcp.json");
+      // Conditional, not a claim about this machine.
+      expect(output).toContain(`If port 4000 is taken`);
+   });
+
+   test("names the workspace whose Publisher this does NOT fix", () => {
+      // Moving ports is no remedy at all when the conflict is a server already
+      // serving THIS workspace: the lock is on the workspace, so the second one
+      // sits at initializing rather than failing to bind.
+      const output = formatSuccess(runHere());
+      expect(output).toContain("DIFFERENT");
+      expect(output).toContain("the lock is on the workspace, not the port");
+   });
+
+   test("carries --init when a reset is pending", () => {
+      runHere({ name: "sales" });
+      markAsAlreadyBooted();
+      const result = runHere({ name: "sales", force: true });
+      const output = formatSuccess(result);
+
+      expect(result.needsReset).toBe(true);
+      const remedy = output
+         .split("\n")
+         .map((line) => line.trim())
+         .find((line) => line.includes("--mcp_port"));
+      expect(remedy).toBeDefined();
+      // The reset boot with ports appended, not the plain start boot: on 4100
+      // without --init, Publisher serves its persisted package list and the
+      // package this run created is registered, reported, and never mounted.
+      expect(remedy).toContain("npm run reset");
+      expect(remedy).toContain("--port 4100 --mcp_port 4140");
+      // The reset guidance already explains the workspace lock at length, so
+      // this branch must not say it a second time four lines later.
+      expect(output.split("the lock is on the").length - 1).toBe(1);
    });
 });
 

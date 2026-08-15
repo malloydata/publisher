@@ -270,11 +270,12 @@ export class Package {
 
    /**
     * Push the package-level query-boundary policy down onto each Model so the
-    * query chokepoints can enforce it without a back-reference to the Package:
-    * `Model.getQueryResults` (the HTTP query route and the MCP tool) and the
-    * `/compile` path (via `assertQueryBoundaryForRunnable`). Derived once here
-    * (and on reload) rather than per query: the policy only changes when the
-    * manifest is (re)read.
+    * query chokepoint can enforce it without a back-reference to the Package:
+    * `Model.getQueryResults` (the HTTP query route and the MCP tool). The
+    * `/compile` path is deliberately NOT a chokepoint — it is exempt from the
+    * boundary (see Environment.compileSource); only `#(authorize)` gates it.
+    * Derived once here (and on reload) rather than per query: the policy only
+    * changes when the manifest is (re)read.
     *
     * Policy: queryable == discoverable. The boundary is inert unless `explores`
     * is declared (no curated surface ⇒ nothing to restrict) AND
@@ -287,11 +288,73 @@ export class Package {
       const exploreSet = this.exploreSet();
       const mode =
          this.packageMetadata.queryableSources === "all" ? "all" : "declared";
+      // The PACKAGE-wide queryable surface: the union of every explores-listed
+      // model's export closure. The source-level gate used to consult only the
+      // requested model's own closure, which denied a source that IS declared
+      // queryable (its own file is listed in explores) whenever it was
+      // addressed through a model that imports it. A client that posts every
+      // query to one model path — the observed agent behavior (HANDOFF CR-5) —
+      // then loses every source but that file's own.
+      //
+      // Each entry maps a name to the DEFINITION IDENTITIES exported under it,
+      // never to the bare name. Keying on names alone would admit by collision:
+      // listed model A exporting `customers` would clear the gate for the name
+      // everywhere, and listed model B that imports a different, hidden
+      // `customers` would then serve the hidden one, because the gate matched
+      // the name while Malloy resolved the declaration in B's namespace. With
+      // identities, a request is admitted only when the requested model
+      // resolves the name to the very declaration a listed model exported —
+      // which is what makes the union genuinely admit nothing new. A legitimate
+      // re-export still works: the exporting model's closure carries the
+      // declaration's own location, wherever the file it lives in.
+      // (Relies on applyDiscoveryPolicyToModels having run first, so
+      // getSources()/getQueries() are already export-curated.)
+      let packageCuratedSources:
+         | ReadonlyMap<string, ReadonlySet<string>>
+         | undefined;
+      let packageCuratedQueries:
+         | ReadonlyMap<string, ReadonlySet<string>>
+         | undefined;
+      if (mode === "declared" && exploresDeclared && exploreSet) {
+         const sources = new Map<string, Set<string>>();
+         const queries = new Map<string, Set<string>>();
+         const add = (
+            into: Map<string, Set<string>>,
+            name: string | undefined,
+            identity: string | undefined,
+         ): void => {
+            // No location ⇒ nothing to prove identity with, so contribute
+            // nothing and leave the name to each model's own closure.
+            if (!name || !identity) return;
+            const existing = into.get(name);
+            if (existing) existing.add(identity);
+            else into.set(name, new Set([identity]));
+         };
+         for (const [modelPath, model] of this.models) {
+            // Only .malloy files curate a query surface. A notebook listed in
+            // explores is already invalid (getInvalidExplores flags it) but is
+            // served fail-safe, and must not contribute names here — the
+            // sibling loops (listModels, emptyDiscoveryWarnings) filter the
+            // same way.
+            if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+            if (!exploreSet.has(modelPath)) continue;
+            for (const source of model.getSources() ?? []) {
+               add(sources, source.name, model.definitionIdentity(source.name));
+            }
+            for (const query of model.getQueries() ?? []) {
+               add(queries, query.name, model.definitionIdentity(query.name));
+            }
+         }
+         packageCuratedSources = sources;
+         packageCuratedQueries = queries;
+      }
       for (const [modelPath, model] of this.models) {
          model.setQueryBoundary({
             mode,
             exploresDeclared,
             isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
+            packageCuratedSources,
+            packageCuratedQueries,
          });
       }
    }
@@ -777,6 +840,12 @@ export class Package {
          ...this.renderTagWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
+         // A listed model whose curated surface is empty. Advisory (an
+         // import-only file is legitimate and must not block a publish, so it
+         // stays out of exploresWarnings), but it must ride the API: the QA
+         // shape this closes was a package reporting exploresWarnings: none
+         // while listed files surfaced nothing (HANDOFF CR-5).
+         ...this.emptyDiscoveryWarnings(),
          // A within-package persist-target collision spans two or more sources, so
          // there is no single subject field; the message names them. Surfaced here
          // (alongside the load-path log) so an operator can see it on the status
@@ -1401,28 +1470,35 @@ export class Package {
    }
 
    /**
-    * One message per LISTED model whose discovery surface is empty because it
-    * is import-only (imports other files, declares/re-exports nothing). Such a
-    * model renders a blank page, which reads as broken; the fix is an explicit
-    * re-export. Log-only (see loadViaWorker/reloadAllModels) — deliberately
-    * NOT part of exploreWarnings, which is strict-at-publish: import-only
-    * files are a legitimate pattern and must not block a publish. Hidden
-    * (non-listed) models are skipped — nobody browses them, so an empty
-    * surface there is just normal plumbing.
+    * One message per LISTED model whose discovery surface is empty: its export
+    * closure yields no sources and no named queries (an import-only file that
+    * re-exports nothing, an `export {}` that filters everything out, or an
+    * empty file). Such a model renders a blank page and lists as [] to an
+    * agent, which reads as broken; the fix is an explicit re-export, or
+    * unlisting the file. Log-only at load, and surfaced on the package's
+    * warnings array (see getPackageMetadata) — deliberately NOT part of
+    * exploreWarnings, which is strict-at-publish: import-only files are a
+    * legitimate pattern and must not block a publish. Hidden (non-listed)
+    * models are skipped — nobody browses them, so an empty surface there is
+    * just normal plumbing.
     */
-   public emptyDiscoveryWarnings(): string[] {
+   public emptyDiscoveryWarnings(): Array<{ model: string; message: string }> {
       const exploreSet = this.exploreSet();
-      const warnings: string[] = [];
+      const warnings: Array<{ model: string; message: string }> = [];
       for (const [modelPath, model] of this.models) {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
          if (exploreSet && !exploreSet.has(modelPath)) continue;
          if (model.hasEmptyDiscoverySurface()) {
-            warnings.push(
-               `Model "${modelPath}" is listed but exposes nothing: it only ` +
-                  `imports other files and re-exports none of their sources. ` +
-                  `Add e.g. 'export { source_name }' to surface sources on ` +
-                  `this model.`,
-            );
+            warnings.push({
+               model: modelPath,
+               message:
+                  `Model "${modelPath}" is listed in explores but exposes ` +
+                  `nothing: its export closure surfaces no sources or named ` +
+                  `queries (typically an import-only file, or an export {} ` +
+                  `that filters everything out). Add e.g. ` +
+                  `'export { source_name }' to surface sources on this ` +
+                  `model, or remove it from explores.`,
+            });
          }
       }
       return warnings;
@@ -1433,7 +1509,7 @@ export class Package {
       for (const warning of this.emptyDiscoveryWarnings()) {
          logger.warn(`Package ${this.packageName} has a blank-looking model`, {
             packageName: this.packageName,
-            detail: warning,
+            detail: warning.message,
          });
       }
    }

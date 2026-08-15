@@ -14,6 +14,7 @@ import {
    README_NAME,
 } from "../constants";
 import {
+   AccessDeniedError,
    BadRequestError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
@@ -161,6 +162,41 @@ export function resetAdmissionTelemetryForTesting(): void {
    packageAdmissionRejectionsCounter = null;
 }
 
+/**
+ * Run a /compile authorize gate, converting an access denial on a
+ * boundary-hidden target into the boundary's generic 404.
+ *
+ * /compile is exempt from the query boundary so a curated package stays
+ * authorable, but the exemption must not turn /compile into an existence
+ * oracle. Without this, an unauthorized caller probing a source that is both
+ * boundary-hidden and `#(authorize)`-gated gets a 403 naming it — proof the
+ * source exists — where the query surface answers a flat 404, letting the
+ * hidden namespace be enumerated one guess at a time. Re-running the boundary
+ * on the denial path only (it throws for a hidden target and otherwise returns
+ * without effect) restores "hidden is indistinguishable from nonexistent" while
+ * leaving compile itself ungated: a target the boundary does not hide keeps its
+ * informative 403.
+ */
+async function denyHiddenAsNotQueryable(
+   convert: () => void | Promise<void>,
+   gate: () => Promise<void>,
+): Promise<void> {
+   try {
+      await gate();
+   } catch (error) {
+      if (error instanceof AccessDeniedError) {
+         // The conversion must resolve the target at least as well as the gate
+         // that denied it: the pre-compile text gate converts on surface
+         // syntax, but the compiled gate must convert on the COMPILED run
+         // target, or a multi-statement decoy / derivation alias keeps a 403
+         // that names the hidden source. Each call site passes the matching
+         // boundary check.
+         await convert();
+      }
+      throw error;
+   }
+}
+
 export class Environment {
    private packages: Map<string, Package> = new Map();
    // Lock ordering: connectionMutex (environment) MUST be acquired before any
@@ -191,6 +227,24 @@ export class Environment {
     * typo'd `location` sends the reader hunting in the wrong place.
     */
    private mountErrors: Map<string, string> = new Map();
+   /**
+    * Why a SERVING package's most recent reload failed to compile, keyed by
+    * package name.
+    *
+    * Separate from {@link failedPackages} because the package is NOT failed:
+    * a failed reload keeps the last good compiled model serving (see
+    * {@link _loadOrGetPackageLocked}), so `getFailedPackages()` and the
+    * serving counters must not include it. What this records is staleness:
+    * the model answering queries is older than the files on disk. Without it
+    * a watch-mode recompile failure is visible only on stderr, and /status
+    * keeps reporting a healthy server while queries answer from the previous
+    * model. Read by EnvironmentStore.getStatus, which reports each entry as a
+    * loadErrors item with `stale: true`.
+    */
+   private staleCompileErrors: Map<
+      string,
+      { message: string; failedAt: string }
+   > = new Map();
    private malloyConfig: EnvironmentMalloyConfig;
    private connectionMutex = new Mutex();
    private retiredConnectionGenerations =
@@ -521,15 +575,28 @@ export class Environment {
          // and compilation surfaces its own error.
          const gateModel = pkg.getModel(modelName);
          if (gateModel) {
-            // Query boundary first (the *what* axis): /compile compiles ad-hoc
-            // text against a model, so gate it like an ad-hoc query — a
-            // non-`explores` model file, or text whose surface-resolved target
-            // is a non-curated model source (under queryableSources:
-            // "declared"), is rejected with a generic 404 before compilation
-            // can leak schema/SQL. Text the early gate can't pin is settled by
-            // the compiled backstop below.
-            gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
-            await gateModel.assertAuthorizedForText(source, givens ?? {});
+            // Only the authorize gate (the *who* axis) applies to /compile.
+            // The query boundary (`explores`/`queryableSources`, the *what*
+            // axis) deliberately does NOT: compile is the authoring loop
+            // (validate -> save -> reload), and gating it made a curated
+            // package un-authorable — a QA session (HANDOFF CR-5) had every
+            // per-file compile 404 with "Query target is not queryable" the
+            // moment `queryableSources: "declared"` was set. The boundary is
+            // discovery curation, not access control (the skills say so
+            // outright); the accepted trade is that /compile can reveal a
+            // non-exported source's schema (and, with includeSql, SQL) —
+            // sources whose confidentiality matters are gated by
+            // `#(authorize)`, which still applies here in full.
+            await denyHiddenAsNotQueryable(
+               () => {
+                  gateModel.assertQueryBoundaryEarly(
+                     undefined,
+                     undefined,
+                     source,
+                  );
+               },
+               () => gateModel.assertAuthorizedForText(source, givens ?? {}),
+            );
          }
 
          // Initialize Runtime with the package's active MalloyConfig so compile
@@ -575,20 +642,9 @@ export class Environment {
             // carries the gate: only a declaration of its OWN `#(authorize)`
             // replaces it, and caller text may not declare one.)
 
-            // Boundary backstop (the *what* axis, 404) before the authorize
-            // one (the *who* axis, 403). /compile text is always ad-hoc — the
-            // early gate can only positively deny, never fully clear — so the
-            // compiled final query's run target is the authority. Self-gates
-            // internally (no-ops when the boundary is inert: "all" / no
-            // explores), so it is deliberately NOT guarded by hasAuthorize().
-            // Text that compiles only source definitions (no final query) has
-            // no run target and nothing to gate.
-            if (queryMaterializer && gateModel) {
-               await gateModel.assertQueryBoundaryForRunnable(
-                  queryMaterializer,
-                  source,
-               );
-            }
+            // No boundary backstop here: /compile is exempt from the query
+            // boundary by design (see the gate comment above). Only the
+            // authorize backstop runs.
 
             // Authorize backstop (the *who* axis, 403). NOT guarded by
             // hasAuthorize(): that reads only top-level modelDef.contents
@@ -599,9 +655,18 @@ export class Environment {
             // model.ts assertAuthorizedForAllSources). The own-source probe and
             // derivation walk it runs are cheap no-ops for an ungated model.
             if (queryMaterializer && gateModel) {
-               await gateModel.assertAuthorizedForRunnable(
-                  queryMaterializer,
-                  givens ?? {},
+               const materializer = queryMaterializer;
+               await denyHiddenAsNotQueryable(
+                  () =>
+                     gateModel.assertCompiledTargetQueryable(
+                        materializer,
+                        source,
+                     ),
+                  () =>
+                     gateModel.assertAuthorizedForRunnable(
+                        materializer,
+                        givens ?? {},
+                     ),
                );
             }
 
@@ -1371,6 +1436,20 @@ export class Environment {
             // the caller surface the error instead of evicting the package and
             // leaving the environment with nothing to answer from.
             this.setPackageStatus(packageName, PackageStatus.SERVING);
+            // Serving the last good model is right, but it must not be silent:
+            // this is the only record that the served model is now older than
+            // the files on disk, and it is what makes a failed watch-mode
+            // recompile visible to /status at all (the watch controller only
+            // logs to stderr). Cleared on the next successful load via
+            // clearPackageLoadFailure. Recording here, not in the watch
+            // controller, covers every reload caller: the chokidar watcher,
+            // MCP malloy_reloadPackage, and REST ?reload=true.
+            this.staleCompileErrors.set(packageName, {
+               message: redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               ),
+               failedAt: new Date().toISOString(),
+            });
          } else {
             this.packages.delete(packageName);
             this.packageStatuses.delete(packageName);
@@ -2213,6 +2292,7 @@ export class Environment {
    private clearPackageLoadFailure(packageName: string): void {
       this.failedPackages.delete(packageName);
       this.mountErrors.delete(packageName);
+      this.staleCompileErrors.delete(packageName);
    }
 
    /** Packages configured for this environment that did not load, and why. */
@@ -2221,6 +2301,19 @@ export class Environment {
       // Mount errors last, so the specific cause overwrites the generic
       // manifest error that the un-mounted package produces on its lazy load.
       return new Map([...this.failedPackages, ...this.mountErrors]);
+   }
+
+   /**
+    * SERVING packages whose most recent reload failed to compile: the served
+    * model is stale relative to the files on disk. Disjoint from
+    * {@link getFailedPackages} by construction (a successful load clears the
+    * entry; a failed first load lands in failedPackages instead).
+    */
+   public getStaleCompileErrors(): ReadonlyMap<
+      string,
+      { message: string; failedAt: string }
+   > {
+      return this.staleCompileErrors;
    }
 
    public setPackageStatus(packageName: string, status: PackageStatus): void {
@@ -2351,6 +2444,12 @@ export class Environment {
          this.retireConnectionGeneration(`package ${packageName}`, () =>
             _package.getMalloyConfig().shutdown("close"),
          );
+         // Same reason deletePackage clears: a recorded failure describes a
+         // package that is serving or configured, and after this it is neither.
+         // Today no entry can survive to here (the only caller evicts a package
+         // that addPackage just created, and addPackage clears on success), but
+         // the eviction and the clear belong together whoever calls next.
+         this.clearPackageLoadFailure(packageName);
          this.packages.delete(packageName);
          this.packageStatuses.delete(packageName);
       });

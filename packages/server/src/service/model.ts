@@ -294,6 +294,17 @@ export class Model {
       mode: "declared" | "all";
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
+      /** The PACKAGE-wide export closure (union over explores-listed models),
+       *  so a source declared queryable by its own file stays queryable when
+       *  addressed through a model that imports it. Keyed name -> the set of
+       *  DEFINITION IDENTITIES ({@link definitionIdentity}) curated under that
+       *  name, never the bare name: a name is admitted only when THIS model
+       *  resolves it to the very definition a listed model exported, so a
+       *  same-named source in another file is not admitted by the collision.
+       *  Absent when the boundary is inert. See
+       *  Package.applyQueryBoundaryToModels. */
+      packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
+      packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    /** Per-query freshness resolver, pushed down by the owning Package (see
     *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
@@ -1691,20 +1702,24 @@ export class Model {
    }
 
    /**
-    * True when this is an import-only model: it imports other files but
-    * declares and re-exports nothing of its own, so `modelDef.exports` is
-    * empty and its discovery surface lists no sources or queries. Legitimate
-    * as plumbing, but confusing when the model is *listed* — the page renders
-    * blank. Used by the load-time warning (Package.emptyDiscoveryWarnings);
-    * the fix is to re-export what should be visible (`export { name }`).
+    * True when this model's curated discovery surface is empty: its export
+    * closure yields no sources and no named queries. The common cause is an
+    * import-only model (imports other files, declares/re-exports nothing);
+    * an `export {}` that filters everything out, or a genuinely empty file,
+    * reads the same to a browser. Legitimate as plumbing, but confusing when
+    * the model is *listed* — the page renders blank and an agent's listing
+    * comes back []. Used by the load-time warning
+    * (Package.emptyDiscoveryWarnings); the fix is to re-export what should be
+    * visible (`export { name }`) or unlist the file.
     */
    public hasEmptyDiscoverySurface(): boolean {
       // No curation (no `explores`) ⇒ legacy listings include imported sources.
       if (!this.discoveryCurationEnabled) return false;
       if (this.modelType !== "model" || !this.modelDef) return false;
-      const exports = this.modelDef.exports;
-      if (!Array.isArray(exports) || exports.length > 0) return false;
-      return (this.modelDef.imports?.length ?? 0) > 0;
+      return (
+         (this.getSources()?.length ?? 0) === 0 &&
+         (this.getQueries()?.length ?? 0) === 0
+      );
    }
 
    /** Set by the owning Package; see {@link assertQueryBoundaryEarly}. */
@@ -1712,8 +1727,79 @@ export class Model {
       mode: "declared" | "all";
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
+      packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
+      packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
    }): void {
       this.queryBoundary = policy;
+   }
+
+   /**
+    * Stable identity of the definition `name` resolves to IN THIS MODEL's
+    * namespace: the file that declares it plus its position in that file.
+    * Malloy resolves a name against the requested model's namespace, so two
+    * models resolving a name to the same declaration yield the same key, while
+    * two same-named declarations in different files do not.
+    *
+    * This is what makes the package-wide union safe. Keying the union on bare
+    * names would let listed model A's exported `customers` admit the name
+    * everywhere, and listed model B — which imports a DIFFERENT, hidden
+    * `customers` — would then serve the hidden one, since the gate matched the
+    * name while Malloy resolved the definition. Keying on the declaration
+    * closes that.
+    *
+    * Returns undefined when Malloy attached no location (nothing to prove
+    * identity with); every caller then falls back to this model's own export
+    * closure, i.e. fails closed to the pre-union behavior.
+    */
+   public definitionIdentity(name: string | undefined): string | undefined {
+      if (!name) return undefined;
+      const def = this.modelDef?.contents?.[name] as
+         | {
+              location?: {
+                 url?: string;
+                 range?: { start?: { line?: number; character?: number } };
+              };
+           }
+         | undefined;
+      const url = def?.location?.url;
+      if (!url) return undefined;
+      const start = def?.location?.range?.start;
+      return `${url}#${start?.line ?? -1}:${start?.character ?? -1}`;
+   }
+
+   /**
+    * True when `name` is admitted by the package-wide curated map: some listed
+    * model exported `name`, AND this model resolves `name` to that same
+    * declaration. See {@link definitionIdentity}.
+    */
+   private admittedByPackage(
+      name: string,
+      curated: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+   ): boolean {
+      const identities = curated?.get(name);
+      if (!identities) return false;
+      const mine = this.definitionIdentity(name);
+      return mine !== undefined && identities.has(mine);
+   }
+
+   /** True if `name` is a directly queryable source under the "declared"
+    *  boundary: exported by THIS model, or exported by a sibling listed model
+    *  and resolved here to that same declaration. */
+   private isCuratedSource(name: string): boolean {
+      if (this.ownCuratedSourceNames().has(name)) return true;
+      return this.admittedByPackage(
+         name,
+         this.queryBoundary.packageCuratedSources,
+      );
+   }
+
+   /** Named-query counterpart of {@link isCuratedSource}. */
+   private isCuratedQuery(name: string): boolean {
+      if ((this.getQueries() ?? []).some((q) => q.name === name)) return true;
+      return this.admittedByPackage(
+         name,
+         this.queryBoundary.packageCuratedQueries,
+      );
    }
 
    /**
@@ -1743,7 +1829,8 @@ export class Model {
       query?: string,
    ): "cleared" | "deferred" {
       // Notebooks are always public — they can't be explores and are never
-      // gated by the boundary, even when reached via the /compile path.
+      // gated by the boundary. (/compile does not reach this gate at all; it
+      // is exempt from the boundary — see Environment.compileSource.)
       if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return "cleared";
       const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
       // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
@@ -1757,11 +1844,6 @@ export class Model {
          throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
       }
 
-      const curatedSources = this.curatedSourceNames();
-      const curatedQueries = new Set(
-         (this.getQueries() ?? []).map((q) => q.name).filter(Boolean),
-      );
-
       // A named query/view is an author-exported entry point (the author chose
       // to expose it, even if it reads hidden sources internally) — admit it on
       // its own name, or on the explicitly-named curated source it runs against.
@@ -1773,14 +1855,14 @@ export class Model {
          // with an exported top-level query (and clearing skips the compiled
          // backstop). With a source prefix, only the named source's curation
          // gates the request.
-         if (!sourceName && curatedQueries.has(queryName)) return "cleared";
-         if (sourceName && curatedSources.has(sourceName)) return "cleared";
+         if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
+         if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
          throw new NotQueryableError(`No queryable query "${queryName}".`);
       }
 
       // An explicitly-named source: admit iff curated.
       if (sourceName) {
-         if (curatedSources.has(sourceName)) return "cleared";
+         if (this.isCuratedSource(sourceName)) return "cleared";
          throw new NotQueryableError(`No queryable source "${sourceName}".`);
       }
 
@@ -1793,7 +1875,7 @@ export class Model {
          const target = extractRunTargetSourceName(query);
          if (
             target &&
-            !curatedSources.has(target) &&
+            !this.isCuratedSource(target) &&
             !this.derivesFromCurated(target, query) &&
             this.sources?.some((s) => s.name === target)
          ) {
@@ -1831,18 +1913,27 @@ export class Model {
          throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
       }
       if (compiledSource) {
-         if (this.curatedSourceNames().has(compiledSource)) return;
+         if (this.isCuratedSource(compiledSource)) return;
          if (query && this.derivesFromCurated(compiledSource, query)) return;
       }
       throw new NotQueryableError("Query target is not queryable.");
    }
 
    /**
-    * The /compile-path wrapper: resolve the compiled run target from the
-    * materializer and apply the boundary backstop. No-ops when the boundary is
-    * inert, so the resolution work is skipped for unaffected packages.
+    * Boundary re-check for /compile's authorize-denial conversion (see
+    * `denyHiddenAsNotQueryable` in service/environment.ts). /compile itself is
+    * exempt from the boundary; this runs only AFTER an authorize denial, to
+    * decide whether the 403 would confirm a hidden source exists. It settles
+    * the COMPILED run target — the source Malloy actually executes — because
+    * the early text gate resolves only the first `run:` statement, so
+    * converting on it alone lets a multi-statement decoy
+    * (`run: visible\nrun: hidden_gated`) or a derivation alias keep a 403 that
+    * names the hidden source. Same admission rule as the query surface
+    * (curated, or derives from curated via the submitted text), so the 403 is
+    * masked exactly where the query surface answers 404. No-ops when the
+    * boundary is inert.
     */
-   public async assertQueryBoundaryForRunnable(
+   public async assertCompiledTargetQueryable(
       runnable: { getPreparedQuery(): Promise<unknown> },
       query?: string,
    ): Promise<void> {
@@ -1854,9 +1945,11 @@ export class Model {
       );
    }
 
-   /** Source names in the export-curated discovery surface (= the directly
-    *  queryable set under the "declared" boundary). */
-   private curatedSourceNames(): Set<string> {
+   /** Source names in THIS model's export-curated discovery surface. The
+    *  package-wide closure is applied separately and identity-checked (see
+    *  {@link isCuratedSource}); it is deliberately not merged in here, so this
+    *  stays the one set whose membership needs no identity proof. */
+   private ownCuratedSourceNames(): Set<string> {
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
@@ -1868,12 +1961,19 @@ export class Model {
     *  `source: NAME is BASE` derivation declarations — composition over a
     *  queryable source is itself queryable. */
    private derivesFromCurated(name: string, query: string): boolean {
-      const curated = this.curatedSourceNames();
+      // Hoisted out of the walk: the own-closure set is the same for every link
+      // in the derivation chain, and only the identity check varies by name.
+      const own = this.ownCuratedSourceNames();
+      const packageCurated = this.queryBoundary.packageCuratedSources;
       const aliasOf = buildSourceAliasMap(query);
       let current: string | undefined = name;
       const seen = new Set<string>();
       while (current && !seen.has(current)) {
-         if (curated.has(current)) return true;
+         if (
+            own.has(current) ||
+            this.admittedByPackage(current, packageCurated)
+         )
+            return true;
          seen.add(current);
          current = aliasOf.get(current);
       }

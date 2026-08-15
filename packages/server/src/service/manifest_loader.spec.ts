@@ -5,7 +5,7 @@ import * as fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import { fetchManifestEntries } from "./manifest_loader";
+import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 
 describe("fetchManifestEntries", () => {
    let dir: string;
@@ -185,5 +185,37 @@ describe("fetchManifestEntries", () => {
       await expect(fetchManifestEntries("gs://bucket-only")).rejects.toThrow(
          /Malformed manifest URI/,
       );
+   });
+});
+
+describe("splitManifestEntries", () => {
+   it("keeps a failed source out of both the serve manifest and the storage set", () => {
+      // The failed entry carries a table name, which is the field the split reads
+      // to decide an entry is servable. It names a table that was never created,
+      // so neither half of the split may take it.
+      const split = splitManifestEntries(
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "healthy_v1",
+               connectionName: "wh",
+            },
+            bad: {
+               sourceEntityId: "bad",
+               sourceName: "broken",
+               physicalTableName: "broken_v1",
+               connectionName: "wh",
+               error: "Permission denied while writing to dataset analytics",
+            },
+         },
+         "test",
+      );
+
+      expect(Object.keys(split.tableNameManifest)).toEqual(["ok"]);
+      expect(
+         split.storageEntries.bad,
+         "a failed source must not reach a serve binding either",
+      ).toBeUndefined();
    });
 });
