@@ -8,6 +8,7 @@ import type {
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
+import { getPreaggregateMode } from "../config";
 import { MaterializationEligibilityError } from "../errors";
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { logger } from "../logger";
@@ -22,6 +23,8 @@ import {
 } from "./incremental_declaration";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import { Model } from "./model";
+import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import type { RollupPlan } from "./preaggregation_synthesis";
 import { quoteIdentifier } from "./quoting";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
@@ -101,6 +104,13 @@ export interface CompiledBuildPlan {
     * dropped.
     */
    droppedPersistSources?: { name: string; modelPath: string }[];
+   /**
+    * sourceID -> the rollup it was synthesized from, for the sources that were
+    * synthesized rather than authored. Absent for an ordinary `#@ persist`
+    * source, which is what makes it the provenance signal the wire plan's
+    * `origin`/`preaggregate` fields report.
+    */
+   preaggregatePlans?: Record<string, RollupPlan>;
 }
 
 /** Output columns of a persist source, degrading to [] if unavailable. */
@@ -581,6 +591,7 @@ export async function compilePackageBuildPlan(
    const allSources: Record<string, PersistSource> = {};
    const sourceModelPaths: Record<string, string> = {};
    const droppedPersistSources: { name: string; modelPath: string }[] = [];
+   const preaggregatePlans: Record<string, RollupPlan> = {};
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -608,6 +619,56 @@ export async function compilePackageBuildPlan(
       // a model cannot carry a functioning persist source anyway. Models that
       // DO have the flag but declare no persist source return empty graphs and
       // are skipped by the `graphs.length === 0` check below.
+      // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
+      // below on purpose: a model can declare `#@ preaggregate` while having no
+      // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
+      // flag, and in both cases the annotation should still produce a rollup —
+      // the SYNTHESIZED model declares the flags it needs and is the only thing
+      // holding a persist source. Skipping here would make a valid annotation a
+      // silent no-op, which the publish gate exists to prevent.
+      if (getPreaggregateMode() !== "off") {
+         const synthesized = await tryCompileSynthesizedPreaggregation({
+            packagePath: pkg.getPackagePath(),
+            modelPath,
+            malloyConfig: pkg.getMalloyConfig(),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            contents: (malloyModel as any)._modelDef?.contents ?? {},
+         });
+         if (synthesized) {
+            const rollupPlan = synthesized.model.getBuildPlan();
+            const rollupNames = new Set(
+               synthesized.plans.map((p) => p.rollupSourceName),
+            );
+            // Graphs wholesale, because they carry the dependency edges: when the
+            // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
+            // it, and pruning that would let a rollup build before the table it
+            // reads exists.
+            allGraphs.push(...rollupPlan.graphs);
+            // Sources: only the rollups. The synthesized model imports the
+            // author's, so a persist source declared there also appears in this
+            // plan — but under the SAME sourceID, since a sourceID embeds the
+            // model that DECLARES a source rather than the one importing it. The
+            // normal path below adds those from the author's own plan, so leaving
+            // them out here avoids re-deriving an identical entry.
+            const planByName = new Map(
+               synthesized.plans.map((p) => [p.rollupSourceName, p]),
+            );
+            for (const [sourceID, source] of Object.entries(
+               rollupPlan.sources,
+            )) {
+               if (!rollupNames.has(source.name)) continue;
+               allSources[sourceID] = source;
+               // The AUTHOR's model path, not the synthesized one: a rollup is
+               // declared by no file, and the model carrying the annotations is
+               // where someone would go to change it (see api-doc's
+               // PersistSourcePlan.modelPath).
+               sourceModelPaths[sourceID] = modelPath;
+               const rollup = planByName.get(source.name);
+               if (rollup) preaggregatePlans[sourceID] = rollup;
+            }
+         }
+      }
+
       const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
       if (!modelTag.has("experimental", "persistence")) continue;
 
@@ -675,6 +736,7 @@ export async function compilePackageBuildPlan(
       connections,
       sourceModelPaths,
       droppedPersistSources,
+      preaggregatePlans,
    };
 }
 
@@ -686,6 +748,7 @@ export function deriveBuildPlan(
    sourceNames?: string[],
    sourceModelPaths?: Record<string, string>,
    packageMaterialization?: WirePackageMaterialization | null,
+   options?: { preaggregatePlans?: Record<string, RollupPlan> },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
@@ -711,11 +774,25 @@ export function deriveBuildPlan(
       // emitted (retired from the contract); if a source declares either it is
       // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
       // still ride `annotationFields` so the validator can detect them.
+      // Provenance. A synthesized rollup is an ordinary persist source in every
+      // mechanical respect, so nothing downstream can tell it apart from an
+      // authored one — which is why the plan has to say. `preaggregate` carries
+      // what the rollup covers, since a query never names it and this is the only
+      // place its grain and measure set are visible at all.
+      const rollup = options?.preaggregatePlans?.[sourceID];
       wireSources[sourceID] = {
          name: source.name,
          sourceID: source.sourceID,
          connectionName: source.connectionName,
          dialect: source.dialectName,
+         origin: rollup ? "preaggregate" : "persist",
+         preaggregate: rollup
+            ? {
+                 baseSourceName: rollup.baseSourceName,
+                 grainDimensions: rollup.grainDimensions,
+                 measures: rollup.measures.map((m) => m.name),
+              }
+            : null,
          sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
          // Reported verbatim, and no longer inert: the mode is resolved and
@@ -770,6 +847,7 @@ export async function computePackageBuildPlan(
               undefined,
               compiled.sourceModelPaths,
               pkg.getMaterializationConfig?.() ?? null,
+              { preaggregatePlans: compiled.preaggregatePlans },
            );
    return {
       plan,

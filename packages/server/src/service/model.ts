@@ -49,7 +49,7 @@ import {
    NotQueryableError,
    PayloadTooLargeError,
 } from "../errors";
-import { getPersistStorageMode } from "../config";
+import { getPersistStorageMode, getPreaggregateMode } from "../config";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
@@ -106,6 +106,10 @@ import {
    type QueryClass,
    type QueryMetadata,
 } from "./query_metadata";
+import {
+   validateModelPreaggregation,
+   type PreaggregateViolation,
+} from "./preaggregation_validation";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -175,7 +179,7 @@ export type ModelType = "model" | "notebook";
  * separately. Absent means the query never had a storage binding to consider.
  */
 export type ServedFrom = "storage" | "live_fallback";
-type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
+export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 /** One reachable authorize gate found by {@link Model.collectEntryPointGates}. */
 type GateEntry = {
@@ -258,6 +262,22 @@ export class Model {
    private serveBindings: ServeBinding[] = [];
    /** Memoized serve-shape materializer, keyed by the bound source set. */
    private serveShapeCache?: { key: string; materializer: ModelMaterializer };
+   /**
+    * The synthesized pre-aggregation model for this model, compiled once per load
+    * by the owning Package (see Package.pushPreaggregateServeModels) and reused by
+    * every query. Undefined when the model declares no usable `#@ preaggregate`,
+    * when `PREAGGREGATE_MODE` is not `on`, or when synthesis failed — in each case
+    * the serve path is untouched.
+    *
+    * Compiled per load rather than per query because there is nothing per-query
+    * to key it on. Unlike the storage tier, whose shape must recompile as
+    * bindings cross their freshness window, a rollup's freshness is handled
+    * underneath this by the per-query build manifest: while the table is fresh it
+    * substitutes, and when it is not, the composite member simply recomputes the
+    * rollup from the base. Same answer either way, which is what lets one
+    * compiled model serve every query.
+    */
+   private preaggregateServeMaterializer?: ModelMaterializer;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -1981,6 +2001,58 @@ export class Model {
    }
 
    /**
+    * Every `#@ preaggregate` declaration in this model that cannot take effect.
+    *
+    * Read straight off the compiled `modelDef.contents`, so it reaches an
+    * annotation on any source in the model — including one nothing references,
+    * where a silently-ignored annotation would otherwise be undetectable.
+    *
+    * Returned rather than thrown: the owning Package joins these across its
+    * models into one rejection, so an author fixing a package sees every bad
+    * declaration at once instead of one per publish.
+    */
+   public preaggregateViolations(): PreaggregateViolation[] {
+      if (!this.modelDef) return [];
+      return validateModelPreaggregation(
+         this.modelDef.contents as Record<string, unknown>,
+      );
+   }
+
+   /**
+    * Compile this model's synthesized pre-aggregation companion and keep it for
+    * the serve path, or clear it when there is nothing to synthesize.
+    *
+    * Called by the owning Package, which supplies the package path, connections
+    * and bound manifest a Model does not hold. Never throws: a failure leaves the
+    * serve path exactly as it was, which is serving live.
+    *
+    * Only `.malloy` models are considered. A notebook's cells are compiled
+    * individually and it declares no sources of its own to roll up.
+    */
+   public async buildPreaggregateServeModel(
+      packagePath: string,
+      malloyConfig: ModelConnectionInput,
+      buildManifest?: BuildManifest["entries"],
+   ): Promise<void> {
+      this.preaggregateServeMaterializer = undefined;
+      if (!this.modelDef || this.modelType !== "model") return;
+      // Dynamic import to break a module cycle: the helper compiles through
+      // Model.getModelRuntime, so importing it at the top of this file would make
+      // the two modules import each other.
+      const { tryCompileSynthesizedPreaggregation } = await import(
+         "./preaggregation_compile"
+      );
+      const synthesized = await tryCompileSynthesizedPreaggregation({
+         packagePath,
+         modelPath: this.modelPath,
+         malloyConfig,
+         contents: this.modelDef.contents as Record<string, unknown>,
+         buildManifest,
+      });
+      this.preaggregateServeMaterializer = synthesized?.materializer;
+   }
+
+   /**
     * Compile-time renderer-tag validation, run on the main thread.
     *
     * The renderer (`@malloydata/render`) is a large solid-js bundle that mutates
@@ -2739,6 +2811,45 @@ export class Model {
                         shapeErr instanceof Error
                            ? shapeErr.message
                            : String(shapeErr),
+                  },
+               );
+            }
+         }
+
+         // Pre-aggregation serve routing: compile the query against the
+         // synthesized model, where each annotated source is a composite of its
+         // rollups and itself. Malloy then picks a rollup when one covers the
+         // query and the base when none does, so this does not decide routing —
+         // it only offers the choice. Which is why there is no eligibility test
+         // here and no metric for "declined": from out here a covered query and
+         // an uncovered one are the same call.
+         //
+         // Skipped when the storage shape already routed: that runnable resolves
+         // through `virtualMap` rather than the build manifest, and recompiling it
+         // here would discard that. Composing the two tiers is future work.
+         if (
+            getPreaggregateMode() === "on" &&
+            this.preaggregateServeMaterializer &&
+            !serveVirtualMap
+         ) {
+            try {
+               runnable =
+                  this.preaggregateServeMaterializer.loadRestrictedQuery(
+                     queryString,
+                  );
+            } catch (preaggErr) {
+               // Expected, and common: the synthesized model imports only the
+               // sources it rolls up, so a query touching anything else does not
+               // compile against it. Serving live is the right answer for those,
+               // so this is debug rather than a warning.
+               logger.debug(
+                  "query does not compile against the pre-aggregation model; serving live",
+                  {
+                     modelPath: this.modelPath,
+                     error:
+                        preaggErr instanceof Error
+                           ? preaggErr.message
+                           : String(preaggErr),
                   },
                );
             }
@@ -3561,11 +3672,23 @@ export class Model {
       };
    }
 
+   /**
+    * `overlay` maps an absolute `file://` URL to text served INSTEAD of reading
+    * that path from disk; anything not in the map reads from disk as usual. It
+    * exists for pre-aggregation, whose synthesized model is generated per load
+    * and never written to disk, and which must resolve its `import` of the
+    * author's model relative to the real package directory — so the synthesized
+    * text needs a URL inside that directory without a file behind it. `modelPath`
+    * still has to exist: it is what anchors `importBaseURL`.
+    */
    static async getModelRuntime(
       packagePath: string,
       modelPath: string,
       malloyConfig: ModelConnectionInput,
-      options?: { buildManifest?: BuildManifest["entries"] },
+      options?: {
+         buildManifest?: BuildManifest["entries"];
+         overlay?: ReadonlyMap<string, string>;
+      },
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -3596,7 +3719,15 @@ export class Model {
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
       const importBaseURL = baseUrl;
-      const urlReader = new HackyDataStylesAccumulator(URL_READER);
+      const overlay = options?.overlay;
+      const urlReader = new HackyDataStylesAccumulator(
+         overlay && overlay.size > 0
+            ? {
+                 readURL: async (url: URL) =>
+                    overlay.get(url.href) ?? (await URL_READER.readURL(url)),
+              }
+            : URL_READER,
+      );
 
       // Request runtimes borrow the cached package MalloyConfig. The package
       // owns release; callers must not release this runtime per request.
