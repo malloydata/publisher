@@ -663,6 +663,77 @@ describe("EnvironmentStore Service", () => {
       expect(status.loadErrors?.[0]?.message).not.toContain("publisher_data");
    });
 
+   it("reports a stale loadErrors entry when a reload fails, and clears it on recovery", async () => {
+      // A failed RELOAD keeps the last good compiled model serving (the
+      // package must not vanish), but the served model is now older than the
+      // files on disk. That staleness must be visible in /status: it is the
+      // only off-box signal that a watch-mode save or reload failed.
+      const projectPath = path.join(serverRootPath, projectName);
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(
+         path.join(projectPath, "publisher.json"),
+         JSON.stringify({ name: projectName }),
+      );
+      writeFileSync(
+         path.join(projectPath, "model.malloy"),
+         'source: s1 is duckdb.sql("SELECT 1 as n")\n',
+      );
+      writeFileSync(
+         path.join(serverRootPath, "publisher.config.json"),
+         JSON.stringify({
+            frozenConfig: false,
+            environments: [
+               {
+                  name: projectName,
+                  packages: [{ name: projectName, location: projectPath }],
+                  connections: [],
+               },
+            ],
+         }),
+      );
+
+      const store = new EnvironmentStore(serverRootPath);
+      await store.finishedInitialization;
+      expect((await store.getStatus()).loadErrors).toBeUndefined();
+
+      // Without a watch env the package is served from its copy under
+      // publisher_data, and that copy is what a reload recompiles, so the
+      // break has to land there.
+      const servedModel = path.join(
+         serverRootPath,
+         "publisher_data",
+         projectName,
+         projectName,
+         "model.malloy",
+      );
+      writeFileSync(servedModel, "source: s1 is duckdb.sql(\n"); // parse error
+
+      const environment = await store.getEnvironment(projectName);
+      await expect(environment.getPackage(projectName, true)).rejects.toThrow();
+
+      const status = await store.getStatus();
+      // Still serving: the package remains listed under its environment...
+      const envEntry = status.environments.find((e) => e.name === projectName);
+      expect(
+         (envEntry?.packages ?? []).some((p) => p.name === projectName),
+      ).toBe(true);
+      // ...and the failure is reported as stale, with when and why.
+      expect(status.loadErrors).toHaveLength(1);
+      const entry = status.loadErrors?.[0];
+      expect(entry?.environment).toBe(projectName);
+      expect(entry?.package).toBe(projectName);
+      expect(entry?.stale).toBe(true);
+      expect(entry?.failedAt).toBeTruthy();
+      expect(entry?.message).toBeTruthy();
+
+      // Fixing the file and reloading clears the entry: a healthy status
+      // omits loadErrors entirely (the byte-for-byte-healthy contract).
+      writeFileSync(servedModel, 'source: s1 is duckdb.sql("SELECT 2 as n")\n');
+      await environment.getPackage(projectName, true);
+      const healthy = await store.getStatus();
+      expect(healthy.loadErrors).toBeUndefined();
+   });
+
    it("keeps sibling packages serving when one sharing their location fails to extract", async () => {
       // Packages grouped under ONE location share a single download, then each
       // is extracted separately. A failure in one extract must not strand the

@@ -41,6 +41,11 @@ description: Author Malloy semantic models: sources, dimensions, measures, joins
 Body in Markdown.
 ```
 
+Those two keys are the whole header you author. Packing `@malloy-publisher/skills` adds a third,
+`version:`, to its copy, so an installed skill says on disk which release it came from; the files
+under `skills/` stay unstamped. Do not add a `version:` of your own — the pack fails rather than
+write a second one.
+
 The `description` is what a host reads on initialization to decide when the skill is relevant,
 so write it as a precise trigger, not a summary. Keep the frontmatter valid YAML; a stray
 unquoted colon in `description` will break the parse (quote the value if it contains a colon).

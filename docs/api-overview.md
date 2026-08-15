@@ -38,7 +38,7 @@ put the server behind your own gateway before exposing it beyond localhost.
 
 | Method & path | Does |
 | --- | --- |
-| `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load. |
+| `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load, or that is still serving an older model because its most recent reload failed to compile (`stale: true`). |
 | `GET /api/v0/environments` | List environments, each with its packages. |
 | `GET /api/v0/environments/{env}/packages/{pkg}` | Package metadata (models, `explores`, `buildPlan`, …). Add `?reload=true` to recompile the package from disk first, the REST form of `malloy_reloadPackage`. |
 | `POST /api/v0/environments/{env}/packages` | Register a package at runtime; body `{ "name": "…", "location": "…" }` ([packages.md](packages.md)). |
