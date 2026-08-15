@@ -16,8 +16,14 @@
  * rollup at `category, order_day` would answer both queries above correctly. But
  * a combined grain has roughly the product of its dimensions' cardinalities, so
  * it can approach the base table's row count and save nothing, while either grain
- * alone is small. Picking the smallest rollup that covers a query is the whole
- * mechanism; that only works if an author can declare more than one.
+ * alone is small. Giving each query a small table to read is the whole mechanism,
+ * and that needs an author to be able to declare more than one grain.
+ *
+ * What it does NOT do is pick the smallest of several COVERING rollups: members
+ * are emitted sorted by generated name and the resolver takes the first that
+ * covers, so overlapping grains are resolved by name rather than by size (pinned
+ * in preaggregation_synthesis.spec.ts). Grains earn their keep by covering
+ * different queries.
  *
  * ## Why this reads the annotation NOTES and not just the merged tag
  *

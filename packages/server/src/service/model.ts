@@ -1733,12 +1733,12 @@ export class Model {
     * model without `##! experimental.persistence`, and a model that declares
     * `#@ preaggregate` has no reason to carry that flag, since the companion
     * declares its own. Passing the full manifest to the author's model therefore
-    * turned every query on it into a 400 the moment a build bound a manifest —
-    * which is what `build-only` does by definition, and what `on` does for any
-    * query that does not compile against the companion.
+    * turned every query served from it into a 400 the moment a build bound a
+    * manifest — which is every query the companion cannot answer, including any
+    * naming a source it does not import, and every notebook cell.
     *
-    * So the rule is by ORIGIN, not by mode: only the companion sees the rollups.
-    * Returns undefined when nothing survives, matching
+    * So the rule is by ORIGIN: only the companion sees the rollups. Returns
+    * undefined when nothing survives, matching
     * {@link resolveFreshBuildManifest}'s "no override ⇒ serve live".
     */
    private withoutPreaggregateEntries(

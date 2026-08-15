@@ -42,7 +42,13 @@ Each `#@ preaggregate` line is one grain, and each grain is its own table:
   measure: revenue is amount.sum()
 ```
 
-Since one rollup covers every subset of its grain, `grain="category, customer_id"` would cover both queries with a single table. The reason to declare them separately is **cost, not coverage**. A combined grain has roughly the product of its dimensions' cardinalities, so `category, customer_id` can approach the base table's row count and save almost nothing, while either grain alone is tiny. Declaring both gives each query the smallest table that covers it, and costs two tables to build and refresh.
+Since one rollup covers every subset of its grain, `grain="category, customer_id"` would cover both queries with a single table. The reason to declare them separately is **cost, not coverage**. A combined grain has roughly the product of its dimensions' cardinalities, so `category, customer_id` can approach the base table's row count and save almost nothing, while either grain alone is tiny. Declaring both gives each query a small table to read, and costs two tables to build and refresh.
+
+### Which rollup answers a query
+
+Where more than one rollup covers a query, the one used is the first that covers it in the composite's member order — and that order is by generated name, which has nothing to do with size. So do not declare a grain expecting it to win a query another declared grain also covers: with `grain="b"` and `grain="a, b"`, a query grouping by `b` alone reads the `a, b` table, because `a_b` sorts first.
+
+Declare grains that cover **different** queries, which is what they are for, and treat overlapping grains as one grain's worth of acceleration rather than a choice Publisher will make well.
 
 Rollups are grouped by grain rather than by measure, so ten measures sharing a grain are one table and one `GROUP BY`:
 

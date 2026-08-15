@@ -197,7 +197,6 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
          // of a model that cannot use it. Read off the plan's `origin` rather
          // than matched on the `__preagg__` naming convention, which an author's
          // source could collide with.
-         process.env.PREAGGREGATE_MODE = "build-only";
          const pkg =
             await loadPackage(`##! experimental { persistence composite_sources }
 source: raw is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""")
@@ -251,19 +250,6 @@ describe("the serve seam", () => {
    const COVERED =
       "run: orders -> { group_by: category; aggregate: total; order_by: category }";
 
-   /**
-    * Sort rows by category. COVERED deliberately carries no `order_by`, since
-    * that is the query most likely to be covered by the rollup, and an unordered
-    * query's row order is not part of its answer — reading a rollup instead of
-    * the base can reorder it and has. Comparing unsorted would assert something
-    * the mechanism never promised, and adding an `order_by` to dodge that would
-    * risk the query falling back to live, leaving the test comparing live to live.
-    */
-   const byCategory = (rows: Record<string, unknown>[]) =>
-      [...rows].sort((a, b) =>
-         String(a.category).localeCompare(String(b.category)),
-      );
-
    it(
       "answers a covered query identically to the same model without rollups",
       async () => {
@@ -285,9 +271,9 @@ describe("the serve seam", () => {
          });
          const routed = await run(await loadPackage(), COVERED);
 
-         expect(byCategory(routed)).toEqual(byCategory(live));
+         expect(routed).toEqual(live);
          // And the numbers are actually right, not merely equal to each other.
-         expect(byCategory(routed)).toEqual([
+         expect(routed).toEqual([
             { category: "A", total: 30 },
             { category: "B", total: 30 },
          ]);
@@ -358,8 +344,8 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
          // Malloy compiles lazily, so before the eager `getSQL` probe the
          // compile error escaped PAST that catch and surfaced as a 400 —
          // `Reference to undefined object 'regions'` — for every query naming an
-         // unannotated sibling.
-         process.env.PREAGGREGATE_MODE = "on";
+         // unannotated sibling. With no flag to turn pre-aggregation off, that
+         // made one annotation enough to break the rest of the file.
          const pkg = await loadPackage(`${MODEL}
 source: regions is duckdb.sql("""
   SELECT * FROM (VALUES ('north'), ('north'), ('south')) AS t(region)
@@ -392,15 +378,26 @@ source: regions is duckdb.sql("""
          // merely useless: Malloy refuses a non-empty `buildManifest` against a
          // model without `##! experimental.persistence`, which a model that only
          // declares `#@ preaggregate` has no reason to carry (the companion
-         // declares its own flags). So a bound manifest used to turn EVERY query
-         // on such a model into a 400 — which is what `build-only` does by
-         // definition, since it binds a manifest and compiles no companion.
-         process.env.PREAGGREGATE_MODE = "build-only";
+         // declares its own flags). A bound manifest therefore turned every query
+         // served from the author's model into a 400.
+         //
+         // The query has to be one that does NOT reach the companion, since the
+         // companion is the one runnable entitled to the full manifest. So this
+         // asserts the fallback path specifically: an unannotated sibling, which
+         // the companion never imports, with a rollup entry bound. Reachable only
+         // because the eager compile probe above lets the fallback happen at all —
+         // the two fixes have to land together.
          const pkg = await loadPackage(`source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
 """) extend {
   #@ preaggregate grain="category"
   measure: total is amount.sum()
+}
+
+source: regions is duckdb.sql("""
+  SELECT * FROM (VALUES ('north'), ('north'), ('south')) AS t(region)
+""") extend {
+  measure: region_count is count()
 }
 `);
          const rollupIds = [...pkg.getPreaggregateEntityIds()];
@@ -420,9 +417,14 @@ source: regions is duckdb.sql("""
             ),
          );
          expect(pkg.hasBoundTableNameManifest()).toBe(true);
-         expect(await run(pkg, COVERED)).toEqual([
-            { category: "A", total: 30 },
-            { category: "B", total: 30 },
+         expect(
+            await run(
+               pkg,
+               "run: regions -> { group_by: region; aggregate: region_count; order_by: region }",
+            ),
+         ).toEqual([
+            { region: "north", region_count: 2 },
+            { region: "south", region_count: 1 },
          ]);
       },
       { timeout: 60000 },
