@@ -69,7 +69,7 @@ await page.goto("http://localhost:4173/index.html", { waitUntil: "load" });
 // false "stuck skeleton" / "empty value" FAIL. "Resolved" = every tile has a
 // value and no skeleton remains. This single wait subsumes the DELAY_MS delay
 // AND the stuck-skeleton check; if it times out, a tile really is stuck.
-// NOTE: assumes a NON-lazy page, every tile loads on open. For a lazy-loaded
+// NOTE: assumes a NON-lazy page: every tile loads on open. For a lazy-loaded
 // page (reference/lazy-load.md) below-fold tiles legitimately keep their
 // skeletons until scrolled in, so this wait would (correctly) time out. Test a
 // lazy page with the scroll-and-assert loop in lazy-load.md instead.

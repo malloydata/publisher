@@ -148,12 +148,18 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       const hasEmDash = (s: SkillEntry) =>
          s.body.includes("—") || s.description.includes("—");
 
-      // Positive control. With the allowlist gone this assertion runs against
-      // a clean tree, so it would pass for free if the predicate ever stopped
-      // detecting; the deleted allowlist test proved that incidentally, by
-      // asserting the listed entries still held one.
+      // Positive controls, one per field the predicate reads. With the
+      // allowlist gone the offenders assertion runs against a clean tree, so
+      // it would pass for free if the predicate ever stopped detecting; the
+      // deleted allowlist test proved that incidentally, by asserting the
+      // listed entries still held one. An empty description (or body) on
+      // the other control is load-bearing: it is the half that would stay
+      // green if that field were dropped from the predicate.
       expect(
          hasEmDash({ name: "control", description: "", body: "a — b" }),
+      ).toBe(true);
+      expect(
+         hasEmDash({ name: "control2", description: "a — b", body: "" }),
       ).toBe(true);
 
       const offenders = skills.filter(hasEmDash).map((s) => s.name);

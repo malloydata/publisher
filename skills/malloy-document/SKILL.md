@@ -39,7 +39,7 @@ measure:
 Doc strings power natural-language search: users type plain-English questions and the system matches against your `#(doc)` strings. Write descriptions that match how analysts would search:
 
 - **Include business meaning**, not code mechanics: what it represents, not how it's implemented
-- **Include units** (USD, count, percentage): a unit is part of what a number means
+- **Include units** (USD, count, percentage): a unit is part of what a number means. For counts, name the unit being counted and say whether it counts distinct entities or events: "total students enrolled" on a subject×term-grain measure counts enrolments, not students, and a student taking four subjects counts four times. If the model cannot answer the distinct-entity version, say so in the doc.
 - **List a categorical field's values only while the list stays short** (roughly ten or fewer). A handful of values makes a description concrete; past that, say what the field captures instead, because the dump crowds out the meaning and goes stale the moment someone adds a value. Treat ten as a rule of thumb, not a hard cap.
 - **Avoid Malloy jargon**: never use "filterable", "groupable", "dimension", "measure", "aggregation"
 
