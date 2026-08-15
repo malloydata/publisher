@@ -168,6 +168,37 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
       },
       { timeout: 60000 },
    );
+
+   it(
+      "reports the synthesized rollups, and only those, as preaggregate-origin",
+      async () => {
+         // The set Model.withoutPreaggregateEntries strips from the manifest, so
+         // getting it wrong in either direction is a live bug: too wide drops an
+         // author's own persist routing, too narrow puts a rollup entry in front
+         // of a model that cannot use it. Read off the plan's `origin` rather
+         // than matched on the `__preagg__` naming convention, which an author's
+         // source could collide with.
+         process.env.PREAGGREGATE_MODE = "build-only";
+         const pkg =
+            await loadPackage(`##! experimental { persistence composite_sources }
+source: raw is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""")
+
+#@ persist name="orders_t"
+source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.sum() } extend {
+  #@ preaggregate grain="category"
+  measure: total is amount_sum.sum()
+}
+`);
+         const sources = planSources(pkg);
+         const authored = sources.find((s) => s.origin === "persist");
+         const synthesized = sources.find((s) => s.origin === "preaggregate");
+         const ids = pkg.getPreaggregateEntityIds();
+         expect(ids.size).toBe(1);
+         expect(ids.has(synthesized!.sourceEntityId!)).toBe(true);
+         expect(ids.has(authored!.sourceEntityId!)).toBe(false);
+      },
+      { timeout: 60000 },
+   );
 });
 
 describe("the serve seam", () => {
@@ -192,7 +223,14 @@ describe("the serve seam", () => {
       );
    }
 
-   const COVERED = "run: orders -> { group_by: category; aggregate: total }";
+   // `order_by: category` is load-bearing, not tidiness. Both categories total
+   // 30, so Malloy's default ordering (by the first measure, descending) is a
+   // TIE, and the two shapes below break it differently — the live shape reads
+   // the base while the routed one reads the composite. Without an explicit
+   // order the row-for-row comparison in the first test failed on roughly two
+   // runs in three, which reads as a routing bug and is not one.
+   const COVERED =
+      "run: orders -> { group_by: category; aggregate: total; order_by: category }";
 
    it(
       "answers a covered query identically with routing on and off",
@@ -268,6 +306,94 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
 `);
          const rows = await run(pkg, COVERED);
          expect(rows).toEqual([{ category: "A", total: 10 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "serves a source the companion does not import, rather than failing",
+      async () => {
+         // The case the routing block's catch exists for, and the one neither
+         // test above reaches: annotations DO exist (so a companion is compiled
+         // and every query on the file is offered to it) but the query names a
+         // source the companion never imported, because that source has no
+         // measure to roll up.
+         //
+         // `"falls back to live for a query no rollup covers"` does not cover
+         // this: it groups by a field ON the annotated source, which compiles
+         // against the companion fine and returns through the base member.
+         // `"leaves a model with no annotations untouched"` does not either:
+         // with no annotations there is no companion and the block is skipped.
+         //
+         // Malloy compiles lazily, so before the eager `getSQL` probe the
+         // compile error escaped PAST that catch and surfaced as a 400 —
+         // `Reference to undefined object 'regions'` — for every query naming an
+         // unannotated sibling.
+         process.env.PREAGGREGATE_MODE = "on";
+         const pkg = await loadPackage(`${MODEL}
+source: regions is duckdb.sql("""
+  SELECT * FROM (VALUES ('north'), ('north'), ('south')) AS t(region)
+""") extend {
+  measure: region_count is count()
+}
+`);
+         const rows = await run(
+            pkg,
+            "run: regions -> { group_by: region; aggregate: region_count; order_by: region }",
+         );
+         expect(rows).toEqual([
+            { region: "north", region_count: 2 },
+            { region: "south", region_count: 1 },
+         ]);
+         // And the annotated source in the same file still routes.
+         expect(await run(pkg, COVERED)).toEqual([
+            { category: "A", total: 30 },
+            { category: "B", total: 30 },
+         ]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "keeps a synthesized rollup's manifest entry away from the author's model",
+      async () => {
+         // A rollup exists only in the companion, so its manifest entry can
+         // substitute nothing in the author's model — and handing it over is not
+         // merely useless: Malloy refuses a non-empty `buildManifest` against a
+         // model without `##! experimental.persistence`, which a model that only
+         // declares `#@ preaggregate` has no reason to carry (the companion
+         // declares its own flags). So a bound manifest used to turn EVERY query
+         // on such a model into a 400 — which is what `build-only` does by
+         // definition, since it binds a manifest and compiles no companion.
+         process.env.PREAGGREGATE_MODE = "build-only";
+         const pkg = await loadPackage(`source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         // Deliberately a table that does not exist: if the entry ever reaches
+         // the author's model this test fails loudly rather than passing on a
+         // substitution that happened to work.
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         expect(pkg.hasBoundTableNameManifest()).toBe(true);
+         expect(await run(pkg, COVERED)).toEqual([
+            { category: "A", total: 30 },
+            { category: "B", total: 30 },
+         ]);
       },
       { timeout: 60000 },
    );

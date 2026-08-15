@@ -175,6 +175,11 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
+   // Memoized {@link getPreaggregateEntityIds}, keyed on the plan it was derived
+   // from so a reload recomputes without an explicit invalidation.
+   private preaggregateEntityIdCache:
+      | { plan: BuildPlan | null; ids: ReadonlySet<string> }
+      | undefined;
    // Sources annotated `#@ persist` that Malloy's getBuildPlan() did not
    // recognize as a materializable build root, so they produced no plan entry
    // and would be a silent no-op (served live). Surfaced as an operator warning
@@ -989,7 +994,37 @@ export class Package {
    private wireFreshnessResolvers(): void {
       for (const model of this.models.values()) {
          model.setFreshnessResolver(() => this.getFreshBuildManifest());
+         model.setPreaggregateEntityIdResolver(() =>
+            this.getPreaggregateEntityIds(),
+         );
       }
+   }
+
+   /**
+    * The `sourceEntityId`s of the sources pre-aggregation SYNTHESIZED, as
+    * distinct from the `#@ persist` sources an author declared. Read off the
+    * build plan's `origin`, which exists to carry exactly this provenance — not
+    * matched on the rollup naming convention, which would silently misclassify
+    * an author's source that happened to share the shape.
+    *
+    * Consumed by Model.withoutPreaggregateEntries, which keeps these entries away
+    * from every runnable except the companion model that declares them.
+    *
+    * Memoized on the build plan's identity: the plan is replaced wholesale on
+    * load, so reference equality is a sufficient and always-correct key.
+    */
+   public getPreaggregateEntityIds(): ReadonlySet<string> {
+      if (this.preaggregateEntityIdCache?.plan === this.buildPlan) {
+         return this.preaggregateEntityIdCache.ids;
+      }
+      const ids = new Set<string>();
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (source.origin === "preaggregate" && source.sourceEntityId) {
+            ids.add(source.sourceEntityId);
+         }
+      }
+      this.preaggregateEntityIdCache = { plan: this.buildPlan, ids };
+      return ids;
    }
 
    /**
