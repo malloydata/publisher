@@ -4,9 +4,9 @@
 //
 // preaggregation_synthesis.spec.ts already proves the mechanism against
 // hand-written models. What only a real package can show is that the seams fire
-// at all — that `PREAGGREGATE_MODE` gates them, that a rollup reaches the wire
-// plan under the author's model path, and that routing a live query through the
-// synthesized model does not change the answer.
+// at all — that a rollup reaches the wire plan under the author's model path, and
+// that routing a live query through the synthesized model does not change the
+// answer.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -17,18 +17,14 @@ import type { Package } from "./package";
 
 let rootDir: string;
 let envPath: string;
-let savedMode: string | undefined;
 
 beforeEach(async () => {
    rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-preagg-seam-"));
    envPath = path.join(rootDir, "env");
    await fs.mkdir(envPath, { recursive: true });
-   savedMode = process.env.PREAGGREGATE_MODE;
 });
 
 afterEach(async () => {
-   if (savedMode === undefined) delete process.env.PREAGGREGATE_MODE;
-   else process.env.PREAGGREGATE_MODE = savedMode;
    await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -54,6 +50,11 @@ source: orders is duckdb.sql("""
 }
 `;
 
+// The same model with the annotations stripped — same data, same measures, no
+// rollups. Derived from MODEL rather than written out so the two cannot drift,
+// which is what makes it a usable control for "routing changes no answer".
+const MODEL_UNANNOTATED = MODEL.replace(/^\s*#@ preaggregate.*\n/gm, "");
+
 async function loadPackage(model = MODEL): Promise<Package> {
    const dir = path.join(envPath, "pkg");
    await fs.mkdir(dir, { recursive: true });
@@ -73,12 +74,12 @@ function planSources(pkg: Package) {
 
 describe("the build-plan seam", () => {
    it(
-      "plans nothing extra while the feature is off",
+      "plans nothing for a model that declares no rollup",
       async () => {
-         process.env.PREAGGREGATE_MODE = "off";
-         const pkg = await loadPackage();
-         // The model declares no `#@ persist` of its own, so with rollups
-         // suppressed there is no plan at all.
+         // The seam runs for every model, so the case that keeps it honest is a
+         // model it must leave alone: no `#@ preaggregate` and no `#@ persist`
+         // means no plan at all, rather than an empty rollup invented for it.
+         const pkg = await loadPackage(MODEL_UNANNOTATED);
          expect(planSources(pkg)).toEqual([]);
       },
       { timeout: 60000 },
@@ -87,7 +88,6 @@ describe("the build-plan seam", () => {
    it(
       "plans one rollup per grain, reported against the author's model",
       async () => {
-         process.env.PREAGGREGATE_MODE = "build-only";
          const pkg = await loadPackage();
          const sources = planSources(pkg);
          // Two distinct grains ⇒ two rollups. Note that is neither one per measure
@@ -127,7 +127,6 @@ describe("the build-plan seam", () => {
          // persist source and no `experimental.persistence` flag. Both would make
          // a valid annotation a silent no-op, which is what the publish gate
          // exists to prevent — so this is the case that keeps them honest.
-         process.env.PREAGGREGATE_MODE = "build-only";
          const pkg = await loadPackage(`##! experimental.composite_sources
 source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend {
   #@ preaggregate grain="category"
@@ -142,7 +141,6 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
    it(
       "leaves an ordinary persist source alone, and marks it as authored",
       async () => {
-         process.env.PREAGGREGATE_MODE = "build-only";
          const pkg =
             await loadPackage(`##! experimental { persistence composite_sources }
 source: raw is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""")
@@ -194,29 +192,43 @@ describe("the serve seam", () => {
 
    const COVERED = "run: orders -> { group_by: category; aggregate: total }";
 
+   /**
+    * Sort rows by category. COVERED deliberately carries no `order_by`, since
+    * that is the query most likely to be covered by the rollup, and an unordered
+    * query's row order is not part of its answer — reading a rollup instead of
+    * the base can reorder it and has. Comparing unsorted would assert something
+    * the mechanism never promised, and adding an `order_by` to dodge that would
+    * risk the query falling back to live, leaving the test comparing live to live.
+    */
+   const byCategory = (rows: Record<string, unknown>[]) =>
+      [...rows].sort((a, b) =>
+         String(a.category).localeCompare(String(b.category)),
+      );
+
    it(
-      "answers a covered query identically with routing on and off",
+      "answers a covered query identically to the same model without rollups",
       async () => {
          // The property that makes the whole mechanism safe: routing through a
-         // rollup is a cache, so it must not be observable in the answer. Nothing
-         // is materialized in this test, so `on` exercises the composite with its
-         // rollup member recomputing from the base — the path a query takes
-         // before a build has run, and the one that would silently return partial
-         // aggregates instead of re-aggregated ones if the emitted measures were
-         // wrong.
-         process.env.PREAGGREGATE_MODE = "off";
-         const live = await run(await loadPackage(), COVERED);
+         // rollup is a cache, so it must not be observable in the answer. The
+         // control is the same model with its annotations stripped, so the only
+         // difference between the two runs is whether a rollup exists.
+         //
+         // Nothing is materialized here, so the routed run exercises the
+         // composite with its rollup member recomputing from the base — the path
+         // a query takes before a build has run, and the one that would silently
+         // return partial aggregates instead of re-aggregated ones if the emitted
+         // measures were wrong.
+         const live = await run(await loadPackage(MODEL_UNANNOTATED), COVERED);
 
          await fs.rm(path.join(envPath, "pkg"), {
             recursive: true,
             force: true,
          });
-         process.env.PREAGGREGATE_MODE = "on";
          const routed = await run(await loadPackage(), COVERED);
 
-         expect(routed).toEqual(live);
+         expect(byCategory(routed)).toEqual(byCategory(live));
          // And the numbers are actually right, not merely equal to each other.
-         expect(routed).toEqual([
+         expect(byCategory(routed)).toEqual([
             { category: "A", total: 30 },
             { category: "B", total: 30 },
          ]);
@@ -231,7 +243,6 @@ describe("the serve seam", () => {
          // count() the answer would be the number of GROUPS, which for this
          // fixture is 2 rather than 3 — close enough to look plausible, which is
          // why it is asserted.
-         process.env.PREAGGREGATE_MODE = "on";
          const rows = await run(
             await loadPackage(),
             "run: orders -> { aggregate: order_count }",
@@ -244,7 +255,6 @@ describe("the serve seam", () => {
    it(
       "falls back to live for a query no rollup covers",
       async () => {
-         process.env.PREAGGREGATE_MODE = "on";
          const pkg = await loadPackage();
          // `order_time` is not a grain of either rollup, so this can only be
          // answered from the base.
@@ -260,7 +270,6 @@ describe("the serve seam", () => {
    it(
       "leaves a model with no annotations untouched",
       async () => {
-         process.env.PREAGGREGATE_MODE = "on";
          const pkg = await loadPackage(`##! experimental.composite_sources
 source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend {
   measure: total is amount.sum()

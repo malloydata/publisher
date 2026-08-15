@@ -48,11 +48,7 @@ import {
    ManifestEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
-import {
-   getPersistCollisionEnforce,
-   getPersistStorageMode,
-   getPreaggregateMode,
-} from "../config";
+import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
 import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
 import {
@@ -773,9 +769,7 @@ export class Package {
       // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
       // given on preaggregatePolicyWarnings: a declaration that cannot take
       // effect is invisible in the answers, so warning here would leave the
-      // author believing they had a rollup. Independent of PREAGGREGATE_MODE, so
-      // enabling the feature later cannot turn a published package into a broken
-      // one.
+      // author believing they had a rollup.
       const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
       if (invalidPreaggregate) {
          logger.error(
@@ -1120,11 +1114,10 @@ export class Package {
     * (re)building the model set, and again after a manifest bind, since the
     * companion is compiled against the manifest that substitutes its tables.
     *
-    * A no-op unless `PREAGGREGATE_MODE` is `on`: under `build-only` the rollups
-    * are built and measured but nothing routes to them.
+    * A no-op for a model with no usable `#@ preaggregate`: synthesis returns
+    * nothing and the model's serve path is left exactly as it was.
     */
    private async pushPreaggregateServeModels(): Promise<void> {
-      if (getPreaggregateMode() !== "on") return;
       for (const model of this.models.values()) {
          await model.buildPreaggregateServeModel(
             this.packagePath,
@@ -1442,11 +1435,6 @@ export class Package {
     * and finds out from a bill. Warning at load would put that discovery in an
     * operator's log and leave the one person who can fix it reading a clean
     * publish.
-    *
-    * Independent of `PREAGGREGATE_MODE`. The flag governs whether a VALID
-    * annotation does anything; a declaration that could never work is an
-    * authoring error in every mode, and accepting it while the feature is dark
-    * would mean a package that publishes today and breaks the day it is enabled.
     */
    public preaggregatePolicyWarnings(): string[] {
       const messages: string[] = [];

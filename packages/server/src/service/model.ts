@@ -49,7 +49,7 @@ import {
    NotQueryableError,
    PayloadTooLargeError,
 } from "../errors";
-import { getPersistStorageMode, getPreaggregateMode } from "../config";
+import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
@@ -265,9 +265,8 @@ export class Model {
    /**
     * The synthesized pre-aggregation model for this model, compiled once per load
     * by the owning Package (see Package.pushPreaggregateServeModels) and reused by
-    * every query. Undefined when the model declares no usable `#@ preaggregate`,
-    * when `PREAGGREGATE_MODE` is not `on`, or when synthesis failed — in each case
-    * the serve path is untouched.
+    * every query. Undefined when the model declares no usable `#@ preaggregate`
+    * or when synthesis failed — in both cases the serve path is untouched.
     *
     * Compiled per load rather than per query because there is nothing per-query
     * to key it on. Unlike the storage tier, whose shape must recompile as
@@ -2827,11 +2826,7 @@ export class Model {
          // Skipped when the storage shape already routed: that runnable resolves
          // through `virtualMap` rather than the build manifest, and recompiling it
          // here would discard that. Composing the two tiers is future work.
-         if (
-            getPreaggregateMode() === "on" &&
-            this.preaggregateServeMaterializer &&
-            !serveVirtualMap
-         ) {
+         if (this.preaggregateServeMaterializer && !serveVirtualMap) {
             try {
                runnable =
                   this.preaggregateServeMaterializer.loadRestrictedQuery(

@@ -8,7 +8,6 @@ import type {
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
-import { getPreaggregateMode } from "../config";
 import { MaterializationEligibilityError } from "../errors";
 import { MODEL_FILE_SUFFIX } from "../constants";
 import { logger } from "../logger";
@@ -610,6 +609,52 @@ export async function compilePackageBuildPlan(
          .loadModel(modelURL, { importBaseURL })
          .getModel();
 
+      // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
+      // below on purpose: a model can declare `#@ preaggregate` while having no
+      // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
+      // flag, and in both cases the annotation should still produce a rollup —
+      // the SYNTHESIZED model declares the flags it needs and is the only thing
+      // holding a persist source. Skipping here would make a valid annotation a
+      // silent no-op, which the publish gate exists to prevent.
+      const synthesized = await tryCompileSynthesizedPreaggregation({
+         packagePath: pkg.getPackagePath(),
+         modelPath,
+         malloyConfig: pkg.getMalloyConfig(),
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         contents: (malloyModel as any)._modelDef?.contents ?? {},
+      });
+      if (synthesized) {
+         const rollupPlan = synthesized.model.getBuildPlan();
+         const rollupNames = new Set(
+            synthesized.plans.map((p) => p.rollupSourceName),
+         );
+         // Graphs wholesale, because they carry the dependency edges: when the
+         // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
+         // it, and pruning that would let a rollup build before the table it
+         // reads exists.
+         allGraphs.push(...rollupPlan.graphs);
+         // Sources: only the rollups. The synthesized model imports the
+         // author's, so a persist source declared there also appears in this
+         // plan — but under the SAME sourceID, since a sourceID embeds the
+         // model that DECLARES a source rather than the one importing it. The
+         // normal path below adds those from the author's own plan, so leaving
+         // them out here avoids re-deriving an identical entry.
+         const planByName = new Map(
+            synthesized.plans.map((p) => [p.rollupSourceName, p]),
+         );
+         for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
+            if (!rollupNames.has(source.name)) continue;
+            allSources[sourceID] = source;
+            // The AUTHOR's model path, not the synthesized one: a rollup is
+            // declared by no file, and the model carrying the annotations is
+            // where someone would go to change it (see api-doc's
+            // PersistSourcePlan.modelPath).
+            sourceModelPaths[sourceID] = modelPath;
+            const rollup = planByName.get(source.name);
+            if (rollup) preaggregatePlans[sourceID] = rollup;
+         }
+      }
+
       // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
       // on any model that lacks the flag — it does NOT return empty. So a
       // header-less non-persist model in the package (e.g. an imported base
@@ -619,56 +664,6 @@ export async function compilePackageBuildPlan(
       // a model cannot carry a functioning persist source anyway. Models that
       // DO have the flag but declare no persist source return empty graphs and
       // are skipped by the `graphs.length === 0` check below.
-      // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
-      // below on purpose: a model can declare `#@ preaggregate` while having no
-      // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
-      // flag, and in both cases the annotation should still produce a rollup —
-      // the SYNTHESIZED model declares the flags it needs and is the only thing
-      // holding a persist source. Skipping here would make a valid annotation a
-      // silent no-op, which the publish gate exists to prevent.
-      if (getPreaggregateMode() !== "off") {
-         const synthesized = await tryCompileSynthesizedPreaggregation({
-            packagePath: pkg.getPackagePath(),
-            modelPath,
-            malloyConfig: pkg.getMalloyConfig(),
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            contents: (malloyModel as any)._modelDef?.contents ?? {},
-         });
-         if (synthesized) {
-            const rollupPlan = synthesized.model.getBuildPlan();
-            const rollupNames = new Set(
-               synthesized.plans.map((p) => p.rollupSourceName),
-            );
-            // Graphs wholesale, because they carry the dependency edges: when the
-            // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
-            // it, and pruning that would let a rollup build before the table it
-            // reads exists.
-            allGraphs.push(...rollupPlan.graphs);
-            // Sources: only the rollups. The synthesized model imports the
-            // author's, so a persist source declared there also appears in this
-            // plan — but under the SAME sourceID, since a sourceID embeds the
-            // model that DECLARES a source rather than the one importing it. The
-            // normal path below adds those from the author's own plan, so leaving
-            // them out here avoids re-deriving an identical entry.
-            const planByName = new Map(
-               synthesized.plans.map((p) => [p.rollupSourceName, p]),
-            );
-            for (const [sourceID, source] of Object.entries(
-               rollupPlan.sources,
-            )) {
-               if (!rollupNames.has(source.name)) continue;
-               allSources[sourceID] = source;
-               // The AUTHOR's model path, not the synthesized one: a rollup is
-               // declared by no file, and the model carrying the annotations is
-               // where someone would go to change it (see api-doc's
-               // PersistSourcePlan.modelPath).
-               sourceModelPaths[sourceID] = modelPath;
-               const rollup = planByName.get(source.name);
-               if (rollup) preaggregatePlans[sourceID] = rollup;
-            }
-         }
-      }
-
       const modelTag = malloyModel.modelAnnotations.parseAsTag("!").tag;
       if (!modelTag.has("experimental", "persistence")) continue;
 
