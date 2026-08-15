@@ -2530,10 +2530,12 @@ components:
           description:
             Configured packages and environments that did not load, and why. A
             load failure is not fatal to the server, so operationalState stays
-            serving and the affected packages are simply absent from
-            environments; this is the only place that difference is reported, so
-            check it before treating a serving server as complete. Present only
-            when something failed to load, so a healthy server omits the field.
+            serving and the affected packages are absent from environments,
+            unless the entry carries stale = true, in which case the package is
+            still listed and still serving its last successful compile. This is
+            the only place either difference is reported, so check it before
+            treating a serving server as complete or current. Present only when
+            something failed, so a healthy server omits the field.
           items:
             type: object
             properties:
@@ -2551,6 +2553,24 @@ components:
               message:
                 type: string
                 description: Why it did not load.
+              stale:
+                type: boolean
+                description:
+                  When true, the package did load earlier and is still serving
+                  that last successful compile; the message is why its most
+                  recent reload (a watch-mode save, malloy_reloadPackage, or
+                  reload=true) failed. The served model is older than the files
+                  on disk. Absent on ordinary load failures. This array is the
+                  only place staleness is reported, because the package's entry
+                  under environments, and its own package resource, both read
+                  SERVING; join on the package name here to tell a current
+                  package from a stale one.
+              failedAt:
+                type: string
+                format: date-time
+                description:
+                  When the failed reload happened. Only present alongside
+                  stale = true.
         frozenConfig:
           type: boolean
           description:
@@ -2823,9 +2843,11 @@ components:
             findings: a `storage=` source not served from storage, a `#@ persist`
             source that was not recognized as materializable, a persist-target
             collision, and materialization-config problems that degrade
-            attribution. Server-computed and read-only: ignored on create/update
-            requests and only returned in responses. Present only when there are
-            such findings.
+            attribution. Discovery findings: a model listed in `explores` whose
+            export closure surfaces no sources or named queries, so it lists as
+            empty and renders a blank page. Server-computed and read-only:
+            ignored on create/update requests and only returned in responses.
+            Present only when there are such findings.
           items:
             type: object
             properties:
@@ -2861,15 +2883,28 @@ components:
           description: >-
             Controls whether the discovery surface is also a query boundary.
             `"declared"` (the default) makes queryable == discoverable: when
-            `explores` is declared, only `explores` model files — and within
-            them only the `export {}` closure — are valid top-level query
-            targets; every other source still compiles, imports, joins, and
-            extends but is not directly queryable (denied with 404). `"all"`
-            decouples them: `explores`/`export {}` gate discovery only and every
-            compiled source stays directly queryable. When `explores` is absent
-            there is no curated surface, so both modes are equivalent
-            (everything queryable). Invalid values fall back to `"declared"`.
-            Identity-based access is a separate concern — see `#(authorize)`.
+            `explores` is declared, only `explores` model files are valid query
+            entry points, and the queryable sources are the union of those
+            files' `export {}` closures — so a source exported by any listed
+            file stays queryable whichever listed model path the request
+            addresses it through. Admission is by declaration, not by name: a
+            request clears only when the model it names resolves the name to the
+            very source a listed file exported, so a same-named source declared
+            in a hidden file is not admitted by the coincidence. Every other
+            source still compiles, imports, joins, and extends but is not
+            directly queryable (denied with 404).
+            The `/compile` endpoint is exempt (compile is the authoring loop;
+            the boundary is discovery curation, not access control — for
+            confidentiality use `#(authorize)`, which gates compile too). A
+            source that is both hidden and `#(authorize)`-gated still answers
+            `/compile` with the generic 404, so the exemption cannot be used to
+            enumerate gated names.
+            `"all"` decouples the axes: `explores`/`export {}` gate discovery
+            only and every compiled source stays directly queryable. When
+            `explores` is absent there is no curated surface, so both modes are
+            equivalent (everything queryable). Invalid values fall back to
+            `"declared"`. Identity-based access is a separate concern — see
+            `#(authorize)`.
         manifestLocation:
           type: ["string", "null"]
           description: |
@@ -5135,6 +5170,15 @@ components:
       properties:
         sourceEntityId:
           type: string
+        error:
+          type: [string, "null"]
+          description: >-
+            Why this source failed to materialize, in the words the warehouse or
+            compiler reported. Present only on a source that failed; absent on one
+            that built, whose table the remaining fields describe. A build that
+            loses some of its sources still returns the ones that succeeded, so an
+            entry carrying this is how a consumer tells a failed source from a
+            healthy one.
         sourceName:
           type: string
         materializedTableId:

@@ -64,6 +64,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("malloy_compile")).toBe(true);
       expect(names.has("malloy_reloadPackage")).toBe(true);
       expect(names.has("malloy_searchDatabaseSchema")).toBe(true);
+      expect(names.has("malloy_getStatus")).toBe(true);
    });
 
    /**
@@ -118,6 +119,13 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // cannot drift, and they have drifted twice. Without this, deleting the
       // interpolation leaves the suite green and the drift comes back.
       expect(instructions).toContain(RELOAD_FAILURE_IS_SAFE);
+      // The two working rules that keep an agent from trusting a stale or
+      // silently empty model (see F1/F7 in the QA field notes): reload after
+      // every edit, and never read an empty getContext as an empty package.
+      expect(instructions).toContain(
+         "After every model edit, call malloy_reloadPackage before querying",
+      );
+      expect(instructions).toContain("malloy_getStatus");
    });
 
    it("malloy_searchDocs returns relevant docs over the protocol", async () => {

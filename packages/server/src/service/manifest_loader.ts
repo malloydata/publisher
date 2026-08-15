@@ -4,7 +4,11 @@ import * as fs from "fs/promises";
 import { fileURLToPath } from "url";
 import { components } from "../api";
 import { logger } from "../logger";
-import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
+import {
+   FreshnessManifest,
+   isFailedEntry,
+   ManifestEntry,
+} from "../storage/DatabaseInterface";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 
@@ -129,6 +133,12 @@ export function splitManifestEntries(
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
+      // An entry that records a failure names no table that was built, so it must
+      // not reach a serve binding: the name either resolves to nothing or, on a
+      // rebuild, to the generation this run failed to replace.
+      if (isFailedEntry(entry)) {
+         continue;
+      }
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
          logger.warn("Manifest entry has no physicalTableName; skipping", {

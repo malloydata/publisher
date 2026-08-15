@@ -335,6 +335,7 @@ describe("generated project serves against a real server", () => {
          "malloy_compile",
          "malloy_executeQuery",
          "malloy_getContext",
+         "malloy_getStatus",
          "malloy_reloadPackage",
          "malloy_searchDatabaseSchema",
          "malloy_searchDocs",
