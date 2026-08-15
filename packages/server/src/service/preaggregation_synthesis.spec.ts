@@ -395,6 +395,80 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       }
    });
 
+   it("CANARY: when two grains both cover a query, the FIRST member wins, not the smallest", async () => {
+      // Pinned because it bounds what multiple grains buy, and the natural
+      // assumption is the opposite. Members are emitted sorted by synthesized
+      // name (grain slug plus digest), and the resolver takes the first that
+      // covers the query — a name has nothing to do with size, so where two
+      // declared grains BOTH cover a query the larger can win.
+      //
+      // Built to make that visible: 200 distinct `a_dim`, 2 distinct `b_dim`, so
+      // the {b_dim} rollup is 2 rows and {a_dim, b_dim} is 200, and both answer a
+      // by-b_dim query. Dimensions are sorted into the slug, so `a_dim_b_dim`
+      // sorts BEFORE `b_dim` and the 200-row table is offered first.
+      //
+      // Multiple grains still pay off for the case they exist for — grains that
+      // cover DIFFERENT queries — and docs/preaggregation.md says so without
+      // promising the smallest covering table. If this test starts failing
+      // because member order became size-aware, that is an improvement: update
+      // the doc's "Which rollup answers a query" note along with it.
+      const { load, manifest, tables } = await synthesizeAndBuild(
+         `  dimension: a_dim is concat('a', amount::string)
+  dimension: b_dim is pick 'even' when amount % 2 = 0 else 'odd'
+  #@ preaggregate grain="b_dim"
+  #@ preaggregate grain="a_dim, b_dim"
+  measure: total is amount.sum()`,
+      );
+      expect(tables).toHaveLength(2);
+      const combined = tables.find((t) => t.includes("a_dim_b_dim"));
+      // By exclusion: the narrow grain's own slug is a SUFFIX of the combined
+      // one's, so matching it by name would match both.
+      const narrow = tables.find((t) => t !== combined);
+      expect(combined).toBeDefined();
+      expect(narrow).toBeDefined();
+
+      const sql = await load("synth.malloy")
+         .loadQuery("run: orders -> { group_by: b_dim; aggregate: total }")
+         .getSQL({ buildManifest: manifest });
+      expect(sql).toContain(combined as string);
+      expect(sql).not.toContain(narrow as string);
+   });
+
+   it("CANARY: a query naming a VIEW does not route, because compose() drops views", async () => {
+      // A real coverage limit, pinned so it is a documented fact rather than
+      // folklore. `compose()` carries its members' fields but not their VIEWS, so
+      // the composite has `revenue` and `category` and no `by_cat`. A query naming
+      // the view therefore does not compile against the synthesized model at all
+      // and is served live — the right failure (correct answer, no acceleration),
+      // but it means the REST `queryName` form and any dashboard built on named
+      // views go unaccelerated while the equivalent ad-hoc query routes.
+      //
+      // If this ever starts passing, compose() has gained view inheritance:
+      // delete the canary and update the "What does not route" section of
+      // docs/preaggregation.md, which documents this to authors.
+      const { load, manifest, tables } = await synthesizeAndBuild(
+         `  #@ preaggregate grain="category"
+  measure: revenue is amount.sum()
+
+  view: by_cat is {
+    group_by: category
+    aggregate: revenue
+  }`,
+      );
+      await expect(
+         load("synth.malloy")
+            .loadQuery("run: orders -> by_cat")
+            .getSQL({ buildManifest: manifest }),
+      ).rejects.toThrow("'by_cat' is not defined");
+
+      // The same shape written ad hoc DOES route, which is what identifies the
+      // cause as the view rather than the grain.
+      const sql = await load("synth.malloy")
+         .loadQuery("run: orders -> { group_by: category; aggregate: revenue }")
+         .getSQL({ buildManifest: manifest });
+      expect(sql).toContain(tables[0]);
+   });
+
    it("an UNCOVERED query falls back to the base and is still correct", async () => {
       const { load, manifest, tables } = await synthesizeAndBuild(BODY);
       const query = "run: orders -> { group_by: order_date; aggregate: total }";

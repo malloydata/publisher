@@ -176,31 +176,4 @@ describe("an unusable declaration FAILS the load as a 400", () => {
       },
       { timeout: 30000 },
    );
-
-   it(
-      "fails the load regardless of PREAGGREGATE_MODE",
-      async () => {
-         // The flag governs whether a VALID annotation does anything. Accepting a
-         // broken one while the feature is dark would mean a package that
-         // publishes today and breaks the day someone enables it.
-         const before = process.env.PREAGGREGATE_MODE;
-         process.env.PREAGGREGATE_MODE = "off";
-         try {
-            let error: unknown;
-            try {
-               await loadPackage(
-                  model(`  #@ preaggregate grain="category"
-  measure: avg_amount is amount.avg()`),
-               );
-            } catch (e) {
-               error = e;
-            }
-            expect(error).toBeInstanceOf(BadRequestError);
-         } finally {
-            if (before === undefined) delete process.env.PREAGGREGATE_MODE;
-            else process.env.PREAGGREGATE_MODE = before;
-         }
-      },
-      { timeout: 30000 },
-   );
 });

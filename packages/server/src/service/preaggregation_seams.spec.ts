@@ -4,9 +4,9 @@
 //
 // preaggregation_synthesis.spec.ts already proves the mechanism against
 // hand-written models. What only a real package can show is that the seams fire
-// at all — that `PREAGGREGATE_MODE` gates them, that a rollup reaches the wire
-// plan under the author's model path, and that routing a live query through the
-// synthesized model does not change the answer.
+// at all — that a rollup reaches the wire plan under the author's model path, and
+// that routing a live query through the synthesized model does not change the
+// answer.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -17,18 +17,14 @@ import type { Package } from "./package";
 
 let rootDir: string;
 let envPath: string;
-let savedMode: string | undefined;
 
 beforeEach(async () => {
    rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-preagg-seam-"));
    envPath = path.join(rootDir, "env");
    await fs.mkdir(envPath, { recursive: true });
-   savedMode = process.env.PREAGGREGATE_MODE;
 });
 
 afterEach(async () => {
-   if (savedMode === undefined) delete process.env.PREAGGREGATE_MODE;
-   else process.env.PREAGGREGATE_MODE = savedMode;
    await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -54,6 +50,11 @@ source: orders is duckdb.sql("""
 }
 `;
 
+// The same model with the annotations stripped — same data, same measures, no
+// rollups. Derived from MODEL rather than written out so the two cannot drift,
+// which is what makes it a usable control for "routing changes no answer".
+const MODEL_UNANNOTATED = MODEL.replace(/^\s*#@ preaggregate.*\n/gm, "");
+
 async function loadPackage(model = MODEL): Promise<Package> {
    const dir = path.join(envPath, "pkg");
    await fs.mkdir(dir, { recursive: true });
@@ -73,12 +74,12 @@ function planSources(pkg: Package) {
 
 describe("the build-plan seam", () => {
    it(
-      "plans nothing extra while the feature is off",
+      "plans nothing for a model that declares no rollup",
       async () => {
-         process.env.PREAGGREGATE_MODE = "off";
-         const pkg = await loadPackage();
-         // The model declares no `#@ persist` of its own, so with rollups
-         // suppressed there is no plan at all.
+         // The seam runs for every model, so the case that keeps it honest is a
+         // model it must leave alone: no `#@ preaggregate` and no `#@ persist`
+         // means no plan at all, rather than an empty rollup invented for it.
+         const pkg = await loadPackage(MODEL_UNANNOTATED);
          expect(planSources(pkg)).toEqual([]);
       },
       { timeout: 60000 },
@@ -87,7 +88,6 @@ describe("the build-plan seam", () => {
    it(
       "plans one rollup per grain, reported against the author's model",
       async () => {
-         process.env.PREAGGREGATE_MODE = "build-only";
          const pkg = await loadPackage();
          const sources = planSources(pkg);
          // Two distinct grains ⇒ two rollups. Note that is neither one per measure
@@ -127,7 +127,6 @@ describe("the build-plan seam", () => {
          // persist source and no `experimental.persistence` flag. Both would make
          // a valid annotation a silent no-op, which is what the publish gate
          // exists to prevent — so this is the case that keeps them honest.
-         process.env.PREAGGREGATE_MODE = "build-only";
          const pkg = await loadPackage(`##! experimental.composite_sources
 source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend {
   #@ preaggregate grain="category"
@@ -140,9 +139,29 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
    );
 
    it(
+      "plans a rollup for a model that declares no experimental flags",
+      async () => {
+         // The author's model needs no `##! experimental` of its own: the
+         // synthesized companion uses `compose()` and `#@ persist` in its own
+         // right and declares the flags for them, and `##!` flags do not cross an
+         // import. Asserted because requiring one would be invisible — an
+         // un-flagged model's annotation would go quietly inert, which is the
+         // failure this feature is built to avoid.
+         const pkg = await loadPackage(`source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+         expect(planSources(pkg)).toHaveLength(1);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "leaves an ordinary persist source alone, and marks it as authored",
       async () => {
-         process.env.PREAGGREGATE_MODE = "build-only";
          const pkg =
             await loadPackage(`##! experimental { persistence composite_sources }
 source: raw is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""")
@@ -165,6 +184,36 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
          expect(
             byOrigin.get("preaggregate")?.preaggregate?.baseSourceName,
          ).toBe("orders");
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "reports the synthesized rollups, and only those, as preaggregate-origin",
+      async () => {
+         // The set Model.withoutPreaggregateEntries strips from the manifest, so
+         // getting it wrong in either direction is a live bug: too wide drops an
+         // author's own persist routing, too narrow puts a rollup entry in front
+         // of a model that cannot use it. Read off the plan's `origin` rather
+         // than matched on the `__preagg__` naming convention, which an author's
+         // source could collide with.
+         const pkg =
+            await loadPackage(`##! experimental { persistence composite_sources }
+source: raw is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""")
+
+#@ persist name="orders_t"
+source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.sum() } extend {
+  #@ preaggregate grain="category"
+  measure: total is amount_sum.sum()
+}
+`);
+         const sources = planSources(pkg);
+         const authored = sources.find((s) => s.origin === "persist");
+         const synthesized = sources.find((s) => s.origin === "preaggregate");
+         const ids = pkg.getPreaggregateEntityIds();
+         expect(ids.size).toBe(1);
+         expect(ids.has(synthesized!.sourceEntityId!)).toBe(true);
+         expect(ids.has(authored!.sourceEntityId!)).toBe(false);
       },
       { timeout: 60000 },
    );
@@ -192,26 +241,34 @@ describe("the serve seam", () => {
       );
    }
 
-   const COVERED = "run: orders -> { group_by: category; aggregate: total }";
+   // `order_by: category` is load-bearing, not tidiness. Both categories total
+   // 30, so Malloy's default ordering (by the first measure, descending) is a
+   // TIE, and the two shapes below break it differently — the live shape reads
+   // the base while the routed one reads the composite. Without an explicit
+   // order the row-for-row comparison in the first test failed on roughly two
+   // runs in three, which reads as a routing bug and is not one.
+   const COVERED =
+      "run: orders -> { group_by: category; aggregate: total; order_by: category }";
 
    it(
-      "answers a covered query identically with routing on and off",
+      "answers a covered query identically to the same model without rollups",
       async () => {
          // The property that makes the whole mechanism safe: routing through a
-         // rollup is a cache, so it must not be observable in the answer. Nothing
-         // is materialized in this test, so `on` exercises the composite with its
-         // rollup member recomputing from the base — the path a query takes
-         // before a build has run, and the one that would silently return partial
-         // aggregates instead of re-aggregated ones if the emitted measures were
-         // wrong.
-         process.env.PREAGGREGATE_MODE = "off";
-         const live = await run(await loadPackage(), COVERED);
+         // rollup is a cache, so it must not be observable in the answer. The
+         // control is the same model with its annotations stripped, so the only
+         // difference between the two runs is whether a rollup exists.
+         //
+         // Nothing is materialized here, so the routed run exercises the
+         // composite with its rollup member recomputing from the base — the path
+         // a query takes before a build has run, and the one that would silently
+         // return partial aggregates instead of re-aggregated ones if the emitted
+         // measures were wrong.
+         const live = await run(await loadPackage(MODEL_UNANNOTATED), COVERED);
 
          await fs.rm(path.join(envPath, "pkg"), {
             recursive: true,
             force: true,
          });
-         process.env.PREAGGREGATE_MODE = "on";
          const routed = await run(await loadPackage(), COVERED);
 
          expect(routed).toEqual(live);
@@ -231,7 +288,6 @@ describe("the serve seam", () => {
          // count() the answer would be the number of GROUPS, which for this
          // fixture is 2 rather than 3 — close enough to look plausible, which is
          // why it is asserted.
-         process.env.PREAGGREGATE_MODE = "on";
          const rows = await run(
             await loadPackage(),
             "run: orders -> { aggregate: order_count }",
@@ -244,7 +300,6 @@ describe("the serve seam", () => {
    it(
       "falls back to live for a query no rollup covers",
       async () => {
-         process.env.PREAGGREGATE_MODE = "on";
          const pkg = await loadPackage();
          // `order_time` is not a grain of either rollup, so this can only be
          // answered from the base.
@@ -260,7 +315,6 @@ describe("the serve seam", () => {
    it(
       "leaves a model with no annotations untouched",
       async () => {
-         process.env.PREAGGREGATE_MODE = "on";
          const pkg = await loadPackage(`##! experimental.composite_sources
 source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend {
   measure: total is amount.sum()
@@ -268,6 +322,178 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
 `);
          const rows = await run(pkg, COVERED);
          expect(rows).toEqual([{ category: "A", total: 10 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "serves a source the companion does not import, rather than failing",
+      async () => {
+         // The case the routing block's catch exists for, and the one neither
+         // test above reaches: annotations DO exist (so a companion is compiled
+         // and every query on the file is offered to it) but the query names a
+         // source the companion never imported, because that source has no
+         // measure to roll up.
+         //
+         // `"falls back to live for a query no rollup covers"` does not cover
+         // this: it groups by a field ON the annotated source, which compiles
+         // against the companion fine and returns through the base member.
+         // `"leaves a model with no annotations untouched"` does not either:
+         // with no annotations there is no companion and the block is skipped.
+         //
+         // Malloy compiles lazily, so before the eager `getSQL` probe the
+         // compile error escaped PAST that catch and surfaced as a 400 —
+         // `Reference to undefined object 'regions'` — for every query naming an
+         // unannotated sibling. With no flag to turn pre-aggregation off, that
+         // made one annotation enough to break the rest of the file.
+         const pkg = await loadPackage(`${MODEL}
+source: regions is duckdb.sql("""
+  SELECT * FROM (VALUES ('north'), ('north'), ('south')) AS t(region)
+""") extend {
+  measure: region_count is count()
+}
+`);
+         const rows = await run(
+            pkg,
+            "run: regions -> { group_by: region; aggregate: region_count; order_by: region }",
+         );
+         expect(rows).toEqual([
+            { region: "north", region_count: 2 },
+            { region: "south", region_count: 1 },
+         ]);
+         // And the annotated source in the same file still routes.
+         expect(await run(pkg, COVERED)).toEqual([
+            { category: "A", total: 30 },
+            { category: "B", total: 30 },
+         ]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "answers a given-supplying query, which cannot route",
+      async () => {
+         // A model-level `given:` does not cross the companion's `import`, so the
+         // companion surfaces no givens and a query supplying one cannot compile
+         // against it. That is a coverage limit (documented in
+         // docs/preaggregation.md) but it must not be an ERROR, and it is only
+         // not one because the probe is given the same givens the run will use:
+         // probe without them and the query compiles, then fails at run with
+         // "unknown given 'MIN_AMOUNT'. Model surfaces []".
+         //
+         // The rollup entry is bound to a table that does not exist, so a query
+         // that wrongly routed here would fail loudly instead of quietly
+         // returning the right answer from the base.
+         const pkg =
+            await loadPackage(`##! experimental { persistence composite_sources givens }
+
+given: MIN_AMOUNT :: number is 0
+
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  where: amount >= $MIN_AMOUNT
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         const model = pkg.getModel("model.malloy");
+         const { compactResult } = await model!.getQueryResults(
+            undefined,
+            undefined,
+            "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            undefined,
+            undefined,
+            { MIN_AMOUNT: 15 },
+         );
+         // 15 excludes the amount-10 row, so this also proves the given was
+         // applied rather than dropped on the way through.
+         expect(
+            (compactResult as Record<string, unknown>[]).map((row) =>
+               Object.fromEntries(
+                  Object.entries(row).map(([k, v]) => [
+                     k,
+                     typeof v === "bigint" ? Number(v) : v,
+                  ]),
+               ),
+            ),
+         ).toEqual([
+            { category: "A", total: 20 },
+            { category: "B", total: 30 },
+         ]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "keeps a synthesized rollup's manifest entry away from the author's model",
+      async () => {
+         // A rollup exists only in the companion, so its manifest entry can
+         // substitute nothing in the author's model — and handing it over is not
+         // merely useless: Malloy refuses a non-empty `buildManifest` against a
+         // model without `##! experimental.persistence`, which a model that only
+         // declares `#@ preaggregate` has no reason to carry (the companion
+         // declares its own flags). A bound manifest therefore turned every query
+         // served from the author's model into a 400.
+         //
+         // The query has to be one that does NOT reach the companion, since the
+         // companion is the one runnable entitled to the full manifest. So this
+         // asserts the fallback path specifically: an unannotated sibling, which
+         // the companion never imports, with a rollup entry bound. Reachable only
+         // because the eager compile probe above lets the fallback happen at all —
+         // the two fixes have to land together.
+         const pkg = await loadPackage(`source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+
+source: regions is duckdb.sql("""
+  SELECT * FROM (VALUES ('north'), ('north'), ('south')) AS t(region)
+""") extend {
+  measure: region_count is count()
+}
+`);
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         // Deliberately a table that does not exist: if the entry ever reaches
+         // the author's model this test fails loudly rather than passing on a
+         // substitution that happened to work.
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         expect(pkg.hasBoundTableNameManifest()).toBe(true);
+         expect(
+            await run(
+               pkg,
+               "run: regions -> { group_by: region; aggregate: region_count; order_by: region }",
+            ),
+         ).toEqual([
+            { region: "north", region_count: 2 },
+            { region: "south", region_count: 1 },
+         ]);
       },
       { timeout: 60000 },
    );

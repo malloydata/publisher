@@ -41,8 +41,10 @@
  *     It must be length-checked; a truthiness check silently rejects every
  *     measure that mentions a function.
  *
- * The IR coupling here is the price of the feature (preaggregation.md §4.4), so
- * the module is kept small and isolated and its facts are pinned by real-compile
+ * The IR coupling here is the price of the feature — deciding whether a partial
+ * can be merged means reading the measure's expression, and the compiled IR is
+ * the only place that is written down. So the module is kept small and isolated
+ * and its facts are pinned by real-compile
  * tests in `preaggregation_classifier.spec.ts`. A pin bump that changes the IR
  * should fail there rather than quietly change what a rollup stores.
  */

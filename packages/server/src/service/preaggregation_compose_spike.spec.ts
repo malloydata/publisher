@@ -68,9 +68,9 @@ const PHYSICAL_TABLE = "mz_orders_rollup_day_category";
  * and re-declaring each measure as the merge over its partial, and a compose()
  * with the base last.
  *
- * `members` is a parameter because freshness-versus-membership (§8.2) is
- * expressed by dropping a stale rollup from the member list — the stale case is
- * literally `compose(orders__base)`.
+ * `members` is a parameter because freshness is expressed as membership: a stale
+ * rollup leaves the serving set by dropping out of the member list, so the stale
+ * case is literally `compose(orders__base)`.
  */
 function modelText(members: string): string {
    return `##! experimental { persistence composite_sources }
@@ -226,8 +226,8 @@ describe("E2.1 spike: a persist source as a compose() member", () => {
    });
 
    it("5. freshness: a stale rollup serves from the base, by window OR by absence", async () => {
-      // Two independent ways a rollup leaves the serving set, both of which
-      // §8.2 relies on, and neither of which may error.
+      // Two independent ways a rollup leaves the serving set, both of which the
+      // freshness design relies on, and neither of which may error.
       //
       // (a) The freshness gate drops the entry while the member is still in the
       //     compose(). This is the one that matters most, because the member

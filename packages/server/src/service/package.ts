@@ -48,11 +48,7 @@ import {
    ManifestEntry,
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
-import {
-   getPersistCollisionEnforce,
-   getPersistStorageMode,
-   getPreaggregateMode,
-} from "../config";
+import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
 import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
 import {
@@ -175,6 +171,11 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
+   // Memoized {@link getPreaggregateEntityIds}, keyed on the plan it was derived
+   // from so a reload recomputes without an explicit invalidation.
+   private preaggregateEntityIdCache:
+      | { plan: BuildPlan | null; ids: ReadonlySet<string> }
+      | undefined;
    // Sources annotated `#@ persist` that Malloy's getBuildPlan() did not
    // recognize as a materializable build root, so they produced no plan entry
    // and would be a silent no-op (served live). Surfaced as an operator warning
@@ -773,9 +774,7 @@ export class Package {
       // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
       // given on preaggregatePolicyWarnings: a declaration that cannot take
       // effect is invisible in the answers, so warning here would leave the
-      // author believing they had a rollup. Independent of PREAGGREGATE_MODE, so
-      // enabling the feature later cannot turn a published package into a broken
-      // one.
+      // author believing they had a rollup.
       const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
       if (invalidPreaggregate) {
          logger.error(
@@ -989,7 +988,37 @@ export class Package {
    private wireFreshnessResolvers(): void {
       for (const model of this.models.values()) {
          model.setFreshnessResolver(() => this.getFreshBuildManifest());
+         model.setPreaggregateEntityIdResolver(() =>
+            this.getPreaggregateEntityIds(),
+         );
       }
+   }
+
+   /**
+    * The `sourceEntityId`s of the sources pre-aggregation SYNTHESIZED, as
+    * distinct from the `#@ persist` sources an author declared. Read off the
+    * build plan's `origin`, which exists to carry exactly this provenance — not
+    * matched on the rollup naming convention, which would silently misclassify
+    * an author's source that happened to share the shape.
+    *
+    * Consumed by Model.withoutPreaggregateEntries, which keeps these entries away
+    * from every runnable except the companion model that declares them.
+    *
+    * Memoized on the build plan's identity: the plan is replaced wholesale on
+    * load, so reference equality is a sufficient and always-correct key.
+    */
+   public getPreaggregateEntityIds(): ReadonlySet<string> {
+      if (this.preaggregateEntityIdCache?.plan === this.buildPlan) {
+         return this.preaggregateEntityIdCache.ids;
+      }
+      const ids = new Set<string>();
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (source.origin === "preaggregate" && source.sourceEntityId) {
+            ids.add(source.sourceEntityId);
+         }
+      }
+      this.preaggregateEntityIdCache = { plan: this.buildPlan, ids };
+      return ids;
    }
 
    /**
@@ -1120,11 +1149,10 @@ export class Package {
     * (re)building the model set, and again after a manifest bind, since the
     * companion is compiled against the manifest that substitutes its tables.
     *
-    * A no-op unless `PREAGGREGATE_MODE` is `on`: under `build-only` the rollups
-    * are built and measured but nothing routes to them.
+    * A no-op for a model with no usable `#@ preaggregate`: synthesis returns
+    * nothing and the model's serve path is left exactly as it was.
     */
    private async pushPreaggregateServeModels(): Promise<void> {
-      if (getPreaggregateMode() !== "on") return;
       for (const model of this.models.values()) {
          await model.buildPreaggregateServeModel(
             this.packagePath,
@@ -1442,11 +1470,6 @@ export class Package {
     * and finds out from a bill. Warning at load would put that discovery in an
     * operator's log and leave the one person who can fix it reading a clean
     * publish.
-    *
-    * Independent of `PREAGGREGATE_MODE`. The flag governs whether a VALID
-    * annotation does anything; a declaration that could never work is an
-    * authoring error in every mode, and accepting it while the feature is dark
-    * would mean a package that publishes today and breaks the day it is enabled.
     */
    public preaggregatePolicyWarnings(): string[] {
       const messages: string[] = [];

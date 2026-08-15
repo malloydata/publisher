@@ -622,58 +622,6 @@ export const getPersistStorageMode = (): PersistStorageMode => {
 };
 
 /**
- * The `#@ preaggregate` deployment modes, read from `PREAGGREGATE_MODE`. Same
- * three rungs as {@link getPersistStorageMode} and for the same reasons:
- *
- *  - `off` (default): a valid `#@ preaggregate` is inert. No rollup is
- *    synthesized, nothing extra is built, and every query serves exactly as it
- *    did before the feature existed.
- *  - `build-only`: rollups are synthesized and BUILT, so an operator can measure
- *    what they cost and inspect the tables, but the serve path ignores them and
- *    queries still run live. The measurement rung.
- *  - `on`: end to end — synthesize, build, and route queries through the
- *    memoized composite, with a per-query fallback to live for anything not
- *    covered.
- *
- * Note the rungs are ordered by COST, not by risk: `build-only` spends money
- * without saving any, so it is a deliberate measurement step rather than a
- * resting state. `off` is the resting state and the incident kill switch.
- *
- * Flipping DOWN is always safe. Every query is answerable live by construction —
- * that is what makes the rollup a cache — so dropping to `off` costs latency and
- * nothing else. It does NOT drop the built tables; use the ordinary
- * materialization GC for that.
- *
- * Invalid declarations are refused at publish and at load in EVERY mode,
- * including `off`. The flag governs whether a VALID annotation does anything; it
- * is not a reason to accept one that could never work (see
- * preaggregation_validation.ts).
- *
- * Case-insensitive; loud-fails on an unrecognized value, like its siblings.
- */
-export type PreaggregateMode = "off" | "build-only" | "on";
-
-const PREAGGREGATE_MODES: readonly PreaggregateMode[] = [
-   "off",
-   "build-only",
-   "on",
-];
-
-export const getPreaggregateMode = (): PreaggregateMode => {
-   const raw = process.env.PREAGGREGATE_MODE;
-   if (raw === undefined || raw.trim() === "") return "off";
-   const value = raw.trim().toLowerCase();
-   if ((PREAGGREGATE_MODES as readonly string[]).includes(value)) {
-      return value as PreaggregateMode;
-   }
-   throw new Error(
-      `PREAGGREGATE_MODE must be one of ${PREAGGREGATE_MODES.join(
-         " | ",
-      )} (got ${JSON.stringify(raw)})`,
-   );
-};
-
-/**
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) is a
  * hard publish rejection, from `PERSIST_COLLISION_ENFORCE` (default `false`).

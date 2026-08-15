@@ -26,9 +26,9 @@
  *
  *  - **No text surgery.** Making `orders` a composite requires the original under
  *    another name, and `import { new is old }` provides exactly that, so nothing
- *    parses or rewrites the author's source. The design doc's §4.4 warned that
- *    "text synthesis is real surgery"; with rename-on-import there is no surgery
- *    to get wrong.
+ *    parses or rewrites the author's source. Rewriting it would be real surgery —
+ *    the risk this approach exists to avoid — and with rename-on-import there is
+ *    no surgery to get wrong.
  *  - **No discovery leak.** The author's model is untouched, so the model the API
  *    introspects still exports `orders` alone. The rollup exists only in this
  *    second model, which is compiled for the build plan and for the transient

@@ -271,7 +271,7 @@ describe("grain dimensions must resolve", () => {
 
    it("a grain reaching through a join, even a permitted join_one", async () => {
       // The grain rule is independent of the source-level fan-out gate, and it
-      // holds for the §3e reason rather than the fan-out one: a query writing
+      // holds for the grain-naming reason rather than the fan-out one: a query writing
       // `other_j.qty` references `other_j`, which the rollup member does not have,
       // so no rollup could serve it however the stored column were named.
       const violations = await validate(`  #@ preaggregate grain="other_j.qty"
