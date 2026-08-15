@@ -1,6 +1,6 @@
 /**
  * Reader for the `#@ preaggregate` measure annotation — the authoring surface
- * for pre-aggregation (preaggregation.md §5).
+ * for pre-aggregation (docs/preaggregation.md).
  *
  * ## A measure may be rolled up at several grains
  *

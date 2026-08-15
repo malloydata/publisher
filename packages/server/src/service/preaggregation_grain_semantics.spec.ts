@@ -6,11 +6,12 @@
 // **a grain may name only dimensions that already exist on the base source** — is
 // enforced by preaggregation_validation.ts, and this is the evidence for it.
 //
-// preaggregation.md's §4.4 limitation list predicts half of this ("a query writing
-// the raw expression `order_time.month` … falls to the base … only queries using
-// *named* dimensions route"), but §5's headline example is
-// `grain="order_time.day, category"`. Those two cannot both be right, and the
-// tests below are which one is.
+// The distinction is easy to get wrong from reading alone: it is tempting to
+// suppose a query writing the raw expression `order_time.month` merely falls back
+// to the base while only *named* dimensions route, and therefore that
+// `grain="order_time.day, category"` is a harmless spelling. It is not, and the
+// tests below are the reason. See docs/preaggregation.md, "Grains name
+// dimensions".
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { BuildManifest, FixedConnectionMap } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
@@ -147,7 +148,7 @@ describe("a time grain stored under the base's own name is UNSAFE", () => {
 
 describe("a time grain stored under a synthesized name is safe but useless", () => {
    it("an author's truncation expression does NOT route", async () => {
-      // §4.4's predicted limitation, confirmed: the query references `order_time`,
+      // The query references `order_time`,
       // the member has no such field, the member is rejected, and the base serves
       // it. Correct, and completely unaccelerated.
       expect(
@@ -192,8 +193,8 @@ describe("a grain naming a dimension the base declares is safe AND useful", () =
    });
 
    it("a COARSER truncation of the stored dimension also routes, correctly", async () => {
-      // §3.3 rule 1's "functionally determined by it — month from a day grain".
-      // It works, and it is the payoff for making the author name the dimension:
+      // A month is functionally determined by a day, so a day-grain rollup can
+      // answer it. It works, and it is the payoff for making the author name the dimension:
       // one day-grain rollup serves day, month, quarter and year.
       const query =
          "run: orders_c -> { group_by: order_day.month; aggregate: total }";

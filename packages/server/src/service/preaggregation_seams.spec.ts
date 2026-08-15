@@ -139,6 +139,27 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
    );
 
    it(
+      "plans a rollup for a model that declares no experimental flags",
+      async () => {
+         // The author's model needs no `##! experimental` of its own: the
+         // synthesized companion uses `compose()` and `#@ persist` in its own
+         // right and declares the flags for them, and `##!` flags do not cross an
+         // import. Asserted because requiring one would be invisible — an
+         // un-flagged model's annotation would go quietly inert, which is the
+         // failure this feature is built to avoid.
+         const pkg = await loadPackage(`source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+         expect(planSources(pkg)).toHaveLength(1);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "leaves an ordinary persist source alone, and marks it as authored",
       async () => {
          const pkg =
