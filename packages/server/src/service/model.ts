@@ -2909,10 +2909,20 @@ export class Model {
                // here and without this the error escapes at prepare/run instead,
                // past the catch below — which made a query naming any source the
                // companion does not import a hard 400 rather than a live answer.
-               // Cheap relative to the run. The companion's rollup members
-               // resolve through the build manifest and its bases surface the
-               // model's givens, so the probe must use both, or it rejects a
-               // query the run would have accepted.
+               // Cheap relative to the run. It must probe with exactly what the
+               // run will use — the build manifest its rollup members resolve
+               // through, and the givens — because the probe's whole job is to
+               // decide routing on the same terms.
+               //
+               // The givens are the load-bearing half, and not for the reason one
+               // would guess. A model-level `given:` does NOT cross the
+               // companion's `import`, so the companion surfaces none: probing
+               // WITH them makes a given-supplying query fail here and fall to
+               // live, which is what we want, while probing without them lets it
+               // compile and then fail at RUN with "unknown given … Model
+               // surfaces []" — an escaped 400, the same class of bug the eager
+               // compile above exists to prevent. Measured both ways; see the
+               // givens test in preaggregation_seams.spec.ts.
                await candidate.getSQL({
                   givens: querySurfaceGivens,
                   buildManifest,

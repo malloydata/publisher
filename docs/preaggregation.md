@@ -123,9 +123,11 @@ This rule is wider than it sounds: it disqualifies the whole source, not just th
 
 ## What does not route
 
-Two limits are worth knowing before you decide pre-aggregation will help your workload. Neither affects correctness — an uncovered query is answered from the base, with the answer it always had — but both mean no acceleration.
+Three limits are worth knowing before you decide pre-aggregation will help your workload. None affects correctness — an uncovered query is answered from the base, with the answer it always had — but each means no acceleration.
 
 **A query that names a `view:` does not route.** Rollups are offered to a query through a composite source, and a composite carries its members' fields but not their views, so a view defined on your source is not visible on it. Given `view: by_category is { group_by: category; aggregate: revenue }`, `run: orders -> by_category` serves live, while the same query written out — `run: orders -> { group_by: category; aggregate: revenue }` — reads the rollup. This affects the REST API's `{"queryName": …, "sourceName": …}` form and Console dashboards, since both run named views. If your traffic is mostly named views, expect little benefit today.
+
+**A query that supplies a [given](givens.md) does not route.** A model-level `given:` does not cross into the model Publisher synthesizes, so a query passing one cannot be compiled against the rollup and is served live. This is not merely a technicality to be lifted: a rollup is built with the givens in force at build time, so serving a query at a different given value from the stored rows would be wrong. A filter-driven data app, whose every query supplies a given, gets no benefit today.
 
 **A query grouping by an expression rather than a dimension does not route.** `group_by: order_time.month` is an expression, and the rollup has no such field. Group by the declared dimension (`order_day`) or a coarser truncation of it (`order_day.month`) instead.
 

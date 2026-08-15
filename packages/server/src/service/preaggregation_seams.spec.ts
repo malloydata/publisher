@@ -371,6 +371,74 @@ source: regions is duckdb.sql("""
    );
 
    it(
+      "answers a given-supplying query, which cannot route",
+      async () => {
+         // A model-level `given:` does not cross the companion's `import`, so the
+         // companion surfaces no givens and a query supplying one cannot compile
+         // against it. That is a coverage limit (documented in
+         // docs/preaggregation.md) but it must not be an ERROR, and it is only
+         // not one because the probe is given the same givens the run will use:
+         // probe without them and the query compiles, then fails at run with
+         // "unknown given 'MIN_AMOUNT'. Model surfaces []".
+         //
+         // The rollup entry is bound to a table that does not exist, so a query
+         // that wrongly routed here would fail loudly instead of quietly
+         // returning the right answer from the base.
+         const pkg =
+            await loadPackage(`##! experimental { persistence composite_sources givens }
+
+given: MIN_AMOUNT :: number is 0
+
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  where: amount >= $MIN_AMOUNT
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+         const rollupIds = [...pkg.getPreaggregateEntityIds()];
+         expect(rollupIds).toHaveLength(1);
+         pkg.bindColocatedServeManifest(
+            Object.fromEntries(
+               rollupIds.map((id) => [
+                  id,
+                  {
+                     tableName: "no_such_rollup_table",
+                     connectionName: "duckdb",
+                  },
+               ]),
+            ),
+         );
+         const model = pkg.getModel("model.malloy");
+         const { compactResult } = await model!.getQueryResults(
+            undefined,
+            undefined,
+            "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            undefined,
+            undefined,
+            { MIN_AMOUNT: 15 },
+         );
+         // 15 excludes the amount-10 row, so this also proves the given was
+         // applied rather than dropped on the way through.
+         expect(
+            (compactResult as Record<string, unknown>[]).map((row) =>
+               Object.fromEntries(
+                  Object.entries(row).map(([k, v]) => [
+                     k,
+                     typeof v === "bigint" ? Number(v) : v,
+                  ]),
+               ),
+            ),
+         ).toEqual([
+            { category: "A", total: 20 },
+            { category: "B", total: 30 },
+         ]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "keeps a synthesized rollup's manifest entry away from the author's model",
       async () => {
          // A rollup exists only in the companion, so its manifest entry can
