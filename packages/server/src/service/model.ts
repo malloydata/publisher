@@ -107,6 +107,10 @@ import {
    type QueryMetadata,
 } from "./query_metadata";
 import {
+   validateModelPreaggregation,
+   type PreaggregateViolation,
+} from "./preaggregation_validation";
+import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
    type OwnAuthorizeSource,
@@ -175,7 +179,7 @@ export type ModelType = "model" | "notebook";
  * separately. Absent means the query never had a storage binding to consider.
  */
 export type ServedFrom = "storage" | "live_fallback";
-type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
+export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 /** One reachable authorize gate found by {@link Model.collectEntryPointGates}. */
 type GateEntry = {
@@ -258,6 +262,21 @@ export class Model {
    private serveBindings: ServeBinding[] = [];
    /** Memoized serve-shape materializer, keyed by the bound source set. */
    private serveShapeCache?: { key: string; materializer: ModelMaterializer };
+   /**
+    * The synthesized pre-aggregation model for this model, compiled once per load
+    * by the owning Package (see Package.pushPreaggregateServeModels) and reused by
+    * every query. Undefined when the model declares no usable `#@ preaggregate`
+    * or when synthesis failed — in both cases the serve path is untouched.
+    *
+    * Compiled per load rather than per query because there is nothing per-query
+    * to key it on. Unlike the storage tier, whose shape must recompile as
+    * bindings cross their freshness window, a rollup's freshness is handled
+    * underneath this by the per-query build manifest: while the table is fresh it
+    * substitutes, and when it is not, the composite member simply recomputes the
+    * rollup from the base. Same answer either way, which is what lets one
+    * compiled model serve every query.
+    */
+   private preaggregateServeMaterializer?: ModelMaterializer;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -314,6 +333,8 @@ export class Model {
     *  (or returning undefined) means no override: the runtime-baked manifest
     *  applies, which serves live when unbound. */
    private freshnessResolver?: () => BuildManifest["entries"] | undefined;
+   /** See {@link setPreaggregateEntityIdResolver}. */
+   private preaggregateEntityIdResolver?: () => ReadonlySet<string>;
    /** Entry-point gates per declared source name — see
     *  {@link computeEntryPointGatesBySource}. The one answer that
     *  `sources[].authorize`, {@link getAuthorize} and the early gate all read. */
@@ -1689,6 +1710,53 @@ export class Model {
       return entries ? { entries, strict: false } : undefined;
    }
 
+   /**
+    * Set by the owning Package (see Package.wireFreshnessResolvers). Supplies the
+    * `sourceEntityId`s of the rollups pre-aggregation synthesized, which
+    * {@link withoutPreaggregateEntries} strips from the manifest. A resolver
+    * rather than a value because the build plan it reads is computed AFTER the
+    * models are wired.
+    */
+   public setPreaggregateEntityIdResolver(
+      resolver: () => ReadonlySet<string>,
+   ): void {
+      this.preaggregateEntityIdResolver = resolver;
+   }
+
+   /**
+    * `manifest` with pre-aggregation's own rollup entries removed.
+    *
+    * A synthesized rollup exists ONLY in the companion model (see
+    * preaggregation_synthesis) — the author's model never declares it and can
+    * never reference it, so its manifest entry can substitute nothing there. It
+    * is not merely useless: Malloy refuses a non-empty `buildManifest` against a
+    * model without `##! experimental.persistence`, and a model that declares
+    * `#@ preaggregate` has no reason to carry that flag, since the companion
+    * declares its own. Passing the full manifest to the author's model therefore
+    * turned every query served from it into a 400 the moment a build bound a
+    * manifest — which is every query the companion cannot answer, including any
+    * naming a source it does not import, and every notebook cell.
+    *
+    * So the rule is by ORIGIN: only the companion sees the rollups. Returns
+    * undefined when nothing survives, matching
+    * {@link resolveFreshBuildManifest}'s "no override ⇒ serve live".
+    */
+   private withoutPreaggregateEntries(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      if (!manifest) return undefined;
+      const preaggregateIds = this.preaggregateEntityIdResolver?.();
+      if (!preaggregateIds || preaggregateIds.size === 0) return manifest;
+      const entries = Object.fromEntries(
+         Object.entries(manifest.entries).filter(
+            ([sourceEntityId]) => !preaggregateIds.has(sourceEntityId),
+         ),
+      );
+      return Object.keys(entries).length > 0
+         ? { ...manifest, entries }
+         : undefined;
+   }
+
    public getSources(): ApiSource[] | undefined {
       return this.curateForDiscovery(this.sources);
    }
@@ -1978,6 +2046,58 @@ export class Model {
          current = aliasOf.get(current);
       }
       return false;
+   }
+
+   /**
+    * Every `#@ preaggregate` declaration in this model that cannot take effect.
+    *
+    * Read straight off the compiled `modelDef.contents`, so it reaches an
+    * annotation on any source in the model — including one nothing references,
+    * where a silently-ignored annotation would otherwise be undetectable.
+    *
+    * Returned rather than thrown: the owning Package joins these across its
+    * models into one rejection, so an author fixing a package sees every bad
+    * declaration at once instead of one per publish.
+    */
+   public preaggregateViolations(): PreaggregateViolation[] {
+      if (!this.modelDef) return [];
+      return validateModelPreaggregation(
+         this.modelDef.contents as Record<string, unknown>,
+      );
+   }
+
+   /**
+    * Compile this model's synthesized pre-aggregation companion and keep it for
+    * the serve path, or clear it when there is nothing to synthesize.
+    *
+    * Called by the owning Package, which supplies the package path, connections
+    * and bound manifest a Model does not hold. Never throws: a failure leaves the
+    * serve path exactly as it was, which is serving live.
+    *
+    * Only `.malloy` models are considered. A notebook's cells are compiled
+    * individually and it declares no sources of its own to roll up.
+    */
+   public async buildPreaggregateServeModel(
+      packagePath: string,
+      malloyConfig: ModelConnectionInput,
+      buildManifest?: BuildManifest["entries"],
+   ): Promise<void> {
+      this.preaggregateServeMaterializer = undefined;
+      if (!this.modelDef || this.modelType !== "model") return;
+      // Dynamic import to break a module cycle: the helper compiles through
+      // Model.getModelRuntime, so importing it at the top of this file would make
+      // the two modules import each other.
+      const { tryCompileSynthesizedPreaggregation } = await import(
+         "./preaggregation_compile"
+      );
+      const synthesized = await tryCompileSynthesizedPreaggregation({
+         packagePath,
+         modelPath: this.modelPath,
+         malloyConfig,
+         contents: this.modelDef.contents as Record<string, unknown>,
+         buildManifest,
+      });
+      this.preaggregateServeMaterializer = synthesized?.materializer;
    }
 
    /**
@@ -2548,8 +2668,31 @@ export class Model {
       // to live — which must NOT count as a storage hit, since the hit rate is
       // the tier's headline KPI and would otherwise rise while the tier is down.
       let servedFrom: ServedFrom | undefined;
+      // Set when the query compiled against the pre-aggregation companion model
+      // and will run there. Decides which build manifest the run gets: only the
+      // companion may see pre-aggregation's own rollup entries (see
+      // {@link withoutPreaggregateEntries}).
+      let preaggRouted = false;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
+
+      // Per-query freshness gate (persistence.md §9.3): resolve the
+      // freshness-filtered manifest once and thread it into both the prepare
+      // (for the row limit) and the run so a stale persist source falls back per
+      // its declared policy — and prep/run agree on the same substitution.
+      //
+      // Resolved HERE, above the routing block below, because the pre-aggregation
+      // probe has to compile against the same manifest the run will use.
+      const buildManifest = this.resolveFreshBuildManifest();
+      // The same manifest with pre-aggregation's rollups removed, for every
+      // runnable that is NOT the companion. See the method for why.
+      const liveBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      // Givens supplied only so a joined source's authorize gate could see
+      // them (checked below, against the full unfiltered set) must not reach
+      // the real query if this model doesn't itself surface them — see
+      // filterGivensToModelSurface. Resolved here for the same reason as
+      // `buildManifest`: the pre-aggregation probe needs them.
+      const querySurfaceGivens = this.filterGivensToModelSurface(givens);
 
       // Query boundary FIRST (the *what* axis): reject a target that isn't in
       // the package's queryable surface with a generic 404, before authorize
@@ -2743,6 +2886,66 @@ export class Model {
                );
             }
          }
+
+         // Pre-aggregation serve routing: compile the query against the
+         // synthesized model, where each annotated source is a composite of its
+         // rollups and itself. Malloy then picks a rollup when one covers the
+         // query and the base when none does, so this does not decide routing —
+         // it only offers the choice. Which is why there is no eligibility test
+         // here and no metric for "declined": from out here a covered query and
+         // an uncovered one are the same call.
+         //
+         // Skipped when the storage shape already routed: that runnable resolves
+         // through `virtualMap` rather than the build manifest, and recompiling it
+         // here would discard that. Composing the two tiers is future work.
+         if (this.preaggregateServeMaterializer && !serveVirtualMap) {
+            try {
+               const candidate =
+                  this.preaggregateServeMaterializer.loadRestrictedQuery(
+                     queryString,
+                  );
+               // Compile eagerly, for the same reason loadServeShapeQuery does:
+               // Malloy compiles LAZILY, so `loadRestrictedQuery` cannot throw
+               // here and without this the error escapes at prepare/run instead,
+               // past the catch below — which made a query naming any source the
+               // companion does not import a hard 400 rather than a live answer.
+               // Cheap relative to the run. It must probe with exactly what the
+               // run will use — the build manifest its rollup members resolve
+               // through, and the givens — because the probe's whole job is to
+               // decide routing on the same terms.
+               //
+               // The givens are the load-bearing half, and not for the reason one
+               // would guess. A model-level `given:` does NOT cross the
+               // companion's `import`, so the companion surfaces none: probing
+               // WITH them makes a given-supplying query fail here and fall to
+               // live, which is what we want, while probing without them lets it
+               // compile and then fail at RUN with "unknown given … Model
+               // surfaces []" — an escaped 400, the same class of bug the eager
+               // compile above exists to prevent. Measured both ways; see the
+               // givens test in preaggregation_seams.spec.ts.
+               await candidate.getSQL({
+                  givens: querySurfaceGivens,
+                  buildManifest,
+               });
+               runnable = candidate;
+               preaggRouted = true;
+            } catch (preaggErr) {
+               // Expected, and common: the synthesized model imports only the
+               // sources it rolls up, so a query touching anything else does not
+               // compile against it. Serving live is the right answer for those,
+               // so this is debug rather than a warning.
+               logger.debug(
+                  "query does not compile against the pre-aggregation model; serving live",
+                  {
+                     modelPath: this.modelPath,
+                     error:
+                        preaggErr instanceof Error
+                           ? preaggErr.message
+                           : String(preaggErr),
+                  },
+               );
+            }
+         }
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
@@ -2823,19 +3026,22 @@ export class Model {
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
-      // Per-query freshness gate (persistence.md §9.3): resolve the
-      // freshness-filtered manifest once and thread it into both the prepare
-      // (for the row limit) and the run so a stale persist source falls back per
-      // its declared policy — and prep/run agree on the same substitution.
-      const buildManifest = this.resolveFreshBuildManifest();
+      // `buildManifest` / `liveBuildManifest` / `querySurfaceGivens` are resolved
+      // above the routing block, which needs them for its compile probe.
+      //
       // The serve-shape runnable resolves its tables through `virtualMap`, not
       // the same-connection build manifest, and its transient model carries no
       // `##! experimental.persistence` — so passing a non-empty buildManifest to
-      // it errors. When routing through the shape, suppress the manifest; the
-      // original (live) runnable still gets it.
+      // it errors. When routing through the shape, suppress the manifest.
+      //
+      // Only the pre-aggregation companion may see the FULL manifest: its rollup
+      // entries name sources that exist nowhere else, and the author's model has
+      // no reason to carry the persistence flag those entries require.
       const effectiveBuildManifest = serveVirtualMap
          ? undefined
-         : buildManifest;
+         : preaggRouted
+           ? buildManifest
+           : liveBuildManifest;
 
       // Prepare INSIDE the run try/catch: a bad-given / value-type throw at
       // prepare time (getPreparedResult binds the givens) gets the same
@@ -2848,11 +3054,6 @@ export class Model {
       let executionTime = 0;
       let queryResults;
       let appliedQueryMetadata: QueryMetadata | undefined;
-      // Givens supplied only so a joined source's authorize gate could see
-      // them (checked above, against the full unfiltered set) must not reach
-      // the real query if this model doesn't itself surface them — see
-      // filterGivensToModelSurface.
-      const querySurfaceGivens = this.filterGivensToModelSurface(givens);
       // Same reason as effectiveBuildManifest: the serve shape is built from
       // given-FREE sources, so it surfaces no `given:` and Malloy rejects any
       // supplied name with "unknown given" — a spurious 400, past the routing
@@ -3012,9 +3213,12 @@ export class Model {
             // the connector reads as a hard cap and stops before the first row: a
             // successful, EMPTY answer. Asking the live shape is also the honest
             // limit, since the live shape is what runs.
+            // `liveBuildManifest`, not `buildManifest`: this retry runs on the
+            // AUTHOR's model, which can neither reference a synthesized rollup
+            // nor be assumed to carry `##! experimental.persistence`.
             const livePrepared = await liveRunnable!.getPreparedResult({
                givens: querySurfaceGivens,
-               buildManifest,
+               buildManifest: liveBuildManifest,
             });
             const livePreparedLimit = livePrepared.resultExplore.limit;
             rowLimitSource = queryRowLimitSource(livePreparedLimit);
@@ -3036,7 +3240,7 @@ export class Model {
                rowLimit,
                givens: querySurfaceGivens,
                abortSignal,
-               buildManifest,
+               buildManifest: liveBuildManifest,
                queryMetadata: appliedQueryMetadata,
             });
          } catch (retryError) {
@@ -3445,8 +3649,15 @@ export class Model {
             const cellMaxRows = getMaxQueryRows();
             const cellMaxBytes = getMaxResponseBytes();
             // Per-query freshness gate (see getQueryResults): the same
-            // freshness-filtered manifest gates notebook-cell queries.
-            const buildManifest = this.resolveFreshBuildManifest();
+            // freshness-filtered manifest gates notebook-cell queries — minus
+            // pre-aggregation's rollups, which belong to the companion model and
+            // are never referenced from a notebook cell. A notebook has no
+            // companion (it declares no sources to roll up), so unlike
+            // getQueryResults there is no branch here: the live view is the only
+            // one that applies.
+            const buildManifest = this.withoutPreaggregateEntries(
+               this.resolveFreshBuildManifest(),
+            );
             // See getQueryResults / filterGivensToModelSurface: the gate
             // above already saw the full unfiltered givens.
             const cellSurfaceGivens = this.filterGivensToModelSurface(givens);
@@ -3561,11 +3772,23 @@ export class Model {
       };
    }
 
+   /**
+    * `overlay` maps an absolute `file://` URL to text served INSTEAD of reading
+    * that path from disk; anything not in the map reads from disk as usual. It
+    * exists for pre-aggregation, whose synthesized model is generated per load
+    * and never written to disk, and which must resolve its `import` of the
+    * author's model relative to the real package directory — so the synthesized
+    * text needs a URL inside that directory without a file behind it. `modelPath`
+    * still has to exist: it is what anchors `importBaseURL`.
+    */
    static async getModelRuntime(
       packagePath: string,
       modelPath: string,
       malloyConfig: ModelConnectionInput,
-      options?: { buildManifest?: BuildManifest["entries"] },
+      options?: {
+         buildManifest?: BuildManifest["entries"];
+         overlay?: ReadonlyMap<string, string>;
+      },
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -3596,7 +3819,15 @@ export class Model {
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
       const importBaseURL = baseUrl;
-      const urlReader = new HackyDataStylesAccumulator(URL_READER);
+      const overlay = options?.overlay;
+      const urlReader = new HackyDataStylesAccumulator(
+         overlay && overlay.size > 0
+            ? {
+                 readURL: async (url: URL) =>
+                    overlay.get(url.href) ?? (await URL_READER.readURL(url)),
+              }
+            : URL_READER,
+      );
 
       // Request runtimes borrow the cached package MalloyConfig. The package
       // owns release; callers must not release this runtime per request.
