@@ -171,6 +171,11 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
+   // Memoized {@link getPreaggregateEntityIds}, keyed on the plan it was derived
+   // from so a reload recomputes without an explicit invalidation.
+   private preaggregateEntityIdCache:
+      | { plan: BuildPlan | null; ids: ReadonlySet<string> }
+      | undefined;
    // Sources annotated `#@ persist` that Malloy's getBuildPlan() did not
    // recognize as a materializable build root, so they produced no plan entry
    // and would be a silent no-op (served live). Surfaced as an operator warning
@@ -766,6 +771,21 @@ export class Package {
          );
          throw new BadRequestError(invalidIncremental);
       }
+      // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
+      // given on preaggregatePolicyWarnings: a declaration that cannot take
+      // effect is invisible in the answers, so warning here would leave the
+      // author believing they had a rollup.
+      const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
+      if (invalidPreaggregate) {
+         logger.error(
+            `Package ${packageName} has an invalid pre-aggregation declaration`,
+            {
+               packageName,
+               detail: invalidPreaggregate,
+            },
+         );
+         throw new BadRequestError(invalidPreaggregate);
+      }
       // Persist-target collisions are ALWAYS warn-only at load (never fail an
       // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
       // the flag only governs whether they REJECT a publish (see
@@ -777,6 +797,13 @@ export class Package {
             detail: collisions.join("\n"),
          });
       }
+      // After the gates, so a package with a bad declaration is rejected rather
+      // than having a companion compiled for it. At create time no manifest is
+      // bound yet, so the companion routes to a rollup that recomputes from the
+      // base until a bind triggers reloadAllModels — correct answers, no
+      // acceleration, which is the same resting state as the rest of the persist
+      // path.
+      await pkg.pushPreaggregateServeModels();
       pkg.logEmptyDiscoveryWarnings();
 
       return pkg;
@@ -961,7 +988,37 @@ export class Package {
    private wireFreshnessResolvers(): void {
       for (const model of this.models.values()) {
          model.setFreshnessResolver(() => this.getFreshBuildManifest());
+         model.setPreaggregateEntityIdResolver(() =>
+            this.getPreaggregateEntityIds(),
+         );
       }
+   }
+
+   /**
+    * The `sourceEntityId`s of the sources pre-aggregation SYNTHESIZED, as
+    * distinct from the `#@ persist` sources an author declared. Read off the
+    * build plan's `origin`, which exists to carry exactly this provenance — not
+    * matched on the rollup naming convention, which would silently misclassify
+    * an author's source that happened to share the shape.
+    *
+    * Consumed by Model.withoutPreaggregateEntries, which keeps these entries away
+    * from every runnable except the companion model that declares them.
+    *
+    * Memoized on the build plan's identity: the plan is replaced wholesale on
+    * load, so reference equality is a sufficient and always-correct key.
+    */
+   public getPreaggregateEntityIds(): ReadonlySet<string> {
+      if (this.preaggregateEntityIdCache?.plan === this.buildPlan) {
+         return this.preaggregateEntityIdCache.ids;
+      }
+      const ids = new Set<string>();
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (source.origin === "preaggregate" && source.sourceEntityId) {
+            ids.add(source.sourceEntityId);
+         }
+      }
+      this.preaggregateEntityIdCache = { plan: this.buildPlan, ids };
+      return ids;
    }
 
    /**
@@ -1084,6 +1141,25 @@ export class Package {
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
+   }
+
+   /**
+    * Compile each model's synthesized pre-aggregation companion so the serve path
+    * can route to a rollup (see Model.buildPreaggregateServeModel). Called after
+    * (re)building the model set, and again after a manifest bind, since the
+    * companion is compiled against the manifest that substitutes its tables.
+    *
+    * A no-op for a model with no usable `#@ preaggregate`: synthesis returns
+    * nothing and the model's serve path is left exactly as it was.
+    */
+   private async pushPreaggregateServeModels(): Promise<void> {
+      for (const model of this.models.values()) {
+         await model.buildPreaggregateServeModel(
+            this.packagePath,
+            this.malloyConfig,
+            this.buildManifestEntries,
+         );
+      }
    }
 
    /** Push the current storage serve bindings onto every loaded model. */
@@ -1378,6 +1454,41 @@ export class Package {
     */
    public formatInvalidIncrementalPolicy(): string {
       return this.incrementalPolicyWarnings().join("\n");
+   }
+
+   /**
+    * REJECTION messages for every `#@ preaggregate` declaration in the package
+    * that cannot take effect: one on something other than a measure, one whose
+    * measure cannot be re-aggregated from a stored partial, one whose grain does
+    * not resolve against its source. See preaggregation_validation for the rules.
+    *
+    * Strict at publish AND at load, like {@link incrementalPolicyWarnings} and
+    * unlike {@link persistencePolicyWarnings}. The reason is specific to this
+    * feature: pre-aggregation is invisible when it works, since a query never
+    * names a rollup and returns the same answer either way. So an author whose
+    * declaration was quietly ignored sees correct numbers, assumes acceleration,
+    * and finds out from a bill. Warning at load would put that discovery in an
+    * operator's log and leave the one person who can fix it reading a clean
+    * publish.
+    */
+   public preaggregatePolicyWarnings(): string[] {
+      const messages: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const violation of model.preaggregateViolations()) {
+            // The model path is prepended because the same source name can occur
+            // in two models, and the author needs to know which file to open.
+            messages.push(`${modelPath}: ${violation.message}`);
+         }
+      }
+      return messages;
+   }
+
+   /**
+    * The {@link preaggregatePolicyWarnings} joined into one string, or "" when
+    * every `#@ preaggregate` in the package can take effect.
+    */
+   public formatInvalidPreaggregatePolicy(): string {
+      return this.preaggregatePolicyWarnings().join("\n");
    }
 
    /**
@@ -1734,6 +1845,10 @@ export class Package {
       // connections; re-apply both so a reload preserves serve routing.
       this.pushStorageServeBindingsToModels();
       this.pushServeDestinationConfigToModels();
+      // Same for pre-aggregation, and this is also where a manifest bind lands
+      // (bindManifest → reloadAllModels), so the companion is recompiled against
+      // the manifest that substitutes its rollup tables.
+      await this.pushPreaggregateServeModels();
       this.renderTagWarnings = renderTagWarnings;
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to

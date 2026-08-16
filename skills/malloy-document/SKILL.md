@@ -53,6 +53,24 @@ Doc strings power natural-language search: users type plain-English questions an
 - `#(doc) Groupable by region`: "groupable" is a system concept
 - `#(doc) Aggregation of total sales`: "aggregation" doesn't match natural queries
 
+### Mark conventions as conventions
+
+A `#(doc)` must let a reader tell a **measured fact** from a **choice someone made**. Any dimension or measure encoding a threshold, bucket boundary, or business definition that the user did not explicitly confirm must say so in its own doc string:
+
+```malloy
+// WRONG - a chosen cutoff stated as fact
+#(doc) Popularity band: Hit (70+), Popular (40-69), Moderate (15-39), Obscure (<15)
+
+// RIGHT - the choice is visible and auditable
+#(doc) Popularity band: Hit (70+), Popular (40-69), Moderate (15-39), Obscure (<15).
+#(doc) 70 follows the source dataset's own high-popularity cutoff; 40 and 15 are
+#(doc) working boundaries for this model, not settled by the data.
+```
+
+These are governed models: a threshold nobody confirmed is an assumption, and an unlabeled assumption reads as a fact to everyone downstream, including the agents that answer questions from these docs. The hedge in the `#(doc)` is the artifact-time record; the "Flag Ambiguous Descriptions" table below is the conversation-time surface for getting them confirmed, and `modeling-notes.md`'s "Open decisions" section (see `skill:malloy-modeling`) is where they wait for a subject-matter expert.
+
+Do not hedge measured facts: `avg_energy is avg(energy)` needs no caveat. Hedge only where a domain expert could reasonably choose differently.
+
 ## #(filter): see `malloy-model`
 
 `#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. The full reference (syntax, filter types, `required` / `implicit` flags, and when each applies) lives in `malloy-model` § Parameterizable Filters with `#(filter)` alongside the other source-authoring constructs.
