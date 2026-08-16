@@ -1633,6 +1633,21 @@ export class Package {
       return this.models.get(modelPath);
    }
 
+   /**
+    * Authorization evaluator for /compile. Prefer the target's cached Model;
+    * a new model path has none, so fall back to any package Model solely to
+    * evaluate gates carried by the compiled runnable's own ModelDef.
+    */
+   public getCompileAuthorizationModel(modelPath: string): {
+      model: Model | undefined;
+      exact: boolean;
+   } {
+      const exact = this.models.get(modelPath);
+      return exact
+         ? { model: exact, exact: true }
+         : { model: this.models.values().next().value, exact: false };
+   }
+
    public async getMalloyConnection(
       connectionName: string,
    ): Promise<Connection> {

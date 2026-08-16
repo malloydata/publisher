@@ -316,20 +316,27 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 // URLReader: file:// → fs; everything else proxies to main thread
 // ──────────────────────────────────────────────────────────────────────
 
-function makeWorkerUrlReader(jobId: string): {
+function makeWorkerUrlReader(job: LoadPackageRequest): {
    readURL: (url: URL) => Promise<string>;
 } {
    return {
       readURL: async (url: URL): Promise<string> => {
          if (url.protocol === "file:") {
             const filePath = fileURLToPath(url);
+            if (
+               job.replacement &&
+               path.resolve(filePath) ===
+                  path.resolve(job.packagePath, job.replacement.modelPath)
+            ) {
+               return job.replacement.source;
+            }
             return fs.promises.readFile(filePath, "utf8");
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
             const req: ReadUrlRequest = {
                type: "read-url",
                requestId,
-               jobId,
+               jobId: job.requestId,
                url: url.toString(),
             };
             port.postMessage(req);
@@ -585,9 +592,8 @@ function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
 function buildRuntimeForModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-   jobId: string,
 ): { runtime: Runtime; urlReader: HackyDataStylesAccumulator } {
-   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(jobId));
+   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(job));
    const runtime = new Runtime({
       urlReader,
       config: malloyConfig,
@@ -617,11 +623,7 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
@@ -666,6 +668,7 @@ async function compileMalloyModel(
       givens,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? compiled.problems : undefined,
    };
 }
 
@@ -681,11 +684,7 @@ async function compileNotebookModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
    const parse = MalloySQLParser.parse(fileContents, modelPath);
@@ -809,8 +808,10 @@ async function compileNotebookModel(
    let finalSourceInfos: Malloy.SourceInfo[] | undefined;
    let finalFilterMap: Map<string, FilterDefinition[]> | undefined;
    let finalGivens: ApiGivenWire[] | undefined;
+   let finalProblems: unknown[] | undefined;
    if (mm) {
       const compiled = await mm.getModel();
+      finalProblems = compiled.problems;
       finalModelDef = compiled._modelDef;
       const malloyGivens = Array.from(compiled.givens.values());
       finalGivens =
@@ -852,6 +853,7 @@ async function compileNotebookModel(
       notebookCells,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? finalProblems : undefined,
    };
 }
 
@@ -903,6 +905,12 @@ async function loadPackage(
 
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+   const replacementMatchedExisting = job.replacement
+      ? modelPaths.includes(job.replacement.modelPath)
+      : undefined;
+   if (job.replacement && !replacementMatchedExisting) {
+      modelPaths.push(job.replacement.modelPath);
+   }
 
    // Bracket the compile region: only work from here on is compilation +
    // proxied schema fetches. The setup above (manifest read + file listing)
@@ -927,6 +935,7 @@ async function loadPackage(
       requestId: job.requestId,
       packageMetadata,
       models,
+      replacementMatchedExisting,
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Compile-region wall minus the schema-fetch wait it contains — a
