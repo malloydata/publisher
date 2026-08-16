@@ -18,6 +18,19 @@ Once the package is in shape, self-hosters publish it through their own host: co
 - Malloy model (`.malloy`) and/or notebook (`.malloynb`) files ready
 - The Publisher MCP tools configured (used by the modeling and analysis skills, not by a publish step)
 
+## Connections: a flat-file package needs none
+
+A package backed by data files (CSV/Parquet/XLSX/JSON) needs **no `connections` entry at all** in `publisher.config.json`: every loaded package automatically gets its own DuckDB sandbox connection named `duckdb`, which is what `duckdb.table('data/file.csv')` resolves against. That name is **reserved**: declaring an environment-level connection named `duckdb` fails the whole environment at init (name an env-level DuckDB connection something like `shared_duckdb` instead). See `docs/connections.md`.
+
+Two more facts about how a Publisher server sees the package, both easy to get wrong:
+
+- **A package `location` is treated as local only when it starts with `./`, `../`, `~/`, or `/`.** A bare name like `"spotify"` is silently not local; write `"./spotify"`.
+- **Local authoring means `--watch-env`.** Without `--watch-env <env>`, Publisher **copies** each local package into `publisher_data/` at boot and serves the copy; edits to your source directory are never read, however many times you save. Start the server with `--watch-env <env>` (mounts the package in place and live-reloads), the same command `skill:malloy-html-data-apps` uses:
+
+  ```sh
+  npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
+  ```
+
 ## Step 1: Verify publisher.json
 
 Check if `publisher.json` exists in the package root. If it does, proceed to Step 2.
