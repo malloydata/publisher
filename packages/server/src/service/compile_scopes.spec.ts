@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
 
 // The compile scopes exist to close the gap between /compile and an LSP: the
@@ -133,16 +132,56 @@ source: tracks is base_source extend {
       expect(errors.some((p) => p.model === "tracks.malloy")).toBe(true);
    });
 
+   it("package: uses reload file selection for notebooks and dotfiles", async () => {
+      await fs.mkdir(path.join(rootDir, "env", "pkg", ".git"), {
+         recursive: true,
+      });
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", ".git", "ignored.malloy"),
+         "this is not malloy",
+      );
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "broken.malloynb"),
+         `>>>malloy
+##! experimental.givens
+given:
+  ROLE :: string
+#(authorize) "$NOPE = 'x'"
+source: broken is duckdb.sql("select 1 as id")`,
+      );
+      const { problems } = await compile(
+         "unused.malloynb",
+         undefined,
+         "package",
+      );
+      expect(problems.some((p) => p.model === "broken.malloynb")).toBe(true);
+      expect(problems.some((p) => p.model?.includes(".git"))).toBe(false);
+   });
+
+   it("package: warns when a replacement path is treated as new", async () => {
+      const { problems } = await compile("Base.malloy", BASE_MODEL, "package");
+      expect(
+         problems.some(
+            (p) =>
+               p.severity === "warn" &&
+               p.model === "Base.malloy" &&
+               p.message.includes("did not replace another model"),
+         ),
+      ).toBe(true);
+   });
+
    it("package: does not touch the served model", async () => {
       // The whole point vs. reload: after a dry-run over a broken what-if, the
       // served model still answers, and no reload happened (the package would
       // otherwise be marked stale by a failing one).
+      const pkg = await env.getPackage("pkg");
+      const servedBefore = pkg.getModel("tracks.malloy");
       await compile(
          "base.malloy",
          BASE_MODEL.replace(/base_source/g, "base_renamed"),
          "package",
       );
-      const pkg = await env.getPackage("pkg");
+      expect(pkg.getModel("tracks.malloy")).toBe(servedBefore);
       const { result } = await pkg
          .getModel("tracks.malloy")!
          .getQueryResults("tracks", "v");
@@ -176,14 +215,16 @@ source: tracks is base_source extend {
       for (const scope of ["append", "file"] as const) {
          await expect(
             compile("tracks.malloy", undefined, scope),
-         ).rejects.toBeInstanceOf(BadRequestError);
+         ).rejects.toThrow(
+            `Compile scope "${scope}" requires a source to compile`,
+         );
       }
    });
 
    it("rejects includeSql at package scope", async () => {
       await expect(
          compile("tracks.malloy", undefined, "package", true),
-      ).rejects.toBeInstanceOf(BadRequestError);
+      ).rejects.toThrow(`includeSql is not available at scope "package"`);
    });
 
    it("rejects an unknown scope instead of consuming it", async () => {
@@ -196,7 +237,9 @@ source: tracks is base_source extend {
             undefined,
             "buffer" as never,
          ),
-      ).rejects.toBeInstanceOf(BadRequestError);
+      ).rejects.toThrow(
+         'Invalid compile scope "buffer": expected one of "append", "file", "package".',
+      );
    });
 
    it("rejects a caller #(authorize) annotation at file scope too", async () => {

@@ -113,6 +113,89 @@ describe("compile-path authorize gate (compileSource)", () => {
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
+
+   it("file scope still denies when the submitted edit deletes the gate", async () => {
+      const withoutGate = MODEL.replace(
+         `#(authorize) "$ROLE = 'analyst'"\n`,
+         "",
+      );
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGate}\nrun: gated -> { aggregate: c }`,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("file scope catches a gated final run after an open decoy", async () => {
+      const withoutGate = MODEL.replace(
+         `#(authorize) "$ROLE = 'analyst'"\n`,
+         "",
+      );
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGate}
+run: open_src -> { aggregate: c }
+run: gated -> { aggregate: c }`,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("a brand-new model path cannot bypass an imported source gate", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "scratch.malloy",
+            `import "model.malloy"
+run: gated -> { aggregate: c }`,
+            true,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("uses an on-disk gate for a file added since the last load", async () => {
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "stale.malloy"),
+         MODEL,
+      );
+      const submitted = `${MODEL.replace(
+         `#(authorize) "$ROLE = 'analyst'"\n`,
+         "",
+      )}\nrun: gated -> { aggregate: c }`;
+
+      await expect(
+         env.compileSource(
+            "pkg",
+            "stale.malloy",
+            submitted,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+
+      await expect(
+         env.compileSource(
+            "pkg",
+            "stale.malloy",
+            submitted,
+            false,
+            { ROLE: "analyst" },
+            "file",
+         ),
+      ).resolves.toMatchObject({ problems: [] });
+   });
 });
 
 describe("compile-path is exempt from the query boundary (compileSource)", () => {

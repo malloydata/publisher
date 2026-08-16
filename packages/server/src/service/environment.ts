@@ -9,7 +9,6 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
 import {
    API_PREFIX,
-   MODEL_FILE_SUFFIX,
    normalizeModelPath,
    NOTEBOOK_FILE_SUFFIX,
    README_NAME,
@@ -20,6 +19,7 @@ import {
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
+   NotQueryableError,
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
@@ -37,6 +37,7 @@ import {
 } from "../path_safety";
 import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
+import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
    buildEnvironmentMalloyConfig,
    deleteDuckLakeConnectionFile,
@@ -54,7 +55,7 @@ import {
    splitManifestEntries,
    type FetchedManifest,
 } from "./manifest_loader";
-import { ApiConnection } from "./model";
+import { ApiConnection, Model } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 
@@ -554,7 +555,10 @@ export class Environment {
       // against it only yields a confusing parse error — reject it up front
       // with an actionable message. (Notebooks remain public for
       // discovery/query; this is specific to the compile context.)
-      if (modelName.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+      if (
+         modelName.endsWith(NOTEBOOK_FILE_SUFFIX) &&
+         (scope !== "package" || source !== undefined)
+      ) {
          throw new BadRequestError(
             `Cannot compile against a notebook ("${modelName}"). ` +
                `/compile takes a .malloy model path.`,
@@ -643,10 +647,34 @@ export class Environment {
          // text resolves to undefined, so only the model-wide file-level gate
          // applies. The gate runs against the package's cached Model (its
          // `given:` block + authorize annotations), independent of the virtual
-         // compile below. If the model isn't loaded, there's nothing to enforce
-         // and compilation surfaces its own error.
-         const gateModel = pkg.getModel(modelName);
-         if (gateModel && source !== undefined) {
+         // compile below. A new model path has no cached Model, so its early
+         // surface-syntax gate cannot run; the compiled backstop below instead
+         // evaluates gates carried by the runnable's own ModelDef.
+         let { model: gateModel, exact: hasExactGateModel } =
+            pkg.getCompileAuthorizationModel(modelName);
+         // A file can exist on disk without being in the cached package model
+         // (for example, it was added after the last reload). Compile that
+         // author's file once as an ephemeral gate model so file-level givens
+         // and authorize annotations come from the correct namespace. A truly
+         // new path still falls back to the compiled-runnable gate below.
+         if (!hasExactGateModel && source !== undefined) {
+            const diskTarget = await fs.promises
+               .stat(modelPath)
+               .catch(() => undefined);
+            if (diskTarget?.isFile()) {
+               gateModel = await Model.create(
+                  packageName,
+                  packagePath,
+                  modelName,
+                  pkg.getMalloyConfig(),
+                  {
+                     buildManifest: pkg.getBuildManifestEntries(),
+                  },
+               );
+               hasExactGateModel = true;
+            }
+         }
+         if (gateModel && hasExactGateModel && source !== undefined) {
             // Only the authorize gate (the *who* axis) applies to /compile.
             // The query boundary (`explores`/`queryableSources`, the *what*
             // axis) deliberately does NOT: compile is the authoring loop
@@ -707,49 +735,107 @@ export class Environment {
                      // Not a resolvable file URL — leave the tag off.
                   }
                }
-               if (
-                  model !== undefined &&
-                  path.basename(model) === "__compile_check.malloy"
-               ) {
+               if (scope === "append" && url === virtualUri) {
                   model = modelName;
                }
                return model !== undefined ? { ...problem, model } : problem;
             });
 
          if (scope === "package") {
-            // Dry-run every model file in the package from disk — the same
-            // reach as a reload (imports across files included, hidden files
-            // included), with none of its effects: nothing is swapped, so a
-            // dry-run that fails cannot even transiently disturb the served
-            // model, and a clean one does not bump anything. Files are
-            // enumerated from DISK, not from the loaded package, so a file
-            // added since the last load is validated too — matching what a
-            // reload would compile.
-            const entries = (await fs.promises.readdir(packagePath, {
-               recursive: true,
-            })) as string[];
-            const modelFiles = entries
-               .filter(
-                  (entry) =>
-                     entry.endsWith(MODEL_FILE_SUFFIX) &&
-                     !entry.endsWith(NOTEBOOK_FILE_SUFFIX),
-               )
-               .map((entry) => path.join(packagePath, entry))
-               .sort();
-            // A what-if source for a NEW file is still part of the dry-run.
-            if (source !== undefined && !modelFiles.includes(modelPath)) {
-               modelFiles.push(modelPath);
+            // Gate the caller's replacement once on the main thread. The full
+            // package compile below runs in the load worker, but authorization
+            // probes use the package's live connection/config and must remain
+            // on this side of the worker boundary.
+            if (source !== undefined && gateModel) {
+               try {
+                  const materializer = runtime.loadModel(virtualUrl);
+                  await materializer.getModel();
+                  let finalQuery: ReturnType<
+                     typeof materializer.loadFinalQuery
+                  > | null = null;
+                  try {
+                     finalQuery = materializer.loadFinalQuery();
+                  } catch {
+                     // No runnable query in the replacement text.
+                  }
+                  if (finalQuery) {
+                     await denyHiddenAsNotQueryable(
+                        () => {
+                           if (!hasExactGateModel) {
+                              throw new NotQueryableError(
+                                 "Query target is not queryable.",
+                              );
+                           }
+                           return gateModel.assertCompiledTargetQueryable(
+                              finalQuery,
+                              source,
+                           );
+                        },
+                        () =>
+                           hasExactGateModel
+                              ? gateModel.assertAuthorizedForRunnable(
+                                   finalQuery,
+                                   givens ?? {},
+                                )
+                              : gateModel.assertAuthorizedFromCompiledRunnable(
+                                   finalQuery,
+                                   givens ?? {},
+                                ),
+                     );
+                  }
+               } catch (error) {
+                  // Compiler diagnostics are returned by the worker below.
+                  // Authorization denials are policy outcomes and propagate.
+                  if (!(error instanceof MalloyError)) throw error;
+               }
             }
 
-            // The same declaration reached through several entry files reports
-            // identical problems once per entry; deduped on position+message
-            // so the caller reads each defect once.
+            // Use the exact worker path a reload uses: dotfiles are ignored,
+            // both .malloy and .malloynb files are compiled, CPU work is kept
+            // off the event loop, and the worker's timeout bounds the request.
+            // This does not swap the returned models into the served package.
+            let outcome;
+            try {
+               outcome = await getPackageLoadPool().loadPackage({
+                  packagePath,
+                  packageName,
+                  malloyConfig: pkg.getMalloyConfig(),
+                  defaultConnectionName: "duckdb",
+                  buildManifest: boundManifestEntries,
+                  collectProblems: true,
+                  replacement:
+                     source === undefined
+                        ? undefined
+                        : { modelPath: modelName, source },
+               });
+            } catch (error) {
+               throw new ServiceUnavailableError(
+                  `Package compile worker unavailable: ${
+                     error instanceof Error ? error.message : String(error)
+                  }`,
+               );
+            }
+
+            // Package scope intentionally reports diagnostics from every model
+            // the reload compiler sees, including files hidden from discovery.
+            // It returns no rows or SQL; authorize still gates caller text.
             const seen = new Set<string>();
             const problems: TaggedLogMessage[] = [];
-            const collect = (batch: LogMessage[]): void => {
+            const collect = (
+               batch: LogMessage[],
+               fallbackModel?: string,
+            ): void => {
                for (const problem of tagProblems(batch)) {
+                  const problemUrl = (problem as { at?: { url?: string } }).at
+                     ?.url;
+                  const tagged =
+                     problem.model === undefined &&
+                     problemUrl === undefined &&
+                     fallbackModel !== undefined
+                        ? { ...problem, model: fallbackModel }
+                        : problem;
                   const start = (
-                     problem as {
+                     tagged as {
                         at?: {
                            range?: {
                               start?: { line?: number; character?: number };
@@ -757,77 +843,60 @@ export class Environment {
                         };
                      }
                   ).at?.range?.start;
-                  const key = `${problem.model ?? ""}|${start?.line ?? -1}|${
-                     start?.character ?? -1
-                  }|${problem.severity}|${problem.message}`;
+                  const key = `${tagged.model ?? problemUrl ?? ""}|${
+                     start?.line ?? -1
+                  }|${start?.character ?? -1}|${tagged.severity}|${
+                     tagged.message
+                  }`;
                   if (seen.has(key)) continue;
                   seen.add(key);
-                  problems.push(problem);
+                  problems.push(tagged);
                }
             };
-
-            for (const filePath of modelFiles) {
-               const entryUrl =
-                  substitute && filePath === modelPath
-                     ? virtualUrl
-                     : pathToFileURL(filePath);
-               let materializer: ReturnType<Runtime["loadModel"]> | undefined;
-               try {
-                  materializer = runtime.loadModel(entryUrl);
-                  const model = await materializer.getModel();
-                  collect(model.problems);
-               } catch (error) {
-                  if (error instanceof MalloyError) {
-                     collect(error.problems);
-                     continue;
-                  }
-                  // A file the dry-run cannot even read is a finding, not a
-                  // 500: the point of the scope is one pass over everything.
-                  collect([
-                     {
-                        severity: "error",
-                        message: `Could not compile ${path.relative(
-                           packagePath,
-                           filePath,
-                        )}: ${error instanceof Error ? error.message : String(error)}`,
-                     } as LogMessage,
-                  ]);
-                  continue;
+            for (const compiled of outcome.models) {
+               if (compiled.problems) {
+                  collect(
+                     compiled.problems as LogMessage[],
+                     compiled.modelPath,
+                  );
                }
-               // The runnable backstop applies only to the CALLER's text (the
-               // what-if replacement); the package's own files are author
-               // content, gated at query time like a reload's. Outside the
-               // compile try so its denials propagate as denials.
-               if (
-                  source !== undefined &&
-                  filePath === modelPath &&
-                  gateModel &&
-                  materializer
-               ) {
-                  let queryMaterializer: ReturnType<
-                     typeof materializer.loadFinalQuery
-                  > | null = null;
-                  try {
-                     queryMaterializer = materializer.loadFinalQuery();
-                  } catch {
-                     // No runnable query in the replacement text.
-                  }
-                  if (queryMaterializer) {
-                     const finalQuery = queryMaterializer;
-                     await denyHiddenAsNotQueryable(
-                        () =>
-                           gateModel.assertCompiledTargetQueryable(
-                              finalQuery,
-                              source,
-                           ),
-                        () =>
-                           gateModel.assertAuthorizedForRunnable(
-                              finalQuery,
-                              givens ?? {},
-                           ),
+               if (compiled.compilationError) {
+                  const compilerProblems =
+                     compiled.compilationError.malloyProblems;
+                  if (compilerProblems) {
+                     collect(
+                        compilerProblems as LogMessage[],
+                        compiled.modelPath,
+                     );
+                  } else {
+                     collect(
+                        [
+                           {
+                              severity: "error",
+                              message: compiled.compilationError.message,
+                           } as LogMessage,
+                        ],
+                        compiled.modelPath,
                      );
                   }
                }
+            }
+            if (
+               source !== undefined &&
+               outcome.replacementMatchedExisting === false
+            ) {
+               collect(
+                  [
+                     {
+                        severity: "warn",
+                        message:
+                           `No existing package file exactly matched ` +
+                           `"${modelName}"; the source was validated as a new ` +
+                           `file and did not replace another model.`,
+                     } as LogMessage,
+                  ],
+                  modelName,
+               );
             }
             return { problems };
          }
@@ -874,16 +943,27 @@ export class Environment {
             if (queryMaterializer && gateModel) {
                const materializer = queryMaterializer;
                await denyHiddenAsNotQueryable(
-                  () =>
-                     gateModel.assertCompiledTargetQueryable(
+                  () => {
+                     if (!hasExactGateModel) {
+                        throw new NotQueryableError(
+                           "Query target is not queryable.",
+                        );
+                     }
+                     return gateModel.assertCompiledTargetQueryable(
                         materializer,
                         source,
-                     ),
+                     );
+                  },
                   () =>
-                     gateModel.assertAuthorizedForRunnable(
-                        materializer,
-                        givens ?? {},
-                     ),
+                     hasExactGateModel
+                        ? gateModel.assertAuthorizedForRunnable(
+                             materializer,
+                             givens ?? {},
+                          )
+                        : gateModel.assertAuthorizedFromCompiledRunnable(
+                             materializer,
+                             givens ?? {},
+                          ),
                );
             }
 

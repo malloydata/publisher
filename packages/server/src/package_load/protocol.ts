@@ -104,6 +104,15 @@ export interface LoadPackageRequest {
    defaultConnectionName: string | null;
    /** Optional row-build manifest passed through to Malloy Runtime. */
    buildManifest?: unknown;
+   /**
+    * Optional in-memory replacement used by a package compile dry-run. The
+    * worker still enumerates and compiles the package exactly like a reload,
+    * but reads this text instead of the named file. If the path is new it is
+    * added to the compile set without touching disk.
+    */
+   replacement?: { modelPath: string; source: string };
+   /** Include non-fatal compiler diagnostics in SerializedModel results. */
+   collectProblems?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -147,6 +156,8 @@ export interface SerializedModel {
    dataStyles?: unknown;
    /** Wall-clock ms spent compiling this single model in the worker. */
    compileDurationMs?: number;
+   /** Non-fatal compiler diagnostics emitted while compiling this model. */
+   problems?: unknown[];
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
 }
@@ -193,6 +204,8 @@ export interface LoadPackageResult {
       manifestWarnings?: string[];
    };
    models: SerializedModel[];
+   /** Whether the replacement path exactly matched an enumerated package file. */
+   replacementMatchedExisting?: boolean;
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**

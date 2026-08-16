@@ -4578,12 +4578,14 @@ components:
             redefine"), and diagnostic positions land in the concatenated
             virtual file. "file" compiles the source AS that model, replacing
             its on-disk content for the check — validates an edit before
-            saving, at true file coordinates. "package" is a dry-run of every
-            .malloy file in the package as saved — a reload's reach (imports
-            across files) with none of its effects on the served model; with a
-            source, importers compile against the replacement. includeSql is
-            not available at "package". An invalid value is rejected with a
-            400 naming the valid set.
+            saving, at true file coordinates. "package" runs the same worker
+            compiler and file selection as reload over every .malloy and
+            .malloynb file, without swapping the result into the served
+            package; with a source, importers compile against the replacement.
+            Package diagnostics can name files hidden from discovery. No rows
+            or SQL are returned, and caller-provided source remains subject to
+            authorize gates. includeSql is not available at "package". An
+            invalid value is rejected with a 400 naming the valid set.
         includeSql:
           type: boolean
           default: false

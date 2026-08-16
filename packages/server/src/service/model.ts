@@ -812,7 +812,20 @@ export class Model {
       const ownSourceName =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
       await this.assertAuthorized(ownSourceName, givens);
+      await this.assertAuthorizedFromCompiledRunnable(runnable, givens);
+   }
 
+   /**
+    * Gate only from the compiled runnable's own ModelDef. Used when /compile
+    * targets a brand-new path that has no cached Model to provide the
+    * source-name gate. The prepared query still carries the imported source
+    * definitions and their inherited authorize annotations, so this closes the
+    * missing-model fail-open without borrowing an unrelated file-level gate.
+    */
+   public async assertAuthorizedFromCompiledRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
       const { struct, modelDef, compositeResolvedSourceDef } =
          await this.resolveRunTargetStruct(runnable);
       const seen = new Set<SourceDef>();

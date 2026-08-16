@@ -36,7 +36,7 @@ const compileShape = {
       .enum(["append", "file", "package"])
       .optional()
       .describe(
-         'What source means. "append" (default): appended to modelPath, for validating NEW definitions (an edit collides with "Cannot redefine"). "file": compiled AS modelPath, replacing its content — validates an edit pre-save at true file coordinates. "package": dry-run every .malloy file as saved (reload\'s reach, none of its effects); with source, importers compile against the edit.',
+         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": run reload\'s worker compiler over all .malloy/.malloynb files without serving the result; an optional source replaces modelPath.',
       ),
    includeSql: z
       .boolean()
@@ -52,15 +52,15 @@ const compileShape = {
       ),
 };
 
-const COMPILE_DESCRIPTION = `Compile-check Malloy source against a package and return structured diagnostics WITHOUT running anything. Use this to validate a model or a change while authoring, instead of a throwaway malloy_executeQuery.
+const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use this while authoring instead of a throwaway malloy_executeQuery.
 
 ## Scopes (the scope parameter)
-- "append" (default): the source is appended to modelPath and compiled in its namespace. For NEW definitions and queries. Resubmitting a definition the model already declares reports "Cannot redefine" — use scope "file" for edits — and diagnostics are positioned in the CONCATENATED file, so a line in your source lands after the model's own line count.
-- "file": the source is compiled AS modelPath, replacing its on-disk content for this check. This is how to validate an EDIT before saving; diagnostics land at true file coordinates.
-- "package": a dry-run of every .malloy file in the package as saved — reload's reach (imports across files) with none of its effects on the served model. An optional source is a what-if replacement for modelPath, so importers compile against the edit. includeSql is not available here. A clean dry-run still requires malloy_reloadPackage after saving for the edit to serve.
+- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file.
+- "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
+- "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and #(authorize) still gates caller text. A missing exact path is warned and treated as a new file. Save and call malloy_reloadPackage to serve a clean edit.
 
 ## Parameters
-- environmentName, packageName, modelPath (required). source: required at append/file, optional at package. includeSql (append/file): also return generated SQL when the source ends in a runnable query; never executed, no data scanned. givens: values for the model's given: block and any #(authorize) gate. An #(authorize) annotation in the source itself is rejected — gates come only from package files.
+- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and #(authorize) values. Caller source may not declare #(authorize).
 
 ## Response
 { status: "success"|"error", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file the diagnostic points at (which can be pre-existing content, not your source). status is "error" only when an error-severity diagnostic exists; errors are also stated in a plain text block.`;
