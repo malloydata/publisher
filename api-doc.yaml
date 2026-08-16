@@ -2848,6 +2848,50 @@ components:
             empty and renders a blank page. Server-computed and read-only:
             ignored on create/update requests and only returned in responses.
             Present only when there are such findings.
+
+
+            **Pre-aggregation contributes nothing to this array. A
+            `#@ preaggregate` that cannot be honored is an ERROR, never a
+            warning** — a 400 at publish or PATCH, and a load failure thereafter.
+            Rejected are a `#@ preaggregate` anywhere but on a measure;
+            a `#@ preaggregate` with no `grain=`;
+            a grain naming anything but a dimension the base source itself
+            declares, which rules out an inline time truncation such as
+            `order_time.day`; a measure that cannot be correctly
+            re-aggregated to a coarser grain, whether because its aggregate has no
+            exact merge function (`count(distinct)`, `median`, percentiles, `mode`,
+            and `avg` until it is decomposed) or because it carries its own filter,
+            an ungrouping (`all`, `exclude`), or a required group-by; a measure
+            whose expression cannot be POSITIVELY classified as re-aggregatable,
+            which fails closed rather than being guessed at; a base source with a
+            FAN-OUT join (`join_many` or `join_cross`), which can multiply rows,
+            while a `join_one` is permitted and a measure aggregating through one
+            is served normally; a base source that already fails persist eligibility (unbound
+            parameters, `given` references, `#(authorize)` gates); `sharing=` or
+            `schedule=` at the resource level; and a synthesized rollup name that
+            collides with an existing model object. Each names the measure and the
+            fix.
+
+
+            Refusing rather than silently dropping the measure is the deliberate
+            choice. A dropped measure is not served from the rollup at ANY grain,
+            so the declaration would have no effect whatsoever while still reading
+            as applied — and the build cost of the rollup would still be paid. An
+            author who writes `#@ preaggregate` on a measure that cannot be rolled
+            up has made a modeling mistake, and an error is where a mistake
+            belongs.
+
+
+            The same verdict is enforced at LOAD, not only at publish, so a
+            package whose declarations stopped being honorable does not load at
+            all: it is absent from its environment and reported in
+            `ServerStatus.loadErrors`. Worth knowing because whether a measure can
+            be re-aggregated is derived from the compiled model, so a Malloy
+            version change can in principle reclassify a measure that published
+            cleanly long before. That surfaces as a package that stops loading
+            rather than as a package quietly serving without its rollups — louder,
+            and deliberately so, since the alternative is paying for rollups that
+            answer nothing.
           items:
             type: object
             properties:
@@ -4855,6 +4899,45 @@ components:
           type: string
         dialect:
           type: string
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          default: persist
+          description: >-
+            Which authoring annotation produced this plan entry. `persist` — the
+            modeler wrote `#@ persist` on the source; every entry on a deployment
+            that uses no pre-aggregation, and the meaning of an absent value.
+            `preaggregate` — the modeler wrote `#@ preaggregate` on measures of
+            `preaggregate.baseSourceName`, and the publisher SYNTHESIZED this
+            rollup source to serve them.
+
+
+            Note that BOTH kinds carry a `#@ persist` annotation by the time they
+            reach this plan, because synthesis emits one (see `annotationFields`).
+            So this reports which surface the AUTHOR used, not which annotation
+            sits on the source — which is the question worth answering, since a
+            `preaggregate` entry's `name` appears in no model file and without
+            this field an operator or orchestrator sees a source nobody wrote with
+            no way to tell it from one they did.
+
+
+            Everything downstream is deliberately indifferent to it: a synthesized
+            entry is built, identified, manifested, shared and garbage-collected
+            exactly like a hand-written one.
+        preaggregate:
+          oneOf:
+            - $ref: "#/components/schemas/PreaggregatePlan"
+            - type: "null"
+          description: >-
+            What the synthesized rollup covers: the base source it was derived
+            from, the one grain it is built at, and the measures served there.
+            Present only when `origin` is `preaggregate`; null otherwise.
+
+
+            Coverage is complete by construction — a measure that cannot be
+            correctly re-aggregated is refused at publish rather than dropped
+            from the rollup — so there is no per-measure omission list to
+            reconcile against the model.
         sourceEntityId:
           type: string
           description: >-
@@ -4893,6 +4976,14 @@ components:
             scope modes. (Per-source `sharing`/`schedule` were retired: scope is
             a single package-level mode and a schedule is package-root-only —
             declaring either on a source is a publish-time manifest error.)
+
+
+            A synthesized rollup (`origin: preaggregate`) declares nothing of its
+            own and gets no freshness policy of its own: it INHERITS its base's,
+            so what is reported here is the base source's effective objective
+            resolved by the rule above. A rollup and its base therefore go stale
+            together, which is what makes "serve the base when the rollup is
+            stale" a safe degradation rather than a change of answer.
         queryMetadata:
           oneOf:
             - $ref: "#/components/schemas/QueryMetadata"
@@ -4947,14 +5038,141 @@ components:
             a dangling or stale name is rejected rather than deferred to a build.
             Neither participates in `sourceEntityId`: adding a watermark to an
             existing source must not re-address its table.
+
+
+            For a synthesized rollup (`origin: preaggregate`) the annotation was
+            generated by the publisher rather than authored, so this reports what
+            synthesis emitted. It is still the annotation that governs the build,
+            which is why it is reported the same way: a rollup is an ordinary
+            persist source whose `#@ persist` nobody typed.
         modelPath:
           type: string
-          description:
+          description: >-
             Package-relative path of the `.malloy` model that declares this
             source (e.g. `order_rollup.malloy`). The source's sourceID embeds an
             absolute `file://` modelURL with no package boundary, so this is the
             only place the relative path is exposed; callers use it to deep-link
             the source back to its model.
+
+
+            A synthesized rollup (`origin: preaggregate`) is declared by no model,
+            so this is the model of its base — the file holding the
+            `#@ preaggregate` annotations it was synthesized from, which is where
+            an author would go to change it.
+
+    PreaggregatePlan:
+      type: object
+      description: >-
+        Provenance for a rollup source synthesized from `#@ preaggregate`
+        annotations. A query never names a rollup, never changes shape because one
+        exists, and gets the same answer whether one is used or not, so this is
+        the only place the set of rollups and the coverage of each is visible at
+        all.
+
+
+        **This object describes ONE rollup table, at ONE grain.** A rollup is a
+        single `GROUP BY`, so a grain is a property of the table, not of the
+        individual measures in it: `grainDimensions` lists the dimensions of that
+        one grain, and `measures` are the measures served at it.
+
+
+        That inverts how the grain was authored, which is worth knowing before
+        reading a plan. The modeler declares per measure — `#@ preaggregate
+        grain="order_day, category"` — and may declare a measure at SEVERAL grains
+        by writing several annotation lines on it, each of which is its own rollup.
+        The publisher then packs every measure declaring the same (grain,
+        connection, base source) into a single synthesized source, because ten
+        measures at one grain should be one table and one CTAS rather than ten. So
+        the plan has one entry per DISTINCT grain declared anywhere on the source,
+        which is neither the number of annotated measures nor the number of
+        annotations: a measure declared at two grains appears in two entries, and
+        two measures sharing a grain appear in one. To recover the per-measure view
+        that was written, iterate `buildPlan.sources`, keep the `origin:
+        preaggregate` entries, and invert each entry's grain-to-measures pairing.
+
+
+        Choosing between two rollups and one at the combined grain is a size
+        judgement, not a correctness one — see `grainDimensions`.
+      required: [baseSourceName, grainDimensions, measures]
+      properties:
+        baseSourceName:
+          type: string
+          description: >-
+            The source whose measures carry the `#@ preaggregate` annotations this
+            rollup was synthesized from. Queries name THIS source; the rollup is
+            selected behind it, or bypassed, per grain coverage.
+        grainDimensions:
+          type: array
+          items:
+            type: string
+          description: >-
+            The dimensions of the ONE grain this rollup is built at — the parsed
+            form of a single `grain=` annotation value, so `grain="order_day,
+            category"` reports as two entries here and not as two grains.
+
+
+            **Every entry is a dimension the base source itself declares**, never
+            a truncation written inline. `grain="order_time.day"` is refused at
+            publish: a stored column of truncated values either shadows the base's
+            own `order_time` and answers untruncated queries from truncated rows,
+            or is named something no query references and serves nothing. So time
+            grains are reached by declaring `dimension: order_day is
+            order_time.day` on the source and naming `order_day` here.
+
+
+            **Sorted, and canonically so.** Synthesis derives the rollup's name
+            and identity from the sorted grain, so two authors who write the same
+            dimensions in different orders get one table rather than two. Compare
+            grains as sets using this list; never by the annotation's original
+            string, which is not canonical.
+
+
+            A query can be answered here only if this grain covers it: every
+            dimension the query groups by is in this list, or is a coarser
+            truncation of one (a `month` of a stored `order_day` is derivable and
+            does route; a `day` of a stored `order_month` is not). Which makes the
+            set of grains ACROSS a package the whole performance story, and the
+            reason adding a rollup per query shape is the documented way to spend
+            more on builds than you save.
+
+
+            Note that covering does not require an exact match: a query grouping
+            by a SUBSET of these dimensions — or by none of them — is served here
+            too, by re-aggregating across the ones it omits. So one rollup at the
+            finest grain an author needs does subsume every coarser one, and a
+            combined grain is often the economical choice.
+
+
+            That subsumption is about coverage, though, not cost, and it is why a
+            measure may still be declared at several grains. A combined grain has
+            roughly the PRODUCT of its dimensions' cardinalities, so
+            `customer_id, order_day` can approach the base table's row count and
+            save almost nothing, while `order_day` alone is tiny. Two rollups then
+            beat one, each query reading the smallest that covers it, at the price
+            of two tables to build and refresh. Correctness is identical either
+            way; the choice is size against build cost.
+        measures:
+          type: array
+          items:
+            type: string
+          description: >-
+            The measures served at this rollup's grain, under their original names
+            — the names a query uses, not the names of the partial-aggregate
+            columns stored to serve them. A query using only these, at a grain
+            this rollup covers, is eligible to be served from its table.
+
+
+            These are the measures whose `#@ preaggregate` named THIS grain. A
+            measure declared at a different grain is not missing: it is in the
+            plan entry for that grain. Do not read this list as the base source's
+            full set of pre-aggregated measures — that is the union of these lists
+            across every entry sharing a `baseSourceName`.
+
+
+            **Every measure that declared this grain is here.** There is no
+            partial rollup and no per-measure omission to check: a measure that
+            cannot be correctly re-aggregated is refused at publish, so a rollup
+            that exists carries everything that asked to be in it.
 
     Realization:
       type: string
@@ -5210,6 +5428,29 @@ components:
             healthy one.
         sourceName:
           type: string
+          description: >-
+            The persist source this table was built for. Convenience only:
+            `sourceEntityId` is the identity, and this is the human-readable label
+            beside it.
+
+
+            **It may name no source in any model file.** A pre-aggregation rollup
+            is a persist source the publisher synthesized, so its name is
+            generated (see `PersistSourcePlan.origin`). Match on
+            `sourceEntityId`; do not resolve this against a package's models and
+            treat a miss as a corrupt manifest.
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          default: persist
+          description: >-
+            Mirrors `PersistSourcePlan.origin` for the source this entry was built
+            from: `persist` for a source the modeler wrote `#@ persist` on, which
+            is the meaning of an absent value, and `preaggregate` for a rollup
+            synthesized from `#@ preaggregate` measures. Repeated here because a
+            manifest travels without its build plan, and a consumer holding only
+            the manifest otherwise cannot tell why it holds a table for a source
+            that does not appear in the package.
         materializedTableId:
           type: string
           description: Echoes the caller-assigned id from the BuildInstruction.

@@ -48,8 +48,8 @@ dimension: is_complete is status = 'complete'
 
 | LookML Measure Type | Malloy Equivalent | Notes |
 |---------------------|-------------------|-------|
-| `type: count` | `count()` | Malloy `count()` is always distinct |
-| `type: count_distinct` | `count(field)` | Direct mapping |
+| `type: count` | `count()` | Both count rows, so this is a direct mapping |
+| `type: count_distinct` | `count(field)` | `count(field)` is already distinct; `count(distinct field)` is deprecated |
 | `type: sum` | `sum(field)` | Direct mapping |
 | `type: average` | `avg(field)` | Direct mapping |
 | `type: min` / `max` | `min(field)` / `max(field)` | Direct mapping |

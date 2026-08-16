@@ -137,35 +137,32 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       });
    });
 
-   /**
-    * Pre-existing drift, bounded rather than exempted. Every SKILL.md honours
-    * the house style; these three reference files never did, because nothing
-    * checked them until they entered the bundle. Fixing 23 prose em-dashes in
-    * three SHARED skills is an upstream-first change of its own, not something
-    * to bundle into the build-time asset that surfaced it.
-    *
-    * Listed by name so a NEW violation still fails: shrink this list as the
-    * files are fixed, and delete it when it is empty.
-    */
-   const EM_DASH_DRIFT = new Set([
-      "malloy-html-data-apps/lazy-load",
-      "malloy-html-data-apps/verification-harness",
-      "malloy-lookml-review/build-derived-tables",
-   ]);
-
+   // No allowlist: the three reference files that carried the last of the
+   // drift were rewritten upstream and copied back, so every entry in the
+   // bundle now honours the house style and a new em-dash fails outright.
+   //
+   // Descriptions count as well as bodies. A SKILL.md's frontmatter
+   // description is not part of its body, and it ships as the MCP prompt's
+   // description, so it is bundle text like any other.
    it("carries no em-dashes (house style)", () => {
-      const offenders = skills
-         .filter((s) => !EM_DASH_DRIFT.has(s.name) && s.body.includes("—"))
-         .map((s) => s.name);
-      expect(offenders).toEqual([]);
-   });
+      const hasEmDash = (s: SkillEntry) =>
+         s.body.includes("—") || s.description.includes("—");
 
-   it("the em-dash allowlist names only entries that still need fixing", () => {
-      // Stops the list outliving the drift: an entry that has been cleaned up,
-      // or renamed away, has to leave the list.
-      const stillDrifting = skills
-         .filter((s) => EM_DASH_DRIFT.has(s.name) && s.body.includes("—"))
-         .map((s) => s.name);
-      expect([...EM_DASH_DRIFT].sort()).toEqual(stillDrifting.sort());
+      // Positive controls, one per field the predicate reads. With the
+      // allowlist gone the offenders assertion runs against a clean tree, so
+      // it would pass for free if the predicate ever stopped detecting; the
+      // deleted allowlist test proved that incidentally, by asserting the
+      // listed entries still held one. An empty description (or body) on
+      // the other control is load-bearing: it is the half that would stay
+      // green if that field were dropped from the predicate.
+      expect(
+         hasEmDash({ name: "control", description: "", body: "a — b" }),
+      ).toBe(true);
+      expect(
+         hasEmDash({ name: "control2", description: "a — b", body: "" }),
+      ).toBe(true);
+
+      const offenders = skills.filter(hasEmDash).map((s) => s.name);
+      expect(offenders).toEqual([]);
    });
 });
