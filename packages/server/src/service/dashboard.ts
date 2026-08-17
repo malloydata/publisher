@@ -49,6 +49,8 @@ import {
    tagText,
    unwrapFilterLiteral,
    UNSAFE_TO_PARSE,
+   ENV_REFERENCE_DROPPED,
+   ANNOTATION_TOO_LONG,
 } from "./motly";
 
 // Re-exported because the MOTLY primitives moved to `motly.ts` but read as part
@@ -336,7 +338,8 @@ export interface DashboardDrill {
    dimension: string;
    /** Destinations: a dashboard slug each, or the literal `self`. */
    to: string[];
-   /** Overrides the given name, which otherwise upper-cases the dimension. */
+   /** Overrides the given name, which is otherwise the dimension name
+    *  verbatim (see `resolveDrill.ts`, which owns that rule). */
    given?: string;
 }
 
@@ -801,13 +804,40 @@ export function lintDashboard(
    const add = (message: string, severity: "error" | "warn" = "warn") =>
       findings.push({ subject: slug, message, severity });
 
-   const ownTag = manifest.tiles
-      ? motlyTag(facts.modelAnnotations)
-      : motlyTag(
-           facts.queries.find((query) => query.name === manifest.query)
-              ?.annotations ?? [],
-        );
+   // One selection, used for both the tag and the parse-failure report below,
+   // so the two cannot disagree about which annotations belong to this
+   // dashboard.
+   const ownAnnotations = manifest.tiles
+      ? facts.modelAnnotations
+      : (facts.queries.find((query) => query.name === manifest.query)
+           ?.annotations ?? []);
+   const ownTag = motlyTag(ownAnnotations);
    const artifactTag = ownTag?.tag("artifact");
+
+   // A dropped or refused annotation on a dashboard that STILL BUILT. Every
+   // reason `motlyParseErrors` reports is per LINE and upstream of the parse,
+   // so a well-formed `## artifact` beside a `## note=@env.X` yields a working
+   // dashboard with one line silently removed.
+   //
+   // Needed here because package.ts runs exactly one of the two dashboard
+   // lints: `lintUndiscoveredDashboard` reports these only for a file that
+   // produced NO dashboard, so before this the author of a working dashboard
+   // was told nothing at all. Measured: that file built and produced zero
+   // findings.
+   //
+   // Scoped to this dashboard's OWN annotations rather than every query in the
+   // file, which is what the undiscovered lint reads. It has no dashboard to
+   // attribute to and casts wide on purpose; here a sibling query's broken tag
+   // would be reported against a dashboard that does not contain it.
+   //
+   // Worded for a dashboard that exists. The undiscovered wording ("treated as
+   // a shared include rather than a dashboard") is false on this path.
+   for (const message of new Set(motlyParseErrors(ownAnnotations))) {
+      add(
+         `Annotation ${describeParseFailure(message)}, so that line had no ` +
+            `effect on this dashboard.`,
+      );
+   }
 
    // The grid width has two spellings and BOTH reach the manifest (see
    // readArtifactTag), so both are checked here. Checking only the artifact-tag
@@ -891,6 +921,30 @@ export function lintDashboard(
       }
    }
 
+   // A starting value for a given this file cannot bind. Distinct from the two
+   // checks above, which are about a given a QUERY references: this one is
+   // authored directly in `## artifact { givens { … } }`, so it needs no query
+   // to mention it and neither check sees it.
+   //
+   // What happens without this: `Model.givens` is the same surface
+   // `filterGivensToModelSurface` enforces at query time, so the value is
+   // dropped there and the dashboard opens at the declaration's default. The
+   // manifest still advertises it, and there is no control for it in the row,
+   // since that row comes from the same surface. Silent in all three places.
+   //
+   // Reported rather than dropped from the manifest, deliberately. The value is
+   // what the author wrote, and a consumer diffing the manifest against what it
+   // got back can see the discrepancy; removing it leaves nothing to notice.
+   for (const name of Object.keys(manifest.startingGivens ?? {})) {
+      if (facts.givens.has(name)) continue;
+      add(
+         `'artifact { givens { ${name}=… } }' sets a starting value for given ` +
+            `"${name}", which this file does not import, so the value is ` +
+            `dropped at query time and the dashboard opens at the ` +
+            `declaration's default. Add it to an import in ${facts.modelPath}.`,
+      );
+   }
+
    for (const spec of manifest.givens) {
       const suggest = spec.suggest;
       if (!suggest) {
@@ -956,6 +1010,28 @@ export function lintDashboard(
 }
 
 /**
+ * How a `motlyParseErrors` message should be introduced to an author.
+ *
+ * Three of the four messages are REFUSALS rather than syntax errors: the
+ * annotation is well formed and was not parsed, by policy or by a guard. Saying
+ * "does not parse" for those sends the author hunting a syntax error in a line
+ * that has none. Kept as one function because the set has grown twice and both
+ * times a call site was left behind.
+ */
+function describeParseFailure(message: string): string {
+   if (message === UNSAFE_TO_PARSE) {
+      return `was refused rather than parsed (${message}), which can be caused by something outside this file`;
+   }
+   if (message === ENV_REFERENCE_DROPPED) {
+      return `was dropped rather than parsed (${message}), so nothing on that line took effect`;
+   }
+   if (message === ANNOTATION_TOO_LONG) {
+      return `was refused rather than parsed (${message})`;
+   }
+   return `does not parse (${message})`;
+}
+
+/**
  * Explain a `dashboards/*.malloy` that produced no dashboard.
  *
  * A file with no artifact tag is a shared include and silent, as Malloyyo
@@ -968,19 +1044,26 @@ export function lintUndiscoveredDashboard(
    facts: DashboardModelFacts,
 ): DashboardLintFinding[] {
    const subject = dashboardSlug(facts.modelPath);
-   const errors = [
+   // Deduplicated, like lintGivenTags and for the same reason: every finding
+   // here carries the same subject (the file's slug), so two tags in the file
+   // failing the same way produce byte-identical findings. The commonest shape
+   // is two queries each carrying an unparseable tag.
+   //
+   // Keyed on the FINAL message rather than the raw one. Deduping on the raw
+   // message happens to be equivalent today, because `describeParseFailure`
+   // embeds it verbatim, but three of its four branches return a constant, so
+   // that is incidental rather than a property worth depending on.
+   const messages = [
       ...motlyParseErrors(facts.modelAnnotations),
       ...facts.queries.flatMap((query) => motlyParseErrors(query.annotations)),
-   ];
-   const findings = errors.map((message) => ({
+   ].map(
+      (message) =>
+         `Tag ${describeParseFailure(message)}, so the whole tag is discarded ` +
+         `and this file is treated as a shared include rather than a dashboard.`,
+   );
+   const findings = Array.from(new Set(messages), (message) => ({
       subject,
-      message:
-         (message === UNSAFE_TO_PARSE
-            ? `Tag was refused rather than parsed (${message}), which can be ` +
-              `caused by something outside this file, so the whole tag is ` +
-              `discarded and `
-            : `Tag does not parse (${message}), so the whole tag is discarded and `) +
-         `this file is treated as a shared include rather than a dashboard.`,
+      message,
       severity: "error" as const,
    }));
    if (findings.length > 0) return findings;
@@ -1037,8 +1120,9 @@ export function lintGivenTags(
             findings.set(`${name}|${message}`, {
                subject: name,
                message:
-                  `given "${name}" has an annotation that does not parse ` +
-                  `(${message}), so the whole line is discarded and the given ` +
+                  `given "${name}" has an annotation that ` +
+                  `${describeParseFailure(message)}, so the whole line is ` +
+                  `discarded and the given ` +
                   `loses any label, control, range or suggest it declared. ` +
                   `It still accepts values; only its presentation is lost.`,
                severity: "error",
@@ -1131,9 +1215,15 @@ function drillGivenName(drill: DashboardDrill): string {
 export function lintSelfDrills(
    facts: readonly DashboardModelFacts[],
 ): DashboardLintFinding[] {
+   // Folded, because the surfaces that consume a drill fold: the SDK dashboard
+   // viewer resolves a tag's name against a case-folded map of the declared
+   // givens (`Dashboard.tsx`, `givenNamesByFold`), and the notebook does the
+   // same. Matching exactly here would report `# drill` on `region` against a
+   // declared `REGION` as naming a given that does not exist, which is a finding
+   // about a drill that works.
    const surfaced = new Set<string>();
    for (const file of facts) {
-      for (const name of file.givens.keys()) surfaced.add(name);
+      for (const name of file.givens.keys()) surfaced.add(name.toLowerCase());
    }
 
    const findings = new Map<string, DashboardLintFinding>();
@@ -1141,30 +1231,23 @@ export function lintSelfDrills(
       for (const drill of file.drills) {
          if (!drill.to.includes("self")) continue;
          const given = drillGivenName(drill);
-         if (surfaced.has(given)) continue;
+         if (surfaced.has(given.toLowerCase())) continue;
          const where = `${drill.source}.${drill.dimension}`;
-         // A case-only mismatch is worth its own message. It is the shape an
-         // author is most likely to hit and least likely to diagnose, because
-         // the same tag WORKS in a notebook: `Notebook` folds case at lookup and
-         // a dashboard does not, so `# drill` on `region` finds a declared
-         // `REGION` there and silently finds nothing here.
-         const caseOnly = Array.from(surfaced).find(
-            (name) => name.toLowerCase() === given.toLowerCase(),
-         );
+         // One message, no case-only variant. The SDK dashboard viewer folds
+         // case (`Dashboard.tsx`, `givenNamesByFold`/`resolveGiven`, "so one tag
+         // behaves identically on both surfaces"), so `# drill` on `region`
+         // against a declared `REGION` resolves and is not a defect. An earlier
+         // version reported it as an error, which was true of the viewer when
+         // that check was run and false eighteen minutes later when the fold
+         // landed. The membership test above folds for the same reason. If the
+         // fold is ever removed, both go back together.
          findings.set(where, {
             subject: where,
-            message: caseOnly
-               ? `# drill on ${where} has to=self and seeds a given named ` +
-                 `"${given}", the dimension exactly as spelled, but this ` +
-                 `package declares "${caseOnly}". The names differ only in ` +
-                 `case, which a notebook forgives at lookup and a dashboard ` +
-                 `does not, so the click silently filters nothing here. Rename ` +
-                 `the given to "${given}", or point the tag at it with ` +
-                 `given=${caseOnly}.`
-               : `# drill on ${where} has to=self, but no model in this ` +
-                 `package declares a given "${given}" for the clicked value to ` +
-                 `filter on, so the drill cannot fire anywhere. Declare it, or ` +
-                 `point the tag at a given that exists with given=.`,
+            message:
+               `# drill on ${where} has to=self, but no model in this ` +
+               `package declares a given "${given}" for the clicked value to ` +
+               `filter on, so the drill cannot fire anywhere. Declare it, or ` +
+               `point the tag at a given that exists with given=.`,
             severity: "error",
          });
       }

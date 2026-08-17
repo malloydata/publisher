@@ -631,6 +631,22 @@ describe("readAutorun", () => {
  */
 describe("readStartingGivens", () => {
    /**
+    * The case the required `declaredType` parameter exists for, and which
+    * nothing pinned: a PLAIN given whose starting value is shaped like a filter
+    * literal. Unwrapping it publishes `Nike`, which posts back as a different
+    * value entirely. Every other test here passes `filter<string>` for all
+    * names, so an unconditional unwrap survived the whole suite.
+    */
+   it("leaves a plain given's f-shaped value alone", () => {
+      expect(
+         readStartingGivens(
+            motlyTag([`## givens { NOTE=f'Nike' REGION=f'US' }`]),
+            (name) => (name === "REGION" ? "filter<string>" : "string"),
+         ),
+      ).toEqual({ NOTE: "f'Nike'", REGION: "US" });
+   });
+
+   /**
     * The zone-pinned half, and the only one of the two that can fail in CI.
     *
     * `authoredDay` has two branches and this pins both, which needs a zone WEST
@@ -642,7 +658,7 @@ describe("readStartingGivens", () => {
    it("publishes the authored day under a non-UTC zone as well", () => {
       const service = import.meta.dir;
       const read = (literal: string) =>
-         `m.readStartingGivens(m.motlyTag(["## givens { X=${literal} }"]))`;
+         `m.readStartingGivens(m.motlyTag(["## givens { X=${literal} }"]), () => "date")`;
       const proc = Bun.spawnSync({
          cmd: [
             "bun",

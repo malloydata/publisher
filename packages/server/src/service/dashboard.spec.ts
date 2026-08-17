@@ -679,6 +679,69 @@ describe("service/dashboard lint", () => {
       ).toEqual([]);
    });
 
+   // The `@env.` drop is per LINE, so an env reference on a SIBLING line leaves
+   // the artifact tag intact and the dashboard builds. That is the case the
+   // same-line tests never reach: with a surviving MOTLY line the parse
+   // succeeds, so it returns down the direct-success path rather than the
+   // no-annotations early return.
+   //
+   // It also lands on the branch of the lint that runs for a dashboard that
+   // EXISTS. `lintUndiscoveredDashboard` reports the drop, but package.ts picks
+   // exactly one of the two lints, so a built dashboard would never see it: the
+   // author's line is dropped and nothing anywhere says so.
+   it("reports an @env line dropped from a dashboard that still builds", () => {
+      expect(
+         lint(
+            facts({
+               modelAnnotations: [
+                  '## artifact { tiles=["orders -> by_brand"] }\n',
+                  "## note=@env.SLICE6_SIBLING_SECRET\n",
+               ],
+               viewGivens: new Map([["orders -> by_brand", []]]),
+               sourceFields: new Map([["orders", new Set(["by_brand"])]]),
+               givens: new Map(),
+            }),
+         ),
+      ).toEqual([expect.stringContaining("@env.")]);
+   });
+
+   // Authored directly in the artifact tag, so no query mentions it and the two
+   // query-side unbindable checks never see it. `Model.givens` is the surface
+   // `filterGivensToModelSurface` enforces at query time, so the value is
+   // dropped there and the dashboard opens at the declaration's default, with
+   // no control in the row either. Silent in all three places without this.
+   it("flags a starting given the file cannot bind", () => {
+      expect(
+         lint(
+            facts({
+               modelAnnotations: [
+                  "## artifact { tiles=[\"orders -> by_brand\"] givens { GHOST=f'Nike' } }\n",
+               ],
+               viewGivens: new Map([["orders -> by_brand", []]]),
+               sourceFields: new Map([["orders", new Set(["by_brand"])]]),
+               givens: new Map(),
+            }),
+         ),
+      ).toEqual([expect.stringContaining('starting value for given "GHOST"')]);
+   });
+
+   // The control. Without it the check above is satisfied by reporting EVERY
+   // starting given, which would fire on every correct dashboard that sets one.
+   it("stays silent for a starting given the file does bind", () => {
+      expect(
+         lint(
+            facts({
+               modelAnnotations: [
+                  "## artifact { tiles=[\"orders -> by_brand\"] givens { BRAND=f'Nike' } }\n",
+               ],
+               viewGivens: new Map([["orders -> by_brand", ["BRAND"]]]),
+               sourceFields: new Map([["orders", new Set(["by_brand"])]]),
+               givens: new Map([given("BRAND", "filter<string>", [])]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
    it("flags a dashboard_columns that is not a positive integer", () => {
       // `numeric()` returns undefined for these, so the manifest simply omits
       // the grid width — invisible without the warning.
@@ -896,25 +959,27 @@ describe("service/dashboard lint", () => {
       });
 
       /**
-       * The runtime seeds the dimension name EXACTLY as spelled
-       * (`resolveDrill.ts`, `drillGivenName`), and no dashboard consumer folds
-       * case. So `# drill` on `region` against a declared `REGION` sets a value
-       * under a name nothing reads, and the click filters nothing.
+       * The runtime seeds the dimension name exactly as spelled
+       * (`resolveDrill.ts`, `drillGivenName`), and the consumers FOLD CASE when
+       * they look it up: the SDK dashboard viewer builds `givenNamesByFold` for
+       * precisely this, "so one tag behaves identically on both surfaces". So
+       * `# drill` on `region` against a declared `REGION` resolves, and a
+       * finding about it would be a finding about a working drill.
        *
-       * This is the shape hardest to diagnose, because the same tag WORKS in a
-       * notebook, which does fold case at lookup. An earlier version of this
-       * suite asserted the lint stays SILENT here, which pinned the defect as
-       * correct: a green lint told the author the drill was wired.
+       * This test has now been wrong in BOTH directions, which is worth keeping.
+       * It first asserted silence while the lint upper-cased, pinning a real
+       * defect as correct. It then asserted an error, correct against the viewer
+       * as it stood when that was checked and wrong eighteen minutes later when
+       * the fold landed. The lesson is not about case: a lint that copies a
+       * runtime rule is only as current as the last time someone compared them.
        */
-      it("flags a given that differs from the dimension only in case", () => {
-         const findings = lintSelfDrills([
-            facts({ drills: [selfDrill("region")] }),
-            surfacing("REGION"),
-         ]);
-         expect(findings).toHaveLength(1);
-         expect(findings[0]?.message).toContain('declares "REGION"');
-         expect(findings[0]?.message).toContain("differ only in");
-         expect(findings[0]?.severity).toBe("error");
+      it("stays silent when the given differs from the dimension only in case", () => {
+         expect(
+            lintSelfDrills([
+               facts({ drills: [selfDrill("region")] }),
+               surfacing("REGION"),
+            ]),
+         ).toEqual([]);
       });
 
       it("stays silent on an upper-case dimension whose given matches", () => {
@@ -1132,6 +1197,52 @@ describe("service/dashboard silent-vanish lint", () => {
             }),
          ),
       ).toEqual([expect.stringContaining("Tag does not parse")]);
+   });
+
+   // Every finding here carries the same subject (the file's slug), so two tags
+   // failing the SAME way are byte-identical and an author is told the same
+   // thing twice about a file with one problem. The pair below is the natural
+   // shape: two queries in one dashboard file whose tags break identically.
+   it("reports one finding when two tags in a file fail the same way", () => {
+      const broken = "# artifact { givens { WHEN=@2024-03-01 10:00 } }\n";
+      expect(
+         messages(
+            facts({
+               queries: [
+                  { name: "a", annotations: [broken], givens: [] },
+                  { name: "b", annotations: [broken], givens: [] },
+               ],
+            }),
+         ),
+      ).toEqual([expect.stringContaining("Tag does not parse")]);
+   });
+
+   // The control, and the half that matters: dedup must collapse repeats, not
+   // distinct causes. Without it this passes just as well as the test above,
+   // since returning only the first finding would satisfy that one alone.
+   it("still reports two findings when the two tags fail differently", () => {
+      expect(
+         messages(
+            facts({
+               queries: [
+                  {
+                     name: "a",
+                     annotations: [
+                        "# artifact { givens { WHEN=@2024-03-01 10:00 } }\n",
+                     ],
+                     givens: [],
+                  },
+                  {
+                     name: "b",
+                     annotations: [
+                        `# artifact { title="${"x".repeat(9000)}" }\n`,
+                     ],
+                     givens: [],
+                  },
+               ],
+            }),
+         ),
+      ).toHaveLength(2);
    });
 });
 

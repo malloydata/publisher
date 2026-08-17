@@ -2042,15 +2042,20 @@ export class Package {
     * Whether a `dashboards/*.malloy` claims to be a dashboard, read from its
     * source text rather than from a `ModelDef`.
     *
-    * Consulted on three paths, all of which have in common that the tag cannot
+    * Consulted on two paths, both of which have in common that the tag cannot
     * be read the normal way. The original is a file that failed to compile, so
     * there is no `ModelDef` to read it off; the alternative there was to list
     * every uncompilable file in the directory, which contradicts the documented
     * rule that an untagged file is a shared include and produced a dashboard
-    * that existed only while a sibling include was broken. The two added later
-    * are the drop paths: a file whose manifest build threw, and one that
-    * produced no facts and no compile error. A file that compiled cleanly can
-    * reach the second of those, so this is no longer only about broken files.
+    * that existed only while a sibling include was broken. The second is a drop
+    * path: a file that produced no facts and no compile error, which a file
+    * that compiled cleanly can reach, so this is no longer only about broken
+    * files.
+    *
+    * NOT consulted on the third drop path, the one where the manifest build
+    * threw. There the facts are in scope and the tag is perfectly readable, so
+    * that site reads `factsCarryArtifactTag` and this heuristic would be the
+    * wrong tool; its comment says so.
     *
     * Deliberately textual and deliberately generous: it looks for an `artifact`
     * annotation at the start of a line. Note the cost of a false positive is

@@ -220,6 +220,42 @@ function pollutionTargets(): object[] | undefined {
 }
 
 /**
+ * Longest annotation this will hand to the parser, and the message for one that
+ * is refused.
+ *
+ * `parseAnnotation` is superlinear in the number of PROPERTIES, not in raw
+ * length, which is why this is a crude bound rather than a precise one.
+ * Measured in this worktree, one annotation:
+ *
+ *   one long quoted value   1.1ms at 63KB    (linear, harmless)
+ *   flat `k=v` run          194ms at 92KB    (quadratic)
+ *   nested braces           32ms at 9KB      (worst per byte)
+ *
+ * So bytes are a proxy for the thing that actually costs, and a generous one:
+ * the largest annotation across every fixture in this repo is 162 characters,
+ * so 8KB is roughly fifty times the real ceiling while capping the worst shape
+ * to tens of milliseconds.
+ *
+ * It matters because this slice moved MOTLY parsing onto paths that had none.
+ * `getNotebookListing` runs per request for every notebook in a package and
+ * `getNotebookModel` per request for one, both uncached, and discovery runs on
+ * the main process rather than in the load worker. Measured before this bound:
+ * 1.29s of uninterruptible event loop for a single notebook request carrying a
+ * 110KB annotation. Publisher is one event loop, so that is not a slow request,
+ * it is every tenant on the pod waiting.
+ *
+ * REFUSED, not truncated. A truncated annotation parses into something the
+ * author did not write, which is worse than not parsing at all.
+ *
+ * The underlying amplification is upstream and not fixed here: Malloy compiles
+ * the same 630KB source in 14ms while the tag parser takes 7.49s. Filed
+ * separately.
+ */
+const MAX_ANNOTATION_CHARS = 8_192;
+
+export const ANNOTATION_TOO_LONG = `annotation exceeds ${MAX_ANNOTATION_CHARS} characters and was not parsed`;
+
+/**
  * Message used when an annotation was dropped for carrying an `@env.` reference.
  *
  * Fixed text, like {@link UNSAFE_TO_PARSE}, because the annotation is never
@@ -380,6 +416,9 @@ function parseGuarded(texts: readonly string[]): {
       });
       return polluted || unreadable;
    };
+   if (texts.some((text) => text.length > MAX_ANNOTATION_CHARS)) {
+      return { tag: undefined, messages: [ANNOTATION_TOO_LONG] };
+   }
    try {
       const result = parseAnnotation([...texts]);
       if (undoPollution())
@@ -423,6 +462,11 @@ export function docCommentText(texts: readonly string[]): string | undefined {
  * One function because the two halves have to agree about where the cut is. The
  * rule "a title is the first non-empty line" lives here and nowhere else, so a
  * caller that takes the title cannot disagree with a caller that takes the rest.
+ *
+ * Why a line rather than the whole comment: {@link docCommentText} joins with
+ * newlines on purpose, since that route carries markdown and authors write one
+ * line per source line, whereas a title is rendered on one line everywhere, so
+ * the whole comment as a title fallback published an embedded newline.
  */
 function splitDocComment(texts: readonly string[]): {
    title?: string;
@@ -446,18 +490,6 @@ function splitDocComment(texts: readonly string[]): {
       title: lines[titleLine].trim(),
       body: body.length > 0 ? body : undefined,
    };
-}
-
-/**
- * The first non-empty line of a doc comment, for a field that must be one line.
- *
- * {@link docCommentText} joins with newlines on purpose, because that route
- * carries markdown and authors write one line per source line. A title is not
- * markdown and is rendered on one line everywhere, so using the whole comment
- * as a title fallback published an embedded newline.
- */
-export function docCommentTitle(texts: readonly string[]): string | undefined {
-   return splitDocComment(texts).title;
 }
 
 /**
@@ -749,7 +781,10 @@ function parseMotly(texts: readonly string[]): {
       return parseGuarded([rewritten]).messages.length === 0 ? rewritten : text;
    });
    const after = parseGuarded(rescued);
-   return { tag: after.tag, errors: after.messages };
+   // `envErrors` carried through here too. Returning only `after.messages` lost
+   // the env drop whenever a SIBLING line was malformed, so one bad annotation
+   // hid the fact that another had been dropped entirely.
+   return { tag: after.tag, errors: [...envErrors, ...after.messages] };
 }
 
 /**
@@ -979,10 +1014,17 @@ export function readStartingGivens(
       // Nothing reports it, because the tag parses: a dashboard just opens on
       // the wrong day depending on the worker's TZ. So the day is rebuilt from
       // calendar fields rather than sliced off the UTC rendering.
+      // The DECLARED type decides, not the tag's scalar type. `scalarType()`
+      // reports "date" for `@2024-03-01T10:30:15` too, so keying on it dropped
+      // the time of day from a `timestamp` given's starting value, silently.
+      // `declaredType` is in hand, so use it and let a timestamp keep its text.
+      const declared = declaredType(name);
       collected[name] =
-         scalarTypeOf(tag) === "date"
+         scalarTypeOf(tag) === "date" &&
+         declared !== "timestamp" &&
+         declared !== "timestamptz"
             ? authoredDay(text)
-            : declaredType(name)?.startsWith("filter<")
+            : declared?.startsWith("filter<")
               ? unwrapFilterLiteral(text)
               : text;
    }
