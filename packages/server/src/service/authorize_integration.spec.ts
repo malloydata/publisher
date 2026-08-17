@@ -2308,7 +2308,12 @@ describe("authorize is classified by Malloy's annotation route", () => {
    const FILE_LEVEL_GATE_SPELLINGS = ["##(authorize)", "##|(authorize)"];
 
    // Refused — neither honoured nor ignored. Each is route `''` (a plain MOTLY
-   // tag) or `malformed-route`, so nothing would ever enforce it.
+   // tag), `malformed-route`, or a case variant of our own name, so nothing
+   // would ever enforce it. The case variants are the one place the rule refuses
+   // a note Malloy gives a perfectly good route of its own: honouring
+   // `#(AUTHORIZE)` would mean claiming a namespace that isn't ours, and leaving
+   // it silent is the fail-open — an author reads the source as locked while
+   // every row serves.
    const NEAR_MISS_SPELLINGS = [
       "# (authorize)",
       "## (authorize)",
@@ -2316,6 +2321,8 @@ describe("authorize is classified by Malloy's annotation route", () => {
       "#(authorize )",
       "#(authorize)X",
       "#authorize",
+      "#(AUTHORIZE)",
+      "#(Authorize)",
    ];
 
    // A block annotation's closer mirrors its sigil: `#|` closes with `|#`,
