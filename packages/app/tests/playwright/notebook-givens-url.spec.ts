@@ -22,14 +22,28 @@ const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/orders.malloynb`;
  * pass over a notebook that came back mostly blank.
  */
 async function settledCount(locator: Locator): Promise<number> {
+   // THREE consecutive equal samples, not two, and it throws rather than
+   // returning a number it is unsure of.
+   //
+   // Two samples 250ms apart prove the count PAUSED, not that it settled: the
+   // notebook renders its cells over several frames, so any gap longer than the
+   // interval yields two equal readings mid-render, and the helper returned a
+   // partial count — the exact thing it was written to prevent. The old
+   // give-up path made that worse by returning the unsettled count silently
+   // after ten seconds, so a slow render pinned a baseline instead of failing.
+   const STABLE = 3;
    let last = -1;
-   for (let i = 0; i < 40; i++) {
+   let repeats = 0;
+   for (let i = 0; i < 60; i++) {
       const current = await locator.count();
-      if (current === last && current > 0) return current;
+      repeats = current === last ? repeats + 1 : 0;
+      if (current > 0 && repeats >= STABLE - 1) return current;
       last = current;
       await locator.page().waitForTimeout(250);
    }
-   return last;
+   throw new Error(
+      `Result count never settled: last saw ${last} over 15s. A baseline taken here would pin a partial render.`,
+   );
 }
 
 /** Everything the rendered results say, as one string. */
