@@ -45,8 +45,8 @@ const GRANDFATHERED: ContentType[] = ["report"];
 
 describe("CONTENT_TINT contrast", () => {
    /**
-    * Every tint fills a 32px backplate behind an 18px white glyph, so it has
-    * to clear 3:1
+    * Every tint fills a 32px backplate behind an 18px white glyph, so it has to
+    * clear 3:1
     * against white, WCAG's minimum for a graphical object. Asserted rather than
     * written down, because the failure is invisible: a lighter colour looks fine
     * in a screenshot and the icon simply stops being readable.
@@ -63,8 +63,12 @@ describe("CONTENT_TINT contrast", () => {
       expect(contrastWithWhite(hex)).toBeGreaterThanOrEqual(3);
    });
 
-   // Guards the exception list itself: if a grandfathered type is removed or
-   // renamed, this says so rather than silently exempting nothing.
+   // Guards the exception list against drift: a grandfathered name that no
+   // longer matches a `ContentType` fails here rather than silently exempting
+   // nothing. It does NOT catch the list being emptied, which passes
+   // vacuously; that case is caught instead by the contrast assertion for the
+   // type that stops being skipped, and an empty list is the desired end state
+   // anyway.
    it("grandfathers only types that exist", () => {
       for (const type of GRANDFATHERED) {
          expect(CONTENT_TINT).toHaveProperty(type);

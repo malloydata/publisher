@@ -6,8 +6,8 @@
 
 All three are artifacts that live _inside a package_, ship with the model, and run on the same
 engine: the same governed query endpoints, the same [givens](givens.md), the same
-`@malloydata/render` renderer, the same authorize gates and query caps. Ask any of them the same
-question and the numbers come back the same. What changes is the **reading mode** you're authoring
+`@malloydata/render` renderer, the same query caps. Ask any of them the same question and the numbers
+come back the same. What changes is the **reading mode** you're authoring
 for, **how much control you take on**, and one thing that is easy to miss:
 
 > **An HTML data app runs author-written JavaScript with the viewer's authority. Notebooks and
@@ -141,10 +141,13 @@ filter wiring, and error handling. Guide:
   no-build loop (edit the file, reload; live-reload under watch mode) makes iteration fast.
 - The strongest embedding story today: `Publisher.embed` drops it into any host page with
   auto-resizing and cross-origin support.
-- Governed the same way at the data layer: `#(authorize)` gates, given-scoped filtering and query
-  caps all still apply, because the page asks the same endpoints every other surface asks. What it
-  does **not** inherit is the no-author-code property; see
-  [security-posture.md](security-posture.md).
+- Given-scoped filtering and query caps apply as usual, because the page asks the same endpoints
+  every other surface asks. **`#(authorize)` is the exception, and it follows from the author-code
+  property rather than from the endpoint:** because the page controls its own requests, it can send
+  `x-publisher-bypass-authorize: true` and skip gate evaluation on any deployment that does not strip
+  that header at its edge ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),
+  [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). A notebook or a dashboard cannot,
+  having no author code to send it.
 
 **Cons**
 

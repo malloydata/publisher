@@ -265,11 +265,12 @@ export default function Home({ onClickEnvironment }: HomeProps) {
             sx={{ maxWidth: 720, lineHeight: 1.6 }}
          >
             {/* Six of the ten types in the api-doc.yaml enum. connections.md
-                gives eight of them prose and never names Databricks or
-                MotherDuck, though the docs site does cover MotherDuck. "And
-                more" rather than a full list, because a list that reads as
-                complete while omitting Databricks is worse than a short one
-                that says it is short. */}
+                names eight, but only six with any real treatment: mysql and
+                trino appear once each, in the same parenthetical that ends
+                "etc.". Databricks and MotherDuck it never names. "And more"
+                rather than a full list, because a list that reads as complete
+                while omitting Databricks is worse than a short one that says
+                it is short. */}
             Also here:{" "}
             <InlineLink href={DOC_LINKS.connections}>connections</InlineLink> to
             BigQuery, Snowflake, Postgres, MySQL, Trino, DuckDB and more;{" "}
