@@ -401,7 +401,7 @@ export function resolveQueryMetadata(
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): QueryMetadata | null {
    return composeDeclaredQueryMetadata({
-      packageMaterialization,
+      packageDeclaration: packageMaterialization?.queryMetadata ?? null,
       modelTag: safeModelTag(source),
       sourceTag: safeSourceTag(source),
    });
@@ -409,9 +409,14 @@ export function resolveQueryMetadata(
 
 /**
  * The author-declared layers of one statement's metadata, composed
- * most-specific-wins PER PROPERTY: source `#@ persist queryMetadata.*` >
- * model-file `## materialization.queryMetadata.*` (bare `## queryMetadata.*`
- * underneath) > package `materialization.queryMetadata`.
+ * most-specific-wins PER PROPERTY: source `#@ queryMetadata.*` > model-file
+ * `## queryMetadata.*` > package `queryMetadata`.
+ *
+ * The package and model-file layers each have a deprecated
+ * `materialization.`-prefixed spelling, still read, sitting UNDERNEATH its
+ * canonical form — so a file declaring both resolves to the canonical one. That
+ * is the OPPOSITE of freshness, where the prefixed spelling IS canonical; the
+ * ordering note in the body is where that trap is spelled out.
  *
  * Takes tags rather than a {@link PersistSource} so the SERVE path can compose
  * the same layers from a loaded model, where no `PersistSource` exists. A
@@ -426,15 +431,29 @@ export function resolveQueryMetadata(
  * "declared nowhere" rather than "declared empty".
  */
 export function composeDeclaredQueryMetadata(layers: {
-   packageMaterialization?: WirePackageMaterialization | null;
+   /**
+    * The package's declared bag — a bag, not the materialization policy that
+    * carries it on the wire. Nothing here needs a schedule or a freshness
+    * window, and threading the policy object through would say this layer is
+    * about materialization when it is not.
+    */
+   packageDeclaration?: QueryMetadata | null;
    modelTag?: ReadableTag;
    sourceTag?: ReadableTag;
 }): QueryMetadata | null {
    // Least specific first, so a more specific layer overwrites property by
    // property.
+   //
+   // `modelTagLayers` yields [envelope, bare], which is most-specific-first for
+   // freshness — there the envelope is the canonical spelling and the bare form
+   // is the legacy one. Query metadata migrates the other way: the bare `##
+   // queryMetadata.*` is canonical and `## materialization.queryMetadata.*` is
+   // deprecated. So the list is consumed as-is rather than reversed, putting the
+   // deprecated spelling underneath. Reversing it let the spelling we tell
+   // authors to stop writing silently override the one we tell them to write.
    const ordered: QueryMetadata[] = [
-      layers.packageMaterialization?.queryMetadata ?? {},
-      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer).reverse(),
+      layers.packageDeclaration ?? {},
+      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer),
       tagQueryMetadataLayer(layers.sourceTag),
    ];
    const resolved: QueryMetadata = Object.assign({}, ...ordered);

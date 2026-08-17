@@ -111,7 +111,7 @@ export class QueryController {
                      // The package owns its manifest, so the least-specific
                      // author-declared layer is read here; the model knows only
                      // its own file and its package's NAME.
-                     packageMaterialization: p.getMaterializationConfig(),
+                     packageDeclaration: p.getDeclaredQueryMetadata(),
                      // The environment owns the connection configs, so the
                      // default and enforced layers are read here rather than
                      // from the model.

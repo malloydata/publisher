@@ -1083,6 +1083,12 @@ describe("service/model", () => {
          modelNotes?: string[];
          sourceNotes?: Record<string, string[]>;
          /**
+          * `#@` notes on a NAMED QUERY of the same name, which `modelDef.contents`
+          * holds beside sources. Overwrites the source entry, so a test can prove
+          * which of the two a reader picked.
+          */
+         namedQueryNotes?: Record<string, string[]>;
+         /**
           * `##` notes on a DIFFERENT compilation node that this model inherits
           * from — i.e. an import. `modelAnnotations` folds these in and
           * `ownModelNotes` does not, which is the whole difference under test.
@@ -1157,10 +1163,49 @@ describe("service/model", () => {
                   Object.entries(opts.sourceNotes ?? {}).map(
                      ([name, texts]) => [
                         name,
-                        { annotations: { notes: texts.map(specNote) } },
+                        {
+                           // `type` is not decoration: `safeSourceTag` admits
+                           // only a real SourceDef, so a fixture without one is
+                           // a named query as far as malloy's `isSourceDef` is
+                           // concerned and contributes no source layer.
+                           type: "table",
+                           annotations: { notes: texts.map(specNote) },
+                        },
                      ],
                   ),
                ),
+               ...(opts.namedQueryNotes
+                  ? {
+                       contents: {
+                          ...Object.fromEntries(
+                             Object.entries(opts.sourceNotes ?? {}).map(
+                                ([name, texts]) => [
+                                   name,
+                                   {
+                                      type: "table",
+                                      annotations: {
+                                         notes: texts.map(specNote),
+                                      },
+                                   },
+                                ],
+                             ),
+                          ),
+                          ...Object.fromEntries(
+                             Object.entries(opts.namedQueryNotes).map(
+                                ([name, texts]) => [
+                                   `${name}_query`,
+                                   {
+                                      type: "query",
+                                      annotations: {
+                                         notes: texts.map(specNote),
+                                      },
+                                   },
+                                ],
+                             ),
+                          ),
+                       },
+                    }
+                  : {}),
                exports: [],
                queryList: [],
                // The file-level `##` tags come from the modelAnnotations
@@ -1384,9 +1429,7 @@ describe("service/model", () => {
             undefined,
             {
                correlationId: "corr-2",
-               packageMaterialization: {
-                  queryMetadata: { team: "finance", tier: "bronze" },
-               },
+               packageDeclaration: { team: "finance", tier: "bronze" },
                connectionMetadata: () => ({ default: null, enforced: null }),
             },
          );
@@ -1420,9 +1463,7 @@ describe("service/model", () => {
             {
                correlationId: "corr-3",
                request: { tier: "platinum" },
-               packageMaterialization: {
-                  queryMetadata: { team: "finance", tier: "bronze" },
-               },
+               packageDeclaration: { team: "finance", tier: "bronze" },
                connectionMetadata: () => ({ default: null, enforced: null }),
             },
          );
@@ -1462,9 +1503,7 @@ describe("service/model", () => {
             undefined,
             {
                correlationId: "corr-4",
-               packageMaterialization: {
-                  queryMetadata: { tier: "bronze", team: "finance" },
-               },
+               packageDeclaration: { tier: "bronze", team: "finance" },
                connectionMetadata: () => ({ default: null, enforced: null }),
             },
          );
@@ -1595,6 +1634,24 @@ describe("service/model", () => {
          const first = model.getDeclaredQueryMetadata();
          expect(first).toEqual({ tier: "silver" });
          expect(model.getDeclaredQueryMetadata()).toBe(first);
+      });
+
+      it("lists tagged SOURCES only, never a named query that carries a `#@`", async () => {
+         // `modelDef.contents` holds named queries beside sources. Iterating it
+         // blind read a query's `#@` as though a source had declared it, so the
+         // query's name turned up among the package's tagged sources — and any
+         // publish warning about that bag pointed an author at a `source:` that
+         // does not exist in the file.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            sourceNotes: { daily: ['#@ queryMetadata.tier="gold"'] },
+            namedQueryNotes: { daily: ['#@ queryMetadata.tier="forged"'] },
+         });
+
+         expect(model.getDeclaredSourceQueryMetadata()).toEqual([
+            { sourceName: "daily", queryMetadata: { tier: "gold" } },
+         ]);
       });
 
       it("reports no declaration as null, and does not re-derive it", async () => {

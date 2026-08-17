@@ -79,11 +79,7 @@ import {
    ownModelAnnotations,
    ownModelNotes,
 } from "./annotations";
-import {
-   composeDeclaredQueryMetadata,
-   type ReadableTag,
-   type WirePackageMaterialization,
-} from "./build_plan";
+import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -157,12 +153,11 @@ export interface ModelQueryMetadataInput {
       enforced?: QueryMetadata | null;
    } | null;
    /**
-    * The package manifest's `materialization` block, for its
-    * `queryMetadata` — the least specific author-declared layer. Supplied by the
-    * controller, which owns the package; the model knows only its own file and
-    * its package's NAME.
+    * The package's declared bag — the least specific author-declared layer.
+    * Supplied by the controller, which owns the package; the model knows only
+    * its own file and its package's NAME.
     */
-   packageMaterialization?: WirePackageMaterialization | null;
+   packageDeclaration?: QueryMetadata | null;
 }
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -311,6 +306,10 @@ export class Model {
     * `null` = computed and nothing declared.
     */
    private declaredQueryMetadataMemo: QueryMetadata | null | undefined;
+   /** Memo for {@link getDeclaredSourceQueryMetadata}. */
+   private declaredSourceQueryMetadataMemo:
+      | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- the file-level gate, every top-level
     *  source's own gate, and every gate a top-level source carries in from
@@ -1718,6 +1717,41 @@ export class Model {
          });
       }
       return this.declaredQueryMetadataMemo;
+   }
+
+   /**
+    * Each top-level source's OWN `#@ queryMetadata.*`, for the sources that
+    * declare one.
+    *
+    * `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than
+    * a key inside it, so a source that persists nothing can declare tags and
+    * they ride every query against it. The publish gate reads persist sources
+    * from the build plan, so those declarations had no validation path — a
+    * reserved or malformed name published clean and vanished with only a metric
+    * behind it.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}: the
+    * caller runs once per package inside `listPackages`.
+    */
+   public getDeclaredSourceQueryMetadata(): {
+      sourceName: string;
+      queryMetadata: QueryMetadata;
+   }[] {
+      if (this.declaredSourceQueryMetadataMemo === undefined) {
+         const contents = (this.modelDef?.contents ?? {}) as Record<
+            string,
+            unknown
+         >;
+         this.declaredSourceQueryMetadataMemo = Object.keys(contents).flatMap(
+            (sourceName) => {
+               const queryMetadata = composeDeclaredQueryMetadata({
+                  sourceTag: this.safeSourceTag(sourceName),
+               });
+               return queryMetadata ? [{ sourceName, queryMetadata }] : [];
+            },
+         );
+      }
+      return this.declaredSourceQueryMetadataMemo;
    }
 
    /**
@@ -3557,7 +3591,7 @@ export class Model {
          connection: connectionLayers?.default,
          enforced: connectionLayers?.enforced,
          model: composeDeclaredQueryMetadata({
-            packageMaterialization: input?.packageMaterialization,
+            packageDeclaration: input?.packageDeclaration,
             modelTag: this.safeModelFileTag(),
             sourceTag: this.safeSourceTag(sourceName),
          }),
@@ -3630,12 +3664,15 @@ export class Model {
    ): ReadableTag | undefined {
       if (!sourceName || !this.modelDef) return undefined;
       try {
-         const contents = this.modelDef.contents as Record<
-            string,
-            { annotations?: unknown } | undefined
-         >;
-         const def = contents?.[sourceName];
-         if (!def?.annotations) return undefined;
+         const entry = this.modelDef.contents?.[sourceName];
+         // The docstring's "not a top-level source" case, now actually checked.
+         // `contents` also holds NAMED QUERIES, and a `#@` on one of those is
+         // not a source's declaration — reading it resolved a query's tag as
+         // though a source had declared it, and listed the query's name among
+         // the package's tagged sources in the publish warnings.
+         if (!entry || !isSourceDef(entry)) return undefined;
+         const def = entry as unknown as { annotations?: unknown };
+         if (!def.annotations) return undefined;
          return new Annotations(def.annotations).parseAsTag("@")
             .tag as ReadableTag;
       } catch {

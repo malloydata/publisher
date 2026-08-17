@@ -52,25 +52,33 @@ Everything except `query_id` is a property of the unit of work rather than of th
 Most specific wins, property by property:
 
 1. **Connection** — `queryMetadata` on the connection config. Use it for what is true of the whole connection.
-2. **Package** — `materialization.queryMetadata` in `publisher.json`.
-3. **Model file** — `## materialization.queryMetadata.<name>="<value>"`.
-4. **Persist source** — `#@ persist queryMetadata.<name>="<value>"`.
+2. **Package** — `queryMetadata` at the root of `publisher.json`.
+3. **Model file** — `## queryMetadata.<name>="<value>"`.
+4. **Source** — `#@ queryMetadata.<name>="<value>"`.
 5. **Request** — `queryMetadata` on a query or SQL request, plus `queryClass` to set `class`.
+
+**Any source can be tagged, not only a persisted one.** `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than a key inside it, so layer 4 applies to a source that is never materialized — its tags ride every query that reads it.
+
+**The `materialization.` spelling is deprecated at layers 2 and 3.** `materialization.queryMetadata` in `publisher.json`, `## materialization.queryMetadata.*` in a model file, and `materialization.queryMetadata` on the package API all still work. None was ever a build-only setting: the properties ride served queries too, so declaring them inside the build-policy block described a scope the feature does not have and sent authors hunting through build settings for a way to label their traffic.
+
+Only the manifest home warns today — that is where the two homes can disagree, and where the warning has something actionable to say. At layer 2 the canonical root wins a conflict and warns, unlike a conflicting `scope`, which fails the load: a tag must never be the reason a package refuses to load. At layer 3 the canonical bare form simply wins per property, silently, and a property only the deprecated form declares still resolves.
+
+The package API carries both homes for as long as the old one is supported: `queryMetadata` on a `Package` is canonical, both are populated on read, both are accepted on write, and the canonical one wins if a request sends both. Omitting it on a PATCH preserves the package's existing tags, and so does sending null — a client that serializes unset fields as null must not untag a package by accident. An empty object clears.
 
 ```json
 // publisher.json — every statement this package's sources issue
 {
   "name": "orders",
+  "queryMetadata": { "team": "finance", "tier": "gold" },
   "materialization": {
-    "scope": "version",
-    "queryMetadata": { "team": "finance", "tier": "gold" }
+    "scope": "version"
   }
 }
 ```
 
 ```malloy
-// model file: a default for every persist source in this file
-## materialization.queryMetadata.surface="marts"
+// model file: a default for every source in this file
+## queryMetadata.surface="marts"
 
 // one source, overriding `tier` and inheriting `team` and `surface`
 #@ persist name="order_rollup" queryMetadata.tier="platinum"
