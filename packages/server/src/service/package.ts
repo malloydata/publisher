@@ -2351,8 +2351,16 @@ export class Package {
          // the listing", which an earlier version of this comment claimed and
          // which is false three ways: a held-back dashboard `continue`s before
          // `discovered.set`, its `withheldDrills` sibling describes the same
-         // withheld file, and `lintUndiscoveredDashboard` fires precisely for
-         // files that produced no manifest.
+         // withheld file, and `lintUndiscoveredDashboard` fires for files that
+         // produced no manifest AND whose facts reached `factsByPath`.
+         //
+         // That second condition is load-bearing and an earlier version of this
+         // sentence omitted it, which overstated the lint's reach in the one
+         // direction that matters. The loop below iterates `factsByPath`, and
+         // two paths `continue` before anything is added to it: a manifest
+         // build that threw, and a held-back file. Neither lint runs for those,
+         // so their parse failures are NOT reported and only the root-cause
+         // warning here says anything about them.
          for (const { modelPath, name } of droppedByError) {
             warnings.push({
                model: modelPath,
