@@ -11,11 +11,16 @@ come back the same. What changes is the **reading mode** you're authoring
 for, **how much control you take on**, and one thing that is easy to miss:
 
 > **An HTML data app runs author-written JavaScript with the viewer's authority. Notebooks and
-> dashboards execute no author code.** That is the one axis on which the three are not
-> interchangeable, and it is why the declarative two are reviewable in a pull request and safely
+> dashboards run none of their own.** That is the axis on which the three are least
+> interchangeable, and it is why the declarative two are reviewable in a pull request and
 > agent-authorable. [security-posture.md](security-posture.md) spells out what it means: page
 > JavaScript can call any same-origin endpoint directly, `Publisher.query` is a convenience wrapper
 > rather than a capability boundary, and those documents carry no `script-src`.
+>
+> The declarative two are not a sandbox, and the same doc says where the line actually sits: package
+> markdown is rendered with raw HTML parsing on, so a markdown cell is one place a declarative
+> artifact still carries author-controlled HTML. See
+> [Known gaps](security-posture.md#known-gaps).
 
 The one-line version:
 
@@ -146,8 +151,8 @@ filter wiring, and error handling. Guide:
   property rather than from the endpoint:** because the page controls its own requests, it can send
   `x-publisher-bypass-authorize: true` and skip gate evaluation on any deployment that does not strip
   that header at its edge ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),
-  [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). A notebook or a dashboard cannot,
-  having no author code to send it.
+  [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). A notebook or a dashboard cannot:
+  setting a request header takes JavaScript, and neither runs any of its own.
 
 **Cons**
 
