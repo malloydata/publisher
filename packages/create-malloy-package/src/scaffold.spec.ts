@@ -192,6 +192,7 @@ describe("scaffold: default package", () => {
       expect(result.packageCreated).toBe(true);
       for (const file of [
          "sales/publisher.json",
+         "sales/malloy-config.json",
          "sales/sales.malloy",
          "sales/data/sales.csv",
          "publisher.config.json",
@@ -208,6 +209,34 @@ describe("scaffold: default package", () => {
    test("publisher.json is just the name", () => {
       run();
       expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
+   });
+
+   test("malloy-config.json points the editor at the package directory", () => {
+      // The whole file is one absolute path, and every way of getting it wrong
+      // is silent: the editor reports unresolved tables while Publisher, which
+      // never reads this file, serves the same model correctly. Absolute
+      // because the extension resolves a relative workingDirectory against its
+      // own per-window process cwd.
+      run();
+      expect(readJson("sales/malloy-config.json")).toEqual({
+         connections: {
+            duckdb: {
+               is: "duckdb",
+               workingDirectory: path.join(tmp, "sales"),
+            },
+         },
+      });
+      expect(path.isAbsolute(tmp)).toBe(true);
+   });
+
+   test("the .gitignore covers the machine-specific editor config", () => {
+      // Committed, its absolute workingDirectory points a teammate's editor at
+      // a directory that does not exist on their machine, which reads as every
+      // table failing rather than as a file that should not have been there.
+      run();
+      expect(fs.readFileSync(path.join(tmp, ".gitignore"), "utf8")).toContain(
+         "malloy-config.json",
+      );
    });
 
    test("registers the package in the config", () => {
@@ -669,21 +698,91 @@ describe("scaffold: malformed existing config", () => {
 });
 
 describe("scaffold: unservable workspace path", () => {
-   test("refuses a path DuckDB cannot read data files from", () => {
+   // Windows refuses the mkdir itself (EINVAL) for a name carrying a
+   // control character or a reserved character (`< > : " / \ | ? *`), so
+   // those hazards cannot even be staged there; this guards the POSIX
+   // filesystems that allow the name.
+   const posixOnlyTest = process.platform === "win32" ? test.skip : test;
+
+   test("accepts a path containing a space (the YYYY-MM-DD Project Name convention)", () => {
+      // The old refusal's premise — that the workspace path reaches DuckDB's
+      // path parser — does not hold: the served path is the model's RELATIVE
+      // data/… reference, resolved against the package working directory.
+      // Verified end-to-end against the server (load + query a CSV) under
+      // paths containing a space, an apostrophe, and a double quote. One
+      // exception: Package.getDatabaseInfo builds an absolute duckdb.table(...)
+      // literal and does reach the path parser, so a spaced path still loses
+      // row counts/column types on the databases endpoint (pre-existing
+      // server behavior, degrades gracefully, tracked separately).
       const spaced = path.join(tmp, "my data dir");
       fs.mkdirSync(spaced);
-      expect(() => run({ cwd: spaced })).toThrow(/a space/);
-      // Nothing was written, so there is no half-scaffolded package to explain.
-      expect(fs.readdirSync(spaced)).toEqual([]);
+      expect(run({ cwd: spaced }).packageCreated).toBe(true);
    });
 
-   test("names a non-ASCII character by codepoint", () => {
-      const accented = path.join(tmp, "josé");
+   test("accepts an apostrophe", () => {
+      // Verified end-to-end against the server. This tool never hands the
+      // workspace path to a shell, which is the only place it would have
+      // mattered. Legal on Windows, and the character most likely to show up
+      // in a real path (~/Users/O'Brien), so this one runs everywhere.
+      const quoted = path.join(tmp, "jim's data");
+      fs.mkdirSync(quoted);
+      expect(run({ cwd: quoted }).packageCreated).toBe(true);
+   });
+
+   // `"` is a reserved filename character on Windows, so the hazard cannot
+   // even be staged there.
+   posixOnlyTest("accepts a double quote", () => {
+      // Verified end-to-end against the server. This tool never hands the
+      // workspace path to a shell, which is the only place it would have
+      // mattered.
+      const quoted = path.join(tmp, 'jim "data"');
+      fs.mkdirSync(quoted);
+      expect(run({ cwd: quoted }).packageCreated).toBe(true);
+   });
+
+   test("refuses an accented path, because the server will not mount it", () => {
+      // Not a DuckDB constraint, and not a cosmetic one: assertSafeEnvironmentPath
+      // in the server's path_safety.ts tests an environment path against
+      // /^(?:\/|[A-Za-z]:[\\/])[\x20-\x7E]*$/, so a package under a non-ASCII
+      // path never mounts. Measured against 0.0.244: the server answers
+      // `serving` with environments [], /environments/default/packages 400s,
+      // and the only explanation is in status.loadErrors. Refusing here, before
+      // anything is written, is what turns that into a message.
+      const accented = path.join(tmp, "jos\u00E9");
       fs.mkdirSync(accented);
       expect(() => run({ cwd: accented })).toThrow(/U\+00E9/);
+      expect(() => run({ cwd: accented })).toThrow(/printable ASCII/);
+      // Nothing was written, so there is no half-scaffolded package to explain.
+      expect(fs.readdirSync(accented)).toEqual([]);
    });
 
-   test("accepts the characters DuckDB does accept", () => {
+   posixOnlyTest("refuses a control character, naming it by codepoint", () => {
+      // The escape rather than the raw byte, which is invisible in a diff: a
+      // reviewer reads the directory name as plain ASCII and reads this test as
+      // one that cannot fire. U+0001 is SOH.
+      const weird = path.join(tmp, "soh\u0001here");
+      fs.mkdirSync(weird);
+      expect(() => run({ cwd: weird })).toThrow(/U\+0001/);
+      expect(fs.readdirSync(weird)).toEqual([]);
+   });
+
+   posixOnlyTest("names an escape character without emitting it", () => {
+      // The refusal is printed to a terminal, so interpolating the character
+      // being refused would send the ESC to it instead of showing it.
+      const esc = path.join(tmp, "esc\u001Bhere");
+      fs.mkdirSync(esc);
+      let message = "";
+      try {
+         run({ cwd: esc });
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).toContain("U+001B");
+      expect(message).toContain("\\u001B");
+      expect(message).not.toContain("\u001B");
+   });
+
+   test("accepts the plain safe characters", () => {
       const fine = path.join(tmp, "my-data_dir.v2");
       fs.mkdirSync(fine);
       expect(run({ cwd: fine }).packageCreated).toBe(true);

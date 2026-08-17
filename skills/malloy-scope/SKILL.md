@@ -11,7 +11,9 @@ description: Present discovery findings and propose an analytical scope before m
 
 **Goal:** Present what you found and recommend an analytical focus. The user selects a direction.
 
-Ground yourself first with `get_context`: it returns the package's sources, views, and fields, so it tells you what data exists, how it relates, and what is already modeled. Query the data with `execute_query` to get row counts and spot data-quality issues. Keep your proposal and the user's decision in the conversation; there is no separate scope file to write.
+Ground yourself first with `get_context`: it returns the package's sources, views, and fields, so it tells you what data exists, how it relates, and what is already modeled. Query the data with `execute_query` to get row counts and spot data-quality issues. Record the proposal and the user's decision in your modeling workflow's `modeling-notes.md`.
+
+**Scope is "which questions", not just "which tables".** A single A/B/C question about table inclusion is step 3's architecture question wearing step 2's clothes. The scope proposal must establish what the model is *for*: a model aimed at recommendation looks different from one aimed at catalog analysis over the same tables.
 
 ## What to Present
 
@@ -35,7 +37,9 @@ Classify each table by role:
 
 ### 2. Recommended Analytical Focus
 
-Identify 2-3 analytical domains: categories of questions the data can answer.
+Identify 2-3 analytical domains: categories of questions the data can answer. Typically these are the business processes (measurement events like taking an order or billing a customer) the data records, or, for entity/snapshot datasets, the entities it describes.
+
+**Say what kind of model this is, and what that rules out.** A dataset of events supports a fact-centred model with trends over time; a dataset of entities with cumulative counters supports an entity/snapshot model that cannot do period-over-period analysis however well it is built. State the kind in the proposal, and name the concrete consequences (e.g. "release dates are 98% null, so this model cannot do calendar analysis at all: no month, quarter, or year-over-year"). The user should learn what the model will never answer *before* choosing a scope, not discover it from a failed query later.
 
 - **Order Analysis**: Revenue, order trends, product performance, customer purchasing patterns. (Covers: orders, order_items, products, customers)
 - **Customer Health**: Retention, segmentation, lifetime value, churn risk. (Covers: customers, orders)
@@ -79,7 +83,7 @@ The user will:
 
 ## After User Confirms
 
-Restate the confirmed scope in the conversation so it's clear what you'll model next. A useful shape to summarize:
+Restate the confirmed scope in the conversation so it's clear what you'll model next, and record it (with the skip list and reasons) in `modeling-notes.md`. A useful shape to summarize:
 
 - **Connection / schema**: the connection name and schema the sources draw from.
 - **Tables in scope**: table, row count, role (Fact/Dimension/Bridge), and any notes.
@@ -97,4 +101,4 @@ Then hand off to modeling: use your modeling workflow to turn the confirmed scop
 
 ## Done
 
-Scope confirmed in the conversation: tables in scope, analytical focus, and what's deferred. Continue with your modeling workflow.
+Scope confirmed, in the conversation and in `modeling-notes.md`: tables in scope, analytical focus, model kind and what it rules out, and what's deferred. Continue with your modeling workflow.

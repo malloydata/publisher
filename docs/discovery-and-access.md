@@ -38,10 +38,14 @@ within a listed file are shown.
 ## Query boundary — `queryableSources`
 
 Controls whether that discovery surface is *also* a query boundary. `"declared"` (the default) makes
-**queryable == discoverable**: when `explores` is declared, only `explores` files — and within them
-only the `export {}` closure — are valid top-level query targets; every other source still compiles,
-imports, joins, and extends, but a direct query against it is denied with a `404` (indistinguishable
-from a non-existent target). `"all"` decouples the axes — `explores`/`export {}` gate discovery only
+**queryable == discoverable**: when `explores` is declared, only `explores` files are valid query
+entry points, and the queryable sources are the union of those files' `export {}` closures — so a
+source exported by any listed file stays queryable whichever listed model path a request addresses it
+through. Admission is by *declaration*, not by name: a request clears only when the model it names
+resolves the name to the very source a listed file exported, so a same-named source declared in a
+hidden file is not admitted by the coincidence. Every other source still compiles, imports, joins,
+and extends, but a direct query against it is denied with a `404` (indistinguishable from a
+non-existent target). `"all"` decouples the axes — `explores`/`export {}` gate discovery only
 and every compiled source stays directly queryable. When `explores` is absent there is no curated
 surface, so both modes are equivalent (everything queryable).
 
@@ -59,10 +63,15 @@ every source queryable by name; switch to `"declared"` when ready to enforce the
 > those gates are enforced against the complete source set and are never weakened by listing or
 > boundary curation.
 >
-> The `queryableSources` boundary applies to the *query* surface (`getQueryResults`, the MCP query
-> tool, and `/compile`). It does **not** cover raw retrieval by exact path — a hidden model's file
-> text and its compiled metadata are still fetchable by path — by design; use `#(authorize)` when the
-> contents themselves must be protected, not just removed from discovery.
+> The `queryableSources` boundary applies to the *query* surface (`getQueryResults` and the MCP query
+> tool). It does **not** gate `/compile` (or `malloy_compile`): compile is the authoring loop, so a
+> curated package stays authorable, and the boundary is discovery curation rather than access
+> control. The consequence is that `/compile` can reveal a hidden source's schema, and with
+> `includeSql` its SQL. It does **not** cover raw retrieval by exact path either — a hidden model's
+> file text and its compiled metadata are still fetchable by path — by design; use `#(authorize)`
+> when the contents themselves must be protected, not just removed from discovery. A source that is
+> both hidden and `#(authorize)`-gated still answers `/compile` with the boundary's generic `404`, so
+> the exemption cannot be used to enumerate gated names.
 
 ## Runnable example
 
