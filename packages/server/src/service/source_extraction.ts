@@ -40,7 +40,10 @@ import {
    type MisplacedAuthorizeAnnotation,
 } from "./authorize";
 import { parseFilters, type FilterDefinition } from "./filter";
-import { effectiveAncestorGateExprs } from "./gate_registry_walk";
+import {
+   derivedStructsReachable,
+   effectiveAncestorGateExprs,
+} from "./gate_registry_walk";
 
 /** A `#(filter)` definition enriched with the dimension's Malloy type. */
 export interface ExtractedFilter {
@@ -274,9 +277,13 @@ export function extractSourcesFromModelDef(
    // error rather than a downstream complaint about a gate this model does not
    // actually carry. See `collectAuthorizeNearMisses`.
    const nearMissAuthorize: string[] = [];
+   // The roots of the near-miss sweep, so the derivation hops below can extend
+   // it past what `contents` u `sourceRegistry` names.
+   const sweptStructs: SourceDef[] = [];
    for (const obj of Object.values(modelDef.contents)) {
       if (!isSourceDef(obj)) continue;
       const struct = obj as StructDef;
+      sweptStructs.push(obj);
       for (const note of ownLevelNotes(struct.annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
@@ -309,6 +316,7 @@ export function extractSourcesFromModelDef(
       const entry = value.entry;
       if (entry.type === "source_registry_reference") continue;
       if (!isSourceDef(entry)) continue;
+      sweptStructs.push(entry);
       for (const note of ownLevelNotes((entry as StructDef).annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
@@ -319,6 +327,23 @@ export function extractSourcesFromModelDef(
             ownLevelNotes((entry as StructDef).annotations).map(
                (note) => note.text,
             ),
+         ),
+      );
+   }
+   // A struct reached only by a derivation hop — a `query_source`'s imported
+   // base, a composite's resolved member — is in neither collection above, and
+   // its own gate is read (by `effectiveAncestorGateExprs`) all the same. Sweep
+   // it too, or a near miss written there is silently the one spelling mistake
+   // this refusal doesn't catch.
+   for (const struct of derivedStructsReachable(sweptStructs, modelDef)) {
+      nearMissAuthorize.push(
+         ...collectAuthorizeNearMisses(
+            [
+               ...ownLevelNotes(struct.annotations),
+               ...struct.fields.flatMap((field) =>
+                  ownLevelNotes(field.annotations),
+               ),
+            ].map((note) => note.text),
          ),
       );
    }

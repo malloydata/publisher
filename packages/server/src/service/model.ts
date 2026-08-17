@@ -17,7 +17,6 @@ import {
    Runtime,
    type FilterCondition,
    type SourceDef,
-   type StructDef,
    type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
@@ -131,6 +130,7 @@ import {
 import {
    ancestorGateExprs,
    ANCESTOR_WALK_MAX_DEPTH,
+   derivedStructsReachable,
    resolveDeclaredSource,
    resolveQuerySourceBase,
 } from "./gate_registry_walk";
@@ -997,13 +997,28 @@ export class Model {
     * `contents` u `sourceRegistry` — on a source, on one of its fields, or
     * anywhere up an `annotations.inherits` chain?
     *
-    * That is a superset of everything {@link collectEntryPointGates} can reach.
-    * Every link it follows (own notes, the inherits chain, a `sourceRegistry`
-    * declaration, a `query_source`'s base, a composite's resolved member) lands
-    * on a struct in one of those two collections, or on a by-reference copy of a
-    * note that does. So `false` here genuinely means "no gate is findable",
-    * which is what makes it safe to skip the walk on — and unreadable IR returns
-    * `true`, so every inexactness falls on the side of walking anyway.
+    * It has to be a superset of everything {@link collectEntryPointGates} can
+    * reach, and `contents` u `sourceRegistry` alone is NOT that. Two of the five
+    * links the walk follows land on structs in neither collection, so the sweep
+    * has to follow them itself:
+    *
+    *  - a `query_source`'s base (`query.structRef`) is an INLINE `SourceDef`,
+    *    not a string into `contents`, whenever the base arrived through an
+    *    import. `import { gated }` in a middle file, `source: qs is gated ->
+    *    {...}`, then `import { qs }` locally: `contents` holds only `qs`, and
+    *    `gated`'s gate lives on the inline ref.
+    *  - a composite's resolved member (`query.compositeResolvedSourceDef`) is a
+    *    synthesized struct that is never in either collection.
+    *
+    * Both were missed by an earlier version of this sweep, which therefore
+    * answered `false` for a genuinely gated entry point and skipped the walk —
+    * handing storage and pre-aggregation routing back the dependence on a BUILD
+    * path's refusal that the guard exists to remove. {@link
+    * derivedStructsReachable} follows both, transitively.
+    *
+    * With those, `false` genuinely means "no gate is findable" — and unreadable
+    * IR returns `true`, so every remaining inexactness falls on the side of
+    * walking anyway.
     *
     * It exists so a deployment with pre-aggregation enabled and no gates
     * anywhere does not start paying a live compile per query for a case it
@@ -1015,15 +1030,16 @@ export class Model {
          const modelDef = this.modelDef;
          if (!modelDef) return false;
          try {
-            const structs: StructDef[] = [];
+            const structs: SourceDef[] = [];
             for (const obj of Object.values(modelDef.contents)) {
-               if (isSourceDef(obj)) structs.push(obj as StructDef);
+               if (isSourceDef(obj)) structs.push(obj);
             }
             for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
                const entry = value.entry;
                if (entry.type === "source_registry_reference") continue;
-               if (isSourceDef(entry)) structs.push(entry as StructDef);
+               if (isSourceDef(entry)) structs.push(entry);
             }
+            structs.push(...derivedStructsReachable(structs, modelDef));
             for (const struct of structs) {
                // `annotationTexts` (whole chain), not `ownLevelNoteTexts`: this
                // has to see a gate demoted to `annotations.inherits` by a stray

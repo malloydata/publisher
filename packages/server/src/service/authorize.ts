@@ -21,7 +21,7 @@
  * gets a clear refusal instead of a silently-ignored annotation.
  *
  * **What counts as the tag is Malloy's answer, not a regex of ours.** A note is
- * a gate iff Malloy routes it to `authorize` ({@link noteContentOnRoute}), which
+ * a gate iff Malloy routes it to `authorize` ({@link noteRoute}), which
  * admits the block form `#|(authorize)` and the other bracket pairs
  * (`#[authorize]`, `#<authorize>`, `#{authorize}`) and excludes near misses like
  * `# (authorize)` (route `''`, Malloy's reserved MOTLY namespace) and
@@ -38,55 +38,96 @@
  * `./annotations` (which the worker already bundles via `source_extraction.ts`).
  */
 
-import { type GivenValue } from "@malloydata/malloy";
+import { payloadOf, routeOf, type GivenValue } from "@malloydata/malloy";
 import { BadRequestError, ModelCompilationError } from "../errors";
-import { noteContentOnRoute, type AnnotationNote } from "./annotations";
+import { type AnnotationNote } from "./annotations";
 
 /** The annotation route Malloy assigns an `authorize` gate. */
 const AUTHORIZE_ROUTE = "authorize";
 
 /**
- * A spelling that LOOKS like an author reaching for an `authorize` gate.
+ * Malloy's own routing for ONE note, via the public `routeOf`. Three outcomes,
+ * and all three are load-bearing here:
  *
- * The invariant between this and the parser is ASYMMETRIC, and getting the
- * direction wrong is what makes one of them a security hole:
+ *   a name (`"authorize"`, `"authorize-v2"`, `"doc"`)  an app's namespace
+ *   `""`                                              MOTLY / render tags
+ *   `undefined`                                        a malformed prefix
  *
- *   parser spellings  ==  Malloy's `authorize` route  (ask the compiler)
- *   this pattern      ⊇   parser spellings            (a superset, by construction)
- *
- * A rejecter that accepts MORE than the parser is a 400 on odd caller input,
- * which is safe. A rejecter that accepts LESS is a forged-gate bypass. So the
- * two cannot share one definition: the parser reads a compiled note whose
- * route Malloy has already decided, while
- * {@link assertNoCallerAuthorizeAnnotation} reads raw pre-compile text where no
- * route exists yet and a regex is all there is. This pattern is that regex, and
- * it covers every route-`authorize` spelling by construction — sigil `##?` with
- * an optional block `|`, then `authorize` in any of Malloy's four bracket pairs
- * — plus the near misses either side of it.
- *
- * `[ \t]`, never `\s`: the unanchored form scans a whole submitted document, and
- * `\s` matches a newline, so `"# \n(authorize) rules apply"` would be a
- * spurious 400 on ordinary prose.
- *
- * The trailing lookahead is what keeps `#(authorized)` — a legitimately
- * different app route — out of both the rejecter and the near-miss refusal.
+ * Reading the compiler's answer rather than text-matching is what keeps
+ * publisher from inventing its own grammar — see this module's header.
  */
-const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*[([{<]?[ \t]*authorize(?![\p{L}\p{N}_])`;
-const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "u");
-/**
- * The anchored form, for classifying ONE note rather than scanning a document.
- * A note matching this that Malloy does NOT route to `authorize` is a near miss
- * — see {@link collectAuthorizeNearMisses}.
- */
-const AUTHORIZE_TAG_LIKE_PREFIX = new RegExp(`^${AUTHORIZE_TAG_LIKE}`, "u");
+function noteRoute(text: string): string | undefined {
+   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
+}
+
+/** The note's payload — the part after the prefix, dedented for a block note. */
+function notePayload(text: string): string {
+   return (
+      payloadOf({ value: text.trimStart() } as Parameters<
+         typeof payloadOf
+      >[0]) ?? ""
+   );
+}
 
 /**
- * The gate expression on ONE annotation note, or `undefined` if the note is not
- * an `authorize` gate. Malloy's own routing decides — see
- * {@link noteContentOnRoute}.
+ * A caller-text pattern for an `authorize` annotation, and deliberately a
+ * SUPERSET of the spellings that are actually gates.
+ *
+ * The invariant is ASYMMETRIC, and getting the direction wrong is what makes one
+ * side a security hole:
+ *
+ *   gate spellings  ==  Malloy's `authorize` route  (ask the compiler)
+ *   this pattern    ⊇   gate spellings              (a superset, by construction)
+ *
+ * A rejecter that accepts MORE than the parser is a 400 on odd caller input,
+ * which is safe. One that accepts LESS is a forged-gate bypass. The two cannot
+ * share a definition, because {@link assertNoCallerAuthorizeAnnotation} reads raw
+ * PRE-COMPILE text where no route exists yet — a regex is all there is there,
+ * while the parser gets to ask {@link noteRoute}.
+ *
+ * It covers every route-`authorize` spelling by construction: sigil `##?`, an
+ * optional block `|`, then `authorize` in any of Malloy's four bracket pairs.
+ * Case-insensitive, so a caller cannot mint `#(AUTHORIZE)` past it either.
+ *
+ * `[ \t]`, never `\s`: the unanchored form scans a whole submitted document, and
+ * `\s` matches a newline, so `"# \n(authorize) rules apply"` would be a spurious
+ * 400 on ordinary prose.
+ *
+ * The lookahead requires the name to END at `authorize` — a closing bracket,
+ * whitespace, or end of input. Without it this also fired on `#(authorized)` and
+ * on the whole `#(authorize-v2)` / `#(authorize.audit)` family, which are other
+ * apps' deliberate routes, 400-ing a caller query that merely mentions one.
+ */
+const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*[([{<]?[ \t]*authorize(?=[)\]}>]|[ \t]|$)`;
+const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "iu");
+
+/**
+ * A MOTLY (route `""`) payload that is an author reaching for a gate: optional
+ * space/tab, an opening bracket, `authorize`, a closing bracket. The bracket is
+ * REQUIRED, which is what keeps every ordinary render tag out — `# bar_chart`,
+ * `# currency`, `# size=lg` have no bracket at that position, and a MOTLY tag
+ * genuinely named `authorize` without brackets is left alone rather than guessed
+ * at.
+ */
+const MOTLY_AUTHORIZE_PAYLOAD = /^[ \t]*[([{<][ \t]*authorize[ \t]*[)\]}>]/iu;
+
+/**
+ * A malformed-prefix note (route `undefined`) that was reaching for `authorize`
+ * — `#( authorize )`, `#(authorize )`, `#(authorize)X`, `#authorize`.
+ *
+ * Anchored text, and safe to use here precisely BECAUSE the route is already
+ * `undefined`: Malloy has refused to give this note a namespace at all, so
+ * matching text cannot steal a route that belongs to somebody else.
+ */
+const MALFORMED_AUTHORIZE_ATTEMPT = /^##?\|?[ \t]*[([{<]?[ \t]*authorize/iu;
+
+/**
+ * The gate payload on ONE annotation note, or `undefined` if the note is not an
+ * `authorize` gate. Malloy's own routing decides — see {@link noteRoute}. A
+ * malformed prefix routes to `undefined`, so it is never a gate here.
  */
 function authorizeNoteContent(text: string): string | undefined {
-   return noteContentOnRoute(text, AUTHORIZE_ROUTE);
+   return noteRoute(text) === AUTHORIZE_ROUTE ? notePayload(text) : undefined;
 }
 
 /**
@@ -183,21 +224,41 @@ export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
  * instead: it blesses nothing, it cannot start enforcing anything, and the author
  * gets told what to type.
  *
- * The test is {@link AUTHORIZE_TAG_LIKE_PREFIX} minus what Malloy routes here, so
- * it stays a superset of the gate spellings and cannot disagree with the parser
- * about a spelling that IS a gate. False positives are confined to a note whose
- * text STARTS with the sigil immediately followed by `authorize` (bracketed or
- * not) — so `#(doc)`, `# bar_chart`, `# currency`, `#(filter)`, `#(authorized)`
- * and a `##(description)` that merely quotes the tag are all untouched, the last
- * because the match is anchored at the note's own prefix.
+ * The rule is keyed on Malloy's ROUTE, not on a text superset, so it cannot
+ * refuse another app's deliberate namespace. Each of the three route outcomes
+ * gets its own answer:
+ *
+ *  - `""` (MOTLY) — a near miss only if the payload is a bracketed `authorize`
+ *    ({@link MOTLY_AUTHORIZE_PAYLOAD}). `# bar_chart`, `# currency` and every
+ *    other render tag pass straight through.
+ *  - `undefined` (malformed prefix) — a near miss if the text was reaching for
+ *    `authorize` ({@link MALFORMED_AUTHORIZE_ATTEMPT}). Malloy has already
+ *    refused this note a namespace, so a text test here cannot take one from
+ *    anybody.
+ *  - any other NAME — somebody else's route, left completely alone. This is
+ *    what a text superset got wrong: `#(authorize-v2)`, `#(authorize.audit)`,
+ *    `#(authorize/v2)` and `#(authorized)` are all valid distinct routes, and
+ *    refusing them failed the whole model load with advice aimed at someone
+ *    else. The ONE exception is a case-variant of our own name (`#(AUTHORIZE)`,
+ *    `#(Authorize)`): Malloy routes those elsewhere, so honouring them is not an
+ *    option, but leaving them silent is the exact fail-open this function
+ *    exists for — an author reads the source as locked and every row serves. So
+ *    they are refused too, which blesses nothing.
  */
 export function collectAuthorizeNearMisses(texts: Iterable<string>): string[] {
    const found: string[] = [];
    for (const text of texts) {
       const trimmed = text.trimStart();
-      if (!AUTHORIZE_TAG_LIKE_PREFIX.test(trimmed)) continue;
-      if (authorizeNoteContent(trimmed) !== undefined) continue;
-      // The prefix alone — the part that decides routing. Reporting the whole
+      const route = noteRoute(trimmed);
+      if (route === AUTHORIZE_ROUTE) continue; // a real gate
+      const nearMiss =
+         route === undefined
+            ? MALFORMED_AUTHORIZE_ATTEMPT.test(trimmed)
+            : route === ""
+              ? MOTLY_AUTHORIZE_PAYLOAD.test(notePayload(trimmed))
+              : route.toLowerCase() === AUTHORIZE_ROUTE;
+      if (!nearMiss) continue;
+      // The first line only — the part that decides routing. Reporting the whole
       // note would put the author's gate expression into a load error, and the
       // expression is not what is wrong with it.
       found.push(trimmed.split(/[\r\n]/, 1)[0]);
@@ -1732,7 +1793,7 @@ export async function validateAuthorizeProbes(
  * sits (a struct's `blockNotes` vs the model's own notes), not by the `#`/`##`
  * count, so the one route covers both.
  *
- * Classification is Malloy's — see {@link noteContentOnRoute} and this module's
+ * Classification is Malloy's — see {@link noteRoute} and this module's
  * header. That is what makes the block form (`#|(authorize)` … `|#`) a gate here
  * as it already is to the compiler, and what keeps `#( authorize )` /
  * `#(authorize)X` from being honoured as gates publisher alone believes in. The

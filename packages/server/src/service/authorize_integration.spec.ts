@@ -2437,6 +2437,43 @@ source: near_locked is duckdb.table('customers') extend { measure: c is count() 
       });
    }
 
+   it("refuses a near miss reached only through a derivation hop", async () => {
+      // The spelling is on a source the entry model never names: `near_layer`
+      // imports `near_qs` alone, so `near_base_gated` reaches the sweep only as
+      // the inline struct on `near_qs`'s `query.structRef`. The near-miss sweep
+      // reads `contents` u `sourceRegistry`, which is not where that struct
+      // lives — without following the derivation hops, this is the one place a
+      // misspelled gate loads clean.
+      await writeModel(
+         "near_base.malloy",
+         `# (authorize) "false"
+source: near_base_gated is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      await writeModel(
+         "near_mid.malloy",
+         `import { near_base_gated } from "near_base.malloy"
+
+source: near_qs is near_base_gated -> { select: * }
+`,
+      );
+      await writeModel(
+         "near_layer.malloy",
+         `import { near_qs } from "near_mid.malloy"
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "near_layer.malloy",
+         getConnections(),
+      );
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toContain("# (authorize)");
+      expect(err?.message).toContain('#(authorize) "<expression>"');
+   });
+
    // The other side of the near-miss detector: it is anchored at each note's own
    // prefix and requires `authorize` to end at a non-word character, so ordinary
    // annotations on other routes load untouched. `#(authorized)` is the sharp one

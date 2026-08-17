@@ -295,3 +295,43 @@ export function effectiveAncestorGateExprs(
    }
    return groups;
 }
+
+/**
+ * Every struct reachable from `roots` by the two derivation hops
+ * {@link effectiveAncestorGateExprs} takes — {@link resolveQuerySourceBase} and
+ * {@link resolveCompositeResolvedBase} — transitively, and EXCLUDING the roots
+ * themselves.
+ *
+ * `modelDef.contents` u `sourceRegistry` is not a superset of what the gate
+ * walks can reach, and the gap is not exotic: through an import, a
+ * `query_source`'s base arrives as an INLINE `SourceDef` on `query.structRef`
+ * rather than as a name into `contents`, and a composite's resolved member is
+ * synthesized and lives in neither collection. Any sweep that wants to answer
+ * "does a gate (or a near miss) exist ANYWHERE this model's gate walks look"
+ * has to follow both, or it answers `false` for a genuinely gated model.
+ *
+ * Identity-guarded, so a diamond or a self-referencing derivation terminates,
+ * and a string `structRef` that resolves back into `contents` contributes
+ * nothing (it is already a root).
+ */
+export function derivedStructsReachable(
+   roots: readonly SourceDef[],
+   modelDef: ModelDef | undefined,
+): SourceDef[] {
+   const seen = new Set<SourceDef>(roots);
+   const found: SourceDef[] = [];
+   const worklist: SourceDef[] = [...roots];
+   for (let i = 0; i < worklist.length; i++) {
+      const struct = worklist[i];
+      for (const next of [
+         resolveQuerySourceBase(struct, modelDef),
+         resolveCompositeResolvedBase(struct),
+      ]) {
+         if (!next || seen.has(next)) continue;
+         seen.add(next);
+         found.push(next);
+         worklist.push(next);
+      }
+   }
+   return found;
+}

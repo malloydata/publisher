@@ -55,17 +55,51 @@ source: orders is duckdb.sql("""
 // which is what makes it a usable control for "routing changes no answer".
 const MODEL_UNANNOTATED = MODEL.replace(/^\s*#@ preaggregate.*\n/gm, "");
 
-async function loadPackage(model = MODEL): Promise<Package> {
+async function loadPackageFiles(
+   files: Record<string, string>,
+): Promise<Package> {
    const dir = path.join(envPath, "pkg");
    await fs.mkdir(dir, { recursive: true });
    await fs.writeFile(
       path.join(dir, "publisher.json"),
       JSON.stringify({ name: "pkg", description: "fixture" }),
    );
-   await fs.writeFile(path.join(dir, "model.malloy"), model);
+   for (const [name, contents] of Object.entries(files)) {
+      await fs.writeFile(path.join(dir, name), contents);
+   }
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
    return env.getPackage("pkg", false);
+}
+
+async function loadPackage(model = MODEL): Promise<Package> {
+   return loadPackageFiles({ "model.malloy": model });
+}
+
+/** Run `query` and return its rows as plain objects. */
+async function runGatedQuery(
+   pkg: Package,
+   query: string,
+   givens: Record<string, unknown>,
+) {
+   const model = pkg.getModel("model.malloy");
+   if (!model) throw new Error("model.malloy did not load");
+   const { compactResult } = await model.getQueryResults(
+      undefined,
+      undefined,
+      query,
+      undefined,
+      undefined,
+      givens as never,
+   );
+   return (compactResult as Record<string, unknown>[]).map((row) =>
+      Object.fromEntries(
+         Object.entries(row).map(([k, v]) => [
+            k,
+            typeof v === "bigint" ? Number(v) : v,
+         ]),
+      ),
+   );
 }
 
 function planSources(pkg: Package) {
@@ -533,32 +567,6 @@ source: orders is duckdb.sql("""
 }
 `;
 
-   /** Run `query` and return its rows as plain objects. */
-   async function runGatedQuery(
-      pkg: Package,
-      query: string,
-      givens: Record<string, unknown>,
-   ) {
-      const model = pkg.getModel("model.malloy");
-      if (!model) throw new Error("model.malloy did not load");
-      const { compactResult } = await model.getQueryResults(
-         undefined,
-         undefined,
-         query,
-         undefined,
-         undefined,
-         givens as never,
-      );
-      return (compactResult as Record<string, unknown>[]).map((row) =>
-         Object.fromEntries(
-            Object.entries(row).map(([k, v]) => [
-               k,
-               typeof v === "bigint" ? Number(v) : v,
-            ]),
-         ),
-      );
-   }
-
    it(
       "plans the rollup — the gate stops materialization, not synthesis",
       async () => {
@@ -627,6 +635,97 @@ source: orders is duckdb.sql("""
                {},
             ),
          ).rejects.toThrow();
+      },
+      { timeout: 60000 },
+   );
+});
+
+// ---------------------------------------------------------------------------
+// The routing pre-check's own reachability. Blocking a gated entry point from
+// the storage / pre-aggregation tiers is guarded by a model-wide "is there an
+// authorize note ANYWHERE" sweep, so a deployment with rollups and no gates
+// doesn't pay a live compile per query. A sweep that misses a gate un-guards
+// the tier: this is the shape that missed.
+// ---------------------------------------------------------------------------
+
+describe("a gate reached only through a derivation hop", () => {
+   // Three files, because two import hops is what it takes: the gate is
+   // declared in `base`, `mid` derives a `query_source` from it, and `model`
+   // imports only the derivation. `model`'s `contents` therefore holds `qs`
+   // alone — `gated` is an INLINE struct hanging off `qs.query.structRef`, in
+   // neither `contents` nor `sourceRegistry`. `ungated` is what turns the
+   // pre-aggregation serve tier on, so the routing pre-check actually runs.
+   const LAYERED = {
+      "base.malloy": `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: gated is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""")
+`,
+      "mid.malloy": `##! experimental { persistence composite_sources givens }
+import { gated } from "base.malloy"
+
+given:
+  GROUPS :: number[]
+
+source: qs is gated -> { select: * }
+`,
+      "model.malloy": `##! experimental { persistence composite_sources givens }
+import { qs } from "mid.malloy"
+
+given:
+  GROUPS :: number[]
+
+source: ungated is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'A')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+   };
+
+   it(
+      "is found by the routing pre-check's model-wide sweep",
+      async () => {
+         // Asserted on the predicate rather than on an answer, because a miss
+         // here is not (yet) a wrong answer: it un-guards the tier, and what
+         // catches the query after that is the authoritative gate. The
+         // predicate's contract is what has to hold — a superset of every gate
+         // the entry-point walks can reach — so that is what this pins.
+         const pkg = await loadPackageFiles(LAYERED);
+         const model = pkg.getModel("model.malloy");
+         if (!model) throw new Error("model.malloy did not load");
+         expect(
+            (
+               model as unknown as { hasAnyAuthorizeNote(): boolean }
+            ).hasAnyAuthorizeNote(),
+         ).toBe(true);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "is still enforced on the gated entry point",
+      async () => {
+         // The other half: two import hops do not lose the gate. `org_id` 2 is
+         // outside `GROUPS`, so an unfiltered answer is unmistakable.
+         const pkg = await loadPackageFiles(LAYERED);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: qs -> { group_by: org_id; aggregate: t is amount.sum(); order_by: org_id }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([{ org_id: 1, t: 40 }]);
       },
       { timeout: 60000 },
    );
