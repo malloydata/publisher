@@ -96,7 +96,9 @@ query: overview is order_items -> {
 
 The `#"` line above the tag is a doc comment, and it is the page's description. If you leave `title=`
 off the artifact tag, it becomes the title instead, so write it as one, not as a sentence about the
-page.
+page. **It belongs to the query, so it only works on this form.** Putting a `#"` above a
+model-level `##` tag fails the whole package load with "Object annotation not connected to any
+object", and a composite has no description as a result.
 
 **Composite:** a list of views that already exist, each run separately into one grid. The tag is
 model-level (`##`) because there is no query of its own to hang a `#` tag on.
@@ -123,19 +125,30 @@ source: scoped_sales is order_items extend {
 }
 ```
 
-Its tiles are equal-width (there is no per-tile colspan), so pick a `dashboard_columns` the tile list
-divides evenly, and use the single-query form when one tile deserves more room than the others.
+Its tiles are equal-width (there is no per-tile colspan), and each one takes a single column, so
+**`dashboard_columns` is how many tiles you want per row**, not a number of twelfths. Three tiles want
+`dashboard_columns=3`. Setting it to 12 out of habit gives you twelve columns and three tiles a
+twelfth of the page wide. Use the single-query form when one tile deserves more room than the others.
+
+**The two column spellings are form-specific and neither degrades into the other.**
+`dashboard_columns=N` on the artifact tag is composite-only; `# dashboard { columns=N }` is
+single-query-only. Cross them and the page silently loses its layout entirely: a query tagged
+`dashboard_columns=12` renders as one plain table, no grid, every `# colspan` and `# break` dropped.
+Nothing catches it. The reload is 200, the warnings are empty, and the manifest reports
+`dashboardColumns: 12` either way, because both spellings feed the same field. `tiles=` on a
+single-query artifact tag is dropped the same way, silently.
 
 ## Layout: the four tags that make a page line up
 
-Cards and tiles share one grid. Copy this recipe, and use the same column count on every dashboard in
-the package so they read as one product:
+This section is the **single-query** form only. A composite has no colspans and counts tiles per row,
+above. Cards and tiles share one grid, so copy this recipe, and use the same count on every
+single-query dashboard in the package so they read as one product:
 
 1. **`columns=12`** on the `# dashboard` tag. Twelve divides by 2, 3, 4 and 6, so a row is even with
    three cards or four.
 2. **A `# colspan` on every card and tile, summing to 12 per row.** Four cards at 3, three at 4, two
    tiles at 6, a full-width table at 12. Omit them and every item falls to a single column, a twelfth
-   of the width, which is too narrow for a chart to draw in at all.
+   of the width, which is too narrow for a line chart to draw in at all.
 3. **`# break` on the first tile after the cards.** Otherwise it flows into the columns left beside
    the cards and the next tile wraps. Not needed per row: once a row sums to 12 the next item wraps
    on its own.
@@ -175,12 +188,17 @@ its rows.
   that references it lives up an import chain. A composite must import the givens its tiles use.
 - **A suggest's source or query has to resolve in the dashboard file too.** `suggest { source=products … }`
   means the dashboard imports `products`.
-- **Put `# dashboard` on its own line whenever the artifact tag carries `givens { … }`.** A `f'…'`
-  filter literal inside that block breaks the raw parse of everything after it on the line, and
-  Publisher rescues only the `# artifact` half. So the manifest still shows the right title, autorun
-  and starting values, the reload is 200 and the package warnings are empty, and the page renders
-  **with no grid at all**: every `# colspan` and `# break` is dropped. The two idioms are each fine
-  alone; it is putting them on one line that loses the layout, silently and on every surface.
+- **A `f'…'` filter literal in `givens { … }` cannot share a line with `# dashboard`.** Put
+  `# dashboard` on its own line and the problem goes away. Publisher reads the combined line
+  correctly, so the manifest carries the right title, starting values and column count, the reload is
+  200 and the package warnings are empty. The renderer re-parses the raw annotation for itself, loses
+  all of it, and the page comes out as **a plain nested table with no dashboard layout at all**, every
+  `# colspan` and `# break` dropped. Order does not save it: `# dashboard` written first fails the
+  same way. A plain `'Outerwear'` or a bare date on that line is fine, and the composite `##` form is
+  immune, since its layout comes from the manifest rather than from a re-parse. The one place it
+  shows is the query response's render logs, as `Unknown render tag 'colspan'`, which is worth
+  telling apart from the `Ignored # colspan` below: that one means you forgot `columns=N`, this one
+  means the renderer never saw the `# dashboard` tag.
 - **`# colspan` does nothing without `# dashboard { columns=N }`.** The items fall back to flowing
   side by side instead of aligning to a grid. It does warn ("Ignored # colspan on 'x': colspan only
   applies in columns mode"), but on the query response as a render log, not in the package warnings,
@@ -193,8 +211,8 @@ its rows.
 - **In a `# dashboard` view, fields render by role.** A top-level `aggregate:` measure is a KPI card,
   so do not nest a `# big_value` view to get one. Each `nest:` is a tile. Give every KPI a
   `# label=`, or the card is headed `total_sales`.
-- **Only table cells are marked drillable.** Nothing marks a chart mark, however it is tagged, so a
-  dashboard meant to be clicked wants at least one untagged (table) tile.
+- **Only table cells are marked drillable**, so a dashboard meant to be clicked wants at least one
+  untagged (table) tile. See "Drill" for what a reader sees.
 
 `skill:malloy-gotchas-rendering` covers the renderer tags in depth; `skill:malloy-charts` covers
 choosing them.
@@ -257,14 +275,16 @@ gives the identical output field name and the identical numbers, and carries the
 `to=self` survives that, because a surface folds case when it looks up its own given. A `to=<slug>`
 does not: it navigates, still looks like it worked, and arrives as `?category=…`, which the
 destination drops by exact match, so you land on an unfiltered page. Nothing errors, and the lint
-upper-cases when it checks, so it stays green too.
+upper-cases when it checks, so it stays green too. That silence is specific to a name that folds onto
+a declared given: one that matches nothing at all is caught loudly, and the `to=self` is not offered.
 
 A drill only lands somewhere useful if the destination declares a control for the given being
 seeded. **No lint checks that.** It verifies that the target slug is a dashboard in the package, and
 for `to=self` that some model declares the given, and stops there. Nothing reads the destination's
 own givens, so click it and look.
 
-Cells in a drillable **table** column show it: pointer cursor, and a blue underline on hover. They
+Cells in a drillable **table** column show it, a transposed one excepted: pointer cursor, and a blue
+underline on hover. They
 are in the tab order and carry a button role too, so a keyboard reaches them, focus is styled the way
 hover is, and Enter or Space fires the drill. Chart marks get no such affordance in either Publisher
 or Malloyyo, so a dashboard meant to be drilled wants at least one table tile. A destination the
@@ -287,7 +307,8 @@ was already serving then keeps serving its previous version, so the listing stil
 looks perfectly healthy while your edit has silently not taken effect. That is the usual case and the
 one to watch for: a 424 you did not read, and a page that has not changed. A package that never loaded
 at all behaves differently: on a fresh boot its listing answers 424 too, and one added at runtime is
-refused outright, so it never appears in the package list.
+refused outright. Either way it is absent from the package list; the difference is only where you are
+told, on your own POST or on the single-package GET and in `status.loadErrors`.
 
 If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
 usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
