@@ -130,6 +130,13 @@ jobs:
       # filter grammar. Run under node rather than bun because the page is a
       # no-build ES module the browser loads directly, and node is the runtime
       # closest to that: no bundler, no transform, no test-runner globals.
+      #
+      # The script names the test file rather than globbing it, which is the
+      # whole point: `node --test` on a glob that matches nothing exits 0 and
+      # reports "tests 0", so a moved or renamed directory would turn this step
+      # green while running none of it. Named explicitly, a missing file exits 1.
+      # The cost is that a NEW test file has to be added to the script by hand.
+      # Expect 15 tests here; a smaller number means collection, not coverage.
       - name: Run example package tests
         run: bun run test:examples
         shell: bash

@@ -1,7 +1,10 @@
 // Coverage for the storefront data app's one pure module.
 //
-//   node --test "examples/storefront/tests/*.test.mjs"
 //   bun run test:examples
+//   node --test examples/storefront/tests/format.test.mjs
+//
+// Named, not globbed: `node --test` on a glob that matches nothing exits 0 and
+// reports "tests 0", so the globbed form passes while running none of this.
 //
 // The filter cases below are the point of this file. Every one of them is a
 // value a hand-rolled encoder turns into something Malloy matches differently

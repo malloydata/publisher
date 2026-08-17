@@ -30,7 +30,7 @@
     "test:skills": "cd packages/skills && bun run test",
     "test:create-malloy-package": "cd packages/create-malloy-package && bun run test",
     "test:hammer": "bun test hammer/lib",
-    "test:examples": "node --test \"examples/storefront/tests/*.test.mjs\"",
+    "test:examples": "node --test examples/storefront/tests/format.test.mjs",
     "test": "NODE_ENV=test bun run test:sdk && bun run test:server && bun run test:skills && bun run test:create-malloy-package && bun run test:hammer && bun run test:examples",
     "generate-api-types:sdk": "cd packages/sdk && bun run generate-api-types",
     "generate-api-types:server": "cd packages/server && bun run generate-api-types",
