@@ -104,10 +104,11 @@ same origin as the REST API. The consequences follow from that and are all inten
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
   lexically and again through `realpath`, and a symlink escaping the directory returns 403.
 
-**Notebooks and dashboards execute no author code.** A `.malloynb` is markdown and Malloy cells;
-a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which is what makes
-them reviewable in a pull request and safely agent-authorable. Keeping them that way is a
-deliberate property, not an accident of scope.
+**Notebooks and dashboards carry no author-written JavaScript file.** A `.malloynb` is markdown
+and Malloy cells; a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which
+is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
+deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
+declarative artifact still carries author-controlled HTML.
 
 ## Known gaps
 
