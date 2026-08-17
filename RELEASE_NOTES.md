@@ -18,6 +18,64 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a build that loses one source keeps the rest
+
+A build that failed on any source abandoned the whole command: it stopped at the first failure, reclaimed the tables already written, and reported one message for the entire run. A package where one source of five had a bad grant was indistinguishable from a package that was entirely broken, and the four tables that had already materialized were dropped on the way out.
+
+A source that fails is now recorded in the manifest with the reason it gave, and the build continues. The sources that materialized stay usable, and a consumer can tell which source failed rather than inferring it from an absent entry. A build that loses *every* source still fails — it produced nothing, so it must not report itself as a success with errors attached. A reuse-only run, which builds nothing of its own, is unaffected.
+
+**New response field.** `ManifestEntry.error` carries the reason, redacted against that source's own connection. A consumer generating a strict client from `api-doc.yaml` rejects the field until it regenerates. The entry still carries `physicalTableName`, because the schema requires it — so a consumer deciding whether a table exists must read `error`, not the presence of a name.
+
+**New metric label values.** `outcome` on the run counter gains `partial`, for a run that committed a manifest while some of its sources failed; the sources counter gains `failed`. A success-rate expression written as `success / (success + failed)` now drops `partial` into neither bucket, so a partial failure reads as a dip in volume rather than a failure. Alerting on that ratio should add `partial` to the denominator, or to the numerator's complement, depending on whether a partially served package counts as healthy for that deployment.
+## [Unreleased] — `publisher.db` picks up new columns on upgrade
+
+An existing `publisher.db` has always picked up a new **table** added by a later build, because `CREATE TABLE IF NOT EXISTS` is idempotent. It never picked up a new **column**: that same statement is a no-op against a table that already exists, however its columns differ. So a store created before a column was introduced never gained it, schema initialization reported success anyway, and the first write naming that column failed at the binder.
+
+**If your `publisher.db` predates 2026-06-19, every `POST .../materializations` has been returning 500** with `Binder Error: Table "materializations" does not have a column with name "manifest"`. That store now repairs itself on the next boot. Materialization is the only thing that was affected; nothing else names the column.
+
+### What changed
+
+- **Schema init now reconciles columns.** After the `CREATE TABLE` pass, the declared shape is compared against what is on disk and anything declared-but-absent is added. Additions only, and only for columns carrying no constraint. A declared `DEFAULT` **is** carried across and backfills existing rows.
+- **What it cannot fix, it now says at boot.** A constrained column that cannot be added, or a column already present whose type, nullability, default or constraints have changed, is logged as a warning naming the column, instead of surfacing later as a binder error on an unrelated request. This is the part that keeps earning its keep after this particular column is behind us.
+- **Nothing is ever dropped.** Columns and tables an older store has and this build no longer declares are left in place and reported at debug level. `materializations.build_plan` (added and removed within four days in June 2026) and the `build_manifests` table are both inert relics of this kind; removing them is a decision for an operator, not something an upgrade should do quietly.
+
+### What is and is not carried across
+
+`ALTER TABLE ... ADD COLUMN` in DuckDB rejects a column carrying any constraint — `NOT NULL`, `PRIMARY KEY`, `UNIQUE`, `CHECK`, `FOREIGN KEY` — with or without a `DEFAULT`. A bare `DEFAULT` is accepted. So the safe subset is not a policy this code chose; it is the boundary the engine enforces.
+
+Constraints are read from `duckdb_constraints()` rather than inferred from nullability, which matters more than it sounds: a `UNIQUE` or `CHECK` column reports as _nullable_, so screening on nullability alone would add it as a bare column and leave the store holding the right column under the wrong rules — two servers on the same build enforcing differently depending on how their store was created. Such a column is refused and named in the warning instead.
+
+A future column outside the safe subset needs a hand-written step, and the boot warning is what tells you the day one appears.
+
+Constraints are also now compared on columns both sides already have, and reported the same way. A constraint added to an existing table's DDL is as invisible to `CREATE TABLE IF NOT EXISTS` as a column is, and the consequence is quieter: the older store keeps accepting rows a fresh one rejects, with nothing failing to say so.
+
+There is still no schema-version marker, and none is needed: the comparison is against the database itself. The expected shape is not written down twice either — it is read back from a scratch in-memory database the same DDL has just been run against, so the `CREATE TABLE` statements remain the single declaration of the schema.
+
+### On a large store
+
+Adding a column without a default is a catalog operation, not a data rewrite — on a 5M-row, 205MB `materializations` table it took 17ms and grew the file by 0.1%. Adding one **with** a `DEFAULT` backfills every existing row, so that path is a real write: ~81ms on the same table, with a longer checkpoint. Both are trivial against a boot that compiles packages, and both happen before the server accepts traffic, but only the first is free.
+
+### Why it took an upgrade to find
+
+CI starts from a clean checkout with no `publisher.db`, so the create path always runs with the current DDL and the drift cannot arise. The gap was never a missing assertion — it was that no test had ever booted against a store older than the build. There is one now.
+---
+
+## [Unreleased] — measures can be pre-aggregated
+
+A measure annotated `#@ preaggregate grain="…"` is rolled up into a stored table at that grain, and a query the rollup covers reads the small table instead of the base. Queries name the original source and nothing about them changes; the rollup is selected behind it, or bypassed, with a per-query fallback to live for anything no rollup covers.
+
+[docs/preaggregation.md](docs/preaggregation.md) is the guide. Two limits to know before reaching for it, both of which cost acceleration and not correctness. **A query that names a `view:` does not route:** rollups are offered through a composite source, which carries its members' fields but not their views, so `run: orders -> by_category` serves live while the same query written out reads the rollup — which covers the REST `queryName` form and Console dashboards. **A query that supplies a `given:` does not route** either, since a model-level given does not cross into the synthesized model; that one is partly inherent, because a rollup is built with the givens in force at build time and could not answer a different value from stored rows anyway. Between them, a workload of named views or a filter-driven data app sees little benefit today.
+
+**The annotation is all it takes — there is no deployment flag to enable.** Writing one is the decision to build and serve a rollup, so a package that carries no `#@ preaggregate` is untouched: nothing extra is planned, built, or compiled for it. Worth knowing before adding your first annotation, because the build is not free: a rollup is materialized like any `#@ persist` source, and a grain whose cardinality approaches the base table's spends nearly as much as the base while saving little. `buildPlan.sources` with `origin: preaggregate` is where to see what a package will build before it builds it.
+
+**A measure may be declared at several grains, one annotation line each, and that is a cost decision.** A rollup also serves queries grouped by any *subset* of its grain, so one rollup at `category, order_day` correctly answers by-category, by-day and grand-total queries. But a combined grain has roughly the product of its dimensions' cardinalities, so `customer_id, order_day` can approach the base table's row count and save almost nothing where either grain alone is small. Declaring both separately gives each query a small table to read, at the price of two tables to build and refresh. Rollups are grouped by grain, not by measure: ten measures sharing a grain are one table and one `GROUP BY`. Note that where two declared grains both cover a query, the one used is the first in the composite's member order, which is by generated name rather than by size — so grains are worth declaring for queries they cover *differently*, not to offer the same query a choice.
+
+**Unusable annotations are refused at publish, and again at load.** Pre-aggregation's failure mode is an annotation that silently does nothing while the plan looks correct, so anything that cannot be built is a 400 rather than a warning. Refused: an annotation anywhere but on a measure; a measure whose aggregate cannot be re-aggregated from a stored partial (only `sum`, `count`, `min` and `max` can — pre-aggregate a sum and a count and divide them in a view instead); a grain naming anything but a dimension the source itself declares, which rules out an inline truncation like `grain="order_time.day"` (declare `dimension: order_day is order_time.day` and name that, after which coarser truncations of it route too); and a base source with a fan-out join, since `join_many` and `join_cross` can multiply rows. A `join_one` is permitted, and a measure that aggregates through one is served normally. Enforcing at load as well as at publish matters because re-aggregatability is derived from the compiled model: a Malloy version change can in principle reclassify a measure that published cleanly, and that surfaces as a package that stops loading (reported in `ServerStatus.loadErrors`) rather than one quietly paying for rollups that answer nothing.
+
+**API.** `PersistSourcePlan` gains `origin` (`persist` for a `#@ persist` the modeler wrote, `preaggregate` for a rollup the publisher synthesized) and `preaggregate`, a `PreaggregatePlan` naming the base source, the grain's dimensions, and the measures served at it. A synthesized rollup is declared by no file, so it reports the model holding the annotations it came from, which is where an author would go to change it. Nothing about a synthesized rollup appears in model discovery: the author's model is never edited, so it still exports the source it always did.
+
+---
+
 ## [Unreleased] — a `storage=` build's warehouse read is now attributable
 
 A `storage=` build reads its source through DuckDB's native query-passthrough, where no Malloy connector is in the call path to apply the query-metadata bag. Every such build therefore reached the warehouse untagged — the one kind of work a deployment could not attribute. It now carries the same bag the colocated path does, resolved through the same layering.

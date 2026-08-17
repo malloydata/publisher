@@ -43,7 +43,7 @@ Call `search_malloy_docs` with these topics.
 | Cohort Analysis | `"cohort analysis"` |
 | Nested Subtotals | `"nested subtotals"` |
 | Bucketing with 'Other' | `"bucketing other"` |
-| Auto-binning Histograms | `"autobin"` or `"histogram"` |
+| Histograms (bin by arithmetic; there is no `autobin`) | `"histogram"` |
 | Moving Average | `"moving average"` |
 | Transform Data | `"transform"` |
 | Sessionize - Map/Reduce | `"sessionize"` |

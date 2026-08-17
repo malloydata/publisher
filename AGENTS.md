@@ -49,6 +49,13 @@ server serves whatever did load and the package is simply absent. If data you ex
 `curl -s http://localhost:4000/api/v0/status | jq .loadErrors`, which is absent when everything loaded
 and otherwise names each environment or package that did not load, and why.
 
+The same array reports the other failure, the one you cannot see by looking at what is present: an
+entry with `stale: true` is a package that IS listed and IS answering queries, but whose most recent
+reload failed to compile, so it answers from the model compiled before that save rather than from the
+files on disk. Nothing else says so. The package's entry under `environments`, and its own package
+resource, both read as serving, so join on the package name to tell a current package from a stale
+one. Fix the model and reload to clear it.
+
 ## 2. Connect your agent
 
 Publisher exposes one MCP endpoint: `http://localhost:4040/mcp` (streamable HTTP, stateless, unauthenticated; put it behind a gateway if you expose it beyond localhost).
@@ -116,8 +123,9 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 
 - `malloy_getContext`: discovery and grounding. Call it with as much as you know and omit the rest. No arguments lists the environments, an environment lists its packages, a package lists its sources, and a plain-English query returns the most relevant sources, views, and fields. Use the names it returns verbatim.
 - `malloy_executeQuery`: run a Malloy query (a named view or query, or ad-hoc code) against a model and get JSON back.
-- `malloy_compile`: compile-check Malloy source against a model and get structured diagnostics back (severity, message, line and column) without running a query. Use it to validate a model or a change while authoring, instead of firing a throwaway query.
+- `malloy_compile`: compile-check Malloy source and get structured diagnostics back (severity, message, model, line and column) without running a query. Use it to validate a model or a change while authoring, instead of firing a throwaway query. Pick the `scope` that matches the change: `append` (default) for a NEW definition, `file` for an EDIT (the source compiles as the file, at true coordinates), `package` for a dry-run of every file as saved — including a what-if edit importers must survive.
 - `malloy_reloadPackage`: recompile a package from its on-disk model files so a source or view you added or changed after boot becomes queryable by name, without restarting the server. Use it to close the edit-and-run loop: validate with `malloy_compile`, save, `malloy_reloadPackage`, then `malloy_executeQuery` the new view.
+- `malloy_getStatus`: the server's health. Its operational state, each environment's loaded packages, and every configured package that failed to load or is serving a stale model. This is the only MCP surface where a load failure is visible on its own, so call it before concluding a package is empty or missing, and after a model edit whose reload you did not run yourself.
 - `malloy_searchDocs`: search the Malloy language documentation when you need syntax.
 - `malloy_searchDatabaseSchema`: discover what tables a database connection holds, and find the right ones for a plain-English description. Use it when building a model from a database rather than exploring one that already exists. Each table it returns carries the `source:` line to start from. It returns names and types only: no row value is returned.
 
@@ -148,18 +156,18 @@ Watch mode is a separate, optional thing for a human: it is how someone launches
 - The in-place mount is set up when the environment is first loaded from config: the first boot on a fresh server root (empty `publisher_data/` storage), or any boot with `--init`. If you previously started the env WITHOUT `--watch-env`, its packages were copied into `publisher_data/` and edits to your source do nothing; run once with both flags together, `--watch-env <env> --init`, to re-mount them in place (`--init` alone re-copies, it does not symlink). You do NOT need `--init` on every boot: once a package is mounted as a symlink it stays one, and later boots keep watching.
 - Only the first environment in the watch list auto-reloads.
 
-A save that fails to compile is skipped without a signal, so if a change does not appear, compile-check it first with `malloy_compile`.
+A save that fails to compile is skipped: the package keeps serving the model it compiled last, so a change that does not appear is the symptom, and confident numbers from the previous model are the trap. The server does not push that at you, but it does record it: `malloy_getStatus` (or `GET /api/v0/status`) reports the package as a `loadErrors` entry with `stale: true` and the compile error, `malloy_getContext` marks it in the package listing and attaches a note to anything it returns for that package, and both clear on the next save that compiles. Compile-check with `malloy_compile` first anyway; it is faster feedback than noticing afterwards.
 
 ## 7. Working unattended: the REST API
 
 If you started the server yourself and there is no user to reconnect your MCP client (a one-shot task, a cloud sandbox), MCP is out of reach for the whole session. Use the REST API on port 4000 instead; discovery, query, compile, reload and schema discovery are all there. For schema discovery the endpoints are `GET /api/v0/environments/{env}/connections`, then `.../connections/{conn}/schemas`, then `.../schemas/{schema}/tables`, with a `.../packages/{pkg}/connections/...` form for the per-package `duckdb` sandbox; you rank the table list yourself, since that ranking is MCP-only. (`malloy_searchDocs` and `malloy_getContext`'s plain-English ranking stay MCP-only; for syntax, read the bundled [`skills/`](skills/) markdown). Like MCP it is unauthenticated, so keep it on localhost. The playbook with worked examples is [docs/ai-agents.md](docs/ai-agents.md), and the running server serves its complete OpenAPI spec at http://localhost:4000/api-doc.yaml. The map:
 
-- `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded).
+- `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded, and the REST equivalent of `malloy_getStatus`). Re-check it after every edit-and-reload: an entry with `stale: true` names a package that is still answering, from the model it compiled before your last save.
 - `GET /api/v0/environments`: the environment names every other path needs (the bundled one is `examples`).
 - `GET /api/v0/environments/{env}/packages`, then `…/packages/{pkg}/models`: what exists.
 - `GET …/models/{path}`: the discovery step. The response's `sources` (each with its `views`), `queries`, and `givens` are the names you can run. Use them verbatim; never guess.
 - `POST …/models/{path}/query`: run a query. The body is either `{"query": "run: …"}` (ad-hoc) or `{"queryName": "…", "sourceName": "…"}` (a named view; `queryName` alone runs a model-level named query). Add `"compactJson": true` and parse the `result` string to get plain row objects.
-- `POST …/models/{path}/compile`: body `{"source": "…"}`; structured diagnostics without running anything.
+- `POST …/models/{path}/compile`: body `{"source": "…", "scope": "append" | "file" | "package"}`; structured diagnostics without running anything. `"append"` (default) validates NEW definitions against the model; `"file"` compiles the source AS the file, which is how to validate an edit (append collides with "Cannot redefine"); `"package"` (source optional) runs reload's worker compiler over every `.malloy` and `.malloynb` file without touching the served model. Its diagnostics may name files hidden from discovery; a replacement path that does not exactly match a file is warned and treated as new.
 - `GET …/packages/{pkg}?reload=true`: recompile a package after editing its files (the REST form of `malloy_reloadPackage`).
 - `POST /api/v0/environments/{env}/packages` with `{"name": "…", "location": "/absolute/path"}`: serve a package of your own on a running server. [docs/packages.md](docs/packages.md) is the package format.
 

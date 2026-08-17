@@ -11,6 +11,7 @@ import {
    RELOAD_FAILURE_IS_SAFE,
 } from "./tools/reload_package_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
+import { registerGetStatusTool } from "./tools/get_status_tool";
 import skillsBundle from "./skills/skills_bundle.json";
 
 export const testServerInfo = {
@@ -41,7 +42,7 @@ const AGENT_SKILLS = (
 // must never interpolate environment, package, connection, or request data.
 const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
 
-Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE}
+Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE} After every model edit, call malloy_reloadPackage before querying: the server serves the model compiled at the last load, not your files, and a watch-mode save that fails to compile is otherwise silent. An empty malloy_getContext result does not mean the package is empty; check malloy_getStatus for load errors and stale packages before concluding there is no data.
 
 To build a model from a database rather than from an existing package, start with malloy_searchDatabaseSchema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
 
@@ -65,6 +66,7 @@ export function initializeMcpServer(
    registerCompileTool(mcpServer, environmentStore);
    registerReloadPackageTool(mcpServer, environmentStore);
    registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
+   registerGetStatusTool(mcpServer, environmentStore);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the

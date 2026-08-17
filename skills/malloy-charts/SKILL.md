@@ -370,10 +370,15 @@ view: explorer is {
 
 ### Distribution (Histogram)
 
-Call `search_malloy_docs("autobin")` for syntax:
+There is no auto-binning function: `autobin(...)` does not exist and fails with `Unknown function 'autobin'`. Bin by arithmetic, choosing the width from the column's actual range: query `min`, `max` and a few percentiles first, and say in the view's doc where the width came from. A bin width nobody derived is a business decision in disguise.
+
 ```malloy
 # bar_chart
-view: price_dist is { group_by: bucket is autobin(price, 20), aggregate: order_count }
+view: price_dist is {
+  group_by: bucket is floor(price / 20) * 20   // 20 is the bin width, from the observed range
+  aggregate: order_count is count()
+  order_by: bucket
+}
 ```
 
 
@@ -407,7 +412,7 @@ A top-level chart tag (e.g., `# bar_chart`) renders only the outer query; any `n
 
 NOTE: The term 'constructor' is a reserved term in Vega-Lite. If the word 'constructor' appears in the query, it will cause the rendering to fail. Never use it in a query and avoid using it as a dimension in a model.
 
-For more patterns, call `search_malloy_docs` with topics like "bar charts", "line charts", "dashboards", "autobin", "percent of total", "comparing timeframes", or "pivots".
+For more patterns, call `search_malloy_docs` with topics like "bar charts", "line charts", "dashboards", "histograms", "percent of total", "comparing timeframes", or "pivots".
 
 ## Further Reading
 

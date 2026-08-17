@@ -5,6 +5,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
+import { isFailedEntry } from "../storage/DatabaseInterface";
 import { logger } from "../logger";
 import {
    recordEligibilityRefused,
@@ -147,6 +148,13 @@ export function deriveServeBindings(
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
    for (const entry of Object.values(entries)) {
+      // A source that failed names no table to bind. Asked explicitly rather than
+      // relying on the failure entry omitting a destination: adding one later --
+      // an orchestrator wanting to know where the failed source was headed --
+      // would otherwise put a table that was never built back on the serve path.
+      if (isFailedEntry(entry)) {
+         continue;
+      }
       // Need the source name to rebind it, plus a storage destination + table.
       if (
          !entry.sourceName ||
