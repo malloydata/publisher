@@ -609,4 +609,54 @@ describe("service/package", () => {
          expect(boundSources(pkg)).toEqual(["all_rows"]);
       });
    });
+
+   describe("getDeclaredQueryMetadata", () => {
+      const pkgWith = (metadata: Record<string, unknown>) =>
+         new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage", ...metadata } as never,
+            [],
+            new Map(),
+         );
+
+      it("reads the canonical top-level field", () => {
+         expect(
+            pkgWith({
+               queryMetadata: { team: "finance" },
+            }).getDeclaredQueryMetadata(),
+         ).toEqual({ team: "finance" });
+      });
+
+      it("falls back to the deprecated materialization block", () => {
+         // An un-migrated client PATCHes the block and nothing else, so dropping
+         // the fallback would silently stop tagging that package's queries.
+         expect(
+            pkgWith({
+               materialization: { queryMetadata: { team: "finance" } },
+            }).getDeclaredQueryMetadata(),
+         ).toEqual({ team: "finance" });
+      });
+
+      it("prefers the canonical field when both are present", () => {
+         // Both homes are populated on the way out, so a client that sets only
+         // the new one must not have a stale block win over it.
+         expect(
+            pkgWith({
+               queryMetadata: { team: "finance" },
+               materialization: { queryMetadata: { team: "stale" } },
+            }).getDeclaredQueryMetadata(),
+         ).toEqual({ team: "finance" });
+      });
+
+      it("is null when neither home carries a bag", () => {
+         expect(pkgWith({}).getDeclaredQueryMetadata()).toBeNull();
+         expect(
+            pkgWith({
+               materialization: { schedule: null },
+            }).getDeclaredQueryMetadata(),
+         ).toBeNull();
+      });
+   });
 });

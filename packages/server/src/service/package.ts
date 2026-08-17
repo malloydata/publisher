@@ -56,7 +56,11 @@ import {
    incrementalPolicyRejections,
    type IncrementalPolicySource,
 } from "./incremental_policy";
-import { materializationConfigWarnings } from "./materialization_config_validation";
+import {
+   materializationConfigWarnings,
+   type QueryMetadataDeclaration,
+} from "./materialization_config_validation";
+import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
@@ -559,6 +563,12 @@ export class Package {
             schedule: null,
             freshness: null,
          },
+         // The canonical home for the package's declared tags, mirrored from the
+         // block above — which is where the wire originally carried them. Both
+         // are populated for as long as the deprecated home is supported, so a
+         // client migrates when it chooses rather than when this ships.
+         queryMetadata:
+            outcome.packageMetadata.materialization?.queryMetadata ?? null,
          // Package-level persist scope mode, applied uniformly to every persist
          // source/index. Defaults to "package" (cross-version reuse) when the
          // manifest omits it.
@@ -834,6 +844,112 @@ export class Package {
       return this.packageMetadata.materialization ?? null;
    }
 
+   /**
+    * The package's declared `queryMetadata` — the least specific author-declared
+    * layer, and the counterpart to {@link Model.getDeclaredQueryMetadata}.
+    *
+    * Prefers the canonical top-level field and falls back to the deprecated
+    * `materialization.queryMetadata`. The fallback is not dead code: a PATCH may
+    * still set the block (an un-migrated client), and metadata assembled by
+    * anything that predates the top-level field carries only the block. Callers
+    * want the package's bag, not its build policy, and should not have to know
+    * which home it arrived in.
+    */
+   public getDeclaredQueryMetadata(): QueryMetadata | null {
+      return (
+         this.packageMetadata.queryMetadata ??
+         this.packageMetadata.materialization?.queryMetadata ??
+         null
+      );
+   }
+
+   /**
+    * Every `queryMetadata` bag this package's authors declared, at whatever
+    * level, as declared. What the publish gate needs in order to name the line
+    * to edit.
+    *
+    * Whether a source persists does not enter into it. A bag on a source rides
+    * every query against that source, materialized or not, so a source is listed
+    * because it declared something — not because a build reads it.
+    */
+   private queryMetadataDeclarations(): QueryMetadataDeclaration[] {
+      const packageDeclaration = this.getDeclaredQueryMetadata();
+      return [
+         ...(packageDeclaration
+            ? [{ level: "package" as const, queryMetadata: packageDeclaration }]
+            : []),
+         ...[...this.models.values()].flatMap((model) => {
+            const modelDeclaration = model.getDeclaredQueryMetadata();
+            return [
+               ...(modelDeclaration
+                  ? [
+                       {
+                          level: "model" as const,
+                          // The model path goes in `modelPath`, not `subject`:
+                          // the wire schema keeps the two apart, so a client
+                          // filtering findings by model missed every one of
+                          // these while `subject` read like a source name.
+                          modelPath: model.getPath(),
+                          queryMetadata: modelDeclaration,
+                       },
+                    ]
+                  : []),
+               ...model
+                  .getDeclaredSourceQueryMetadata()
+                  .map(({ sourceName, queryMetadata }) => ({
+                     level: "source" as const,
+                     subject: sourceName,
+                     // A source name is unique within a model, not within a
+                     // package: without the path, two models declaring a
+                     // same-named source produce identical findings that dedupe
+                     // to a single message naming neither file.
+                     modelPath: model.getPath(),
+                     queryMetadata,
+                  })),
+            ];
+         }),
+      ];
+   }
+
+   /**
+    * How many properties a statement actually SENDS, per model file, once the
+    * package, model-file and source layers have merged.
+    *
+    * The budget is the one rule that cannot be checked per declaration: every
+    * layer can sit under the author budget while their merge sits over it, and
+    * it is the merge that rides the statement.
+    *
+    * The FLOOR — package ⊕ model file — is reported for every model, whether or
+    * not any of its sources declares anything. Sizing only the declaring sources
+    * missed the common shape outright: a package and a model file that overflow
+    * together published clean whenever no source in the file happened to add a
+    * tag, and every query against every source in that file then shed context
+    * properties.
+    */
+   private queryMetadataEffectiveMerges(): {
+      modelPath: string;
+      floorSize: number;
+      sources: { subject: string; size: number }[];
+   }[] {
+      const packageDeclaration = this.getDeclaredQueryMetadata();
+      return [...this.models.values()].map((model) => {
+         const floor = {
+            ...(packageDeclaration ?? {}),
+            ...(model.getDeclaredQueryMetadata() ?? {}),
+         };
+         return {
+            modelPath: model.getPath(),
+            floorSize: Object.keys(floor).length,
+            sources: model
+               .getDeclaredSourceQueryMetadata()
+               .map(({ sourceName, queryMetadata }) => ({
+                  subject: sourceName,
+                  size: Object.keys({ ...floor, ...queryMetadata }).length,
+               })),
+         };
+      });
+   }
+
    public getPackageMetadata(): ApiPackage {
       // Overlay the server-computed fields onto the stored metadata: the
       // explores misconfig warnings (loading is fail-safe — the package still
@@ -887,10 +1003,8 @@ export class Package {
          // not do what it says, and manifest shapes that still parse but are
          // deprecated. Advisory by design — none of these blocks a publish.
          ...materializationConfigWarnings({
-            packageMaterialization: this.packageMetadata.materialization,
-            sources: this.buildPlan?.sources
-               ? Object.values(this.buildPlan.sources)
-               : [],
+            declarations: this.queryMetadataDeclarations(),
+            effectiveMerges: this.queryMetadataEffectiveMerges(),
             manifestWarnings: this.manifestWarnings,
          }),
       ];
