@@ -27,6 +27,7 @@ import {
    BuildManifestResult,
    BuildPlan,
    FreshnessManifest,
+   isLegacyFailedEntry,
    LedgerEntry,
    Materialization,
    MaterializationStatus,
@@ -351,18 +352,24 @@ function collectSensitiveValues(value: unknown, out: Set<string>): void {
  * The instruction list is the wrong denominator because an instruction can be
  * skipped without building (no matching compiled source), so counting
  * instructions would report a skip as built.
+ *
+ * `failures` is the authority on what failed, and an entry mirroring a failure
+ * (the `ManifestEntry.error` deprecation window) is excluded from every other
+ * count -- otherwise one lost source reports as built, or as both reused and
+ * failed where it was also seeded.
  */
 export function tallySources(
    entries: Record<string, ManifestEntry>,
    failures: Record<string, SourceFailure>,
    carried: Record<string, ManifestEntry>,
 ): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
+   const built = Object.values(entries).filter(
+      (e) => !isLegacyFailedEntry(e) && !carried[e.sourceEntityId!],
+   );
    return {
-      sourcesBuilt: Object.values(entries).filter(
-         (e) => !carried[e.sourceEntityId!],
-      ).length,
+      sourcesBuilt: built.length,
       sourcesFailed: Object.keys(failures).length,
-      sourcesReused: Object.keys(carried).length,
+      sourcesReused: Object.keys(carried).filter((id) => !failures[id]).length,
    };
 }
 
@@ -1208,7 +1215,17 @@ export class MaterializationService {
       for (const m of list) {
          if (m.id === excludeId) continue;
          if (m.status === "MANIFEST_FILE_READY" && m.manifest?.entries) {
-            return m.manifest.entries;
+            // Legacy tolerance, removable with `ManifestEntry.error`: a manifest
+            // written by 0.0.245-0.0.246 records a failed source among its
+            // entries. Carrying one forward as reuse would retire the source from
+            // every later run -- a warehouse error that clears on its own would
+            // never be retried -- and seeding a downstream FROM from it would
+            // compile against a table that was never created.
+            return Object.fromEntries(
+               Object.entries(m.manifest.entries).filter(
+                  ([, entry]) => !isLegacyFailedEntry(entry),
+               ),
+            );
          }
       }
       return {};
@@ -1688,16 +1705,33 @@ export class MaterializationService {
                      reason,
                   });
                   failedReasons.push(`${persistSource.name}: ${reason}`);
-                  // Beside `entries`, never in it: the table this source was
-                  // headed for was not created, and an entry's
-                  // `physicalTableName` is required, so recording it as an entry
-                  // would hand every consumer a name it must know not to resolve.
                   failures[sourceEntityId] = {
                      sourceEntityId,
                      sourceName: persistSource.name,
+                     materializedTableId: instruction.materializedTableId,
                      physicalTableName: instruction.physicalTableName,
                      reason,
                   };
+                  // Mirrored into `entries` for the deprecation window, because
+                  // consumers built against 0.0.245-0.0.246 read the failure from
+                  // `ManifestEntry.error` and would otherwise see this source as
+                  // merely ABSENT -- which reads as "nothing to report" rather
+                  // than "this failed", the fail-dangerous direction. Written
+                  // unconditionally rather than merged onto whatever is already
+                  // here: a source can be BOTH seeded (from a reference manifest
+                  // or bound manifest, which apply no exclusion keyed on this
+                  // run's content address) and instructed-and-failed, and the
+                  // seed names the PRIOR generation's table -- a real table,
+                  // which a serve binding would resolve and serve as fresh.
+                  // Overwriting is what makes `error` present on the entry any
+                  // such consumer reads. Remove this whole block with the field.
+                  entries[sourceEntityId] = {
+                     sourceEntityId,
+                     sourceName: persistSource.name,
+                     physicalTableName: instruction.physicalTableName,
+                     materializedTableId: instruction.materializedTableId,
+                     error: reason,
+                  } as ManifestEntry;
                   continue;
                }
                builtSources.push(persistSource.name);

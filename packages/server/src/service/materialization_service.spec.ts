@@ -1422,6 +1422,58 @@ describe("commitManifest", () => {
    });
 });
 
+describe("getMostRecentManifestEntries (legacy tolerance)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("does not return a legacy failed entry from a persisted manifest", async () => {
+      // This is the read boundary for reuse (skip-if-unchanged) and for reference
+      // resolution. A manifest written by 0.0.245-0.0.246 records a failed source
+      // among its entries, and returning one has two distinct consequences: it is
+      // carried forward as a reused table, which retires the source from every
+      // later run so a transient warehouse error is never retried; and it seeds a
+      // downstream FROM against a table that was never created. Delete this test
+      // with the field it tolerates.
+      ctx.repository.listMaterializations.resolves([
+         makeMaterialization({
+            id: "mat-prior",
+            status: "MANIFEST_FILE_READY",
+            manifest: {
+               entries: {
+                  healthy: {
+                     sourceEntityId: "healthy",
+                     sourceName: "good",
+                     physicalTableName: "good_v1",
+                     connectionName: "duckdb",
+                  },
+                  legacyFailed: {
+                     sourceEntityId: "legacyFailed",
+                     sourceName: "broken",
+                     physicalTableName: "broken_v1_prior_generation",
+                     connectionName: "duckdb",
+                     error: "Permission denied while writing to dataset analytics",
+                  },
+               },
+            },
+         }),
+      ]);
+
+      const entries = await (
+         ctx.service as unknown as {
+            getMostRecentManifestEntries: (
+               envId: string,
+               pkg: string,
+               excludeId: string,
+            ) => Promise<Record<string, unknown>>;
+         }
+      ).getMostRecentManifestEntries("env-1", "pkg", "mat-current");
+
+      expect(Object.keys(entries)).toEqual(["healthy"]);
+   });
+});
+
 describe("deriveSelfInstructions", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
@@ -2017,15 +2069,6 @@ describe("executeInstructedBuild", () => {
          "a source that built must still be usable when a sibling failed",
       ).toBe("good_v1");
 
-      // The split is the contract every downstream consumer relies on, so it is
-      // asserted in BOTH directions: the failed source is reported, AND it is
-      // absent from the collection that names real tables. Checking only that the
-      // reason is recorded would pass a build that also left the phantom table in
-      // `entries`, which is the mistake this shape exists to make unavailable.
-      expect(
-         entries["bbadbbbbbbbbbbb"],
-         "a source that failed names no table, so it must not be in entries",
-      ).toBeUndefined();
       const failed = failures["bbadbbbbbbbbbbb"];
       expect(
          failed,
@@ -2038,6 +2081,17 @@ describe("executeInstructedBuild", () => {
          failed?.physicalTableName,
          "the failure names the table the source was headed for",
       ).toBe("bad_v1");
+
+      // Mirrored into `entries` carrying `error`, for the deprecation window only.
+      // A consumer built against 0.0.245-0.0.246 reads the failure from there, and
+      // would otherwise see this source as merely ABSENT -- indistinguishable from
+      // a source nobody asked about, which is the fail-dangerous reading. Delete
+      // this assertion with the field.
+      const mirrored = entries["bbadbbbbbbbbbbb"] as { error?: string };
+      expect(
+         mirrored?.error,
+         "the deprecated entry must carry the same reason while it exists",
+      ).toContain("Permission denied while writing to dataset analytics");
    });
 
    it("redacts a failed source's reason before recording it", async () => {
@@ -2168,11 +2222,86 @@ describe("executeInstructedBuild", () => {
       expect(failed?.reason).toContain("write rejected");
       // The build returned normally, so the run is a partial success rather than a
       // total failure -- that is what keeps the healthy table's manifest committed
-      // and therefore reachable, instead of reclaimed as an orphan. Each source
-      // lands in exactly one collection: the healthy one names a table, the failed
-      // one names only a reason.
-      expect(Object.keys(entries)).toEqual(["dgoodaaaaaaaaaa"]);
+      // and therefore reachable, instead of reclaimed as an orphan.
+      expect(Object.keys(entries).sort()).toEqual([
+         "dbadbbbbbbbbbbb",
+         "dgoodaaaaaaaaaa",
+      ]);
       expect(Object.keys(failures)).toEqual(["dbadbbbbbbbbbbb"]);
+   });
+
+   it("overwrites a seeded entry when the same source is instructed and fails", async () => {
+      // A source can be BOTH seeded and instructed: a reference manifest applies no
+      // exclusion for instructed sources, and the bound-manifest seed excludes on
+      // the caller's `instruction.sourceEntityId` while a failure keys on the
+      // content address the publisher computes -- which the build treats as an
+      // opaque caller-assigned value, so the two can differ by design.
+      //
+      // The seed names the PRIOR generation's table, which for a stable auto-run
+      // name is a table that really exists. Leaving it in `entries` beside the
+      // failure would let a serve binding resolve it and serve last generation's
+      // data as though this run had produced it -- the failure mode that is worse
+      // than a missing table, because nothing reports it.
+      // A healthy sibling keeps this a PARTIAL failure: an all-failed build throws
+      // rather than returning a manifest, so the overlap would never be observable.
+      const runSQL = sinon.stub().callsFake(async (sql: string) => {
+         if (String(sql).includes("bad_v2")) throw new Error("boom");
+      });
+      const connection = { runSQL } as unknown as MalloyConnection;
+      const bad = fakeSource({
+         name: "bad",
+         sourceEntityId: "bsameaaaaaaaaaa",
+      });
+      const good = fakeSource({
+         name: "good",
+         sourceEntityId: "bfineaaaaaaaaaa",
+      });
+      const compiled = compiledWith(
+         { bad, good },
+         [["bad", "good"]],
+         new Map([["duckdb", connection]]),
+      );
+
+      const { entries, failures } = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bsameaaaaaaaaaa",
+               materializedTableId: "mt-b",
+               physicalTableName: "bad_v2",
+               realization: "COPY",
+            },
+            {
+               sourceEntityId: "bfineaaaaaaaaaa",
+               materializedTableId: "mt-g",
+               physicalTableName: "good_v1",
+               realization: "COPY",
+            },
+         ],
+         {
+            // Same source, seeded with the generation a previous run built.
+            bsameaaaaaaaaaa: {
+               sourceEntityId: "bsameaaaaaaaaaa",
+               sourceName: "bad",
+               physicalTableName: "bad_v1_prior_generation",
+               connectionName: "duckdb",
+            },
+         },
+      );
+
+      expect(failures["bsameaaaaaaaaaa"]?.reason).toContain("boom");
+      const entry = entries["bsameaaaaaaaaaa"] as {
+         error?: string;
+         physicalTableName?: string;
+      };
+      expect(
+         entry?.error,
+         "the seeded entry must be replaced by the failure, not left beside it",
+      ).toContain("boom");
+      expect(
+         entry?.physicalTableName,
+         "the prior generation's table name must not survive on the entry",
+      ).not.toBe("bad_v1_prior_generation");
    });
 
    it("fails the build when every source fails", async () => {
