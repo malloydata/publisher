@@ -133,7 +133,7 @@ export function resolvePackageQueryMetadata(
    if (rootDeclared && envelopeDeclared) {
       // Both homes agreeing is the transition state the server itself writes,
       // so it is not worth a word to an operator who cannot act on it.
-      if (JSON.stringify(rootRaw) === JSON.stringify(envelopeRaw)) {
+      if (sameQueryMetadataBag(rootRaw, envelopeRaw)) {
          return { queryMetadata: rootRaw, home: "root", warnings: [] };
       }
       return {
@@ -150,6 +150,39 @@ export function resolvePackageQueryMetadata(
       };
    }
    return { queryMetadata: rootRaw, home: "root", warnings: [] };
+}
+
+/**
+ * Whether two raw `queryMetadata` declarations say the same thing, INSENSITIVE
+ * to key order. `{team, tier}` and `{tier, team}` are the same bag; comparing
+ * serialized forms directly called them a conflict and sent an author off to
+ * reconcile two homes that already agreed.
+ *
+ * Runs on RAW, pre-validation input, so it cannot assume a flat string map — a
+ * value may be a number, a null, an array or an object. Compared through a
+ * key-sorted re-serialization that recurses, so nesting is handled rather than
+ * assumed away.
+ */
+function sameQueryMetadataBag(a: unknown, b: unknown): boolean {
+   return keySortedJson(a) === keySortedJson(b);
+}
+
+function keySortedJson(value: unknown): string {
+   if (value === null || typeof value !== "object") {
+      // `undefined` has no JSON form; name it so two absent values still match.
+      return JSON.stringify(value) ?? "undefined";
+   }
+   if (Array.isArray(value)) {
+      return `[${value.map(keySortedJson).join(",")}]`;
+   }
+   const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
+   );
+   return `{${entries
+      .map(
+         ([name, nested]) => `${JSON.stringify(name)}:${keySortedJson(nested)}`,
+      )
+      .join(",")}}`;
 }
 
 /**

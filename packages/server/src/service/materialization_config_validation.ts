@@ -66,12 +66,25 @@ export interface MaterializationConfigInput {
     */
    declarations?: QueryMetadataDeclaration[];
    /**
-    * How many properties each source actually SENDS, after the package, model
-    * file and source layers merge. The declarations above cannot answer this —
-    * each is individually under budget while their merge is over it — and the
-    * budget is a property of the merge.
+    * How many properties a statement actually SENDS, per model file, after the
+    * layers merge. The declarations above cannot answer this — each is
+    * individually under budget while their merge is over it — and the budget is
+    * a property of the merge.
+    *
+    * Given per model rather than per source because the overflow usually is not
+    * a source's fault. `floorSize` is package ⊕ model file: the bag EVERY source
+    * in that file carries, including the sources that declare nothing. Sizing
+    * only the declaring sources missed that case entirely — a package and a
+    * model file that overflow together published clean whenever no source in the
+    * file happened to add a tag of its own.
     */
-   effectiveBagSizes?: { subject: string; modelPath?: string; size: number }[];
+   effectiveMerges?: {
+      modelPath: string;
+      /** package ⊕ model file — carried by every source in this file. */
+      floorSize: number;
+      /** Per source that declares its own bag: package ⊕ model ⊕ source. */
+      sources: { subject: string; size: number }[];
+   }[];
    /**
     * Deprecations the manifest parse tolerated (e.g. a root-level `scope`), which
     * a load keeps working but a publish should report.
@@ -158,23 +171,37 @@ export function materializationConfigWarnings(
 
    // The budget is the one rule a single declaration cannot answer. Every check
    // above is per-declaration on purpose — that is what lets a message name the
-   // line to edit — but the budget is about what a source SENDS, and a source
-   // sends the merge of every layer above it. Package 6 + model 6 is eleven
-   // properties at neither declaration and twelve at the source, which is over
+   // line to edit — but the budget is about what a statement SENDS, and a
+   // statement sends the merge of every layer above it. Package 6 + model 6 is
+   // six properties at each declaration and twelve on the wire, which is over
    // the author budget and sheds context properties on every statement: the
    // exact failure `queryMetadataBudgetWarning` exists to prevent, published
    // clean and visible afterwards only as a metric.
    //
-   // Emitted without a level label because no single line is at fault, and
-   // located at the source so a reader knows which merge overflowed.
-   for (const { subject, modelPath, size } of input.effectiveBagSizes ?? []) {
-      const budget = queryMetadataBudgetWarning(size);
-      if (!budget) continue;
-      warnings.push({
-         message: `queryMetadata (package + model file + source, merged): ${budget}`,
-         ...(modelPath ? { model: modelPath } : {}),
-         ...(subject ? { subject } : {}),
-      });
+   // No level label on these, because no single line is at fault.
+   for (const merge of input.effectiveMerges ?? []) {
+      // The floor first, and ALONE when it overflows. Every source in the file
+      // carries it, so naming each would be N messages for one mistake — and the
+      // sources are not where the fix goes, the manifest and this file are. Once
+      // the floor is back under budget a republish surfaces whichever individual
+      // sources are still over.
+      const floor = queryMetadataBudgetWarning(merge.floorSize);
+      if (floor) {
+         warnings.push({
+            model: merge.modelPath,
+            message: `queryMetadata (package + model file, merged): ${floor}`,
+         });
+         continue;
+      }
+      for (const { subject, size } of merge.sources) {
+         const budget = queryMetadataBudgetWarning(size);
+         if (!budget) continue;
+         warnings.push({
+            model: merge.modelPath,
+            subject,
+            message: `queryMetadata (package + model file + source, merged): ${budget}`,
+         });
+      }
    }
 
    // Identical findings collapse (the same declaration reaching this function

@@ -244,6 +244,39 @@ describe("service/package_manifest", () => {
          });
       });
 
+      it("treats the same bag in a different key order as agreement", () => {
+         // Key order is not meaning. Comparing serialized forms directly called
+         // these a conflict and sent the author off to reconcile two homes that
+         // already agree — the root wins anyway, so the warning was pure noise
+         // pointing at a bag that needs no edit.
+         const resolved = resolvePackageQueryMetadata(
+            { team: "finance", tier: "gold" },
+            { queryMetadata: { tier: "gold", team: "finance" } },
+         );
+         expect(resolved.warnings).toEqual([]);
+         expect(resolved.queryMetadata).toEqual({
+            team: "finance",
+            tier: "gold",
+         });
+      });
+
+      it("still calls genuinely different bags a conflict", () => {
+         // The order-insensitive compare must not swallow a real disagreement.
+         expect(
+            resolvePackageQueryMetadata(
+               { team: "finance", tier: "gold" },
+               { queryMetadata: { tier: "bronze", team: "finance" } },
+            ).warnings[0],
+         ).toMatch(/conflicting/i);
+         // Same keys, one missing on the other side.
+         expect(
+            resolvePackageQueryMetadata(
+               { team: "finance", tier: "gold" },
+               { queryMetadata: { team: "finance" } },
+            ).warnings[0],
+         ).toMatch(/conflicting/i);
+      });
+
       it("warns and prefers the root when the homes disagree", () => {
          // Deliberately unlike `scope`, which throws. Scope decides whether an
          // artifact is version-owned; a tag decides a label. Failing a package

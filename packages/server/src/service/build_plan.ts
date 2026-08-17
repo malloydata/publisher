@@ -400,9 +400,14 @@ export function resolveQueryMetadata(
 
 /**
  * The author-declared layers of one statement's metadata, composed
- * most-specific-wins PER PROPERTY: source `#@ persist queryMetadata.*` >
- * model-file `## materialization.queryMetadata.*` (bare `## queryMetadata.*`
- * underneath) > package `materialization.queryMetadata`.
+ * most-specific-wins PER PROPERTY: source `#@ queryMetadata.*` > model-file
+ * `## queryMetadata.*` > package `queryMetadata`.
+ *
+ * The package and model-file layers each have a deprecated
+ * `materialization.`-prefixed spelling, still read, sitting UNDERNEATH its
+ * canonical form — so a file declaring both resolves to the canonical one. That
+ * is the OPPOSITE of freshness, where the prefixed spelling IS canonical; the
+ * ordering note in the body is where that trap is spelled out.
  *
  * Takes tags rather than a {@link PersistSource} so the SERVE path can compose
  * the same layers from a loaded model, where no `PersistSource` exists. A

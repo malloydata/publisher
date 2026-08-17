@@ -473,4 +473,50 @@ describe("materialization schedule surfacing", () => {
       },
       { timeout: 20000 },
    );
+
+   it(
+      "warns about a package+model tag overflow with no source declaring one",
+      async () => {
+         // End-to-end over a real Environment: the floor has to be SIZED, not
+         // just checkable. Sizing only the sources that declare their own bag
+         // meant this package published clean while every query it serves shed
+         // context properties.
+         const env = await Environment.create("testEnv", envPath, []);
+         const six = (prefix: string) =>
+            Object.fromEntries(
+               Array.from({ length: 6 }, (_, i) => [`${prefix}${i}`, "v"]),
+            );
+         const dir = path.join(envPath, "pkg");
+         await fs.mkdir(dir, { recursive: true });
+         await fs.writeFile(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({
+               name: "pkg",
+               description: "fixture",
+               queryMetadata: six("p"),
+            }),
+         );
+         // Six more at the model file, and no `#@` on the source at all.
+         await fs.writeFile(
+            path.join(dir, "model.malloy"),
+            Object.entries(six("m"))
+               .map(([name, value]) => `## queryMetadata.${name}="${value}"`)
+               .join("\n") +
+               "\n" +
+               MODEL,
+         );
+         await env.addPackage("pkg");
+
+         const warnings =
+            (await env.getPackage("pkg", false)).getPackageMetadata()
+               .warnings ?? [];
+         const overflow = warnings.filter((w) =>
+            w.message?.includes("package + model file, merged"),
+         );
+         expect(overflow).toHaveLength(1);
+         expect(overflow[0].model).toBe("model.malloy");
+         expect(overflow[0].subject).toBeUndefined();
+      },
+      { timeout: 20000 },
+   );
 });

@@ -196,20 +196,88 @@ describe("materializationConfigWarnings", () => {
                queryMetadata: six("m"),
             },
          ],
-         effectiveBagSizes: [
-            { subject: "orders", modelPath: "marts.malloy", size: 12 },
+         effectiveMerges: [
+            {
+               modelPath: "marts.malloy",
+               floorSize: 12,
+               sources: [{ subject: "orders", size: 12 }],
+            },
          ],
       });
       const merged = warnings.filter((w) => w.message.includes("merged"));
       expect(merged).toHaveLength(1);
-      expect(merged[0].subject).toBe("orders");
       expect(merged[0].model).toBe("marts.malloy");
    });
 
-   it("says nothing about a merged bag inside the budget", () => {
+   it("catches a package+model overflow when NO source declares anything", () => {
+      // The case the merge check was added for and then missed: sizing only the
+      // declaring sources meant a package and a model file that overflow
+      // together published clean whenever no source in the file happened to add
+      // a tag of its own — and every query against every source in that file
+      // then shed context properties.
+      const warnings = materializationConfigWarnings({
+         effectiveMerges: [
+            { modelPath: "marts.malloy", floorSize: 12, sources: [] },
+         ],
+      });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].model).toBe("marts.malloy");
+      expect(warnings[0].subject).toBeUndefined();
+      expect(warnings[0].message).toContain("package + model file, merged");
+   });
+
+   it("reports an overflowing floor ONCE, not once per source under it", () => {
+      // Every source in the file carries the floor, so naming each would be N
+      // messages for one mistake — and the sources are not where the fix goes.
+      const warnings = materializationConfigWarnings({
+         effectiveMerges: [
+            {
+               modelPath: "marts.malloy",
+               floorSize: 12,
+               sources: [
+                  { subject: "orders", size: 13 },
+                  { subject: "returns", size: 14 },
+               ],
+            },
+         ],
+      });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].subject).toBeUndefined();
+   });
+
+   it("names the individual sources when the floor itself is fine", () => {
+      // Floor under budget, so each source that tips its own merge over is a
+      // separate mistake in a separate place and gets its own message.
+      const warnings = materializationConfigWarnings({
+         effectiveMerges: [
+            {
+               modelPath: "marts.malloy",
+               floorSize: 5,
+               sources: [
+                  { subject: "orders", size: 12 },
+                  { subject: "fine", size: 6 },
+                  { subject: "returns", size: 13 },
+               ],
+            },
+         ],
+      });
+      expect(warnings).toHaveLength(2);
+      expect(warnings.map((w) => w.subject)).toEqual(["orders", "returns"]);
+      expect(warnings[0].message).toContain(
+         "package + model file + source, merged",
+      );
+   });
+
+   it("says nothing about merges inside the budget", () => {
       expect(
          materializationConfigWarnings({
-            effectiveBagSizes: [{ subject: "orders", size: 3 }],
+            effectiveMerges: [
+               {
+                  modelPath: "marts.malloy",
+                  floorSize: 2,
+                  sources: [{ subject: "orders", size: 3 }],
+               },
+            ],
          }),
       ).toEqual([]);
    });

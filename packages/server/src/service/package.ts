@@ -822,33 +822,41 @@ export class Package {
    }
 
    /**
-    * How many properties each tagged source actually SENDS, once the package,
-    * model-file and source layers have merged.
+    * How many properties a statement actually SENDS, per model file, once the
+    * package, model-file and source layers have merged.
     *
     * The budget is the one rule that cannot be checked per declaration: every
     * layer can sit under the author budget while their merge sits over it, and
-    * it is the merge that rides the statement. Reported per source so a warning
-    * can name the merge that overflowed rather than a line that looks fine.
+    * it is the merge that rides the statement.
+    *
+    * The FLOOR — package ⊕ model file — is reported for every model, whether or
+    * not any of its sources declares anything. Sizing only the declaring sources
+    * missed the common shape outright: a package and a model file that overflow
+    * together published clean whenever no source in the file happened to add a
+    * tag, and every query against every source in that file then shed context
+    * properties.
     */
-   private queryMetadataEffectiveBagSizes(): {
-      subject: string;
-      modelPath?: string;
-      size: number;
+   private queryMetadataEffectiveMerges(): {
+      modelPath: string;
+      floorSize: number;
+      sources: { subject: string; size: number }[];
    }[] {
       const packageDeclaration = this.getDeclaredQueryMetadata();
-      return [...this.models.values()].flatMap((model) => {
-         const modelDeclaration = model.getDeclaredQueryMetadata();
-         return model
-            .getDeclaredSourceQueryMetadata()
-            .map(({ sourceName, queryMetadata }) => ({
-               subject: sourceName,
-               modelPath: model.getPath(),
-               size: Object.keys({
-                  ...(packageDeclaration ?? {}),
-                  ...(modelDeclaration ?? {}),
-                  ...queryMetadata,
-               }).length,
-            }));
+      return [...this.models.values()].map((model) => {
+         const floor = {
+            ...(packageDeclaration ?? {}),
+            ...(model.getDeclaredQueryMetadata() ?? {}),
+         };
+         return {
+            modelPath: model.getPath(),
+            floorSize: Object.keys(floor).length,
+            sources: model
+               .getDeclaredSourceQueryMetadata()
+               .map(({ sourceName, queryMetadata }) => ({
+                  subject: sourceName,
+                  size: Object.keys({ ...floor, ...queryMetadata }).length,
+               })),
+         };
       });
    }
 
@@ -900,7 +908,7 @@ export class Package {
          // deprecated. Advisory by design — none of these blocks a publish.
          ...materializationConfigWarnings({
             declarations: this.queryMetadataDeclarations(),
-            effectiveBagSizes: this.queryMetadataEffectiveBagSizes(),
+            effectiveMerges: this.queryMetadataEffectiveMerges(),
             manifestWarnings: this.manifestWarnings,
          }),
       ];
