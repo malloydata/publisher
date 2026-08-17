@@ -5,7 +5,7 @@ description: "Build or modify a Malloy Publisher dashboard, a tagged .malloy fil
 
 # Publisher Dashboards
 
-> A `dashboards/*.malloy` file **is** a dashboard. It imports the model, declares one query (or names existing views), applies its filtering, and tags the layout. Publisher discovers it at package load, renders the filter controls from the givens it references, and serves it at `/<env>/<pkg>/dashboards/<name>`. No code, no build step.
+> A `dashboards/*.malloy` file **is** a dashboard. It imports the model, either declares one query and applies its own filtering or names views that already do, and tags the layout. Publisher discovers it at package load, renders the filter controls from the givens it references, offers `# drill` click-through between pages, and serves it at `/<env>/<pkg>/dashboards/<name>`. No code, no build step.
 
 ## When this is the right tool
 
@@ -29,19 +29,22 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 2. **DECIDE THE FORM** (below): single-query if the page is one filtered result with parts;
    composite if the views already exist and the job is choosing which to show together.
 3. **DECLARE THE GIVENS** the dashboard will filter by, in the model (usually `givens.malloy`), with
-   their control tags. Skip if they already exist, since a given is a model concern and dashboards
-   share them.
+   their control tags: see "Filter controls" below for the syntax and what each tag renders as. Skip
+   if they already exist, since a given is a model concern and dashboards share them.
 4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
    Import every given it filters by, and every source or query any of those givens names in a
    `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
    looks like a picker but has no options, and only the package warnings name it.
 5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
-   before you save. Cheaper than a reload, and it catches a wrong field or source name outright. A
-   clean compile is not a working dashboard: some tag mistakes surface at step 6, and some only when
-   you look at the page in step 7.
+   before you save. Use the path the file is going to have; it does not need to exist yet, and its
+   relative imports resolve from it. Cheaper than a reload, and it catches a wrong field or source
+   name outright. A clean compile is not a working dashboard: some tag mistakes surface at step 6,
+   and some only when you look at the page in step 7.
 6. **SAVE IT, THEN RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
    `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
-   a 424 means the package did not load and your edit is not live. See "Read the lint" below.
+   a 424 means the package did not load and your edit is not live. **The `warnings` key is absent
+   when there are none**, so an empty response is the pass, not a sign you are reading the wrong
+   field. See "Read the lint" below.
 7. **OPEN IT AND LOOK.** Not optional; see "What 'done' means".
 
 Compiling before you save is worth the extra step: compile against a path that already holds the
@@ -113,7 +116,9 @@ import { CATEGORY, SINCE } from '../givens.malloy'
 
 A composite has no query, so the filtering it applies must live in what it composes: a source that
 already has the givens applied. Put it in an untagged `dashboards/_shared.malloy`, which discovery
-treats as a shared include rather than a dashboard:
+treats as a shared include rather than a dashboard. Save it before you compile the dashboard that
+imports it: step 5 is protecting you from compiling a dashboard against its own saved copy, and the
+include is neither.
 
 ```malloy
 ##! experimental.givens
@@ -132,11 +137,12 @@ twelfth of the page wide. Use the single-query form when one tile deserves more 
 
 **The two column spellings are form-specific and neither degrades into the other.**
 `dashboard_columns=N` on the artifact tag is composite-only; `# dashboard { columns=N }` is
-single-query-only. Cross them and the page silently loses its layout entirely: a query tagged
+single-query-only. Cross them and the page loses its layout entirely: a query tagged
 `dashboard_columns=12` renders as one plain table, no grid, every `# colspan` and `# break` dropped.
-Nothing catches it. The reload is 200, the warnings are empty, and the manifest reports
-`dashboardColumns: 12` either way, because both spellings feed the same field. `tiles=` on a
-single-query artifact tag is dropped the same way, silently.
+The reload is 200, the warnings are empty, and the manifest reports `dashboardColumns: 12` either
+way, because both spellings feed the same field, so nothing short of looking at the page or reading
+the render logs will tell you (see "Losing the grid"). `tiles=` on a single-query artifact tag is
+dropped the same way, silently.
 
 ## Layout: the four tags that make a page line up
 
@@ -152,8 +158,10 @@ single-query dashboard in the package so they read as one product:
 3. **`# break` on the first tile after the cards.** Otherwise it flows into the columns left beside
    the cards and the next tile wraps. Not needed per row: once a row sums to 12 the next item wraps
    on its own.
-4. **`# label="…"` on every nest and every aggregate.** The heading is otherwise the view's or
-   field's name.
+4. **`# label="…"` on every nest and every aggregate**, including the aggregates inside a table
+   nest, whose column headers are field names too. The heading is otherwise the view's or field's
+   name, and a wide table full of `total_sales` and `order_item_count` is the most visible thing
+   between a rough page and a finished one.
 
 Then the traps:
 
@@ -165,7 +173,9 @@ Then the traps:
 - **A ratio needs a number format.** `order_count / customer_count` renders as `10.695` on a card;
   `# number="#,##0.0"` is the precision it actually carries.
 - **A `# shape_map` legend is titled with the measure's field _name_, not its `# label`.** Rename it
-  in the view: `aggregate: revenue is total_sales`.
+  in the view: `aggregate: revenue is total_sales`. Renaming drops the measure's own format tags
+  though, so `# currency` becomes plain digits unless you re-tag it at the rename. Prefer `# label=`
+  anywhere the legend is not the problem.
 - **A series legend sizes itself from the longer of the series label and its widest value**, then
   truncates both. A 4-character label over 4-digit years clips to `20…`; `# label="Order year"`
   instead of `"Year"` buys the room. A legend showing `…` is this, not a data problem.
@@ -188,31 +198,15 @@ its rows.
   that references it lives up an import chain. A composite must import the givens its tiles use.
 - **A suggest's source or query has to resolve in the dashboard file too.** `suggest { source=products … }`
   means the dashboard imports `products`.
-- **A `f'…'` filter literal in `givens { … }` cannot share a line with `# dashboard`.** Put
-  `# dashboard` on its own line and the problem goes away. Publisher reads the combined line
-  correctly, so the manifest carries the right title, starting values and column count, the reload is
-  200 and the package warnings are empty. The renderer re-parses the raw annotation for itself, loses
-  all of it, and the page comes out as **a plain nested table with no dashboard layout at all**, every
-  `# colspan` and `# break` dropped. Order does not save it: `# dashboard` written first fails the
-  same way. A plain `'Outerwear'` or a bare date on that line is fine, and the composite `##` form is
-  immune, since its layout comes from the manifest rather than from a re-parse. The one place it
-  shows is the query response's render logs, as `Unknown render tag 'colspan'`, which is worth
-  telling apart from the `Ignored # colspan` below: that one means you forgot `columns=N`, this one
-  means the renderer never saw the `# dashboard` tag.
-- **`# colspan` does nothing without `# dashboard { columns=N }`.** The items fall back to flowing
-  side by side instead of aligning to a grid. It does warn ("Ignored # colspan on 'x': colspan only
-  applies in columns mode"), but on the query response as a render log, not in the package warnings,
-  so step 6 will not show it. See "Layout" above.
 - **A model-level `##` tag must be on one line.** Wrapping one always breaks it, but how you find
   out depends on what follows. If the continuation is not valid Malloy you get a compile error. If it
   happens to be, an `import` say, the file compiles clean, quietly stops being a dashboard and
   becomes a shared include, and only the package warnings tell you: "Tag does not parse (Unclosed
-  '{')". That second case is why step 5 is not the last step.
+  '{')". See "Losing the grid" below.
 - **In a `# dashboard` view, fields render by role.** A top-level `aggregate:` measure is a KPI card,
   so do not nest a `# big_value` view to get one. Each `nest:` is a tile. Give every KPI a
   `# label=`, or the card is headed `total_sales`.
-- **Only table cells are marked drillable**, so a dashboard meant to be clicked wants at least one
-  untagged (table) tile. See "Drill" for what a reader sees.
+- **Only table cells are marked drillable.** See "Drill".
 
 `skill:malloy-gotchas-rendering` covers the renderer tags in depth; `skill:malloy-charts` covers
 choosing them.
@@ -276,20 +270,51 @@ gives the identical output field name and the identical numbers, and carries the
 does not: it navigates, still looks like it worked, and arrives as `?category=…`, which the
 destination drops by exact match, so you land on an unfiltered page. Nothing errors, and the lint
 upper-cases when it checks, so it stays green too. That silence is specific to a name that folds onto
-a declared given: one that matches nothing at all is caught loudly, and the `to=self` is not offered.
+a declared given. A `to=self` whose name matches nothing at all is caught loudly and is not offered;
+a `to=<slug>` is not checked either way.
 
 A drill only lands somewhere useful if the destination declares a control for the given being
 seeded. **No lint checks that.** It verifies that the target slug is a dashboard in the package, and
 for `to=self` that some model declares the given, and stops there. Nothing reads the destination's
 own givens, so click it and look.
 
-Cells in a drillable **table** column show it, a transposed one excepted: pointer cursor, and a blue
-underline on hover. They
-are in the tab order and carry a button role too, so a keyboard reaches them, focus is styled the way
+Cells in a drillable **table** column show it: pointer cursor, and a blue underline on hover. They are
+in the tab order and carry a button role too, so a keyboard reaches them, focus is styled the way
 hover is, and Enter or Space fires the drill. Chart marks get no such affordance in either Publisher
 or Malloyyo, so a dashboard meant to be drilled wants at least one table tile. A destination the
 surface cannot honor is not marked and not offered, which is why a `to=self` reads as plain text in a
 document that declares no control for its given.
+
+**The marking is all-or-nothing across the page, and one thing quietly switches it off: another tile
+rendering a column with the same header.** Put a "revenue by category" chart beside a drillable
+`category` table, which is the obvious thing to build, and the affordance disappears from every cell
+on the page. Marking matches columns by their rendered header text, so a name a non-drillable field
+also shows is dropped rather than risk painting a dead link. The clicks still work, so this is
+invisible unless you hover. Give the two different headings with `# label=`. A transposed table is
+never marked either, for a different reason.
+
+## Losing the grid
+
+The commonest way a dashboard goes wrong is that the whole layout disappears and the page renders as
+one plain nested table. It looks healthy everywhere else: the reload is 200, the package warnings are
+empty, and the manifest reports the column count you asked for. Three causes, one symptom:
+
+1. **The column spelling does not match the form.** `dashboard_columns=N` is composite-only,
+   `# dashboard { columns=N }` is single-query-only.
+2. **A `f'…'` filter literal shares a line with `# dashboard`.** Put `# dashboard` on its own line.
+   Writing it first on the line does not help; a plain `'Outerwear'` or a bare date is fine; the
+   composite form is immune, since its layout comes from the manifest rather than from a re-parse.
+3. **You wrote `# colspan` but no `columns=N`**, so the items flow side by side instead of aligning.
+
+Run one tile's query and read `renderLogs` on the response. It tells the three apart:
+
+| render log | what it means |
+|---|---|
+| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag: cause 1 or 2 |
+| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count: cause 3 |
+| neither, and the file is missing from the listing | the tag did not parse: see the `##`-on-one-line rule above |
+
+None of these reach the package warnings, so step 6 will not show them.
 
 ## Read the lint
 
@@ -314,7 +339,8 @@ If the reload is 200 and the others are listed but yours is not, discovery skipp
 usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
 an untagged shared include.
 
-**A clean reload is not proof the tags are right.** The tag lint is syntax only: it carries no
+**A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
+separate warning for a tag that does not *parse* is syntax only: it carries no
 position and says nothing about a name that does not resolve. It catches *a* malformed tag; its
 absence is not evidence there are none. That is why the last step is opening the page, not reading
 the warning list.
@@ -323,14 +349,17 @@ the warning list.
 
 - Every source, view, and field name came from the model you read in step 1.
 - The reload returned **200**, not 424. A 424 means the page you are about to look at is the old one.
-- The package reloads with **zero** dashboard warnings.
+- The package reloads with **zero** dashboard warnings, and your dashboard is in the listing at all.
+- **The page is a grid, not one plain nested table.** This is the check the others cannot make for
+  you: all of them pass on a page whose layout has vanished. If it has, see "Losing the grid".
 - You opened the page and every tile shows real numbers: not stuck loading, not an error, not an
   empty state you did not intend.
 - Each control renders as the widget you intended (a select shows options; a slider is a slider),
   and changing one changes the numbers.
 - If you added a `# drill`, you clicked it and landed where you meant to, with the given seeded.
-- Every card and tile carries a colspan, each row's colspans sum to `columns`, and the rows end flush
-  with each other. Nothing is clipped, no tile is thousands of pixels tall, and no legend or card
+- On a single-query dashboard, every card and tile carries a colspan, each row's colspans sum to
+  `columns`, and the rows end flush with each other. On a composite, the tiles fill the row rather
+  than leaving a gap. Nothing is clipped, no tile is thousands of pixels tall, and no legend or card
   label ends in `…`.
 
 ## Reference
