@@ -23,6 +23,14 @@ export const MIN_SIMILARITY = 0.2;
  * Packages with more entities than this stay lexical: the first embed of
  * such a package would take minutes of provider calls and rate limits.
  * The bundled examples sit around a few hundred entities.
+ *
+ * Counted in ENTITIES, not rows. Faceting means a documented entity costs
+ * more than one embedding (a name row plus its doc rows), so the ceiling on
+ * first-sync provider calls is a small multiple of this number rather than
+ * this number. The cap is deliberately still expressed in entities: it is
+ * checked before facets are computed, and it is the figure an operator can
+ * reason about from their model. Undocumented entities, which are the ones
+ * that make a package large by accident, still cost exactly one row each.
  */
 export const MAX_EMBEDDED_ENTITIES = 5_000;
 /**
@@ -73,7 +81,17 @@ export type SemanticUnavailableReason =
    | "error";
 
 export type SemanticSearchResult =
-   | { hits: SemanticHit[] }
+   | {
+        hits: SemanticHit[];
+        /**
+         * Entities whose best facet matched, but below MIN_SIMILARITY, under
+         * the same scope as `hits`. Makes a thin result legible: 0 alongside
+         * no hits is a true negative ("this package models nothing like
+         * that"), while a large number means the question is diffusely
+         * related to many entities and wants rephrasing or splitting.
+         */
+        belowCutoffCount: number;
+     }
    | { unavailable: SemanticUnavailableReason };
 
 /**
@@ -100,10 +118,125 @@ export function humanizeName(name: string): string {
  * both the hash and the request path apply) separately guarantees that
  * even a whitespace-only name never reaches the provider as an empty
  * input.
+ *
+ * Retained as the definition of an entity's DOC facet text; the name facet
+ * is embedded separately. See entityFacets.
  */
 export function embeddingText(entity: EmbeddableEntity): string {
    const name = humanizeName(entity.name) || entity.name;
    return entity.embedDoc ? `${name}: ${entity.embedDoc}` : name;
+}
+
+/** The facet holding an entity's own name, embedded free of doc text. */
+export const NAME_FACET = "name";
+
+/**
+ * Target and hard ceiling for one doc chunk, in characters, and the most
+ * chunks one doc may produce.
+ *
+ * The target is small enough that a single fact keeps a vector of its own,
+ * and the cap bounds what one lavishly-documented entity can cost: at most
+ * MAX_DOC_CHUNKS + 1 embeddings. A doc at or under CHUNK_MAX_CHARS stays a
+ * single chunk, so short docs produce byte-identical rows to the unchunked
+ * scheme and cost no re-embed when this ships.
+ */
+export const CHUNK_TARGET_CHARS = 300;
+export const CHUNK_MAX_CHARS = 500;
+export const MAX_DOC_CHUNKS = 8;
+
+/** One embeddable unit of an entity: its name, or a chunk of its doc. */
+export interface EntityFacet {
+   facet: string;
+   text: string;
+}
+
+/**
+ * Split doc text into chunks that each keep their own embedding.
+ *
+ * A source doc is where modellers put grain caveats, population rules and
+ * reporting conventions, and those facts were unreachable by their own
+ * content: on a ~300-word doc, a rare token retrieved the source at rank 1
+ * while near-verbatim business phrasing from the same doc did not retrieve it
+ * at all. Averaged across everything the doc mentions, no single fact in it
+ * is close to anything.
+ *
+ * It also fixes a silent loss. prepareEmbeddingInput caps input at
+ * MAX_EMBED_INPUT_CHARS, so before chunking, everything past that cap was
+ * dropped with no signal — the tail of a long doc was not merely diluted, it
+ * was never embedded at all.
+ *
+ * Splits on sentence boundaries and packs greedily toward CHUNK_TARGET_CHARS,
+ * so a chunk is a few whole sentences rather than a cut phrase. A sentence
+ * longer than the ceiling on its own is kept whole rather than cut
+ * mid-clause; prepareEmbeddingInput still bounds what is sent. Past
+ * MAX_DOC_CHUNKS the remainder is folded into the last chunk, so no text is
+ * silently dropped the way the old cap dropped it.
+ */
+export function chunkDoc(doc: string): string[] {
+   const text = doc.replace(/\s+/g, " ").trim();
+   if (!text) return [];
+   if (text.length <= CHUNK_MAX_CHARS) return [text];
+
+   const sentences = text.split(/(?<=[.!?])\s+/);
+   const chunks: string[] = [];
+   let current = "";
+   for (const sentence of sentences) {
+      if (!current) {
+         current = sentence;
+         continue;
+      }
+      const joined = `${current} ${sentence}`;
+      // Pack until the target, but never push a chunk past the ceiling.
+      if (
+         joined.length <= CHUNK_TARGET_CHARS ||
+         (current.length < CHUNK_TARGET_CHARS &&
+            joined.length <= CHUNK_MAX_CHARS)
+      ) {
+         current = joined;
+         continue;
+      }
+      chunks.push(current);
+      current = sentence;
+   }
+   if (current) chunks.push(current);
+
+   if (chunks.length > MAX_DOC_CHUNKS) {
+      const kept = chunks.slice(0, MAX_DOC_CHUNKS - 1);
+      kept.push(chunks.slice(MAX_DOC_CHUNKS - 1).join(" "));
+      return kept;
+   }
+   return chunks;
+}
+
+/**
+ * Split an entity into the units that get their own embedding.
+ *
+ * One vector per entity meant a long `#(doc)` dominated the average and the
+ * entity stopped matching the plain name of the concept it describes.
+ * Measured on a 42-source model: a field with a 547-char doc ranked 10th for
+ * its own name while 14-16 char-doc siblings ranked 1st, and appending a
+ * 64-char pointer to a doc dropped a field out of the top 12 entirely. So
+ * documenting a field well made it harder to find, which is exactly backwards
+ * for a tool whose quality is meant to track the model's.
+ *
+ * Embedding the name on its own fixes that: the name facet matches the plain
+ * name at full strength no matter how much documentation the entity carries,
+ * and the doc facets still contribute their own vocabulary. Scoring takes the
+ * best facet (see trySemanticSearch), so more documentation can only add
+ * recall, never cost precision on the entity's own name.
+ *
+ * A long doc splits across `doc:N` facets so individual facts stay
+ * retrievable by their own content (see chunkDoc). Each chunk is prefixed
+ * with the entity's name, which anchors a bare fact to the thing it is about;
+ * the chunks are short, so that prefix costs little dilution.
+ */
+export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
+   const name = humanizeName(entity.name) || entity.name;
+   const facets: EntityFacet[] = [{ facet: NAME_FACET, text: name }];
+   chunkDoc(entity.embedDoc).forEach((chunk, i) => {
+      facets.push({ facet: `doc:${i}`, text: `${name}: ${chunk}` });
+   });
+   return facets;
 }
 
 function contentHash(text: string): string {
@@ -126,6 +259,20 @@ export function entityRowKey(
    name: string,
 ): string {
    return `${kind}|${source}|${name}`;
+}
+
+/**
+ * The stable key for one embedding ROW: an entity plus the facet of it that
+ * row holds. Keeping the format here means the diff, the upsert and the
+ * delete cannot drift apart.
+ */
+export function facetRowKey(
+   kind: string,
+   source: string,
+   name: string,
+   facet: string,
+): string {
+   return `${entityRowKey(kind, source, name)}|${facet}`;
 }
 
 // Sync state, two layers.
@@ -252,6 +399,7 @@ interface ExistingRow {
    entity_kind: string;
    entity_source: string;
    entity_name: string;
+   facet: string;
    content_hash: string;
    embedding_model: string;
    dims: number;
@@ -365,7 +513,7 @@ async function syncPackageEmbeddings(
       // it ends, so the generation moves mid-sync only via the bump at
       // the bottom of this function.
       const existingRows = await db.all<ExistingRow>(
-         `SELECT entity_kind, entity_source, entity_name, content_hash,
+         `SELECT entity_kind, entity_source, entity_name, facet, content_hash,
                  embedding_model, CAST(dims AS INTEGER) AS dims
           FROM entity_embeddings
           WHERE environment_name = ? AND package_name = ?`,
@@ -373,21 +521,27 @@ async function syncPackageEmbeddings(
       );
       const existing = new Map(
          existingRows.map((r) => [
-            entityRowKey(r.entity_kind, r.entity_source, r.entity_name),
+            facetRowKey(r.entity_kind, r.entity_source, r.entity_name, r.facet),
             r,
          ]),
       );
 
-      const desired = entities.map((entity) => {
-         const text = prepareEmbeddingInput(embeddingText(entity));
-         return { entity, text, hash: contentHash(text) };
-      });
+      // One desired row per (entity, facet). Hashing per facet is what keeps
+      // the diff cheap under faceting: editing a doc re-embeds that entity's
+      // doc rows and leaves its name row alone.
+      const desired = entities.flatMap((entity) =>
+         entityFacets(entity).map(({ facet, text: raw }) => {
+            const text = prepareEmbeddingInput(raw);
+            return { entity, facet, text, hash: contentHash(text) };
+         }),
+      );
       const desiredKeys = new Set(
          desired.map((d) =>
-            entityRowKey(
+            facetRowKey(
                d.entity.kind,
                sourceColumn(d.entity.source),
                d.entity.name,
+               d.facet,
             ),
          ),
       );
@@ -402,10 +556,11 @@ async function syncPackageEmbeddings(
       // dims change is caught at query time by the stale-row heal.
       const toEmbed = desired.filter((d) => {
          const row = existing.get(
-            entityRowKey(
+            facetRowKey(
                d.entity.kind,
                sourceColumn(d.entity.source),
                d.entity.name,
+               d.facet,
             ),
          );
          if (!row) return true;
@@ -436,10 +591,10 @@ async function syncPackageEmbeddings(
                await db.run(
                   `INSERT INTO entity_embeddings (
                      environment_name, package_name, entity_kind, entity_source,
-                     entity_name, model_path, content_hash, embedding_model,
+                     entity_name, facet, model_path, content_hash, embedding_model,
                      dims, embedding, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)
-                   ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name)
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)
+                   ON CONFLICT (environment_name, package_name, entity_kind, entity_source, entity_name, facet)
                    DO UPDATE SET
                      model_path = EXCLUDED.model_path,
                      content_hash = EXCLUDED.content_hash,
@@ -453,6 +608,7 @@ async function syncPackageEmbeddings(
                      d.entity.kind,
                      sourceColumn(d.entity.source),
                      d.entity.name,
+                     d.facet,
                      d.entity.modelPath,
                      d.hash,
                      provider.model,
@@ -470,13 +626,15 @@ async function syncPackageEmbeddings(
                await db.run(
                   `DELETE FROM entity_embeddings
                    WHERE environment_name = ? AND package_name = ?
-                     AND entity_kind = ? AND entity_source = ? AND entity_name = ?`,
+                     AND entity_kind = ? AND entity_source = ? AND entity_name = ?
+                     AND facet = ?`,
                   [
                      environmentName,
                      packageName,
                      row.entity_kind,
                      row.entity_source,
                      row.entity_name,
+                     row.facet,
                   ],
                );
                rowsChanged = true;
@@ -638,13 +796,23 @@ export async function trySemanticSearch(args: {
          entity_name: string;
          score: number;
       }>(
+         // An entity scores as its BEST-matching facet, not as an average
+         // over them. A weighted name/doc blend would need a doc vector for
+         // every entity, and roughly half of a real model's entities have no
+         // doc at all, so any blend either penalises them or invents a
+         // neutral fill; MAX is also the only composition that stays
+         // well-defined as a doc splits into a variable number of chunks.
+         // The floor applies to that max, so it keeps meaning "nothing here
+         // is even weakly related", and can only ever be cleared by more
+         // facets, never blocked by them.
          `SELECT * FROM (
             SELECT entity_kind, entity_source, entity_name,
-                   list_cosine_similarity(embedding, CAST(? AS FLOAT[])) AS score
+                   MAX(list_cosine_similarity(embedding, CAST(? AS FLOAT[]))) AS score
             FROM entity_embeddings
             WHERE environment_name = ? AND package_name = ?
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
+            GROUP BY entity_kind, entity_source, entity_name
          )
          WHERE score >= ?
          ORDER BY score DESC, entity_name
@@ -660,11 +828,43 @@ export async function trySemanticSearch(args: {
             limit,
          ],
       );
+
+      // How many entities matched, but only below the floor. Without it an
+      // empty result is indistinguishable from "this package models nothing
+      // like that", and we watched analysts conclude the latter from the
+      // former. Zero here means a true negative; a large number means the
+      // question is diffusely related to many entities and should be
+      // rephrased or split. Counted as a second statement deliberately: a
+      // single statement carrying the count on result rows loses it in
+      // exactly the case that matters most, when no row clears the floor.
+      const belowCutoff = await db.get<{ n: number }>(
+         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM (
+            SELECT MAX(list_cosine_similarity(embedding, CAST(? AS FLOAT[]))) AS score
+            FROM entity_embeddings
+            WHERE environment_name = ? AND package_name = ?
+              AND embedding_model = ? AND dims = ?
+              ${sourceName !== undefined ? "AND entity_source = ?" : ""}
+            GROUP BY entity_kind, entity_source, entity_name
+         )
+         WHERE score < ?`,
+         [
+            JSON.stringify(queryVector),
+            environmentName,
+            packageName,
+            provider.model,
+            queryVector.length,
+            ...(sourceName !== undefined ? [sourceName] : []),
+            MIN_SIMILARITY,
+         ],
+      );
+
       // A sync or heal holding the package mutex right now may be
       // rewriting rows underneath the query that just ran: that snapshot
       // is unreliable (it can be partial or empty mid-write) and must
       // not be served as semantic. Completed writers are caught by the
       // generation re-check below; this catches the in-flight ones.
+      // Placed after the count so an unreliable snapshot invalidates the
+      // count too, rather than reporting a number read mid-write.
       if (meta.mutex.isLocked()) {
          return { unavailable: "indexing" };
       }
@@ -796,6 +996,7 @@ export async function trySemanticSearch(args: {
             name: row.entity_name,
             score: row.score,
          })),
+         belowCutoffCount: belowCutoff?.n ?? 0,
       };
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -805,4 +1006,63 @@ export async function trySemanticSearch(args: {
       );
       return { unavailable: "error" };
    }
+}
+
+/** What a package's semantic index is currently doing. */
+export interface EmbeddingIndexStatus {
+   status: "indexing" | "ready" | "cooldown" | "oversize";
+   /** Rows cached for this package, across all entities and facets. */
+   embeddedRows: number;
+   /** Entities the package currently exposes to retrieval. */
+   totalEntities: number;
+   /** Most recent row write, absent when nothing is cached yet. */
+   lastSyncedAt?: string;
+}
+
+/**
+ * Report a package's embedding-index state for the REST Package resource.
+ *
+ * The state existed only as a debug log line ("Synced entity embeddings"),
+ * so anything wanting to wait for a warm index — a harness measuring
+ * retrieval, an operator checking an upgrade re-embedded — had to scrape the
+ * server log. This reads the same state the search path uses.
+ *
+ * Derived, never authoritative: it takes no mutex and writes nothing, so
+ * calling it cannot perturb or serialize behind a sync in flight.
+ */
+export async function getEmbeddingIndexStatus(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+   entityCount: number,
+): Promise<EmbeddingIndexStatus> {
+   const row = await db.get<{ n: number; last: string | null }>(
+      `SELECT CAST(COUNT(*) AS INTEGER) AS n,
+              CAST(MAX(updated_at) AS VARCHAR) AS last
+       FROM entity_embeddings
+       WHERE environment_name = ? AND package_name = ?`,
+      [environmentName, packageName],
+   );
+   const embeddedRows = row?.n ?? 0;
+   const lastSyncedAt = row?.last ?? undefined;
+   const meta = syncMeta.get(metaKey(environmentName, packageName));
+
+   const status: EmbeddingIndexStatus["status"] =
+      entityCount > MAX_EMBEDDED_ENTITIES
+         ? "oversize"
+         : meta && inCooldown(meta)
+           ? "cooldown"
+           : // Rows exist and nothing is mid-write: the cache is serving.
+             // An entity with no doc has one row, so a synced package always
+             // has at least as many rows as entities.
+             embeddedRows >= entityCount && !meta?.mutex.isLocked()
+             ? "ready"
+             : "indexing";
+
+   return {
+      status,
+      embeddedRows,
+      totalEntities: entityCount,
+      ...(lastSyncedAt ? { lastSyncedAt } : {}),
+   };
 }

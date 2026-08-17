@@ -164,14 +164,33 @@ function textBlock(result: { content: Content }) {
    return result.content.find((b) => b.type === "text")?.text;
 }
 
-// A model with one source (order_items) carrying one dimension (state).
+// A model with one source (order_items) carrying one dimension (state) and one
+// declared join (current_building). The join's own schema carries a field with
+// a distinctive token so a no-recursion pin can assert it is never indexed.
 const mockModel = {
    getSourceInfos: () => [
       {
          name: "order_items",
-         annotations: [],
+         annotations: ["#(doc) One row per product sold on an order."],
          schema: {
-            fields: [{ kind: "dimension", name: "state", annotations: [] }],
+            fields: [
+               { kind: "dimension", name: "state", annotations: [] },
+               {
+                  kind: "join",
+                  name: "current_building",
+                  relationship: "one",
+                  annotations: ["#(doc) Building this asset sits in."],
+                  schema: {
+                     fields: [
+                        {
+                           kind: "dimension",
+                           name: "building_name",
+                           annotations: ["#(doc) Zzyzx joined-source field."],
+                        },
+                     ],
+                  },
+               },
+            ],
          },
       },
    ],
@@ -217,6 +236,71 @@ const envWith = (
       getPackage,
       getStaleCompileErrors: () => staleCompileErrors,
    }) as never;
+// A source carrying a raw physical column beside its own documented alias,
+// which is what a model that renames without hiding produces.
+const mockAliasModel = {
+   getSourceInfos: () => [
+      {
+         name: "fclt_building",
+         annotations: [],
+         schema: {
+            fields: [
+               { kind: "dimension", name: "SITE", annotations: [] },
+               {
+                  kind: "dimension",
+                  name: "site",
+                  annotations: ["#(doc) Campus site the building sits on."],
+               },
+               { kind: "dimension", name: "height", annotations: [] },
+            ],
+         },
+      },
+   ],
+   getQueries: () => [],
+};
+const mockAliasPackage = {
+   listModels: async () => [{ path: "b.malloy" }],
+   getModel: () => mockAliasModel,
+};
+
+// Three parallel sources carrying the same concept, the shape that produced
+// the largest measured failure class.
+const SIBLING_SOURCES = ["fac_building", "fclt_building", "fclt_building_hist"];
+const mockSiblingModel = {
+   getSourceInfos: () =>
+      SIBLING_SOURCES.map((name) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "dimension", name: "site", annotations: [] }],
+         },
+      })),
+   getQueries: () => [],
+};
+const mockSiblingPackage = {
+   listModels: async () => [{ path: "sib.malloy" }],
+   getModel: () => mockSiblingModel,
+};
+
+// A source whose doc is longer than SOURCE_DOC_MAX_CHARS, and one that
+// declares no joins at all, to pin the truncation and the empty-joins signal.
+const LONG_SOURCE_DOC = `Rooms in the facilities inventory. ${"Grain caveats and population rules go here. ".repeat(20)}`;
+const mockLongDocModel = {
+   getSourceInfos: () => [
+      {
+         name: "rooms",
+         annotations: [`#(doc) ${LONG_SOURCE_DOC}`],
+         schema: {
+            fields: [{ kind: "dimension", name: "room_key", annotations: [] }],
+         },
+      },
+   ],
+   getQueries: () => [],
+};
+const mockLongDocPackage = {
+   listModels: async () => [{ path: "rooms.malloy" }],
+   getModel: () => mockLongDocModel,
+};
 
 describe("get_context discovery tiers", () => {
    it("tier 1: no environment lists environments with their package names", async () => {
@@ -416,7 +500,14 @@ describe("get_context discovery tiers", () => {
             environmentName: "malloy-samples",
             packageName: "ecommerce",
             modelPath: "ecommerce.malloy",
-            doc: "",
+            doc: "One row per product sold on an order.",
+            joins: [
+               {
+                  name: "current_building",
+                  relationship: "one",
+                  doc: "Building this asset sits in.",
+               },
+            ],
          },
       ]);
    });
@@ -536,6 +627,254 @@ describe("get_context discovery tiers", () => {
       ).toBe(true);
    });
 
+   it("tier 4: retrieves a declared join, carrying its cardinality", async () => {
+      // Joins were skipped by the collector, so an agent could not see that
+      // the model declared one and concluded it had to bridge the tables
+      // itself. The join's #(doc) was likewise unreachable.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "building",
+         }),
+      );
+      const join = results.find(
+         (r: { name: string }) => r.name === "current_building",
+      );
+      expect(join).toBeDefined();
+      expect(join.kind).toBe("join");
+      expect(join.relationship).toBe("one");
+      // `source` names the source that DECLARES the join, so a drill-down on
+      // that source sees it.
+      expect(join.source).toBe("order_items");
+      expect(join.doc).toBe("Building this asset sits in.");
+   });
+
+   it("tier 4: does not recurse into a join's own schema", async () => {
+      // The joined source's fields are already indexed under that source.
+      // Recursing would re-index every one of them once per join that
+      // reaches it, which is the redundancy this tool can least afford.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "Zzyzx",
+         }),
+      );
+      expect(results).toEqual([]);
+   });
+
+   it("tier 3: a package listing still returns only sources, not joins", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      expect(results.map((r: { kind: string }) => r.kind)).toEqual(["source"]);
+   });
+
+   it("delivers the parent source's doc and joins alongside a field hit", async () => {
+      // A field hit used to arrive with only its own doc: the source's grain
+      // and population rules reached the agent only when the source itself
+      // happened to rank for the same query, so guidance placement depended
+      // on query phrasing rather than on where the modeller wrote it.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const { results, sources } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "state",
+         }),
+      );
+      // The hit itself is a field, carrying only its own (empty) doc...
+      expect(results[0].kind).toBe("dimension");
+      expect(results[0].doc).toBe("");
+      // ...and the source context arrives regardless.
+      expect(sources).toEqual([
+         {
+            name: "order_items",
+            modelPath: "ecommerce.malloy",
+            doc: "One row per product sold on an order.",
+            joins: [
+               {
+                  name: "current_building",
+                  relationship: "one",
+                  doc: "Building this asset sits in.",
+               },
+            ],
+         },
+      ]);
+   });
+
+   it("reports each source once, however many of its entities matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const { results, sources } = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            // Matches the source, the join, and (via the source doc) more.
+            query: "order building state",
+         }),
+      );
+      expect(results.length).toBeGreaterThan(1);
+      expect(sources).toHaveLength(1);
+      expect(sources[0].name).toBe("order_items");
+   });
+
+   it("truncates a long source doc in context but not in the result itself", async () => {
+      // The context copy exists to deliver the caveat, not to reproduce the
+      // model file; a source that is itself the hit still returns in full.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
+      });
+      const { results, sources } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "rooms",
+         }),
+      );
+      const sourceHit = results.find(
+         (r: { kind: string }) => r.kind === "source",
+      );
+      expect(sourceHit.doc).toBe(LONG_SOURCE_DOC.trim());
+      expect(sourceHit.doc.length).toBeGreaterThan(500);
+
+      expect(sources[0].doc.length).toBeLessThanOrEqual(501);
+      expect(sources[0].doc.endsWith("…")).toBe(true);
+      expect(sources[0].doc).toStartWith("Rooms in the facilities inventory.");
+   });
+
+   it("reports an empty joins list for a source that declares none", async () => {
+      // The authoritative negative: without it an agent cannot tell "no joins
+      // declared" from "joins exist but were not returned", and we watched
+      // agents spend queries probing for a relationship that was never there.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
+      });
+      const { results } = parse(
+         await handler({ environmentName: "e", packageName: "p" }),
+      );
+      expect(results[0].joins).toEqual([]);
+   });
+
+   it("omits the sources block entirely when nothing matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "Zzyzx",
+         }),
+      );
+      expect(payload.results).toEqual([]);
+      expect(payload).not.toHaveProperty("sources");
+   });
+
+   it("collapses a raw column into its documented alias, naming the raw one", async () => {
+      // `SITE` and `site` are one physical column indexed twice, and both
+      // competed for the same scarce slots: 34% of returned slots were a
+      // concept the result set already held. The documented spelling wins,
+      // because a modeller who wrote the #(doc) said which name they meant.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockAliasPackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "site",
+         }),
+      );
+      const sites = results.filter(
+         (r: { name: string }) => r.name.toLowerCase() === "site",
+      );
+      expect(sites).toHaveLength(1);
+      expect(sites[0].name).toBe("site");
+      expect(sites[0].doc).toBe("Campus site the building sits on.");
+      expect(sites[0].aliases).toEqual(["SITE"]);
+   });
+
+   it("leaves genuinely distinct fields in a source alone", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockAliasPackage }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "height",
+         }),
+      );
+      const height = results.find((r: { name: string }) => r.name === "height");
+      expect(height).toBeDefined();
+      expect(height.aliases).toBeUndefined();
+   });
+
+   it("never sees a field the model hid with an access modifier", async () => {
+      // The modelling-side fix for the same redundancy, and the reason this
+      // tool needs no opt-out: Malloy drops non-public fields before the
+      // compiled SourceInfo exists, so `include { internal: SITE }` removes
+      // the raw twin from retrieval outright. Pinned because the collapse
+      // heuristic above would otherwise look like the only defence.
+      const hiddenModel = {
+         getSourceInfos: () => [
+            {
+               name: "fclt_building",
+               annotations: [],
+               schema: {
+                  fields: [
+                     {
+                        kind: "dimension",
+                        name: "site",
+                        annotations: ["#(doc) Campus site."],
+                     },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               getPackage: async () => ({
+                  listModels: async () => [{ path: "h.malloy" }],
+                  getModel: () => hiddenModel,
+               }),
+            }) as never,
+      });
+      const { results } = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "site",
+         }),
+      );
+      expect(results.some((r: { name: string }) => r.name === "SITE")).toBe(
+         false,
+      );
+      expect(results[0].aliases).toBeUndefined();
+   });
+
    it("tier 1: surfaces a listEnvironments failure as a tool error", async () => {
       const handler = captureHandler({
          listEnvironments: async () => {
@@ -583,7 +922,9 @@ describe("get_context discovery tiers", () => {
          }),
       );
       expect(payload.retrieval).toBeUndefined();
-      expect(Object.keys(payload)).toEqual(["results"]);
+      // `sources` is metadata every caller benefits from, so it rides on the
+      // unconfigured payload too; the marker and scores stay provider-only.
+      expect(Object.keys(payload)).toEqual(["results", "sources"]);
       for (const r of payload.results) {
          expect(r.score).toBeUndefined();
       }
@@ -614,14 +955,27 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(null);
    });
 
-   // Entity texts are humanize(name) [+ doc]: "order items" and "state".
    const VECTORS: Record<string, number[]> = {
+      // An entity's name and its doc embed as separate facets, so both need
+      // a stub vector. A missing entry throws, which is what makes this map
+      // double as a pin on exactly what gets embedded: the join's facets are
+      // here because it is indexed, and the field inside its schema is
+      // absent because it is not.
       "order items": [0, 1],
+      "order items: One row per product sold on an order.": [0, 1],
       state: [1, 0],
+      "current building": [0, 1],
+      "current building: Building this asset sits in.": [0, 1],
       "where do customers live": [1, 0],
+      "what building is this in": [0, 1],
    };
 
-   function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
+   /** A provider over an explicit text -> vector map. Unknown text throws, */
+   /** so the map pins exactly which facets get embedded. */
+   function stubProviderFor(
+      vectors: Record<string, number[]>,
+      options: { fail?: boolean } = {},
+   ): EmbeddingProvider {
       const fetchStub = (async (
          _url: RequestInfo | URL,
          init?: RequestInit,
@@ -629,7 +983,7 @@ describe("get_context semantic retrieval", () => {
          if (options.fail) return new Response("down", { status: 500 });
          const body = JSON.parse(String(init?.body)) as { input: string[] };
          const data = body.input.map((text, index) => {
-            const embedding = VECTORS[text];
+            const embedding = vectors[text];
             if (!embedding) throw new Error(`no stub vector for "${text}"`);
             return { index, embedding };
          });
@@ -645,18 +999,26 @@ describe("get_context semantic retrieval", () => {
       );
    }
 
-   /** A store whose package is a fresh instance, backed by the temp DB. */
-   function semanticStore(): Partial<EnvironmentStore> {
-      const pkg = {
-         listModels: async () => [{ path: "ecommerce.malloy" }],
-         getModel: () => mockModel,
-      };
+   function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
+      return stubProviderFor(VECTORS, options);
+   }
+
+   /** A store over the given package, backed by the temp DB. */
+   function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
       return {
          getEnvironment: async () => envWith(async () => pkg),
          storageManager: {
             getDuckDbConnection: () => db,
          } as never,
       };
+   }
+
+   /** A store whose package is a fresh instance, backed by the temp DB. */
+   function semanticStore(): Partial<EnvironmentStore> {
+      return semanticStoreFor({
+         listModels: async () => [{ path: "ecommerce.malloy" }],
+         getModel: () => mockModel,
+      });
    }
 
    async function callUntilSemantic(
@@ -696,6 +1058,187 @@ describe("get_context semantic retrieval", () => {
             (r: { name: string }) => r.name === "order_items",
          ),
       ).toBe(false);
+   });
+
+   it("ranks a join semantically and writes it to the embedding index", async () => {
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "join-pkg",
+         query: "what building is this in",
+      });
+      const join = payload.results.find(
+         (r: { name: string }) => r.name === "current_building",
+      );
+      expect(join).toBeDefined();
+      expect(join.kind).toBe("join");
+      expect(join.relationship).toBe("one");
+      expect(join.score).toBeCloseTo(1.0, 3);
+
+      // The vector cache holds it under its own kind, so it survives a
+      // restart and takes part in the incremental hash diff like any other
+      // entity — including being faceted, so a join's doc cannot bury the
+      // join's own name.
+      const rows = await db.all<{ facet: string }>(
+         `SELECT facet FROM entity_embeddings
+          WHERE package_name = ? AND entity_kind = 'join' AND entity_name = ?
+          ORDER BY facet`,
+         ["join-pkg", "current_building"],
+      );
+      expect(rows.map((r) => r.facet)).toEqual(["doc:0", "name"]);
+   });
+
+   it("delivers a source's doc even when the source itself scores below the floor", async () => {
+      // The §5 fix, on the path that produced it. "where do customers live"
+      // is orthogonal to the order_items source entity, so the source is
+      // dropped by MIN_SIMILARITY and, before this, its doc went with it —
+      // the agent got a field with no idea of the source's grain. The doc now
+      // rides on the response regardless of how the source itself scored.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "context-pkg",
+         query: "where do customers live",
+      });
+      expect(
+         payload.results.some((r: { kind: string }) => r.kind === "source"),
+      ).toBe(false);
+      expect(payload.sources).toEqual([
+         {
+            name: "order_items",
+            modelPath: "ecommerce.malloy",
+            doc: "One row per product sold on an order.",
+            joins: [
+               {
+                  name: "current_building",
+                  relationship: "one",
+                  doc: "Building this asset sits in.",
+               },
+            ],
+         },
+      ]);
+   });
+
+   it("says WHY a configured server answered lexically, and stops once semantic", async () => {
+      // "lexical" alone is a dead end: an agent cannot tell a cold index,
+      // which clears in seconds and is worth one retry, from a down provider,
+      // which is not. Only the first is actionable, so only naming it helps.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         environmentName: "specs",
+         packageName: "reason-pkg",
+         query: "where do customers live",
+      };
+      const first = parse(await handler(params));
+      expect(first.retrieval).toBe("lexical");
+      expect(first.retrievalReason).toBe("indexing");
+
+      const warm = await callUntilSemantic(handler, params);
+      expect(warm).not.toHaveProperty("retrievalReason");
+   });
+
+   it("reports a dead provider as provider-error, then as cooldown", async () => {
+      // Two different remedies behind one "lexical": the first call learns the
+      // endpoint is down, and every call in the window after it is being
+      // short-circuited deliberately rather than re-probing.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         environmentName: "specs",
+         packageName: "dead-provider-pkg",
+         query: "where do customers live",
+      };
+      await callUntilSemantic(handler, params);
+
+      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
+      const failed = parse(await handler(params));
+      expect(failed.retrieval).toBe("lexical");
+      expect(failed.retrievalReason).toBe("provider-error");
+
+      const cooled = parse(await handler(params));
+      expect(cooled.retrievalReason).toBe("cooldown");
+   });
+
+   it("reports belowCutoffCount on semantic responses, never on lexical ones", async () => {
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         environmentName: "specs",
+         packageName: "cutoff-pkg",
+         query: "where do customers live",
+      };
+
+      // Cold start answers lexically: there is no floor on that path, so
+      // reporting a count would be meaningless.
+      const first = parse(await handler(params));
+      expect(first.retrieval).toBe("lexical");
+      expect(first).not.toHaveProperty("belowCutoffCount");
+
+      // order_items and its join are orthogonal to this query, so they are
+      // dropped by the floor and counted rather than silently missing.
+      const payload = await callUntilSemantic(handler, params);
+      expect(payload.results.map((r: { name: string }) => r.name)).toEqual([
+         "state",
+      ]);
+      expect(payload.belowCutoffCount).toBe(2);
+   });
+
+   it("collapses the same concept across sibling sources into one marked row", async () => {
+      // The measured worst case: "site of the building" returned SITE at an
+      // identical 0.96 from fac_building, fclt_building and
+      // fclt_building_hist, presented as three peers with nothing to choose
+      // between them. Agents picked arbitrarily, and choosing wrong between
+      // sibling families was the largest single failure class. One row now,
+      // naming the alternatives, so the ambiguity is stated rather than
+      // inferred — and the freed slots go to different concepts.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            site: [1, 0],
+            "fac building": [0, 1],
+            "fclt building": [0, 1],
+            "fclt building hist": [0, 1],
+            "site of the building": [1, 0],
+         }),
+      );
+      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "sibling-pkg",
+         query: "site of the building",
+      });
+      const sites = payload.results.filter(
+         (r: { name: string }) => r.name === "site",
+      );
+      expect(sites).toHaveLength(1);
+      expect(sites[0].alsoIn).toHaveLength(2);
+      expect([sites[0].source, ...sites[0].alsoIn].sort()).toEqual(
+         [...SIBLING_SOURCES].sort(),
+      );
+   });
+
+   it("keeps siblings separate under a drill-down, where they cannot be duplicates", async () => {
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            site: [1, 0],
+            "fac building": [0, 1],
+            "fclt building": [0, 1],
+            "fclt building hist": [0, 1],
+            "site of the building": [1, 0],
+         }),
+      );
+      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "sibling-scoped-pkg",
+         query: "site of the building",
+         sourceName: "fclt_building",
+      });
+      expect(payload.results).toHaveLength(1);
+      expect(payload.results[0].source).toBe("fclt_building");
+      expect(payload.results[0].alsoIn).toBeUndefined();
    });
 
    it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
