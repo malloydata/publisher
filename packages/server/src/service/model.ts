@@ -78,7 +78,6 @@ import { URL_READER } from "../utils";
 import {
    annotationTexts,
    ownLevelNotes,
-   ownLevelNoteTexts,
    ownModelAnnotations,
    ownModelNotes,
    type AnnotationNote,
@@ -5127,7 +5126,8 @@ export class Model {
     * The model file's own `##` tag, or undefined if it is absent or fails to
     * parse. Read off `modelDef`, which survives the worker serialization
     * boundary — so this works for a freshly-compiled model and a deserialized
-    * one alike, the same reason `fileLevelAuthorize` is derived there.
+    * one alike, the same reason {@link authorizeReferencedGivenNames} is
+    * derived from it in the constructor rather than shipped over the wire.
     *
     * The file's OWN notes, not the folded import lineage. `modelAnnotations`
     * folds deliberately, but only because a file-level `##(authorize)` gate an
