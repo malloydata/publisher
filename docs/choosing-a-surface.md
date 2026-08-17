@@ -10,17 +10,18 @@ engine: the same governed query endpoints, the same [givens](givens.md), the sam
 come back the same. What changes is the **reading mode** you're authoring
 for, **how much control you take on**, and one thing that is easy to miss:
 
-> **An HTML data app runs author-written JavaScript with the viewer's authority. Notebooks and
-> dashboards run none of their own.** That is the axis on which the three are least
-> interchangeable, and it is why the declarative two are reviewable in a pull request and
-> agent-authorable. [security-posture.md](security-posture.md) spells out what it means: page
-> JavaScript can call any same-origin endpoint directly, `Publisher.query` is a convenience wrapper
-> rather than a capability boundary, and those documents carry no `script-src`.
+> **An HTML data app runs author-written JavaScript with the viewer's authority. A notebook or a
+> dashboard gives an author nowhere to put JavaScript of their own.** That is the axis on which
+> the three are least interchangeable, and it is why the declarative two are reviewable in a pull
+> request and agent-authorable. [security-posture.md](security-posture.md) spells out what it
+> means: page JavaScript can call any same-origin endpoint directly, `Publisher.query` is a
+> convenience wrapper rather than a capability boundary, and those documents carry no
+> `script-src`.
 >
-> The declarative two are not a sandbox, and the same doc says where the line actually sits: package
-> markdown is rendered with raw HTML parsing on, so a markdown cell is one place a declarative
-> artifact still carries author-controlled HTML. See
-> [Known gaps](security-posture.md#known-gaps).
+> The declarative two are not a sandbox, and the same doc says where the line actually sits:
+> package markdown is rendered with raw HTML parsing on, so a notebook's markdown cell is one
+> place a declarative artifact still carries author-controlled HTML.
+> See [Known gaps](security-posture.md#known-gaps).
 
 The one-line version:
 
@@ -151,9 +152,9 @@ filter wiring, and error handling. Guide:
   property rather than from the endpoint:** because the page controls its own requests, it can send
   `x-publisher-bypass-authorize: true` and skip gate evaluation on any deployment that does not strip
   that header at its edge ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),
-  [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). Neither a notebook nor a
-  dashboard offers an author a place to put the JavaScript that sending a custom header would take,
-  beyond the raw-HTML caveat at the top of this page.
+  [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). Sending a custom header takes
+  JavaScript, and neither surface gives an author anywhere to put it, except through the raw-HTML
+  path in a notebook's markdown cell noted at the top of this page.
 
 **Cons**
 
