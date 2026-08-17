@@ -187,8 +187,8 @@ its rows.
 - **In a `# dashboard` view, fields render by role.** A top-level `aggregate:` measure is a KPI card,
   so do not nest a `# big_value` view to get one. Each `nest:` is a tile. Give every KPI a
   `# label=`, or the card is headed `total_sales`.
-- **Only table cells drill.** A chart mark emits no click, so a chart is not clickable however it is
-  tagged. If a dashboard is meant to be clicked, give it at least one untagged (table) tile.
+- **Only table cells are marked drillable.** Nothing marks a chart mark, however it is tagged, so a
+  dashboard meant to be clicked wants at least one untagged (table) tile.
 
 `skill:malloy-gotchas-rendering` covers the renderer tags in depth; `skill:malloy-charts` covers
 choosing them.
@@ -247,10 +247,11 @@ tagged dimension. Declaring `dimension: category is products.category` and group
 gives the identical output field name and the identical numbers, and carries the tag.
 
 **Always write `given=`.** Without it the given name is the dimension name **verbatim**, so a
-`dimension: category` seeds a given called `category`, which does not match a declared
-`given: CATEGORY`. Nothing errors: the `to=self` is quietly not offered, and a `to=<slug>` still
-navigates and still looks like it worked, but arrives as `?category=…`, which the destination drops,
-so you land on an unfiltered page. The lint upper-cases when it checks, so it stays green.
+`dimension: category` seeds a given called `category` rather than a declared `given: CATEGORY`. A
+`to=self` survives that, because a surface folds case when it looks up its own given. A `to=<slug>`
+does not: it navigates, still looks like it worked, and arrives as `?category=…`, which the
+destination drops by exact match, so you land on an unfiltered page. Nothing errors, and the lint
+upper-cases when it checks, so it stays green too.
 
 A drill only lands somewhere useful if the destination declares a control for the given being
 seeded. **No lint checks that.** It verifies that the target slug is a dashboard in the package, and
