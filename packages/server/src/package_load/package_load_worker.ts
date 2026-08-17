@@ -86,8 +86,10 @@ import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
    PackageScope,
-   packageMaterializationWarnings,
+   materializationWithQueryMetadata,
    parsePackageMaterialization,
+   queryMetadataParseWarnings,
+   resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
@@ -432,14 +434,29 @@ async function readPackageMetadata(packagePath: string): Promise<{
       manifestLocation?: unknown;
       materialization?: unknown;
       scope?: unknown;
+      queryMetadata?: unknown;
    };
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
+   // Query metadata has two homes as well, migrating the other way (canonical
+   // root, deprecated `materialization.queryMetadata`). A conflict warns rather
+   // than throws — see resolvePackageQueryMetadata.
+   const queryMetadata = resolvePackageQueryMetadata(
+      parsed.queryMetadata,
+      parsed.materialization,
+   );
    const manifestWarnings = [
       ...scope.warnings,
-      ...packageMaterializationWarnings(parsed.materialization),
+      ...queryMetadata.warnings,
+      // Report what the WINNING home could not keep. Reading the envelope alone
+      // would say nothing about a malformed property declared at the root, which
+      // is the home authors are being moved to.
+      ...queryMetadataParseWarnings(
+         queryMetadata.queryMetadata,
+         queryMetadata.home,
+      ),
    ];
    return {
       name: parsed.name,
@@ -459,7 +476,10 @@ async function readPackageMetadata(packagePath: string): Promise<{
       // Package-level Malloy Persistence policy; surfaced to the control plane,
       // which owns scheduling. `schedule`/`freshness` are for the control plane;
       // `queryMetadata` is the publisher's own package-level layer.
-      materialization: parsePackageMaterialization(parsed.materialization),
+      materialization: materializationWithQueryMetadata(
+         parsePackageMaterialization(parsed.materialization),
+         queryMetadata.queryMetadata,
+      ),
       // Package-level persist scope mode; defaults to "package".
       scope: scope.scope,
       manifestWarnings:
