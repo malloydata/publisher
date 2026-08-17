@@ -48,11 +48,43 @@ export function isReservedRoute(route: string): boolean {
  * `ownNotes`, whose own `inherits` would otherwise leak in. Replace with a
  * direct `import { getModelAnnotations }` once malloy exports it.
  */
+/**
+ * A model file's OWN `##` annotation bundle, ignoring everything it imports.
+ *
+ * The parsed-tag counterpart to {@link ownModelNotes}, which returns note TEXTS
+ * and so cannot feed `parseAsTag` — that needs each note's source location, and
+ * a note without one makes every reader catch and degrade to "no layer". Same
+ * document rule as `ownModelNotes`: a node counts only if it is this document or
+ * one of malloy's synthetic URL-less compiles, so a notebook's per-cell nodes are
+ * in and every real-URL import is out.
+ *
+ * Use this for a tag that describes one document; use {@link modelAnnotations}
+ * only for a policy gate that must survive being imported.
+ */
+export function ownModelAnnotations(modelDef: ModelDef): AnnotationsDef {
+   return foldModelAnnotations(
+      modelDef,
+      (id) => id === modelDef.modelID || id.startsWith("internal://"),
+   );
+}
+
 export function modelAnnotations(modelDef: ModelDef): AnnotationsDef {
+   return foldModelAnnotations(modelDef, () => true);
+}
+
+/**
+ * Shared fold behind {@link modelAnnotations} and {@link ownModelAnnotations} —
+ * the two differ only in which nodes they admit.
+ */
+function foldModelAnnotations(
+   modelDef: ModelDef,
+   admits: (id: string) => boolean,
+): AnnotationsDef {
    const registry = modelDef.modelAnnotations ?? {};
    const visited = new Set<string>();
    const order: string[] = [];
    const visit = (id: string): void => {
+      if (!admits(id)) return;
       if (visited.has(id)) return;
       visited.add(id);
       const entry = registry[id];

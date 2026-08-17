@@ -2320,6 +2320,7 @@ export class Environment {
          queryableSources?: "declared" | "all";
          manifestLocation?: string | null;
          scope?: ApiPackage["scope"];
+         queryMetadata?: ApiPackage["queryMetadata"];
          materialization?: ApiPackage["materialization"];
       },
    ): Promise<void> {
@@ -2370,11 +2371,16 @@ export class Environment {
          // `queryMetadata` is orthogonal to both: a client setting a schedule
          // has no reason to re-send the package's tags, and dropping them
          // silently untags every statement the package's builds issue. So it is
-         // preserved on omission, like `scope` above; an explicit null still
-         // clears it, which keeps the block expressible.
+         // preserved on omission, like `scope` above.
+         //
+         // A NULL is preserve too, not a clear — one rule at both wire homes.
+         // Null used to clear here while null on the canonical field preserved,
+         // which protected a client that serializes unset fields as null only
+         // if it had already migrated off this home. The clear is an EMPTY bag,
+         // which is unambiguous and which no such client emits by accident.
          const preservedQueryMetadata =
             metadata.materialization !== undefined &&
-            metadata.materialization?.queryMetadata === undefined &&
+            metadata.materialization?.queryMetadata == null &&
             onDiskMaterialization?.queryMetadata !== undefined
                ? { queryMetadata: onDiskMaterialization.queryMetadata }
                : {};
@@ -2389,6 +2395,29 @@ export class Environment {
             resolvedScope !== undefined
                ? { ...(materializationBase ?? {}), scope: resolvedScope }
                : materializationBase;
+
+         // `queryMetadata` has two homes as well, migrating the opposite way to
+         // `scope`: the manifest ROOT is canonical and the envelope is
+         // deprecated. Same dual-write rule and the same reason — writing only
+         // the root would leave an older publisher, which reads only the
+         // envelope, serving untagged statements for a package that asked to be
+         // tagged.
+         //
+         // A caller can express tags at either wire home, so precedence follows
+         // the same order the manifest resolver uses: the canonical top-level
+         // field, then the deprecated block, then what is already on disk. A
+         // client that has not migrated keeps working; one that has is not
+         // overruled by a block it did not send.
+         //
+         // A null anywhere in this chain is "not provided", never a clear — the
+         // one rule at both homes (see preservedQueryMetadata). Clearing is an
+         // empty bag, which parses to "no tags" and reaches both homes like any
+         // other value.
+         const resolvedQueryMetadata =
+            metadata.queryMetadata ??
+            (materializationBlock as { queryMetadata?: unknown } | undefined)
+               ?.queryMetadata ??
+            (existingManifest as { queryMetadata?: unknown }).queryMetadata;
 
          // Update with new metadata. `explores`/`queryableSources` are only
          // overwritten when the caller explicitly provides them; otherwise the
@@ -2408,8 +2437,25 @@ export class Environment {
                ? { manifestLocation: metadata.manifestLocation }
                : {}),
             ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
+            ...(resolvedQueryMetadata !== undefined
+               ? { queryMetadata: resolvedQueryMetadata }
+               : {}),
+            // Mirrored into the deprecated home too, so a package tagged
+            // through the canonical field still reads as tagged on a publisher
+            // that only knows the envelope. Only when that home already exists
+            // or the caller wrote to it: mirroring unconditionally introduced a
+            // `materialization` block into a manifest that never had one, which
+            // is the shape being migrated AWAY from, appearing in a file whose
+            // author only ever used the canonical field.
             ...(materializationBlock !== undefined
-               ? { materialization: materializationBlock }
+               ? {
+                    materialization: {
+                       ...materializationBlock,
+                       ...(resolvedQueryMetadata !== undefined
+                          ? { queryMetadata: resolvedQueryMetadata }
+                          : {}),
+                    },
+                 }
                : {}),
          };
 
@@ -2483,9 +2529,36 @@ export class Environment {
          const materializationProvided = body.materialization != null;
          const editingPolicy = scopeProvided || materializationProvided;
          const scope = scopeProvided ? body.scope : existing.scope;
-         const materialization = materializationProvided
+         // Preserved unless provided, for the same reason as scope: this
+         // replaces the whole metadata object, so omitting it would make a
+         // name/description-only PATCH silently untag every query the package
+         // emits until the next reload. A null is treated as omitted for the
+         // same reason as scope — a client that serializes unset fields as null
+         // must not thereby untag a package. Clearing is an empty bag, which no
+         // such client produces by accident.
+         //
+         // Resolved ONCE across both wire homes and then written to BOTH, the
+         // way writePackageManifest resolves the file. Setting them
+         // independently left whichever home the caller did not send holding a
+         // stale bag, and the two are read by different paths: the serve path
+         // takes the canonical field through getDeclaredQueryMetadata, the build
+         // path takes the block. A migrated client PATCHing only the canonical
+         // field therefore tagged its served queries with the new bag and its
+         // builds with the old one, and getPackageMetadata returned the two
+         // homes contradicting each other on a schema that promises both.
+         const queryMetadata =
+            body.queryMetadata ??
+            body.materialization?.queryMetadata ??
+            existing.queryMetadata ??
+            existing.materialization?.queryMetadata ??
+            null;
+         const materializationBase = materializationProvided
             ? body.materialization
             : existing.materialization;
+         const materialization =
+            materializationBase || queryMetadata !== null
+               ? { ...(materializationBase ?? {}), queryMetadata }
+               : materializationBase;
          _package.setPackageMetadata({
             name: body.name,
             description: body.description,
@@ -2495,6 +2568,7 @@ export class Environment {
             queryableSources,
             manifestLocation,
             materialization,
+            queryMetadata,
             scope,
          });
 
@@ -2530,6 +2604,7 @@ export class Environment {
             // null-as-absent rule above, so a rebind PATCH neither wipes the
             // persisted policy nor writes a stray `scope: null`.
             scope: scopeProvided ? body.scope : undefined,
+            queryMetadata: body.queryMetadata ?? undefined,
             materialization: materializationProvided
                ? body.materialization
                : undefined,
