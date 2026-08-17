@@ -62,8 +62,8 @@ is a Console convenience.
   **Semantic Models**, **Package Data** and **Materializations**, in that order, plus the package's
   `README.malloynb` rendered underneath. Dashboards and Data Apps are hidden when the package has
   none. Every kind has its own icon and its own color, so a row's type reads before its name does.
-  Notebooks and dashboards are listed by title, with the filename beside a notebook and the slug
-  beside a dashboard; a notebook's title comes from its opening markdown heading unless a
+  Notebooks and dashboards are listed by title, with a notebook's path beside it and a dashboard's
+  slug beside it; a notebook's title comes from its opening markdown heading unless a
   `## title="…"` or a `#" ` doc comment overrides it.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
