@@ -562,10 +562,27 @@ function RenderedResultInner({
                   // straight past the menu it had just opened. Measured: the
                   // menu was visible while the key was held and gone, with the
                   // URL already changed, once it was released.
+                  //
+                  // Dispatched with the cell's own coordinates rather than
+                  // through `HTMLElement.click()`, which reports `clientX/Y` as
+                  // 0. A drill offering two destinations anchors its menu on
+                  // those numbers (`useDrill` holds no ref into the renderer's
+                  // DOM), so a keyboard-opened menu appeared in the corner of
+                  // the viewport instead of beside the cell it came from.
                   const fire = (cell: Element) => {
                      const content =
                         cell.querySelector<HTMLElement>(".cell-content");
-                     (content ?? (cell as HTMLElement)).click();
+                     const target = content ?? (cell as HTMLElement);
+                     const rect = target.getBoundingClientRect();
+                     target.dispatchEvent(
+                        new MouseEvent("click", {
+                           bubbles: true,
+                           cancelable: true,
+                           view: target.ownerDocument.defaultView,
+                           clientX: Math.round(rect.left + rect.width / 2),
+                           clientY: Math.round(rect.bottom),
+                        }),
+                     );
                   };
                   const drillCell = (event: KeyboardEvent) =>
                      (event.target as HTMLElement | null)?.closest?.(

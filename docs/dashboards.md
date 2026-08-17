@@ -313,7 +313,11 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 }
 ```
 
-- `to=<slug>` navigates to that dashboard with the clicked value written into the named given.
+- `to=<slug>` navigates to that dashboard with the clicked value written into the named given. The
+  value is written as **filter syntax**, because a click cannot know what it is aiming at, so the
+  destination's given should be a `filter<…>` one. Seeding a plain `string` given across dashboards
+  delivers the escaped spelling (`Ben\ &\ Jerry` for a cell reading `Ben & Jerry`), which matches
+  nothing. `to=self` is exempt: there the surface knows the declared type and re-encodes for it.
 - `to=self` filters wherever the click came from, without leaving the page.
 - More than one destination pops a menu, because a choice is not a guess.
 - `given=` names the given to seed. **Write it.** Without it the given is the dimension name
@@ -437,8 +441,11 @@ import { Dashboard, encodeResourceUri } from "@malloy-publisher/sdk";
 
 Without `onNavigate`, drilling to another dashboard is inert — and, by the rule above, those cells do
 not read as clickable either, so a host that has not wired navigation shows no affordance rather than
-a dead one. `to=self` still works, since it never leaves the component. [`examples/data-app`](../examples/data-app) is a running standalone app that
-does this.
+a dead one. `to=self` still works, since it never leaves the component. The Console's own
+`DashboardPage` (`packages/app/src/components/pages/DashboardPage/DashboardPage.tsx`) is the worked
+example of both handlers; [`examples/data-app`](../examples/data-app) is a standalone SDK app, but it
+predates this component and builds its pages from `EmbeddedQueryResult` rather than rendering
+`<Dashboard>`.
 
 Embedding into a **non-React** host page is a follow-up
 ([#931](https://github.com/malloydata/publisher/issues/931)); `Publisher.embed` cannot usefully

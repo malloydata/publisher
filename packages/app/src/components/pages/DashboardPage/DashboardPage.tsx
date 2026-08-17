@@ -6,7 +6,7 @@ import {
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import { useCallback, useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 export interface DashboardPageProps {
    environmentName: string;
@@ -28,8 +28,16 @@ export default function DashboardPage({
    packageName,
    dashboardName,
 }: DashboardPageProps) {
-   const [searchParams, setSearchParams] = useSearchParams();
+   const [searchParams] = useSearchParams();
    const navigate = useRouterClickHandler();
+
+   // `setSearchParams` is deliberately not used to WRITE, for the reason
+   // NotebookPage documents: it navigates to a search-only target, and a target
+   // carrying no fragment resolves to an empty one, so changing a control
+   // dropped whatever anchor the reader had arrived on. Navigating with an
+   // explicit `hash` keeps it.
+   const routerNavigate = useNavigate();
+   const location = useLocation();
 
    // Control values ride in the query string, so a link reproduces the view.
    const givens = useMemo(
@@ -39,11 +47,27 @@ export default function DashboardPage({
 
    const onGivensChange = useCallback(
       (next: Record<string, string>) => {
-         // Filtering is not a navigation step: Back should leave the
-         // dashboard, not walk back through every filter the user tried.
-         setSearchParams(next, { replace: true });
+         // KNOWN GAP, unlike NotebookPage: the applied values REPLACE the query
+         // string rather than merging into it, so an unrelated parameter on a
+         // dashboard URL (a tracking tag, say) is dropped on the first control
+         // change. Merging needs to know which names are the dashboard's to take
+         // back out, and `Dashboard`'s `onGivensChange` hands over values only,
+         // where `Notebook`'s hands over the managed names alongside them, which
+         // is what lets NotebookPage merge. Guessing is worse than replacing:
+         // without that list, a control the reader CLEARS cannot be told from a
+         // parameter that was never ours, so its value would stay in the address
+         // bar while the page ran without it.
+         routerNavigate(
+            // Filtering is not a navigation step: Back should leave the
+            // dashboard, not walk back through every filter the user tried.
+            {
+               search: new URLSearchParams(next).toString(),
+               hash: location.hash,
+            },
+            { replace: true },
+         );
       },
-      [setSearchParams],
+      [routerNavigate, location],
    );
 
    // A drill IS a navigation step, so unlike filtering it pushes history: Back

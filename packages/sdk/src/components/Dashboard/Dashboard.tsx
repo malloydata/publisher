@@ -270,9 +270,13 @@ export function Dashboard({
                   gap: 2,
                }}
             >
-               {tiles.map((tile) => (
+               {tiles.map((tile, index) => (
                   <DashboardTile
-                     key={tile.query}
+                     // Position too, not the expression alone: `tiles=[…]` can
+                     // repeat one, which is a typo rather than a request for two
+                     // identical panels, and keying on the expression made the
+                     // duplicate warn and reconcile onto its twin.
+                     key={`${index}:${tile.query}`}
                      environmentName={environmentName}
                      packageName={packageName}
                      modelPath={modelPath}
