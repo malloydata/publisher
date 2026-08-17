@@ -220,6 +220,39 @@ source: orders__preagg__category is orders -> {
       ).toThrow(/authorize/i);
    });
 
+   it("tells a rollup's author to remove #@ preaggregate, not #@ persist they never wrote", async () => {
+      // A rollup's name is synthesized and appears nowhere in the author's model,
+      // so the default message ("Source 'orders__preagg__category__<hash>' …
+      // Drop '#@ persist' from this source") sends them looking for a line that
+      // does not exist. The caller passes the `origin` that `build_plan.ts`
+      // already reports.
+      const sources =
+         await persistSources(`##! experimental { persistence composite_sources givens }
+given: GROUPS :: number[]
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist
+source: orders__preagg__category is orders -> {
+  group_by: category
+  aggregate: total__partial is amount.sum()
+}`);
+      let message = "";
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            sources.orders__preagg__category,
+            sources.orders__preagg__category.name,
+            "preaggregate",
+         );
+      } catch (err) {
+         message = (err as Error).message;
+      }
+      expect(message).toContain("#@ preaggregate");
+      expect(message).not.toContain("Drop '#@ persist'");
+      // The reason a rollup is a sharper case than an ordinary persist.
+      expect(message).toMatch(/groups ACROSS the gated column/);
+   });
+
    it("refuses a source that reaches a given through a JOIN (not just its own pipeline)", async () => {
       // The given lives on a joined source, not on mz_joined's own where/fields.
       // The compiled struct embeds the joined SourceDef, so the fail-closed walk

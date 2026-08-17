@@ -1000,7 +1000,18 @@ export class MaterializationService {
                // source materialized here would still be served to every
                // caller. Gate BEFORE computeSourceEntityId for the same
                // reason as the storage case above.
-               assertColocatedPersistNotAuthorizeGated(persistSource);
+               //
+               // The origin is passed so a REFUSED ROLLUP names `#@ preaggregate`
+               // and not `#@ persist`: a rollup's name is synthesized and appears
+               // nowhere in the author's model, so the default message sends them
+               // hunting for a line they never wrote. See the function's doc.
+               assertColocatedPersistNotAuthorizeGated(
+                  persistSource,
+                  persistSource.name,
+                  compiled.preaggregatePlans?.[persistSource.sourceID]
+                     ? "preaggregate"
+                     : "persist",
+               );
             }
 
             const sourceEntityId = computeSourceEntityId(
@@ -1639,7 +1650,13 @@ export class MaterializationService {
                   // computeSourceEntityId for the reason the comment above
                   // gives: it calls getSQL(), which throws opaquely for a gate
                   // that references a given, losing the clean 422.
-                  assertColocatedPersistNotAuthorizeGated(persistSource);
+                  assertColocatedPersistNotAuthorizeGated(
+                     persistSource,
+                     persistSource.name,
+                     compiled.preaggregatePlans?.[persistSource.sourceID]
+                        ? "preaggregate"
+                        : "persist",
+                  );
                }
 
                // The manifest is keyed by the content sourceEntityId — what Malloy

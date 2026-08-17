@@ -66,6 +66,20 @@ source — cannot be persisted, in either mode:
 The check is deliberately broader than that hazard: it also refuses a source that merely *joins* a
 gated source, whose gate entry-point semantics never enforced in the first place.
 
+**The colocated refusal also carries a second job, and narrowing it on the frozen-data reasoning
+alone would open a hole.** `#@ preaggregate` synthesizes each rollup as a colocated `#@ persist` over
+an import of the annotated base, and none of the pre-aggregation modules has any `#(authorize)`
+awareness of its own — so this refusal is the only thing standing between a gated source and the
+pre-aggregation tier. It holds because the eligibility walk follows the import → rename →
+`query_source` chain and finds the base's gate. A gated source therefore gets no rollups built, and
+the serve path never has a frozen rollup to route to. (The query path additionally declines to route
+a row-level-gated entry point through the pre-aggregation companion, so that containment does not
+rest on this refusal alone — but this refusal is what makes it true at build time.) A rollup is a
+sharper case than an ordinary persist, too: it groups *across* the gated column, so the column the
+gate filters on is not even present in the result to filter on afterwards. A refused rollup names
+`#@ preaggregate` and the gated source rather than the synthesized rollup's own name, which the
+author never wrote.
+
 Both refusals name the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
 everyone.

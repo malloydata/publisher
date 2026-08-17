@@ -140,28 +140,69 @@ export function assertMaterializationEligible(
  * problem on this path: it is evaluated per request, and a colocated build is
  * just as frozen as a storage build, so the same leak applies.
  *
- * @throws {MaterializationEligibilityError} (HTTP 422) naming the source and
- *   the remedy, so the author can either drop `#@ persist` from this source or
- *   move the gate to a source that is not materialized.
+ * This gate carries a SECOND job that its own justification above does not
+ * mention, and narrowing it on the strength of that justification alone would
+ * open a hole. Pre-aggregation (`#@ preaggregate`) synthesizes each rollup as a
+ * colocated `#@ persist` over an import of the annotated base, and none of the
+ * `preaggregation_*` modules has any authorize awareness of its own — so this
+ * refusal is also the only thing standing between an `#(authorize)`-gated source
+ * and the pre-aggregation tier. `referencesAuthorize` finds the gate through the
+ * import → rename → `query_source` chain, which is why it holds. See
+ * `docs/materialization.md`, and the rollup-shaped test in this module's spec.
+ *
+ * `origin` names the annotation the AUTHOR wrote, so the refusal can be
+ * actionable for a source they never typed. A rollup's name is synthesized
+ * (`orders__preagg__category__<hash>`) and appears nowhere in their model, and
+ * telling them to "drop `#@ persist`" when what they wrote is `#@ preaggregate`
+ * sends them looking for a line that does not exist. Callers pass
+ * `"preaggregate"` when `CompiledBuildPlan.preaggregatePlans` has an entry for
+ * the source — the same signal `build_plan.ts` reports as `origin`.
+ *
+ * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
+ *   annotation to remove, and the alternative of moving the gate to a source
+ *   that is not materialized.
  */
 export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
+   origin: "persist" | "preaggregate" = "persist",
 ): void {
    if (referencesAuthorize(persistSource)) {
       // Reuses the "authorize" reason: this is the same underlying refusal
       // (a frozen table serving an authorize-gated relation to everyone) as
       // the storage-destination case, just reached via the colocated path.
       recordEligibilityRefused("authorize");
+      const gated =
+         origin === "preaggregate"
+            ? `the source '${sourceName}' rolls up is protected by an ` +
+              `#(authorize) gate (its own or a joined source's)`
+            : `it is protected by an #(authorize) gate (its own or a joined ` +
+              `source's)`;
+      const remedy =
+         origin === "preaggregate"
+            ? `Remove the '#@ preaggregate' annotation from the gated source's ` +
+              `measure(s), or move the gate to a source that is not ` +
+              `pre-aggregated.`
+            : `Drop '#@ persist' from this source, or move the gate to a source ` +
+              `that is not materialized.`;
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}' cannot be built`
+            : `Source '${sourceName}' cannot be materialized (colocated ` +
+              `'#@ persist')`;
+      // Only true of a rollup: it GROUPS, so the gated column is not even
+      // present to filter on afterwards.
+      const alsoRollup =
+         origin === "preaggregate"
+            ? ` A rollup also groups ACROSS the gated column, so it could not ` +
+              `be row-filtered afterwards even in principle.`
+            : "";
       throw new MaterializationEligibilityError({
          message:
-            `Source '${sourceName}' cannot be materialized (colocated ` +
-            `'#@ persist'): it is protected by an #(authorize) gate (its own or ` +
-            `a joined source's). An authorize expression is evaluated per ` +
+            `${what}: ${gated}. An authorize expression is evaluated per ` +
             `request; a materialized-once table served frozen carries no gate, ` +
-            `so it would be served to everyone, bypassing authorization. This ` +
-            `is refused for safety. Drop '#@ persist' from this source, or move ` +
-            `the gate to a source that is not materialized.`,
+            `so it would be served to everyone, bypassing authorization.` +
+            `${alsoRollup} This is refused for safety. ${remedy}`,
       });
    }
 }
