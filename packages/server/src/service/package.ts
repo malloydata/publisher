@@ -56,7 +56,11 @@ import {
    incrementalPolicyRejections,
    type IncrementalPolicySource,
 } from "./incremental_policy";
-import { materializationConfigWarnings } from "./materialization_config_validation";
+import {
+   materializationConfigWarnings,
+   type QueryMetadataDeclaration,
+} from "./materialization_config_validation";
+import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
@@ -171,6 +175,11 @@ export class Package {
    // no persist source. Surfaced read-only on getPackageMetadata() so a caller
    // can derive build instructions without a separate plan round-trip.
    private buildPlan: BuildPlan | null = null;
+   // Memoized {@link getPreaggregateEntityIds}, keyed on the plan it was derived
+   // from so a reload recomputes without an explicit invalidation.
+   private preaggregateEntityIdCache:
+      | { plan: BuildPlan | null; ids: ReadonlySet<string> }
+      | undefined;
    // Sources annotated `#@ persist` that Malloy's getBuildPlan() did not
    // recognize as a materializable build root, so they produced no plan entry
    // and would be a silent no-op (served live). Surfaced as an operator warning
@@ -270,11 +279,12 @@ export class Package {
 
    /**
     * Push the package-level query-boundary policy down onto each Model so the
-    * query chokepoints can enforce it without a back-reference to the Package:
-    * `Model.getQueryResults` (the HTTP query route and the MCP tool) and the
-    * `/compile` path (via `assertQueryBoundaryForRunnable`). Derived once here
-    * (and on reload) rather than per query: the policy only changes when the
-    * manifest is (re)read.
+    * query chokepoint can enforce it without a back-reference to the Package:
+    * `Model.getQueryResults` (the HTTP query route and the MCP tool). The
+    * `/compile` path is deliberately NOT a chokepoint — it is exempt from the
+    * boundary (see Environment.compileSource); only `#(authorize)` gates it.
+    * Derived once here (and on reload) rather than per query: the policy only
+    * changes when the manifest is (re)read.
     *
     * Policy: queryable == discoverable. The boundary is inert unless `explores`
     * is declared (no curated surface ⇒ nothing to restrict) AND
@@ -287,11 +297,73 @@ export class Package {
       const exploreSet = this.exploreSet();
       const mode =
          this.packageMetadata.queryableSources === "all" ? "all" : "declared";
+      // The PACKAGE-wide queryable surface: the union of every explores-listed
+      // model's export closure. The source-level gate used to consult only the
+      // requested model's own closure, which denied a source that IS declared
+      // queryable (its own file is listed in explores) whenever it was
+      // addressed through a model that imports it. A client that posts every
+      // query to one model path — the observed agent behavior (HANDOFF CR-5) —
+      // then loses every source but that file's own.
+      //
+      // Each entry maps a name to the DEFINITION IDENTITIES exported under it,
+      // never to the bare name. Keying on names alone would admit by collision:
+      // listed model A exporting `customers` would clear the gate for the name
+      // everywhere, and listed model B that imports a different, hidden
+      // `customers` would then serve the hidden one, because the gate matched
+      // the name while Malloy resolved the declaration in B's namespace. With
+      // identities, a request is admitted only when the requested model
+      // resolves the name to the very declaration a listed model exported —
+      // which is what makes the union genuinely admit nothing new. A legitimate
+      // re-export still works: the exporting model's closure carries the
+      // declaration's own location, wherever the file it lives in.
+      // (Relies on applyDiscoveryPolicyToModels having run first, so
+      // getSources()/getQueries() are already export-curated.)
+      let packageCuratedSources:
+         | ReadonlyMap<string, ReadonlySet<string>>
+         | undefined;
+      let packageCuratedQueries:
+         | ReadonlyMap<string, ReadonlySet<string>>
+         | undefined;
+      if (mode === "declared" && exploresDeclared && exploreSet) {
+         const sources = new Map<string, Set<string>>();
+         const queries = new Map<string, Set<string>>();
+         const add = (
+            into: Map<string, Set<string>>,
+            name: string | undefined,
+            identity: string | undefined,
+         ): void => {
+            // No location ⇒ nothing to prove identity with, so contribute
+            // nothing and leave the name to each model's own closure.
+            if (!name || !identity) return;
+            const existing = into.get(name);
+            if (existing) existing.add(identity);
+            else into.set(name, new Set([identity]));
+         };
+         for (const [modelPath, model] of this.models) {
+            // Only .malloy files curate a query surface. A notebook listed in
+            // explores is already invalid (getInvalidExplores flags it) but is
+            // served fail-safe, and must not contribute names here — the
+            // sibling loops (listModels, emptyDiscoveryWarnings) filter the
+            // same way.
+            if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+            if (!exploreSet.has(modelPath)) continue;
+            for (const source of model.getSources() ?? []) {
+               add(sources, source.name, model.definitionIdentity(source.name));
+            }
+            for (const query of model.getQueries() ?? []) {
+               add(queries, query.name, model.definitionIdentity(query.name));
+            }
+         }
+         packageCuratedSources = sources;
+         packageCuratedQueries = queries;
+      }
       for (const [modelPath, model] of this.models) {
          model.setQueryBoundary({
             mode,
             exploresDeclared,
             isQueryEntryPoint: exploreSet ? exploreSet.has(modelPath) : true,
+            packageCuratedSources,
+            packageCuratedQueries,
          });
       }
    }
@@ -491,6 +563,12 @@ export class Package {
             schedule: null,
             freshness: null,
          },
+         // The canonical home for the package's declared tags, mirrored from the
+         // block above — which is where the wire originally carried them. Both
+         // are populated for as long as the deprecated home is supported, so a
+         // client migrates when it chooses rather than when this ships.
+         queryMetadata:
+            outcome.packageMetadata.materialization?.queryMetadata ?? null,
          // Package-level persist scope mode, applied uniformly to every persist
          // source/index. Defaults to "package" (cross-version reuse) when the
          // manifest omits it.
@@ -703,6 +781,21 @@ export class Package {
          );
          throw new BadRequestError(invalidIncremental);
       }
+      // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
+      // given on preaggregatePolicyWarnings: a declaration that cannot take
+      // effect is invisible in the answers, so warning here would leave the
+      // author believing they had a rollup.
+      const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
+      if (invalidPreaggregate) {
+         logger.error(
+            `Package ${packageName} has an invalid pre-aggregation declaration`,
+            {
+               packageName,
+               detail: invalidPreaggregate,
+            },
+         );
+         throw new BadRequestError(invalidPreaggregate);
+      }
       // Persist-target collisions are ALWAYS warn-only at load (never fail an
       // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
       // the flag only governs whether they REJECT a publish (see
@@ -714,6 +807,13 @@ export class Package {
             detail: collisions.join("\n"),
          });
       }
+      // After the gates, so a package with a bad declaration is rejected rather
+      // than having a companion compiled for it. At create time no manifest is
+      // bound yet, so the companion routes to a rollup that recomputes from the
+      // base until a bind triggers reloadAllModels — correct answers, no
+      // acceleration, which is the same resting state as the rest of the persist
+      // path.
+      await pkg.pushPreaggregateServeModels();
       pkg.logEmptyDiscoveryWarnings();
 
       return pkg;
@@ -742,6 +842,112 @@ export class Package {
       ApiPackage["materialization"]
    > | null {
       return this.packageMetadata.materialization ?? null;
+   }
+
+   /**
+    * The package's declared `queryMetadata` — the least specific author-declared
+    * layer, and the counterpart to {@link Model.getDeclaredQueryMetadata}.
+    *
+    * Prefers the canonical top-level field and falls back to the deprecated
+    * `materialization.queryMetadata`. The fallback is not dead code: a PATCH may
+    * still set the block (an un-migrated client), and metadata assembled by
+    * anything that predates the top-level field carries only the block. Callers
+    * want the package's bag, not its build policy, and should not have to know
+    * which home it arrived in.
+    */
+   public getDeclaredQueryMetadata(): QueryMetadata | null {
+      return (
+         this.packageMetadata.queryMetadata ??
+         this.packageMetadata.materialization?.queryMetadata ??
+         null
+      );
+   }
+
+   /**
+    * Every `queryMetadata` bag this package's authors declared, at whatever
+    * level, as declared. What the publish gate needs in order to name the line
+    * to edit.
+    *
+    * Whether a source persists does not enter into it. A bag on a source rides
+    * every query against that source, materialized or not, so a source is listed
+    * because it declared something — not because a build reads it.
+    */
+   private queryMetadataDeclarations(): QueryMetadataDeclaration[] {
+      const packageDeclaration = this.getDeclaredQueryMetadata();
+      return [
+         ...(packageDeclaration
+            ? [{ level: "package" as const, queryMetadata: packageDeclaration }]
+            : []),
+         ...[...this.models.values()].flatMap((model) => {
+            const modelDeclaration = model.getDeclaredQueryMetadata();
+            return [
+               ...(modelDeclaration
+                  ? [
+                       {
+                          level: "model" as const,
+                          // The model path goes in `modelPath`, not `subject`:
+                          // the wire schema keeps the two apart, so a client
+                          // filtering findings by model missed every one of
+                          // these while `subject` read like a source name.
+                          modelPath: model.getPath(),
+                          queryMetadata: modelDeclaration,
+                       },
+                    ]
+                  : []),
+               ...model
+                  .getDeclaredSourceQueryMetadata()
+                  .map(({ sourceName, queryMetadata }) => ({
+                     level: "source" as const,
+                     subject: sourceName,
+                     // A source name is unique within a model, not within a
+                     // package: without the path, two models declaring a
+                     // same-named source produce identical findings that dedupe
+                     // to a single message naming neither file.
+                     modelPath: model.getPath(),
+                     queryMetadata,
+                  })),
+            ];
+         }),
+      ];
+   }
+
+   /**
+    * How many properties a statement actually SENDS, per model file, once the
+    * package, model-file and source layers have merged.
+    *
+    * The budget is the one rule that cannot be checked per declaration: every
+    * layer can sit under the author budget while their merge sits over it, and
+    * it is the merge that rides the statement.
+    *
+    * The FLOOR — package ⊕ model file — is reported for every model, whether or
+    * not any of its sources declares anything. Sizing only the declaring sources
+    * missed the common shape outright: a package and a model file that overflow
+    * together published clean whenever no source in the file happened to add a
+    * tag, and every query against every source in that file then shed context
+    * properties.
+    */
+   private queryMetadataEffectiveMerges(): {
+      modelPath: string;
+      floorSize: number;
+      sources: { subject: string; size: number }[];
+   }[] {
+      const packageDeclaration = this.getDeclaredQueryMetadata();
+      return [...this.models.values()].map((model) => {
+         const floor = {
+            ...(packageDeclaration ?? {}),
+            ...(model.getDeclaredQueryMetadata() ?? {}),
+         };
+         return {
+            modelPath: model.getPath(),
+            floorSize: Object.keys(floor).length,
+            sources: model
+               .getDeclaredSourceQueryMetadata()
+               .map(({ sourceName, queryMetadata }) => ({
+                  subject: sourceName,
+                  size: Object.keys({ ...floor, ...queryMetadata }).length,
+               })),
+         };
+      });
    }
 
    public getPackageMetadata(): ApiPackage {
@@ -777,6 +983,12 @@ export class Package {
          ...this.renderTagWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
+         // A listed model whose curated surface is empty. Advisory (an
+         // import-only file is legitimate and must not block a publish, so it
+         // stays out of exploresWarnings), but it must ride the API: the QA
+         // shape this closes was a package reporting exploresWarnings: none
+         // while listed files surfaced nothing (HANDOFF CR-5).
+         ...this.emptyDiscoveryWarnings(),
          // A within-package persist-target collision spans two or more sources, so
          // there is no single subject field; the message names them. Surfaced here
          // (alongside the load-path log) so an operator can see it on the status
@@ -791,10 +1003,8 @@ export class Package {
          // not do what it says, and manifest shapes that still parse but are
          // deprecated. Advisory by design — none of these blocks a publish.
          ...materializationConfigWarnings({
-            packageMaterialization: this.packageMetadata.materialization,
-            sources: this.buildPlan?.sources
-               ? Object.values(this.buildPlan.sources)
-               : [],
+            declarations: this.queryMetadataDeclarations(),
+            effectiveMerges: this.queryMetadataEffectiveMerges(),
             manifestWarnings: this.manifestWarnings,
          }),
       ];
@@ -892,7 +1102,37 @@ export class Package {
    private wireFreshnessResolvers(): void {
       for (const model of this.models.values()) {
          model.setFreshnessResolver(() => this.getFreshBuildManifest());
+         model.setPreaggregateEntityIdResolver(() =>
+            this.getPreaggregateEntityIds(),
+         );
       }
+   }
+
+   /**
+    * The `sourceEntityId`s of the sources pre-aggregation SYNTHESIZED, as
+    * distinct from the `#@ persist` sources an author declared. Read off the
+    * build plan's `origin`, which exists to carry exactly this provenance — not
+    * matched on the rollup naming convention, which would silently misclassify
+    * an author's source that happened to share the shape.
+    *
+    * Consumed by Model.withoutPreaggregateEntries, which keeps these entries away
+    * from every runnable except the companion model that declares them.
+    *
+    * Memoized on the build plan's identity: the plan is replaced wholesale on
+    * load, so reference equality is a sufficient and always-correct key.
+    */
+   public getPreaggregateEntityIds(): ReadonlySet<string> {
+      if (this.preaggregateEntityIdCache?.plan === this.buildPlan) {
+         return this.preaggregateEntityIdCache.ids;
+      }
+      const ids = new Set<string>();
+      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
+         if (source.origin === "preaggregate" && source.sourceEntityId) {
+            ids.add(source.sourceEntityId);
+         }
+      }
+      this.preaggregateEntityIdCache = { plan: this.buildPlan, ids };
+      return ids;
    }
 
    /**
@@ -1015,6 +1255,25 @@ export class Package {
       });
       this.storageServeBindings = allowed;
       this.pushStorageServeBindingsToModels();
+   }
+
+   /**
+    * Compile each model's synthesized pre-aggregation companion so the serve path
+    * can route to a rollup (see Model.buildPreaggregateServeModel). Called after
+    * (re)building the model set, and again after a manifest bind, since the
+    * companion is compiled against the manifest that substitutes its tables.
+    *
+    * A no-op for a model with no usable `#@ preaggregate`: synthesis returns
+    * nothing and the model's serve path is left exactly as it was.
+    */
+   private async pushPreaggregateServeModels(): Promise<void> {
+      for (const model of this.models.values()) {
+         await model.buildPreaggregateServeModel(
+            this.packagePath,
+            this.malloyConfig,
+            this.buildManifestEntries,
+         );
+      }
    }
 
    /** Push the current storage serve bindings onto every loaded model. */
@@ -1312,6 +1571,41 @@ export class Package {
    }
 
    /**
+    * REJECTION messages for every `#@ preaggregate` declaration in the package
+    * that cannot take effect: one on something other than a measure, one whose
+    * measure cannot be re-aggregated from a stored partial, one whose grain does
+    * not resolve against its source. See preaggregation_validation for the rules.
+    *
+    * Strict at publish AND at load, like {@link incrementalPolicyWarnings} and
+    * unlike {@link persistencePolicyWarnings}. The reason is specific to this
+    * feature: pre-aggregation is invisible when it works, since a query never
+    * names a rollup and returns the same answer either way. So an author whose
+    * declaration was quietly ignored sees correct numbers, assumes acceleration,
+    * and finds out from a bill. Warning at load would put that discovery in an
+    * operator's log and leave the one person who can fix it reading a clean
+    * publish.
+    */
+   public preaggregatePolicyWarnings(): string[] {
+      const messages: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const violation of model.preaggregateViolations()) {
+            // The model path is prepended because the same source name can occur
+            // in two models, and the author needs to know which file to open.
+            messages.push(`${modelPath}: ${violation.message}`);
+         }
+      }
+      return messages;
+   }
+
+   /**
+    * The {@link preaggregatePolicyWarnings} joined into one string, or "" when
+    * every `#@ preaggregate` in the package can take effect.
+    */
+   public formatInvalidPreaggregatePolicy(): string {
+      return this.preaggregatePolicyWarnings().join("\n");
+   }
+
+   /**
     * Within-package persist-target COLLISION warnings: two DISTINCT persist
     * sources (different `sourceEntityId`) that resolve to the same physical
     * table — the same resolved `name=` (or source-name fallback) in the same
@@ -1401,28 +1695,35 @@ export class Package {
    }
 
    /**
-    * One message per LISTED model whose discovery surface is empty because it
-    * is import-only (imports other files, declares/re-exports nothing). Such a
-    * model renders a blank page, which reads as broken; the fix is an explicit
-    * re-export. Log-only (see loadViaWorker/reloadAllModels) — deliberately
-    * NOT part of exploreWarnings, which is strict-at-publish: import-only
-    * files are a legitimate pattern and must not block a publish. Hidden
-    * (non-listed) models are skipped — nobody browses them, so an empty
-    * surface there is just normal plumbing.
+    * One message per LISTED model whose discovery surface is empty: its export
+    * closure yields no sources and no named queries (an import-only file that
+    * re-exports nothing, an `export {}` that filters everything out, or an
+    * empty file). Such a model renders a blank page and lists as [] to an
+    * agent, which reads as broken; the fix is an explicit re-export, or
+    * unlisting the file. Log-only at load, and surfaced on the package's
+    * warnings array (see getPackageMetadata) — deliberately NOT part of
+    * exploreWarnings, which is strict-at-publish: import-only files are a
+    * legitimate pattern and must not block a publish. Hidden (non-listed)
+    * models are skipped — nobody browses them, so an empty surface there is
+    * just normal plumbing.
     */
-   public emptyDiscoveryWarnings(): string[] {
+   public emptyDiscoveryWarnings(): Array<{ model: string; message: string }> {
       const exploreSet = this.exploreSet();
-      const warnings: string[] = [];
+      const warnings: Array<{ model: string; message: string }> = [];
       for (const [modelPath, model] of this.models) {
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
          if (exploreSet && !exploreSet.has(modelPath)) continue;
          if (model.hasEmptyDiscoverySurface()) {
-            warnings.push(
-               `Model "${modelPath}" is listed but exposes nothing: it only ` +
-                  `imports other files and re-exports none of their sources. ` +
-                  `Add e.g. 'export { source_name }' to surface sources on ` +
-                  `this model.`,
-            );
+            warnings.push({
+               model: modelPath,
+               message:
+                  `Model "${modelPath}" is listed in explores but exposes ` +
+                  `nothing: its export closure surfaces no sources or named ` +
+                  `queries (typically an import-only file, or an export {} ` +
+                  `that filters everything out). Add e.g. ` +
+                  `'export { source_name }' to surface sources on this ` +
+                  `model, or remove it from explores.`,
+            });
          }
       }
       return warnings;
@@ -1433,7 +1734,7 @@ export class Package {
       for (const warning of this.emptyDiscoveryWarnings()) {
          logger.warn(`Package ${this.packageName} has a blank-looking model`, {
             packageName: this.packageName,
-            detail: warning,
+            detail: warning.message,
          });
       }
    }
@@ -1444,6 +1745,21 @@ export class Package {
 
    public getModel(modelPath: string): Model | undefined {
       return this.models.get(modelPath);
+   }
+
+   /**
+    * Authorization evaluator for /compile. Prefer the target's cached Model;
+    * a new model path has none, so fall back to any package Model solely to
+    * evaluate gates carried by the compiled runnable's own ModelDef.
+    */
+   public getCompileAuthorizationModel(modelPath: string): {
+      model: Model | undefined;
+      exact: boolean;
+   } {
+      const exact = this.models.get(modelPath);
+      return exact
+         ? { model: exact, exact: true }
+         : { model: this.models.values().next().value, exact: false };
    }
 
    public async getMalloyConnection(
@@ -1658,6 +1974,10 @@ export class Package {
       // connections; re-apply both so a reload preserves serve routing.
       this.pushStorageServeBindingsToModels();
       this.pushServeDestinationConfigToModels();
+      // Same for pre-aggregation, and this is also where a manifest bind lands
+      // (bindManifest → reloadAllModels), so the companion is recompiled against
+      // the manifest that substitutes its rollup tables.
+      await this.pushPreaggregateServeModels();
       this.renderTagWarnings = renderTagWarnings;
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // A reload re-reads publisher.json in the worker; pick up any change to

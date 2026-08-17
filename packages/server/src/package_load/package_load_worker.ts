@@ -86,8 +86,10 @@ import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
    PackageScope,
-   packageMaterializationWarnings,
+   materializationWithQueryMetadata,
    parsePackageMaterialization,
+   queryMetadataParseWarnings,
+   resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
@@ -316,20 +318,27 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 // URLReader: file:// → fs; everything else proxies to main thread
 // ──────────────────────────────────────────────────────────────────────
 
-function makeWorkerUrlReader(jobId: string): {
+function makeWorkerUrlReader(job: LoadPackageRequest): {
    readURL: (url: URL) => Promise<string>;
 } {
    return {
       readURL: async (url: URL): Promise<string> => {
          if (url.protocol === "file:") {
             const filePath = fileURLToPath(url);
+            if (
+               job.replacement &&
+               path.resolve(filePath) ===
+                  path.resolve(job.packagePath, job.replacement.modelPath)
+            ) {
+               return job.replacement.source;
+            }
             return fs.promises.readFile(filePath, "utf8");
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
             const req: ReadUrlRequest = {
                type: "read-url",
                requestId,
-               jobId,
+               jobId: job.requestId,
                url: url.toString(),
             };
             port.postMessage(req);
@@ -425,14 +434,29 @@ async function readPackageMetadata(packagePath: string): Promise<{
       manifestLocation?: unknown;
       materialization?: unknown;
       scope?: unknown;
+      queryMetadata?: unknown;
    };
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
+   // Query metadata has two homes as well, migrating the other way (canonical
+   // root, deprecated `materialization.queryMetadata`). A conflict warns rather
+   // than throws — see resolvePackageQueryMetadata.
+   const queryMetadata = resolvePackageQueryMetadata(
+      parsed.queryMetadata,
+      parsed.materialization,
+   );
    const manifestWarnings = [
       ...scope.warnings,
-      ...packageMaterializationWarnings(parsed.materialization),
+      ...queryMetadata.warnings,
+      // Report what the WINNING home could not keep. Reading the envelope alone
+      // would say nothing about a malformed property declared at the root, which
+      // is the home authors are being moved to.
+      ...queryMetadataParseWarnings(
+         queryMetadata.queryMetadata,
+         queryMetadata.home,
+      ),
    ];
    return {
       name: parsed.name,
@@ -452,7 +476,10 @@ async function readPackageMetadata(packagePath: string): Promise<{
       // Package-level Malloy Persistence policy; surfaced to the control plane,
       // which owns scheduling. `schedule`/`freshness` are for the control plane;
       // `queryMetadata` is the publisher's own package-level layer.
-      materialization: parsePackageMaterialization(parsed.materialization),
+      materialization: materializationWithQueryMetadata(
+         parsePackageMaterialization(parsed.materialization),
+         queryMetadata.queryMetadata,
+      ),
       // Package-level persist scope mode; defaults to "package".
       scope: scope.scope,
       manifestWarnings:
@@ -585,9 +612,8 @@ function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
 function buildRuntimeForModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-   jobId: string,
 ): { runtime: Runtime; urlReader: HackyDataStylesAccumulator } {
-   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(jobId));
+   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(job));
    const runtime = new Runtime({
       urlReader,
       config: malloyConfig,
@@ -617,11 +643,7 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
@@ -666,6 +688,7 @@ async function compileMalloyModel(
       givens,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? compiled.problems : undefined,
    };
 }
 
@@ -681,11 +704,7 @@ async function compileNotebookModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
    const parse = MalloySQLParser.parse(fileContents, modelPath);
@@ -809,8 +828,10 @@ async function compileNotebookModel(
    let finalSourceInfos: Malloy.SourceInfo[] | undefined;
    let finalFilterMap: Map<string, FilterDefinition[]> | undefined;
    let finalGivens: ApiGivenWire[] | undefined;
+   let finalProblems: unknown[] | undefined;
    if (mm) {
       const compiled = await mm.getModel();
+      finalProblems = compiled.problems;
       finalModelDef = compiled._modelDef;
       const malloyGivens = Array.from(compiled.givens.values());
       finalGivens =
@@ -852,6 +873,7 @@ async function compileNotebookModel(
       notebookCells,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? finalProblems : undefined,
    };
 }
 
@@ -903,6 +925,12 @@ async function loadPackage(
 
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+   const replacementMatchedExisting = job.replacement
+      ? modelPaths.includes(job.replacement.modelPath)
+      : undefined;
+   if (job.replacement && !replacementMatchedExisting) {
+      modelPaths.push(job.replacement.modelPath);
+   }
 
    // Bracket the compile region: only work from here on is compilation +
    // proxied schema fetches. The setup above (manifest read + file listing)
@@ -927,6 +955,7 @@ async function loadPackage(
       requestId: job.requestId,
       packageMetadata,
       models,
+      replacementMatchedExisting,
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Compile-region wall minus the schema-fetch wait it contains — a

@@ -53,6 +53,9 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
          ({
             assertCanAdmitQuery: () => undefined,
             getPackage: async () => ({
+               // The tool reads the package's own declared bag as the
+               // least-specific author layer.
+               getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
@@ -95,6 +98,9 @@ function storeCapturingMetadata(
                return connection;
             },
             getPackage: async () => ({
+               // The tool reads the package's own declared bag as the
+               // least-specific author layer.
+               getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
@@ -162,6 +168,39 @@ describe("malloy_executeQuery error classification", () => {
       const parsed = parse(await handler(args));
       expect(parsed.error).not.toContain("unexpected internal error");
       expect(JSON.stringify(parsed.suggestions)).toContain("Malloy");
+   });
+
+   it("returns only the restricted cause, with the model-file loop, on a restricted rejection", async () => {
+      // One forbidden construct cascades into not-defined noise; the payload
+      // must carry the cause alone and route the caller to a model file, not
+      // to the generic syntax advice (QA field notes F5).
+      const restricted = new MalloyError(
+         "`duckdb.sql(...)` cannot be used in a restricted query\n'x' is not defined",
+         [],
+      );
+      (restricted as MalloyError & { problems: unknown }).problems = [
+         {
+            severity: "error",
+            code: "restricted-construct-forbidden",
+            message: "`duckdb.sql(...)` cannot be used in a restricted query",
+         },
+         {
+            severity: "error",
+            code: "not-found",
+            message: "'x' is not defined",
+         },
+      ];
+      const handler = captureHandler(storeWhoseQueryThrows(restricted));
+      const parsed = parse(await handler(args));
+      expect(parsed.error).toContain("cannot be used in a restricted query");
+      expect(parsed.error).not.toContain("'x' is not defined");
+      expect(JSON.stringify(parsed.suggestions)).toContain("model file");
+      expect(JSON.stringify(parsed.suggestions)).toContain(
+         "malloy_reloadPackage",
+      );
+      expect(JSON.stringify(parsed.suggestions)).not.toContain(
+         "Verify the structure and syntax",
+      );
    });
 
    it("keeps the reload hint on an undefined name", async () => {

@@ -88,6 +88,45 @@ describe("@malloy-publisher/skills", () => {
       }
    });
 
+   /**
+    * The stamp is what makes a months-old install identifiable on disk, and it
+    * is applied by the copy rather than committed, so nothing else would notice
+    * it silently stopping. Counting the key matters as much as reading it: a
+    * second `version:` makes the frontmatter a duplicate-key YAML error, which
+    * strict hosts reject by dropping the skill entirely.
+    */
+   it("stamps every shipped skill's frontmatter with the package version", () => {
+      const { version } = JSON.parse(
+         fs.readFileSync(
+            path.join(import.meta.dir, "..", "package.json"),
+            "utf8",
+         ),
+      ) as { version: string };
+      const shipped = skillNamesIn(skillsDir);
+      expect(shipped.length).toBeGreaterThan(0);
+      for (const name of shipped) {
+         const text = fs.readFileSync(
+            path.join(skillsDir, name, "SKILL.md"),
+            "utf8",
+         );
+         const front = text.slice(4, text.indexOf("\n---", 4));
+         expect(front.match(/^version:.*$/gm)).toEqual([`version: ${version}`]);
+      }
+   });
+
+   /** Pack-time only, so the upstream-sync copies stay byte-identical. */
+   it("leaves the repo's source skills unstamped", () => {
+      for (const name of skillNamesIn(sourceDir)) {
+         const text = fs.readFileSync(
+            path.join(sourceDir, name, "SKILL.md"),
+            "utf8",
+         );
+         expect(text.slice(0, text.indexOf("\n---", 4))).not.toMatch(
+            /^version:/m,
+         );
+      }
+   });
+
    it("leaves out the internal sync README and any credible-* skill", () => {
       const shipped = fs.readdirSync(skillsDir);
       expect(shipped).not.toContain("README.md");

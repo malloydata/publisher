@@ -253,6 +253,19 @@ export interface IncrementalLedgerEntry {
 /** How a delta advances the serving table. */
 export type IncrementalStrategy = "merge" | "range_replace";
 
+/**
+ * Whether a manifest entry records a source that failed to build.
+ *
+ * A failed entry still carries the identifying fields it was instructed with,
+ * including `physicalTableName`, so presence of a table name is not evidence a
+ * table exists. Anything that resolves an entry to a real table -- serve
+ * bindings, reuse decisions, seeds for a downstream build -- has to exclude
+ * these, or it will name a table that was never created.
+ */
+export function isFailedEntry(entry: Pick<ManifestEntry, "error">): boolean {
+   return Boolean(entry?.error);
+}
+
 export interface MaterializationUpdate {
    status?: MaterializationStatus;
    manifest?: BuildManifestResult | null;

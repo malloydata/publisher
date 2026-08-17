@@ -22,6 +22,8 @@ import {
 } from "./incremental_declaration";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import { Model } from "./model";
+import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import type { RollupPlan } from "./preaggregation_synthesis";
 import { quoteIdentifier } from "./quoting";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
@@ -29,7 +31,7 @@ type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type WireColumn = components["schemas"]["Column"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
-type WirePackageMaterialization =
+export type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
 type QueryMetadata = components["schemas"]["QueryMetadata"];
 
@@ -48,7 +50,7 @@ interface FreshnessLayer {
  * reads by path, plus the subtree read that a property collection like
  * `queryMetadata { … }` needs.
  */
-interface ReadableTag {
+export interface ReadableTag {
    text(...path: string[]): string | undefined;
    tag(...path: string[]): ReadableTag | undefined;
    entries?(): Iterable<[string, { text(): string | undefined }]>;
@@ -101,6 +103,13 @@ export interface CompiledBuildPlan {
     * dropped.
     */
    droppedPersistSources?: { name: string; modelPath: string }[];
+   /**
+    * sourceID -> the rollup it was synthesized from, for the sources that were
+    * synthesized rather than authored. Absent for an ordinary `#@ persist`
+    * source, which is what makes it the provenance signal the wire plan's
+    * `origin`/`preaggregate` fields report.
+    */
+   preaggregatePlans?: Record<string, RollupPlan>;
 }
 
 /** Output columns of a persist source, degrading to [] if unavailable. */
@@ -391,16 +400,63 @@ export function resolveQueryMetadata(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): QueryMetadata | null {
+   return composeDeclaredQueryMetadata({
+      packageDeclaration: packageMaterialization?.queryMetadata ?? null,
+      modelTag: safeModelTag(source),
+      sourceTag: safeSourceTag(source),
+   });
+}
+
+/**
+ * The author-declared layers of one statement's metadata, composed
+ * most-specific-wins PER PROPERTY: source `#@ queryMetadata.*` > model-file
+ * `## queryMetadata.*` > package `queryMetadata`.
+ *
+ * The package and model-file layers each have a deprecated
+ * `materialization.`-prefixed spelling, still read, sitting UNDERNEATH its
+ * canonical form — so a file declaring both resolves to the canonical one. That
+ * is the OPPOSITE of freshness, where the prefixed spelling IS canonical; the
+ * ordering note in the body is where that trap is spelled out.
+ *
+ * Takes tags rather than a {@link PersistSource} so the SERVE path can compose
+ * the same layers from a loaded model, where no `PersistSource` exists. A
+ * declaration describes the source's traffic, not only its build, so a served
+ * query carries it too; {@link resolveQueryMetadata} is the build-path caller,
+ * which still reads both tags off the persist source it is building.
+ *
+ * A layer whose tag is absent contributes nothing rather than clearing what a
+ * less specific layer set — so a package-wide `team` survives a source that only
+ * overrides `workload`, and a model with no `##` tag does not erase the package
+ * default. Null when no layer declares anything, so absence always means
+ * "declared nowhere" rather than "declared empty".
+ */
+export function composeDeclaredQueryMetadata(layers: {
+   /**
+    * The package's declared bag — a bag, not the materialization policy that
+    * carries it on the wire. Nothing here needs a schedule or a freshness
+    * window, and threading the policy object through would say this layer is
+    * about materialization when it is not.
+    */
+   packageDeclaration?: QueryMetadata | null;
+   modelTag?: ReadableTag;
+   sourceTag?: ReadableTag;
+}): QueryMetadata | null {
    // Least specific first, so a more specific layer overwrites property by
    // property.
-   const layers: QueryMetadata[] = [
-      packageMaterialization?.queryMetadata ?? {},
-      ...modelTagLayers(safeModelTag(source))
-         .map(tagQueryMetadataLayer)
-         .reverse(),
-      tagQueryMetadataLayer(safeSourceTag(source)),
+   //
+   // `modelTagLayers` yields [envelope, bare], which is most-specific-first for
+   // freshness — there the envelope is the canonical spelling and the bare form
+   // is the legacy one. Query metadata migrates the other way: the bare `##
+   // queryMetadata.*` is canonical and `## materialization.queryMetadata.*` is
+   // deprecated. So the list is consumed as-is rather than reversed, putting the
+   // deprecated spelling underneath. Reversing it let the spelling we tell
+   // authors to stop writing silently override the one we tell them to write.
+   const ordered: QueryMetadata[] = [
+      layers.packageDeclaration ?? {},
+      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer),
+      tagQueryMetadataLayer(layers.sourceTag),
    ];
-   const resolved: QueryMetadata = Object.assign({}, ...layers);
+   const resolved: QueryMetadata = Object.assign({}, ...ordered);
    return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
@@ -581,6 +637,7 @@ export async function compilePackageBuildPlan(
    const allSources: Record<string, PersistSource> = {};
    const sourceModelPaths: Record<string, string> = {};
    const droppedPersistSources: { name: string; modelPath: string }[] = [];
+   const preaggregatePlans: Record<string, RollupPlan> = {};
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -598,6 +655,52 @@ export async function compilePackageBuildPlan(
       const malloyModel = await runtime
          .loadModel(modelURL, { importBaseURL })
          .getModel();
+
+      // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
+      // below on purpose: a model can declare `#@ preaggregate` while having no
+      // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
+      // flag, and in both cases the annotation should still produce a rollup —
+      // the SYNTHESIZED model declares the flags it needs and is the only thing
+      // holding a persist source. Skipping here would make a valid annotation a
+      // silent no-op, which the publish gate exists to prevent.
+      const synthesized = await tryCompileSynthesizedPreaggregation({
+         packagePath: pkg.getPackagePath(),
+         modelPath,
+         malloyConfig: pkg.getMalloyConfig(),
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         contents: (malloyModel as any)._modelDef?.contents ?? {},
+      });
+      if (synthesized) {
+         const rollupPlan = synthesized.model.getBuildPlan();
+         const rollupNames = new Set(
+            synthesized.plans.map((p) => p.rollupSourceName),
+         );
+         // Graphs wholesale, because they carry the dependency edges: when the
+         // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
+         // it, and pruning that would let a rollup build before the table it
+         // reads exists.
+         allGraphs.push(...rollupPlan.graphs);
+         // Sources: only the rollups. The synthesized model imports the
+         // author's, so a persist source declared there also appears in this
+         // plan — but under the SAME sourceID, since a sourceID embeds the
+         // model that DECLARES a source rather than the one importing it. The
+         // normal path below adds those from the author's own plan, so leaving
+         // them out here avoids re-deriving an identical entry.
+         const planByName = new Map(
+            synthesized.plans.map((p) => [p.rollupSourceName, p]),
+         );
+         for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
+            if (!rollupNames.has(source.name)) continue;
+            allSources[sourceID] = source;
+            // The AUTHOR's model path, not the synthesized one: a rollup is
+            // declared by no file, and the model carrying the annotations is
+            // where someone would go to change it (see api-doc's
+            // PersistSourcePlan.modelPath).
+            sourceModelPaths[sourceID] = modelPath;
+            const rollup = planByName.get(source.name);
+            if (rollup) preaggregatePlans[sourceID] = rollup;
+         }
+      }
 
       // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
       // on any model that lacks the flag — it does NOT return empty. So a
@@ -675,6 +778,7 @@ export async function compilePackageBuildPlan(
       connections,
       sourceModelPaths,
       droppedPersistSources,
+      preaggregatePlans,
    };
 }
 
@@ -686,6 +790,7 @@ export function deriveBuildPlan(
    sourceNames?: string[],
    sourceModelPaths?: Record<string, string>,
    packageMaterialization?: WirePackageMaterialization | null,
+   options?: { preaggregatePlans?: Record<string, RollupPlan> },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
@@ -711,11 +816,25 @@ export function deriveBuildPlan(
       // emitted (retired from the contract); if a source declares either it is
       // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
       // still ride `annotationFields` so the validator can detect them.
+      // Provenance. A synthesized rollup is an ordinary persist source in every
+      // mechanical respect, so nothing downstream can tell it apart from an
+      // authored one — which is why the plan has to say. `preaggregate` carries
+      // what the rollup covers, since a query never names it and this is the only
+      // place its grain and measure set are visible at all.
+      const rollup = options?.preaggregatePlans?.[sourceID];
       wireSources[sourceID] = {
          name: source.name,
          sourceID: source.sourceID,
          connectionName: source.connectionName,
          dialect: source.dialectName,
+         origin: rollup ? "preaggregate" : "persist",
+         preaggregate: rollup
+            ? {
+                 baseSourceName: rollup.baseSourceName,
+                 grainDimensions: rollup.grainDimensions,
+                 measures: rollup.measures.map((m) => m.name),
+              }
+            : null,
          sourceEntityId: computeSourceEntityId(source, connectionDigests),
          sql: source.getSQL(),
          // Reported verbatim, and no longer inert: the mode is resolved and
@@ -770,6 +889,7 @@ export async function computePackageBuildPlan(
               undefined,
               compiled.sourceModelPaths,
               pkg.getMaterializationConfig?.() ?? null,
+              { preaggregatePlans: compiled.preaggregatePlans },
            );
    return {
       plan,

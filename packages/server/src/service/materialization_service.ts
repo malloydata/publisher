@@ -28,6 +28,7 @@ import {
    BuildPlan,
    FreshnessManifest,
    LedgerEntry,
+   isFailedEntry,
    Materialization,
    MaterializationStatus,
    MaterializationUpdate,
@@ -77,6 +78,7 @@ import { EnvironmentStore } from "./environment_store";
 import { assertMaterializationEligible } from "./materialization_eligibility";
 import {
    assertStorageServeShapeCompiles,
+   BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
@@ -342,6 +344,29 @@ function collectSensitiveValues(value: unknown, out: Set<string>): void {
  * account JSON / connection strings a federation or attach error can echo. Only
  * the concrete secret values are removed, not the message structure.
  */
+/**
+ * How many sources a run built, failed on, and reused, counted from what the
+ * build returned rather than from what it was asked to do.
+ *
+ * Two things make the instruction list the wrong denominator: an instruction can
+ * be skipped without building (no matching compiled source), and a source that
+ * failed is recorded as an entry carrying its reason -- so counting instructions
+ * would report both as built.
+ */
+export function tallySources(
+   entries: Record<string, ManifestEntry>,
+   carried: Record<string, ManifestEntry>,
+): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
+   const returned = Object.values(entries);
+   return {
+      sourcesBuilt: returned.filter(
+         (e) => !isFailedEntry(e) && !carried[e.sourceEntityId!],
+      ).length,
+      sourcesFailed: returned.filter(isFailedEntry).length,
+      sourcesReused: Object.keys(carried).length,
+   };
+}
+
 export function redactConnectionSecrets(
    message: string,
    ...connections: unknown[]
@@ -840,8 +865,10 @@ export class MaterializationService {
             incremental,
          );
 
-         const sourcesBuilt = instructions.length;
-         const sourcesReused = Object.keys(carried).length;
+         const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
+            entries,
+            carried,
+         );
          const durationMs = Date.now() - startedAt;
          await this.commitManifest(id, entries, {
             forceRefresh: opts.forceRefresh,
@@ -862,15 +889,30 @@ export class MaterializationService {
 
          recordSourcesOutcome("built", sourcesBuilt);
          recordSourcesOutcome("reused", sourcesReused);
-         this.recordRun(mode, "success", startedAt);
-         logger.info("Materialization build complete", {
-            materializationId: id,
-            packageName,
+         if (sourcesFailed > 0) {
+            recordSourcesOutcome("failed", sourcesFailed);
+         }
+         // A run that lost sources is a partial success, not a success: the
+         // manifest it committed is missing tables a consumer expected.
+         this.recordRun(
             mode,
-            sourcesBuilt,
-            sourcesReused,
-            durationMs,
-         });
+            sourcesFailed > 0 ? "partial" : "success",
+            startedAt,
+         );
+         logger[sourcesFailed > 0 ? "warn" : "info"](
+            sourcesFailed > 0
+               ? "Materialization build complete with failed sources"
+               : "Materialization build complete",
+            {
+               materializationId: id,
+               packageName,
+               mode,
+               sourcesBuilt,
+               sourcesReused,
+               sourcesFailed,
+               durationMs,
+            },
+         );
       } catch (err) {
          this.recordRun(mode, outcomeFor(err, signal), startedAt);
          throw err;
@@ -985,6 +1027,10 @@ export class MaterializationService {
             if (
                !deltaEligible &&
                prior &&
+               // A prior entry that records a failure names no table that exists:
+               // carrying it forward would retire the source from every later run,
+               // so a transient warehouse error would never be retried.
+               !isFailedEntry(prior) &&
                prior.physicalTableName &&
                (prior.storageDestinationName ?? undefined) === destination
             ) {
@@ -1202,7 +1248,14 @@ export class MaterializationService {
          // putting one here would make the original model try to substitute the
          // source with a table on its OWN (source) connection, which doesn't
          // exist there. Only colocated entries go into the tableName manifest.
-         if (entry.physicalTableName && !entry.storageDestinationName) {
+         // A failed source names no table that was built; binding it would rewrite
+         // queries to a table that does not exist, or to the generation this run
+         // failed to replace.
+         if (
+            !isFailedEntry(entry) &&
+            entry.physicalTableName &&
+            !entry.storageDestinationName
+         ) {
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // Carried so the bind step can quote the physical path for the
@@ -1490,7 +1543,9 @@ export class MaterializationService {
       manifest.strict = strict;
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
-         if (entry.physicalTableName) {
+         // A seeded entry that records a failure names no table that was built,
+         // so it must not reach a downstream source's FROM.
+         if (!isFailedEntry(entry) && entry.physicalTableName) {
             // The build Manifest feeds a downstream persist's `FROM` verbatim,
             // so a seeded upstream must carry the SAME quoting the builder
             // CREATEd it with — else the downstream CREATE misses the
@@ -1514,6 +1569,9 @@ export class MaterializationService {
       // names a table an earlier successful run built and a live manifest may still
       // serve, so dropping one would be data loss rather than cleanup.
       const builtThisRun: ManifestEntry[] = [];
+      const failedSources: string[] = [];
+      const failedReasons: string[] = [];
+      const builtSources: string[] = [];
       try {
          for (const graph of graphs) {
             const connection = connections.get(graph.connectionName);
@@ -1598,31 +1656,82 @@ export class MaterializationService {
                   assertMaterializationEligible(persistSource);
                }
 
-               const entry = await this.buildOneSource(
-                  persistSource,
-                  instruction,
-                  connection,
-                  connectionDigests,
-                  manifest,
-                  environment,
-                  entries,
-                  buildMetadata,
-                  incremental,
-                  // The CONTENT address, distinct from the instruction's
-                  // caller-assigned identity: the ledger is keyed by it so a
-                  // boundary can never be read against different SQL.
-                  sourceEntityId,
-               );
+               let entry;
+               try {
+                  entry = await this.buildOneSource(
+                     persistSource,
+                     instruction,
+                     connection,
+                     connectionDigests,
+                     manifest,
+                     environment,
+                     entries,
+                     buildMetadata,
+                     incremental,
+                     // The CONTENT address, distinct from the instruction's
+                     // caller-assigned identity: the ledger is keyed by it so a
+                     // boundary can never be read against different SQL.
+                     sourceEntityId,
+                  );
+               } catch (buildErr) {
+                  // One source failing does not end the build: the sources that
+                  // did materialize stay usable, and this one records the reason
+                  // it gave so a consumer can attribute the failure to the unit it
+                  // belongs to rather than to the whole command. A build that
+                  // loses every source still fails, below.
+                  //
+                  // Redacted against this source's own connection for the same
+                  // reason the run-level message is: a warehouse error can echo
+                  // the credentials it was handed, and this value is persisted.
+                  const reason = redactConnectionSecrets(
+                     errMessage(buildErr),
+                     connection,
+                  );
+                  // The manifest carries this reason to the control plane, but a
+                  // build that lost a source no longer throws -- so without a log
+                  // here the failure is invisible to anyone reading the server's
+                  // own output.
+                  logger.warn("Source failed to materialize", {
+                     packageName: owner?.packageName,
+                     sourceName: persistSource.name,
+                     physicalTableName: instruction.physicalTableName,
+                     reason,
+                  });
+                  failedSources.push(persistSource.name);
+                  failedReasons.push(`${persistSource.name}: ${reason}`);
+                  entries[sourceEntityId] = {
+                     sourceEntityId,
+                     sourceName: persistSource.name,
+                     physicalTableName: instruction.physicalTableName,
+                     materializedTableId: instruction.materializedTableId,
+                     error: reason,
+                  } as ManifestEntry;
+                  continue;
+               }
+               builtSources.push(persistSource.name);
                entries[sourceEntityId] = entry;
                if (entry.storageDestinationName) builtThisRun.push(entry);
             }
          }
+
+         // Every source this run built failed, so it produced nothing. A build
+         // with no output must not report itself as one that succeeded with
+         // errors attached; the partial path above covers the case where at least
+         // one source is usable. Thrown from inside the try so a run that wrote
+         // nothing reclaimable still takes the same cleanup path as any other
+         // total failure.
+         if (builtSources.length === 0 && failedSources.length > 0) {
+            throw new Error(failedReasons.join("; "));
+         }
       } catch (err) {
-         // A run that fails part-way commits NO manifest, and manifest-driven GC
-         // only drops names a manifest records — so a table an earlier source in
-         // this run already wrote would be unreachable forever. Reclaim those
-         // before rethrowing. Best-effort and non-fatal: the build's own failure is
-         // what the caller needs to see.
+         // A part-way failure returns a manifest that records the sources which
+         // built and the reason each failed one gave, so those tables stay
+         // reachable to manifest-driven GC. This path is for a build that
+         // produced nothing to record -- an orchestration failure, or every
+         // source failing -- where a table an earlier source wrote would
+         // otherwise be unreachable forever. Reclaim those before rethrowing.
+         // Best-effort and non-fatal: the build's own failure is what the caller
+         // needs to see.
          if (owner) {
             await this.reclaimStorageTablesFromFailedRun(
                builtThisRun,
@@ -1904,6 +2013,22 @@ export class MaterializationService {
          connectionDigests,
       });
 
+      // Every statement of this source's build carries the same metadata, so the
+      // warehouse's query history shows the staging CTAS, the drop and the rename
+      // as one attributable unit of work.
+      //
+      // Resolved before the storage branch below so BOTH build paths carry the
+      // same bag, layered the same way. A `storage=` build reads through DuckDB's
+      // query-passthrough rather than a Malloy connection, so it applies these
+      // itself instead of handing them to `runSQL` — but what it applies has to be
+      // the same properties, or one deployment's query history attributes the two
+      // paths differently.
+      const runOptions = this.buildRunSQLOptions(
+         persistSource,
+         environment,
+         buildMetadata,
+      );
+
       // `storage=` build: materialize into a DuckDB/DuckLake destination via a
       // build-scoped session (never on the source or serve connection). Diverges
       // fully from the in-warehouse CTAS below — different engine, credential
@@ -1940,17 +2065,9 @@ export class MaterializationService {
             publicBuildSQL,
             builtEntries,
             dependsOnStorageUpstream,
+            runOptions.queryMetadata,
          );
       }
-
-      // Every statement of this source's build carries the same metadata, so the
-      // warehouse's query history shows the staging CTAS, the drop and the rename
-      // as one attributable unit of work.
-      const runOptions = this.buildRunSQLOptions(
-         persistSource,
-         environment,
-         buildMetadata,
-      );
 
       // Incremental refresh: a source that declares `refresh="incremental"` and a
       // usable watermark can advance its serving table by a bounded delta instead
@@ -2237,6 +2354,12 @@ export class MaterializationService {
       buildSQL: string,
       builtEntries: Record<string, ManifestEntry>,
       dependsOnStorageUpstream: boolean,
+      /**
+       * Applied to the warehouse read by the passthrough itself — see
+       * {@link buildSourceIntoStorage}. Resolved by the caller through the same
+       * layering the colocated path uses.
+       */
+      queryMetadata?: QueryMetadata,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -2336,6 +2459,7 @@ export class MaterializationService {
                buildSQL,
                physicalTableName,
                environmentPath: environment.getEnvironmentPath(),
+               queryMetadata,
             });
          } catch (err) {
             // Redaction: a failed federation / passthrough / attach
@@ -2351,16 +2475,32 @@ export class MaterializationService {
                sourceConnection,
                destinationConnection,
             );
-            recordStorageBuildFailure(destinationName);
+            // Whether the warehouse read was already BILLED survives the
+            // redaction, because it changes what a caller should do next. This
+            // service's own scheduler advances "regardless of outcome so a
+            // persistent failure retries on the next cron occurrence" and fires
+            // with forceRefresh, which defeats skip-if-unchanged — so a
+            // persistent cause re-runs the same read every occurrence, and on
+            // this branch that means paying for it every occurrence. Rewrapping
+            // as a bare Error made that indistinguishable from an attach
+            // failure, which is free to retry.
+            const alreadyBilled = err instanceof BilledReadNotCapturedError;
+            recordStorageBuildFailure(
+               destinationName,
+               alreadyBilled ? "billed_read_not_captured" : "build_failed",
+            );
             logger.warn("Storage materialization build failed", {
                sourceName: persistSource.name,
                destinationName,
+               alreadyBilled,
                error: safeDetail,
             });
-            throw new Error(
+            const failure =
                `Failed to materialize source '${persistSource.name}' into ` +
-                  `storage destination '${destinationName}': ${safeDetail}`,
-            );
+               `storage destination '${destinationName}': ${safeDetail}`;
+            throw alreadyBilled
+               ? new BilledReadNotCapturedError(failure, { cause: err })
+               : new Error(failure, { cause: err });
          }
       }
 
@@ -2432,6 +2572,12 @@ export class MaterializationService {
             storageDestinationName: result.storageDestinationName,
             columns: result.schema.length,
             durationMs,
+            // The whole cost, not just the one field the manifest carries. These
+            // are the numbers that answer a cost question and the ids that let a
+            // human reach the job in the warehouse's own console — the manifest
+            // has room for neither. Null says the read's shape reported nothing,
+            // which is not the same as free: see BuildReadCost.
+            readCost: result.readCost,
          },
       );
 
@@ -2446,13 +2592,17 @@ export class MaterializationService {
          realization: instruction.realization,
          rowCount: null,
          buildDurationMs: durationMs,
-         // The warehouse read happens inside DuckDB's query-passthrough, so the
-         // Malloy connector that supplies this on the colocated path is not in
-         // the call path and there is no per-query statistic to carry. Reading it
-         // back from the warehouse's own accounting requires an identifier for
-         // the job, which the passthrough does not return for a rows-returning
-         // call; obtaining one restructures how the build issues its read.
-         queryCostBytes: null,
+         // SCANNED, matching the colocated path above, which fills this from the
+         // connector's runStats -- and that is totalBytesProcessed, i.e. scanned.
+         // Reporting billed here would put two different quantities in one field,
+         // differing by up to BigQuery's 10MB floor, and anyone summing it across
+         // a package's sources would add them together.
+         //
+         // Null when the read's shape reported nothing: a rows-returning
+         // passthrough call hands back no job to account for. Today that means a
+         // build whose metadata bag was empty, since it is the label that makes
+         // BigQuery's read a form that reports.
+         queryCostBytes: result.readCost?.bytesScanned ?? null,
       };
    }
 
@@ -2895,7 +3045,7 @@ export class MaterializationService {
 
    private recordRun(
       mode: MaterializationMode,
-      outcome: "success" | "failed" | "cancelled",
+      outcome: "success" | "partial" | "failed" | "cancelled",
       startedAtMs: number,
    ): void {
       recordMaterializationRun(mode, outcome, Date.now() - startedAtMs);

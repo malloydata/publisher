@@ -7,6 +7,7 @@ import {
    isSourceDef,
    MalloyConfig,
    MalloyError,
+   Annotations,
    ModelDef,
    modelDefToModelInfo,
    ModelMaterializer,
@@ -38,6 +39,7 @@ import {
    getDefaultQueryRowLimit,
    getMaxQueryRows,
    getMaxResponseBytes,
+   getQueryMetadataMode,
 } from "../config";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
@@ -74,8 +76,10 @@ import { URL_READER } from "../utils";
 import {
    modelAnnotations,
    ownLevelNoteTexts,
+   ownModelAnnotations,
    ownModelNotes,
 } from "./annotations";
+import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -106,6 +110,10 @@ import {
    type QueryClass,
    type QueryMetadata,
 } from "./query_metadata";
+import {
+   validateModelPreaggregation,
+   type PreaggregateViolation,
+} from "./preaggregation_validation";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -144,6 +152,12 @@ export interface ModelQueryMetadataInput {
       default?: QueryMetadata | null;
       enforced?: QueryMetadata | null;
    } | null;
+   /**
+    * The package's declared bag — the least specific author-declared layer.
+    * Supplied by the controller, which owns the package; the model knows only
+    * its own file and its package's NAME.
+    */
+   packageDeclaration?: QueryMetadata | null;
 }
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -175,7 +189,7 @@ export type ModelType = "model" | "notebook";
  * separately. Absent means the query never had a storage binding to consider.
  */
 export type ServedFrom = "storage" | "live_fallback";
-type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
+export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 /** One reachable authorize gate found by {@link Model.collectEntryPointGates}. */
 type GateEntry = {
@@ -258,6 +272,21 @@ export class Model {
    private serveBindings: ServeBinding[] = [];
    /** Memoized serve-shape materializer, keyed by the bound source set. */
    private serveShapeCache?: { key: string; materializer: ModelMaterializer };
+   /**
+    * The synthesized pre-aggregation model for this model, compiled once per load
+    * by the owning Package (see Package.pushPreaggregateServeModels) and reused by
+    * every query. Undefined when the model declares no usable `#@ preaggregate`
+    * or when synthesis failed — in both cases the serve path is untouched.
+    *
+    * Compiled per load rather than per query because there is nothing per-query
+    * to key it on. Unlike the storage tier, whose shape must recompile as
+    * bindings cross their freshness window, a rollup's freshness is handled
+    * underneath this by the per-query build manifest: while the table is fresh it
+    * substitutes, and when it is not, the composite member simply recomputes the
+    * rollup from the base. Same answer either way, which is what lets one
+    * compiled model serve every query.
+    */
+   private preaggregateServeMaterializer?: ModelMaterializer;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -272,6 +301,15 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
+   /**
+    * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
+    * `null` = computed and nothing declared.
+    */
+   private declaredQueryMetadataMemo: QueryMetadata | null | undefined;
+   /** Memo for {@link getDeclaredSourceQueryMetadata}. */
+   private declaredSourceQueryMetadataMemo:
+      | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- the file-level gate, every top-level
     *  source's own gate, and every gate a top-level source carries in from
@@ -294,6 +332,17 @@ export class Model {
       mode: "declared" | "all";
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
+      /** The PACKAGE-wide export closure (union over explores-listed models),
+       *  so a source declared queryable by its own file stays queryable when
+       *  addressed through a model that imports it. Keyed name -> the set of
+       *  DEFINITION IDENTITIES ({@link definitionIdentity}) curated under that
+       *  name, never the bare name: a name is admitted only when THIS model
+       *  resolves it to the very definition a listed model exported, so a
+       *  same-named source in another file is not admitted by the collision.
+       *  Absent when the boundary is inert. See
+       *  Package.applyQueryBoundaryToModels. */
+      packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
+      packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
    } = { mode: "all", exploresDeclared: false, isQueryEntryPoint: true };
    /** Per-query freshness resolver, pushed down by the owning Package (see
     *  Package.wireFreshnessResolvers). Returns the freshness-filtered build
@@ -303,6 +352,8 @@ export class Model {
     *  (or returning undefined) means no override: the runtime-baked manifest
     *  applies, which serves live when unbound. */
    private freshnessResolver?: () => BuildManifest["entries"] | undefined;
+   /** See {@link setPreaggregateEntityIdResolver}. */
+   private preaggregateEntityIdResolver?: () => ReadonlySet<string>;
    /** Entry-point gates per declared source name — see
     *  {@link computeEntryPointGatesBySource}. The one answer that
     *  `sources[].authorize`, {@link getAuthorize} and the early gate all read. */
@@ -801,7 +852,20 @@ export class Model {
       const ownSourceName =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
       await this.assertAuthorized(ownSourceName, givens);
+      await this.assertAuthorizedFromCompiledRunnable(runnable, givens);
+   }
 
+   /**
+    * Gate only from the compiled runnable's own ModelDef. Used when /compile
+    * targets a brand-new path that has no cached Model to provide the
+    * source-name gate. The prepared query still carries the imported source
+    * definitions and their inherited authorize annotations, so this closes the
+    * missing-model fail-open without borrowing an unrelated file-level gate.
+    */
+   public async assertAuthorizedFromCompiledRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
       const { struct, modelDef, compositeResolvedSourceDef } =
          await this.resolveRunTargetStruct(runnable);
       const seen = new Set<SourceDef>();
@@ -1625,6 +1689,72 @@ export class Model {
    }
 
    /**
+    * This file's own model-level `queryMetadata` declaration, or null if it
+    * declares none. Covers both the `## materialization.queryMetadata.*` form
+    * and the bare `## queryMetadata.*` one beneath it, since
+    * {@link composeDeclaredQueryMetadata} reads the same two layers the build
+    * path does.
+    *
+    * Exposed for the publish gate. That gate walks the package manifest and the
+    * build plan's persist sources, so a model file's declaration was only ever
+    * visible through a source that inherited it — and a file with NO persist
+    * source was invisible entirely. Since a model-file declaration now rides
+    * served queries whether or not the file persists anything, it needs a
+    * validation path of its own.
+    *
+    * Memoized, because the caller is not the cold path it looks like:
+    * `getPackageMetadata()` runs once per package inside `listPackages`, and
+    * several callers invoke it only to read `manifestLocation`. Recomputing
+    * would walk the import closure and re-parse every `##` note on each of those.
+    * A compiled model's annotations never change — a reload replaces the `Model`
+    * object outright — so the memo needs no invalidation.
+    */
+   public getDeclaredQueryMetadata(): QueryMetadata | null {
+      // `undefined` means "not computed"; `null` is a computed answer of "none".
+      if (this.declaredQueryMetadataMemo === undefined) {
+         this.declaredQueryMetadataMemo = composeDeclaredQueryMetadata({
+            modelTag: this.safeModelFileTag(),
+         });
+      }
+      return this.declaredQueryMetadataMemo;
+   }
+
+   /**
+    * Each top-level source's OWN `#@ queryMetadata.*`, for the sources that
+    * declare one.
+    *
+    * `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than
+    * a key inside it, so a source that persists nothing can declare tags and
+    * they ride every query against it. The publish gate reads persist sources
+    * from the build plan, so those declarations had no validation path — a
+    * reserved or malformed name published clean and vanished with only a metric
+    * behind it.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}: the
+    * caller runs once per package inside `listPackages`.
+    */
+   public getDeclaredSourceQueryMetadata(): {
+      sourceName: string;
+      queryMetadata: QueryMetadata;
+   }[] {
+      if (this.declaredSourceQueryMetadataMemo === undefined) {
+         const contents = (this.modelDef?.contents ?? {}) as Record<
+            string,
+            unknown
+         >;
+         this.declaredSourceQueryMetadataMemo = Object.keys(contents).flatMap(
+            (sourceName) => {
+               const queryMetadata = composeDeclaredQueryMetadata({
+                  sourceTag: this.safeSourceTag(sourceName),
+               });
+               return queryMetadata ? [{ sourceName, queryMetadata }] : [];
+            },
+         );
+      }
+      return this.declaredSourceQueryMetadataMemo;
+   }
+
+   /**
     * Restrict a list of named objects to the model's re-export closure
     * (`modelDef.exports`) for discovery. This mirrors what Malloy's stable
     * `modelDefToModelInfo` already does for `modelInfo`/`sourceInfos` (and what
@@ -1678,6 +1808,53 @@ export class Model {
       return entries ? { entries, strict: false } : undefined;
    }
 
+   /**
+    * Set by the owning Package (see Package.wireFreshnessResolvers). Supplies the
+    * `sourceEntityId`s of the rollups pre-aggregation synthesized, which
+    * {@link withoutPreaggregateEntries} strips from the manifest. A resolver
+    * rather than a value because the build plan it reads is computed AFTER the
+    * models are wired.
+    */
+   public setPreaggregateEntityIdResolver(
+      resolver: () => ReadonlySet<string>,
+   ): void {
+      this.preaggregateEntityIdResolver = resolver;
+   }
+
+   /**
+    * `manifest` with pre-aggregation's own rollup entries removed.
+    *
+    * A synthesized rollup exists ONLY in the companion model (see
+    * preaggregation_synthesis) — the author's model never declares it and can
+    * never reference it, so its manifest entry can substitute nothing there. It
+    * is not merely useless: Malloy refuses a non-empty `buildManifest` against a
+    * model without `##! experimental.persistence`, and a model that declares
+    * `#@ preaggregate` has no reason to carry that flag, since the companion
+    * declares its own. Passing the full manifest to the author's model therefore
+    * turned every query served from it into a 400 the moment a build bound a
+    * manifest — which is every query the companion cannot answer, including any
+    * naming a source it does not import, and every notebook cell.
+    *
+    * So the rule is by ORIGIN: only the companion sees the rollups. Returns
+    * undefined when nothing survives, matching
+    * {@link resolveFreshBuildManifest}'s "no override ⇒ serve live".
+    */
+   private withoutPreaggregateEntries(
+      manifest: BuildManifest | undefined,
+   ): BuildManifest | undefined {
+      if (!manifest) return undefined;
+      const preaggregateIds = this.preaggregateEntityIdResolver?.();
+      if (!preaggregateIds || preaggregateIds.size === 0) return manifest;
+      const entries = Object.fromEntries(
+         Object.entries(manifest.entries).filter(
+            ([sourceEntityId]) => !preaggregateIds.has(sourceEntityId),
+         ),
+      );
+      return Object.keys(entries).length > 0
+         ? { ...manifest, entries }
+         : undefined;
+   }
+
    public getSources(): ApiSource[] | undefined {
       return this.curateForDiscovery(this.sources);
    }
@@ -1691,20 +1868,24 @@ export class Model {
    }
 
    /**
-    * True when this is an import-only model: it imports other files but
-    * declares and re-exports nothing of its own, so `modelDef.exports` is
-    * empty and its discovery surface lists no sources or queries. Legitimate
-    * as plumbing, but confusing when the model is *listed* — the page renders
-    * blank. Used by the load-time warning (Package.emptyDiscoveryWarnings);
-    * the fix is to re-export what should be visible (`export { name }`).
+    * True when this model's curated discovery surface is empty: its export
+    * closure yields no sources and no named queries. The common cause is an
+    * import-only model (imports other files, declares/re-exports nothing);
+    * an `export {}` that filters everything out, or a genuinely empty file,
+    * reads the same to a browser. Legitimate as plumbing, but confusing when
+    * the model is *listed* — the page renders blank and an agent's listing
+    * comes back []. Used by the load-time warning
+    * (Package.emptyDiscoveryWarnings); the fix is to re-export what should be
+    * visible (`export { name }`) or unlist the file.
     */
    public hasEmptyDiscoverySurface(): boolean {
       // No curation (no `explores`) ⇒ legacy listings include imported sources.
       if (!this.discoveryCurationEnabled) return false;
       if (this.modelType !== "model" || !this.modelDef) return false;
-      const exports = this.modelDef.exports;
-      if (!Array.isArray(exports) || exports.length > 0) return false;
-      return (this.modelDef.imports?.length ?? 0) > 0;
+      return (
+         (this.getSources()?.length ?? 0) === 0 &&
+         (this.getQueries()?.length ?? 0) === 0
+      );
    }
 
    /** Set by the owning Package; see {@link assertQueryBoundaryEarly}. */
@@ -1712,8 +1893,79 @@ export class Model {
       mode: "declared" | "all";
       exploresDeclared: boolean;
       isQueryEntryPoint: boolean;
+      packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
+      packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
    }): void {
       this.queryBoundary = policy;
+   }
+
+   /**
+    * Stable identity of the definition `name` resolves to IN THIS MODEL's
+    * namespace: the file that declares it plus its position in that file.
+    * Malloy resolves a name against the requested model's namespace, so two
+    * models resolving a name to the same declaration yield the same key, while
+    * two same-named declarations in different files do not.
+    *
+    * This is what makes the package-wide union safe. Keying the union on bare
+    * names would let listed model A's exported `customers` admit the name
+    * everywhere, and listed model B — which imports a DIFFERENT, hidden
+    * `customers` — would then serve the hidden one, since the gate matched the
+    * name while Malloy resolved the definition. Keying on the declaration
+    * closes that.
+    *
+    * Returns undefined when Malloy attached no location (nothing to prove
+    * identity with); every caller then falls back to this model's own export
+    * closure, i.e. fails closed to the pre-union behavior.
+    */
+   public definitionIdentity(name: string | undefined): string | undefined {
+      if (!name) return undefined;
+      const def = this.modelDef?.contents?.[name] as
+         | {
+              location?: {
+                 url?: string;
+                 range?: { start?: { line?: number; character?: number } };
+              };
+           }
+         | undefined;
+      const url = def?.location?.url;
+      if (!url) return undefined;
+      const start = def?.location?.range?.start;
+      return `${url}#${start?.line ?? -1}:${start?.character ?? -1}`;
+   }
+
+   /**
+    * True when `name` is admitted by the package-wide curated map: some listed
+    * model exported `name`, AND this model resolves `name` to that same
+    * declaration. See {@link definitionIdentity}.
+    */
+   private admittedByPackage(
+      name: string,
+      curated: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+   ): boolean {
+      const identities = curated?.get(name);
+      if (!identities) return false;
+      const mine = this.definitionIdentity(name);
+      return mine !== undefined && identities.has(mine);
+   }
+
+   /** True if `name` is a directly queryable source under the "declared"
+    *  boundary: exported by THIS model, or exported by a sibling listed model
+    *  and resolved here to that same declaration. */
+   private isCuratedSource(name: string): boolean {
+      if (this.ownCuratedSourceNames().has(name)) return true;
+      return this.admittedByPackage(
+         name,
+         this.queryBoundary.packageCuratedSources,
+      );
+   }
+
+   /** Named-query counterpart of {@link isCuratedSource}. */
+   private isCuratedQuery(name: string): boolean {
+      if ((this.getQueries() ?? []).some((q) => q.name === name)) return true;
+      return this.admittedByPackage(
+         name,
+         this.queryBoundary.packageCuratedQueries,
+      );
    }
 
    /**
@@ -1743,7 +1995,8 @@ export class Model {
       query?: string,
    ): "cleared" | "deferred" {
       // Notebooks are always public — they can't be explores and are never
-      // gated by the boundary, even when reached via the /compile path.
+      // gated by the boundary. (/compile does not reach this gate at all; it
+      // is exempt from the boundary — see Environment.compileSource.)
       if (this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) return "cleared";
       const { mode, exploresDeclared, isQueryEntryPoint } = this.queryBoundary;
       // No opt-in surface (no explores) or explicitly decoupled ("all") ⇒ the
@@ -1757,11 +2010,6 @@ export class Model {
          throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
       }
 
-      const curatedSources = this.curatedSourceNames();
-      const curatedQueries = new Set(
-         (this.getQueries() ?? []).map((q) => q.name).filter(Boolean),
-      );
-
       // A named query/view is an author-exported entry point (the author chose
       // to expose it, even if it reads hidden sources internally) — admit it on
       // its own name, or on the explicitly-named curated source it runs against.
@@ -1773,14 +2021,14 @@ export class Model {
          // with an exported top-level query (and clearing skips the compiled
          // backstop). With a source prefix, only the named source's curation
          // gates the request.
-         if (!sourceName && curatedQueries.has(queryName)) return "cleared";
-         if (sourceName && curatedSources.has(sourceName)) return "cleared";
+         if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
+         if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
          throw new NotQueryableError(`No queryable query "${queryName}".`);
       }
 
       // An explicitly-named source: admit iff curated.
       if (sourceName) {
-         if (curatedSources.has(sourceName)) return "cleared";
+         if (this.isCuratedSource(sourceName)) return "cleared";
          throw new NotQueryableError(`No queryable source "${sourceName}".`);
       }
 
@@ -1793,7 +2041,7 @@ export class Model {
          const target = extractRunTargetSourceName(query);
          if (
             target &&
-            !curatedSources.has(target) &&
+            !this.isCuratedSource(target) &&
             !this.derivesFromCurated(target, query) &&
             this.sources?.some((s) => s.name === target)
          ) {
@@ -1831,18 +2079,27 @@ export class Model {
          throw new NotQueryableError(`No queryable model "${this.modelPath}".`);
       }
       if (compiledSource) {
-         if (this.curatedSourceNames().has(compiledSource)) return;
+         if (this.isCuratedSource(compiledSource)) return;
          if (query && this.derivesFromCurated(compiledSource, query)) return;
       }
       throw new NotQueryableError("Query target is not queryable.");
    }
 
    /**
-    * The /compile-path wrapper: resolve the compiled run target from the
-    * materializer and apply the boundary backstop. No-ops when the boundary is
-    * inert, so the resolution work is skipped for unaffected packages.
+    * Boundary re-check for /compile's authorize-denial conversion (see
+    * `denyHiddenAsNotQueryable` in service/environment.ts). /compile itself is
+    * exempt from the boundary; this runs only AFTER an authorize denial, to
+    * decide whether the 403 would confirm a hidden source exists. It settles
+    * the COMPILED run target — the source Malloy actually executes — because
+    * the early text gate resolves only the first `run:` statement, so
+    * converting on it alone lets a multi-statement decoy
+    * (`run: visible\nrun: hidden_gated`) or a derivation alias keep a 403 that
+    * names the hidden source. Same admission rule as the query surface
+    * (curated, or derives from curated via the submitted text), so the 403 is
+    * masked exactly where the query surface answers 404. No-ops when the
+    * boundary is inert.
     */
-   public async assertQueryBoundaryForRunnable(
+   public async assertCompiledTargetQueryable(
       runnable: { getPreparedQuery(): Promise<unknown> },
       query?: string,
    ): Promise<void> {
@@ -1854,9 +2111,11 @@ export class Model {
       );
    }
 
-   /** Source names in the export-curated discovery surface (= the directly
-    *  queryable set under the "declared" boundary). */
-   private curatedSourceNames(): Set<string> {
+   /** Source names in THIS model's export-curated discovery surface. The
+    *  package-wide closure is applied separately and identity-checked (see
+    *  {@link isCuratedSource}); it is deliberately not merged in here, so this
+    *  stays the one set whose membership needs no identity proof. */
+   private ownCuratedSourceNames(): Set<string> {
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
@@ -1868,16 +2127,75 @@ export class Model {
     *  `source: NAME is BASE` derivation declarations — composition over a
     *  queryable source is itself queryable. */
    private derivesFromCurated(name: string, query: string): boolean {
-      const curated = this.curatedSourceNames();
+      // Hoisted out of the walk: the own-closure set is the same for every link
+      // in the derivation chain, and only the identity check varies by name.
+      const own = this.ownCuratedSourceNames();
+      const packageCurated = this.queryBoundary.packageCuratedSources;
       const aliasOf = buildSourceAliasMap(query);
       let current: string | undefined = name;
       const seen = new Set<string>();
       while (current && !seen.has(current)) {
-         if (curated.has(current)) return true;
+         if (
+            own.has(current) ||
+            this.admittedByPackage(current, packageCurated)
+         )
+            return true;
          seen.add(current);
          current = aliasOf.get(current);
       }
       return false;
+   }
+
+   /**
+    * Every `#@ preaggregate` declaration in this model that cannot take effect.
+    *
+    * Read straight off the compiled `modelDef.contents`, so it reaches an
+    * annotation on any source in the model — including one nothing references,
+    * where a silently-ignored annotation would otherwise be undetectable.
+    *
+    * Returned rather than thrown: the owning Package joins these across its
+    * models into one rejection, so an author fixing a package sees every bad
+    * declaration at once instead of one per publish.
+    */
+   public preaggregateViolations(): PreaggregateViolation[] {
+      if (!this.modelDef) return [];
+      return validateModelPreaggregation(
+         this.modelDef.contents as Record<string, unknown>,
+      );
+   }
+
+   /**
+    * Compile this model's synthesized pre-aggregation companion and keep it for
+    * the serve path, or clear it when there is nothing to synthesize.
+    *
+    * Called by the owning Package, which supplies the package path, connections
+    * and bound manifest a Model does not hold. Never throws: a failure leaves the
+    * serve path exactly as it was, which is serving live.
+    *
+    * Only `.malloy` models are considered. A notebook's cells are compiled
+    * individually and it declares no sources of its own to roll up.
+    */
+   public async buildPreaggregateServeModel(
+      packagePath: string,
+      malloyConfig: ModelConnectionInput,
+      buildManifest?: BuildManifest["entries"],
+   ): Promise<void> {
+      this.preaggregateServeMaterializer = undefined;
+      if (!this.modelDef || this.modelType !== "model") return;
+      // Dynamic import to break a module cycle: the helper compiles through
+      // Model.getModelRuntime, so importing it at the top of this file would make
+      // the two modules import each other.
+      const { tryCompileSynthesizedPreaggregation } = await import(
+         "./preaggregation_compile"
+      );
+      const synthesized = await tryCompileSynthesizedPreaggregation({
+         packagePath,
+         modelPath: this.modelPath,
+         malloyConfig,
+         contents: this.modelDef.contents as Record<string, unknown>,
+         buildManifest,
+      });
+      this.preaggregateServeMaterializer = synthesized?.materializer;
    }
 
    /**
@@ -2448,8 +2766,31 @@ export class Model {
       // to live — which must NOT count as a storage hit, since the hit rate is
       // the tier's headline KPI and would otherwise rise while the tier is down.
       let servedFrom: ServedFrom | undefined;
+      // Set when the query compiled against the pre-aggregation companion model
+      // and will run there. Decides which build manifest the run gets: only the
+      // companion may see pre-aggregation's own rollup entries (see
+      // {@link withoutPreaggregateEntries}).
+      let preaggRouted = false;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
+
+      // Per-query freshness gate (persistence.md §9.3): resolve the
+      // freshness-filtered manifest once and thread it into both the prepare
+      // (for the row limit) and the run so a stale persist source falls back per
+      // its declared policy — and prep/run agree on the same substitution.
+      //
+      // Resolved HERE, above the routing block below, because the pre-aggregation
+      // probe has to compile against the same manifest the run will use.
+      const buildManifest = this.resolveFreshBuildManifest();
+      // The same manifest with pre-aggregation's rollups removed, for every
+      // runnable that is NOT the companion. See the method for why.
+      const liveBuildManifest = this.withoutPreaggregateEntries(buildManifest);
+      // Givens supplied only so a joined source's authorize gate could see
+      // them (checked below, against the full unfiltered set) must not reach
+      // the real query if this model doesn't itself surface them — see
+      // filterGivensToModelSurface. Resolved here for the same reason as
+      // `buildManifest`: the pre-aggregation probe needs them.
+      const querySurfaceGivens = this.filterGivensToModelSurface(givens);
 
       // Query boundary FIRST (the *what* axis): reject a target that isn't in
       // the package's queryable surface with a generic 404, before authorize
@@ -2643,6 +2984,66 @@ export class Model {
                );
             }
          }
+
+         // Pre-aggregation serve routing: compile the query against the
+         // synthesized model, where each annotated source is a composite of its
+         // rollups and itself. Malloy then picks a rollup when one covers the
+         // query and the base when none does, so this does not decide routing —
+         // it only offers the choice. Which is why there is no eligibility test
+         // here and no metric for "declined": from out here a covered query and
+         // an uncovered one are the same call.
+         //
+         // Skipped when the storage shape already routed: that runnable resolves
+         // through `virtualMap` rather than the build manifest, and recompiling it
+         // here would discard that. Composing the two tiers is future work.
+         if (this.preaggregateServeMaterializer && !serveVirtualMap) {
+            try {
+               const candidate =
+                  this.preaggregateServeMaterializer.loadRestrictedQuery(
+                     queryString,
+                  );
+               // Compile eagerly, for the same reason loadServeShapeQuery does:
+               // Malloy compiles LAZILY, so `loadRestrictedQuery` cannot throw
+               // here and without this the error escapes at prepare/run instead,
+               // past the catch below — which made a query naming any source the
+               // companion does not import a hard 400 rather than a live answer.
+               // Cheap relative to the run. It must probe with exactly what the
+               // run will use — the build manifest its rollup members resolve
+               // through, and the givens — because the probe's whole job is to
+               // decide routing on the same terms.
+               //
+               // The givens are the load-bearing half, and not for the reason one
+               // would guess. A model-level `given:` does NOT cross the
+               // companion's `import`, so the companion surfaces none: probing
+               // WITH them makes a given-supplying query fail here and fall to
+               // live, which is what we want, while probing without them lets it
+               // compile and then fail at RUN with "unknown given … Model
+               // surfaces []" — an escaped 400, the same class of bug the eager
+               // compile above exists to prevent. Measured both ways; see the
+               // givens test in preaggregation_seams.spec.ts.
+               await candidate.getSQL({
+                  givens: querySurfaceGivens,
+                  buildManifest,
+               });
+               runnable = candidate;
+               preaggRouted = true;
+            } catch (preaggErr) {
+               // Expected, and common: the synthesized model imports only the
+               // sources it rolls up, so a query touching anything else does not
+               // compile against it. Serving live is the right answer for those,
+               // so this is debug rather than a warning.
+               logger.debug(
+                  "query does not compile against the pre-aggregation model; serving live",
+                  {
+                     modelPath: this.modelPath,
+                     error:
+                        preaggErr instanceof Error
+                           ? preaggErr.message
+                           : String(preaggErr),
+                  },
+               );
+            }
+         }
       } catch (error) {
          // Re-throw BadRequestError as-is
          if (error instanceof BadRequestError) {
@@ -2723,19 +3124,22 @@ export class Model {
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
-      // Per-query freshness gate (persistence.md §9.3): resolve the
-      // freshness-filtered manifest once and thread it into both the prepare
-      // (for the row limit) and the run so a stale persist source falls back per
-      // its declared policy — and prep/run agree on the same substitution.
-      const buildManifest = this.resolveFreshBuildManifest();
+      // `buildManifest` / `liveBuildManifest` / `querySurfaceGivens` are resolved
+      // above the routing block, which needs them for its compile probe.
+      //
       // The serve-shape runnable resolves its tables through `virtualMap`, not
       // the same-connection build manifest, and its transient model carries no
       // `##! experimental.persistence` — so passing a non-empty buildManifest to
-      // it errors. When routing through the shape, suppress the manifest; the
-      // original (live) runnable still gets it.
+      // it errors. When routing through the shape, suppress the manifest.
+      //
+      // Only the pre-aggregation companion may see the FULL manifest: its rollup
+      // entries name sources that exist nowhere else, and the author's model has
+      // no reason to carry the persistence flag those entries require.
       const effectiveBuildManifest = serveVirtualMap
          ? undefined
-         : buildManifest;
+         : preaggRouted
+           ? buildManifest
+           : liveBuildManifest;
 
       // Prepare INSIDE the run try/catch: a bad-given / value-type throw at
       // prepare time (getPreparedResult binds the givens) gets the same
@@ -2748,11 +3152,6 @@ export class Model {
       let executionTime = 0;
       let queryResults;
       let appliedQueryMetadata: QueryMetadata | undefined;
-      // Givens supplied only so a joined source's authorize gate could see
-      // them (checked above, against the full unfiltered set) must not reach
-      // the real query if this model doesn't itself surface them — see
-      // filterGivensToModelSurface.
-      const querySurfaceGivens = this.filterGivensToModelSurface(givens);
       // Same reason as effectiveBuildManifest: the serve shape is built from
       // given-FREE sources, so it surfaces no `given:` and Malloy rejects any
       // supplied name with "unknown given" — a spurious 400, past the routing
@@ -2777,6 +3176,22 @@ export class Model {
          appliedQueryMetadata = this.resolveQueryMetadata(
             queryMetadataInput,
             preparedResult.connectionName,
+            // The run-target source already resolved for the authorize gate, not
+            // the raw `sourceName` param: a `queryName` request names exactly one
+            // source and must not lose its declared layer for having named it
+            // indirectly, and ad-hoc text resolves through the same surface-syntax
+            // path. Reusing the gate's answer also keeps one definition of "which
+            // source is this query against" rather than a second, weaker one.
+            //
+            // The COMPILED target specifically, for the reason the authorize gate
+            // treats it as the source of truth: `extractRunTargetSourceName`
+            // reads the FIRST `run:` and Malloy executes the LAST, so `run:
+            // cheap\nrun: expensive` would execute one source while tagging
+            // another's team and tier — attribution that is not merely missing
+            // but wrong, and wrong in the direction of blaming the cheap query.
+            // Falls back to the surface-syntax answer when the compiled one is
+            // unresolved, the same degradation the gate accepts.
+            compiledSource ?? earlySource,
          );
 
          queryResults = await runnable.run({
@@ -2912,9 +3327,12 @@ export class Model {
             // the connector reads as a hard cap and stops before the first row: a
             // successful, EMPTY answer. Asking the live shape is also the honest
             // limit, since the live shape is what runs.
+            // `liveBuildManifest`, not `buildManifest`: this retry runs on the
+            // AUTHOR's model, which can neither reference a synthesized rollup
+            // nor be assumed to carry `##! experimental.persistence`.
             const livePrepared = await liveRunnable!.getPreparedResult({
                givens: querySurfaceGivens,
-               buildManifest,
+               buildManifest: liveBuildManifest,
             });
             const livePreparedLimit = livePrepared.resultExplore.limit;
             rowLimitSource = queryRowLimitSource(livePreparedLimit);
@@ -2931,12 +3349,15 @@ export class Model {
             appliedQueryMetadata = this.resolveQueryMetadata(
                queryMetadataInput,
                livePrepared.connectionName,
+               // Same compiled run target as the primary path — the retry runs
+               // the same query, so it must not tag a different source.
+               compiledSource ?? earlySource,
             );
             queryResults = await liveRunnable!.run({
                rowLimit,
                givens: querySurfaceGivens,
                abortSignal,
-               buildManifest,
+               buildManifest: liveBuildManifest,
                queryMetadata: appliedQueryMetadata,
             });
          } catch (retryError) {
@@ -3118,18 +3539,43 @@ export class Model {
     * default, the caller's request override, and the server's context (which
     * package, which model, which class of work), merged most-specific-wins.
     *
-    * There is no model-side layer here. `materialization.queryMetadata` describes
-    * how a persist source is BUILT; a live query against the model is a different
-    * unit of work, and inheriting a build's tags would attribute interactive
-    * traffic to the build that happens to share the source.
+    * The author-declared layers ARE included, composed by
+    * {@link composeDeclaredQueryMetadata} exactly as the build path composes
+    * them. This reverses an earlier decision to omit them, which read
+    * `materialization.queryMetadata` as describing only how a persist source is
+    * BUILT and reasoned that a live query is a different unit of work.
+    *
+    * What that reasoning missed is which properties the layer actually carries.
+    * The build-identifying properties — `run_id`, `trigger`, `source`, `class` —
+    * come from the CONTEXT layer, which is per-statement and never inherited, so
+    * a served query cannot be mistaken for a build no matter what the author
+    * declared. The declared layer carries the author's own vocabulary (a team, a
+    * cost centre, a data tier), which describes the SOURCE and is as true of a
+    * query reading it as of the build writing it. Omitting it meant a deployment
+    * could attribute its builds and not the interactive traffic that is most of
+    * its warehouse bill.
+    *
+    * The block is named `materialization.queryMetadata` for historical reasons;
+    * the name is narrower than the thing it declares.
     *
     * Fails open, like every other metadata path: a connection whose config can't
-    * be read contributes no default rather than failing the query.
+    * be read contributes no default rather than failing the query, and an
+    * unparseable annotation contributes no layer rather than throwing.
     */
    private resolveQueryMetadata(
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,
+      sourceName?: string,
    ): QueryMetadata | undefined {
+      // Nothing below is observable when the feature is off: `mergeQueryMetadata`
+      // early-returns, so every layer assembled here is discarded. Assembling
+      // them anyway made a default deployment — the mode is off unless an
+      // operator turns it on — pay an annotation walk and a connection lookup on
+      // every query for a bag nobody reads. Read per statement rather than per
+      // boot for the same reason `mergeQueryMetadata` reads it there: the mode
+      // is allowed to change under a running server.
+      if (getQueryMetadataMode() === "off") return undefined;
+
       let connectionLayers: {
          default?: QueryMetadata | null;
          enforced?: QueryMetadata | null;
@@ -3144,6 +3590,11 @@ export class Model {
       const resolved = mergeQueryMetadata({
          connection: connectionLayers?.default,
          enforced: connectionLayers?.enforced,
+         model: composeDeclaredQueryMetadata({
+            packageDeclaration: input?.packageDeclaration,
+            modelTag: this.safeModelFileTag(),
+            sourceTag: this.safeSourceTag(sourceName),
+         }),
          request: input?.request,
          context: {
             queryClass: input?.queryClass ?? "interactive",
@@ -3161,6 +3612,72 @@ export class Model {
          });
       }
       return resolved.metadata;
+   }
+
+   /**
+    * The model file's own `##` tag, or undefined if it is absent or fails to
+    * parse. Read off `modelDef`, which survives the worker serialization
+    * boundary — so this works for a freshly-compiled model and a deserialized
+    * one alike, the same reason `fileLevelAuthorize` is derived there.
+    *
+    * The file's OWN notes, not the folded import lineage. `modelAnnotations`
+    * folds deliberately, but only because a file-level `##(authorize)` gate an
+    * import could shed would be no gate at all; `annotations.ts` says to read
+    * through `ownModelNotes` for everything that is not a policy gate. A tag is
+    * not a gate, and folding one would let a shared include attribute every
+    * importing file's traffic to the include's team — the same misattribution
+    * {@link safeSourceTag} already refuses for a derivation base. It would also
+    * report the resulting publish warning against the importer's path, sending
+    * an author to a file that does not contain the line.
+    */
+   private safeModelFileTag(): ReadableTag | undefined {
+      if (!this.modelDef) return undefined;
+      try {
+         return new Annotations(ownModelAnnotations(this.modelDef)).parseAsTag()
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * The run-target source's own `#@` tag, or undefined when no source could be
+    * resolved, the name is not a top-level source, or the annotation fails to
+    * parse.
+    *
+    * Callers pass the source the server ALREADY resolved for the authorize gate,
+    * not the raw `sourceName` request param — a `queryName` request names one
+    * source indirectly and must not lose its declared layer for it, and ad-hoc
+    * text resolves through the same surface-syntax path. What remains
+    * unresolvable is a statement with no single run target (some notebook
+    * cells); those carry the package and model-file layers only.
+    *
+    * Reads the named source's OWN annotations and does not walk its derivation
+    * base, so `source: a is b extend {…}` inherits nothing from `b`'s
+    * declaration. This diverges from {@link ancestorGateExprs}, which walks
+    * ancestors deliberately because a gate an extension could shed would be no
+    * gate at all. A cost label carries no such requirement, and inheriting one
+    * would attribute `a`'s traffic to `b`'s team.
+    */
+   private safeSourceTag(
+      sourceName: string | undefined,
+   ): ReadableTag | undefined {
+      if (!sourceName || !this.modelDef) return undefined;
+      try {
+         const entry = this.modelDef.contents?.[sourceName];
+         // The docstring's "not a top-level source" case, now actually checked.
+         // `contents` also holds NAMED QUERIES, and a `#@` on one of those is
+         // not a source's declaration — reading it resolved a query's tag as
+         // though a source had declared it, and listed the query's name among
+         // the package's tagged sources in the publish warnings.
+         if (!entry || !isSourceDef(entry)) return undefined;
+         const def = entry as unknown as { annotations?: unknown };
+         if (!def.annotations) return undefined;
+         return new Annotations(def.annotations).parseAsTag("@")
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
    }
 
    private getStandardModel(): ApiCompiledModel {
@@ -3345,8 +3862,15 @@ export class Model {
             const cellMaxRows = getMaxQueryRows();
             const cellMaxBytes = getMaxResponseBytes();
             // Per-query freshness gate (see getQueryResults): the same
-            // freshness-filtered manifest gates notebook-cell queries.
-            const buildManifest = this.resolveFreshBuildManifest();
+            // freshness-filtered manifest gates notebook-cell queries — minus
+            // pre-aggregation's rollups, which belong to the companion model and
+            // are never referenced from a notebook cell. A notebook has no
+            // companion (it declares no sources to roll up), so unlike
+            // getQueryResults there is no branch here: the live view is the only
+            // one that applies.
+            const buildManifest = this.withoutPreaggregateEntries(
+               this.resolveFreshBuildManifest(),
+            );
             // See getQueryResults / filterGivensToModelSurface: the gate
             // above already saw the full unfiltered givens.
             const cellSurfaceGivens = this.filterGivensToModelSurface(givens);
@@ -3361,6 +3885,13 @@ export class Model {
                   maxRows: cellMaxRows,
                },
             );
+            // The compiled run target, preferred over the cell's surface syntax
+            // for the reason getQueryResults prefers it: `extractRunTargetSourceName`
+            // reads the first `run:` and Malloy executes the last, so a cell
+            // holding more than one would tag the wrong source. The prepared
+            // query is read again below, so this costs nothing new.
+            const cellCompiledSource =
+               await this.resolveAuthorizeSourceFromRunnable(runnableToExecute);
             const result = await runnableToExecute.run({
                rowLimit,
                givens: cellSurfaceGivens,
@@ -3369,6 +3900,9 @@ export class Model {
                queryMetadata: this.resolveQueryMetadata(
                   queryMetadataInput,
                   preparedCell.connectionName,
+                  // Same resolution the cell's own filter lookup uses, so a
+                  // notebook cell carries the source's declared layer too.
+                  cellCompiledSource ?? extractRunTargetSourceName(cell.text),
                ),
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
@@ -3461,11 +3995,23 @@ export class Model {
       };
    }
 
+   /**
+    * `overlay` maps an absolute `file://` URL to text served INSTEAD of reading
+    * that path from disk; anything not in the map reads from disk as usual. It
+    * exists for pre-aggregation, whose synthesized model is generated per load
+    * and never written to disk, and which must resolve its `import` of the
+    * author's model relative to the real package directory — so the synthesized
+    * text needs a URL inside that directory without a file behind it. `modelPath`
+    * still has to exist: it is what anchors `importBaseURL`.
+    */
    static async getModelRuntime(
       packagePath: string,
       modelPath: string,
       malloyConfig: ModelConnectionInput,
-      options?: { buildManifest?: BuildManifest["entries"] },
+      options?: {
+         buildManifest?: BuildManifest["entries"];
+         overlay?: ReadonlyMap<string, string>;
+      },
    ): Promise<{
       runtime: Runtime;
       modelURL: URL;
@@ -3496,7 +4042,15 @@ export class Model {
       const modelURL = new URL(`file://${fullModelPath}`);
       const baseUrl = new URL(".", modelURL);
       const importBaseURL = baseUrl;
-      const urlReader = new HackyDataStylesAccumulator(URL_READER);
+      const overlay = options?.overlay;
+      const urlReader = new HackyDataStylesAccumulator(
+         overlay && overlay.size > 0
+            ? {
+                 readURL: async (url: URL) =>
+                    overlay.get(url.href) ?? (await URL_READER.readURL(url)),
+              }
+            : URL_READER,
+      );
 
       // Request runtimes borrow the cached package MalloyConfig. The package
       // owns release; callers must not release this runtime per request.

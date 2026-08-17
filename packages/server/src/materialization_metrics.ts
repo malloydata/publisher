@@ -3,7 +3,7 @@
  *
  * Operators need to answer "are builds completing, how long do they take, and
  * where are they failing?" without grepping logs. The run counter carries
- * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`failed`|`cancelled`);
+ * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`partial`|`failed`|`cancelled`);
  * the run-duration histogram carries `mode` so a dashboard can render auto-run
  * vs orchestrated build latency side by side.
  *
@@ -16,7 +16,16 @@ import { type Counter, type Histogram } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
-export type MaterializationOutcome = "success" | "failed" | "cancelled";
+/**
+ * `partial` is a run that committed a manifest while some of its sources failed:
+ * distinct from `success` because the manifest is missing tables a consumer
+ * expected, and from `failed` because the sources that did build are usable.
+ */
+export type MaterializationOutcome =
+   | "success"
+   | "partial"
+   | "failed"
+   | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
@@ -86,7 +95,7 @@ function lazyHistogram(
 
 const runCounter = lazyCounter(
    "publisher_materialization_runs_total",
-   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'failed'|'cancelled').",
+   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'partial'|'failed'|'cancelled').",
 );
 const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
@@ -95,7 +104,7 @@ const runDuration = lazyHistogram(
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
+   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused'|'failed').",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -150,7 +159,21 @@ const storageServeRoutingCounter = lazyCounter(
 const storageBuildFailureCounter = lazyCounter(
    "publisher_storage_build_failures_total",
    "storage= build failures (federation/passthrough/attach/CTAS), distinct from " +
-      "in-warehouse build failures. Label: destination (connection name).",
+      "in-warehouse build failures. Labels: destination (connection name), " +
+      "reason ('build_failed'|'billed_read_not_captured'). The second is the " +
+      "expensive one: the warehouse read ran and was charged, and the rows could " +
+      "not be captured — so a re-drive pays for it again. Worth alerting on " +
+      "separately from a failure that costs only a retry.",
+);
+const attributionSkippedCounter = lazyCounter(
+   "publisher_storage_build_attribution_skipped_total",
+   "storage= builds whose warehouse read went out UNATTRIBUTED while tagging was " +
+      "on. Label: reason ('job_listing_unavailable'|'tag_failed'|" +
+      "'read_row_not_found'|'read_row_ambiguous'|'cost_query_failed'). " +
+      "The read still ran and the " +
+      "build still succeeded — what was lost is the label in the customer's own " +
+      "query history, and the cost on this side. Without this an operator who " +
+      "turns tagging on and sees nothing has a single log line to go on.",
 );
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
@@ -204,7 +227,7 @@ export function recordMaterializationRun(
  * the main lever on materialization cost.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused",
+   outcome: "built" | "reused" | "failed",
    count: number,
 ): void {
    if (count <= 0) return;
@@ -297,8 +320,27 @@ export function recordDropTables(
  * counted separately from in-warehouse build failures because the storage path
  * has its own failure modes and destination axis.
  */
-export function recordStorageBuildFailure(destination: string): void {
-   storageBuildFailureCounter().add(1, { destination });
+export function recordStorageBuildFailure(
+   destination: string,
+   reason: "build_failed" | "billed_read_not_captured" = "build_failed",
+): void {
+   storageBuildFailureCounter().add(1, { destination, reason });
+}
+
+/**
+ * Record a build that ran its warehouse read WITHOUT attribution, despite tagging
+ * being on. Not a failure — the build succeeded and the rows are correct — which
+ * is exactly why it needs a counter: nothing else about the run looks wrong.
+ */
+export function recordAttributionSkipped(
+   reason:
+      | "job_listing_unavailable"
+      | "tag_failed"
+      | "read_row_not_found"
+      | "read_row_ambiguous"
+      | "cost_query_failed",
+): void {
+   attributionSkippedCounter().add(1, { reason });
 }
 
 /**
