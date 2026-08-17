@@ -483,6 +483,25 @@ export class Model {
     */
    private graftedMaterializerCache: Map<string, ModelMaterializer> = new Map();
    /**
+    * Entry cap for {@link graftedMaterializerCache}.
+    *
+    * Each entry retains a full `structuredClone(modelDef)`. Measured with
+    * Bun 1.3 on `@malloydata/malloy` 0.0.427, resident cost per entry runs
+    * ~1.35x the serialized ModelDef: 1.4 MiB for a 1 MiB model, 4.1 MiB for
+    * a 3 MiB one. Entries are (cacheScope x sorted graft set), and a
+    * notebook multiplies the scopes by its cell count -- so an uncapped map
+    * on a large gated package is a several-hundred-MiB step function, per
+    * `Model` instance, that nothing ever releases.
+    *
+    * 32 is chosen to hold every graft set a normal package produces (one
+    * per gated entry point, plus a notebook's per-cell scopes) while
+    * bounding the worst case at ~130 MiB for a 3 MiB model. A miss costs
+    * one clone and one model reload -- never correctness, since the graft
+    * is rebuilt from the same inputs -- so evicting too eagerly is a
+    * latency question, not a safety one.
+    */
+   private static readonly GRAFTED_MATERIALIZER_CACHE_MAX = 32;
+   /**
     * Identifies a `QueryMaterializer` `authorizeAndBindRunnable` returned
     * because it attached a row-level filter — an object-identity `WeakSet`
     * rather than a field on `Model`, since `Model` is shared across
@@ -1311,9 +1330,13 @@ export class Model {
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.authorizeAndBindRunnable(runnable as QueryMaterializer, givens, {
-         skipOwnSourceGate: true,
-      });
+      await this.authorizeAndBindRunnable(
+         runnable as QueryMaterializer,
+         givens,
+         {
+            skipOwnSourceGate: true,
+         },
+      );
    }
 
    /**
@@ -2396,15 +2419,30 @@ export class Model {
             .map((g) => `${g.graftTarget}\u0000${g.filterText}`)
             .sort()
             .join("\u0001");
-      let materializer = this.graftedMaterializerCache.get(key);
-      if (!materializer) {
-         materializer = this.buildGraftedMaterializer(
-            grafts,
-            graftScope.modelDef,
-         );
+      const materializer = this.graftedMaterializerCache.get(key);
+      if (materializer) {
+         // Re-insert so Map iteration order is least-recently-used first;
+         // that ordering is what makes the eviction below an LRU rather
+         // than a FIFO, which would evict the hot model-wide scope in
+         // favour of whichever notebook cell ran last.
+         this.graftedMaterializerCache.delete(key);
          this.graftedMaterializerCache.set(key, materializer);
+         return materializer;
       }
-      return materializer;
+      const built = this.buildGraftedMaterializer(grafts, graftScope.modelDef);
+      this.graftedMaterializerCache.set(key, built);
+      // Evict AFTER inserting, so the entry just built is never the one
+      // dropped. Each held entry is a multi-MiB ModelDef clone -- see
+      // GRAFTED_MATERIALIZER_CACHE_MAX for the measurement.
+      while (
+         this.graftedMaterializerCache.size >
+         Model.GRAFTED_MATERIALIZER_CACHE_MAX
+      ) {
+         const oldest = this.graftedMaterializerCache.keys().next();
+         if (oldest.done) break;
+         this.graftedMaterializerCache.delete(oldest.value);
+      }
+      return built;
    }
 
    /**

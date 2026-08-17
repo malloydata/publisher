@@ -90,6 +90,34 @@ async function compileModel(text: string): Promise<ModelDef> {
    }
 }
 
+/** The compiled `Model`'s givens, keyed by name. `compileModel` above returns
+ *  the `ModelDef`, which carries no given declarations — `Model.givens` is the
+ *  only surface that does, and it is what `package_load_worker` reads. */
+async function compileGivens(
+   text: string,
+): Promise<Map<string, { _internal?: { defaultText?: string } }>> {
+   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   try {
+      const urlReader = new InMemoryURLReader(
+         new Map([[`${ROOT}m.malloy`, text]]),
+      );
+      const connMap = new Map<string, Connection>([["duckdb", duckdb]]);
+      const runtime = new Runtime({
+         urlReader,
+         connections: new FixedConnectionMap(connMap, "duckdb"),
+      });
+      const compiled = await runtime
+         .loadModel(new URL(`${ROOT}m.malloy`))
+         .getModel();
+      return compiled.givens as unknown as Map<
+         string,
+         { _internal?: { defaultText?: string } }
+      >;
+   } finally {
+      await duckdb.close();
+   }
+}
+
 describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", () => {
    it("resolves the installed @malloydata/malloy version this file was verified against", () => {
       // If every test below starts failing after a version bump, this is the
@@ -396,5 +424,48 @@ source: emp is duckdb.sql("SELECT 1 as id") extend {
       // THE canary: the join field's note is the SAME object as `salaries`'
       // own note, not a re-parsed equal one.
       expect(joinFieldOwnNotes[0]).toBe(salariesOwnNotes[0]);
+   });
+   it("given: `_internal.defaultText` is the rendered default literal, and is absent when no default is declared", async () => {
+      // This one does not pin a discriminator — it pins an INPUT to a security
+      // refusal. `service/given.ts` reads `_internal.defaultText` (Malloy's
+      // private surface, as its own comment says) to populate
+      // `ApiGiven.default`; `model.ts` filters on `g.default != null` to build
+      // `declaredDefaults`; and `authorize.ts`'s `declaredDefaults.has(given)`
+      // is the refusal that stops a defaulted given from carrying a row-level
+      // gate.
+      //
+      // Every one of those degrades SILENTLY and FAIL-OPEN if the field moves:
+      // each `default` becomes undefined, the map empties, `has()` is always
+      // false, and the gates that refusal exists to reject start loading again.
+      // There is no layer that can tell "no givens have defaults" from "the
+      // input went missing", which is exactly why the canary belongs here
+      // rather than in a test of the publisher's own handling.
+      const givens = await compileGivens(`##! experimental.givens
+
+given: ROLE :: string is 'analyst'
+given: MAX_ROWS :: number is 2003
+given: FLAG :: boolean is true
+given: SINCE :: date is @2024-01-01
+given: NO_DEFAULT :: string
+
+source: s is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+`);
+
+      // The rendered SOURCE literal, not the parsed AST node and not the
+      // runtime value — quotes on the string, bare number, bare boolean, and
+      // Malloy's own `@`-prefixed date spelling. `given.ts` forwards this
+      // verbatim rather than re-implementing the printer, so the exact
+      // spelling is the contract.
+      expect(givens.get("ROLE")?._internal?.defaultText).toBe("'analyst'");
+      expect(givens.get("MAX_ROWS")?._internal?.defaultText).toBe("2003");
+      expect(givens.get("FLAG")?._internal?.defaultText).toBe("true");
+      expect(givens.get("SINCE")?._internal?.defaultText).toBe("@2024-01-01");
+
+      // The other half, and the one that makes the assertion non-vacuous: a
+      // given with no default must be distinguishable from one whose default
+      // Malloy stopped rendering. If a version bump made BOTH undefined, the
+      // four assertions above go red rather than this quietly agreeing.
+      expect(givens.get("NO_DEFAULT")).toBeDefined();
+      expect(givens.get("NO_DEFAULT")?._internal?.defaultText).toBeUndefined();
    });
 });

@@ -3403,3 +3403,123 @@ source: qs is combo -> { group_by: org_id }
       }
    });
 });
+
+// ---------------------------------------------------------------------------
+// The graft cache holds a full `structuredClone(modelDef)` per entry. Measured
+// with Bun 1.3 on @malloydata/malloy 0.0.427, that is ~1.35x the serialized
+// ModelDef resident -- 1.4 MiB for a 1 MiB model, 4.1 MiB for a 3 MiB one --
+// so an uncapped map is a several-hundred-MiB step function per gated package
+// that nothing releases. These pin the bound, and that a miss is only ever a
+// recompile.
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — grafted materializer cache is bounded", () => {
+   const GATED = `##! experimental.givens
+
+given: GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
+  measure: c is count()
+}
+`;
+
+   /** Same shape as the scoping block's `createModel`, redeclared here so this
+    *  block stands alone. */
+   async function createModelForCache(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-graft-cache-"));
+      fs.writeFileSync(path.join(dir, "m.malloy"), text);
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   /** Reach the private cache and the private builder the request path uses. */
+   function internals(model: Model) {
+      return model as unknown as {
+         graftedMaterializerCache: Map<string, unknown>;
+         defaultGraftScope(): {
+            modelDef: unknown;
+            materializer: unknown;
+            cacheScope: string;
+         };
+         getOrBuildGraftedMaterializer(
+            grafts: ReadonlyArray<{
+               graftTarget: string;
+               filterText: string;
+               condition: unknown;
+            }>,
+            graftScope: unknown,
+         ): unknown;
+      };
+   }
+
+   /** One graft set, distinct per `n`, in a distinct cache scope. Varying the
+    *  scope is how a notebook multiplies entries -- the case that makes the
+    *  count unbounded in practice. */
+   function fill(model: Model, n: number): void {
+      const inner = internals(model);
+      const scope = inner.defaultGraftScope();
+      inner.getOrBuildGraftedMaterializer(
+         [
+            {
+               graftTarget: "gated",
+               filterText: `org_id = ${n}`,
+               condition: { node: "true" },
+            },
+         ],
+         { ...scope, cacheScope: `cell:${n}` },
+      );
+   }
+
+   it("evicts least-recently-used past the cap instead of growing without bound", async () => {
+      const { model, duckdb, dir } = await createModelForCache(GATED);
+      try {
+         const cache = internals(model).graftedMaterializerCache;
+
+         for (let n = 0; n < 40; n++) fill(model, n);
+
+         // 40 distinct scopes, at most 32 retained.
+         expect(cache.size).toBeLessThanOrEqual(32);
+         expect(cache.size).toBe(32);
+
+         // The oldest is gone and the newest is held: FIFO and LRU agree here,
+         // because nothing was re-read during the fill.
+         const keys = [...cache.keys()];
+         expect(keys.some((k) => k.startsWith("cell:0\u0000"))).toBe(false);
+         expect(keys.some((k) => k.startsWith("cell:39\u0000"))).toBe(true);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a re-read keeps an old entry alive — the policy is LRU, not FIFO", async () => {
+      const { model, duckdb, dir } = await createModelForCache(GATED);
+      try {
+         const cache = internals(model).graftedMaterializerCache;
+
+         for (let n = 0; n < 32; n++) fill(model, n);
+         expect(cache.size).toBe(32);
+
+         // Touch the oldest, then overflow by one. Under FIFO the touched
+         // entry would be the one evicted; under LRU its neighbour goes.
+         fill(model, 0);
+         fill(model, 999);
+
+         const keys = [...cache.keys()];
+         expect(keys.some((k) => k.startsWith("cell:0\u0000"))).toBe(true);
+         expect(keys.some((k) => k.startsWith("cell:1\u0000"))).toBe(false);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
