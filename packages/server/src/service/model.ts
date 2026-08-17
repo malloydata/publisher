@@ -7,6 +7,7 @@ import {
    isSourceDef,
    MalloyConfig,
    MalloyError,
+   Annotations,
    ModelDef,
    modelDefToModelInfo,
    ModelMaterializer,
@@ -38,6 +39,7 @@ import {
    getDefaultQueryRowLimit,
    getMaxQueryRows,
    getMaxResponseBytes,
+   getQueryMetadataMode,
 } from "../config";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
@@ -74,8 +76,10 @@ import { URL_READER } from "../utils";
 import {
    modelAnnotations,
    ownLevelNoteTexts,
+   ownModelAnnotations,
    ownModelNotes,
 } from "./annotations";
+import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoCallerAuthorizeAnnotation,
    collectAuthorizeExprs,
@@ -148,6 +152,12 @@ export interface ModelQueryMetadataInput {
       default?: QueryMetadata | null;
       enforced?: QueryMetadata | null;
    } | null;
+   /**
+    * The package's declared bag — the least specific author-declared layer.
+    * Supplied by the controller, which owns the package; the model knows only
+    * its own file and its package's NAME.
+    */
+   packageDeclaration?: QueryMetadata | null;
 }
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -291,6 +301,15 @@ export class Model {
    /** Model-wide `##(authorize)` expressions; apply to every query in the
     *  model, including ad-hoc inline sources not declared in the model. */
    private fileLevelAuthorize: string[] = [];
+   /**
+    * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
+    * `null` = computed and nothing declared.
+    */
+   private declaredQueryMetadataMemo: QueryMetadata | null | undefined;
+   /** Memo for {@link getDeclaredSourceQueryMetadata}. */
+   private declaredSourceQueryMetadataMemo:
+      | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- the file-level gate, every top-level
     *  source's own gate, and every gate a top-level source carries in from
@@ -1667,6 +1686,72 @@ export class Model {
 
    public getType(): ModelType {
       return this.modelType;
+   }
+
+   /**
+    * This file's own model-level `queryMetadata` declaration, or null if it
+    * declares none. Covers both the `## materialization.queryMetadata.*` form
+    * and the bare `## queryMetadata.*` one beneath it, since
+    * {@link composeDeclaredQueryMetadata} reads the same two layers the build
+    * path does.
+    *
+    * Exposed for the publish gate. That gate walks the package manifest and the
+    * build plan's persist sources, so a model file's declaration was only ever
+    * visible through a source that inherited it — and a file with NO persist
+    * source was invisible entirely. Since a model-file declaration now rides
+    * served queries whether or not the file persists anything, it needs a
+    * validation path of its own.
+    *
+    * Memoized, because the caller is not the cold path it looks like:
+    * `getPackageMetadata()` runs once per package inside `listPackages`, and
+    * several callers invoke it only to read `manifestLocation`. Recomputing
+    * would walk the import closure and re-parse every `##` note on each of those.
+    * A compiled model's annotations never change — a reload replaces the `Model`
+    * object outright — so the memo needs no invalidation.
+    */
+   public getDeclaredQueryMetadata(): QueryMetadata | null {
+      // `undefined` means "not computed"; `null` is a computed answer of "none".
+      if (this.declaredQueryMetadataMemo === undefined) {
+         this.declaredQueryMetadataMemo = composeDeclaredQueryMetadata({
+            modelTag: this.safeModelFileTag(),
+         });
+      }
+      return this.declaredQueryMetadataMemo;
+   }
+
+   /**
+    * Each top-level source's OWN `#@ queryMetadata.*`, for the sources that
+    * declare one.
+    *
+    * `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than
+    * a key inside it, so a source that persists nothing can declare tags and
+    * they ride every query against it. The publish gate reads persist sources
+    * from the build plan, so those declarations had no validation path — a
+    * reserved or malformed name published clean and vanished with only a metric
+    * behind it.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}: the
+    * caller runs once per package inside `listPackages`.
+    */
+   public getDeclaredSourceQueryMetadata(): {
+      sourceName: string;
+      queryMetadata: QueryMetadata;
+   }[] {
+      if (this.declaredSourceQueryMetadataMemo === undefined) {
+         const contents = (this.modelDef?.contents ?? {}) as Record<
+            string,
+            unknown
+         >;
+         this.declaredSourceQueryMetadataMemo = Object.keys(contents).flatMap(
+            (sourceName) => {
+               const queryMetadata = composeDeclaredQueryMetadata({
+                  sourceTag: this.safeSourceTag(sourceName),
+               });
+               return queryMetadata ? [{ sourceName, queryMetadata }] : [];
+            },
+         );
+      }
+      return this.declaredSourceQueryMetadataMemo;
    }
 
    /**
@@ -3091,6 +3176,22 @@ export class Model {
          appliedQueryMetadata = this.resolveQueryMetadata(
             queryMetadataInput,
             preparedResult.connectionName,
+            // The run-target source already resolved for the authorize gate, not
+            // the raw `sourceName` param: a `queryName` request names exactly one
+            // source and must not lose its declared layer for having named it
+            // indirectly, and ad-hoc text resolves through the same surface-syntax
+            // path. Reusing the gate's answer also keeps one definition of "which
+            // source is this query against" rather than a second, weaker one.
+            //
+            // The COMPILED target specifically, for the reason the authorize gate
+            // treats it as the source of truth: `extractRunTargetSourceName`
+            // reads the FIRST `run:` and Malloy executes the LAST, so `run:
+            // cheap\nrun: expensive` would execute one source while tagging
+            // another's team and tier — attribution that is not merely missing
+            // but wrong, and wrong in the direction of blaming the cheap query.
+            // Falls back to the surface-syntax answer when the compiled one is
+            // unresolved, the same degradation the gate accepts.
+            compiledSource ?? earlySource,
          );
 
          queryResults = await runnable.run({
@@ -3248,6 +3349,9 @@ export class Model {
             appliedQueryMetadata = this.resolveQueryMetadata(
                queryMetadataInput,
                livePrepared.connectionName,
+               // Same compiled run target as the primary path — the retry runs
+               // the same query, so it must not tag a different source.
+               compiledSource ?? earlySource,
             );
             queryResults = await liveRunnable!.run({
                rowLimit,
@@ -3435,18 +3539,43 @@ export class Model {
     * default, the caller's request override, and the server's context (which
     * package, which model, which class of work), merged most-specific-wins.
     *
-    * There is no model-side layer here. `materialization.queryMetadata` describes
-    * how a persist source is BUILT; a live query against the model is a different
-    * unit of work, and inheriting a build's tags would attribute interactive
-    * traffic to the build that happens to share the source.
+    * The author-declared layers ARE included, composed by
+    * {@link composeDeclaredQueryMetadata} exactly as the build path composes
+    * them. This reverses an earlier decision to omit them, which read
+    * `materialization.queryMetadata` as describing only how a persist source is
+    * BUILT and reasoned that a live query is a different unit of work.
+    *
+    * What that reasoning missed is which properties the layer actually carries.
+    * The build-identifying properties — `run_id`, `trigger`, `source`, `class` —
+    * come from the CONTEXT layer, which is per-statement and never inherited, so
+    * a served query cannot be mistaken for a build no matter what the author
+    * declared. The declared layer carries the author's own vocabulary (a team, a
+    * cost centre, a data tier), which describes the SOURCE and is as true of a
+    * query reading it as of the build writing it. Omitting it meant a deployment
+    * could attribute its builds and not the interactive traffic that is most of
+    * its warehouse bill.
+    *
+    * The block is named `materialization.queryMetadata` for historical reasons;
+    * the name is narrower than the thing it declares.
     *
     * Fails open, like every other metadata path: a connection whose config can't
-    * be read contributes no default rather than failing the query.
+    * be read contributes no default rather than failing the query, and an
+    * unparseable annotation contributes no layer rather than throwing.
     */
    private resolveQueryMetadata(
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,
+      sourceName?: string,
    ): QueryMetadata | undefined {
+      // Nothing below is observable when the feature is off: `mergeQueryMetadata`
+      // early-returns, so every layer assembled here is discarded. Assembling
+      // them anyway made a default deployment — the mode is off unless an
+      // operator turns it on — pay an annotation walk and a connection lookup on
+      // every query for a bag nobody reads. Read per statement rather than per
+      // boot for the same reason `mergeQueryMetadata` reads it there: the mode
+      // is allowed to change under a running server.
+      if (getQueryMetadataMode() === "off") return undefined;
+
       let connectionLayers: {
          default?: QueryMetadata | null;
          enforced?: QueryMetadata | null;
@@ -3461,6 +3590,11 @@ export class Model {
       const resolved = mergeQueryMetadata({
          connection: connectionLayers?.default,
          enforced: connectionLayers?.enforced,
+         model: composeDeclaredQueryMetadata({
+            packageDeclaration: input?.packageDeclaration,
+            modelTag: this.safeModelFileTag(),
+            sourceTag: this.safeSourceTag(sourceName),
+         }),
          request: input?.request,
          context: {
             queryClass: input?.queryClass ?? "interactive",
@@ -3478,6 +3612,72 @@ export class Model {
          });
       }
       return resolved.metadata;
+   }
+
+   /**
+    * The model file's own `##` tag, or undefined if it is absent or fails to
+    * parse. Read off `modelDef`, which survives the worker serialization
+    * boundary — so this works for a freshly-compiled model and a deserialized
+    * one alike, the same reason `fileLevelAuthorize` is derived there.
+    *
+    * The file's OWN notes, not the folded import lineage. `modelAnnotations`
+    * folds deliberately, but only because a file-level `##(authorize)` gate an
+    * import could shed would be no gate at all; `annotations.ts` says to read
+    * through `ownModelNotes` for everything that is not a policy gate. A tag is
+    * not a gate, and folding one would let a shared include attribute every
+    * importing file's traffic to the include's team — the same misattribution
+    * {@link safeSourceTag} already refuses for a derivation base. It would also
+    * report the resulting publish warning against the importer's path, sending
+    * an author to a file that does not contain the line.
+    */
+   private safeModelFileTag(): ReadableTag | undefined {
+      if (!this.modelDef) return undefined;
+      try {
+         return new Annotations(ownModelAnnotations(this.modelDef)).parseAsTag()
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * The run-target source's own `#@` tag, or undefined when no source could be
+    * resolved, the name is not a top-level source, or the annotation fails to
+    * parse.
+    *
+    * Callers pass the source the server ALREADY resolved for the authorize gate,
+    * not the raw `sourceName` request param — a `queryName` request names one
+    * source indirectly and must not lose its declared layer for it, and ad-hoc
+    * text resolves through the same surface-syntax path. What remains
+    * unresolvable is a statement with no single run target (some notebook
+    * cells); those carry the package and model-file layers only.
+    *
+    * Reads the named source's OWN annotations and does not walk its derivation
+    * base, so `source: a is b extend {…}` inherits nothing from `b`'s
+    * declaration. This diverges from {@link ancestorGateExprs}, which walks
+    * ancestors deliberately because a gate an extension could shed would be no
+    * gate at all. A cost label carries no such requirement, and inheriting one
+    * would attribute `a`'s traffic to `b`'s team.
+    */
+   private safeSourceTag(
+      sourceName: string | undefined,
+   ): ReadableTag | undefined {
+      if (!sourceName || !this.modelDef) return undefined;
+      try {
+         const entry = this.modelDef.contents?.[sourceName];
+         // The docstring's "not a top-level source" case, now actually checked.
+         // `contents` also holds NAMED QUERIES, and a `#@` on one of those is
+         // not a source's declaration — reading it resolved a query's tag as
+         // though a source had declared it, and listed the query's name among
+         // the package's tagged sources in the publish warnings.
+         if (!entry || !isSourceDef(entry)) return undefined;
+         const def = entry as unknown as { annotations?: unknown };
+         if (!def.annotations) return undefined;
+         return new Annotations(def.annotations).parseAsTag("@")
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
    }
 
    private getStandardModel(): ApiCompiledModel {
@@ -3685,6 +3885,13 @@ export class Model {
                   maxRows: cellMaxRows,
                },
             );
+            // The compiled run target, preferred over the cell's surface syntax
+            // for the reason getQueryResults prefers it: `extractRunTargetSourceName`
+            // reads the first `run:` and Malloy executes the last, so a cell
+            // holding more than one would tag the wrong source. The prepared
+            // query is read again below, so this costs nothing new.
+            const cellCompiledSource =
+               await this.resolveAuthorizeSourceFromRunnable(runnableToExecute);
             const result = await runnableToExecute.run({
                rowLimit,
                givens: cellSurfaceGivens,
@@ -3693,6 +3900,9 @@ export class Model {
                queryMetadata: this.resolveQueryMetadata(
                   queryMetadataInput,
                   preparedCell.connectionName,
+                  // Same resolution the cell's own filter lookup uses, so a
+                  // notebook cell carries the source's declared layer too.
+                  cellCompiledSource ?? extractRunTargetSourceName(cell.text),
                ),
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
