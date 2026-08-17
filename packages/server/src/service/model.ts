@@ -17,6 +17,7 @@ import {
    Runtime,
    type FilterCondition,
    type SourceDef,
+   type StructDef,
    type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
@@ -75,6 +76,7 @@ import type {
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
+   annotationTexts,
    ownLevelNotes,
    ownLevelNoteTexts,
    ownModelAnnotations,
@@ -87,9 +89,10 @@ import {
    assertNoMisplacedAuthorizeAnnotations,
    buildAuthorizeProbe,
    buildRowLevelProbe,
+   liftProbeFilterCondition,
    classifyAuthorizeGate,
    collectAuthorizeExprs,
-   describeMisplacedJoinAuthorizeWarnings,
+   containsAuthorizeAnnotationTag,
    evaluateAuthorize,
    gateFilterText,
    referencedGivenNames,
@@ -462,6 +465,14 @@ export class Model {
     * model instance, ever. `cacheScope` (see {@link GraftScope}) keeps a
     * notebook cell's per-cell classification from colliding with the
     * model-wide one, or with a different cell's.
+    *
+    * Uncapped, unlike {@link graftedMaterializerCache}, and for a reason rather
+    * than by oversight: every component of the key (`cacheScope` x `graftTarget`
+    * x `filterText`) is derived from the model's own shape, never from a
+    * caller's givens or query text, so the entry count is bounded by the model
+    * itself and no request pattern can grow it. Each entry holds a
+    * classification plus one lifted `FilterCondition` — not the retained
+    * `structuredClone(modelDef)` that made the graft cache a memory question.
     */
    private gateShapeCache: Map<
       string,
@@ -485,20 +496,15 @@ export class Model {
    /**
     * Entry cap for {@link graftedMaterializerCache}.
     *
-    * Each entry retains a full `structuredClone(modelDef)`. Measured with
-    * Bun 1.3 on `@malloydata/malloy` 0.0.427, resident cost per entry runs
-    * ~1.35x the serialized ModelDef: 1.4 MiB for a 1 MiB model, 4.1 MiB for
-    * a 3 MiB one. Entries are (cacheScope x sorted graft set), and a
-    * notebook multiplies the scopes by its cell count -- so an uncapped map
-    * on a large gated package is a several-hundred-MiB step function, per
-    * `Model` instance, that nothing ever releases.
-    *
-    * 32 is chosen to hold every graft set a normal package produces (one
-    * per gated entry point, plus a notebook's per-cell scopes) while
-    * bounding the worst case at ~130 MiB for a 3 MiB model. A miss costs
-    * one clone and one model reload -- never correctness, since the graft
-    * is rebuilt from the same inputs -- so evicting too eagerly is a
-    * latency question, not a safety one.
+    * Each entry retains a full `structuredClone(modelDef)`, costing roughly
+    * 1.35x the serialized ModelDef -- so uncapped, on a large gated package
+    * whose notebook multiplies the scopes by its cell count, this is a
+    * several-hundred-MiB step function per `Model` instance that nothing ever
+    * releases. 32 holds every graft set a normal package produces (one per
+    * gated entry point, plus a notebook's per-cell scopes). A miss costs one
+    * clone and one model reload, never correctness -- the graft is rebuilt from
+    * the same inputs -- so evicting too eagerly is a latency question, not a
+    * safety one.
     */
    private static readonly GRAFTED_MATERIALIZER_CACHE_MAX = 32;
    /**
@@ -973,6 +979,80 @@ export class Model {
     */
    public hasAuthorize(): boolean {
       return this.sources?.some((s) => (s.authorize?.length ?? 0) > 0) ?? false;
+   }
+
+   /** Memoized {@link hasAnyAuthorizeNote}; `undefined` until first asked. */
+   private anyAuthorizeNote: boolean | undefined;
+
+   /**
+    * Whether this model carries an `#(authorize)` annotation ANYWHERE — the
+    * cheap short-circuit for a per-query gate walk, and deliberately NOT the
+    * same predicate as {@link hasAuthorize}.
+    *
+    * The difference is the whole point. `hasAuthorize` reads top-level sources'
+    * OWN effective gates off the extracted `sources` list, which is why
+    * `getQueryResults` warns against guarding the authoritative gate on it: a
+    * gate a source only INHERITS can be missing from it, and guarding on that
+    * re-opens the inherited-gate bypass. This asks a strictly wider question, of
+    * the IR rather than the extract: does any authorize-routed note exist across
+    * `contents` u `sourceRegistry` — on a source, on one of its fields, or
+    * anywhere up an `annotations.inherits` chain?
+    *
+    * That is a superset of everything {@link collectEntryPointGates} can reach.
+    * Every link it follows (own notes, the inherits chain, a `sourceRegistry`
+    * declaration, a `query_source`'s base, a composite's resolved member) lands
+    * on a struct in one of those two collections, or on a by-reference copy of a
+    * note that does. So `false` here genuinely means "no gate is findable",
+    * which is what makes it safe to skip the walk on — and unreadable IR returns
+    * `true`, so every inexactness falls on the side of walking anyway.
+    *
+    * It exists so a deployment with pre-aggregation enabled and no gates
+    * anywhere does not start paying a live compile per query for a case it
+    * cannot hit; see `getQueryResults`'s routing pre-check.
+    */
+   private hasAnyAuthorizeNote(): boolean {
+      if (this.anyAuthorizeNote !== undefined) return this.anyAuthorizeNote;
+      this.anyAuthorizeNote = ((): boolean => {
+         const modelDef = this.modelDef;
+         if (!modelDef) return false;
+         try {
+            const structs: StructDef[] = [];
+            for (const obj of Object.values(modelDef.contents)) {
+               if (isSourceDef(obj)) structs.push(obj as StructDef);
+            }
+            for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
+               const entry = value.entry;
+               if (entry.type === "source_registry_reference") continue;
+               if (isSourceDef(entry)) structs.push(entry as StructDef);
+            }
+            for (const struct of structs) {
+               // `annotationTexts` (whole chain), not `ownLevelNoteTexts`: this
+               // has to see a gate demoted to `annotations.inherits` by a stray
+               // annotation on the deriving statement, which is the shape the
+               // inherited-gate hole lives in.
+               if (
+                  containsAuthorizeAnnotationTag(
+                     annotationTexts(struct.annotations) ?? [],
+                  )
+               ) {
+                  return true;
+               }
+               for (const field of struct.fields) {
+                  if (
+                     containsAuthorizeAnnotationTag(
+                        annotationTexts(field.annotations) ?? [],
+                     )
+                  ) {
+                     return true;
+                  }
+               }
+            }
+            return false;
+         } catch {
+            return true;
+         }
+      })();
+      return this.anyAuthorizeNote;
    }
 
    /**
@@ -2339,19 +2419,11 @@ export class Model {
     * unlikely to collide with a real field on `graftTarget`.
     *
     * Takes the LAST entry of `filterList` on faith that it is the `where:`
-    * this probe just added — but `assertGateLanded` later "proves" the graft
-    * landed by matching that same entry's `code` against the recompiled
-    * query's own `filterList[].code`. If the lift ever picked up
-    * `graftTarget`'s OWN pre-existing source `where:` instead (a Malloy
-    * ordering change, or a gate that happens to compile to more than one
-    * condition), that proof would pass against the AUTHOR's filter rather
-    * than the gate's, and the query would run UNGATED. So both properties
-    * that make it safe to trust this entry are asserted here, not assumed:
-    * its `code` must equal the `filterText` just asked for (rules out
-    * picking up a different, pre-existing condition), and `isSourceFilter`
-    * must be `true` (rules out a condition that isn't a source-level filter
-    * at all, which would mean this probe shape stopped landing where the
-    * whole design depends on it landing). Either failing throws, which
+    * this probe just added — which is exactly why
+    * {@link liftProbeFilterCondition} (`./authorize`) asserts both properties
+    * that make that safe rather than assuming them. See its doc for what each
+    * one rules out, and for how a missing check ends up running a query
+    * UNGATED through `assertGateLanded`'s proof. A failure throws, which
     * {@link resolveGateShape}'s caller already turns into a deny.
     */
    private async liftGateCondition(
@@ -2359,34 +2431,23 @@ export class Model {
       filterText: string,
       materializer: ModelMaterializer,
    ): Promise<FilterCondition> {
-      // Shared with load-time validation's own lift (`./authorize`'s
-      // `liftRowLevelCondition`) rather than spelled out twice: both read the
-      // compiled `FilterCondition` back out of `_query.structRef.filterList`,
-      // which only works while the two probe shapes stay byte-identical.
+      // The probe SHAPE and the lift are both shared with load-time validation
+      // (`./authorize`'s `buildRowLevelProbe` / `liftRowLevelCondition`) rather
+      // than spelled out twice: reading the compiled `FilterCondition` back out
+      // of `_query.structRef.filterList` only works while the two probe shapes
+      // stay byte-identical, and the three checks that make that read
+      // trustworthy must not be able to drift apart between the two paths.
       const probe = materializer.loadQuery(
          buildRowLevelProbe(graftTarget, filterText),
       );
       const prepared = (await probe.getPreparedQuery()) as {
          _query?: { structRef?: { filterList?: FilterCondition[] } };
       };
-      const filterList = prepared._query?.structRef?.filterList;
-      if (!Array.isArray(filterList) || filterList.length === 0) {
-         throw new Error(
-            `lifted probe for "${graftTarget}" carries no filter condition`,
-         );
-      }
-      const lifted = filterList[filterList.length - 1];
-      if (lifted.code !== filterText) {
-         throw new Error(
-            `lifted probe for "${graftTarget}" carries the wrong condition — expected "${filterText}", got "${lifted.code ?? ""}"`,
-         );
-      }
-      if (!lifted.isSourceFilter) {
-         throw new Error(
-            `lifted probe for "${graftTarget}" carries a condition that is not a source filter`,
-         );
-      }
-      return lifted;
+      return liftProbeFilterCondition(
+         prepared,
+         `lifted probe for "${graftTarget}"`,
+         filterText,
+      );
    }
 
    /**
@@ -2734,17 +2795,6 @@ export class Model {
                ...sourceResult.misplacedAuthorize,
                ...queryResult.misplacedAuthorize,
             ]);
-            // A `#(authorize)` on a join_one:/join_many: line this walk could
-            // not explain as Malloy's by-reference copy of a gate declared
-            // beyond this model's visibility — see
-            // `describeMisplacedJoinAuthorizeWarnings`'s doc. Never fails the
-            // load; warns only.
-            for (const message of describeMisplacedJoinAuthorizeWarnings(
-               sourceResult.joinMisplacedAuthorize,
-            )) {
-               logger.warn(message, { packageName, modelPath });
-            }
-
             // Translation-time validation of #(authorize) annotations (shared
             // with the package-load worker so both compile paths validate
             // identically). Compiling the probe surfaces unknown givens and
@@ -4327,9 +4377,25 @@ export class Model {
             getPersistStorageMode() === "on" &&
             this.serveBindings.length > 0 &&
             !!this.serveDestinationConfig;
+         // The companion alone, deliberately: the pre-aggregation tier's own
+         // precondition is just "a companion was synthesized".
+         // `serveVirtualMap` is NOT available at this point — it is assigned
+         // inside the storage block below — so folding it in here would read
+         // `undefined` and answer the wrong question. Captured into a local
+         // rather than re-read below, so the guard and the use cannot disagree
+         // about which companion (or none) they are talking about.
+         const preaggServeMaterializer = this.preaggregateServeMaterializer;
          const routingBlockedByRowLevelGate =
-            storageRoutingPossible &&
+            (storageRoutingPossible || !!preaggServeMaterializer) &&
             !bypassAuthorize &&
+            // Short-circuit BEFORE the walk. The walk is a full entry-point
+            // traversal plus, on a cold `gateShapeCache`, a live compile, and a
+            // deployment that enables pre-aggregation and declares no gate
+            // anywhere would otherwise pay it on every query for a case it
+            // cannot hit. This is NOT the `hasAuthorize()` trap warned about
+            // further down — see `hasAnyAuthorizeNote`'s doc for why the two
+            // predicates differ and why only this one is safe to skip on.
+            this.hasAnyAuthorizeNote() &&
             (await this.queryEntryPointHasRowLevelGate(runnable));
 
          // storage= serve routing: when enabled and this package has sources
@@ -4382,12 +4448,40 @@ export class Model {
          // Skipped when the storage shape already routed: that runnable resolves
          // through `virtualMap` rather than the build manifest, and recompiling it
          // here would discard that. Composing the two tiers is future work.
-         if (this.preaggregateServeMaterializer && !serveVirtualMap) {
+         // Gated on the SAME hoisted answer as the storage tier above, rather
+         // than on a second walk.
+         //
+         // This is defence in depth, not a fix for a reachable leak, and the
+         // distinction is worth stating because the measurement is easy to get
+         // wrong. Measured on this branch: a rollup over a gated base compiles
+         // and is PLANNED, but both build gates refuse to materialize it
+         // (`assertColocatedPersistNotAuthorizeGated` and
+         // `assertMaterializationEligible`, via `referencesAuthorize` finding the
+         // base's gate in the rollup's compiled subtree). So no rollup table
+         // exists, the composite's rollup member recomputes from the gated base,
+         // the gate grafts onto that base, and a covered query already returns
+         // correctly filtered rows.
+         //
+         // What the guard removes is the serve path's dependence on a BUILD
+         // path's refusal for its own correctness. That refusal is the blind
+         // `referencesAuthorize` walk, whose join reach is documented as partial
+         // — an ANNOTATED join leaves no authorize byte in the subtree for it to
+         // find. If synthesis ever emitted its base import in a shape that walk
+         // cannot see, a rollup would build, and a covered query would then be
+         // served from a table pre-aggregated across every tenant, with the gate
+         // filtering on a column the rollup does not carry. Nothing downstream
+         // would catch it: `preaggRouted` is never reset, so
+         // `effectiveBuildManifest` hands the rollup manifest to the runnable
+         // regardless. Blocking the tier for a row-level-gated entry point makes
+         // the invariant local to this decision.
+         if (
+            preaggServeMaterializer &&
+            !routingBlockedByRowLevelGate &&
+            !serveVirtualMap
+         ) {
             try {
                const candidate =
-                  this.preaggregateServeMaterializer.loadRestrictedQuery(
-                     queryString,
-                  );
+                  preaggServeMaterializer.loadRestrictedQuery(queryString);
                // Compile eagerly, for the same reason loadServeShapeQuery does:
                // Malloy compiles LAZILY, so `loadRestrictedQuery` cannot throw
                // here and without this the error escapes at prepare/run instead,
@@ -5681,7 +5775,6 @@ export class Model {
       filterMap: Map<string, FilterDefinition[]>;
       authorizeMap: AuthorizeMap;
       misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-      joinMisplacedAuthorize: MisplacedAuthorizeAnnotation[];
       authorizeOwnNotes: Map<string, AnnotationNote[]>;
    } {
       // Shared with the package-load worker — see service/source_extraction.ts.
@@ -5691,7 +5784,6 @@ export class Model {
          filterMap,
          authorizeMap,
          misplacedAuthorize,
-         joinMisplacedAuthorize,
          authorizeOwnNotes,
       } = extractSourcesFromModelDef(modelDef, givens, (sourceName, err) =>
          logger.warn(
@@ -5704,7 +5796,6 @@ export class Model {
          filterMap,
          authorizeMap,
          misplacedAuthorize,
-         joinMisplacedAuthorize,
          authorizeOwnNotes,
       };
    }

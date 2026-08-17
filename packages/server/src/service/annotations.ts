@@ -37,6 +37,52 @@ export function isReservedRoute(route: string): boolean {
 }
 
 /**
+ * A stand-in source location for the one-note bundle {@link noteContentOnRoute}
+ * builds. `Annotations` reads only `.text` to route a note; `.at` is on the
+ * required `Note` shape but never consulted on this path.
+ */
+const SYNTHETIC_NOTE_LOCATION = {
+   url: "internal://annotation-route",
+   range: {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 0 },
+   },
+};
+
+/**
+ * The payload of ONE annotation note if Malloy routes it to `route`, else
+ * `undefined`.
+ *
+ * Asks Malloy rather than text-matching the prefix, and that distinction is
+ * load-bearing for a policy route like `authorize`. An annotation's route comes
+ * from its prefix grammar (`lang/prefix.ts`): sigil `##?` plus an optional
+ * block `|`, then a bracketed name in any of `()`/`<>`/`[]`/`{}`. So
+ * `#(authorize)`, `##(authorize)`, `#|(authorize)`, `##|(authorize)`,
+ * `#[authorize]`, `#<authorize>` and `#{authorize}` are ALL route `authorize`
+ * — while `#( authorize )`, `#(authorize)X` and `#authorize` are
+ * `malformed-route` and `# (authorize)` is route `''` (Malloy's own reserved
+ * MOTLY/render namespace, the same route as `# bar_chart`). A regex over the
+ * prefix gets some of those wrong in both directions, and for a gate a
+ * false negative is a source that serves every row while its author reads it
+ * as locked. Malloy's own type docs say as much: the deprecated RegExp
+ * readers "cannot see multi-line annotations (`#|`…`|#`)".
+ *
+ * Malformed-prefix notes are EXCLUDED (that is `forRoute`'s contract), so a
+ * near-miss spelling is never silently honoured as the real thing — see
+ * `authorize.ts`'s near-miss refusal, which is what turns those into an error
+ * instead of a silent miss.
+ */
+export function noteContentOnRoute(
+   text: string,
+   route: string,
+): string | undefined {
+   const routed = new Annotations({
+      notes: [{ text: text.trimStart(), at: SYNTHETIC_NOTE_LOCATION }],
+   }).forRoute(route);
+   return routed.length > 0 ? routed[0].content : undefined;
+}
+
+/**
  * The model (`##`) annotation bundle for one model, folded across its
  * import/extend lineage.
  *

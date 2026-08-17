@@ -84,7 +84,6 @@ import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import {
    assertNoMisplacedAuthorizeAnnotations,
-   describeMisplacedJoinAuthorizeWarnings,
    validateAuthorizeProbes,
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
@@ -603,7 +602,6 @@ function extractSources(
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-   joinMisplacedAuthorize: MisplacedAuthorizeAnnotation[];
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
 } {
    const {
@@ -611,7 +609,6 @@ function extractSources(
       filterMap,
       authorizeMap,
       misplacedAuthorize,
-      joinMisplacedAuthorize,
       authorizeOwnNotes,
    } = extractSourcesFromModelDef(modelDef, givens);
    return {
@@ -619,24 +616,19 @@ function extractSources(
       filterMap,
       authorizeMap,
       misplacedAuthorize,
-      joinMisplacedAuthorize,
       authorizeOwnNotes,
    };
 }
 
 /**
- * Collects two non-fatal `#(authorize)` finding kinds as plain strings for the
- * wire (`SerializedModel.authorizeWarnings`) — the worker has no logger (see
- * `extractSources`'s doc above), so these ride to the main thread, which
- * does, to be logged once per compiled model: `validateAuthorizeProbes`'s
- * `onRowLevelGateUnexpressible`, and `extractSourcesFromModelDef`'s
- * `joinMisplacedAuthorize` (via `pushJoinMisplacedAuthorize`).
+ * Collects `validateAuthorizeProbes`'s non-fatal `onRowLevelGateUnexpressible`
+ * findings as plain strings for the wire
+ * (`SerializedModel.authorizeWarnings`) — the worker has no logger (see
+ * `extractSources`'s doc above), so these ride to the main thread, which does,
+ * to be logged once per compiled model.
  */
 function authorizeWarningCollector(): {
    onRowLevelGateUnexpressible: (sourceName: string, detail: string) => void;
-   pushJoinMisplacedAuthorize: (
-      found: readonly MisplacedAuthorizeAnnotation[],
-   ) => void;
    warnings: string[];
 } {
    const warnings: string[] = [];
@@ -646,9 +638,6 @@ function authorizeWarningCollector(): {
          warnings.push(
             `Row-level #(authorize) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
          );
-      },
-      pushJoinMisplacedAuthorize: (found) => {
-         warnings.push(...describeMisplacedJoinAuthorizeWarnings(found));
       },
    };
 }
@@ -748,7 +737,6 @@ async function compileMalloyModel(
       filterMap,
       authorizeMap,
       misplacedAuthorize,
-      joinMisplacedAuthorize,
       authorizeOwnNotes,
    } = extractSources(modelDef, givens);
    const queryResult = extractQueries(modelDef);
@@ -769,11 +757,6 @@ async function compileMalloyModel(
    // it does not throw — see `validateAuthorizeProbes`'s doc comment for what
    // it validates.
    const authorizeWarningCollection = authorizeWarningCollector();
-   // Join-field findings never fail the load (see
-   // `describeMisplacedJoinAuthorizeWarnings`'s doc) — warn only.
-   authorizeWarningCollection.pushJoinMisplacedAuthorize(
-      joinMisplacedAuthorize,
-   );
    await validateAuthorizeProbes(mm, {
       authorizeMap,
       declaredTypes: givenDeclaredTypes(givens),
@@ -976,10 +959,6 @@ async function compileNotebookModel(
          ...extracted.misplacedAuthorize,
          ...finalQueryResult.misplacedAuthorize,
       ]);
-      // See the identical join-warning collection in `compileMalloyModel`.
-      authorizeWarningCollection.pushJoinMisplacedAuthorize(
-         extracted.joinMisplacedAuthorize,
-      );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
       await validateAuthorizeProbes(mm, {

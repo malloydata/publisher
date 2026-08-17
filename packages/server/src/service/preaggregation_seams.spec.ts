@@ -221,13 +221,20 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
 
 describe("the serve seam", () => {
    /** Run `query` and return its rows as plain objects. */
-   async function run(pkg: Package, query: string) {
+   async function run(
+      pkg: Package,
+      query: string,
+      givens?: Record<string, unknown>,
+   ) {
       const model = pkg.getModel("model.malloy");
       if (!model) throw new Error("model.malloy did not load");
       const { compactResult } = await model.getQueryResults(
          undefined,
          undefined,
          query,
+         undefined,
+         undefined,
+         givens as never,
       );
       // Numbers arrive as bigint from DuckDB sums; normalize so the assertions
       // read as the numbers an author would expect.
@@ -494,6 +501,132 @@ source: regions is duckdb.sql("""
             { region: "north", region_count: 2 },
             { region: "south", region_count: 1 },
          ]);
+      },
+      { timeout: 60000 },
+   );
+});
+
+// ---------------------------------------------------------------------------
+// Pre-aggregation x row-level `#(authorize)`. Nothing covered the combination,
+// and the two tiers guard differently: `routingBlockedByRowLevelGate` was
+// `&&`-ed with `storageRoutingPossible` and guarded only the storage branch,
+// while the pre-aggregation branch had no gate check and `preaggRouted` is never
+// reset.
+// ---------------------------------------------------------------------------
+
+describe("pre-aggregation and a row-level gate", () => {
+   const GATED = `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+
+   /** Run `query` and return its rows as plain objects. */
+   async function runGatedQuery(
+      pkg: Package,
+      query: string,
+      givens: Record<string, unknown>,
+   ) {
+      const model = pkg.getModel("model.malloy");
+      if (!model) throw new Error("model.malloy did not load");
+      const { compactResult } = await model.getQueryResults(
+         undefined,
+         undefined,
+         query,
+         undefined,
+         undefined,
+         givens as never,
+      );
+      return (compactResult as Record<string, unknown>[]).map((row) =>
+         Object.fromEntries(
+            Object.entries(row).map(([k, v]) => [
+               k,
+               typeof v === "bigint" ? Number(v) : v,
+            ]),
+         ),
+      );
+   }
+
+   it(
+      "plans the rollup — the gate stops materialization, not synthesis",
+      async () => {
+         // Worth pinning both halves separately. Synthesis is unaffected by the
+         // gate, so the rollup reaches the plan; what keeps the combination safe
+         // is that MATERIALIZING it is then refused, which is asserted directly
+         // against the build gate in `materialization_eligibility.spec.ts` (a
+         // rollup-shaped `#@ persist` over a gated base). A frozen rollup
+         // pre-aggregates ACROSS org_id, so it could not be filtered by org_id
+         // afterwards at all.
+         const pkg = await loadPackage(GATED);
+         expect(planSources(pkg)).toHaveLength(1);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "answers a covered query with the gate's row filter applied, not the unfiltered rollup",
+      async () => {
+         // `category` IS the rollup's grain, so this is the query a rollup covers
+         // — the one that would read a frozen table if one could exist. `org_id`
+         // is not in the grain, so an unfiltered answer is unmistakable: A would
+         // total 30 rather than 10.
+         const pkg = await loadPackage(GATED);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([
+            { category: "A", total: 10 },
+            { category: "B", total: 30 },
+         ]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "answers an uncovered query with the gate's row filter applied",
+      async () => {
+         // `org_id` is not in any rollup's grain, so the composite falls back to
+         // the base member. This is the path on which `effectiveBuildManifest`
+         // would hand a rollup manifest to a runnable rebuilt against the live
+         // model if the tier were not blocked for a gated entry point.
+         const pkg = await loadPackage(GATED);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: org_id; aggregate: total; order_by: org_id }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([{ org_id: 1, total: 40 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "denies when the caller supplies no value for the gate's given",
+      async () => {
+         const pkg = await loadPackage(GATED);
+         await expect(
+            runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total }",
+               {},
+            ),
+         ).rejects.toThrow();
       },
       { timeout: 60000 },
    );

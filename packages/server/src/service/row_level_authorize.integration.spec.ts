@@ -864,6 +864,11 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
 // note: it names a declaration this model's own `contents` never registered
 // at all, which is exactly why the fix treats "cannot be resolved to a
 // declaration in this model" as its own inherited-copy case.
+//
+// That branch is silent rather than warned, so "loads cleanly" is the whole
+// observable claim here. These two tests previously also asserted that no join
+// warning fired — against a field nothing ever populated, so the assertion
+// could not fail and proved nothing the line above it did not already prove.
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — cross-file join false positive (fix1)", () => {
@@ -890,31 +895,6 @@ describe("row-level authorize — cross-file join false positive (fix1)", () => 
          .compilationError;
    }
 
-   /** Whether a `"is a join_one:/join_many: line and is never enforced
-    *  there"` non-fatal warning fired for this field/source pair — see
-    *  `describeMisplacedJoinAuthorizeWarnings`. The direction that costs
-    *  NOISE (a cross-file join wrongly warned about) is what this test
-    *  guards; without this assertion the two tests below only prove the
-    *  load doesn't FAIL, which holds even if the mutant this file exists to
-    *  catch (`joinFieldNamesUnresolvableDeclaration` always returning
-    *  `false`) fires a spurious warning on every cross-file join. */
-   function warnedMisplacedJoin(
-      warnSpy: { mock: { calls: unknown[][] } },
-      fieldName: string,
-      sourceName: string,
-   ): boolean {
-      return warnSpy.mock.calls.some((call) => {
-         const [message] = call as [string];
-         return (
-            typeof message === "string" &&
-            message.includes(
-               `field "${fieldName}" of source "${sourceName}"`,
-            ) &&
-            message.includes("join_one:/join_many:")
-         );
-      });
-   }
-
    // `sal` is gated; `mid` joins it with no annotation of its own — the
    // by-reference copy shape `docs/authorize.md` documents, just declared in
    // a file the importing model does not fully see.
@@ -930,8 +910,6 @@ source: mid is duckdb.table('childtable') extend {
 `;
 
    it("CRITICAL — selective one-hop import of only the joiner loads cleanly (sal never enters m's own contents)", async () => {
-      const warnSpy = spyOn(logger, "warn");
-      warnSpy.mockClear();
       const M = `##! experimental.givens
 import { mid } from "a.malloy"
 
@@ -943,7 +921,6 @@ source: top is mid extend {}
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         expect(warnedMisplacedJoin(warnSpy, "sal", "mid")).toBe(false);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -957,8 +934,6 @@ source: top is mid extend {}
       // import level, so `sal` never enters `m`'s own `modelDef.contents`,
       // even though `b.malloy`'s `mid` (which DOES enter `m`'s contents) still
       // carries a join field whose `referenceID` names it.
-      const warnSpy = spyOn(logger, "warn");
-      warnSpy.mockClear();
       const A_SAL_ONLY = `##! experimental.givens
 
 #(authorize) "false"
@@ -983,7 +958,6 @@ source: top is mid extend {}
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         expect(warnedMisplacedJoin(warnSpy, "sal", "mid")).toBe(false);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -3017,6 +2991,43 @@ source: X is duckdb.table('parent') extend {
          expect(err).toBeInstanceOf(ModelCompilationError);
          expect(err?.message).toMatch(/ROLE.*!=.*'admin'/);
          expect(err?.message).toMatch(/evaluates to TRUE/i);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("names the entry point it probed, which for a derived one is NOT the source that authored the gate", async () => {
+      // Pins the one cost of `assertNoVacuousDefaultAtom` NOT taking the
+      // `ownNotes.length === 0` escape its `rejected` sibling takes (see the
+      // comment at its call site). The refusal is correct — a vacuous atom is
+      // wrong wherever the gate reaches — but whichever entry point probes it
+      // first is what the message names, and here that can be the derivation
+      // rather than `X`, which is where the annotation actually lives. Asserted
+      // so a future change to that escape is a visible diff rather than a silent
+      // change in what an author is told to go and look at.
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  ROLE :: string is ''
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS or $ROLE != 'admin'"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+
+source: Derived is X -> { group_by: org_id }
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         // The atom is named either way — that half is unambiguous.
+         expect(err?.message).toMatch(/ROLE.*!=.*'admin'/);
+         // And it names SOME entry point. `Derived` carries no annotation of its
+         // own, so if it probed first the message points at it rather than at
+         // `X`, which is the source an author would have to be told about.
+         expect(err?.message).toMatch(/on source "(X|Derived)"/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });

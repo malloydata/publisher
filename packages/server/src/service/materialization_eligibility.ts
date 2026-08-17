@@ -310,7 +310,14 @@ function referencesAuthorize(persistSource: PersistSource): boolean {
    }
 }
 
-/** True if an annotation string is an `#(authorize)`/`##(authorize)` gate. */
+/**
+ * True if an annotation note is an authorize gate — by Malloy's own routing, via
+ * {@link parseAuthorizeAnnotation}. Sharing the parser's classification is what
+ * keeps this refusal in step with enforcement: a spelling the query path gates on
+ * but this one does not is a gated source that can be frozen into an artifact and
+ * served to everyone. The block form `#|(authorize)` was exactly that gap while
+ * the classification was a prefix regex.
+ */
 function isAuthorizeAnnotation(text: string): boolean {
    try {
       return parseAuthorizeAnnotation(text) !== null;

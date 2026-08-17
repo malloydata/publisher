@@ -32,7 +32,9 @@ import {
    type AnnotationNote,
 } from "./annotations";
 import {
+   assertNoAuthorizeNearMisses,
    collectAuthorizeExprs,
+   collectAuthorizeNearMisses,
    containsAuthorizeAnnotationTag,
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
@@ -216,12 +218,12 @@ function joinFieldNamesUnresolvableDeclaration(
  * added to `misplacedAuthorize`, failing the load like any other misplaced
  * annotation: leaving it a warning would let the containing source's own
  * gate silently vanish (it lands on the field, which nothing enforces).
- * `joinMisplacedAuthorize` is consequently never populated any more. It stays in
- * the return shape because callers outside this file still consume it, and
- * because the undecidable case it used to carry — a join whose declaration
- * resolves nowhere in this model — is now ignored silently rather than warned:
- * every legitimate cross-file join of a gated source reaches that branch, so a
- * warning there fires on correct packages (pinned by the cross-file tests).
+ *
+ * Between those two branches there is nothing left over, which is why this no
+ * longer reports a join-field warning at all: the undecidable case such a
+ * warning used to carry is the unresolvable branch, and every legitimate
+ * cross-file join of a gated source reaches it, so warning there fired on
+ * correct packages (pinned by the cross-file tests).
  */
 export function extractSourcesFromModelDef(
    modelDef: ModelDef,
@@ -232,10 +234,6 @@ export function extractSourcesFromModelDef(
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-   /** `#(authorize)` found on a `join_one:`/`join_many:` field that looks
-    *  author-written rather than Malloy's by-reference copy — see the
-    *  function doc. Never fails the load; callers log these as warnings. */
-   joinMisplacedAuthorize: MisplacedAuthorizeAnnotation[];
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
 } {
    const filterMap = new Map<string, FilterDefinition[]>();
@@ -261,7 +259,6 @@ export function extractSourcesFromModelDef(
    // somewhere in this model; an author's stray annotation is a freshly
    // parsed note object that appears nowhere else.
    const misplacedAuthorize: MisplacedAuthorizeAnnotation[] = [];
-   const joinMisplacedAuthorize: MisplacedAuthorizeAnnotation[] = [];
 
    // Every `#(authorize)`-tagged note object that is some source's OWN
    // annotation (blockNotes/notes at that source's own level), across the
@@ -270,13 +267,33 @@ export function extractSourcesFromModelDef(
    // source the field happens to live on — a join field's copied note names
    // the JOINED source, not the joiner.
    const gatedSourceOwnAuthorizeNotes = new Set<AnnotationNote>();
+   // Every annotation position this function reads for authorize purposes is
+   // also swept for a NEAR-MISS spelling — one that reads as an attempt at a
+   // gate but that Malloy routes elsewhere, so nothing would ever enforce it.
+   // Refused before anything else here runs, so the author gets the spelling
+   // error rather than a downstream complaint about a gate this model does not
+   // actually carry. See `collectAuthorizeNearMisses`.
+   const nearMissAuthorize: string[] = [];
    for (const obj of Object.values(modelDef.contents)) {
       if (!isSourceDef(obj)) continue;
-      for (const note of ownLevelNotes((obj as StructDef).annotations)) {
+      const struct = obj as StructDef;
+      for (const note of ownLevelNotes(struct.annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
          }
       }
+      nearMissAuthorize.push(
+         ...collectAuthorizeNearMisses(
+            [
+               ...ownLevelNotes(struct.annotations),
+               // A near miss one line too low is doubly unenforced, and the
+               // spelling is the more actionable of the two mistakes to report.
+               ...struct.fields.flatMap((field) =>
+                  ownLevelNotes(field.annotations),
+               ),
+            ].map((note) => note.text),
+         ),
+      );
    }
    // Also walk `sourceRegistry` entries that are themselves an inline
    // `SourceDef` — a `source_registry_reference` names something already
@@ -297,7 +314,28 @@ export function extractSourcesFromModelDef(
             gatedSourceOwnAuthorizeNotes.add(note);
          }
       }
+      nearMissAuthorize.push(
+         ...collectAuthorizeNearMisses(
+            ownLevelNotes((entry as StructDef).annotations).map(
+               (note) => note.text,
+            ),
+         ),
+      );
    }
+   // The model's own `##` notes, folded across the import lineage exactly as the
+   // file-level `##(authorize)` refusal below reads them — so `## (authorize)` in
+   // an import is refused too, not just one written locally.
+   {
+      const folded = modelAnnotations(modelDef);
+      nearMissAuthorize.push(
+         ...collectAuthorizeNearMisses(
+            [...(folded.notes ?? []), ...(folded.blockNotes ?? [])].map(
+               (note) => note.text,
+            ),
+         ),
+      );
+   }
+   assertNoAuthorizeNearMisses(nearMissAuthorize);
 
    // source name → the source's OWN-level `#(authorize)`-tagged note
    // objects (possibly empty — e.g. a `query_source` struct carries no
@@ -537,7 +575,6 @@ export function extractSourcesFromModelDef(
       filterMap,
       authorizeMap,
       misplacedAuthorize,
-      joinMisplacedAuthorize,
       authorizeOwnNotes,
    };
 }

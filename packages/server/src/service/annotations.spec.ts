@@ -6,6 +6,7 @@ import {
    modelAnnotations,
    ownModelNotes,
 } from "./annotations";
+import { containsAuthorizeAnnotationTag } from "./authorize";
 
 // Minimal `ModelDef` carrying only what `modelAnnotations` reads: `modelID`
 // and the `modelAnnotations` registry (modelID → { ownNotes, inheritsFrom }).
@@ -83,16 +84,20 @@ describe("modelAnnotations", () => {
       // even when the importing file declares no `##` of its own. An earlier
       // fold kept an empty local link at the top, so `.notes` returned [] and
       // the stray annotation escaped detection entirely.
+      //
+      // The fixture is the real `##(authorize)` spelling, not `## (authorize)`:
+      // the latter is route `''` (a plain MOTLY tag), so the detector never
+      // matched it and this test asserted only the note folding it was named
+      // for. Detection is asserted below, which is the half that fails open.
       const def = makeModelDef("local", {
          local: { ownNotes: {}, inheritsFrom: ["base"] },
          base: {
-            ownNotes: { notes: ['## (authorize) request.user == "admin"'] },
+            ownNotes: { notes: ["##(authorize) \"$ROLE = 'admin'\""] },
             inheritsFrom: [],
          },
       });
-      expect(noteTexts(def)).toEqual([
-         '## (authorize) request.user == "admin"',
-      ]);
+      expect(noteTexts(def)).toEqual(["##(authorize) \"$ROLE = 'admin'\""]);
+      expect(containsAuthorizeAnnotationTag(noteTexts(def))).toBe(true);
    });
 
    it("surfaces the local model's notes at the top when both local and import have `##`", () => {

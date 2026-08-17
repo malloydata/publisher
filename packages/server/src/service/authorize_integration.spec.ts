@@ -2275,21 +2275,191 @@ given:
    });
 });
 
-// The rejecter and the parser must accept the same spellings. A spelling only
-// the rejecter knows is an author-side fail-OPEN: verified against 0.0.427 that
-// `#( authorize ) "false"` left the source fully queryable, with no model-load
-// complaint, while the same bytes in caller text were refused.
-describe("inner whitespace in the annotation tag", () => {
-   it("gates the source when an author writes #( authorize )", async () => {
+// Which annotation SPELLINGS are gates is Malloy's decision, not publisher's: a
+// note is a gate iff Malloy routes it to `authorize`. Every row below was
+// confirmed against `@malloydata/malloy` 0.0.427's own prefix parser, and the
+// three outcomes are exhaustive — a gate, a refused near miss, or a note on
+// somebody else's route that this must leave completely alone.
+//
+// The two directions this pins are not symmetric in cost. A spelling Malloy
+// routes here that publisher misses (`#|(authorize)`, the block form) is a source
+// serving every row while its author reads it as locked — the fail-open a prefix
+// regex left open. A spelling publisher honours that Malloy routes elsewhere
+// (`# (authorize)`, route `''` — Malloy's reserved MOTLY/render namespace) means
+// publisher assigning meaning inside that namespace, and silently starting to
+// enforce a filter on packages that served every row yesterday.
+describe("authorize is classified by Malloy's annotation route", () => {
+   // Source-level (`#`): routed to `authorize` AND enforced on the source below.
+   const GATE_SPELLINGS = [
+      "#(authorize)",
+      // The block form. Malloy routes it to `authorize`, and the deprecated
+      // RegExp readers cannot see it at all — its own type docs say so.
+      "#|(authorize)",
+      // Malloy's bracket pairs are `()`, `<>`, `[]`, `{}`, all equivalent.
+      "#[authorize]",
+      "#<authorize>",
+      "#{authorize}",
+   ];
+
+   // File-level (`##`): routed to `authorize` too, which is exactly why the
+   // deprecation refusal reaches them — recognition is the precondition for
+   // refusing. A spelling that routed nowhere would load silently unenforced,
+   // which is the fail-open that refusal exists to close.
+   const FILE_LEVEL_GATE_SPELLINGS = ["##(authorize)", "##|(authorize)"];
+
+   // Refused — neither honoured nor ignored. Each is route `''` (a plain MOTLY
+   // tag) or `malformed-route`, so nothing would ever enforce it.
+   const NEAR_MISS_SPELLINGS = [
+      "# (authorize)",
+      "## (authorize)",
+      "#( authorize )",
+      "#(authorize )",
+      "#(authorize)X",
+      "#authorize",
+   ];
+
+   // A block annotation's closer mirrors its sigil: `#|` closes with `|#`,
+   // `##|` with `|##`.
+   const blockCloser = (tag: string) =>
+      tag.startsWith("##|") ? "\n|##" : tag.startsWith("#|") ? "\n|#" : "";
+
+   for (const tag of GATE_SPELLINGS) {
+      it(`enforces a gate written ${tag}`, async () => {
+         const closer = blockCloser(tag);
+         await writeModel(
+            "route.malloy",
+            `${tag} "false"${closer}
+source: route_locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "route.malloy",
+               "run: route_locked -> { aggregate: c }",
+               {},
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      it(`rejects ${tag} in caller-submitted text`, async () => {
+         // The rejecter reads raw pre-compile text where no route exists yet, so
+         // it stays a regex — and it must be a SUPERSET of the spellings the
+         // parser honours, or a caller mints a gate in a spelling only the
+         // compiler recognizes.
+         await writeModel(
+            "route_open.malloy",
+            `source: route_open is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "route_open.malloy",
+               `${tag} "true"\nrun: route_open -> { aggregate: c }`,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   }
+
+   for (const tag of FILE_LEVEL_GATE_SPELLINGS) {
+      it(`recognizes ${tag} at the file level and refuses it as deprecated`, async () => {
+         const closer = blockCloser(tag);
+         await writeModel(
+            "route_file.malloy",
+            `${tag} "false"${closer}
+
+source: route_file_plain is duckdb.table('customers')
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "route_file.malloy",
+            getConnections(),
+         );
+         const err = model.getNotebookError();
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/file level/i);
+      });
+
+      it(`rejects ${tag} in caller-submitted text`, async () => {
+         await writeModel(
+            "route_file_open.malloy",
+            `source: route_file_open is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "route_file_open.malloy",
+               `${tag} "true"\nrun: route_file_open -> { aggregate: c }`,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   }
+
+   for (const tag of NEAR_MISS_SPELLINGS) {
+      it(`refuses the load for the near miss ${tag}`, async () => {
+         await writeModel(
+            "near.malloy",
+            `${tag} "false"
+source: near_locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "near.malloy",
+            getConnections(),
+         );
+         const err = model.getNotebookError();
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         // Names the spelling, and what to write instead.
+         expect(err?.message).toContain(tag);
+         expect(err?.message).toContain('#(authorize) "<expression>"');
+         // Refused, never silently enforced as if it had been spelled right.
+         expect(model.getSources()).toBeUndefined();
+      });
+
+      it(`rejects the near miss ${tag} in caller-submitted text too`, async () => {
+         await writeModel(
+            "near_open.malloy",
+            `source: near_open is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "near_open.malloy",
+               `${tag} "true"\nrun: near_open -> { aggregate: c }`,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   }
+
+   // The other side of the near-miss detector: it is anchored at each note's own
+   // prefix and requires `authorize` to end at a non-word character, so ordinary
+   // annotations on other routes load untouched. `#(authorized)` is the sharp one
+   // — a legitimately different app route that a substring test would refuse.
+   it("leaves annotations on other routes alone", async () => {
       await writeModel(
-         "ws.malloy",
-         `#( authorize ) "false"
-source: ws_locked is duckdb.table('customers') extend { measure: c is count() }
+         "other_routes.malloy",
+         `##(description) "see the #(authorize) tag"
+
+#(authorized) "not a gate"
+# bar_chart
+#(doc) "a doc note"
+source: other_routes is duckdb.table('customers') extend { measure: c is count() }
 `,
       );
-      await expect(
-         runGated("ws.malloy", "run: ws_locked -> { aggregate: c }", {}),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "other_routes.malloy",
+         getConnections(),
+      );
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(sourceNamed(model, "other_routes")?.authorize).toBeUndefined();
    });
 });
 

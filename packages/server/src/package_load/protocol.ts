@@ -179,11 +179,6 @@ export interface SerializedModel {
     *    sources can share without being related at
     *    all. The model still loads and serves; the affected entry point
     *    denies every request (`Model.resolveGateShape`).
-    *  - `extractSourcesFromModelDef`'s `joinMisplacedAuthorize`: a
-    *    `#(authorize)` on a `join_one:`/`join_many:` field that could not be
-    *    explained as Malloy's by-reference copy of a gate declared beyond
-    *    this model's visibility. A join is never enforced either way, so this
-    *    never fails the load — see `describeMisplacedJoinAuthorizeWarnings`.
     *
     * The worker has no logger (see `extractSources`'s doc in
     * `package_load_worker.ts`), so these ride over the wire as plain strings

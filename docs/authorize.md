@@ -70,7 +70,7 @@ The accepted shape is a positive allowlist — a boolean combination (`and`/`or`
 #(authorize) "region = $REGION and tier != $EXCLUDED_TIER"
 ```
 
-- **`in` is required for an array-typed given** (`org_id in $GROUPS`); `=`, `!=`, `>`, `>=`, `<`, `<=` for a scalar one. `org_id = $GROUPS` and `org_id ? $GROUPS` compile to the same comparison node, so there is nothing to tell apart by spelling — both are refused on the given's declared type: a scalar comparison against an array given compiles clean and then fails in the warehouse with a cast error, where `in` also matches no rows when the array is empty, which is the correct behavior for a caller who was given no groups.
+- **`in` is required for an array-typed given** (`org_id in $GROUPS`); `=`, `!=`, `>`, `>=`, `<`, `<=` for a scalar one. A scalar comparison against an array-typed given is refused at load, and note that `org_id = $GROUPS` and `org_id ? $GROUPS` are the SAME thing here — they compile to one comparison node, so neither spelling escapes the refusal. The refusal is on the given's declared type, because without it the query compiles clean and then fails in the warehouse with a cast error. `in` also has the behaviour you want for an empty array: no rows, which is correct for a caller who was given no groups.
 - **A comparison against a constant is refused** (`region = 'us-west'`) — that is a fixed filter and belongs in the source's own `where:`, not in an access gate.
 - **Function calls, arithmetic, `like`, and `not in` are refused.** `not in` specifically: a row-level gate expresses the set of rows a caller MAY read, not a set to exclude.
 
@@ -281,7 +281,7 @@ Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`
 Two more counters cover row-level gates specifically:
 
 - `publisher_authorize_row_level_total`, labelled `decision` (`denied_by_gate` | `empty_after_filter`). `denied_by_gate` is the fail-closed refusal when a row-level gate could not be applied; `empty_after_filter` is a normal 200 with zero rows after the filter matched none, which is not an error.
-- `publisher_authorize_row_level_rejected_total`, labelled `cause` (`array_given_needs_in` | `scalar_given_rejects_in` | `unsupported_node` | `no_given_reference` | `unreachable_given`). Fires at package load when a row-level gate's compiled condition is not an allowed shape — alert on any nonzero value since the last publish, not on a rate.
+- `publisher_authorize_row_level_rejected_total`, labelled `cause` (`array_given_needs_in` | `scalar_given_rejects_in` | `field_given_has_default` | `unsupported_node` | `no_given_reference` | `unreachable_given` | `entry_point_unexpressible`). Fires at package load — alert on any nonzero value since the last publish, not on a rate. The first six mean the gate's compiled condition is not an allowed shape, and each fails the whole model load. `entry_point_unexpressible` is the exception in both respects: the gate is a valid shape, but one derived entry point (an `extend` that renamed/excluded/projected away the gated field, or a `query_source` projection) cannot express it. That does **not** fail the load — the rest of the model serves normally, and every request against that one entry point is denied.
 
 `publisher_authorize_guard_rejected_total`, labelled `field` (`query` | `source_name` | `query_name` | `compile_source`), counts requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text.
 

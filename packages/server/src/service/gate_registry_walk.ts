@@ -21,18 +21,13 @@
  * What `annotations.inherits` genuinely does NOT cover — confirmed the same
  * way — is a `query_source` (`Z is X -> {...}`): a `query_source`-typed
  * `StructDef` carries no `annotations` at all, and its OWN `sourceRegistry`
- * entry self-references (Malloy elides a real link for this shape exactly
- * like it elides one for a trivial `extend {}` — `resolveDeclaredSource`
- * resolves it to `{kind: "none"}`, not to its base). The only surviving link
- * from `Z` back to `X` is `Z.query.structRef` — see
- * {@link resolveQuerySourceBase}, which is NOT folded into
- * {@link ancestorGateExprs} itself: `Model.collectEntryPointGates` already
- * walks a `query_source`'s `query.structRef` as its OWN separate, already-
- * tested recursion (composite-branch handling included) rather than through
- * `gateExprsForOwnAnnotations`/`ancestorGateExprs` at all, so changing what
- * `ancestorGateExprs` returns for a `query_source` struct would double up
- * that recursion's own result rather than fill a gap. `extractSources
- * FromModelDef` has no such separate recursion, so it calls
+ * entry self-references (Malloy elides a real link for this shape exactly like
+ * it elides one for a trivial `extend {}`). The only surviving link from `Z`
+ * back to `X` is `Z.query.structRef` — see {@link resolveQuerySourceBase},
+ * which is deliberately NOT folded into {@link ancestorGateExprs}:
+ * `Model.collectEntryPointGates` already takes that hop as its own separate
+ * recursion, so folding it in here would double its result rather than fill a
+ * gap. `extractSourcesFromModelDef` has no such recursion and calls
  * {@link resolveQuerySourceBase} directly.
  *
  * Kept light on purpose: this is imported by `source_extraction.ts`, which is
@@ -150,6 +145,20 @@ export function ancestorGateExprs(
    // struct has no base" — it means the link to a base exists and the walk
    // failed to follow it, so the gate on the other end is unknown. Deny.
    if (declared.kind === "unresolvable") return ["false"];
+   // A CYCLE returns `[]` ("no gate here"), not `["false"]`, and that is sound
+   // because of a CALLER PRECONDITION, not because a cycle is harmless in
+   // itself. Every call site reads the struct's OWN gate first and only calls
+   // this walk when that came back empty (`Model.gateExprsForOwnAnnotations`,
+   // `extractSourcesFromModelDef`'s `ownGates.length === 0`). So on an A->B->A
+   // cycle the struct at the far end is either an ancestor whose own notes the
+   // line below has already read, or the starting struct itself — whose own gate
+   // the caller read before calling. Nothing is skipped either way.
+   //
+   // Do NOT "harden" this to `["false"]`: a diamond or self-referencing
+   // derivation legitimately revisits a struct, and denying there denies every
+   // query against it. And do NOT hoist this walk above a call site's own-gate
+   // read — that read IS the precondition, and losing it turns this `[]` into a
+   // real fail-open with nothing else to catch it.
    if (declared.kind === "none" || seen.has(declared.source)) return [];
    const exprs = collectAuthorizeExprs(
       ownLevelNoteTexts(declared.source.annotations),

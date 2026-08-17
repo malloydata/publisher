@@ -127,9 +127,13 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   `query:` statement, or a field (`dimension:`/`measure:`/`view:`) inside a source. This also
   breaks existing packages, also deliberately: today such a gate silently protects nothing. Move
   the annotation to the `source:` statement it is meant to protect.
-- **An `#(authorize)` on a `join_one:`/`join_many:` line warns** rather than failing the load —
-  gating a join has no effect, so if this was meant to lock access, move it to the joined source's
-  own `source:` declaration.
+- **An `#(authorize)` on a `join_one:`/`join_many:` line fails the load, in the common case.**
+  Gating a join has no effect, so this is the same misplacement as the bullet above and is refused
+  the same way — move it to the joined source's own `source:` declaration. The one exception is a
+  join whose target is declared beyond what this model imported (a selective one-hop import of only
+  the joiner, or a source two-plus hops away): there the annotation is indistinguishable from
+  Malloy's own by-reference copy of the joined source's gate, so it is ignored silently rather than
+  risk refusing a correct package.
 - **`##(authorize)` (file-level) is deprecated and now fails the model load.** It was a mistake to
   ship a model-wide override in the first place: the raw-warehouse path it existed to close is
   already closed unconditionally by restricted mode, so the file-level fallback protected nothing a
@@ -138,12 +142,26 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   from an imported file — now fails the load rather than silently applying; the remedy is
   `#(authorize)` on each `source:` it was meant to protect. See
   [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates).
-- **Known limitation:** a notebook cell's row-level gate filters correctly even when that cell both
-  declares the gated source and runs it in the same cell (the first code cell, one preceded only by
-  markdown, or any later cell in the same shape) — EXCEPT for a joined-field gate whose run query
-  does not itself reference the joined field. That one narrow shape denies with a 400 rather than a
-  403 (never a leak — no rows are returned either way); reference the joined field in the run
-  query's own projection to avoid it.
+- **A near-miss `authorize` spelling now fails the model load instead of silently doing nothing.**
+  `# (authorize)` / `## (authorize)` (a space after the `#`), `#( authorize )`, `#(authorize)X` and
+  `#authorize` are not `authorize` annotations to the Malloy compiler — the first two are plain
+  MOTLY/render tags, the rest are malformed prefixes — so a source carrying one has always served
+  every row while its author read it as locked, and the package loaded clean. A package with one of
+  these will now fail to load, naming the spelling and the fix (`#(authorize) "<expression>"` on the
+  `source:` statement). Refusing is deliberate rather than interpreting the intent: honouring the
+  spelling would mean publisher assigning meaning inside a namespace Malloy reserves for itself, and
+  would silently start enforcing a filter on packages that served every row yesterday. In the same
+  change, the block form `#|(authorize)` … `|#` and the other bracket pairs (`#[authorize]`,
+  `#<authorize>`, `#{authorize}`) are now recognized as gates, because the compiler routes them
+  there — the block form in particular was previously a live fail-open, unenforced at query time
+  *and* eligible to be frozen into a materialized artifact.
+- **Known limitation — one notebook shape fails with a 400 instead of filtering.** A cell that both
+  declares a gated source and runs it in the same cell, where the gate reads a JOINED field and the
+  run query does not itself reference that field, is refused rather than answered. Reference the
+  joined field in the run query's own projection to avoid it. Never a leak — no rows are returned
+  either way, and the 400 is only the wrong status for a request that should have succeeded with
+  filtered rows. Every other same-cell shape (the first code cell, one preceded only by markdown, or
+  any later cell) filters correctly.
 
 ### What changed
 

@@ -27,7 +27,10 @@
 
 import { type Counter } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
-import { type RowLevelGateRejectionCause } from "./service/authorize";
+import {
+   ROW_LEVEL_GATE_REJECTION_CAUSES,
+   type RowLevelGateRejectionCause,
+} from "./service/authorize";
 
 /** The caller-supplied request field a rejected annotation arrived in. */
 export type AuthorizeGuardField =
@@ -184,7 +187,11 @@ export function recordRowLevelGateRejected(
       "publisher_authorize_row_level_rejected_total",
       {
          description:
-            "Row-level `#(authorize)` gates refused at package load because their compiled condition is not an allowed shape, or an inherited gate that could not be expressed at one derived entry point. Label: cause ('array_given_needs_in'|'scalar_given_rejects_in'|'unsupported_node'|'no_given_reference'|'unreachable_given'|'entry_point_unexpressible'). All but 'entry_point_unexpressible' fail the whole model load; that one fires at load without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
+            "Row-level `#(authorize)` gates refused at package load because their compiled condition is not an allowed shape, or an inherited gate that could not be expressed at one derived entry point. Label: cause (" +
+            // Derived from the union, not retyped beside it — the retyped
+            // version had already drifted a cause behind.
+            ROW_LEVEL_GATE_REJECTION_CAUSES.map((c) => `'${c}'`).join("|") +
+            "). All but 'entry_point_unexpressible' fail the whole model load; that one fires at load without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
       },
    );
    rowLevelRejectionCounter.add(1, { cause });

@@ -20,30 +20,74 @@
  * {@link assertNoCallerAuthorizeAnnotation} alike — so an author who writes it
  * gets a clear refusal instead of a silently-ignored annotation.
  *
+ * **What counts as the tag is Malloy's answer, not a regex of ours.** A note is
+ * a gate iff Malloy routes it to `authorize` ({@link noteContentOnRoute}), which
+ * admits the block form `#|(authorize)` and the other bracket pairs
+ * (`#[authorize]`, `#<authorize>`, `#{authorize}`) and excludes near misses like
+ * `# (authorize)` (route `''`, Malloy's reserved MOTLY namespace) and
+ * `#( authorize )` (malformed prefix). Publisher must not decide any of that for
+ * itself: honouring a spelling Malloy routes elsewhere cements a divergence from
+ * the compiler, and missing one Malloy DOES route here serves every row from a
+ * source its author locked. The near misses are refused outright at load
+ * ({@link collectAuthorizeNearMisses}) rather than either honoured or ignored.
+ *
  * This module parses, collects, and (at compile time) validates authorize
  * annotations. Evaluating the expression — the actual access gate — reuses
  * `buildAuthorizeProbe`. Kept light so it bundles cleanly into the
- * package-load worker (its only non-type import is `../errors`).
+ * package-load worker: its only non-type imports are `../errors` and
+ * `./annotations` (which the worker already bundles via `source_extraction.ts`).
  */
 
 import { type GivenValue } from "@malloydata/malloy";
 import { BadRequestError, ModelCompilationError } from "../errors";
-import { type AnnotationNote } from "./annotations";
+import { noteContentOnRoute, type AnnotationNote } from "./annotations";
+
+/** The annotation route Malloy assigns an `authorize` gate. */
+const AUTHORIZE_ROUTE = "authorize";
 
 /**
- * An `authorize` annotation's opening tag, source-level (`#`) or file-level
- * (`##`), tolerant of whitespace inside the parens (`#( authorize )`).
+ * A spelling that LOOKS like an author reaching for an `authorize` gate.
  *
- * ONE pattern serves both the parser ({@link parseAuthorizeAnnotation}, anchored
- * below) and the caller-text rejection ({@link assertNoCallerAuthorizeAnnotation},
- * unanchored). They MUST accept the same spellings: a spelling the rejecter
- * catches but the parser ignores is an author-side fail-OPEN — the author reads
- * their source as locked while it carries no gate at all and loads without
- * complaint.
+ * The invariant between this and the parser is ASYMMETRIC, and getting the
+ * direction wrong is what makes one of them a security hole:
+ *
+ *   parser spellings  ==  Malloy's `authorize` route  (ask the compiler)
+ *   this pattern      ⊇   parser spellings            (a superset, by construction)
+ *
+ * A rejecter that accepts MORE than the parser is a 400 on odd caller input,
+ * which is safe. A rejecter that accepts LESS is a forged-gate bypass. So the
+ * two cannot share one definition: the parser reads a compiled note whose
+ * route Malloy has already decided, while
+ * {@link assertNoCallerAuthorizeAnnotation} reads raw pre-compile text where no
+ * route exists yet and a regex is all there is. This pattern is that regex, and
+ * it covers every route-`authorize` spelling by construction — sigil `##?` with
+ * an optional block `|`, then `authorize` in any of Malloy's four bracket pairs
+ * — plus the near misses either side of it.
+ *
+ * `[ \t]`, never `\s`: the unanchored form scans a whole submitted document, and
+ * `\s` matches a newline, so `"# \n(authorize) rules apply"` would be a
+ * spurious 400 on ordinary prose.
+ *
+ * The trailing lookahead is what keeps `#(authorized)` — a legitimately
+ * different app route — out of both the rejecter and the near-miss refusal.
  */
-const AUTHORIZE_TAG = String.raw`##?\(\s*authorize\s*\)`;
-const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG);
-const AUTHORIZE_ANNOTATION_PREFIX = new RegExp(`^${AUTHORIZE_TAG}`);
+const AUTHORIZE_TAG_LIKE = String.raw`##?\|?[ \t]*[([{<]?[ \t]*authorize(?![\p{L}\p{N}_])`;
+const AUTHORIZE_ANNOTATION_ANYWHERE = new RegExp(AUTHORIZE_TAG_LIKE, "u");
+/**
+ * The anchored form, for classifying ONE note rather than scanning a document.
+ * A note matching this that Malloy does NOT route to `authorize` is a near miss
+ * — see {@link collectAuthorizeNearMisses}.
+ */
+const AUTHORIZE_TAG_LIKE_PREFIX = new RegExp(`^${AUTHORIZE_TAG_LIKE}`, "u");
+
+/**
+ * The gate expression on ONE annotation note, or `undefined` if the note is not
+ * an `authorize` gate. Malloy's own routing decides — see
+ * {@link noteContentOnRoute}.
+ */
+function authorizeNoteContent(text: string): string | undefined {
+   return noteContentOnRoute(text, AUTHORIZE_ROUTE);
+}
 
 /**
  * Reject caller-submitted Malloy text that declares an `authorize` annotation.
@@ -63,6 +107,12 @@ const AUTHORIZE_ANNOTATION_PREFIX = new RegExp(`^${AUTHORIZE_TAG}`);
  * Text-matching is the right tool for a rejection and the wrong one for
  * resolution: a false positive is a clear 400, a false negative is a bypass.
  * Nothing here decides *whose* gate applies — that stays with the compiled IR.
+ * It is deliberately a SUPERSET of the parser's spellings, not a mirror of them
+ * — see {@link AUTHORIZE_TAG_LIKE} for why that asymmetry is the safe direction
+ * and why one shared definition cannot serve both. In particular it must cover
+ * the block form and every bracket pair Malloy routes to `authorize`: the
+ * classification is the compiler's, so a caller could otherwise mint a gate in a
+ * spelling this rejecter had never heard of.
  *
  * Apply to EVERY caller-supplied fragment that reaches the compiler, not just
  * the obvious query body: `sourceName`/`queryName` are interpolated verbatim
@@ -89,8 +139,7 @@ export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
 }
 
 /**
- * Whether ANY of `texts` contains an authorize tag (`#(authorize)` /
- * `##(authorize)`), well-formed or not.
+ * Whether ANY of `texts` is an authorize-routed note, well-formed body or not.
  *
  * Unlike {@link collectAuthorizeExprs}, this does not parse the body or throw
  * on a malformed one — it exists to DETECT the tag in a position nothing ever
@@ -98,20 +147,87 @@ export function assertNoCallerAuthorizeAnnotation(callerText: string): void {
  * fact worth catching is that the author wrote the tag, not whether its body
  * happens to parse.
  *
- * Anchored after trimming, exactly as {@link parseAuthorizeAnnotation} anchors,
- * because each `text` here is ONE annotation note rather than a document. The
- * unanchored spelling belongs to {@link assertNoCallerAuthorizeAnnotation},
- * whose input is a whole caller-submitted model where the tag may sit on any
- * line. Sharing that form here would fail the WHOLE package load over a note
- * that merely MENTIONS the tag — a `##(description) "see the #(authorize) tag"`,
- * or a doc comment quoting it — naming as a gate an annotation the author never
- * wrote. Matching the parser is what keeps the two honest in both directions: a
+ * Routed per note, exactly as {@link parseAuthorizeAnnotation} routes, because
+ * each `text` here is ONE annotation note rather than a document. The
+ * document-wide scan belongs to {@link assertNoCallerAuthorizeAnnotation}, whose
+ * input is a whole caller-submitted model where the tag may sit on any line.
+ * Using that form here would fail the WHOLE package load over a note that merely
+ * MENTIONS the tag — a `##(description) "see the #(authorize) tag"`, or a doc
+ * comment quoting it — naming as a gate an annotation the author never wrote.
+ * Matching the parser is what keeps the two honest in both directions: a
  * spelling only the detector recognizes refuses a package over text the parser
  * would never have enforced, and one only the parser recognizes lets a real
- * misplaced gate through.
+ * misplaced gate through. This is also why the identity sets built from it
+ * (`source_extraction.ts`'s `gatedSourceOwnAuthorizeNotes`, `authorizeOwnNotes`)
+ * stay in step with what actually gets enforced.
  */
 export function containsAuthorizeAnnotationTag(texts: string[]): boolean {
-   return texts.some((text) => AUTHORIZE_ANNOTATION_PREFIX.test(text.trim()));
+   return texts.some((text) => authorizeNoteContent(text) !== undefined);
+}
+
+/**
+ * The near-miss spellings among `texts`: notes that read as an attempt at an
+ * `authorize` gate but that Malloy does NOT route to `authorize`, so no code
+ * path would ever enforce them.
+ *
+ * This is the fail-OPEN that motivates the whole route-based classification.
+ * `# (authorize) "$ROLE = 'admin'"` is route `''` — Malloy's reserved
+ * MOTLY/render namespace, the same route as `# bar_chart` — so it is a plain
+ * display tag as far as the compiler is concerned. The author reads their source
+ * as locked; it serves every row and the package loads clean.
+ *
+ * Two responses were available and only one is safe. Teaching publisher to
+ * HONOUR the spelling would assign application meaning inside a namespace Malloy
+ * reserves, and would silently start enforcing a filter on packages that served
+ * every row yesterday — no author action, no error. So the spelling is REFUSED
+ * instead: it blesses nothing, it cannot start enforcing anything, and the author
+ * gets told what to type.
+ *
+ * The test is {@link AUTHORIZE_TAG_LIKE_PREFIX} minus what Malloy routes here, so
+ * it stays a superset of the gate spellings and cannot disagree with the parser
+ * about a spelling that IS a gate. False positives are confined to a note whose
+ * text STARTS with the sigil immediately followed by `authorize` (bracketed or
+ * not) — so `#(doc)`, `# bar_chart`, `# currency`, `#(filter)`, `#(authorized)`
+ * and a `##(description)` that merely quotes the tag are all untouched, the last
+ * because the match is anchored at the note's own prefix.
+ */
+export function collectAuthorizeNearMisses(texts: Iterable<string>): string[] {
+   const found: string[] = [];
+   for (const text of texts) {
+      const trimmed = text.trimStart();
+      if (!AUTHORIZE_TAG_LIKE_PREFIX.test(trimmed)) continue;
+      if (authorizeNoteContent(trimmed) !== undefined) continue;
+      // The prefix alone — the part that decides routing. Reporting the whole
+      // note would put the author's gate expression into a load error, and the
+      // expression is not what is wrong with it.
+      found.push(trimmed.split(/[\r\n]/, 1)[0]);
+   }
+   return found;
+}
+
+/**
+ * Refuse a model load carrying any {@link collectAuthorizeNearMisses} spelling.
+ *
+ * Names every finding at once, like {@link assertNoMisplacedAuthorizeAnnotations},
+ * so an author fixing three of them reloads once rather than three times.
+ */
+export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
+   if (found.length === 0) return;
+   const unique = [...new Set(found)];
+   throw new ModelCompilationError({
+      message:
+         `These annotations are not \`authorize\` gates and nothing enforces ` +
+         `them:\n${unique.map((t) => `  - \`${t}\``).join("\n")}\n` +
+         `Malloy routes an annotation by its prefix, and only ` +
+         `\`#(authorize)\` (or \`##(authorize)\`, or the block form ` +
+         `\`#|(authorize)\`) reaches the authorize route — a space after the ` +
+         `\`#\`, spaces inside the brackets, or anything trailing the closing ` +
+         `bracket makes it a plain tag Malloy hands to something else. Write ` +
+         `\`#(authorize) "<expression>"\` on the \`source:\` statement you mean ` +
+         `to protect. This is refused rather than interpreted: guessing at the ` +
+         `intent would let publisher start enforcing a filter on a package that ` +
+         `has been serving every row.`,
+   });
 }
 
 /**
@@ -151,9 +267,8 @@ export type MisplacedAuthorizeAnnotation =
    | { kind: "field"; name: string; fieldName: string }
    | { kind: "file" };
 
-/** Human-readable position for a {@link MisplacedAuthorizeAnnotation}, shared
- *  between {@link assertNoMisplacedAuthorizeAnnotations} (fatal) and
- *  {@link describeMisplacedJoinAuthorizeWarnings} (non-fatal, join-only). */
+/** Human-readable position for a {@link MisplacedAuthorizeAnnotation}, as
+ *  {@link assertNoMisplacedAuthorizeAnnotations} names it in its refusal. */
 function describeMisplacedAuthorizeAnnotation(
    f: MisplacedAuthorizeAnnotation,
 ): string {
@@ -191,33 +306,6 @@ export function assertNoMisplacedAuthorizeAnnotations(
          `position above should move to the \`source:\` statement it is meant ` +
          `to protect.`,
    });
-}
-
-/**
- * Non-fatal counterpart to {@link assertNoMisplacedAuthorizeAnnotations} for a
- * `#(authorize)` on a `join_one:`/`join_many:` field that
- * `extractSourcesFromModelDef` could not explain as Malloy's by-reference copy
- * of a gated source's own note (`source_extraction.ts`'s
- * `joinFieldNamesUnresolvableDeclaration` and its identity check). A join line
- * has no enforcement effect either way, so this is worth telling the author
- * about — but the detection has twice proved unable to tell an authored
- * join-line annotation from Malloy's copy across an import boundary, and
- * getting that wrong here means refusing to load a whole package rather than
- * one misplaced annotation, so it warns instead of throwing. Returns one
- * formatted message per finding; callers route them through whatever
- * load-warning channel they already have (`logger.warn` in-process, the
- * worker's `authorizeWarnings` wire field out of process).
- */
-export function describeMisplacedJoinAuthorizeWarnings(
-   found: readonly MisplacedAuthorizeAnnotation[],
-): string[] {
-   return found.map(
-      (f) =>
-         `#(authorize) ${describeMisplacedAuthorizeAnnotation(f)} is a ` +
-         `join_one:/join_many: line and is never enforced there; gating a ` +
-         `join has no effect. If this was meant to lock access, move the ` +
-         `annotation to the JOINED source's own \`source:\` declaration.`,
-   );
 }
 
 /**
@@ -362,6 +450,39 @@ export type RowLevelGateRejectionCause =
    | "unreachable_given"
    | "entry_point_unexpressible";
 
+/**
+ * Builds a tuple that must cover EVERY member of `U`. The intersection with
+ * `never` on an incomplete list is what makes `tsc` fail at the call site rather
+ * than letting the omission through — the argument stops being assignable.
+ */
+const everyMemberOf =
+   <U extends string>() =>
+   <T extends readonly U[]>(
+      ...members: T & ([U] extends [T[number]] ? unknown : never)
+   ): T =>
+      members;
+
+/**
+ * Every {@link RowLevelGateRejectionCause}, as the one list the metric
+ * description and the docs both read.
+ *
+ * Retyping the list into prose is what let it drift: the metric help listed six
+ * of these (`field_given_has_default` missing, though it is emitted) and
+ * `docs/authorize.md` five (also missing `entry_point_unexpressible`) — so an
+ * operator alerting on a cause they had never been told about had nowhere to look
+ * it up. Adding a member to the union without adding it here now fails the build.
+ */
+export const ROW_LEVEL_GATE_REJECTION_CAUSES =
+   everyMemberOf<RowLevelGateRejectionCause>()(
+      "array_given_needs_in",
+      "scalar_given_rejects_in",
+      "field_given_has_default",
+      "unsupported_node",
+      "no_given_reference",
+      "unreachable_given",
+      "entry_point_unexpressible",
+   );
+
 export type RowLevelGateClassification =
    | { shape: "given_only" }
    // `givenNames` is the walker's own record of which givens the gate compared,
@@ -372,8 +493,8 @@ export type RowLevelGateClassification =
    // uses such a list invites are foreclosed. Naming a field to the caller is
    // what the error-scrubbing posture forbids, and deciding at load time which
    // entry points a gate's fields must resolve at is already answered by
-   // compiling the probe there, which is the authority. A second, weaker
-   // classifier beside that one is how two security bugs got in here already.
+   // compiling the probe there, which is the authority; a second, weaker
+   // classifier beside it is what must not exist.
    //
    // `literalAtoms` is the reconstructed source text of every `<given> <op>
    // <literal>` atom the walk accepted (e.g. `$ROLE != 'admin'` from the
@@ -1074,6 +1195,58 @@ export function buildRowLevelProbe(
 }
 
 /**
+ * Read the compiled `FilterCondition` for a {@link buildRowLevelProbe} back out
+ * of the prepared query, proving it is the one the probe just asked for.
+ *
+ * The LAST entry of `structRef.filterList` is where the probe's `where:` lands,
+ * but neither property that makes that safe to trust is assumed:
+ *
+ *  - `code` must equal `filterText`. Without it, a source carrying its OWN
+ *    `where:` — or a Malloy ordering change — hands back the AUTHOR's condition
+ *    instead of the gate's. At load time `classifyAuthorizeGate` would then decide
+ *    the gate's enforcement shape from a filter that is not the gate (a real
+ *    row-level gate reads `given_only`; a plain author filter reads `rejected`,
+ *    failing the load of a package whose gate is fine). At request time it is
+ *    worse: `assertGateLanded` "proves" the graft landed by matching this same
+ *    entry's `code`, so the proof would pass against the author's filter and the
+ *    query would run UNGATED.
+ *  - `isSourceFilter` must be true, ruling out a condition that is not a
+ *    source-level filter at all — i.e. this probe shape no longer landing where
+ *    the whole design depends on it landing.
+ *
+ * Genuinely shared by both lifts — load-time validation's
+ * {@link liftRowLevelCondition} and request-time `Model.liftGateCondition` —
+ * rather than spelled out twice. They read the same IR path and ran the same three
+ * checks independently, differing only in the error label, and a check that
+ * drifted out of one of them fails in the direction above. `label` is the subject
+ * phrase for those errors; `T` is the caller's own condition type, so the service
+ * path keeps Malloy's `FilterCondition` and the worker-bundled path keeps the duck
+ * type.
+ */
+export function liftProbeFilterCondition<T extends CompiledGateCondition>(
+   prepared: { _query?: { structRef?: { filterList?: T[] } } },
+   label: string,
+   filterText: string,
+): T {
+   const filterList = prepared._query?.structRef?.filterList;
+   if (!Array.isArray(filterList) || filterList.length === 0) {
+      throw new Error(`${label} carries no filter condition`);
+   }
+   const lifted = filterList[filterList.length - 1];
+   if (lifted.code !== filterText) {
+      throw new Error(
+         `${label} carries the wrong condition — expected "${filterText}", got "${lifted.code ?? ""}"`,
+      );
+   }
+   if (!lifted.isSourceFilter) {
+      throw new Error(
+         `${label} carries a condition that is not a source filter`,
+      );
+   }
+   return lifted;
+}
+
+/**
  * The ONE spelling of a gate entry's whole expression list as a single Malloy
  * boolean: `exprs.map(e => "(" + e + ")").join(" or ")`. Shared with
  * `Model.resolveGateShape`'s `filterText` so the text this module probes and
@@ -1086,23 +1259,14 @@ export function gateFilterText(exprs: readonly string[]): string {
 }
 
 /**
- * Compile {@link buildRowLevelProbe} and lift the LAST entry of the compiled
- * query's `structRef.filterList` — the condition Malloy built for the
- * `where:` this probe just added. Throws if the probe fails to compile (an
- * unreachable given, or — the case this exists to catch — a field the gate
- * references that this entry point renamed, excluded, or projected away) or
- * if the compiled shape carries no filter at all.
+ * Compile {@link buildRowLevelProbe} and lift the condition Malloy built for the
+ * `where:` this probe just added, via {@link liftProbeFilterCondition} — which is
+ * where the three checks that make the lift trustworthy live, shared with
+ * `Model.liftGateCondition` rather than duplicated beside it.
  *
- * Both properties that make it safe to trust the LAST entry are asserted
- * rather than assumed, exactly as in `Model.liftGateCondition` (keep the two
- * in lockstep): its `code` must be the `filterText` this probe just asked
- * for, and `isSourceFilter` must be true. Without the first, a source that
- * carries its OWN `where:` — or a Malloy ordering change — hands this
- * function the AUTHOR's condition instead of the gate's, and
- * {@link classifyAuthorizeGate} then decides the gate's enforcement shape
- * from a filter that is not the gate: a genuine row-level gate reads as
- * `given_only`, and a plain author filter (no given reference) reads as
- * `rejected`, failing the load of a package whose gate is perfectly good.
+ * Throws if the probe fails to compile (an unreachable given, or — the case this
+ * exists to catch — a field the gate references that this entry point renamed,
+ * excluded, or projected away) or if the lift itself cannot be trusted.
  */
 async function liftRowLevelCondition(
    compiler: AuthorizeProbeCompiler,
@@ -1115,29 +1279,29 @@ async function liftRowLevelCondition(
       .getPreparedQuery()) as {
       _query?: { structRef?: { filterList?: CompiledGateCondition[] } };
    };
-   const filterList = prepared._query?.structRef?.filterList;
-   if (!Array.isArray(filterList) || filterList.length === 0) {
-      throw new Error(
-         `row-level probe for "${sourceName}" carries no filter condition`,
-      );
-   }
-   const lifted = filterList[filterList.length - 1];
-   if (lifted.code !== filterText) {
-      throw new Error(
-         `row-level probe for "${sourceName}" carries the wrong condition — expected "${filterText}", got "${lifted.code ?? ""}"`,
-      );
-   }
-   if (!lifted.isSourceFilter) {
-      throw new Error(
-         `row-level probe for "${sourceName}" carries a condition that is not a source filter`,
-      );
-   }
-   return lifted;
+   return liftProbeFilterCondition(
+      prepared,
+      `row-level probe for "${sourceName}"`,
+      filterText,
+   );
 }
 
 /**
  * Run the one-row `buildAuthorizeProbe`, wrapping a failure into the
  * `ModelCompilationError` shape `validateAuthorizeProbes` has always thrown.
+ *
+ * The message interpolates the gate's own expression text, which is deliberate
+ * and discloses nothing new IN THIS THREAT MODEL: `sources[].authorize` already
+ * publishes a source's effective expressions (see `api-doc.yaml`), and the API
+ * carries no authentication of its own (`docs/security-posture.md`), so the text
+ * is already readable by anyone who can reach this server. Two precisions,
+ * because the argument is narrower than "same surface": the interpolated text
+ * can name a gate declared on a struct `sources[]` does NOT publish — a
+ * derivation base, or a composite member — and these are
+ * `ModelCompilationError`s raised on the operator's own package load, not
+ * answers to a caller's query. The author-only assumption is NOT what makes it
+ * safe; what makes it safe is that the effective expressions are published
+ * already.
  * Shared by the `given_only` path and the "no ancestor to blame this on"
  * fallback so a genuinely broken gate reports the identical message
  * regardless of which path found it.
@@ -1482,6 +1646,24 @@ export async function validateAuthorizeProbes(
          // the gate's field(s) resolved here. Still verify any literal atom
          // it carries isn't vacuously true at its given's declared default
          // before calling it valid — see `assertNoVacuousDefaultAtom`'s doc.
+         //
+         // Deliberately WITHOUT the `ownNotes.length === 0` escape the
+         // `rejected` branch above has. That escape exists because a rejected
+         // SHAPE at a note-less entry point is not an authoring mistake anyone
+         // made here — the text was synthesized by concatenating ancestors'
+         // gates. A vacuous default atom is the opposite: it is a property of
+         // the DECLARED gate and its given's declared default, both authored
+         // somewhere, and it is equally wrong at every entry point the gate
+         // reaches. Escaping here would let a gate that admits every row for a
+         // defaulting caller load as long as the first entry point that probes
+         // it happens to carry no note of its own.
+         //
+         // What that costs, and it is the whole cost: the error names
+         // `sourceName` — this entry point — which for a note-less entry is not
+         // the source that authored the gate. Neither reviewer could construct a
+         // spurious load FAILURE from it, so the effect is a correct refusal with
+         // a misleading name in it. Pinned by the entry-point-naming test in
+         // `row_level_authorize.integration.spec.ts`.
          await assertNoVacuousDefaultAtom(
             compiler,
             sourceName,
@@ -1548,16 +1730,20 @@ export async function validateAuthorizeProbes(
  *
  * Whether the annotation is source- or file-level is decided by WHERE the note
  * sits (a struct's `blockNotes` vs the model's own notes), not by the `#`/`##`
- * count, so one prefix pattern covers both. It matches exactly what
- * {@link assertNoCallerAuthorizeAnnotation} rejects, including inner whitespace
- * (`#( authorize )`) — a spelling only one of them recognized would either
- * silently drop an author's gate or wrongly refuse a caller's query.
+ * count, so the one route covers both.
+ *
+ * Classification is Malloy's — see {@link noteContentOnRoute} and this module's
+ * header. That is what makes the block form (`#|(authorize)` … `|#`) a gate here
+ * as it already is to the compiler, and what keeps `#( authorize )` /
+ * `#(authorize)X` from being honoured as gates publisher alone believes in. The
+ * body then comes from the note's own CONTENT rather than from slicing a matched
+ * prefix off the text, which is what makes the multi-line form work: Malloy has
+ * already dedented the block's body and dropped its closer.
  */
 export function parseAuthorizeAnnotation(annotation: string): string | null {
-   const trimmed = annotation.trim();
-   const prefix = AUTHORIZE_ANNOTATION_PREFIX.exec(trimmed);
-   if (!prefix) return null;
-   return unwrapQuotedExpression(trimmed.slice(prefix[0].length).trim());
+   const content = authorizeNoteContent(annotation);
+   if (content === undefined) return null;
+   return unwrapQuotedExpression(content.trim());
 }
 
 /**
