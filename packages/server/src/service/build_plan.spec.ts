@@ -507,16 +507,25 @@ describe("resolveQueryMetadata", () => {
       });
    });
 
-   it("prefers the model-file envelope over the bare form, per property", () => {
+   it("prefers the CANONICAL model-file form over the deprecated envelope", () => {
+      // Inverted deliberately. The envelope used to win, mirroring freshness —
+      // but freshness migrates the other way (there the envelope is canonical
+      // and the bare form legacy). For query metadata the bare `##
+      // queryMetadata.*` is what an author is now told to write, so the envelope
+      // winning meant the spelling we deprecate silently overrode the one we
+      // recommend, in a file that declares both.
       const source = fakeSource({
          name: "s",
          sourceEntityId: "bid",
          modelQueryMetadata: { tier: "bronze", legacy: "kept" },
-         modelMaterialization: { queryMetadata: { tier: "gold" } },
+         modelMaterialization: { queryMetadata: { tier: "gold", old: "seen" } },
       });
       expect(resolveQueryMetadata(source, null)).toEqual({
-         tier: "gold",
+         tier: "bronze",
          legacy: "kept",
+         // A property only the envelope declares still resolves — the
+         // deprecated home keeps working, it just stops overriding.
+         old: "seen",
       });
    });
 
