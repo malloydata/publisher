@@ -134,8 +134,8 @@ the package so they read as one product:
 1. **`columns=12`** on the `# dashboard` tag. Twelve divides by 2, 3, 4 and 6, so a row is even with
    three cards or four.
 2. **A `# colspan` on every card and tile, summing to 12 per row.** Four cards at 3, three at 4, two
-   tiles at 6, a full-width table at 12. Omit them and each item takes its natural width, which is
-   what "the dashboard looks janky" almost always is.
+   tiles at 6, a full-width table at 12. Omit them and every item falls to a single column, a twelfth
+   of the width, which is too narrow for a chart to draw in at all.
 3. **`# break` on the first tile after the cards.** Otherwise it flows into the columns left beside
    the cards and the next tile wraps. Not needed per row: once a row sums to 12 the next item wraps
    on its own.
@@ -175,10 +175,16 @@ its rows.
   that references it lives up an import chain. A composite must import the givens its tiles use.
 - **A suggest's source or query has to resolve in the dashboard file too.** `suggest { source=products … }`
   means the dashboard imports `products`.
-- **`# colspan` does nothing without `# dashboard { columns=N }`.** This is the usual reason a grid
-  comes out as one column. It does warn ("Ignored # colspan on 'x': colspan only applies in columns
-  mode"), but on the query response as a render log, not in the package warnings, so step 6 will not
-  show it. See "Layout" above.
+- **Put `# dashboard` on its own line whenever the artifact tag carries `givens { … }`.** A `f'…'`
+  filter literal inside that block breaks the raw parse of everything after it on the line, and
+  Publisher rescues only the `# artifact` half. So the manifest still shows the right title, autorun
+  and starting values, the reload is 200 and the package warnings are empty, and the page renders
+  **with no grid at all**: every `# colspan` and `# break` is dropped. The two idioms are each fine
+  alone; it is putting them on one line that loses the layout, silently and on every surface.
+- **`# colspan` does nothing without `# dashboard { columns=N }`.** The items fall back to flowing
+  side by side instead of aligning to a grid. It does warn ("Ignored # colspan on 'x': colspan only
+  applies in columns mode"), but on the query response as a render log, not in the package warnings,
+  so step 6 will not show it. See "Layout" above.
 - **A model-level `##` tag must be on one line.** Wrapping one always breaks it, but how you find
   out depends on what follows. If the continuation is not valid Malloy you get a compile error. If it
   happens to be, an `import` say, the file compiles clean, quietly stops being a dashboard and
@@ -279,8 +285,9 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
 fails the whole package load, and the reload answers **424** with the compile error. A package that
 was already serving then keeps serving its previous version, so the listing still answers 200 and
 looks perfectly healthy while your edit has silently not taken effect. That is the usual case and the
-one to watch for: a 424 you did not read, and a page that has not changed. Only a package that never
-loaded at all, on a fresh boot or when newly added, answers 424 on the listing too.
+one to watch for: a 424 you did not read, and a page that has not changed. A package that never loaded
+at all behaves differently: on a fresh boot its listing answers 424 too, and one added at runtime is
+refused outright, so it never appears in the package list.
 
 If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
 usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
