@@ -23,6 +23,7 @@ import {
 } from "./error_messages";
 import type { Model } from "../service/model";
 import type { Environment } from "../service/environment";
+import type { Package } from "../service/package";
 import { logger } from "../logger";
 
 /**
@@ -174,7 +175,8 @@ export async function getModelForQuery(
    packageName: string,
    modelPath: string,
 ): Promise<
-   { model: Model; environment: Environment } | { error: ErrorDetails }
+   | { model: Model; environment: Environment; pkg: Package }
+   | { error: ErrorDetails }
 > {
    try {
       const environment = await environmentStore.getEnvironment(
@@ -195,7 +197,7 @@ export async function getModelForQuery(
       }
       // Attempt to get the model definition early to catch initial compilation errors
       await model.getModel(); // This might throw ModelCompilationError
-      return { model, environment };
+      return { model, environment, pkg };
    } catch (error) {
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;
