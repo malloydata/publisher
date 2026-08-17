@@ -1835,6 +1835,10 @@ app.post(
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,
+            // Scope defaults to "append" (the historical behavior); an
+            // invalid value is rejected by compileSource with a 400 naming
+            // the valid set, never silently consumed.
+            req.body.scope ?? "append",
          );
          res.status(200).json(result);
       } catch (error) {
@@ -2146,7 +2150,17 @@ mainServer.timeout = 600000;
 mainServer.keepAliveTimeout = 600000;
 mainServer.headersTimeout = 600000;
 
+// Resolved from the REST listen callback. The .mcp.json write below waits on
+// it, so a process whose REST port fails (the listener that dies is the one
+// bound SECOND to a busy port pair) can never leave a fresh .mcp.json behind
+// pointing at a server that is about to exit.
+let resolveRestBound: () => void = () => {};
+const restBound = new Promise<void>((resolve) => {
+   resolveRestBound = resolve;
+});
+
 mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
+   resolveRestBound();
    const address = mainServer.address() as AddressInfo;
    logger.info(
       `Publisher server listening at http://${address.address}:${address.port}`,
@@ -2221,37 +2235,89 @@ const mcpServer = mcpApp.listen(
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
       if (MCP_CONFIG_ENABLED) {
-         // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
-         // raises ENOENT once the working directory has been removed. A throw
-         // here is an uncaught exception inside a listen callback, which would
-         // kill a server that has already bound both ports. Everything the call
-         // needs is built inside the try for that reason, including the
-         // endpoint: it is the newest and least-exercised code in this block.
-         try {
-            // The host an agent should dial, which is NOT `localhost`: that name
-            // resolves to both loopback families while the server binds only one,
-            // so another local process can hold the same port on the other family
-            // and receive the agent's traffic instead.
-            const endpoint = mcpEndpoint(
-               resolveClientHost(this.address(), PUBLISHER_HOST),
-               boundPort,
-            );
-            // cwd, not server_root: the file is for whoever opens an agent here.
-            logMcpConfigOutcome(
-               ensureMcpConfig({
-                  dir: process.cwd(),
-                  endpoint,
-                  requestedPort: MCP_PORT,
+         // Deferred until the REST listener has ALSO bound. Both listens are
+         // issued back-to-back, so this callback can run while the REST port is
+         // about to fail EADDRINUSE; writing here used to leave a .mcp.json
+         // pointing at a process that died moments later, and the next boot on
+         // fresh ports skips the rewrite (create-never-edit), so the stale file
+         // silently broke the NEXT agent session.
+         const boundAddress = this.address();
+         void restBound.then(() => {
+            // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
+            // raises ENOENT once the working directory has been removed. A throw
+            // here would be an unhandled rejection on a server that has already
+            // bound both ports. Everything the call needs is built inside the
+            // try for that reason, including the endpoint: it is the newest and
+            // least-exercised code in this block.
+            try {
+               // The host an agent should dial, which is NOT `localhost`: that name
+               // resolves to both loopback families while the server binds only one,
+               // so another local process can hold the same port on the other family
+               // and receive the agent's traffic instead.
+               const endpoint = mcpEndpoint(
+                  resolveClientHost(boundAddress, PUBLISHER_HOST),
                   boundPort,
-               }),
-            );
-         } catch (error) {
-            logger.info(
-               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(this.address(), PUBLISHER_HOST), boundPort))}`,
-            );
-         }
+               );
+               // cwd, not server_root: the file is for whoever opens an agent here.
+               logMcpConfigOutcome(
+                  ensureMcpConfig({
+                     dir: process.cwd(),
+                     endpoint,
+                     requestedPort: MCP_PORT,
+                     boundPort,
+                  }),
+               );
+            } catch (error) {
+               logger.info(
+                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, PUBLISHER_HOST), boundPort))}`,
+               );
+            }
+         });
       }
    },
+);
+
+// One actionable line and a clean exit for a listener that cannot bind,
+// instead of the raw uncaught-'error' crash dump (a ~40-line stack trace with
+// os.loadavg and memoryUsage for what is usually just a busy port). Closing
+// the sibling listener matters beyond tidiness: the two listens race, so the
+// OTHER port may already be bound and half a server must not linger.
+// (Line comments, not a JSDoc, and no star-slash sequence anywhere in them:
+// authorize_bypass_header.spec.ts strips block comments from this file with a
+// regex that pairs a route string's slash-star with the next closer, so a
+// block comment after the route table swallows the getQuery call it asserts
+// on.)
+function fatalListenError(
+   label: string,
+   requestedPort: number,
+   flag: string,
+   sibling: http.Server,
+): (error: NodeJS.ErrnoException) => void {
+   return (error) => {
+      if (error.code === "EADDRINUSE") {
+         logger.error(`Port ${requestedPort} in use; pass ${flag} <n>`);
+      } else {
+         logger.error(
+            `${label} listener failed on port ${requestedPort}: ${error.message}`,
+         );
+      }
+      try {
+         sibling.close();
+      } catch {
+         // Best effort: the process is exiting either way.
+      }
+      process.exit(1);
+   };
+}
+// Attached after both servers exist (an 'error' event is emitted on a later
+// tick, never synchronously out of listen(), so nothing is missed).
+mainServer.on(
+   "error",
+   fatalListenError("REST", PUBLISHER_PORT, "--port", mcpServer),
+);
+mcpServer.on(
+   "error",
+   fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
 );
 
 mcpServer.timeout = 600000;

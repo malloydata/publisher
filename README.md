@@ -96,6 +96,15 @@ in place, so nothing needs converting first):
 npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
 ```
 
+`./orders.csv` is a placeholder for a file you actually have — pasting the line verbatim fails if
+no such file exists. Any plain delimited file with a header row works; this is the whole shape:
+
+```csv
+order_id,category,amount
+1001,Furniture,789
+1002,Electronics,489.95
+```
+
 That path is relative to the directory you run the command in, so either move your file there first
 or point at wherever it already lives. Either way the scaffolder copies it into the package, so the
 original stays where it is.

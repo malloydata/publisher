@@ -32,7 +32,7 @@ description: Fix Malloy compile errors and understand error messages. Use when e
 | "Can't use type string" | Cast: `field::number` |
 | "Aggregate not allowed in where" | Use `having:` instead |
 | 20+ random errors | Backtick reserved word (`` `Date` ``, `` `Hour` ``, `` `number` ``) |
-| "Can't find field" with `rename:` | Never use `rename:`. It's incompatible with `include {}`. Use `internal:` + `dimension:` instead |
+| `Can't find field 'X' to set access modifier` | An `include {}` sits before the `extend { rename: }`. Rename first, then `include {}` naming the field by its new name (see `skill:malloy-gotchas-modeling` § Field Management) |
 | Import path errors | Check paths: `import "orders.malloy"`. All files should be in the same directory (flat layout) |
 | `from()` errors | Verify the source query returns the expected columns, check that imported sources are defined |
 | "Cannot redefine 'X'" | Field already exists from query-based source (`-> { group_by, aggregate }`). Remove the dimension, add only NEW derived fields in `extend {}`. Use `include {}` to add `#(doc)` tags to existing fields. |

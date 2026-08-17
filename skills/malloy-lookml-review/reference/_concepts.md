@@ -20,7 +20,7 @@ Reference table for translating LookML constructs to Malloy. Referenced by multi
 | `fields` exclusion (explore/join) | `internal:` (with access modifiers) | Structurally excluded; `internal:` candidate |
 | `required_access_grants` | `private:` (with access modifiers) | Security-restricted; `private:` candidate |
 | `description:` | `#(doc)` tag | Direct mapping |
-| `label:` (simple rename) | `internal:` old + `dimension: new_name is old_name` | Never use `rename:` |
+| `label:` (simple rename) | `internal:` old + `dimension: new_name is old_name` | Lighter than `rename:`, and keeps the raw column reachable |
 | `label:` (complex) | `# label="Display Name"` | When name differs from identifier |
 | `sql_table_name:` | `conn.table('schema.table')` | Use the connection name from the model definition if available |
 | `join: { relationship: many_to_one }` | `join_one:` | Direct mapping |

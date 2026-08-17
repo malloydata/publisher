@@ -85,10 +85,10 @@ run: source -> {
 
 ## Long→wide entity-values pivot (custom fields)
 
-A common LookML shape: an entity-attribute-value (EAV) table (custom fields / properties) that LookML widened by joining the same table **N times, once per attribute**. Don't port those N joins. Pivot with **filtered aggregates** in a single query-based source — one aggregate per attribute value, no repeated joins:
+A common LookML shape: an entity-attribute-value (EAV) table (custom fields / properties) that LookML widened by joining the same table **N times, once per attribute**. Don't port those N joins. Pivot with **filtered aggregates** in a single query-based source: one aggregate per attribute value, no repeated joins:
 
 ```malloy
-// EAV table: (entity_id, field_name, field_value) — one row per attribute.
+// EAV table: (entity_id, field_name, field_value), one row per attribute.
 // Wide result: one row per entity, one column per attribute of interest.
 source: entity_custom_fields is conn.table('custom_field_values') -> {
   group_by: entity_id
@@ -101,9 +101,9 @@ source: entity_custom_fields is conn.table('custom_field_values') -> {
 }
 ```
 
-`field_value.max()` (the `expr.aggregate() { where: … }` filtered-aggregate form — same shape as `x.sum() { where: … }` in `skill:malloy-gotchas-modeling`) collapses the one matching row per attribute to a scalar; `max` is a native Malloy aggregate that works on strings. Do **not** reach for `any_value`/`ANY_VALUE` — that's a warehouse SQL function, not a Malloy aggregate, and would force a raw-SQL escape that (per the median gotcha in `skill:malloy-gotchas-modeling`) doesn't compile in aggregate position anyway.
+`field_value.max()` (the `expr.aggregate() { where: … }` filtered-aggregate form, same shape as `x.sum() { where: … }` in `skill:malloy-gotchas-modeling`) collapses the one matching row per attribute to a scalar; `max` is a native Malloy aggregate that works on strings. Do **not** reach for `any_value`/`ANY_VALUE`: that's a warehouse SQL function, not a Malloy aggregate, and would force a raw-SQL escape that (per the median gotcha in `skill:malloy-gotchas-modeling`) doesn't compile in aggregate position anyway.
 
-Then `join_one` this once onto the entity source. This replaces LookML's N self-joins with one grouped scan — fewer joins, one pass, and new attributes are one more `aggregate:` line. (If an attribute can legitimately repeat per entity, that's not a wide column — model it as a nested/joined detail instead.)
+Then `join_one` this once onto the entity source. This replaces LookML's N self-joins with one grouped scan: fewer joins, one pass, and new attributes are one more `aggregate:` line. (If an attribute can legitimately repeat per entity, that's not a wide column, so model it as a nested/joined detail instead.)
 
 ## Examples
 
