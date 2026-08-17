@@ -25,6 +25,24 @@ interface ResultContainerProps {
    drill?: DrillBinding;
 }
 
+/**
+ * Height to paint at before the result has been measured.
+ *
+ * `maxHeight` is a CAP, but it was also the first paint's height, because the
+ * measured height starts out equal to it. That was harmless while every caller
+ * passed something viewport-sized (400 to 800). A caller that means "no cap"
+ * passes a number that is not a height anyone wants to see: the dashboard
+ * viewer's whole-page form passes 20000, so the panel painted twenty thousand
+ * pixels tall until the measurement landed, and a result the renderer sizes to
+ * its CONTAINER (a top-level chart, as opposed to a `# dashboard` grid, which
+ * reports its own height) measured that back and kept it.
+ *
+ * Bounded here rather than by lowering the cap, so "no cap" stays expressible.
+ * Above the cap it does nothing, which is every caller that passes a real
+ * height, so this changes nothing for them.
+ */
+const INITIAL_RENDER_HEIGHT = 2000;
+
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
 // For fill-elements, the result is rendered at minHeight, and the toggle button is shown to scale up to maxHeight.
 // For non-fill-elements, the result is rendered at explicitHeight, with a small window (minHeight) that can be expanded to maxHeight.
@@ -37,7 +55,9 @@ export default function ResultContainer({
    drill,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
-   const [measuredHeight, setMeasuredHeight] = useState(maxHeight);
+   const [measuredHeight, setMeasuredHeight] = useState(
+      Math.min(maxHeight, INITIAL_RENDER_HEIGHT),
+   );
    const [userAcknowledged, setUserAcknowledged] = useState(false);
    const renderLogSummary = summarizeRenderLogs(renderLogs);
 

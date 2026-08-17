@@ -417,12 +417,26 @@ embedding host renders the same component the Console does.
   Without it the given is the dimension name exactly as the model spells it, so
   `dimension: brand_name` looks for a given called `brand_name` and a model declaring `BRAND` does
   not match: the cell still reads as clickable and the click lands on an unfiltered page. A
-  difference of case alone is forgiven, since both surfaces fold case at lookup, and a `to=self`
-  drill seeding a given no model declares is reported at load.
+  difference of case alone is forgiven only for `to=self`, where the surface resolves the name
+  against the givens it declares and folds case doing it. A `to=<slug>` drill does no lookup: the
+  name goes into the destination's URL as the tag spells it and the destination binds only the
+  parameters it declares, spelled identically, so `given=brand` into a dashboard declaring `BRAND`
+  opens it unfiltered. A `to=self` drill seeding a given no model declares is reported at load.
 - **A file that does not compile fails the whole package.** Loading aborts on the first model error,
   so the dashboards endpoint answers 424 and none of that package's dashboards are served, including
   the ones that compiled. A failed `?reload=true` is refused the same way and leaves the previously
   compiled package serving, which is the behaviour to rely on while editing.
+
+One consequence of the new route, the same one the `data-apps` rename had: the app now claims the
+`dashboards` segment, so `/{env}/{pkg}/dashboards/<file>` is no longer redirected to the static
+route. It has to be claimed, because a slug is a filename with `.malloy` removed and
+`dashboards/report.csv.malloy` therefore publishes the slug `report.csv`, which would otherwise be
+diverted as an asset and 404 on a deep link or a refresh. The case to know about is a package that
+itself ships a `public/dashboards/` directory. Unlike `data-apps`, there is no viewer one segment
+down to catch those: `/{env}/{pkg}/dashboards/<file>` now opens the dashboard viewer, which answers
+"no such dashboard". Address them on the standalone URL,
+`/environments/{env}/packages/{pkg}/dashboards/<file>`, which serves them unchanged as it always
+did.
 
 `docs/dashboards.md` is the guide. No bundled example ships a `dashboards/` directory yet; that
 arrives with the examples change that follows this one.

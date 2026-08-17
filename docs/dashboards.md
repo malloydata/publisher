@@ -147,10 +147,14 @@ model.
 
 All of this applies equally to a `# dashboard` **view** run in a notebook cell — the two surfaces
 render through the same code, so a view laid out with these tags looks the same in a cell as on a
-dashboard page. The storefront model's `business_overview` view is the worked case, and the notebook's
-first cell is that view. Height is the one thing the surface decides rather than the tags: a dashboard
-renders at its natural height, while a notebook caps a chart cell and lets a table cell hug its rows,
-so one long result cannot push the prose off the page.
+dashboard page. The storefront model's `business_overview` view is the shipped `# dashboard` view,
+and the notebook's first cell is that view — read it as a working example of the two surfaces
+agreeing, not of the layout recipe above, which it predates: it carries no `columns=`, no colspans,
+and it nests a `# big_value` for its KPIs, which is the one thing this page says not to do. Height
+is the one thing the surface decides rather than the tags: a single-query dashboard renders at its
+natural height, a composite caps each tile so one long table cannot set its row's height, and a
+notebook caps a chart cell and lets a table cell hug its rows so one long result cannot push the
+prose off the page.
 
 ### Tag reference
 
@@ -324,9 +328,13 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   given.** Without it the given is the dimension name exactly as the model spells it, so
   `dimension: brand_name` looks for a given called `brand_name` and a model declaring `BRAND` does
   not match. The failure is quiet on the dashboard side: the cell still reads as clickable and the
-  click lands on an unfiltered page. A difference of CASE alone is forgiven, since both surfaces
-  fold case when they look the name up, and the load-time lint reports the rest: a `to=self` drill
-  seeding a given no model in the package declares is an error at load.
+  click lands on an unfiltered page. A difference of CASE alone is forgiven **only for `to=self`**,
+  where the surface resolves the name against the givens it declares and folds case doing it; a
+  notebook and a dashboard fold it the same way. A `to=<slug>` drill has no such lookup: the name
+  goes into the destination's URL exactly as the tag spells it, and the destination binds only the
+  parameters it declares, spelled identically. So `given=brand` into a dashboard declaring `BRAND`
+  opens it unfiltered. The load-time lint reports the case it can see: a `to=self` drill seeding a
+  given no model in the package declares is an error at load.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
 underlined under the pointer: plain text at rest, a link when you reach for them. They are also in

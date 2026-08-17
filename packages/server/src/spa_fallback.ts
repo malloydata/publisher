@@ -85,6 +85,14 @@ const ASSET_EXTENSIONS = new Set([
  * and reachable by in-app navigation, but a deep link or a refresh 302s to the
  * static route and answers 404. Measured before adding it.
  *
+ * The cost, which `pages` pays too and is worth stating for this one: a package
+ * that ships a `public/dashboards/` directory can no longer address those files
+ * as `/<env>/<pkg>/dashboards/<file>`, since that shape now opens the dashboard
+ * viewer, which answers "no such dashboard". `data-apps` has a viewer one
+ * segment down that catches its own collision; this route has no equivalent, so
+ * those files are reachable only on the static URL
+ * `/environments/<env>/packages/<pkg>/dashboards/<file>`.
+ *
  * `pages` is the OLD spelling of `data-apps`, kept only so an existing bookmark
  * reaches the app and the app can redirect it to the new URL. Without it here the
  * old link is diverted to the static route and 404s, which is a worse answer than

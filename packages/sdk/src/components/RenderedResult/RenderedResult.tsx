@@ -655,8 +655,6 @@ function RenderedResultInner({
          cancelled = true;
          observer?.disconnect();
          drillObserver?.disconnect();
-         if (drillKeydown) stage?.removeEventListener("keydown", drillKeydown);
-         if (drillKeyup) stage?.removeEventListener("keyup", drillKeyup);
          cancelAnimationFrame(drillFrame);
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
@@ -664,6 +662,20 @@ function RenderedResultInner({
          // (superseded, or unmounted mid-render), tear it down so it can't
          // leak a viz or leave an orphan node behind.
          if (stage && liveRef.current?.node !== stage) {
+            // The keyboard listeners go with the stage, and ONLY with the
+            // stage. Removing them unconditionally tied their lifetime to the
+            // effect RUN instead, while the stage's is tied to `liveRef`: a
+            // re-run tore them off the chart that is still on screen, which
+            // keeps its `tabindex` and `role="button"` and so still says Enter
+            // and Space do something. Usually that window closes when the new
+            // render promotes, but a render that never gets that far (a parse
+            // failure, a renderer that throws) leaves the visible chart
+            // permanently keyboard-dead while still advertising otherwise.
+            // Left on a promoted stage they are collected with the node when
+            // `promote` removes it, so nothing leaks by keeping them.
+            if (drillKeydown)
+               stage.removeEventListener("keydown", drillKeydown);
+            if (drillKeyup) stage.removeEventListener("keyup", drillKeyup);
             viz?.remove();
             if (stage.parentNode === element) {
                element.removeChild(stage);

@@ -183,7 +183,16 @@ export default function Package({
       modelPath: README_NOTEBOOK,
    });
 
-   const isLoading = !notebooksQuery.isSuccess && !notebooksQuery.isError;
+   // The dashboards list is part of the gate, not just the notebooks one,
+   // because the models list is FILTERED by it. Gated on notebooks alone, a
+   // dashboards call that resolves after the models call rendered the sections
+   // with an empty `dashboardPaths`, so `dashboards/overview.malloy` appeared
+   // under Semantic Models and then vanished — the double listing the filter
+   // exists to prevent, briefly on screen. It cannot hang the page: the query
+   // above turns a 404 or a transport failure into an empty list.
+   const isLoading =
+      (!notebooksQuery.isSuccess && !notebooksQuery.isError) ||
+      (!dashboardsQuery.isSuccess && !dashboardsQuery.isError);
 
    if (pkgQuery.isError) {
       return (
