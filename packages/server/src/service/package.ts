@@ -2108,7 +2108,6 @@ export class Package {
       const unconventionalSlugs: { modelPath: string; name: string }[] = [];
       // Dashboards served from a file that re-exports nothing, so every query
       // against them is refused by the within-file half of the query boundary.
-      const emptySurface: { modelPath: string; name: string }[] = [];
       // Dashboard files dropped because something threw while reading them, as
       // opposed to because they are not dashboards. Reported for the same
       // reason the lint reports its own truncation: without this the file just
@@ -2287,19 +2286,6 @@ export class Package {
             unconventionalSlugs.push({ modelPath, name });
          }
 
-         // Served, but possibly unusable for a second reason the file-level
-         // gate above cannot see. The query boundary ALSO requires the target
-         // to be inside the file's own `export {}` closure, so a dashboard file
-         // that only imports and re-exports nothing refuses every query made
-         // against it: a composite's tiles all 404 while the manifest looks
-         // fine. Reported rather than withheld, deliberately. Withholding would
-         // mean resolving each tile against the closure before the manifest
-         // exists, and being wrong in that direction hides a working dashboard,
-         // which is worse than serving one with a finding attached.
-         if (this.queryBoundaryActive() && model.hasEmptyDiscoverySurface()) {
-            emptySurface.push({ modelPath, name });
-         }
-
          discovered.set(name, manifest);
          if (facts) factsByPath.set(modelPath, facts);
       }
@@ -2310,7 +2296,6 @@ export class Package {
          heldBack,
          unconventionalSlugs,
          dashboardSlugs,
-         emptySurface,
          droppedByError,
       );
       for (const warning of this.dashboardWarnings) {
@@ -2335,7 +2320,6 @@ export class Package {
       heldBack: readonly { modelPath: string; name: string }[],
       unconventionalSlugs: readonly { modelPath: string; name: string }[],
       knownSlugs: ReadonlySet<string>,
-      emptySurface: readonly { modelPath: string; name: string }[],
       droppedByError: readonly { modelPath: string; name: string }[],
    ): Promise<ApiPackageWarning[]> {
       const warnings: ApiPackageWarning[] = [];
@@ -2388,27 +2372,6 @@ export class Package {
                severity: "warn",
             });
          }
-         for (const { modelPath, name } of emptySurface) {
-            // Worded off the form the dashboard actually took: this fires per
-            // FILE, so it reaches the single-query form as readily as the
-            // composite one, and that form has no tiles to talk about.
-            const tiles = this.dashboards.get(name)?.tiles;
-            warnings.push({
-               model: modelPath,
-               subject: name,
-               message:
-                  `is served, but "${modelPath}" only imports other files and ` +
-                  `re-exports none of their sources, so this package's ` +
-                  `queryableSources: "declared" setting refuses every query ` +
-                  `made against it and ` +
-                  (tiles
-                     ? `each of the dashboard's tiles answers 404`
-                     : `the dashboard's query answers 404`) +
-                  `. Add 'export { source_name }' to the file for the sources ` +
-                  `it reads.`,
-               severity: "warn",
-            });
-         }
          for (const { modelPath, name } of heldBack) {
             // A drill AT a withheld dashboard still dead-ends: the dashboard is
             // real, so calling it "not a dashboard in this package" is false,
@@ -2448,10 +2411,10 @@ export class Package {
                   `refused. It is not served. Add it to 'explores', or set ` +
                   `queryableSources: "all" to keep the curated surface for ` +
                   `discovery only. Listing it is not always sufficient on its ` +
-                  `own: a dashboard file that only imports other files must ` +
-                  `also re-export what it queries (e.g. ` +
-                  `'export { orders }'), because the query boundary checks the ` +
-                  `file's own export closure as well as this list.`,
+                  `own: the queryable sources are the union of every listed ` +
+                  `file's export closure, so a tile reading a source that only ` +
+                  `an UNLISTED file exports is still refused. List that file ` +
+                  `too, or re-export the source from one already listed.`,
                severity: "warn",
             });
          }

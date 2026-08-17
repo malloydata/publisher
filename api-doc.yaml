@@ -1742,13 +1742,14 @@ paths:
 
         Where the boundary is active at all, which needs `explores` declared
         AND `queryableSources` left at `"declared"`, being listed does not by
-        itself guarantee the dashboard runs: the query boundary also checks the entry file's own
-        `export {}` closure, so a dashboard file that only imports other files
-        and re-exports none of their sources is still served while every query
-        against it is refused. That case is reported in the package's
-        `warnings` rather than omitted, because withholding on a guess would
-        hide dashboards that do work. Under `"all"` nothing is refused, so the
-        situation does not arise and no such warning is emitted.
+        itself guarantee the dashboard runs: the queryable sources are the
+        union of every listed file's `export {}` closure, so a dashboard whose
+        tiles read a source that only an UNLISTED file exports is still served
+        while those queries are refused. The fix is to list that file too, or
+        to re-export the source from one already listed. It is served rather
+        than withheld because withholding on a guess would hide dashboards that
+        do work. Under `"all"` nothing is refused, so the situation does not
+        arise.
       parameters:
         - name: environmentName
           in: path

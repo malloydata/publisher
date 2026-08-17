@@ -1071,25 +1071,18 @@ describe("Dashboard discovery (E2E)", () => {
       });
 
       /**
-       * The gate is file-level only, and the query boundary has a second,
-       * within-file level: the target must also be inside the file's own
-       * `export {}` closure. `dashboards/composite.malloy` is in `explores` but
-       * only imports, so it passes the gate and every one of its tiles is still
-       * refused. Reported rather than withheld, because being wrong in the
-       * withholding direction hides a working dashboard.
+       * The query boundary is PACKAGE-wide, not per file. `composite.malloy` is
+       * listed and re-exports nothing of its own, but `orders.malloy` is listed
+       * too and exports `orders`, and this model resolves that name to the very
+       * declaration it exported, so the tile runs.
+       *
+       * This test used to assert 404 and was correct when written: the gate then
+       * consulted only the requested model's own `export {}` closure. #1008 made
+       * it package-wide and this is the assertion that caught it. Kept pointing
+       * at the same request rather than deleted, so the direction of the rule is
+       * pinned rather than merely unasserted.
        */
-      it("warns that a re-exporting-nothing dashboard's tiles will be refused", async () => {
-         const body = (await (await fetch(curatedUrl(""))).json()) as {
-            warnings?: { model?: string; message?: string }[];
-         };
-         const warning = (body.warnings ?? []).find((w) =>
-            (w.model ?? "").includes("composite"),
-         );
-         expect(warning?.message ?? "").toContain("re-exports none");
-         expect(warning?.message ?? "").toContain("export { source_name }");
-      });
-
-      it("confirms that tile really is refused, so the warning is not theoretical", async () => {
+      it("runs an import-only dashboard's tile, because the source's own file is listed", async () => {
          const res = await fetch(
             curatedUrl("/models/dashboards/composite.malloy/query"),
             {
@@ -1098,7 +1091,7 @@ describe("Dashboard discovery (E2E)", () => {
                body: JSON.stringify({ query: "run: orders -> by_brand" }),
             },
          );
-         expect(res.status).toBe(404);
+         expect(res.status).toBe(200);
       });
 
       /**
@@ -1240,26 +1233,10 @@ describe("Dashboard discovery (E2E)", () => {
 
       /**
        * `queryableSources: "all"` decouples the axes: `explores` still curates
-       * DISCOVERY, but nothing is refused. `hasEmptyDiscoverySurface` is about
-       * the discovery surface and is indifferent to the mode, so leaning on it
-       * alone made the warning assert a `"declared"` policy the package does
-       * not have, and 404s that never happen. The sibling held-back warning
-       * recommends exactly this setting, so an author following that advice hit
-       * it.
+       * DISCOVERY, but nothing is refused, so an import-only dashboard's tiles
+       * run regardless of any export closure.
        */
-      it("says nothing about an import-only dashboard when the boundary is inert", async () => {
-         const openUrl = `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN_PACKAGE}`;
-         const body = (await (await fetch(openUrl)).json()) as {
-            warnings?: { message?: string }[];
-         };
-         expect(
-            (body.warnings ?? []).filter((w) =>
-               (w.message ?? "").includes("re-exports none"),
-            ),
-         ).toEqual([]);
-      });
-
-      it("and its tiles really do run, which is why the warning would be false", async () => {
+      it("runs an import-only dashboard's tiles when the boundary is inert", async () => {
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN_PACKAGE}/models/dashboards/composite.malloy/query`,
             {
