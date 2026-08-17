@@ -320,12 +320,13 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   nothing. `to=self` is exempt: there the surface knows the declared type and re-encodes for it.
 - `to=self` filters wherever the click came from, without leaving the page.
 - More than one destination pops a menu, because a choice is not a guess.
-- `given=` names the given to seed. **Write it.** Without it the given is the dimension name
-  exactly as the model spells it, so a lowercase `dimension: category` looks for a given called
-  `category`. A dashboard whose model declares `CATEGORY` does not match it, and the failure is
-  quiet: the cell still reads as clickable, and the click lands on an unfiltered page with an
-  empty control. Note the load-time lint does not catch this, because it upper-cases the
-  dimension name before checking while the click does not.
+- `given=` names the given to seed. **Write it whenever the dimension is not named after the
+  given.** Without it the given is the dimension name exactly as the model spells it, so
+  `dimension: brand_name` looks for a given called `brand_name` and a model declaring `BRAND` does
+  not match. The failure is quiet on the dashboard side: the cell still reads as clickable and the
+  click lands on an unfiltered page. A difference of CASE alone is forgiven, since both surfaces
+  fold case when they look the name up, and the load-time lint reports the rest: a `to=self` drill
+  seeding a given no model in the package declares is an error at load.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
 underlined under the pointer: plain text at rest, a link when you reach for them. They are also in

@@ -413,11 +413,12 @@ embedding host renders the same component the Console does.
 
 ### Two things to know when authoring
 
-- **Write `given=` on a `# drill` tag.** Without it the given is the dimension name exactly as the
-  model spells it, so a lowercase `dimension: category` looks for a given called `category`. A
-  dashboard declaring `CATEGORY` does not match, the cell still reads as clickable, and the click
-  lands on an unfiltered page. The load-time lint does not catch it, because it upper-cases the
-  dimension name before checking while the click does not.
+- **Write `given=` on a `# drill` tag whenever the dimension is not named after the given.**
+  Without it the given is the dimension name exactly as the model spells it, so
+  `dimension: brand_name` looks for a given called `brand_name` and a model declaring `BRAND` does
+  not match: the cell still reads as clickable and the click lands on an unfiltered page. A
+  difference of case alone is forgiven, since both surfaces fold case at lookup, and a `to=self`
+  drill seeding a given no model declares is reported at load.
 - **A file that does not compile fails the whole package.** Loading aborts on the first model error,
   so the dashboards endpoint answers 424 and none of that package's dashboards are served, including
   the ones that compiled. A failed `?reload=true` is refused the same way and leaves the previously
