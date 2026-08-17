@@ -820,11 +820,7 @@ async function compileNotebookModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");

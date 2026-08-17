@@ -33,6 +33,21 @@ source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend { measure: c is count() }
 `;
 
+/**
+ * MODEL with every `#(authorize)` line removed.
+ *
+ * The tests below submit a caller edit that has dropped the author's gate, and
+ * assert the on-disk gate denies anyway. They must drop ALL of them: a leftover
+ * gate byte in caller-submitted text is refused up front by
+ * `assertNoCallerAuthorizeAnnotation` (a BadRequestError), which is a different
+ * refusal than the one under test and would pass for the wrong reason.
+ */
+const withoutGates = (model: string): string =>
+   model
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#(authorize)"))
+      .join("\n");
+
 describe("compile-path authorize gate (compileSource)", () => {
    let rootDir: string;
    let env: Environment;
@@ -150,10 +165,7 @@ describe("compile-path authorize gate (compileSource)", () => {
    });
 
    it("file scope still denies when the submitted edit deletes the gate", async () => {
-      const withoutGate = MODEL.replace(
-         `#(authorize) "$ROLE = 'analyst'"\n`,
-         "",
-      );
+      const withoutGate = withoutGates(MODEL);
       await expect(
          env.compileSource(
             "pkg",
@@ -167,10 +179,7 @@ describe("compile-path authorize gate (compileSource)", () => {
    });
 
    it("file scope catches a gated final run after an open decoy", async () => {
-      const withoutGate = MODEL.replace(
-         `#(authorize) "$ROLE = 'analyst'"\n`,
-         "",
-      );
+      const withoutGate = withoutGates(MODEL);
       await expect(
          env.compileSource(
             "pkg",
@@ -204,10 +213,7 @@ run: gated -> { aggregate: c }`,
          path.join(rootDir, "env", "pkg", "stale.malloy"),
          MODEL,
       );
-      const submitted = `${MODEL.replace(
-         `#(authorize) "$ROLE = 'analyst'"\n`,
-         "",
-      )}\nrun: gated -> { aggregate: c }`;
+      const submitted = `${withoutGates(MODEL)}\nrun: gated -> { aggregate: c }`;
 
       await expect(
          env.compileSource(
