@@ -36,8 +36,10 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
    looks like a picker but has no options, and only the package warnings name it.
 5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
-   before you save. Use the path the file is going to have; it does not need to exist yet, and its
-   relative imports resolve from it. Cheaper than a reload, and it catches a wrong field or source
+   before you save. Compile against any path in `dashboards/` that does not already hold a file: a new
+   file's own path, or for an edit a throwaway sibling like `dashboards/__check.malloy`, since
+   compiling over the saved copy collides with it. The directory is what matters, because the relative
+   imports resolve from there. Cheaper than a reload, and it catches a wrong field or source
    name outright. A clean compile is not a working dashboard: some tag mistakes surface at step 6,
    and some only when you look at the page in step 7.
 6. **SAVE IT, THEN RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
@@ -137,12 +139,9 @@ twelfth of the page wide. Use the single-query form when one tile deserves more 
 
 **The two column spellings are form-specific and neither degrades into the other.**
 `dashboard_columns=N` on the artifact tag is composite-only; `# dashboard { columns=N }` is
-single-query-only. Cross them and the page loses its layout entirely: a query tagged
-`dashboard_columns=12` renders as one plain table, no grid, every `# colspan` and `# break` dropped.
-The reload is 200, the warnings are empty, and the manifest reports `dashboardColumns: 12` either
-way, because both spellings feed the same field, so nothing short of looking at the page or reading
-the render logs will tell you (see "Losing the grid"). `tiles=` on a single-query artifact tag is
-dropped the same way, silently.
+single-query-only. Crossing them costs you the layout, quietly, and the manifest reports the count
+either way because both spellings feed the same field: see "Losing the grid". `tiles=` on a
+single-query artifact tag is dropped the same way, silently.
 
 ## Layout: the four tags that make a page line up
 
@@ -281,40 +280,46 @@ own givens, so click it and look.
 Cells in a drillable **table** column show it: pointer cursor, and a blue underline on hover. They are
 in the tab order and carry a button role too, so a keyboard reaches them, focus is styled the way
 hover is, and Enter or Space fires the drill. Chart marks get no such affordance in either Publisher
-or Malloyyo, so a dashboard meant to be drilled wants at least one table tile. A destination the
+or Malloyyo, so a dashboard meant to be drilled wants at least one untagged (table) tile. A destination the
 surface cannot honor is not marked and not offered, which is why a `to=self` reads as plain text in a
 document that declares no control for its given.
 
-**The marking is all-or-nothing across the page, and one thing quietly switches it off: another tile
-rendering a column with the same header.** Put a "revenue by category" chart beside a drillable
-`category` table, which is the obvious thing to build, and the affordance disappears from every cell
-on the page. Marking matches columns by their rendered header text, so a name a non-drillable field
-also shows is dropped rather than risk painting a dead link. The clicks still work, so this is
-invisible unless you hover. Give the two different headings with `# label=`. A transposed table is
-never marked either, for a different reason.
+**One thing quietly switches the marking off, per column: another tile rendering a column with the
+same header.** Put a "revenue by category" chart beside a drillable `category` table, which is the
+obvious thing to build, and that column's cells stop being marked. Marking matches columns by their
+rendered header text, so a name a non-drillable field also shows is dropped rather than risk painting
+a dead link. **Other drillable columns on the same page keep their marking**, so counting marked cells
+will not tell you: look at the column you care about. The clicks still work, so this is invisible
+unless you hover. Give the two different headings with `# label=`. A transposed table is never marked
+either, for a different reason.
 
 ## Losing the grid
 
-The commonest way a dashboard goes wrong is that the whole layout disappears and the page renders as
-one plain nested table. It looks healthy everywhere else: the reload is 200, the package warnings are
-empty, and the manifest reports the column count you asked for. Three causes, one symptom:
+A single-query dashboard can come out with its layout wrong in two visibly different ways, and the
+reload is 200 and the manifest reports the column count you asked for in both.
 
-1. **The column spelling does not match the form.** `dashboard_columns=N` is composite-only,
-   `# dashboard { columns=N }` is single-query-only.
-2. **A `f'…'` filter literal shares a line with `# dashboard`.** Put `# dashboard` on its own line.
-   Writing it first on the line does not help; a plain `'Outerwear'` or a bare date is fine; the
-   composite form is immune, since its layout comes from the manifest rather than from a re-parse.
-3. **You wrote `# colspan` but no `columns=N`**, so the items flow side by side instead of aligning.
+**Not a dashboard at all: one plain nested table**, every `# colspan` and `# break` dropped. Either
+the column spelling does not match the form (`dashboard_columns=N` is composite-only,
+`# dashboard { columns=N }` is single-query-only), or a `f'…'` filter literal in a `givens { … }`
+block shares a line with `# dashboard`. For the second, put `# dashboard` on its own line: writing it
+first on the line does not help, a plain `'Outerwear'` or a bare date is fine, and the composite form
+is immune because its layout comes from the manifest rather than a re-parse.
 
-Run one tile's query and read `renderLogs` on the response. It tells the three apart:
+**A dashboard, but nothing lines up**: you wrote `# colspan` without `columns=N`, so the items flow
+side by side at their natural widths instead of aligning to a grid.
+
+To tell them apart, run the dashboard's own query, `{"queryName": "<the manifest's query>"}`, and read
+`renderLogs` on the response. Single-query dashboards have no `tiles` in their manifest, so there is
+no tile query to run:
 
 | render log | what it means |
 |---|---|
-| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag: cause 1 or 2 |
-| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count: cause 3 |
-| neither, and the file is missing from the listing | the tag did not parse: see the `##`-on-one-line rule above |
+| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
+| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count |
 
-None of these reach the package warnings, so step 6 will not show them.
+Neither reaches the package warnings, so step 6 will not show either. A **wrapped `##` tag** is the
+one failure in this family that does: the file is absent from the listing and the package warnings
+say "Tag does not parse (Unclosed '{')".
 
 ## Read the lint
 
@@ -350,8 +355,9 @@ the warning list.
 - Every source, view, and field name came from the model you read in step 1.
 - The reload returned **200**, not 424. A 424 means the page you are about to look at is the old one.
 - The package reloads with **zero** dashboard warnings, and your dashboard is in the listing at all.
-- **The page is a grid, not one plain nested table.** This is the check the others cannot make for
-  you: all of them pass on a page whose layout has vanished. If it has, see "Losing the grid".
+- **The page is a dashboard and its items line up.** This is the check the others cannot make for
+  you: all of them pass both on a page that has become one plain nested table and on a dashboard whose
+  items do not align. See "Losing the grid" for which you have.
 - You opened the page and every tile shows real numbers: not stuck loading, not an error, not an
   empty state you did not intend.
 - Each control renders as the widget you intended (a select shows options; a slider is a slider),
