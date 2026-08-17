@@ -45,6 +45,15 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 | `skill:malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells |
 | `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |
 
+**Evaluation and improvement**
+
+| Skill | Use when... |
+|-------|-------------|
+| `skill:eval-loop` | Measuring, triaging, or improving a semantic model against a question set |
+| `skill:eval-answer` | Determining whether one answer correctly answered its question |
+| `skill:eval-diagnose` | Attributing an answer failure to the model, agent, or retrieval |
+| `skill:eval-improve` | Making the smallest evidence-backed model edit for a diagnosed gap |
+
 **Writing correct Malloy** (read before writing, not after failing)
 
 | Skill | Use when... |
