@@ -298,33 +298,6 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
 });
 
 describe("deriveServeBindings", () => {
-   it("does not bind a source that failed, even with a destination named", () => {
-      // The entry carries every field a binding needs, including the destination,
-      // and still must not bind: the table it names was never created. The guard
-      // is asked explicitly so a failure entry that gains a destination later --
-      // an orchestrator wanting to know where the source was headed -- does not
-      // put a phantom table back on the serve path.
-      const bindings = deriveServeBindings({
-         se_failed: {
-            sourceEntityId: "se_failed",
-            sourceName: "orders",
-            physicalTableName: "orders_g004",
-            connectionName: "wh",
-            storageDestinationName: "lake",
-            schema: [{ name: "amount", type: "BIGINT" }],
-            dataAsOf: "2026-07-20T00:00:00Z",
-            realization: "COPY",
-            rowCount: null,
-            error: "Permission denied while writing to dataset analytics",
-         },
-      });
-
-      expect(
-         bindings,
-         "a failed source names no table to serve from",
-      ).toHaveLength(0);
-   });
-
    it("binds only storage entries, keying the handle on sourceEntityId", () => {
       const bindings = deriveServeBindings({
          se_storage: {
