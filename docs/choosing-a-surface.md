@@ -151,8 +151,9 @@ filter wiring, and error handling. Guide:
   property rather than from the endpoint:** because the page controls its own requests, it can send
   `x-publisher-bypass-authorize: true` and skip gate evaluation on any deployment that does not strip
   that header at its edge ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),
-  [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). A notebook or a dashboard cannot:
-  setting a request header takes JavaScript, and neither runs any of its own.
+  [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). Neither a notebook nor a
+  dashboard offers an author a place to put the JavaScript that sending a custom header would take,
+  beyond the raw-HTML caveat at the top of this page.
 
 **Cons**
 
