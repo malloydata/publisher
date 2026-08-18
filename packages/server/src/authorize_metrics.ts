@@ -27,6 +27,10 @@
 
 import { type Counter } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
+import {
+   ROW_LEVEL_GATE_REJECTION_CAUSES,
+   type RowLevelGateRejectionCause,
+} from "./service/authorize";
 
 /** The caller-supplied request field a rejected annotation arrived in. */
 export type AuthorizeGuardField =
@@ -37,6 +41,8 @@ export type AuthorizeGuardField =
 
 let guardRejectionCounter: Counter | null = null;
 let bypassCounter: Counter | null = null;
+let rowLevelDecisionCounter: Counter | null = null;
+let rowLevelRejectionCounter: Counter | null = null;
 
 /**
  * Record one caller-declared-authorize rejection. Call BEFORE throwing, for the
@@ -93,10 +99,111 @@ export function recordAuthorizeBypass(
 }
 
 /**
+ * How a row-level `#(authorize)` gate resolved a request.
+ *
+ * `denied_by_gate` is the fail-closed path: a row-level gate is a filter, not
+ * a boolean, so there is no whole-source admission decision left to fall back
+ * on when the gate cannot be applied (a given that failed to resolve, a shape
+ * the compiled IR no longer matches) — "cannot apply the gate" must deny, and
+ * this is how an operator sees that happening.
+ *
+ * `empty_after_filter` is the other side of the same event: the gate applied
+ * cleanly and the filter matched no rows, so the caller got a normal 200 with
+ * an empty result. That is NOT an error — it is the deliberate
+ * readable-but-empty posture (see the row-level design doc) rather than a 403
+ * on a source the caller is allowed to query. It is recorded anyway because a
+ * filtered-to-nothing response is otherwise indistinguishable from a source
+ * that is genuinely empty, and a spike here is how an operator notices a
+ * misconfigured given before a support ticket does.
+ *
+ * The two share one counter rather than splitting into
+ * `_denied_total`/`_empty_total` because they are the two mutually exclusive
+ * outcomes of the same decision point (apply the gate, then look at what it
+ * did), and a dashboard reading "how did row-level gates resolve" wants them
+ * side by side as one `decision` label, not two metric names to remember.
+ */
+export type RowLevelGateDecision = "denied_by_gate" | "empty_after_filter";
+
+/**
+ * Record how one row-level `#(authorize)` gate resolved a request.
+ */
+export function recordRowLevelGateDecision(
+   decision: RowLevelGateDecision,
+): void {
+   rowLevelDecisionCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_row_level_total",
+      {
+         description:
+            "How a row-level `#(authorize)` gate resolved a request. Label: decision ('denied_by_gate'|'empty_after_filter'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error.",
+      },
+   );
+   rowLevelDecisionCounter.add(1, { decision });
+}
+
+/**
+ * Record one row-level `#(authorize)` gate refused because its compiled
+ * condition is not one of the allowed shapes (see
+ * {@link RowLevelGateRejectionCause} and the walk in `./service/authorize`).
+ *
+ * Call BEFORE throwing, for the same reason as
+ * {@link recordAuthorizeGuardRejection}: a downstream `catch` that reshapes or
+ * swallows the error must not also lose the metric.
+ *
+ * Fires at package LOAD for a refused gate — `validateAuthorizeProbes`
+ * classifies every row-level `#(authorize)` gate's compiled shape at each
+ * entry point before the package is servable, so a rejection blocks the whole
+ * load and this is a step function on deploy, not a request-rate signal.
+ * That is the expected, and by far the more common, call site: the right
+ * alert is "nonzero since the last publish", not a rate or a slope.
+ *
+ * It ALSO fires per REQUEST, defensively, from `Model.resolveGateShape` — the
+ * request-time gate-shape resolver runs the identical classification and
+ * denies the same way a load-time rejection would have. That path should be
+ * unreachable in normal operation (load-time validation already refused
+ * anything it would refuse); reaching it anyway indicates either load-time
+ * validation was bypassed for this package, or the package predates the
+ * check (loaded before row-level gates existed and never reloaded). A
+ * nonzero value from THAT call site, specifically, is worth its own look —
+ * see the paired `cause` label and the source in the request's own logs.
+ *
+ * `cause: 'entry_point_unexpressible'` is the one exception to "blocks the
+ * whole load": it fires at load for a gate that is valid but unexpressible at
+ * ONE derived entry point (an `extend` that renamed/excluded/projected away
+ * the gated field, or a `query_source` projection), which `validateAuthorize
+ * Probes` deliberately does NOT fail the load for — the rest of the model
+ * still loads and serves, and every request against that specific entry
+ * point denies instead (never fires from `Model.resolveGateShape`, since that
+ * path has no `cause` for a compile failure — see its call sites). A nonzero
+ * value here is a per-entry-point authoring mistake to fix, not an outage.
+ * "ONE derived entry point" is confirmed by `validateAuthorizeProbes` via the
+ * gate's own annotation NOTE OBJECT (shared, by reference, with a base that
+ * validated, or absent entirely) — not by gate text, which two unrelated
+ * sources can share without one deriving from the other.
+ */
+export function recordRowLevelGateRejected(
+   cause: RowLevelGateRejectionCause,
+): void {
+   rowLevelRejectionCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_row_level_rejected_total",
+      {
+         description:
+            "Row-level `#(authorize)` gates refused at package load because their compiled condition is not an allowed shape, or an inherited gate that could not be expressed at one derived entry point. Label: cause (" +
+            // Derived from the union, not retyped beside it — the retyped
+            // version had already drifted a cause behind.
+            ROW_LEVEL_GATE_REJECTION_CAUSES.map((c) => `'${c}'`).join("|") +
+            "). All but 'entry_point_unexpressible' fail the whole model load; that one fires at load without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
+      },
+   );
+   rowLevelRejectionCounter.add(1, { cause });
+}
+
+/**
  * Visible for tests. Drops the cached instrument so a fresh `MeterProvider` can
  * capture future emissions. Do NOT call from production code.
  */
 export function resetAuthorizeGuardTelemetryForTesting(): void {
    guardRejectionCounter = null;
    bypassCounter = null;
+   rowLevelDecisionCounter = null;
+   rowLevelRejectionCounter = null;
 }

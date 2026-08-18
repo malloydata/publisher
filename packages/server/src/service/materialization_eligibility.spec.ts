@@ -13,7 +13,10 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
-import { assertMaterializationEligible } from "./materialization_eligibility";
+import {
+   assertColocatedPersistNotAuthorizeGated,
+   assertMaterializationEligible,
+} from "./materialization_eligibility";
 
 const ROOT = "file:///elig/";
 let connections: FixedConnectionMap;
@@ -135,6 +138,121 @@ source: mz_authz_joined is joiner extend {
       ).toThrow(MaterializationEligibilityError);
    });
 
+   it("refuses a source gated by the BLOCK annotation form #|(authorize)", async () => {
+      // The classification is Malloy's route, not a prefix regex — and a regex
+      // could not see this form at all (`@malloydata/malloy`'s own type docs say
+      // so). While it was one, a `#|(authorize)`-gated source was BOTH ungated at
+      // query time and materialization-eligible: freezable into an artifact and
+      // served to everyone, with a clean load either way.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#|(authorize)
+"$role = 'analyst'"
+|#
+#@ persist name="mz_block_authz"
+source: mz_block_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_block_authz).toBeDefined();
+      expect(() =>
+         assertMaterializationEligible(sources.mz_block_authz),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(sources.mz_block_authz),
+      ).toThrow(/authorize/i);
+   });
+
+   it("is ELIGIBLE for a gate reached through an ANNOTATED join — the documented gap", async () => {
+      // The join-reach limit this file's header measures in prose, pinned as a
+      // test. An annotated `join_*` REPLACES the joined struct's annotations
+      // outright, leaving no authorize byte and no `inherits` in the subtree —
+      // only a `sourceID` into `ModelDef.sourceRegistry`, which this pass has no
+      // modelDef to resolve. Same model as the plain-join test above, one render
+      // tag apart, so the delta is unambiguous.
+      //
+      // Asserted as eligible rather than left untested because the header's claim
+      // that nothing is exposed by it rests on the serve path not gating joins
+      // either. If either half moves, one of these two tests has to change, and
+      // that is the point.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+#(authorize) "$role = 'analyst'"
+source: gated is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+source: joiner is duckdb.sql("SELECT 2 AS n, 'acme' AS tenant")
+#@ persist name="mz_authz_annotated_join"
+source: mz_authz_annotated_join is joiner extend {
+  # render_tag
+  join_one: g is gated on tenant = g.tenant
+} -> { aggregate: c is count() }`);
+      expect(sources.mz_authz_annotated_join).toBeDefined();
+      expect(() =>
+         assertMaterializationEligible(sources.mz_authz_annotated_join),
+      ).not.toThrow();
+   });
+
+   it("refuses a pre-aggregation ROLLUP whose base is #(authorize)-gated", async () => {
+      // The shape `synthesizePreaggregationModel` emits: the author's gated source
+      // imported under an alias, rolled up as a `#@ persist`. This refusal is what
+      // keeps `#@ preaggregate` + a row-level gate safe — a rollup groups ACROSS
+      // the gated column, so a frozen one could not be row-filtered afterwards at
+      // all. The serve path does not rely on it (see `preaggregation_seams.spec.ts`
+      // and the routing pre-check in `model.ts`), but nothing else refuses it.
+      const sources =
+         await persistSources(`##! experimental { persistence composite_sources givens }
+given: GROUPS :: number[]
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist
+source: orders__preagg__category is orders -> {
+  group_by: category
+  aggregate: total__partial is amount.sum()
+}`);
+      expect(sources.orders__preagg__category).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            sources.orders__preagg__category,
+         ),
+      ).toThrow(/authorize/i);
+      expect(() =>
+         assertMaterializationEligible(sources.orders__preagg__category),
+      ).toThrow(/authorize/i);
+   });
+
+   it("tells a rollup's author to remove #@ preaggregate, not #@ persist they never wrote", async () => {
+      // A rollup's name is synthesized and appears nowhere in the author's model,
+      // so the default message ("Source 'orders__preagg__category__<hash>' …
+      // Drop '#@ persist' from this source") sends them looking for a line that
+      // does not exist. The caller passes the `origin` that `build_plan.ts`
+      // already reports.
+      const sources =
+         await persistSources(`##! experimental { persistence composite_sources givens }
+given: GROUPS :: number[]
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist
+source: orders__preagg__category is orders -> {
+  group_by: category
+  aggregate: total__partial is amount.sum()
+}`);
+      let message = "";
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            sources.orders__preagg__category,
+            sources.orders__preagg__category.name,
+            "preaggregate",
+         );
+      } catch (err) {
+         message = (err as Error).message;
+      }
+      expect(message).toContain("#@ preaggregate");
+      expect(message).not.toContain("Drop '#@ persist'");
+      // The reason a rollup is a sharper case than an ordinary persist.
+      expect(message).toMatch(/groups ACROSS the gated column/);
+   });
+
    it("refuses a source that reaches a given through a JOIN (not just its own pipeline)", async () => {
       // The given lives on a joined source, not on mz_joined's own where/fields.
       // The compiled struct embeds the joined SourceDef, so the fail-closed walk
@@ -154,5 +272,53 @@ source: mz_joined is joiner extend {
       expect(() => assertMaterializationEligible(sources.mz_joined)).toThrow(
          MaterializationEligibilityError,
       );
+   });
+});
+
+describe("assertColocatedPersistNotAuthorizeGated", () => {
+   it("refuses a colocated persist source protected by its own #(authorize) gate", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(authorize) "$role = 'analyst'"
+#@ persist name="mz_colocated_authz"
+source: mz_colocated_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_colocated_authz).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+      ).toThrow(/authorize/i);
+   });
+
+   it("accepts an ungated colocated persist source", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#@ persist name="mz_colocated_plain"
+source: mz_colocated_plain is base -> { aggregate: c is count() }`);
+      expect(sources.mz_colocated_plain).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_plain),
+      ).not.toThrow();
+   });
+
+   it("accepts a colocated persist source that references a given but carries no gate (narrow check does not pull in referencesGiven)", async () => {
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+#@ persist name="mz_colocated_given"
+source: mz_colocated_given is base -> { where: tenant = $tenant; aggregate: c is count() }`);
+      expect(sources.mz_colocated_given).toBeDefined();
+      // assertMaterializationEligible would refuse this (referencesGiven), but
+      // the colocated check deliberately does not apply that rule.
+      expect(() =>
+         assertMaterializationEligible(sources.mz_colocated_given),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),
+      ).not.toThrow();
    });
 });

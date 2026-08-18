@@ -169,7 +169,7 @@ export function registerExecuteQueryTool(
          }
 
          // --- Execute Query ---
-         const { model, environment } = modelResult;
+         const { model, environment, pkg } = modelResult;
          logger.info(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
          );
@@ -191,6 +191,10 @@ export function registerExecuteQueryTool(
                environment: environmentName,
                // Minted here because the envelope below returns it.
                correlationId: mintCorrelationId(),
+               // The package owns its manifest, so the least-specific
+               // author-declared layer is read here; the model knows only its
+               // own file and its package's NAME.
+               packageDeclaration: pkg.getDeclaredQueryMetadata(),
                // The environment owns the connection configs, so the default
                // and enforced layers are read here rather than from the model.
                connectionMetadata: (connectionName: string) => {

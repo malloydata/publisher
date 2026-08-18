@@ -7,6 +7,7 @@ import {
    isSourceDef,
    MalloyConfig,
    MalloyError,
+   Annotations,
    ModelDef,
    modelDefToModelInfo,
    ModelMaterializer,
@@ -14,6 +15,7 @@ import {
    QueryData,
    QueryMaterializer,
    Runtime,
+   type FilterCondition,
    type SourceDef,
    type VirtualMap,
 } from "@malloydata/malloy";
@@ -38,6 +40,7 @@ import {
    getDefaultQueryRowLimit,
    getMaxQueryRows,
    getMaxResponseBytes,
+   getQueryMetadataMode,
 } from "../config";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
@@ -72,16 +75,30 @@ import type {
 import { BuildManifest } from "../storage/DatabaseInterface";
 import { URL_READER } from "../utils";
 import {
-   modelAnnotations,
-   ownLevelNoteTexts,
+   annotationTexts,
+   ownLevelNotes,
+   ownModelAnnotations,
    ownModelNotes,
+   type AnnotationNote,
 } from "./annotations";
+import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoCallerAuthorizeAnnotation,
+   assertNoMisplacedAuthorizeAnnotations,
+   buildAuthorizeProbe,
+   buildRowLevelProbe,
+   liftProbeFilterCondition,
+   classifyAuthorizeGate,
    collectAuthorizeExprs,
+   containsAuthorizeAnnotationTag,
    evaluateAuthorize,
+   gateFilterText,
    referencedGivenNames,
    validateAuthorizeProbes,
+   type AuthorizeMap,
+   type MisplacedAuthorizeAnnotation,
+   type RowLevelGateClassification,
+   type RowLevelGateRejectionCause,
 } from "./authorize";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
@@ -119,13 +136,21 @@ import {
    type PreaggregateViolation,
 } from "./preaggregation_validation";
 import {
+   ancestorGateExprs,
+   ANCESTOR_WALK_MAX_DEPTH,
+   derivedStructsReachable,
+   resolveDeclaredSource,
+   resolveQuerySourceBase,
+} from "./gate_registry_walk";
+import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
-   type OwnAuthorizeSource,
 } from "./source_extraction";
 import {
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
+   recordRowLevelGateDecision,
+   recordRowLevelGateRejected,
    type AuthorizeBypassEntryPoint,
    type AuthorizeGuardField,
 } from "../authorize_metrics";
@@ -156,6 +181,12 @@ export interface ModelQueryMetadataInput {
       default?: QueryMetadata | null;
       enforced?: QueryMetadata | null;
    } | null;
+   /**
+    * The package's declared bag — the least specific author-declared layer.
+    * Supplied by the controller, which owns the package; the model knows only
+    * its own file and its package's NAME.
+    */
+   packageDeclaration?: QueryMetadata | null;
 }
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
@@ -194,17 +225,19 @@ type GateEntry = {
    label: string;
    exprs: string[];
    selfContained: boolean;
-   /** Leading exprs always probed ambient-first — the file-level `##(authorize)`
-    *  gates, which are the ENTRY model's own. See evaluateAuthorize. */
-   ambientPrefix: number;
+   /**
+    * The ENTRY POINT this gate applies to — the run target itself, or its
+    * resolved composite branch — NOT necessarily the struct the gate's own
+    * annotations were read off (a gate carried in from a `query_source`
+    * base lives on a different struct than the entry point it gates).
+    * Absent only for the synthetic "unresolvable query-source base" deny
+    * entry, which names no real struct at all. Row-level gate resolution
+    * needs this to find where in `modelDef.contents` to graft the gate's
+    * condition ({@link Model.resolveGraftTarget}); a given-only gate never
+    * reads it.
+    */
+   struct?: SourceDef;
 };
-
-/**
- * Link budget for {@link Model.ancestorGateExprs}'s derivation walk. Exceeding
- * it denies (the chain wasn't read to its end), so it only has to be larger than
- * any real chain.
- */
-const ANCESTOR_WALK_MAX_DEPTH = 32;
 
 interface RunnableNotebookCell {
    type: "code" | "markdown";
@@ -212,8 +245,62 @@ interface RunnableNotebookCell {
    runnable?: QueryMaterializer;
    /** Retained so we can rebuild the query with filter refinements at execution time. */
    modelMaterializer?: ModelMaterializer;
+   /**
+    * This cell's own compiled modelDef — the model state AFTER this cell's
+    * own declarations, i.e. what `modelMaterializer` above was hydrated
+    * from. Retained for TWO graft roles (see `Model.graftScopeForCell` /
+    * `Model.selfGraftScopeForCell` / `Model.resolveNotebookCellGraftScope`):
+    *  - as a LATER cell's EARLIER scope: a cell's text compiles against
+    *    whatever existed BEFORE its own declarations, so the correct graft
+    *    scope for recompiling a LATER cell's text is an EARLIER cell's own
+    *    (modelDef, modelMaterializer) pair, never that later cell's own —
+    *    which already contains whatever it itself just declared, so
+    *    grafting it and recompiling that cell's own `source:`+`run:` text
+    *    against it fails with "Cannot redefine".
+    *  - as THIS cell's OWN fallback scope, when no earlier cell can cover
+    *    its gate at all (this cell declares AND runs its own gated source):
+    *    bound by repointing this cell's already-compiled queryDef via
+    *    `_loadQueryFromQueryDef`, never by recompiling text against it — the
+    *    same "Cannot redefine" collision would occur if it were recompiled,
+    *    but the repoint mechanism sidesteps it entirely by never
+    *    re-parsing any text.
+    */
+   modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
+}
+
+/**
+ * The model def + materializer a row-level gate's classification, lift
+ * probe, and graft resolve against — see `resolveGateShape`,
+ * `resolveGraftTarget`, `liftGateCondition`, `buildGraftedMaterializer`. The
+ * query path and the compile-time probe backstop use
+ * {@link Model.defaultGraftScope} — this model's own cumulative
+ * (modelDef, modelMaterializer). A notebook cell instead passes the model
+ * as resolved by {@link Model.resolveNotebookCellGraftScope} — either an
+ * EARLIER cell's own scope ({@link Model.graftScopeForCell}) or, when no
+ * earlier scope covers the run target, this cell's OWN post-declaration
+ * scope ({@link Model.selfGraftScopeForCell}). Never the model-wide
+ * cumulative one for a notebook cell: it already carries everything every
+ * cell (including this one) has declared, so recompiling a cell that
+ * declares its own source (`source: local2 is gated extend {…}` then
+ * `run: local2 -> …`) against it tries to redeclare a name the cumulative
+ * model already has, and fails with "Cannot redefine 'local2'" — the same
+ * failure a cell's OWN scope has for its OWN declarations, which is why
+ * that fallback binds by repointing a compiled queryDef instead of
+ * recompiling text (see `executeNotebookCell`).
+ *
+ * `cacheScope` namespaces `Model.gateShapeCache` and
+ * `Model.graftedMaterializerCache`: two scopes that happen to name a
+ * source identically (the model-wide model and a different cell's earlier
+ * snapshot of it, or a cell's own snapshot of itself) must never share a
+ * cached classification or a materializer grafted against the wrong
+ * modelDef.
+ */
+interface GraftScope {
+   modelDef: ModelDef;
+   materializer: ModelMaterializer;
+   cacheScope: string;
 }
 
 /**
@@ -296,16 +383,21 @@ export class Model {
     *  `Model.givens` already collapses inheritance; we just stash the list
     *  for surfacing on the compiled-model response. */
    private givens: ApiGiven[] | undefined;
-   /** Model-wide `##(authorize)` expressions; apply to every query in the
-    *  model, including ad-hoc inline sources not declared in the model. */
-   private fileLevelAuthorize: string[] = [];
+   /**
+    * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
+    * `null` = computed and nothing declared.
+    */
+   private declaredQueryMetadataMemo: QueryMetadata | null | undefined;
+   /** Memo for {@link getDeclaredSourceQueryMetadata}. */
+   private declaredSourceQueryMetadataMemo:
+      | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
-    *  anywhere in this model -- the file-level gate, every top-level
-    *  source's own gate, and every gate a top-level source carries in from
-    *  what it derives from (the same walk
-    *  {@link assertAuthorizedForAllSources} runs at request time). Computed
-    *  once at construction; see {@link filterGivensToModelSurface}, the only
-    *  consumer. */
+    *  anywhere in this model -- every top-level source's own gate, and every
+    *  gate a top-level source carries in from what it derives from (the same
+    *  walk {@link assertAuthorizedForAllSources} runs at request time).
+    *  Computed once at construction; see {@link filterGivensToModelSurface},
+    *  the only consumer. */
    private authorizeReferencedGivenNames: Set<string> = new Set();
    /** Whether discovery accessors curate to the `export {}` closure. Pushed
     *  down by the owning Package (see Package.applyDiscoveryPolicyToModels):
@@ -347,6 +439,93 @@ export class Model {
     *  {@link computeEntryPointGatesBySource}. The one answer that
     *  `sources[].authorize`, {@link getAuthorize} and the early gate all read. */
    private entryPointGatesBySource: Map<string, GateEntry[]> = new Map();
+   /**
+    * The runtime that produced this model, retained ONLY so a row-level
+    * `#(authorize)` gate can be enforced by grafting its compiled condition
+    * onto a deep-copied `ModelDef` and reloading that copy — see
+    * `buildGraftedMaterializer`. Set once, right after construction, by
+    * `setGateRuntime` from both `Model.create` and `fromSerialized`; a
+    * `Model` built any other way (a test fixture that hand-constructs one)
+    * simply has no retained runtime, so `authorizeAndBindRunnable` denies any
+    * row-level gate it finds rather than throwing — fail closed, not a crash.
+    *
+    * Threaded explicitly rather than read off `ModelMaterializer`'s own
+    * `protected runtime` field on purpose: reaching across that visibility
+    * boundary would work today, but a Malloy internal rename of that field
+    * would silently disable grafting on the next dependency bump. It still
+    * fails closed in that scenario (every row-level gate would deny instead
+    * of filtering) — but a silent, fleet-wide outage on a routine Malloy bump
+    * is exactly the failure mode worth spending an explicit field to avoid.
+    */
+   private gateRuntime: HydrationRuntime | undefined;
+   /**
+    * Row-level gate shape, memoized per `(cacheScope, graftTarget,
+    * filterText)` key — see `resolveGateShape`. Correct to cache for the LIFE
+    * OF THIS MODEL INSTANCE because a `Model` instance is never mutated and
+    * reused across a package reload; a reload always constructs a fresh
+    * `Model` (and therefore a fresh, empty cache) rather than patching this
+    * one. Storing the LIFTED condition alongside the classification (not
+    * just the classification itself) is what makes a row-level gate's SECOND
+    * consumer — grafting it onto a copied `ModelDef` — free too: the
+    * expensive part is the probe compile, and this cache is what limits it to
+    * exactly one per gate per `(cacheScope, graftTarget, filterText)` on this
+    * model instance, ever. `cacheScope` (see {@link GraftScope}) keeps a
+    * notebook cell's per-cell classification from colliding with the
+    * model-wide one, or with a different cell's.
+    *
+    * Uncapped, unlike {@link graftedMaterializerCache}, and for a reason rather
+    * than by oversight: every component of the key (`cacheScope` x `graftTarget`
+    * x `filterText`) is derived from the model's own shape, never from a
+    * caller's givens or query text, so the entry count is bounded by the model
+    * itself and no request pattern can grow it. Each entry holds a
+    * classification plus one lifted `FilterCondition` — not the retained
+    * `structuredClone(modelDef)` that made the graft cache a memory question.
+    */
+   private gateShapeCache: Map<
+      string,
+      { classification: RowLevelGateClassification; condition: FilterCondition }
+   > = new Map();
+   /**
+    * Grafted `ModelMaterializer`s, memoized per `cacheScope` + SORTED set of
+    * `(graftTarget, filterText)` pairs — see `getOrBuildGraftedMaterializer`.
+    * A graft depends only on WHICH source carries WHICH conditions, never on
+    * a caller's givens or query text (those bind later, at `run()`), so every
+    * request that hits the same gate set IN THE SAME SCOPE reuses the same
+    * graft. This is the expensive step (`structuredClone` scales with model
+    * size), so caching it is what keeps a row-level gate affordable under
+    * load rather than merely correct. `cacheScope` (see {@link GraftScope})
+    * is part of the key for the same reason as `gateShapeCache`'s: a graft
+    * built against a notebook cell's own modelDef must never be served for a
+    * different cell (or the model-wide model) that happens to name its graft
+    * target identically.
+    */
+   private graftedMaterializerCache: Map<string, ModelMaterializer> = new Map();
+   /**
+    * Entry cap for {@link graftedMaterializerCache}.
+    *
+    * Each entry retains a full `structuredClone(modelDef)`, costing roughly
+    * 1.35x the serialized ModelDef -- so uncapped, on a large gated package
+    * whose notebook multiplies the scopes by its cell count, this is a
+    * several-hundred-MiB step function per `Model` instance that nothing ever
+    * releases. 32 holds every graft set a normal package produces (one per
+    * gated entry point, plus a notebook's per-cell scopes). A miss costs one
+    * clone and one model reload, never correctness -- the graft is rebuilt from
+    * the same inputs -- so evicting too eagerly is a latency question, not a
+    * safety one.
+    */
+   private static readonly GRAFTED_MATERIALIZER_CACHE_MAX = 32;
+   /**
+    * Identifies a `QueryMaterializer` `authorizeAndBindRunnable` returned
+    * because it attached a row-level filter — an object-identity `WeakSet`
+    * rather than a field on `Model`, since `Model` is shared across
+    * concurrently in-flight requests and a per-instance flag would race.
+    * Consulted by the query and notebook paths to (a) keep a filtered query
+    * off the storage-serve tier, which cannot bind the given the filter
+    * depends on, and (b) record `empty_after_filter` without re-deriving
+    * whether a filter actually attached.
+    */
+   private rowLevelFilteredRunnables: WeakSet<QueryMaterializer> =
+      new WeakSet();
    private meter = publisherMeter();
    private queryExecutionHistogram = this.meter.createHistogram(
       "malloy_model_query_duration",
@@ -422,25 +601,6 @@ export class Model {
       this.compilationError = compilationError;
       this.filterMap = filterMap ?? new Map();
       this.givens = givens;
-      // Model-wide ##(authorize) gates, derived from the file-level annotations
-      // on the modelDef (which survives the worker boundary). These apply to
-      // any query that resolves to a model source (or to no nameable source),
-      // model-wide. (Raw-SQL access to the warehouse is closed separately by
-      // restricted mode, which rejects inline `duckdb.sql(...)` on the caller
-      // query path before any gate runs — see getQueryResults.) A
-      // successfully-loaded model has already had these validated; guard the
-      // parse defensively so the constructor never throws.
-      try {
-         this.fileLevelAuthorize = this.modelDef
-            ? collectAuthorizeExprs(
-                 (modelAnnotations(this.modelDef).notes ?? []).map(
-                    (note) => note.text,
-                 ),
-              )
-            : [];
-      } catch {
-         this.fileLevelAuthorize = [];
-      }
       // One walk, both consumers. `collectEntryPointGates` is the single
       // definition of "what gates this source as an entry point" — it follows
       // the `inherits`/registry chain AND a query-source's derivation base.
@@ -474,10 +634,10 @@ export class Model {
             ?.flatMap((g) => g.exprs);
          if (exprs && exprs.length > 0) source.authorize = exprs;
       }
-      // Guarded the same way as fileLevelAuthorize above: a malformed gate
-      // reachable only through a join/derivation must not throw out of the
-      // constructor (gateExprsForOwnAnnotations already fails closed per
-      // struct, so this can only throw on something unrelated).
+      // Guarded defensively: a malformed gate reachable only through a
+      // join/derivation must not throw out of the constructor
+      // (gateExprsForOwnAnnotations already fails closed per struct, so this
+      // can only throw on something unrelated).
       try {
          this.authorizeReferencedGivenNames =
             this.computeAuthorizeReferencedGivenNames();
@@ -513,6 +673,163 @@ export class Model {
    }
 
    /**
+    * Retain the runtime a row-level `#(authorize)` gate grafts through — see
+    * {@link gateRuntime}. Called once by each construction path
+    * (`Model.create`, `fromSerialized`) right after `new Model(...)`, rather
+    * than threaded as a constructor parameter: the constructor already has
+    * two call shapes (a compiled model, a compilation-failure placeholder)
+    * and most of its parameters are read unconditionally, while this is
+    * needed only on the compiled-model path and only for one feature.
+    */
+   private setGateRuntime(runtime: HydrationRuntime): void {
+      this.gateRuntime = runtime;
+   }
+
+   /**
+    * The graft scope every non-notebook caller uses — this model's own
+    * cumulative (modelDef, modelMaterializer), scoped `"model"`. `undefined`
+    * only when this `Model` has no compiled model at all (a
+    * compilation-failure placeholder), matching every other row-level code
+    * path's existing fail-closed posture for that case.
+    */
+   private defaultGraftScope(): GraftScope | undefined {
+      if (!this.modelDef || !this.modelMaterializer) return undefined;
+      return {
+         modelDef: this.modelDef,
+         materializer: this.modelMaterializer,
+         cacheScope: "model",
+      };
+   }
+
+   /**
+    * The EARLIER-scope half of a notebook cell's row-level graft: the model
+    * AS OF THAT CELL — the nearest EARLIER code cell's own (modelDef,
+    * modelMaterializer) pair, walking back over any markdown cell in
+    * between. Never this cell's own scope (see
+    * {@link RunnableNotebookCell.modelDef}'s doc) and never this model's
+    * cumulative {@link defaultGraftScope}, for the same "Cannot redefine"
+    * reason.
+    *
+    * `undefined` for the first code cell in a notebook, or a code cell
+    * preceded only by markdown (nothing EARLIER carries a code cell's
+    * modelDef/modelMaterializer to graft against). That is not, by itself,
+    * a reason to deny: {@link resolveNotebookCellGraftScope} — the only
+    * caller — falls back to {@link selfGraftScopeForCell} whenever this
+    * returns `undefined`, OR whenever it returns a scope that does not
+    * actually carry the cell's run target (a LATER cell that declares and
+    * runs its own gated source has an earlier cell, but not one that
+    * declared that source). A row-level gate genuinely has nowhere to graft
+    * only when NEITHER scope covers it — see
+    * `resolveNotebookCellGraftScope`'s doc for the full decision.
+    *
+    * `cacheScope` is keyed on the SUPPLYING cell's index (not the requesting
+    * cell's), so two different later cells that share the same nearest
+    * earlier code cell correctly share one cached classification/graft,
+    * while two cells whose nearest earlier cell differs never collide even
+    * if both happen to declare a same-named source.
+    */
+   private graftScopeForCell(cellIndex: number): GraftScope | undefined {
+      const cells = this.runnableNotebookCells;
+      if (!cells) return undefined;
+      for (let i = cellIndex - 1; i >= 0; i--) {
+         const prior = cells[i];
+         if (
+            prior.type === "code" &&
+            prior.modelDef &&
+            prior.modelMaterializer
+         ) {
+            return {
+               modelDef: prior.modelDef,
+               materializer: prior.modelMaterializer,
+               cacheScope: `cell:${i}`,
+            };
+         }
+      }
+      return undefined;
+   }
+
+   /**
+    * The {@link GraftScope} built from `cellIndex`'s OWN post-declaration
+    * model — the fallback {@link resolveNotebookCellGraftScope} uses
+    * whenever the nearest earlier code cell cannot cover a cell's row-level
+    * gate at all: a cell that both DECLARES a gated source and RUNS it in
+    * the SAME cell (`#(authorize) "…"` + `source: gated is …` then
+    * `run: gated -> …`, all in one cell). That source exists nowhere
+    * earlier to graft against — grafting THIS scope instead works only
+    * because the bind mechanism this scope is paired with
+    * (`_loadQueryFromQueryDef` in `executeNotebookCell`) never recompiles
+    * the cell's own text, so the "Cannot redefine" collision
+    * {@link graftScopeForCell}'s doc describes for an EARLIER-scope graft
+    * never arises here.
+    *
+    * `undefined` only when the cell itself has no compiled
+    * (modelDef, modelMaterializer) pair of its own — should not happen for
+    * any cell reaching this method, since only a cell with both ever
+    * attempts a row-level bind at all.
+    */
+   private selfGraftScopeForCell(cellIndex: number): GraftScope | undefined {
+      const cell = this.runnableNotebookCells?.[cellIndex];
+      if (!cell?.modelDef || !cell.modelMaterializer) return undefined;
+      return {
+         modelDef: cell.modelDef,
+         materializer: cell.modelMaterializer,
+         cacheScope: `cell-self:${cellIndex}`,
+      };
+   }
+
+   /**
+    * The {@link GraftScope} for a notebook cell's row-level gate — and,
+    * via `usesOwnScope`, HOW the caller must bind against it. Two scopes
+    * exist for a cell: the nearest EARLIER code cell's own
+    * ({@link graftScopeForCell}) and this cell's OWN post-declaration one
+    * ({@link selfGraftScopeForCell}). Which one is correct depends on where
+    * the RUN TARGET actually resolves — never on the cell's INDEX. A
+    * cell-0-only test would miss a LATER cell that declares and runs its
+    * own gated source: that cell has an earlier code cell, but the source
+    * it declares does not exist there either, so the earlier scope is just
+    * as unusable as it is for cell 0 — the failure is the same shape, only
+    * the cell index differs.
+    *
+    *  - If the run target resolves as a graft target against the EARLIER
+    *    scope, use it: the recompile step stays the ordinary one
+    *    (`mm.loadQuery(cellText)`), because the earlier scope does not yet
+    *    hold whatever name this cell's own text declares, so redeclaring it
+    *    during recompile succeeds. This is the `local2` case: a cell
+    *    that declares `local2 is gated extend {}` and runs it, where `gated`
+    *    (and its gate) was declared in an EARLIER cell.
+    *  - Otherwise — no earlier code cell at all (the first code cell, or one
+    *    preceded only by markdown), or the run target simply isn't reachable
+    *    from whatever the earlier scope holds — fall back to this cell's OWN
+    *    scope (`usesOwnScope: true`). The caller must NOT recompile this
+    *    cell's text against it (see {@link selfGraftScopeForCell}'s doc for
+    *    why that throws); it must repoint the cell's already-compiled
+    *    queryDef instead.
+    *
+    * Reuses {@link resolveGraftTarget} itself to decide reachability — the
+    * exact check {@link resolveGateShape} would otherwise fail on later, per
+    * gate entry — so the two can never disagree about what the earlier scope
+    * does or doesn't cover.
+    */
+   private async resolveNotebookCellGraftScope(
+      cellIndex: number,
+      runnable: QueryMaterializer,
+   ): Promise<{ graftScope: GraftScope | undefined; usesOwnScope: boolean }> {
+      const selfScope = this.selfGraftScopeForCell(cellIndex);
+      const earlierScope = this.graftScopeForCell(cellIndex);
+      if (!earlierScope) return { graftScope: selfScope, usesOwnScope: true };
+
+      const { struct, modelDef } = await this.resolveRunTargetStruct(runnable);
+      if (
+         struct &&
+         modelDef &&
+         this.resolveGraftTarget(struct, modelDef, earlierScope.modelDef)
+      ) {
+         return { graftScope: earlierScope, usesOwnScope: false };
+      }
+      return { graftScope: selfScope, usesOwnScope: true };
+   }
+
+   /**
     * Given name → declared Malloy type, from this model's own given surface
     * ({@link givens}). Passed to {@link evaluateAuthorize}'s self-contained
     * probe fallback so it prefers the gate author's DECLARED type over
@@ -521,22 +838,50 @@ export class Model {
     * declared within one import hop of this model — a gate on a source
     * reached through a deeper transitive import isn't on this surface, so
     * that case still falls back to inferring from the value.
+    *
+    * Built once and reused: {@link givens} is fixed for the life of a `Model`
+    * (a package reload constructs a fresh one), and this is on the per-gate
+    * request path — every `resolveGateShape` and every `assertAuthorizedExprs`
+    * asks for it.
     */
+   private givenDeclaredTypesCache: Map<string, string> | undefined;
+
    private givenDeclaredTypes(): Map<string, string> {
-      return new Map(
+      this.givenDeclaredTypesCache ??= new Map(
          (this.givens ?? [])
             .filter((g) => g.name != null && g.type != null)
             .map((g) => [g.name, g.type] as [string, string]),
       );
+      return this.givenDeclaredTypesCache;
    }
 
    /**
-    * Effective authorize expressions gating a source: file-level
-    * `##(authorize)` followed by the source's own `#(authorize)`, evaluated as
-    * one OR disjunction at request time. Empty array means unrestricted. Reads
-    * the per-source list surfaced on `sources` (which rides the worker
-    * serialization boundary), so it works for both freshly-created and
-    * deserialized models.
+    * Given name → declared default (rendered Malloy source text), mirroring
+    * {@link givenDeclaredTypes} — same cache-once-per-`Model` treatment, same
+    * `givens` surface. Feeds {@link classifyAuthorizeGate}'s `declaredDefaults`
+    * on the request-time graft re-classification ({@link resolveGateShape}),
+    * so a field-vs-given gate reached through a join/derivation is refused
+    * the same way `validateAuthorizeProbes` refuses it at load time — needed
+    * here too because a grafted gate can resolve against a DIFFERENT model's
+    * given surface than the one `validateAuthorizeProbes` validated.
+    */
+   private givenDeclaredDefaultsCache: Map<string, string> | undefined;
+
+   private givenDeclaredDefaults(): Map<string, string> {
+      this.givenDeclaredDefaultsCache ??= new Map(
+         (this.givens ?? [])
+            .filter((g) => g.name != null && g.default != null)
+            .map((g) => [g.name, g.default as string] as [string, string]),
+      );
+      return this.givenDeclaredDefaultsCache;
+   }
+
+   /**
+    * Effective authorize expressions gating a source: its own `#(authorize)`,
+    * evaluated as one OR disjunction at request time. Empty array means
+    * unrestricted. Reads the per-source list surfaced on `sources` (which
+    * rides the worker serialization boundary), so it works for both
+    * freshly-created and deserialized models.
     */
    public getAuthorize(sourceName: string): string[] {
       return (
@@ -587,12 +932,11 @@ export class Model {
    /**
     * Compute {@link authorizeReferencedGivenNames}: every given name (`$NAME`)
     * referenced by an authorize gate expression reachable anywhere in this
-    * model. Walks the file-level gate plus, for every top-level source in
-    * `modelDef.contents`, every gate reached from it via
-    * {@link collectEntryPointGates} — the exact same unified traversal
-    * {@link assertAuthorizedForAllSources} runs per-query, just rooted at
-    * every top-level source instead of one run target. Runs once at
-    * construction, not per request.
+    * model. Walks, for every top-level source in `modelDef.contents`, every
+    * gate reached from it via {@link collectEntryPointGates} — the exact
+    * same unified traversal {@link assertAuthorizedForAllSources} runs
+    * per-query, just rooted at every top-level source instead of one run
+    * target. Runs once at construction, not per request.
     */
    private computeAuthorizeReferencedGivenNames(): Set<string> {
       const names = new Set<string>();
@@ -601,7 +945,6 @@ export class Model {
             for (const name of referencedGivenNames(expr)) names.add(name);
          }
       };
-      addExprs(this.fileLevelAuthorize);
       for (const gates of this.entryPointGatesBySource.values()) {
          for (const { exprs } of gates) addExprs(exprs);
       }
@@ -637,30 +980,102 @@ export class Model {
    }
 
    /**
-    * Whether the model declares any `#(authorize)` / `##(authorize)` gate at all
-    * (file-level or on any source). Lets callers cheaply skip authorize work for
-    * ungated models without compiling a probe.
+    * Whether the model declares any `#(authorize)` gate at all, on any
+    * source. Lets callers cheaply skip authorize work for ungated models
+    * without compiling a probe.
     */
    public hasAuthorize(): boolean {
-      return (
-         this.fileLevelAuthorize.length > 0 ||
-         (this.sources?.some((s) => (s.authorize?.length ?? 0) > 0) ?? false)
-      );
+      return this.sources?.some((s) => (s.authorize?.length ?? 0) > 0) ?? false;
    }
 
+   /** Memoized {@link hasAnyAuthorizeNote}; `undefined` until first asked. */
+   private anyAuthorizeNote: boolean | undefined;
+
    /**
-    * Effective authorize expressions for whatever a query runs against:
-    *  - a declared model source → its own list (file-level ++ source-level);
-    *  - anything else (an ad-hoc inline `duckdb.sql(...)` source, or a source
-    *    we couldn't name) → the model-wide file-level `##(authorize)` gates.
-    * The second case is what stops a file-level gate from being bypassed by
-    * querying the warehouse through raw inline SQL.
+    * Whether this model carries an `#(authorize)` annotation ANYWHERE — the
+    * cheap short-circuit for a per-query gate walk, and deliberately NOT the
+    * same predicate as {@link hasAuthorize}.
+    *
+    * The difference is the whole point. `hasAuthorize` reads top-level sources'
+    * OWN effective gates off the extracted `sources` list, which is why
+    * `getQueryResults` warns against guarding the authoritative gate on it: a
+    * gate a source only INHERITS can be missing from it, and guarding on that
+    * re-opens the inherited-gate bypass. This asks a strictly wider question, of
+    * the IR rather than the extract: does any authorize-routed note exist across
+    * `contents` u `sourceRegistry` — on a source, on one of its fields, or
+    * anywhere up an `annotations.inherits` chain?
+    *
+    * It has to be a superset of everything {@link collectEntryPointGates} can
+    * reach, and `contents` u `sourceRegistry` alone is NOT that. Two of the five
+    * links the walk follows land on structs in neither collection, so the sweep
+    * has to follow them itself:
+    *
+    *  - a `query_source`'s base (`query.structRef`) is an INLINE `SourceDef`,
+    *    not a string into `contents`, whenever the base arrived through an
+    *    import. `import { gated }` in a middle file, `source: qs is gated ->
+    *    {...}`, then `import { qs }` locally: `contents` holds only `qs`, and
+    *    `gated`'s gate lives on the inline ref.
+    *  - a composite's resolved member (`query.compositeResolvedSourceDef`) is a
+    *    synthesized struct that is never in either collection.
+    *
+    * Both were missed by an earlier version of this sweep, which therefore
+    * answered `false` for a genuinely gated entry point and skipped the walk —
+    * handing storage and pre-aggregation routing back the dependence on a BUILD
+    * path's refusal that the guard exists to remove. {@link
+    * derivedStructsReachable} follows both, transitively.
+    *
+    * With those, `false` genuinely means "no gate is findable" — and unreadable
+    * IR returns `true`, so every remaining inexactness falls on the side of
+    * walking anyway.
+    *
+    * It exists so a deployment with pre-aggregation enabled and no gates
+    * anywhere does not start paying a live compile per query for a case it
+    * cannot hit; see `getQueryResults`'s routing pre-check.
     */
-   private effectiveAuthorizeFor(sourceName: string | undefined): string[] {
-      if (sourceName && this.sources?.some((s) => s.name === sourceName)) {
-         return this.getAuthorize(sourceName);
-      }
-      return this.fileLevelAuthorize;
+   private hasAnyAuthorizeNote(): boolean {
+      if (this.anyAuthorizeNote !== undefined) return this.anyAuthorizeNote;
+      this.anyAuthorizeNote = ((): boolean => {
+         const modelDef = this.modelDef;
+         if (!modelDef) return false;
+         try {
+            const structs: SourceDef[] = [];
+            for (const obj of Object.values(modelDef.contents)) {
+               if (isSourceDef(obj)) structs.push(obj);
+            }
+            for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
+               const entry = value.entry;
+               if (entry.type === "source_registry_reference") continue;
+               if (isSourceDef(entry)) structs.push(entry);
+            }
+            structs.push(...derivedStructsReachable(structs, modelDef));
+            for (const struct of structs) {
+               // `annotationTexts` (whole chain), not `ownLevelNoteTexts`: this
+               // has to see a gate demoted to `annotations.inherits` by a stray
+               // annotation on the deriving statement, which is the shape the
+               // inherited-gate hole lives in.
+               if (
+                  containsAuthorizeAnnotationTag(
+                     annotationTexts(struct.annotations) ?? [],
+                  )
+               ) {
+                  return true;
+               }
+               for (const field of struct.fields) {
+                  if (
+                     containsAuthorizeAnnotationTag(
+                        annotationTexts(field.annotations) ?? [],
+                     )
+                  ) {
+                     return true;
+                  }
+               }
+            }
+            return false;
+         } catch {
+            return true;
+         }
+      })();
+      return this.anyAuthorizeNote;
    }
 
    /**
@@ -678,6 +1093,15 @@ export class Model {
       sourceName: string | undefined,
       givens: Record<string, GivenValue>,
       bypassAuthorize = false,
+      /**
+       * The graft scope a row-level gate found here would classify/lift
+       * against — see {@link GraftScope}. Defaults to this model's own
+       * cumulative scope, correct for every caller except
+       * `collectAuthorizeEntryPointGates`, which forwards whatever scope the
+       * runnable it was given belongs to (a notebook cell's own, for a
+       * notebook cell's runnable).
+       */
+      graftScope: GraftScope | undefined = this.defaultGraftScope(),
    ): Promise<void> {
       if (bypassAuthorize) {
          this.noteAuthorizeBypass("source", sourceName);
@@ -696,25 +1120,58 @@ export class Model {
          ? this.entryPointGatesBySource.get(sourceName)
          : undefined;
       if (gates) {
-         for (const { label, exprs, selfContained, ambientPrefix } of gates) {
+         for (const entry of gates) {
+            // A row-level shaped gate has no boolean this probe-only method can
+            // decide — it is a row FILTER, only enforceable where a runnable
+            // exists to recompile against the grafted materializer
+            // (`authorizeAndBindRunnable`). Deferring it here is safe rather
+            // than fail-open: every caller of `assertAuthorized` that reaches a
+            // named source either IS `authorizeAndBindRunnable` itself (via the
+            // shared `collectAuthorizeEntryPointGates` helper, which re-derives
+            // and enforces this exact gate a few lines further down the SAME
+            // call) or is a best-effort PRE-compile fast path
+            // (`getQueryResults`' early gate, `assertAuthorizedForText`) that an
+            // unconditional authoritative backstop always runs after. Denying
+            // here instead would be wrong in the opposite direction: every
+            // row-level-gated query would be refused before the graft ever got
+            // a chance to run.
+            const resolution = this.modelDef
+               ? await this.resolveGateShape(entry, this.modelDef, graftScope)
+               : ({ kind: "given_only" } as const);
+            if (resolution.kind === "row_level") continue;
+            if (resolution.kind === "deny") {
+               // Same decision counter `authorizeAndBindRunnable` books for
+               // its own fail-closed refusals: a deny is a deny wherever the
+               // gate was resolved, and an operator reading
+               // `publisher_authorize_row_level_total{decision=
+               // "denied_by_gate"}` must not have a whole class of them
+               // (every gate refused at SHAPE resolution) silently missing.
+               // `cause` is the separate, finer rejection label, not a
+               // substitute for it.
+               recordRowLevelGateDecision("denied_by_gate");
+               if (resolution.cause)
+                  recordRowLevelGateRejected(resolution.cause);
+               throw new AccessDeniedError(
+                  `Access denied for source "${entry.label}".`,
+               );
+            }
             await this.assertAuthorizedExprs(
-               label,
-               exprs,
+               entry.label,
+               entry.exprs,
                givens,
-               selfContained,
-               ambientPrefix,
+               entry.selfContained,
             );
          }
          return;
       }
-      // Not a declared top-level source (an ad-hoc inline source, a name we could
-      // not resolve, or a model with no modelDef): only the model-wide file-level
-      // gate applies, ambient-first, as before.
-      await this.assertAuthorizedExprs(
-         sourceName ?? "(query)",
-         this.effectiveAuthorizeFor(sourceName),
-         givens,
-      );
+      // Not a declared top-level source (an ad-hoc inline source, a name we
+      // could not resolve, or a model with no modelDef): nothing gates it —
+      // `#(authorize)` is declared only on a `source:`, and a caller cannot
+      // reach the warehouse through one of these without going through
+      // restricted mode first (see `getQueryResults`, which rejects inline
+      // `duckdb.sql(...)`/`connection.table(...)` before any gate runs), or,
+      // for a notebook cell, without the model author having written it
+      // themselves.
    }
 
    /**
@@ -764,7 +1221,6 @@ export class Model {
       exprs: string[],
       givens: Record<string, GivenValue>,
       selfContainedFirst = false,
-      ambientPrefix = 0,
    ): Promise<void> {
       if (exprs.length === 0) return; // unrestricted
       const deny = () => {
@@ -778,7 +1234,7 @@ export class Model {
             exprs,
             givens,
             this.givenDeclaredTypes(),
-            { selfContainedFirst, ambientPrefix },
+            { selfContainedFirst },
          );
       } catch (err) {
          // Fail closed — e.g. a referenced given had no supplied value.
@@ -794,8 +1250,8 @@ export class Model {
 
    /**
     * Gate a compiled query on its ENTRY POINT — the source the query runs
-    * against. That means the run target's own `#(authorize)`, the file-level
-    * `##(authorize)`, the gate it carries from the source it derives from
+    * against. That means the run target's own `#(authorize)`, the gate it
+    * carries from the source it derives from
     * (`extend` / query-source derivation, see {@link ancestorGateExprs}), and,
     * when the run target is a composite, the one member branch Malloy resolved.
     *
@@ -824,37 +1280,86 @@ export class Model {
       givens: Record<string, GivenValue>,
       bypassAuthorize = false,
    ): Promise<void> {
-      // Returns BEFORE the nested assertAuthorized below, so this books at most
-      // one `runnable` emission and never two. It still skips the entry-point
-      // walk, which is the expensive part (resolveRunTargetStruct +
-      // collectEntryPointGates) — but NOT the source-name resolution, which is
-      // the only thing that tells an investigator what a bypass actually read.
-      // An ad-hoc query is exactly the case where the caller-side name is
-      // unavailable and this is the sole record of the target.
-      if (bypassAuthorize) {
-         this.noteAuthorizeBypass(
-            "runnable",
-            await this.resolveAuthorizeSourceFromRunnable(runnable),
-         );
-         return;
-      }
-      const ownSourceName =
-         await this.resolveAuthorizeSourceFromRunnable(runnable);
-      await this.assertAuthorized(ownSourceName, givens);
-      await this.assertAuthorizedFromCompiledRunnable(runnable, givens);
+      // No `recompile`: this method has no runnable to swap in, so it is the
+      // right shape only for a caller that wants a check, not a rewritten
+      // query to run (the compiled-source backstop used by `/compile` via
+      // `assertAuthorizedForRunnable`). A row-level gate therefore denies
+      // here rather than being silently admitted through the given-only
+      // probe — see `authorizeAndBindRunnable`, which this delegates to.
+      await this.authorizeAndBindRunnable(
+         runnable as QueryMaterializer,
+         givens,
+         {
+            bypassAuthorize,
+         },
+      );
    }
 
    /**
-    * Gate only from the compiled runnable's own ModelDef. Used when /compile
-    * targets a brand-new path that has no cached Model to provide the
-    * source-name gate. The prepared query still carries the imported source
-    * definitions and their inherited authorize annotations, so this closes the
-    * missing-model fail-open without borrowing an unrelated file-level gate.
+    * The entry-point gate walk shared by {@link assertAuthorizedForAllSources}
+    * and {@link authorizeAndBindRunnable}: resolve the run target's own source
+    * name and gate it ({@link assertAuthorized}), then resolve the compiled
+    * run-target `SourceDef` and collect every gate reachable from it as an
+    * entry point (its own annotations, a query-source derivation base, and —
+    * when the run target or that base is a composite — the one member branch
+    * Malloy resolved). This is the audited answer to "which gate applies";
+    * callers differ only in HOW they enforce what comes back (a probe here,
+    * a probe-or-graft there), never in what they collect.
+    *
+    * Gate a compiled query on its ENTRY POINT — the source the query runs
+    * against. That means the run target's own `#(authorize)`, the gate it
+    * carries from the source it derives from
+    * (`extend` / query-source derivation, see {@link ancestorGateExprs}), and,
+    * when the run target is a composite, the one member branch Malloy resolved.
+    *
+    * Joined sources are NOT gated. Reaching a gated source through `join_*` —
+    * at any depth, aliased, cross-file, query-local, or as a composite member —
+    * does not bring its gate along. This is deliberate (Q16): authorization is
+    * evaluated once, at the entry point, so a gate means "who may query THIS
+    * source", not "who may read every byte transitively beneath it". The
+    * consequence is that an author who joins sensitive data into an ungated
+    * source has published it — the gate belongs on the source callers enter
+    * through.
+    *
+    * Where several gates are collected (a derivation chain, a resolved
+    * composite branch), semantics are AND across them: any one failing denies
+    * the query, while each source's own expression list stays an OR
+    * disjunction.
+    *
+    * Runs UNCONDITIONALLY — NOT guarded by {@link hasAuthorize}, which only
+    * inspects top-level `modelDef.contents` sources and so misses a gate
+    * carried in from a derivation base that is not itself top-level. The probe
+    * is a cheap no-op for a genuinely ungated model (empty expr list), so there
+    * is nothing to save by skipping it.
     */
-   public async assertAuthorizedFromCompiledRunnable(
+   private async collectAuthorizeEntryPointGates(
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
-   ): Promise<void> {
+      /** The scope a row-level gate found here grafts against — see
+       *  {@link GraftScope}. Forwarded to `assertAuthorized` so its own
+       *  deferred classification of `runnable`'s OWN source uses the SAME
+       *  scope the caller (`authorizeAndBindRunnable`) uses for everything
+       *  else it collects here. */
+      graftScope: GraftScope | undefined,
+      /** Skip the gate keyed on the run target's own SOURCE NAME, keeping
+       *  only the gates readable from the compiled ModelDef. Set by
+       *  {@link assertAuthorizedFromCompiledRunnable} for a `/compile` of a
+       *  path with no cached Model, where the source name would resolve
+       *  against an unrelated file. */
+      skipOwnSourceGate = false,
+   ): Promise<{
+      entryPointGates: GateEntry[];
+      modelDef: ModelDef | undefined;
+   }> {
+      const ownSourceName =
+         await this.resolveAuthorizeSourceFromRunnable(runnable);
+      // Skipped by `assertAuthorizedFromCompiledRunnable`, whose whole point
+      // is to gate from the compiled ModelDef WITHOUT borrowing a gate that
+      // only the cached Model's source name would supply.
+      if (!skipOwnSourceGate) {
+         await this.assertAuthorized(ownSourceName, givens, false, graftScope);
+      }
+
       const { struct, modelDef, compositeResolvedSourceDef } =
          await this.resolveRunTargetStruct(runnable);
       const seen = new Set<SourceDef>();
@@ -901,9 +1406,98 @@ export class Model {
                modelDef,
                seen,
                true,
+               undefined,
+               // Identity-subtract `struct`'s (the composite's) own notes —
+               // Malloy copies them onto the resolved member's own
+               // `blockNotes` by reference; see `collectEntryPointGates`'s
+               // `excludeNotes` doc.
+               struct ? ownLevelNotes(struct.annotations) : [],
             ),
          );
       }
+      return { entryPointGates, modelDef };
+   }
+
+   /**
+    * Gate only from the compiled runnable's own ModelDef. Used when /compile
+    * targets a brand-new path that has no cached Model to provide the
+    * source-name gate. The prepared query still carries the imported source
+    * definitions and their inherited authorize annotations, so this closes the
+    * missing-model fail-open without borrowing an unrelated file-level gate.
+    *
+    * No `recompile`, for the same reason {@link assertAuthorizedForAllSources}
+    * passes none: this is a check, not a query rewrite, so a row-level gate
+    * denies here rather than being admitted through the given-only probe.
+    */
+   public async assertAuthorizedFromCompiledRunnable(
+      runnable: { getPreparedQuery(): Promise<unknown> },
+      givens: Record<string, GivenValue>,
+   ): Promise<void> {
+      await this.authorizeAndBindRunnable(
+         runnable as QueryMaterializer,
+         givens,
+         {
+            skipOwnSourceGate: true,
+         },
+      );
+   }
+
+   /**
+    * Whether `runnable` (a value {@link authorizeAndBindRunnable} returned) has
+    * a row-level `#(authorize)` filter attached. Object-identity keyed
+    * ({@link rowLevelFilteredRunnables}) rather than a field on `Model`, which
+    * is shared across concurrently in-flight requests. Consulted by the query
+    * and notebook paths to keep a filtered query off the storage-serve tier
+    * and to know whether an empty result is `empty_after_filter`.
+    */
+   public queryHadRowLevelFilterAttached(runnable: QueryMaterializer): boolean {
+      return this.rowLevelFilteredRunnables.has(runnable);
+   }
+
+   /**
+    * Collect and evaluate every entry-point gate on `runnable`, exactly like
+    * {@link authorizeAndBindRunnable} does BEFORE it attempts a graft:
+    * every `given_only` gate is evaluated immediately (denying on failure),
+    * every `deny`-classified gate throws immediately, and every `row_level`
+    * gate is DEFERRED — collected and returned rather than evaluated or
+    * denied — because there is nothing to enforce it against without a
+    * `recompile` step, which is `authorizeAndBindRunnable`'s job, not this
+    * one's.
+    *
+    * Factored out so `executeNotebookCell` can run a PRE-refinement gate
+    * call on `cell.runnable` that gets the SAME deferred-row-level
+    * treatment `authorizeAndBindRunnable` gives its post-refinement bind,
+    * without denying a row-level gate outright (which a raw
+    * `authorizeAndBindRunnable` call with no `recompile` would do — correct
+    * for `/compile`'s backstop, wrong for a probe that is never the
+    * authoritative enforcement point). Never calls `noteAuthorizeBypass`:
+    * this helper has no bypass concept of its own, so a caller that invokes
+    * it twice (once pre-, once post-refinement, both through
+    * `authorizeAndBindRunnable`) never double-counts a bypass audit — only
+    * `authorizeAndBindRunnable`'s own top-level `bypassAuthorize` check
+    * ever fires that counter, and it short-circuits before reaching here.
+    */
+   private async probeEntryPointGates(
+      runnable: QueryMaterializer,
+      givens: Record<string, GivenValue>,
+      graftScope: GraftScope | undefined,
+      skipOwnSourceGate = false,
+   ): Promise<
+      Array<{
+         label: string;
+         graftTarget: string;
+         filterText: string;
+         condition: FilterCondition;
+      }>
+   > {
+      const { entryPointGates, modelDef } =
+         await this.collectAuthorizeEntryPointGates(
+            runnable,
+            givens,
+            graftScope,
+            skipOwnSourceGate,
+         );
+
       // Evaluate each collected gate independently — do NOT dedup by expression
       // text. Two distinct entry-point shapes with identical gate text must each
       // be evaluated, or a non-deterministic gate (e.g. one referencing
@@ -911,18 +1505,262 @@ export class Model {
       // ~microsecond one-row DuckDB queries, so there is nothing worth deduping.
       // (Cycles/repeat structs are already pruned in collectEntryPointGates
       // by struct identity, so the list holds no literal duplicates.)
-      for (const {
-         label,
-         exprs,
-         selfContained,
-         ambientPrefix,
-      } of entryPointGates) {
+      const rowLevel: Array<{
+         label: string;
+         graftTarget: string;
+         filterText: string;
+         condition: FilterCondition;
+      }> = [];
+      for (const entry of entryPointGates) {
+         const resolution = modelDef
+            ? await this.resolveGateShape(entry, modelDef, graftScope)
+            : ({ kind: "given_only" } as const);
+         if (resolution.kind === "row_level") {
+            rowLevel.push({
+               label: entry.label,
+               graftTarget: resolution.graftTarget,
+               filterText: resolution.filterText,
+               condition: resolution.condition,
+            });
+            continue;
+         }
+         if (resolution.kind === "deny") {
+            // Booked here as well as in `authorizeAndBindRunnable` — see the
+            // identical call in `assertAuthorized`: a gate refused at SHAPE
+            // resolution is still a fail-closed deny, and leaving it out
+            // would make the decision counter under-report every one of them.
+            recordRowLevelGateDecision("denied_by_gate");
+            if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
+            throw new AccessDeniedError(
+               `Access denied for source "${entry.label}".`,
+            );
+         }
          await this.assertAuthorizedExprs(
-            label,
-            exprs,
+            entry.label,
+            entry.exprs,
             givens,
-            selfContained,
-            ambientPrefix,
+            entry.selfContained,
+         );
+      }
+      return rowLevel;
+   }
+
+   /**
+    * Whether `runnable`'s entry point carries a row-level `#(authorize)` gate
+    * — used to decide whether to attempt storage-serve routing at all.
+    *
+    * This IS the security-relevant check for that decision, not a mere
+    * performance pre-filter: the serve-shape model a routed query compiles
+    * against (`buildServeShapeModel` in `materialization_serve_transform.ts`)
+    * carries no `#(authorize)` annotation bytes at all, so once `runnable` is
+    * swapped for the shape's runnable, nothing downstream — including the
+    * authoritative walk inside {@link authorizeAndBindRunnable} — can ever
+    * discover a row-level gate this call missed. There is no post-hoc undo
+    * that can catch a false negative here: `queryHadRowLevelFilterAttached`
+    * only sees what the authoritative walk finds, and the authoritative walk
+    * runs against whichever struct `runnable` resolves to AT THAT POINT —
+    * the annotation-free shape, if routing already happened. A miss here is
+    * therefore not "storage routing attempted and then undone" — it is
+    * "storage routing attempted and never undone."
+    *
+    * Deliberately does NOT call `assertAuthorized` / `assertAuthorizedExprs`:
+    * this must never itself evaluate or deny a gate (a routing decision must
+    * not be able to deny a query the authoritative gate below would have
+    * admitted), and must never double-count a gate's metrics.
+    *
+    * Walks the SAME entry-point traversal ({@link collectEntryPointGates})
+    * the authoritative check uses, over the LIVE (unshaped) struct — not a
+    * cheaper approximation of it — because that traversal is the only thing
+    * standing between a row-level-gated entry point and the storage tier.
+    * Any exception during the walk fails closed (see the `catch` below):
+    * "cannot tell" must block routing, not admit it.
+    */
+   private async queryEntryPointHasRowLevelGate(runnable: {
+      getPreparedQuery(): Promise<unknown>;
+   }): Promise<boolean> {
+      try {
+         const { struct, modelDef, compositeResolvedSourceDef } =
+            await this.resolveRunTargetStruct(runnable);
+         // The SAME "cannot tell" the catch below refuses, not a "no gate
+         // here": `resolveRunTargetStruct` SWALLOWS a `getPreparedQuery()`
+         // throw and reports it as `{struct: undefined, modelDef: undefined}`
+         // rather than rethrowing, so a failed compile of the LIVE query
+         // lands here and never reaches that catch. Returning false would
+         // admit exactly what the catch exists to block: the live compile
+         // failed so this walk found nothing, while the serve shape's own
+         // (different, annotation-free) compile can still succeed and answer
+         // from frozen, unfiltered rows with nothing left downstream to
+         // discover the gate.
+         if (!modelDef) return true;
+         const seen = new Set<SourceDef>();
+         const gates = this.collectEntryPointGates(
+            struct,
+            modelDef,
+            seen,
+            true,
+         );
+         if (compositeResolvedSourceDef) {
+            gates.push(
+               ...this.collectEntryPointGates(
+                  compositeResolvedSourceDef,
+                  modelDef,
+                  seen,
+                  true,
+                  undefined,
+                  // Identity-subtract `struct`'s own notes — see
+                  // `collectAuthorizeEntryPointGates`'s identical exclusion
+                  // and `collectEntryPointGates`'s `excludeNotes` doc.
+                  struct ? ownLevelNotes(struct.annotations) : [],
+               ),
+            );
+         }
+         const graftScope = this.defaultGraftScope();
+         for (const entry of gates) {
+            const resolution = await this.resolveGateShape(
+               entry,
+               modelDef,
+               graftScope,
+            );
+            // Anything other than `given_only` must block routing here, not
+            // just `row_level`: `deny` means a gate exists and could not be
+            // applied (an unexpressible shape after `rename:`/`except:`/
+            // `accept:`, an unresolvable graft target, a lift that threw),
+            // which is exactly the case a routed query must never be served
+            // from — the serve shape carries no `#(authorize)` annotation
+            // bytes for anything downstream to catch the miss.
+            if (resolution.kind !== "given_only") return true;
+         }
+         return false;
+      } catch {
+         // Cannot tell whether the entry point carries a row-level gate — and,
+         // once this returns false, nothing downstream can catch a wrong
+         // guess (see this method's doc: the shape this decision routes to
+         // carries no `#(authorize)` annotation bytes at all, so a walk of it
+         // can never discover what this walk missed). Fail closed: block
+         // storage routing rather than risk serving frozen, unfiltered rows.
+         // The cost of a false positive here is a live query where a routed
+         // one would have been cheaper and still correct — the cost of a
+         // false negative is a security bypass, so it is not a close call.
+         return true;
+      }
+   }
+
+   /**
+    * Authorize a compiled runnable and return THE RUNNABLE TO EXECUTE — the
+    * one authoritative entry point for both the probe-only gate
+    * ({@link assertAuthorizedForAllSources}, which delegates here with no
+    * `recompile`) and the row-level gate, which cannot be enforced by a
+    * boolean probe at all: `#(authorize) "org_id in $GROUPS"` has no
+    * whole-source admit/deny answer, only a set of rows, so enforcing it
+    * means recompiling the caller's UNMODIFIED query text against a model
+    * whose entry source carries the condition as a `where:` — the only
+    * mechanism that doesn't leak, since appending `+ {where: ...}` to the
+    * query text resolves against the caller's own last pipeline stage and
+    * can be neutralized by a caller-controlled projection.
+    *
+    * `bypassAuthorize` short-circuits exactly like the probe-only path does,
+    * before any gate is even collected.
+    *
+    * Every `given_only` gate and every `deny` are handled by
+    * {@link probeEntryPointGates} — unchanged from before that method was
+    * factored out of this one. Every `row_level` gate it returns is held
+    * instead of evaluated inline, because there is nothing to evaluate it
+    * AGAINST until every row-level gate on this run target is known: they
+    * all graft onto the model at once, below.
+    *
+    * With no row-level gate collected — every gate on this run target is
+    * `given_only` or `deny` — `runnable` is returned UNCHANGED, so this path
+    * is byte-identical to calling the probe-only gate directly.
+    *
+    * A row-level gate with no `options.recompile` denies — there is no
+    * boolean this method can fall back to reporting, and no runnable it can
+    * rewrite, so "cannot apply the gate" must refuse rather than admit
+    * unfiltered. This is what gives `/compile` its row-level 403 for free: it
+    * has nothing to swap in (compiling a gated source is itself a schema+SQL
+    * oracle, and there is no row filtering for `/compile` to do), so it calls
+    * this method with no `recompile` and inherits the deny.
+    *
+    * Otherwise: every row-level condition collected for this run target is
+    * grafted onto ONE copied, reloaded `ModelDef` ({@link
+    * getOrBuildGraftedMaterializer}), `options.recompile` is handed that
+    * grafted materializer to produce the runnable to execute, and — before
+    * trusting that runnable — {@link assertGateLanded} proves each grafted
+    * condition is actually present on the compiled result. Any failure along
+    * this path (the graft, the recompile, or the landing proof) denies; the
+    * caught error is logged at `debug` with detail, but the thrown
+    * `AccessDeniedError` names nothing about the gate — no column, no join —
+    * since a gate reading `childtable.name` names a relationship the caller
+    * may not otherwise see.
+    */
+   public async authorizeAndBindRunnable(
+      runnable: QueryMaterializer,
+      givens: Record<string, GivenValue>,
+      options?: {
+         recompile?: (materializer: ModelMaterializer) => QueryMaterializer;
+         bypassAuthorize?: boolean;
+         /** The scope a row-level gate on `runnable` grafts against — see
+          *  {@link GraftScope}. Defaults to this model's own cumulative
+          *  scope ({@link defaultGraftScope}), which is correct for every
+          *  caller except a notebook cell, which must pass its OWN per-cell
+          *  scope (see `executeNotebookCell`, `graftScopeForCell`). */
+         graftScope?: GraftScope;
+         /** See {@link assertAuthorizedFromCompiledRunnable}. */
+         skipOwnSourceGate?: boolean;
+      },
+   ): Promise<QueryMaterializer> {
+      // Returns BEFORE the entry-point walk below, so this books at most one
+      // `runnable` emission and never two. It still skips the walk, which is
+      // the expensive part (resolveRunTargetStruct + collectEntryPointGates)
+      // — but NOT the source-name resolution, which is the only thing that
+      // tells an investigator what a bypass actually read. An ad-hoc query is
+      // exactly the case where the caller-side name is unavailable and this
+      // is the sole record of the target.
+      if (options?.bypassAuthorize) {
+         this.noteAuthorizeBypass(
+            "runnable",
+            await this.resolveAuthorizeSourceFromRunnable(runnable),
+         );
+         return runnable;
+      }
+
+      const graftScope = options?.graftScope ?? this.defaultGraftScope();
+      const rowLevel = await this.probeEntryPointGates(
+         runnable,
+         givens,
+         graftScope,
+         options?.skipOwnSourceGate ?? false,
+      );
+
+      if (rowLevel.length === 0) return runnable;
+
+      if (!options?.recompile) {
+         recordRowLevelGateDecision("denied_by_gate");
+         throw new AccessDeniedError(
+            `Access denied for source "${rowLevel[0].label}".`,
+         );
+      }
+
+      try {
+         // `rowLevel` is non-empty only when `resolveGateShape` classified a
+         // gate as `row_level`, which requires a defined `graftScope` (see
+         // its own `if (!graftScope) return { kind: "deny" }`) — so
+         // `graftScope` is never actually undefined here.
+         const graftedMaterializer = this.getOrBuildGraftedMaterializer(
+            rowLevel,
+            graftScope!,
+         );
+         const recompiled = options.recompile(graftedMaterializer);
+         await this.assertGateLanded(recompiled, rowLevel);
+         this.rowLevelFilteredRunnables.add(recompiled);
+         return recompiled;
+      } catch (err) {
+         recordRowLevelGateDecision("denied_by_gate");
+         logger.debug("Row-level authorize attach failed; denying", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         throw new AccessDeniedError(
+            `Access denied for source "${rowLevel[0].label}".`,
          );
       }
    }
@@ -990,8 +1828,8 @@ export class Model {
 
    /**
     * Effective authorize exprs read directly off a struct's block annotations
-    * (file-level `##(authorize)` ++ its own `#(authorize)`, else the nearest
-    * ancestor's — see {@link ancestorGateExprs}). Used by the derivation and
+    * (its own `#(authorize)`, else the nearest ancestor's — see
+    * {@link ancestorGateExprs}). Used by the derivation and
     * composite-member walks below, which read a struct's gate straight off its
     * own annotations rather than through a `this.sources` name lookup (a name
     * lookup only covers top-level `modelDef.contents` sources and would miss
@@ -1010,150 +1848,45 @@ export class Model {
     * (see {@link collectEntryPointGates}'s `selfContained`): an ancestor's gate
     * lives in a different source, and possibly a different given namespace, even
     * when the struct carrying it is the entry point.
+    *
+    * `excludeNotes` is subtracted, by object IDENTITY, from `struct`'s own
+    * notes before they are read — see {@link collectEntryPointGates}'s doc for
+    * why: Malloy's composite resolver copies a `query_source` base's own
+    * annotation note OBJECTS onto its resolved member struct's own
+    * `blockNotes`, alongside the member's own notes. Reading them unfiltered
+    * folds the base's gate into the member's own OR group — a different
+    * declaring source's condition landing in THIS source's disjunction, which
+    * is the AND-becomes-OR leak this parameter exists to close. Empty for
+    * every caller except the composite-member recursion in
+    * {@link collectEntryPointGates}.
     */
    private gateExprsForOwnAnnotations(
       struct: SourceDef,
       modelDef?: ModelDef,
-   ): { exprs: string[]; fromAncestor: boolean; ambientPrefix: number } {
+      excludeNotes: readonly AnnotationNote[] = [],
+   ): { exprs: string[]; fromAncestor: boolean } {
       // Both note keys: which one a gate lands in is decided by the author's
       // syntax, not by scope. See {@link ownLevelNoteTexts}.
-      const ownNotes = ownLevelNoteTexts(struct.annotations);
-      try {
-         const own = collectAuthorizeExprs(ownNotes);
-         if (own.length > 0) {
-            return {
-               exprs: [...this.fileLevelAuthorize, ...own],
-               fromAncestor: false,
-               ambientPrefix: this.fileLevelAuthorize.length,
-            };
-         }
-         const ancestor = this.ancestorGateExprs(struct, modelDef);
-         return {
-            exprs: [...this.fileLevelAuthorize, ...ancestor],
-            fromAncestor: ancestor.length > 0,
-            ambientPrefix: this.fileLevelAuthorize.length,
-         };
-      } catch {
-         return { exprs: ["false"], fromAncestor: false, ambientPrefix: 0 };
-      }
-   }
-
-   /**
-    * The gate a struct carries from the source it was derived FROM, used only
-    * when the struct declares no `#(authorize)` of its own.
-    *
-    * Malloy does not leave a base's annotations at top level once the deriving
-    * statement carries any annotation of its own — ANY annotation, not just an
-    * authorize one:
-    *  - `source: x is base extend {}` with its own note demotes the base's
-    *    annotations to `annotations.inherits` (`define-source.ts`);
-    *  - an annotated `join_one:`/`join_many:` REPLACES the joined struct's
-    *    annotations outright, with no `inherits` at all (`join.ts`) — there the
-    *    struct's own `sourceID`/`referenceID` is the only surviving link back.
-    * Reading OWN `blockNotes` alone therefore loses the base's gate to a stray
-    * render tag or doc comment, whoever wrote it. Both links are followed here,
-    * nearest first, and the first ancestor that declares a gate wins.
-    *
-    * Each level is read with {@link ownLevelNoteTexts} rather than `blockNotes`,
-    * so a base whose gate landed under `notes` is still found on every link.
-    *
-    * "Own wins over ancestor" is what keeps the documented locked-base +
-    * curated-extension idiom working (an extension declaring its own gate
-    * replaces the base's). That is only safe because the declaration is the
-    * model author's: `assertNoCallerAuthorizeAnnotation` rejects an authorize
-    * annotation in caller-submitted text, so a caller cannot mint an own gate
-    * to win with.
-    */
-   private ancestorGateExprs(
-      struct: SourceDef,
-      modelDef?: ModelDef,
-      seen: Set<SourceDef> = new Set(),
-   ): string[] {
-      // Depth-capped: the chain is a compiler-built list, but a request-time
-      // walk must not be able to spin on a malformed one. Exhausting the cap
-      // means the chain was NOT read to its end, so deny rather than report "no
-      // gate" — same fail-closed posture as the parse-error branch in
-      // {@link gateExprsForOwnAnnotations}.
-      let inherited = struct.annotations?.inherits;
-      for (
-         let depth = 0;
-         inherited && depth < ANCESTOR_WALK_MAX_DEPTH;
-         depth++
-      ) {
-         const exprs = collectAuthorizeExprs(ownLevelNoteTexts(inherited));
-         if (exprs.length > 0) return exprs;
-         inherited = inherited.inherits;
-      }
-      if (inherited) return ["false"];
-      // The registry link is followed as deep as the inherits chain, not one
-      // hop: `seen` (struct identity) is what stops a cycle, so truncating the
-      // recursion would just lose a gate two declarations up (fail open).
-      seen.add(struct);
-      if (seen.size > ANCESTOR_WALK_MAX_DEPTH) return ["false"];
-      const declared = this.resolveDeclaredSource(struct, modelDef);
-      // A registry entry we found but could not read is NOT the same as "this
-      // struct has no base" — it means the link to a base exists and the walk
-      // failed to follow it, so the gate on the other end is unknown. Deny.
-      if (declared.kind === "unresolvable") return ["false"];
-      if (declared.kind === "none" || seen.has(declared.source)) return [];
-      const exprs = collectAuthorizeExprs(
-         ownLevelNoteTexts(declared.source.annotations),
+      const ownNotes = ownLevelNotes(struct.annotations).filter(
+         (note) => !excludeNotes.includes(note),
       );
-      return exprs.length > 0
-         ? exprs
-         : this.ancestorGateExprs(declared.source, modelDef, seen);
-   }
-
-   /**
-    * The DECLARED source a struct was created from, via `ModelDef.sourceRegistry`
-    * (`referenceID` — set for a plain join or unmodified rename — then the
-    * struct's own `sourceID`).
-    *
-    * Three outcomes, and collapsing the last two would fail OPEN:
-    *  - `resolved` — the declaration this struct derives from.
-    *  - `none` — there is nothing to follow: no id, no registry, or every entry
-    *    resolves back to `struct` itself (it IS its own declaration). The
-    *    overwhelmingly common case for an ordinary top-level source, so this
-    *    has to mean "no gate here", not "deny".
-    *  - `unresolvable` — an entry WAS found for one of the ids and did not yield
-    *    a usable `SourceDef` (a `source_registry_reference` naming something
-    *    absent from `modelDef.contents`, or a non-source entry). The base exists
-    *    and we cannot read it, so the caller denies.
-    */
-   private resolveDeclaredSource(
-      struct: SourceDef,
-      modelDef?: ModelDef,
-   ):
-      | { kind: "resolved"; source: SourceDef }
-      | { kind: "none" }
-      | { kind: "unresolvable" } {
-      // Unreachable in practice: the only caller runs beneath
-      // collectEntryPointGates, which returns early without a modelDef.
-      if (!modelDef) return { kind: "none" };
-      let sawBrokenEntry = false;
-      for (const id of [struct.referenceID, struct.sourceID]) {
-         const entry = id ? modelDef.sourceRegistry?.[id]?.entry : undefined;
-         if (!entry) continue;
-         const declared =
-            entry.type === "source_registry_reference"
-               ? modelDef.contents[entry.name]
-               : entry;
-         // Its own declaration — nothing to inherit from, and not a failure.
-         if (declared === struct) continue;
-         if (!declared || !isSourceDef(declared)) {
-            sawBrokenEntry = true;
-            continue;
+      try {
+         const own = collectAuthorizeExprs(ownNotes.map((note) => note.text));
+         if (own.length > 0) {
+            return { exprs: own, fromAncestor: false };
          }
-         return { kind: "resolved", source: declared };
+         const ancestor = ancestorGateExprs(struct, modelDef);
+         return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
+      } catch {
+         return { exprs: ["false"], fromAncestor: false };
       }
-      return sawBrokenEntry ? { kind: "unresolvable" } : { kind: "none" };
    }
 
    /**
     * The gates that apply to `struct` AS AN ENTRY POINT. Collects:
-    *  - its own annotations ({@link gateExprsForOwnAnnotations}), which already
-    *    include the file-level gate and, when `struct` declares none of its own,
-    *    the nearest `extend` ancestor's ({@link ancestorGateExprs});
+    *  - its own annotations ({@link gateExprsForOwnAnnotations}) — its own
+    *    `#(authorize)`, or, when `struct` declares none of its own, the
+    *    nearest `extend` ancestor's ({@link ancestorGateExprs});
     *  - if `struct` is query-derived (`source: x is y -> {...}`), the base it
     *    derives from (`query.structRef`, resolved the way
     *    {@link resolveRunTargetStruct} resolves a run target's structRef) — a
@@ -1175,6 +1908,18 @@ export class Model {
     * it. See {@link assertAuthorizedForAllSources} for the consequence.
     *
     * `seen` (struct-identity keyed) guards cycles and repeat structs.
+    *
+    * `excludeNotes` — forwarded to {@link gateExprsForOwnAnnotations} — is the
+    * IDENTITY-subtraction the composite-member recursion below needs (see
+    * that method's doc): Malloy copies a `query_source` base's own annotation
+    * note OBJECTS onto its resolved composite member's own `blockNotes`,
+    * alongside the member's own notes, so reading the member's own gate
+    * without excluding the base's copy would fold two different declaring
+    * sources' gates into one OR group instead of the two separate
+    * (AND'd) `GateEntry` results this function already produces for the
+    * plain base-vs-composite split. Every OTHER recursive call passes none:
+    * a query-source's own base (as opposed to that base's composite-resolved
+    * member) carries no such copy to subtract.
     *
     * `QuerySourceDef` isn't re-exported from the package root (same situation as
     * `given.ts`'s `MalloyGiven` duck type), so query-source detection checks
@@ -1198,17 +1943,32 @@ export class Model {
       modelDef: ModelDef | undefined,
       seen: Set<SourceDef> = new Set(),
       treatAsOwnGate = false,
+      // The struct that STARTED this walk — the run target itself, or its
+      // resolved composite branch. Held fixed across the query-source
+      // recursion below (never reassigned to `base`/`resolved`), because it,
+      // not whichever struct a gate's OWN annotations happened to live on, is
+      // what {@link resolveGraftTarget} must graft onto: a gate carried in
+      // from a derivation base applies to THIS entry point as an entry
+      // point, and grafting the base instead cannot reach a model-declared
+      // derivation (`Z is X -> {...}`), which snapshotted its base at
+      // declaration time.
+      entryPointStruct: SourceDef | undefined = struct,
+      // See this function's doc. Non-empty only for the composite-member
+      // recursion below, which passes the query-source base's own notes so
+      // Malloy's by-reference copy of them onto the member's own `blockNotes`
+      // doesn't fold the base's gate into the member's own OR group.
+      excludeNotes: readonly AnnotationNote[] = [],
    ): GateEntry[] {
       if (!struct || !modelDef || seen.has(struct)) return [];
       seen.add(struct);
 
       const results: GateEntry[] = [];
       const label = (struct as { as?: string }).as ?? struct.name;
-      const {
-         exprs: ownExprs,
-         fromAncestor,
-         ambientPrefix,
-      } = this.gateExprsForOwnAnnotations(struct, modelDef);
+      const { exprs: ownExprs, fromAncestor } = this.gateExprsForOwnAnnotations(
+         struct,
+         modelDef,
+         excludeNotes,
+      );
       if (ownExprs.length > 0) {
          results.push({
             label,
@@ -1219,10 +1979,10 @@ export class Model {
             // ambiently would let a colliding entry-model given of the same name
             // decide it (see `evaluateAuthorize`'s `selfContainedFirst` doc).
             selfContained: fromAncestor || !treatAsOwnGate,
-            // The file-level gates in this list stay ambient regardless: they are
-            // the entry model's own, so a self-contained probe would discard the
-            // very `given:` defaults they were written against.
-            ambientPrefix,
+            // The ENTRY POINT, not `struct` — see `entryPointStruct`'s doc
+            // above. Carried so a row-level classification of THIS entry
+            // knows where to graft — see `resolveGraftTarget`.
+            struct: entryPointStruct,
          });
       }
 
@@ -1238,14 +1998,19 @@ export class Model {
          };
       };
       if (duck.type === "query_source") {
-         const ref = duck.query?.structRef;
-         const base = typeof ref === "string" ? modelDef.contents[ref] : ref;
-         if (base && isSourceDef(base)) {
+         // Shared with `extractSourcesFromModelDef`'s
+         // `effectiveAncestorGateExprs` (`./gate_registry_walk`) — see that
+         // module's doc for why the lookup is shared but this recursion
+         // (composite-branch handling, `entryPointStruct` threading) is not.
+         const base = resolveQuerySourceBase(struct, modelDef);
+         if (base) {
             results.push(
                ...this.collectEntryPointGates(
-                  base as SourceDef,
+                  base,
                   modelDef,
                   seen,
+                  false,
+                  entryPointStruct,
                ),
             );
          } else {
@@ -1260,7 +2025,6 @@ export class Model {
                label,
                exprs: ["false"],
                selfContained: true,
-               ambientPrefix: 0,
             });
          }
          // A query-source's own base may itself be a composite
@@ -1278,7 +2042,16 @@ export class Model {
          const resolved = duck.query?.compositeResolvedSourceDef;
          if (resolved) {
             results.push(
-               ...this.collectEntryPointGates(resolved, modelDef, seen),
+               ...this.collectEntryPointGates(
+                  resolved,
+                  modelDef,
+                  seen,
+                  false,
+                  entryPointStruct,
+                  // Identity-subtract the base's own notes — see this
+                  // function's `excludeNotes` doc.
+                  base ? ownLevelNotes(base.annotations) : [],
+               ),
             );
          }
          // The derivation's own inner-pipeline `join_one`s are NOT walked —
@@ -1289,13 +2062,606 @@ export class Model {
    }
 
    /**
+    * Resolve ONE {@link GateEntry} to its enforcement shape: `given_only`
+    * (unchanged — evaluated by the existing probe), `row_level` (a row
+    * FILTER, carrying the graft target and the lifted compiled condition), or
+    * `deny` (fail closed — either the compiled shape is not an allowed one,
+    * or there is nowhere to graft it).
+    *
+    * `entry.struct` is absent only for the synthetic "unresolvable
+    * query-source base" deny entry `collectEntryPointGates` manufactures,
+    * whose sole expression is the literal `"false"` — that has no field
+    * reference by construction, so it is correctly `given_only` (and denies
+    * via the probe, exactly as it always has) without needing a graft target
+    * at all.
+    *
+    * `filterText` folds the entry's whole OR disjunction into ONE expression:
+    * `exprs.map(e => "(" + e + ")").join(" or ")`. This is deliberate, not
+    * incidental — it is what keeps the admin-override idiom working under
+    * row-level enforcement. `#(authorize) "$ROLE = 'admin'"` OR'd with
+    * `#(authorize) "org_id in $GROUPS"` becomes
+    * `($ROLE = 'admin') or (org_id in $GROUPS)`, ONE filter that preserves OR
+    * semantics exactly: an admin's `$ROLE` check makes the whole disjunction
+    * (and therefore the row filter) constant-true, not a second gate an admin
+    * must ALSO satisfy. A given-only predicate inside a `where:` is legal
+    * Malloy and constant for the life of one request, so folding a
+    * given-only disjunct into the same filter text changes nothing about
+    * what rows it admits.
+    *
+    * Classification is memoized per `(cacheScope, graftTarget, filterText)`
+    * in {@link gateShapeCache} — see that field's doc for why caching on the
+    * MODEL INSTANCE (rather than, say, a process-wide cache) is what makes
+    * this correct across a package reload, and why `cacheScope` is part of
+    * the key. A cache miss lifts the condition through `graftScope`'s OWN
+    * materializer ({@link liftGateCondition}) and classifies it
+    * ({@link classifyAuthorizeGate}); a `rejected` classification is cached
+    * too; a THROW from the lift itself is NOT cached (it denies for this
+    * call, but is retried on the next one) and is treated as a straight
+    * deny, never a fallback to the probe — the probe cannot correctly
+    * evaluate a gate that references a row field at all.
+    *
+    * The FINAL graft target key is always resolved against
+    * `graftScope.modelDef` — the STABLE model this SCOPE grafts onto and
+    * lifts through ({@link liftGateCondition} compiles via
+    * `graftScope.materializer`) — never against the caller's own compiled
+    * query's ephemeral `originModelDef`. That ephemeral model mints its own
+    * fresh copy of every declared source (a caller-declared `source: mine is
+    * X extend {}` becomes a REAL `contents["mine"]` entry there, but nowhere
+    * else), so resolving the graft target against it can find a key that
+    * does not exist in `graftScope.modelDef.contents` at all — the graft and
+    * the lift probe both require a `graftScope.modelDef.contents` key.
+    * `originModelDef` — the model `entry.struct` actually compiled against —
+    * is still needed for the ancestor WALK itself (see
+    * {@link resolveGraftTarget}): that is the only model whose
+    * `sourceRegistry` can possibly link `entry.struct` to whatever it
+    * derives from. For the query path these two coincide
+    * (`graftScope.modelDef === this.modelDef === originModelDef`); for a
+    * notebook cell they deliberately do not — see {@link GraftScope}.
+    *
+    * `graftScope` is `undefined` only when this `Model` has nothing to graft
+    * against at all (no compiled model, or — for a notebook cell — no
+    * earlier cell to graft onto); that always denies a row-level gate here,
+    * same as an unresolvable graft target.
+    */
+   private async resolveGateShape(
+      entry: GateEntry,
+      originModelDef: ModelDef,
+      graftScope: GraftScope | undefined,
+   ): Promise<
+      | { kind: "given_only" }
+      | {
+           kind: "row_level";
+           graftTarget: string;
+           filterText: string;
+           condition: FilterCondition;
+        }
+      | { kind: "deny"; cause?: RowLevelGateRejectionCause }
+   > {
+      if (!entry.struct) return { kind: "given_only" };
+      if (!graftScope) {
+         // Distinguish this from an ordinary "the gate admits nothing" deny:
+         // there is no scope here to even ATTEMPT a graft against. For a
+         // notebook cell this means NEITHER of `resolveNotebookCellGraftScope`'s
+         // two scopes was available — no earlier code cell, AND this cell
+         // has no compiled model of its own (see that method's doc; a
+         // self-declaring cell, first cell or not, resolves via its OWN
+         // scope and never reaches this branch). The caller-facing error
+         // stays the same opaque 403 either way (deliberate — it must not
+         // leak whether a gate exists or what it names), but an operator
+         // reading logs should be able to tell "the condition was evaluated
+         // and failed" apart from "there was nowhere at all to carry a
+         // graft".
+         logger.debug(
+            "Row-level gate has no graft scope to attach to (no scope was available at all, not the gate's own condition); denying",
+            { modelPath: this.modelPath, label: entry.label },
+         );
+         return { kind: "deny" };
+      }
+
+      const graftTarget = this.resolveGraftTarget(
+         entry.struct,
+         originModelDef,
+         graftScope.modelDef,
+      );
+      // A missing graft target does NOT mean the gate is row-level — an
+      // ad-hoc/ephemeral run target (an independently recompiled `/compile`
+      // model, a notebook cell's `source: mine is base_locked extend {…}`)
+      // can fail this resolution for a gate that references no row field at
+      // all. Fall back to `classifyWithoutGraft` to tell that apart from a
+      // genuine row-level gate before denying.
+      if (!graftTarget) {
+         return this.classifyWithoutGraft(entry, graftScope.materializer);
+      }
+      const filterText = gateFilterText(entry.exprs);
+      const cacheKey = `${graftScope.cacheScope}\u0000${graftTarget}\u0000${filterText}`;
+
+      let cached = this.gateShapeCache.get(cacheKey);
+      if (!cached) {
+         let condition: FilterCondition;
+         try {
+            condition = await this.liftGateCondition(
+               graftTarget,
+               filterText,
+               graftScope.materializer,
+            );
+         } catch (err) {
+            logger.debug(
+               "Row-level gate condition failed to lift; checking whether it is given-only before denying",
+               {
+                  modelPath: this.modelPath,
+                  graftTarget,
+                  error: err instanceof Error ? err.message : String(err),
+               },
+            );
+            return this.classifyWithoutGraft(entry, graftScope.materializer);
+         }
+         const classification = classifyAuthorizeGate(
+            condition,
+            this.givenDeclaredTypes(),
+            this.givenDeclaredDefaults(),
+         );
+         cached = { classification, condition };
+         this.gateShapeCache.set(cacheKey, cached);
+      }
+
+      if (cached.classification.shape === "given_only") {
+         return { kind: "given_only" };
+      }
+      if (cached.classification.shape === "rejected") {
+         return { kind: "deny", cause: cached.classification.cause };
+      }
+      return {
+         kind: "row_level",
+         graftTarget,
+         filterText,
+         condition: cached.condition,
+      };
+   }
+
+   /**
+    * Fallback for {@link resolveGateShape} when a row-level graft could not
+    * even be ATTEMPTED — no `modelDef.contents` key resolved to graft onto, or
+    * the lift itself threw. Neither failure says anything about the gate's
+    * own shape: an ad-hoc/ephemeral run target (an independently recompiled
+    * `/compile` model; a notebook cell's `source: mine is base_locked extend
+    * {…}`) can hit either failure for a gate that references NO row field at
+    * all, and denying unconditionally here would break every given-only gate
+    * compiled through such a shape — given-only gates ship in production
+    * today and need no graft to begin with.
+    *
+    * Distinguishes the two with the SAME one-row synthetic probe load-time
+    * validation already uses for this question ({@link buildAuthorizeProbe}
+    * in `./authorize`, via `validateAuthorizeProbes`'s `given_only` branch):
+    * it selects over a synthetic one-row DuckDB source with no real columns,
+    * so it can only ever compile for a gate that references givens alone. If
+    * it compiles here, the gate is `given_only` and the boolean path (which
+    * needs no graft) is correct and safe. If it does not compile, the gate
+    * references a row field this graft-less path cannot attach — deny, same
+    * as before this fallback existed. Reusing `buildAuthorizeProbe` itself
+    * (rather than a second, differently-behaving classifier) is deliberate:
+    * two classifiers drifting apart has already caused two security bugs on
+    * this project.
+    */
+   private async classifyWithoutGraft(
+      entry: GateEntry,
+      materializer: ModelMaterializer,
+   ): Promise<{ kind: "given_only" } | { kind: "deny" }> {
+      try {
+         await materializer
+            .loadQuery(buildAuthorizeProbe(entry.exprs))
+            .getPreparedQuery();
+         return { kind: "given_only" };
+      } catch (err) {
+         logger.debug(
+            "Row-level gate has no attachable graft and does not compile as given-only; denying",
+            {
+               modelPath: this.modelPath,
+               label: entry.label,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+         return { kind: "deny" };
+      }
+   }
+
+   /**
+    * The `modelDef.contents` KEY to graft a gate entry's condition onto, or
+    * `undefined` if none resolves (⇒ the caller denies).
+    *
+    * `struct` here is always the RUN TARGET's own entry-point struct (see
+    * {@link collectEntryPointGates}'s `entryPointStruct`) — never the struct
+    * a chained gate's OWN annotations happened to be read off. That is what
+    * makes this call site P0-safe BY CONSTRUCTION, not just by scoping which
+    * gates get collected: the run target is the entry point by definition
+    * and is never a source reached through a join, so grafting it can never
+    * make a joined source's gate fire. Do not widen this to graft anything
+    * other than the run target (or its resolved composite branch) — that
+    * reintroduces the exact join-propagation leak this scoping closes:
+    * grafting a condition onto a SourceDef propagates it into every joined
+    * copy of that source, firing a gate P0 says must not fire.
+    *
+    * If `struct` IS itself a `contents` entry, the entry point is graftED
+    * DIRECTLY — this covers `Y is X extend {}` inheriting `X`'s gate (`Y` is
+    * the run target AND a top-level declaration, so grafting `Y` is both
+    * correct and sufficient) and `Z is X -> {...}` (`Z` is a `contents`
+    * entry whose gate arrived via the `query_source` recursion but which
+    * must still be grafted at `Z` itself, not at its base `X` — `Z`'s
+    * compiled `SourceDef` is a compile-time snapshot of `X` taken when `Z`
+    * was defined, so a condition appended to `X` afterward never reaches it,
+    * and `org_id` resolves fine in `Z`'s field space when `Z`'s projection
+    * kept it).
+    *
+    * Otherwise `struct` is an AD-HOC caller-declared run target (`source:
+    * mine is X extend {…}` + `run: mine`) that never became a `contents`
+    * entry of its own. Two links are tried, nearest first, until one lands
+    * on a `this.modelDef.contents` entry:
+    *  - {@link resolveDeclaredSource}'s `sourceRegistry` walk — real for a
+    *    plain join or an unmodified rename.
+    *  - {@link findSourceByOwnAnnotationIdentity} — needed because a
+    *    TRIVIAL `extend {}` (no rename/except/accept/dimension/join
+    *    addition) compiles to a `sourceRegistry` entry that only
+    *    references ITSELF (`{type: "source_registry_reference", name:
+    *    "mine"}`, no `referenceID` at all) — Malloy elides the derivation
+    *    entirely rather than recording a link to `X`, so the registry walk
+    *    has nothing to follow. What IS preserved is the struct's own
+    *    `#(authorize)` annotation note: Malloy copies X's note onto `mine`
+    *    by REFERENCE (the exact same object, not a re-parsed equal one),
+    *    so it can be traced back to whichever `this.modelDef.contents`
+    *    entry owns that same note object — and only that entry, since two
+    *    independently authored `#(authorize)` blocks with identical text
+    *    are two distinct objects (parsed separately, at separate
+    *    locations). This is an object-identity match, same spirit as
+    *    "never by name alone" below — it happens to key off an annotation
+    *    node rather than the struct itself only because that is the one
+    *    thing Malloy's IR still shares by reference in this shape.
+    * `mine` is compiled fresh from `X` every time the caller's text is
+    * recompiled, so grafting `X` is what a caller-declared derivation needs.
+    *
+    * The FINAL key is always looked up in `graftModelDef.contents` — the
+    * STABLE model the graft and the lift probe both compile against —
+    * never in `originModelDef`, the caller's own query's ephemeral model.
+    * `mine` above is a real `contents` entry in THAT ephemeral model (the
+    * caller declared it inline), so resolving against it would return
+    * `"mine"` directly instead of falling through to the ancestor walk that
+    * lands on `"X"` — and `"mine"` does not exist in `graftModelDef.contents`
+    * at all, so the graft and the lift probe both fail. `originModelDef` is
+    * still needed for the WALK itself: it's the only model whose
+    * `sourceRegistry` (and, for the annotation fallback, whose own
+    * `struct.annotations`) can possibly link `struct` to its base. For the
+    * query path `graftModelDef` and `originModelDef` are the same
+    * (`this.modelDef`); a notebook cell's graft scope passes an EARLIER
+    * cell's own modelDef as `graftModelDef` while `originModelDef` stays the
+    * cell's own (post-declaration) compiled modelDef — see {@link GraftScope}
+    * and `resolveGateShape`'s doc.
+    *
+    * Matches identity first, then `sourceID` — never by name alone: two
+    * distinct `SourceDef`s can share a name across an inheritance chain, and
+    * a name-only match could graft the wrong one.
+    */
+   private resolveGraftTarget(
+      struct: SourceDef,
+      originModelDef: ModelDef,
+      graftModelDef: ModelDef,
+   ): string | undefined {
+      const direct = this.findContentsKey(struct, graftModelDef);
+      if (direct) return direct;
+
+      let current = struct;
+      const seen = new Set<SourceDef>([struct]);
+      for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
+         const declared = resolveDeclaredSource(current, originModelDef);
+         let next: SourceDef | undefined;
+         if (declared.kind === "resolved" && !seen.has(declared.source)) {
+            next = declared.source;
+         } else if (declared.kind === "none") {
+            next = this.findSourceByOwnAnnotationIdentity(
+               current,
+               graftModelDef,
+               seen,
+            );
+         }
+         if (!next) return undefined;
+         const key = this.findContentsKey(next, graftModelDef);
+         if (key) return key;
+         seen.add(next);
+         current = next;
+      }
+      return undefined;
+   }
+
+   /** `modelDef.contents` key whose value IS `struct` (identity), else whose
+    *  value shares `struct`'s `sourceID`, else `undefined`. */
+   private findContentsKey(
+      struct: SourceDef,
+      modelDef: ModelDef,
+   ): string | undefined {
+      for (const [key, value] of Object.entries(modelDef.contents)) {
+         if (value === struct) return key;
+      }
+      if (struct.sourceID) {
+         for (const [key, value] of Object.entries(modelDef.contents)) {
+            if (isSourceDef(value) && value.sourceID === struct.sourceID) {
+               return key;
+            }
+         }
+      }
+      return undefined;
+   }
+
+   /**
+    * Find the `modelDef.contents` entry whose OWN annotation notes include,
+    * by object REFERENCE (never by text), one of `struct`'s own notes — see
+    * {@link resolveGraftTarget}'s doc for why this exists and why it is
+    * safe. `exclude` keeps this from re-matching a struct already visited in
+    * the ancestor walk.
+    */
+   private findSourceByOwnAnnotationIdentity(
+      struct: SourceDef,
+      modelDef: ModelDef,
+      exclude: Set<SourceDef>,
+   ): SourceDef | undefined {
+      const ownNotes = [
+         ...(struct.annotations?.blockNotes ?? []),
+         ...(struct.annotations?.notes ?? []),
+      ];
+      if (ownNotes.length === 0) return undefined;
+      for (const value of Object.values(modelDef.contents)) {
+         if (!isSourceDef(value) || value === struct || exclude.has(value)) {
+            continue;
+         }
+         const candidateNotes = [
+            ...(value.annotations?.blockNotes ?? []),
+            ...(value.annotations?.notes ?? []),
+         ];
+         if (candidateNotes.some((note) => ownNotes.includes(note))) {
+            return value;
+         }
+      }
+      return undefined;
+   }
+
+   /**
+    * Lift a gate's compiled `FilterCondition` through `materializer` — the
+    * SAME model instance {@link resolveGateShape} is grafting onto
+    * (`graftScope.materializer`) — by compiling a one-row probe that applies
+    * `filterText` as a source-level `where:` on `graftTarget` and reading
+    * back the LAST entry of the compiled query's `structRef.filterList`.
+    *
+    * This has to be the SAME materializer the graft targets, not a fresh
+    * `runtime.loadModel(...)`. Every `loadModel` call mints a NEW identity for
+    * each declared given (`given/6:GROUPS,57:internal://loadModel/<uuid>`),
+    * even for byte-identical text — so a condition lifted from a separately
+    * loaded probe model and grafted onto the real model would reference a
+    * given identity the real model never surfaced, and fail at request time
+    * with "references a given ... which is not surfaced in this model".
+    * Sharing `materializer` is what keeps the lifted condition's given
+    * references resolvable against the model it will be grafted onto.
+    *
+    * `__authorize_probe` is a reserved, deliberately obscure select name —
+    * same convention as `buildAuthorizeProbe` in `./authorize` — so it is
+    * unlikely to collide with a real field on `graftTarget`.
+    *
+    * Takes the LAST entry of `filterList` on faith that it is the `where:`
+    * this probe just added — which is exactly why
+    * {@link liftProbeFilterCondition} (`./authorize`) asserts both properties
+    * that make that safe rather than assuming them. See its doc for what each
+    * one rules out, and for how a missing check ends up running a query
+    * UNGATED through `assertGateLanded`'s proof. A failure throws, which
+    * {@link resolveGateShape}'s caller already turns into a deny.
+    */
+   private async liftGateCondition(
+      graftTarget: string,
+      filterText: string,
+      materializer: ModelMaterializer,
+   ): Promise<FilterCondition> {
+      // The probe SHAPE and the lift are both shared with load-time validation
+      // (`./authorize`'s `buildRowLevelProbe` / `liftRowLevelCondition`) rather
+      // than spelled out twice: reading the compiled `FilterCondition` back out
+      // of `_query.structRef.filterList` only works while the two probe shapes
+      // stay byte-identical, and the three checks that make that read
+      // trustworthy must not be able to drift apart between the two paths.
+      const probe = materializer.loadQuery(
+         buildRowLevelProbe(graftTarget, filterText),
+      );
+      const prepared = (await probe.getPreparedQuery()) as {
+         _query?: { structRef?: { filterList?: FilterCondition[] } };
+      };
+      return liftProbeFilterCondition(
+         prepared,
+         `lifted probe for "${graftTarget}"`,
+         filterText,
+      );
+   }
+
+   /**
+    * Build (or reuse) the `ModelMaterializer` every row-level gate on this run
+    * target grafts onto, keyed on `graftScope.cacheScope` + the sorted set of
+    * `(graftTarget, filterText)` pairs in {@link graftedMaterializerCache}.
+    * The graft depends only on WHICH source carries WHICH conditions — never
+    * on the caller's givens or query text, which bind later, at `run()` —
+    * so every request that hits the same gate set IN THE SAME SCOPE reuses
+    * the same grafted materializer instead of paying the deep copy again.
+    */
+   private getOrBuildGraftedMaterializer(
+      grafts: ReadonlyArray<{
+         graftTarget: string;
+         filterText: string;
+         condition: FilterCondition;
+      }>,
+      graftScope: GraftScope,
+   ): ModelMaterializer {
+      // Joined on U+0001, distinct from the U+0000 separator inside each
+      // pair -- joining on "" would let two DIFFERENT graft sets produce the
+      // same key whenever a graftTarget/filterText boundary in one set lines
+      // up with a different boundary in another, which would serve one gate
+      // set's cached materializer for another's request. `cacheScope` is
+      // prefixed with its own U+0000 separator for the same reason
+      // `resolveGateShape`'s cache key uses one -- see {@link GraftScope}.
+      const key =
+         `${graftScope.cacheScope}\u0000` +
+         grafts
+            .map((g) => `${g.graftTarget}\u0000${g.filterText}`)
+            .sort()
+            .join("\u0001");
+      const materializer = this.graftedMaterializerCache.get(key);
+      if (materializer) {
+         // Re-insert so Map iteration order is least-recently-used first;
+         // that ordering is what makes the eviction below an LRU rather
+         // than a FIFO, which would evict the hot model-wide scope in
+         // favour of whichever notebook cell ran last.
+         this.graftedMaterializerCache.delete(key);
+         this.graftedMaterializerCache.set(key, materializer);
+         return materializer;
+      }
+      const built = this.buildGraftedMaterializer(grafts, graftScope.modelDef);
+      this.graftedMaterializerCache.set(key, built);
+      // Evict AFTER inserting, so the entry just built is never the one
+      // dropped. Each held entry is a multi-MiB ModelDef clone -- see
+      // GRAFTED_MATERIALIZER_CACHE_MAX for the measurement.
+      while (
+         this.graftedMaterializerCache.size >
+         Model.GRAFTED_MATERIALIZER_CACHE_MAX
+      ) {
+         const oldest = this.graftedMaterializerCache.keys().next();
+         if (oldest.done) break;
+         this.graftedMaterializerCache.delete(oldest.value);
+      }
+      return built;
+   }
+
+   /**
+    * Deep-copy `modelDef`, append each grafted condition to its target's
+    * `filterList`, and reload the copy through {@link gateRuntime}.
+    *
+    * The deep copy (`structuredClone`) is what makes this safe across
+    * concurrent requests: `modelDef` itself is NEVER mutated, so a request
+    * whose gate set differs — or one with no row-level gate at all — keeps
+    * compiling against the original, untouched model.
+    *
+    * P0 — this graft is safe ONLY because it is scoped to the gates
+    * {@link collectAuthorizeEntryPointGates} collected for THIS run target.
+    * Appending to a source's `filterList` propagates into every join copy
+    * compiled from it afterward — grafting a source that is not on the run
+    * target's own entry-point ancestry would leak the filter into (or out of)
+    * an unrelated query through that propagation. An ungated parent joining a
+    * gated child collects no gate for the child, so nothing is grafted here
+    * and the child's gate correctly does not fire through the join. Do not
+    * "simplify" this by grafting every gated source in the model up front —
+    * that reintroduces exactly the leak this scoping exists to prevent.
+    */
+   private buildGraftedMaterializer(
+      grafts: ReadonlyArray<{
+         graftTarget: string;
+         condition: FilterCondition;
+      }>,
+      modelDef: ModelDef,
+   ): ModelMaterializer {
+      if (!this.gateRuntime) {
+         throw new Error(
+            "no retained runtime to graft a row-level gate through",
+         );
+      }
+      const copy = structuredClone(modelDef);
+      for (const { graftTarget, condition } of grafts) {
+         const target = copy.contents[graftTarget];
+         if (!target || !isSourceDef(target)) {
+            throw new Error(
+               `graft target "${graftTarget}" is not a source in this model`,
+            );
+         }
+         target.filterList = [...(target.filterList ?? []), condition];
+      }
+      return this.gateRuntime._loadModelFromModelDef(copy);
+   }
+
+   /**
+    * Prove every grafted condition actually landed on the recompiled query's
+    * run target — the backstop that turns a future Malloy change which
+    * silently stops honoring the graft into a REFUSAL instead of a leak.
+    * Resolves the recompiled query's run-target `SourceDef` the same way
+    * {@link resolveRunTargetStruct} does, then, for each grafted condition,
+    * matches its `code` against that struct's own `filterList[].code` —
+    * recursing into a `query_source`'s `structRef` base when it isn't there.
+    * That recursion is necessary, not defensive: for `source: qs is X ->
+    * {…}`, the EXECUTED source's own `filterList` is empty (the filter was
+    * consumed inside the inner pipeline), but it IS present on `X`, which is
+    * exactly where {@link resolveGraftTarget} put it. Bounded to
+    * {@link MAX_GATE_PROOF_DEPTH}; any failure to find a condition — missing,
+    * unresolvable base, depth exhausted — is treated as ABSENT.
+    *
+    * `prepared._modelDef` falls back to `this.modelDef`, matching
+    * {@link resolveRunTargetStruct}'s identical fallback — a query-source's
+    * recursion above needs SOME modelDef to resolve `query.structRef`
+    * through, and a missing one must mean "cannot prove the graft landed"
+    * (deny), never "assume it landed" (leak).
+    *
+    * Throws (denying, via the caller's catch) if any condition is not found.
+    */
+   private async assertGateLanded(
+      recompiled: QueryMaterializer,
+      grafts: ReadonlyArray<{ condition: FilterCondition }>,
+   ): Promise<void> {
+      const prepared = (await recompiled.getPreparedQuery()) as {
+         _query?: { structRef?: unknown };
+         _modelDef?: ModelDef;
+      };
+      const modelDef = prepared._modelDef ?? this.modelDef;
+      const structRef = prepared._query?.structRef;
+      const resolvedRef =
+         typeof structRef === "string"
+            ? modelDef?.contents[structRef]
+            : structRef;
+      // Same resolution `resolveRunTargetStruct` uses for a live query's run
+      // target: a string `structRef` names a `contents` entry, an object one
+      // already IS the struct.
+      const struct =
+         resolvedRef && typeof resolvedRef === "object"
+            ? (resolvedRef as SourceDef)
+            : undefined;
+      for (const { condition } of grafts) {
+         if (
+            !condition.code ||
+            !this.filterListContainsCode(struct, modelDef, condition.code, 0)
+         ) {
+            throw new Error(
+               "a row-level gate condition did not land on the recompiled query",
+            );
+         }
+      }
+   }
+
+   /** Depth bound for {@link assertGateLanded}'s query-source base recursion. */
+   private static readonly MAX_GATE_PROOF_DEPTH = 8;
+
+   private filterListContainsCode(
+      struct: SourceDef | undefined,
+      modelDef: ModelDef | undefined,
+      code: string,
+      depth: number,
+   ): boolean {
+      if (!struct || depth > Model.MAX_GATE_PROOF_DEPTH) return false;
+      if (struct.filterList?.some((f) => f.code === code)) return true;
+      const duck = struct as unknown as {
+         type: string;
+         query?: { structRef?: SourceDef | string };
+      };
+      if (duck.type === "query_source" && modelDef) {
+         const ref = duck.query?.structRef;
+         const base = typeof ref === "string" ? modelDef.contents[ref] : ref;
+         if (base && isSourceDef(base)) {
+            return this.filterListContainsCode(base, modelDef, code, depth + 1);
+         }
+      }
+      return false;
+   }
+
+   /**
     * Gate ad-hoc compile/query text by the named source it targets. Resolves the
     * source from surface syntax (`extractRunTargetSourceName`) and applies the
-    * gate. An
-    * unnamed/inline source resolves to `undefined`, so only the model-wide
-    * file-level gate applies — the same top-level-only boundary as the query
-    * path's early gate. Used by the `/compile` path, which has no runnable to
-    * resolve before it decides whether to compile at all.
+    * gate. An unnamed/inline source resolves to `undefined`, so nothing gates
+    * it — the same top-level-only boundary as the query path's early gate.
+    * Used by the `/compile` path, which has no runnable to resolve before it
+    * decides whether to compile at all.
     *
     * Takes no bypass argument, deliberately. `/compile` returns schema and, with
     * `includeSql`, SQL; no caller needs to compile through a gate, so the
@@ -1439,19 +2805,57 @@ export class Model {
             const sourceResult = Model.getSources(modelDef, givens);
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
-            queries = Model.getQueries(modelDef);
+            const queryResult = Model.getQueries(modelDef);
+            queries = queryResult.queries;
 
+            // A `#(authorize)` annotation in a position nothing enforces (a
+            // top-level `query:` statement, or a field inside a `source:`
+            // rather than the `source:` line itself) fails OPEN — see
+            // `assertNoMisplacedAuthorizeAnnotations`'s doc. Checked before
+            // `validateAuthorizeProbes` below so this specific mistake gets
+            // its own message rather than loading as if the gate were fine.
+            assertNoMisplacedAuthorizeAnnotations([
+               ...sourceResult.misplacedAuthorize,
+               ...queryResult.misplacedAuthorize,
+            ]);
             // Translation-time validation of #(authorize) annotations (shared
             // with the package-load worker so both compile paths validate
             // identically). Compiling the probe surfaces unknown givens and
             // source-field references at model-load instead of first request.
-            // Scoped to gates DECLARED here, not the effective list on
-            // `sources` — see extractSourcesFromModelDef on why an inherited
-            // gate must not be probed against this model.
-            await validateAuthorizeProbes(
-               modelMaterializer,
-               sourceResult.ownAuthorizeSources,
+            // `validateAuthorizeProbes` widens to `authorizeMap` (every entry
+            // point, inheritance included) for shape-aware, per-entry-point
+            // validation — see its doc comment.
+            const declaredGivenTypes = new Map(
+               (givens ?? [])
+                  .filter((g) => g.name != null && g.type != null)
+                  .map((g) => [g.name, g.type] as [string, string]),
             );
+            const declaredGivenDefaults = new Map(
+               (givens ?? [])
+                  .filter((g) => g.name != null && g.default != null)
+                  .map(
+                     (g) => [g.name, g.default as string] as [string, string],
+                  ),
+            );
+            await validateAuthorizeProbes(modelMaterializer, {
+               authorizeMap: sourceResult.authorizeMap,
+               declaredTypes: declaredGivenTypes,
+               declaredDefaults: declaredGivenDefaults,
+               authorizeOwnNotes: sourceResult.authorizeOwnNotes,
+               onRowLevelGateRejected: recordRowLevelGateRejected,
+               // A gate genuinely inherited (not declared) at this entry
+               // point — its own gate note objects are shared, by
+               // reference, with a base, or it carries no annotation of its
+               // own at all — that could not be expressed here; see
+               // `validateAuthorizeProbes`'s doc. Not fatal, so surface it as
+               // a warning an operator or author can act on rather than
+               // losing it silently.
+               onRowLevelGateUnexpressible: (sourceName, detail) =>
+                  logger.warn(
+                     "Row-level #(authorize) gate not expressible at this entry point; every query against it will be denied",
+                     { packageName, modelPath, sourceName, detail },
+                  ),
+            });
 
             // Collect sourceInfos from imported models first
             // This follows the same pattern as notebook imports handling
@@ -1499,7 +2903,7 @@ export class Model {
             }
          }
 
-         return new Model(
+         const model = new Model(
             packageName,
             modelPath,
             dataStyles,
@@ -1514,6 +2918,13 @@ export class Model {
             filterMap,
             givens,
          );
+         // Same runtime the materializer above was loaded from — see
+         // `setGateRuntime`. Cast for the same reason `fromSerialized`'s
+         // `makeHydrationRuntime` casts: `_loadModelFromModelDef` is an
+         // internal Malloy method this file's public `Runtime` import doesn't
+         // declare, but it is the same underlying `Runtime` instance either way.
+         model.setGateRuntime(runtime as HydrationRuntime);
+         return model;
       } catch (error) {
          let computedError = error;
          if (error instanceof Error && error.stack) {
@@ -1578,6 +2989,14 @@ export class Model {
          ? new Map(data.filterMap as Array<[string, FilterDefinition[]]>)
          : undefined;
 
+      // Non-fatal `#(authorize)` findings the worker collected (see
+      // `SerializedModel.authorizeWarnings`'s doc) — the worker has no
+      // logger, so they ride over the wire as strings for this thread, which
+      // does, to log once per model hydration.
+      for (const warning of data.authorizeWarnings ?? []) {
+         logger.warn(warning, { packageName, modelPath: data.modelPath });
+      }
+
       // No modelDef → either an empty notebook (no MALLOY statements)
       // or a corrupt worker payload. Build a Model with no materializer;
       // downstream getQueryResults / executeNotebookCell will throw a
@@ -1635,6 +3054,11 @@ export class Model {
       // owning Package pushes the environment's storage destinations
       // instead (see Package.setServeDestinationConfig). Capturing `malloyConfig`
       // here would put a destination in reach of the author's own namespace.
+      // Retain the SAME runtime `modelMaterializer` above hydrated from — see
+      // `setGateRuntime`. A row-level gate grafts by copying `modelDef` and
+      // reloading it through this runtime, so it has to be the one that
+      // shares this model's given identities, not a fresh one.
+      model.setGateRuntime(runtime);
       return model;
    }
 
@@ -1675,6 +3099,72 @@ export class Model {
 
    public getType(): ModelType {
       return this.modelType;
+   }
+
+   /**
+    * This file's own model-level `queryMetadata` declaration, or null if it
+    * declares none. Covers both the `## materialization.queryMetadata.*` form
+    * and the bare `## queryMetadata.*` one beneath it, since
+    * {@link composeDeclaredQueryMetadata} reads the same two layers the build
+    * path does.
+    *
+    * Exposed for the publish gate. That gate walks the package manifest and the
+    * build plan's persist sources, so a model file's declaration was only ever
+    * visible through a source that inherited it — and a file with NO persist
+    * source was invisible entirely. Since a model-file declaration now rides
+    * served queries whether or not the file persists anything, it needs a
+    * validation path of its own.
+    *
+    * Memoized, because the caller is not the cold path it looks like:
+    * `getPackageMetadata()` runs once per package inside `listPackages`, and
+    * several callers invoke it only to read `manifestLocation`. Recomputing
+    * would walk the import closure and re-parse every `##` note on each of those.
+    * A compiled model's annotations never change — a reload replaces the `Model`
+    * object outright — so the memo needs no invalidation.
+    */
+   public getDeclaredQueryMetadata(): QueryMetadata | null {
+      // `undefined` means "not computed"; `null` is a computed answer of "none".
+      if (this.declaredQueryMetadataMemo === undefined) {
+         this.declaredQueryMetadataMemo = composeDeclaredQueryMetadata({
+            modelTag: this.safeModelFileTag(),
+         });
+      }
+      return this.declaredQueryMetadataMemo;
+   }
+
+   /**
+    * Each top-level source's OWN `#@ queryMetadata.*`, for the sources that
+    * declare one.
+    *
+    * `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than
+    * a key inside it, so a source that persists nothing can declare tags and
+    * they ride every query against it. The publish gate reads persist sources
+    * from the build plan, so those declarations had no validation path — a
+    * reserved or malformed name published clean and vanished with only a metric
+    * behind it.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}: the
+    * caller runs once per package inside `listPackages`.
+    */
+   public getDeclaredSourceQueryMetadata(): {
+      sourceName: string;
+      queryMetadata: QueryMetadata;
+   }[] {
+      if (this.declaredSourceQueryMetadataMemo === undefined) {
+         const contents = (this.modelDef?.contents ?? {}) as Record<
+            string,
+            unknown
+         >;
+         this.declaredSourceQueryMetadataMemo = Object.keys(contents).flatMap(
+            (sourceName) => {
+               const queryMetadata = composeDeclaredQueryMetadata({
+                  sourceTag: this.safeSourceTag(sourceName),
+               });
+               return queryMetadata ? [{ sourceName, queryMetadata }] : [];
+            },
+         );
+      }
+      return this.declaredSourceQueryMetadataMemo;
    }
 
    /**
@@ -2683,8 +4173,8 @@ export class Model {
        * Skip `#(authorize)` gate evaluation for this request — the private
        * data-management path (see the router's `dataManagementQuery`).
        *
-       * Disables ONLY expressions collected from `#(authorize)` / `##(authorize)`
-       * annotations. The author's own `where:` clauses, `#(filter)` handling, and
+       * Disables ONLY expressions collected from `#(authorize)` annotations.
+       * The author's own `where:` clauses, `#(filter)` handling, and
        * every other semantic are untouched, and this neither reads nor writes
        * {@link bypassFilters} — that is a separate, deprecated, `#(filter)`-only
        * control. Never settable from the ingress-exposed surface: `/private/**`
@@ -2764,6 +4254,10 @@ export class Model {
 
       let runnable: QueryMaterializer;
       let liveRunnable: QueryMaterializer | undefined;
+      // Hoisted out of the try block below (it's assigned there) so the
+      // row-level authorize recompile, which runs after that try/catch, can
+      // still hand this SAME caller text back to `loadRestrictedQuery`.
+      let queryString: string;
       // Set when this query is routed through the `storage=` serve-shape
       // transform; threaded into prepare + run so the virtual sources resolve to
       // their physical tables. Undefined ⇒ served live (the default path).
@@ -2836,8 +4330,8 @@ export class Model {
          // a source (`run: locked_q + { … }` refines the author's named query).
          // Resolve it to the source that query runs against, the same way the
          // `queryName` param is resolved above — otherwise the name matches no
-         // source, only the file-level gate applies, and the refinement's compile
-         // errors come back from a source the caller cannot read.
+         // source, nothing gates it, and the refinement's compile errors come
+         // back from a source the caller cannot read.
          (surfaceName && !this.sources?.some((s) => s.name === surfaceName)
             ? this.queries?.find((q) => q.name === surfaceName)?.sourceName
             : undefined) ||
@@ -2881,7 +4375,6 @@ export class Model {
                throw err;
             }
          }
-         let queryString: string;
          if (!sourceName && !queryName && query) {
             queryString = "\n" + query;
          } else if (queryName && !query) {
@@ -2957,6 +4450,68 @@ export class Model {
          // underneath it at RUN time (see the freshnessFallback retry below).
          liveRunnable = runnable;
 
+         // Storage-routing eligibility check: decide it BEFORE attempting
+         // routing, not after.
+         // The serve-shape's transient model (buildServeShapeModel in
+         // materialization_serve_transform.ts, `source: X is <dest>.virtual(…
+         // )::<shape>`) carries no `#(authorize)` annotation bytes at all, so
+         // once `runnable` is swapped for the shape's runnable below, NOTHING
+         // downstream — including the authoritative walk inside
+         // `authorizeAndBindRunnable` — can ever discover a row-level gate
+         // this pre-check missed: that walk resolves its struct from
+         // whichever runnable it is handed, and the shape's struct carries no
+         // annotations to find. There is therefore no post-hoc undo that can
+         // backstop a wrong answer here (an earlier version of this code
+         // carried one; it could never fire on this path, since by the time
+         // it ran `runnable` already pointed at the annotation-free shape —
+         // it was deleted rather than kept as inert belt-and-braces). This
+         // pre-check IS the gate that keeps a row-level-gated query off the
+         // storage tier — see its own doc comment.
+         //
+         // `bypassAuthorize` short-circuits this too: a bypassed query skips
+         // every `#(authorize)` gate anyway (`authorizeAndBindRunnable`'s own
+         // top-level check, below), so there is no row-level filter for
+         // storage routing to lose by running against the shape — only
+         // routing eligibility to lose for no benefit. This does not weaken
+         // anything for a NON-bypassed caller: `bypassAuthorize` is never
+         // settable from the ingress-exposed surface (see its own doc
+         // comment on this method), so this only ever short-circuits for the
+         // same trusted data-management path that already bypasses the
+         // authoritative gate below.
+         //
+         // Ordered AFTER the routing preconditions rather than before them:
+         // this pre-check exists only to veto storage routing, so a
+         // deployment that cannot route at all (mode off/write-only, no
+         // serve bindings, no destination config) has nothing for it to
+         // decide — and it is not free, being a full entry-point walk plus,
+         // on a cold `gateShapeCache`, a probe compile. Evaluating it first
+         // would put that on every query in every deployment, including the
+         // overwhelming majority that never route.
+         const storageRoutingPossible =
+            getPersistStorageMode() === "on" &&
+            this.serveBindings.length > 0 &&
+            !!this.serveDestinationConfig;
+         // The companion alone, deliberately: the pre-aggregation tier's own
+         // precondition is just "a companion was synthesized".
+         // `serveVirtualMap` is NOT available at this point — it is assigned
+         // inside the storage block below — so folding it in here would read
+         // `undefined` and answer the wrong question. Captured into a local
+         // rather than re-read below, so the guard and the use cannot disagree
+         // about which companion (or none) they are talking about.
+         const preaggServeMaterializer = this.preaggregateServeMaterializer;
+         const routingBlockedByRowLevelGate =
+            (storageRoutingPossible || !!preaggServeMaterializer) &&
+            !bypassAuthorize &&
+            // Short-circuit BEFORE the walk. The walk is a full entry-point
+            // traversal plus, on a cold `gateShapeCache`, a live compile, and a
+            // deployment that enables pre-aggregation and declares no gate
+            // anywhere would otherwise pay it on every query for a case it
+            // cannot hit. This is NOT the `hasAuthorize()` trap warned about
+            // further down — see `hasAnyAuthorizeNote`'s doc for why the two
+            // predicates differ and why only this one is safe to skip on.
+            this.hasAnyAuthorizeNote() &&
+            (await this.queryEntryPointHasRowLevelGate(runnable));
+
          // storage= serve routing: when enabled and this package has sources
          // materialized into a storage destination, try compiling the query
          // against the transient serve-shape model (materialized sources rebound
@@ -2965,12 +4520,9 @@ export class Model {
          // (a refinement the shape lacks, or an unbound source), we keep the
          // original runnable and serve live — safe fallback, no behavior change
          // for anything the transform can't yet reproduce. Off / write-only and
-         // packages with no storage bindings skip this entirely.
-         if (
-            getPersistStorageMode() === "on" &&
-            this.serveBindings.length > 0 &&
-            this.serveDestinationConfig
-         ) {
+         // packages with no storage bindings skip this entirely — and so does a
+         // row-level-gated entry point, per the pre-check just above.
+         if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
             try {
                const shaped = await this.loadServeShapeQuery(queryString);
                runnable = shaped.runnable;
@@ -3010,12 +4562,40 @@ export class Model {
          // Skipped when the storage shape already routed: that runnable resolves
          // through `virtualMap` rather than the build manifest, and recompiling it
          // here would discard that. Composing the two tiers is future work.
-         if (this.preaggregateServeMaterializer && !serveVirtualMap) {
+         // Gated on the SAME hoisted answer as the storage tier above, rather
+         // than on a second walk.
+         //
+         // This is defence in depth, not a fix for a reachable leak, and the
+         // distinction is worth stating because the measurement is easy to get
+         // wrong. Measured on this branch: a rollup over a gated base compiles
+         // and is PLANNED, but both build gates refuse to materialize it
+         // (`assertColocatedPersistNotAuthorizeGated` and
+         // `assertMaterializationEligible`, via `referencesAuthorize` finding the
+         // base's gate in the rollup's compiled subtree). So no rollup table
+         // exists, the composite's rollup member recomputes from the gated base,
+         // the gate grafts onto that base, and a covered query already returns
+         // correctly filtered rows.
+         //
+         // What the guard removes is the serve path's dependence on a BUILD
+         // path's refusal for its own correctness. That refusal is the blind
+         // `referencesAuthorize` walk, whose join reach is documented as partial
+         // — an ANNOTATED join leaves no authorize byte in the subtree for it to
+         // find. If synthesis ever emitted its base import in a shape that walk
+         // cannot see, a rollup would build, and a covered query would then be
+         // served from a table pre-aggregated across every tenant, with the gate
+         // filtering on a column the rollup does not carry. Nothing downstream
+         // would catch it: `preaggRouted` is never reset, so
+         // `effectiveBuildManifest` hands the rollup manifest to the runnable
+         // regardless. Blocking the tier for a row-level-gated entry point makes
+         // the invariant local to this decision.
+         if (
+            preaggServeMaterializer &&
+            !routingBlockedByRowLevelGate &&
+            !serveVirtualMap
+         ) {
             try {
                const candidate =
-                  this.preaggregateServeMaterializer.loadRestrictedQuery(
-                     queryString,
-                  );
+                  preaggServeMaterializer.loadRestrictedQuery(queryString);
                // Compile eagerly, for the same reason loadServeShapeQuery does:
                // Malloy compiles LAZILY, so `loadRestrictedQuery` cannot throw
                // here and without this the error escapes at prepare/run instead,
@@ -3109,8 +4689,12 @@ export class Model {
       }
 
       // Gate the compiled run target's own source PLUS the gate it carries from
-      // what it derives from (assertAuthorizedForAllSources). This MUST run
-      // unconditionally, not just when compiledSource !== earlySource.
+      // what it derives from, and — new here — bind a row-level gate's filter
+      // onto whatever ends up executing (authorizeAndBindRunnable). This MUST
+      // run unconditionally, not just when compiledSource !== earlySource, and
+      // its result MUST be assigned back to `runnable`: for a row-level gate,
+      // the reassignment IS the enforcement — a caller that keeps the
+      // pre-gate `runnable` around and runs THAT instead serves unfiltered rows.
       //
       // The early gate now reads the same entry-point walk this does, so for a
       // NAMED declared source the two agree — but agreeing is not the same as
@@ -3124,17 +4708,27 @@ export class Model {
       // Do NOT re-add a hasAuthorize() guard here — it reads top-level sources'
       // OWN gates only, so guarding on it re-opens the inherited-gate bypass. The
       // walk is a cheap no-op for an ungated model. When compiledSource is
-      // unknown/unresolved,
-      // the own-source half still applies the model-wide file-level gate via
-      // effectiveAuthorizeFor. Note: on this path an ad-hoc inline
+      // unknown/unresolved, nothing gates it — a `source:` is the only place
+      // `#(authorize)` is declared. Note: on this path an ad-hoc inline
       // `duckdb.sql(...)` query is rejected by restricted mode (the raw-SQL
       // ban from loadRestrictedQuery above) before it can run, so the
-      // raw-warehouse bypass is closed by restricted mode — not by this gate.
-      await this.assertAuthorizedForAllSources(
-         runnable,
-         givens ?? {},
+      // raw-warehouse bypass is closed by restricted mode regardless.
+      // `queryString` is the caller's own untrusted text — same one compiled
+      // above — so the recompile stays inside restricted mode exactly as the
+      // original compile did.
+      runnable = await this.authorizeAndBindRunnable(runnable, givens ?? {}, {
+         recompile: (mm) => mm.loadRestrictedQuery(queryString),
          bypassAuthorize,
-      );
+      });
+      // No post-hoc check of `queryHadRowLevelFilterAttached(runnable)` here:
+      // when `routingBlockedByRowLevelGate` was false and routing succeeded
+      // above, `runnable` at this point is the storage serve-shape's own
+      // runnable, whose struct carries no `#(authorize)` annotation bytes —
+      // so this walk can never find on it what the pre-check (walking the
+      // real, annotated struct) already ruled out. A check here would be
+      // unreachable dead code, not a backstop; correctness for storage
+      // routing depends entirely on `queryEntryPointHasRowLevelGate` above
+      // being sound.
 
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
@@ -3190,6 +4784,22 @@ export class Model {
          appliedQueryMetadata = this.resolveQueryMetadata(
             queryMetadataInput,
             preparedResult.connectionName,
+            // The run-target source already resolved for the authorize gate, not
+            // the raw `sourceName` param: a `queryName` request names exactly one
+            // source and must not lose its declared layer for having named it
+            // indirectly, and ad-hoc text resolves through the same surface-syntax
+            // path. Reusing the gate's answer also keeps one definition of "which
+            // source is this query against" rather than a second, weaker one.
+            //
+            // The COMPILED target specifically, for the reason the authorize gate
+            // treats it as the source of truth: `extractRunTargetSourceName`
+            // reads the FIRST `run:` and Malloy executes the LAST, so `run:
+            // cheap\nrun: expensive` would execute one source while tagging
+            // another's team and tier — attribution that is not merely missing
+            // but wrong, and wrong in the direction of blaming the cheap query.
+            // Falls back to the surface-syntax answer when the compiled one is
+            // unresolved, the same degradation the gate accepts.
+            compiledSource ?? earlySource,
          );
 
          queryResults = await runnable.run({
@@ -3347,6 +4957,9 @@ export class Model {
             appliedQueryMetadata = this.resolveQueryMetadata(
                queryMetadataInput,
                livePrepared.connectionName,
+               // Same compiled run target as the primary path — the retry runs
+               // the same query, so it must not tag a different source.
+               compiledSource ?? earlySource,
             );
             queryResults = await liveRunnable!.run({
                rowLimit,
@@ -3366,6 +4979,21 @@ export class Model {
          // wraps and returns it exactly as a live query would.
       }
 
+      // A row-level gate that applied cleanly and matched nothing is a normal
+      // 200 with zero rows — the deliberate readable-but-empty posture, not an
+      // error — but it is otherwise indistinguishable from a source that is
+      // genuinely empty, so record it. `runnable` here is whatever the gate
+      // step above returned; the live-fallback retry never reaches this line
+      // with a row-level gate attached, because `canDegradeToLive` requires
+      // `serveVirtualMap`, which is only ever set when storage routing
+      // succeeded — and `routingBlockedByRowLevelGate` keeps a row-level-gated
+      // query out of that block in the first place.
+      if (
+         this.queryHadRowLevelFilterAttached(runnable) &&
+         queryResults.totalRows === 0
+      ) {
+         recordRowLevelGateDecision("empty_after_filter");
+      }
       // Rows first, and above `wrapResult` rather than merely above the
       // serialize. A row overflow is a `maxRows + 1`-row result by construction,
       // and `wrapResult` deep-converts every row into Cell objects, an object
@@ -3534,18 +5162,43 @@ export class Model {
     * default, the caller's request override, and the server's context (which
     * package, which model, which class of work), merged most-specific-wins.
     *
-    * There is no model-side layer here. `materialization.queryMetadata` describes
-    * how a persist source is BUILT; a live query against the model is a different
-    * unit of work, and inheriting a build's tags would attribute interactive
-    * traffic to the build that happens to share the source.
+    * The author-declared layers ARE included, composed by
+    * {@link composeDeclaredQueryMetadata} exactly as the build path composes
+    * them. This reverses an earlier decision to omit them, which read
+    * `materialization.queryMetadata` as describing only how a persist source is
+    * BUILT and reasoned that a live query is a different unit of work.
+    *
+    * What that reasoning missed is which properties the layer actually carries.
+    * The build-identifying properties — `run_id`, `trigger`, `source`, `class` —
+    * come from the CONTEXT layer, which is per-statement and never inherited, so
+    * a served query cannot be mistaken for a build no matter what the author
+    * declared. The declared layer carries the author's own vocabulary (a team, a
+    * cost centre, a data tier), which describes the SOURCE and is as true of a
+    * query reading it as of the build writing it. Omitting it meant a deployment
+    * could attribute its builds and not the interactive traffic that is most of
+    * its warehouse bill.
+    *
+    * The block is named `materialization.queryMetadata` for historical reasons;
+    * the name is narrower than the thing it declares.
     *
     * Fails open, like every other metadata path: a connection whose config can't
-    * be read contributes no default rather than failing the query.
+    * be read contributes no default rather than failing the query, and an
+    * unparseable annotation contributes no layer rather than throwing.
     */
    private resolveQueryMetadata(
       input: ModelQueryMetadataInput | undefined,
       connectionName: string | undefined,
+      sourceName?: string,
    ): QueryMetadata | undefined {
+      // Nothing below is observable when the feature is off: `mergeQueryMetadata`
+      // early-returns, so every layer assembled here is discarded. Assembling
+      // them anyway made a default deployment — the mode is off unless an
+      // operator turns it on — pay an annotation walk and a connection lookup on
+      // every query for a bag nobody reads. Read per statement rather than per
+      // boot for the same reason `mergeQueryMetadata` reads it there: the mode
+      // is allowed to change under a running server.
+      if (getQueryMetadataMode() === "off") return undefined;
+
       let connectionLayers: {
          default?: QueryMetadata | null;
          enforced?: QueryMetadata | null;
@@ -3560,6 +5213,11 @@ export class Model {
       const resolved = mergeQueryMetadata({
          connection: connectionLayers?.default,
          enforced: connectionLayers?.enforced,
+         model: composeDeclaredQueryMetadata({
+            packageDeclaration: input?.packageDeclaration,
+            modelTag: this.safeModelFileTag(),
+            sourceTag: this.safeSourceTag(sourceName),
+         }),
          request: input?.request,
          context: {
             queryClass: input?.queryClass ?? "interactive",
@@ -3577,6 +5235,73 @@ export class Model {
          });
       }
       return resolved.metadata;
+   }
+
+   /**
+    * The model file's own `##` tag, or undefined if it is absent or fails to
+    * parse. Read off `modelDef`, which survives the worker serialization
+    * boundary — so this works for a freshly-compiled model and a deserialized
+    * one alike, the same reason {@link authorizeReferencedGivenNames} is
+    * derived from it in the constructor rather than shipped over the wire.
+    *
+    * The file's OWN notes, not the folded import lineage. `modelAnnotations`
+    * folds deliberately, but only because a file-level `##(authorize)` gate an
+    * import could shed would be no gate at all; `annotations.ts` says to read
+    * through `ownModelNotes` for everything that is not a policy gate. A tag is
+    * not a gate, and folding one would let a shared include attribute every
+    * importing file's traffic to the include's team — the same misattribution
+    * {@link safeSourceTag} already refuses for a derivation base. It would also
+    * report the resulting publish warning against the importer's path, sending
+    * an author to a file that does not contain the line.
+    */
+   private safeModelFileTag(): ReadableTag | undefined {
+      if (!this.modelDef) return undefined;
+      try {
+         return new Annotations(ownModelAnnotations(this.modelDef)).parseAsTag()
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * The run-target source's own `#@` tag, or undefined when no source could be
+    * resolved, the name is not a top-level source, or the annotation fails to
+    * parse.
+    *
+    * Callers pass the source the server ALREADY resolved for the authorize gate,
+    * not the raw `sourceName` request param — a `queryName` request names one
+    * source indirectly and must not lose its declared layer for it, and ad-hoc
+    * text resolves through the same surface-syntax path. What remains
+    * unresolvable is a statement with no single run target (some notebook
+    * cells); those carry the package and model-file layers only.
+    *
+    * Reads the named source's OWN annotations and does not walk its derivation
+    * base, so `source: a is b extend {…}` inherits nothing from `b`'s
+    * declaration. This diverges from {@link ancestorGateExprs}, which walks
+    * ancestors deliberately because a gate an extension could shed would be no
+    * gate at all. A cost label carries no such requirement, and inheriting one
+    * would attribute `a`'s traffic to `b`'s team.
+    */
+   private safeSourceTag(
+      sourceName: string | undefined,
+   ): ReadableTag | undefined {
+      if (!sourceName || !this.modelDef) return undefined;
+      try {
+         const entry = this.modelDef.contents?.[sourceName];
+         // The docstring's "not a top-level source" case, now actually checked.
+         // `contents` also holds NAMED QUERIES, and a `#@` on one of those is
+         // not a source's declaration — reading it resolved a query's tag as
+         // though a source had declared it, and listed the query's name among
+         // the package's tagged sources in the publish warnings.
+         if (!entry || !isSourceDef(entry)) return undefined;
+         const def = entry as unknown as { annotations?: unknown };
+         if (!def.annotations) return undefined;
+         return new Annotations(def.annotations).parseAsTag("@")
+            .tag as ReadableTag;
+      } catch {
+         return undefined;
+      }
    }
 
    private getStandardModel(): ApiCompiledModel {
@@ -3644,9 +5369,9 @@ export class Model {
          } as ApiNotebookCell;
       });
 
-      // A notebook's own `##` tags, not its imports'. `modelAnnotations` folds
-      // the import lineage, which file-level `##(authorize)` needs and this
-      // does not: a shared include carrying `##(filters)` would otherwise
+      // A notebook's own `##` tags, not its imports': `ownModelNotes` does NOT
+      // fold the import lineage the way `modelAnnotations` (`./annotations`)
+      // does, so a shared include carrying its own `##(filters)` does not
       // configure the filter panel of every notebook that imports it.
       const allAnnotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
 
@@ -3742,17 +5467,6 @@ export class Model {
          };
       }
 
-      // Authorize gate — only cells that actually run a query touch data, so
-      // gate exactly those (a source-def / import cell has no runnable and
-      // accesses nothing). Gates the COMPILED cell query's own source (the
-      // model-wide file-level gate for an unknown/inline source) PLUS the gate
-      // that source carries from what it derives from — see
-      // assertAuthorizedForAllSources. Before the execution try below so
-      // AccessDeniedError stays a 403; independent of bypassFilters.
-      if (cell.runnable) {
-         await this.assertAuthorizedForAllSources(cell.runnable, givens ?? {});
-      }
-
       // For code cells, execute the runnable if available
       let queryName: string | undefined = undefined;
       let queryResult: string | undefined = undefined;
@@ -3760,27 +5474,190 @@ export class Model {
       if (cell.runnable) {
          try {
             let runnableToExecute = cell.runnable;
+            // The text the runnable that actually executes was built from —
+            // starts as the cell's own text and is updated below if a
+            // `#(filter)` refinement rebuilds the query, so the authorize gate
+            // recompiles against whichever text ends up running.
+            let textToExecute = cell.text;
 
-            // If filters need to be applied, rebuild the query with a refinement
-            if (!bypassFilters && cell.modelMaterializer) {
-               const effectiveSource = extractRunTargetSourceName(cell.text);
-               if (effectiveSource) {
-                  const filters = this.getFilters(effectiveSource);
-                  if (filters.length > 0) {
-                     const filterClause = buildFilterClause(
-                        filters,
-                        filterParams ?? {},
-                     );
-                     if (filterClause) {
-                        const refinedQuery = injectFilterRefinement(
-                           cell.text,
-                           filterClause,
-                        );
-                        runnableToExecute =
-                           cell.modelMaterializer.loadQuery(refinedQuery);
-                     }
-                  }
-               }
+            // The model to graft a row-level gate against, and — via
+            // `usesOwnScope` — HOW to bind it. See
+            // `resolveNotebookCellGraftScope`'s doc for the full decision;
+            // in short: the nearest EARLIER code cell's own scope when this
+            // cell's run target resolves there (the `local2` case —
+            // `source: local2 is gated extend {…}` then `run: local2 -> …`,
+            // where `gated` was declared earlier), else this cell's OWN
+            // post-declaration scope — needed whenever no earlier cell
+            // covers the gate at all: the first code cell, a cell preceded
+            // only by markdown, or a LATER cell that both declares and runs
+            // its OWN gated source in one cell. Recompiling a cell's text
+            // against a scope that already holds whatever that cell just
+            // declared fails with "Cannot redefine" the moment `loadQuery`
+            // re-parses the `source:` line — true of the model-wide
+            // cumulative scope AND of a cell's own scope alike — which is
+            // why the own-scope fallback below binds by repointing a
+            // compiled queryDef instead of recompiling any text.
+            const { graftScope, usesOwnScope } =
+               await this.resolveNotebookCellGraftScope(
+                  cellIndex,
+                  cell.runnable,
+               );
+            if (!graftScope) {
+               // The one case NEITHER scope can cover: this cell has no
+               // compiled (modelDef, modelMaterializer) pair of its own
+               // (`selfGraftScopeForCell` returned undefined) and there is no
+               // earlier code cell either. An operator seeing an
+               // `AccessDeniedError` out of this cell should be able to tell
+               // "there was nowhere at all to attach a graft" apart from "the
+               // gate's own condition failed" — logged here, cheap (no
+               // compile), independent of whether this cell turns out to
+               // carry a row-level gate at all. The caller-facing error text
+               // is unaffected either way.
+               logger.debug(
+                  "Notebook cell has no graft scope to attach a row-level gate against (no earlier code cell, and this cell has no compiled model of its own)",
+                  { modelPath: this.modelPath, cellIndex },
+               );
+            }
+
+            // Whether a `#(filter)` refinement will actually rebuild
+            // `cell.runnable` into a new (possibly broken) `QueryMaterializer`
+            // below — computed up front, before either the pre-refinement
+            // gate call or the rebuild itself, so the pre-call can be skipped
+            // whenever nothing downstream can change its answer. Cheap: no
+            // compile, just a source-name extraction and a filter-map lookup.
+            const effectiveSource =
+               !bypassFilters && cell.modelMaterializer
+                  ? extractRunTargetSourceName(cell.text)
+                  : undefined;
+            const cellFilters = effectiveSource
+               ? this.getFilters(effectiveSource)
+               : [];
+
+            // Pre-refinement gate call: probe `cell.runnable` — the
+            // UNREFINED query — for an entry-point gate BEFORE the
+            // `#(filter)` refinement rebuild below, which recompiles the
+            // query and can itself throw if the refined text fails to
+            // compile. Without this, a caller a `given_only` gate would have
+            // denied could instead hit a broken refinement first: resolving
+            // the broken runnable's source silently swallows the compile
+            // failure and returns `undefined`, so no gate is found, and the
+            // eventual failure surfaces as a Malloy-worded 400 instead of the
+            // 403 the gate would have produced. No data ever escapes either
+            // way (the query still never runs), but behavior must stay
+            // byte-identical to the prior release, and a security-path error
+            // code changing is a regression even when nothing leaked.
+            // `probeEntryPointGates` — not `authorizeAndBindRunnable` itself
+            // — is used here because a `row_level` gate must be DEFERRED
+            // (the same treatment `assertAuthorized` already gives a
+            // row-level gate it finds), not denied outright the way
+            // `authorizeAndBindRunnable` would with no `recompile` to hand
+            // it: the post-refinement call below is the one authoritative
+            // enforcement point.
+            //
+            // Skipped entirely when this cell has no `#(filter)` refinement
+            // to apply: with nothing to rebuild `cell.runnable` into, the
+            // post-refinement authoritative bind below runs against that SAME
+            // unrefined runnable, so this call would evaluate the identical
+            // gate a second time for nothing — doubling `assertAuthorizedExprs`
+            // calls and, for a `given_only` gate, a real warehouse round
+            // trip too. This is also what keeps behavior byte-identical to
+            // the prior release for the common (no `#(filter)` refinement)
+            // cell: with no filters on that path, this call never ran before
+            // either.
+            //
+            // Keyed on `cellFilters.length` rather than on a built
+            // `filterClause`, and placed BEFORE `buildFilterClause` runs, for
+            // the same reason the call exists at all: `buildFilterClause`
+            // itself throws `FilterValidationError` on a bad `filterParams`,
+            // which the catch below turns into a 400. Building the clause
+            // first would let malformed filter params preempt the gate and
+            // turn a denied caller's 403 into that 400 — the same
+            // security-path error-code regression this call was added to
+            // prevent, just one step earlier in the sequence.
+            if (cell.modelMaterializer && cellFilters.length > 0) {
+               await this.probeEntryPointGates(
+                  cell.runnable,
+                  givens ?? {},
+                  graftScope,
+               );
+            }
+
+            const filterClause =
+               cellFilters.length > 0
+                  ? buildFilterClause(cellFilters, filterParams ?? {})
+                  : undefined;
+
+            // If filters need to be applied, rebuild the query with the
+            // refinement computed above.
+            if (filterClause && cell.modelMaterializer) {
+               textToExecute = injectFilterRefinement(cell.text, filterClause);
+               runnableToExecute =
+                  cell.modelMaterializer.loadQuery(textToExecute);
+            }
+
+            // Authorize gate — only cells that actually run a query touch
+            // data, so gate exactly those (a source-def / import cell has no
+            // runnable and accesses nothing). Gates the COMPILED cell query's
+            // own source (nothing, for an unknown/inline source — a
+            // `source:` is the only place `#(authorize)` is declared) PLUS
+            // the gate that source carries from what it derives from, and
+            // binds a row-level gate's filter onto
+            // the runnable that ACTUALLY EXECUTES — not `cell.runnable`
+            // (pre-refinement): grafting that would let the recompile step
+            // silently drop the `#(filter)` refinement above instead of
+            // composing with it. Notebook cells are author-curated, so the
+            // recompile uses `loadQuery` — same as the refinement rebuild
+            // just above — never the query path's `loadRestrictedQuery`.
+            //
+            // This is the AUTHORITATIVE bind — it runs AFTER the refinement
+            // rebuild (it needs `textToExecute`, which that rebuild may have
+            // changed) and its result is what actually executes. The
+            // pre-refinement `probeEntryPointGates` call above is a
+            // best-effort fast-fail for the common case; this call is what
+            // enforcement depends on regardless of whether that one ran or
+            // agreed. `AccessDeniedError` staying a 403 (not the generic 400
+            // this catch block otherwise wraps everything into) is handled by
+            // the explicit rethrow at the top of the catch below, independent
+            // of `bypassFilters`.
+            if (cell.modelMaterializer) {
+               const textForRecompile = textToExecute;
+               // `usesOwnScope` selects the recompile strategy (see
+               // `resolveNotebookCellGraftScope`'s doc): the ordinary text
+               // recompile against an earlier cell's scope, or — when this
+               // cell's own source must be the graft target — repointing
+               // this cell's own already-compiled queryDef at a grafted
+               // clone of its own model via `_loadQueryFromQueryDef`, never
+               // re-parsing any text. The queryDef is read off
+               // `runnableToExecute` (not `cell.runnable`) so a `#(filter)`
+               // refinement rebuild above is still the one that ends up
+               // executing.
+               const queryDefForOwnScopeRepoint = usesOwnScope
+                  ? (
+                       (await runnableToExecute.getPreparedQuery()) as {
+                          _query: unknown;
+                       }
+                    )._query
+                  : undefined;
+               runnableToExecute = await this.authorizeAndBindRunnable(
+                  runnableToExecute,
+                  givens ?? {},
+                  {
+                     recompile: usesOwnScope
+                        ? (mm) =>
+                             (
+                                mm as HydrationMaterializer
+                             )._loadQueryFromQueryDef(
+                                queryDefForOwnScopeRepoint,
+                             )
+                        : (mm) => mm.loadQuery(textForRecompile),
+                     graftScope,
+                  },
+               );
+            } else {
+               await this.assertAuthorizedForAllSources(
+                  runnableToExecute,
+                  givens ?? {},
+               );
             }
 
             const cellMaxRows = getMaxQueryRows();
@@ -3809,6 +5686,13 @@ export class Model {
                   maxRows: cellMaxRows,
                },
             );
+            // The compiled run target, preferred over the cell's surface syntax
+            // for the reason getQueryResults prefers it: `extractRunTargetSourceName`
+            // reads the first `run:` and Malloy executes the last, so a cell
+            // holding more than one would tag the wrong source. The prepared
+            // query is read again below, so this costs nothing new.
+            const cellCompiledSource =
+               await this.resolveAuthorizeSourceFromRunnable(runnableToExecute);
             const result = await runnableToExecute.run({
                rowLimit,
                givens: cellSurfaceGivens,
@@ -3817,10 +5701,24 @@ export class Model {
                queryMetadata: this.resolveQueryMetadata(
                   queryMetadataInput,
                   preparedCell.connectionName,
+                  // Same resolution the cell's own filter lookup uses, so a
+                  // notebook cell carries the source's declared layer too.
+                  cellCompiledSource ?? extractRunTargetSourceName(cell.text),
                ),
             });
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
+            // Same reasoning as getQueryResults: a row-level gate that applied
+            // cleanly and matched nothing is a normal empty result, not an
+            // error, but worth telling apart from a source that is genuinely
+            // empty.
+            if (
+               result?._queryResult &&
+               result.totalRows === 0 &&
+               this.queryHadRowLevelFilterAttached(runnableToExecute)
+            ) {
+               recordRowLevelGateDecision("empty_after_filter");
+            }
             // Same ordering as getQueryResults: rows first, so a row overflow is
             // not reported as an unserializable response.
             if (result?._queryResult) {
@@ -3856,6 +5754,14 @@ export class Model {
                );
             }
          } catch (error) {
+            // The authorize gate above now runs INSIDE this try (it needs the
+            // filter-refined text), so its `AccessDeniedError` must be
+            // rethrown here before anything below reshapes it — otherwise it
+            // falls through to the generic `BadRequestError` at the bottom of
+            // this catch and a 403 silently becomes a 400.
+            if (error instanceof AccessDeniedError) {
+               throw error;
+            }
             if (error instanceof FilterValidationError) {
                throw new BadRequestError(error.message);
             }
@@ -3991,9 +5897,14 @@ export class Model {
       return malloyConfig;
    }
 
-   private static getQueries(modelDef: ModelDef): ApiQuery[] {
+   private static getQueries(modelDef: ModelDef): {
+      queries: ApiQuery[];
+      misplacedAuthorize: MisplacedAuthorizeAnnotation[];
+   } {
       // Shared with the package-load worker — see service/source_extraction.ts.
-      return extractQueriesFromModelDef(modelDef) as ApiQuery[];
+      const { queries, misplacedAuthorize } =
+         extractQueriesFromModelDef(modelDef);
+      return { queries: queries as unknown as ApiQuery[], misplacedAuthorize };
    }
 
    private static getSources(
@@ -4002,21 +5913,30 @@ export class Model {
    ): {
       sources: ApiSource[];
       filterMap: Map<string, FilterDefinition[]>;
-      ownAuthorizeSources: OwnAuthorizeSource[];
+      authorizeMap: AuthorizeMap;
+      misplacedAuthorize: MisplacedAuthorizeAnnotation[];
+      authorizeOwnNotes: Map<string, AnnotationNote[]>;
    } {
       // Shared with the package-load worker — see service/source_extraction.ts.
       // The service path logs filter parse failures; the worker stays silent.
-      const { sources, filterMap, ownAuthorizeSources } =
-         extractSourcesFromModelDef(modelDef, givens, (sourceName, err) =>
-            logger.warn(
-               `Failed to parse filter annotations on source "${sourceName}"`,
-               { error: err },
-            ),
-         );
+      const {
+         sources,
+         filterMap,
+         authorizeMap,
+         misplacedAuthorize,
+         authorizeOwnNotes,
+      } = extractSourcesFromModelDef(modelDef, givens, (sourceName, err) =>
+         logger.warn(
+            `Failed to parse filter annotations on source "${sourceName}"`,
+            { error: err },
+         ),
+      );
       return {
          sources: sources as unknown as ApiSource[],
          filterMap,
-         ownAuthorizeSources,
+         authorizeMap,
+         misplacedAuthorize,
+         authorizeOwnNotes,
       };
    }
 
@@ -4200,6 +6120,7 @@ export class Model {
                      text: stmt.text,
                      runnable: runnable,
                      modelMaterializer: localMM,
+                     modelDef: currentModelDef,
                      newSources,
                      queryInfo,
                   } as RunnableNotebookCell;
@@ -4326,6 +6247,7 @@ function hydrateNotebookCells(
          text: sc.text,
          runnable,
          modelMaterializer,
+         modelDef: cellModelDef,
          newSources: sc.newSources as Malloy.SourceInfo[] | undefined,
          queryInfo: sc.queryInfo as Malloy.QueryInfo | undefined,
       };

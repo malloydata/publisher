@@ -1411,10 +1411,19 @@ paths:
         package-level properties. The package must exist and be accessible.
 
         A supplied `materialization` block REPLACES the one on disk, so re-send every
-        field of it you want to keep. Two exceptions, because neither is expressible
-        in the block a caller sends: `scope` (a top-level field) and `queryMetadata`
-        (orthogonal to the schedule and freshness policy this call usually carries) are
-        preserved when omitted. Send `queryMetadata: null` to clear it.
+        field of it you want to keep. Two exceptions are preserved when omitted:
+        `scope`, which is a top-level field and not expressible in the block at all,
+        and `queryMetadata`, which is orthogonal to the schedule and freshness policy
+        this call usually carries — a client setting a schedule has no reason to
+        re-send the package's tags, and dropping them silently untags every statement
+        the package issues.
+
+        `queryMetadata` has two homes: the top-level field, which is canonical, and
+        `materialization.queryMetadata`, which is DEPRECATED and still accepted. The
+        canonical field wins if a request sends both, and both are populated on read.
+        At EITHER home, omitting it preserves the package's tags and so does sending
+        null — a client that serializes unset fields as null must not untag a package
+        by accident. Send an empty object to clear.
       parameters:
         - name: environmentName
           in: path
@@ -3129,6 +3138,32 @@ components:
             URI (gs:// or s3://) of the externally-computed manifest for this package.
             On (re)load the publisher reads it and binds persist references
             (sourceEntityId -> physicalTableName). Null = serve live.
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: |
+            The package-level layer of per-query metadata. Applies to every
+            statement the package's sources issue — a served query as much as a
+            build — and is overridden per property by a model-file, source or
+            per-request declaration.
+
+            **This is the canonical home, here and in `publisher.json`.**
+            `materialization.queryMetadata` is the original one and is
+            DEPRECATED: the properties are not a build setting, so carrying them
+            inside the build-policy block described a scope the feature does not
+            have.
+
+            Both are populated on read and both are accepted on write, so a
+            client can migrate on its own schedule. On write the canonical field
+            wins if a request sends both; in the manifest, the two declaring
+            different bags warns and the root wins, rather than failing the load
+            the way a conflicting `scope` does — a tag is observability only and
+            must never be the reason a package refuses to load.
+
+            Omitting this on a PATCH preserves the package's existing tags, and
+            so does sending null — a client that serializes unset fields as null
+            must not untag a package by accident. Send an empty object to clear.
         materialization:
           oneOf:
             - $ref: "#/components/schemas/PackageMaterializationConfig"
@@ -3258,11 +3293,20 @@ components:
             - $ref: "#/components/schemas/QueryMetadata"
             - type: "null"
           description: >-
-            The manifest's `materialization.queryMetadata` block, verbatim. Null
-            = none declared. The package-level layer of per-query metadata: it
-            applies to every statement the package's sources issue, and a
-            model-file, source or per-request declaration overrides it property
-            by property.
+            DEPRECATED home for the package's per-query metadata; read
+            `Package.queryMetadata`, which is canonical. Null = none declared.
+
+            NOT the manifest's `materialization.queryMetadata` verbatim: it is
+            the RESOLVED winner across both manifest homes, and it is synthesized
+            for a package whose manifest has no `materialization` block at all —
+            a package that declares tags the canonical way has no build policy to
+            carry them, and its tags must not be lost for want of one. Both homes
+            are populated on read, so this and `Package.queryMetadata` agree.
+
+            The package-level layer of per-query metadata: it applies to every
+            statement the package's sources issue — a build and a served query
+            alike — and a model-file, source or per-request declaration overrides
+            it property by property.
 
     Freshness:
       type: object
@@ -3861,14 +3905,21 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expressions gating this source via `#(authorize)`
-            / `##(authorize)` annotations — file-level expressions first, then the
-            source's own, or, when it declares none, the nearest source it extends
-            that does. Each is a Malloy boolean expression over declared givens,
-            evaluated as a disjunction (OR) and enforced at query time. A request
-            that reads this source is denied with HTTP 403 unless at least one
-            expression evaluates true for the supplied givens; an empty or absent
-            list means unrestricted.
+            Effective authorize expressions gating this source, declared with a
+            source-level `#(authorize)` annotation — the source's own, or, when it
+            declares none, the nearest source it extends that does. (File-level
+            `##(authorize)` is deprecated and fails the model load, so no
+            expression here ever comes from one.) Each is a Malloy boolean
+            expression over declared givens, evaluated as a disjunction (OR) and
+            enforced at query time. An empty or absent list means unrestricted.
+
+            How a denial surfaces depends on what the expression reads. An
+            expression referencing only givens is a whole-source gate: the request
+            is denied with HTTP 403 unless at least one expression evaluates true.
+            An expression that also references a row field of the source is a
+            row-level gate, applied as a filter instead — such a request succeeds
+            with HTTP 200 and returns only the rows the expression admits, which
+            may be none. Do not treat a 200 with zero rows as "no gate applied".
 
             IMPORTANT for anything re-implementing the decision: this flat list
             cannot always express the predicate. Expressions from one source are
@@ -4049,13 +4100,23 @@ components:
         grammar while other backends keep it.
 
         Layers, most specific wins per property: connection default < package
-        `materialization.queryMetadata` < model-file
-        `## materialization.queryMetadata.*` < `#@ persist queryMetadata.*` <
-        per-request `queryMetadata`. The publisher's own context (`class`,
+        `queryMetadata` < model-file `## queryMetadata.*` < source
+        `#@ queryMetadata.*` < per-request `queryMetadata`. The `materialization.`
+        spellings of the package and model-file layers are deprecated and still
+        read; where a file declares both, the canonical one wins per property. The publisher's own context (`class`,
         `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
-        `query_id`) is applied on top and cannot be overwritten by a declaration
-        — it is what the server is actually doing, and a caller must not be able
-        to relabel it. Put no secrets or personal data here: a tag is visible to
+        `query_id`, `version`) is applied on top and cannot be overwritten — it
+        is what the server is actually doing, and a caller must not be able to
+        relabel it. Those names are also RESERVED against a MODEL-SIDE
+        declaration: a package block, a model file or a `#@ persist` annotation
+        declaring one has it DROPPED rather than attached. Context only
+        overwrites a name it has a value for, and a served query has no
+        `source`, `trigger` or `run_id` — so a declared one would otherwise ride
+        interactive traffic and read, in the backend's own history, exactly like
+        a build. A connection default and a per-request bag are not covered: a
+        request setting `queryClass` is a caller describing its own call, while a
+        model-side declaration rides every query against that source, including
+        ones its author never sees. Put no secrets or personal data here: a tag is visible to
         anyone who can read the backend's query history, and on a backend with no
         native tag mechanism it is visible in the statement text.
 
@@ -5365,14 +5426,24 @@ components:
             - type: "null"
           description: >-
             The source's EFFECTIVE per-query metadata after most-specific-wins
-            resolution per property (`#@ persist queryMetadata.*` > model-file
-            `## materialization.queryMetadata.*` > package
-            `materialization.queryMetadata`). Null = declared at no level. The
+            resolution per property (`#@ queryMetadata.*` > model-file
+            `## queryMetadata.*` > package `queryMetadata`; the deprecated
+            `materialization.` spellings of the last two are still read and lose
+            to the canonical ones). Null = declared at no level. The
             publisher attaches it — merged under its own context — to every
-            statement it issues while building this source, and reports it here so
-            a caller can see how a build will be tagged and tag its own queries
-            the same way. Observability only: excluded from `sourceEntityId`, so
-            editing it never re-addresses the source or orphans its table.
+            statement it issues while building this source AND to every query
+            served from it, and reports it here so a caller can see how the
+            source's traffic will be tagged. Reported as DECLARED, not as
+            attached: a property whose name the server owns (`class`,
+            `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
+            `query_id`, `version`) appears here and is then dropped rather than
+            attached. Copying this bag onto a request does NOT reproduce that
+            drop: the reservation covers a MODEL-SIDE declaration only, so a
+            `source`, `trigger` or `run_id` sent on a request layer ATTACHES, and
+            the statement then reads, in the backend's own history, exactly like
+            a build of this source. Strip the server-owned names before reusing
+            it. Observability only: excluded from `sourceEntityId`, so editing it
+            never re-addresses the source or orphans its table.
         columns:
           type: array
           description: Output schema of the source.
@@ -5780,27 +5851,88 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of sourceEntityId to manifest entry.
+          description: >-
+            Map of sourceEntityId to manifest entry. Every source that BUILT is
+            here. A source that FAILED is reported in `failures`, and during the
+            `ManifestEntry.error` deprecation window is also mirrored here
+            carrying that field -- so a consumer resolving an entry to a real
+            table must skip entries whose `error` is set until the field is
+            removed, after which `entries` is built-only.
+        failures:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SourceFailure"
+          description: >-
+            Map of sourceEntityId to the reason that source failed to
+            materialize, for the sources that did NOT build. A build that loses
+            some of its sources still returns the ones that succeeded in
+            `entries`, so this is how a consumer tells a partial failure from a
+            clean run and learns which source failed. Empty or absent on a run
+            where every source built.
         strict:
           type: boolean
           description: Whether unresolved references should error.
 
+    SourceFailure:
+      type: object
+      description: >-
+        One source that failed to materialize, and why. Kept beside `entries`
+        rather than inside a manifest entry because a failed source names no
+        table that exists: an entry carries a required `physicalTableName`, so
+        putting a failure there would hand every consumer a table name it must
+        know not to resolve.
+      required: [sourceEntityId, reason]
+      properties:
+        sourceEntityId:
+          type: string
+          description: The source's content address, as `entries` would have keyed it.
+        sourceName:
+          type: string
+          description: The persist source's declared name, for reporting.
+        reason:
+          type: string
+          description: >-
+            Why this source failed, in the words the warehouse or compiler
+            reported, redacted against that source's own connection.
+        materializedTableId:
+          type: string
+          description: >-
+            Echoes the caller-assigned id from the BuildInstruction, so an
+            orchestrator can match this failure to the row it dispatched without
+            deriving the content address itself.
+        physicalTableName:
+          type: string
+          description: >-
+            The table this source was HEADED for, echoing the instruction. NOT a
+            table that exists -- the build that would have created it is what
+            failed, and a source that failed a REBUILD leaves the prior
+            generation's table in place under this same name, so resolving it
+            serves stale data rather than missing. Present for correlating the
+            failure with the request; a consumer must never resolve or read it.
+
     ManifestEntry:
       type: object
-      description: A single entry in the build manifest.
+      description: >-
+        A single entry in the build manifest. An entry describing a source that
+        BUILT names a table that exists; `error` marks the one exception, kept for
+        one deprecation cycle (see that field).
       required: [sourceEntityId, physicalTableName]
       properties:
         sourceEntityId:
           type: string
         error:
           type: [string, "null"]
+          deprecated: true
           description: >-
-            Why this source failed to materialize, in the words the warehouse or
-            compiler reported. Present only on a source that failed; absent on one
-            that built, whose table the remaining fields describe. A build that
-            loses some of its sources still returns the ones that succeeded, so an
-            entry carrying this is how a consumer tells a failed source from a
-            healthy one.
+            DEPRECATED -- read `BuildManifest.failures` instead, which is where a
+            failed source is now reported. Mirrors `SourceFailure.reason` for the
+            same source, so a consumer written against 0.0.245-0.0.246 keeps
+            working unchanged; it will be removed once those consumers have moved.
+            An entry carrying this describes a source that FAILED, so its
+            `physicalTableName` names a table the build did not create -- which is
+            the defect the `failures` collection exists to remove, because the
+            field is required and a consumer resolving an entry to a real table has
+            no way to know it must check here first.
         sourceName:
           type: string
           description: >-
