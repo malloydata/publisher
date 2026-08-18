@@ -1,6 +1,7 @@
 import CloseIcon from "@mui/icons-material/Close";
 import { Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import { LogMessage } from "../client";
+import type { DrillBinding } from "./drill";
 import ResultContainer from "./RenderedResult/ResultContainer";
 
 interface ResultsDialogProps {
@@ -9,6 +10,8 @@ interface ResultsDialogProps {
    result: string;
    title?: string;
    renderLogs?: LogMessage[];
+   /** `# drill` wiring, so a result stays clickable when it is expanded. */
+   drill?: DrillBinding;
 }
 
 export default function ResultsDialog({
@@ -17,6 +20,7 @@ export default function ResultsDialog({
    result,
    title = "Results",
    renderLogs,
+   drill,
 }: ResultsDialogProps) {
    return (
       <Dialog
@@ -56,6 +60,7 @@ export default function ResultsDialog({
                maxHeight={800}
                maxResultSize={1000000}
                renderLogs={renderLogs}
+               drill={drill}
             />
          </DialogContent>
       </Dialog>

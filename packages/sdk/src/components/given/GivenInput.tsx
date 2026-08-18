@@ -1,14 +1,18 @@
 import ClearIcon from "@mui/icons-material/Clear";
 import {
    Autocomplete,
+   Box,
    Checkbox,
+   CircularProgress,
    FormControl,
    FormControlLabel,
    FormHelperText,
    IconButton,
    InputAdornment,
+   Slider,
    Stack,
    TextField,
+   Typography,
 } from "@mui/material";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -16,15 +20,57 @@ import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import { Given } from "../../client";
-import { GivenValue } from "../../hooks/useGivensForm";
+import { paramToGiven, pickedDayToUtc } from "./paramCodec";
+import { GivenValue } from "../../hooks/givenValue";
+import {
+   decodeAtLeast,
+   decodeFilterList,
+   encodeAtLeast,
+   encodeFilterList,
+   filterInnerType,
+   isFilterType,
+   isPlainFilterList,
+} from "./filterValue";
 import { renderGivenDefault } from "./utils";
 
 dayjs.extend(utc);
 
+/**
+ * Metrics of MUI's small outlined input, which the box-less controls match so a
+ * row of mixed widgets lines up: the horizontal inset of an outlined field's
+ * content and helper text, and the height of the field itself.
+ */
+const INPUT_CONTENT_INSET = 14;
+const SLIDER_FIELD_HEIGHT = 42;
+
 export interface GivenInputProps {
+   /**
+    * The declaration, which carries its own presentation (`label`, `control`,
+    * `rangeMin`, `rangeMax`) from the control tags on it
+    * (`# label="Brand" control=select range_min=0`).
+    *
+    * Presentation never changes what the given means, just which widget stands
+    * in for typing the value by hand. An untagged given falls back to the
+    * widget its type implies, which is what notebooks have always rendered.
+    */
    given: Given;
    value: GivenValue | undefined;
    onChange: (next: GivenValue) => void;
+   /**
+    * Options for a `select`/`multiselect`, already resolved from the given's
+    * `suggest` query. Resolved by the caller rather than fetched here so this
+    * stays a presentational component: the suggest query is an ordinary query
+    * against the host's model, which the widget has no business knowing about.
+    */
+   options?: string[];
+   optionsLoading?: boolean;
+   /**
+    * The `suggest` query for this given failed. Distinguished from an empty
+    * `options` because a dropdown looks identical either way, and the two mean
+    * opposite things: no values in the data, versus no answer from the server.
+    * Free text still works, so the control degrades rather than locking up.
+    */
+   optionsFailed?: boolean;
 }
 
 /**
@@ -72,14 +118,21 @@ function annotationHelperText(given: Given): string | undefined {
  *     including an empty string — so typing the field empty (a deliberate `""`)
  *     is distinguishable from unset by the × being present.
  *   - revert → the × affordance calls `onChange(null)`, which drops the override
- *     (useGivensForm deletes the key) and returns the widget to its unset state.
+ *     (useGivensState deletes the key) and returns the widget to its unset state.
  *
  * A given's model default (if any) is also surfaced as an always-visible
  * `Default: …` helper line on every widget — including the boolean checkbox,
  * which gets a wrapping FormControl for the slot.
  */
-export function GivenInput({ given, value, onChange }: GivenInputProps) {
-   const label = given.name ?? "";
+export function GivenInput({
+   given,
+   value,
+   onChange,
+   options,
+   optionsLoading,
+   optionsFailed,
+}: GivenInputProps) {
+   const label = given.label ?? given.name ?? "";
    const type = given.type ?? "string";
    const helperText = annotationHelperText(given);
    const defaultDisplay = renderGivenDefault(type, given.default);
@@ -103,12 +156,454 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
          </>
       ) : undefined;
 
+   // A picker, when the declaration asked for one. Placed ahead of the
+   // type branches because `control=` is an explicit instruction and the type
+   // is only an inference.
+   //
+   // But this picker only speaks two languages: plain strings, and the STRING
+   // filter grammar. It commits through `encodeFilterList`, which is
+   // `StringFilterExpression.unparse`. So `control=select` on anything else is
+   // refused rather than honoured, because honouring it corrupts the value:
+   // a `filter<date>` or `filter<number>` would receive string-grammar escaping
+   // that the temporal and number parsers reject outright, and a `number`,
+   // `date` or `boolean` given would receive a string that `givensToRequest`
+   // forwards verbatim for Malloy to refuse. Falling through gives the given the
+   // widget its type implies, which is the behaviour before `control=` existed.
+   // No picker renders unless a given carries `control`, so this closes the hole
+   // before the slice
+   // that opens it rather than after.
+   const pickableType = type === "string" || filterInnerType(type) === "string";
+   const filterIsPickable =
+      !isFilterType(type) ||
+      typeof value !== "string" ||
+      isPlainFilterList(value);
+   // And multi-pick only for a `filter<…>`, which is the one type that can carry
+   // several values in one string. A plain `string` given cannot hold a list at
+   // all: `GivenValue` admits no array, and `givenToParam` refuses one rather
+   // than joining it, because the codec cannot read a join back. So a
+   // `multiselect` on a plain string given renders as a single-pick instead of
+   // emitting something that cannot survive the address bar.
+   /**
+    * A value that is in force but that this control cannot render.
+    *
+    * Every typed branch has the same hazard: the control substitutes a blank
+    * for a value of the wrong shape, so the value goes on filtering every cell
+    * while the box looks empty. Shown here rather than per branch, because
+    * handling it three different ways is how the date branch ended up with a
+    * revert and the number branch without one.
+    *
+    * Read-only on purpose: an editable version swapped itself for the real
+    * control the moment the typed text first parsed, taking the cursor with it.
+    */
+   const unrepresentable = (what: string) => (
+      <TextField
+         label={label}
+         value={String(value)}
+         error
+         inputProps={{ readOnly: true }}
+         helperText={
+            <>
+               {`Not a ${what}. Clear it to pick one.`}
+               {helperNode ? <br /> : null}
+               {helperNode}
+            </>
+         }
+         slotProps={{
+            input: {
+               endAdornment: <ClearAdornment onClear={() => onChange(null)} />,
+            },
+         }}
+         fullWidth
+         size="small"
+      />
+   );
+
+   const multiplePickable = isFilterType(type);
+   const multiple = given.control === "multiselect" && multiplePickable;
+   const filtered = isFilterType(type);
+   const pickerControl =
+      given.control === "select" || given.control === "multiselect";
+   // A filter carries its selection as one string ("Nike, Levi's"); a plain
+   // array-typed given carries a real array.
+   //
+   // Guarded by `pickerControl` because it is read only by the picker below and
+   // by the condition guarding it. Computing it for every given would decode a
+   // filter on every render of a control that never shows one.
+   const selected: string[] = !pickerControl
+      ? []
+      : filtered
+        ? typeof value === "string"
+           ? decodeFilterList(value)
+           : []
+        : typeof value === "string" && value !== ""
+          ? [value]
+          : [];
+
+   if (
+      pickerControl &&
+      pickableType &&
+      // A picker that cannot represent the current filter would silently
+      // rewrite it on the next edit: `-Nike` decodes to one opaque chip and
+      // re-encodes as a literal, inverting what the filter means. Fall through
+      // to the text box instead, where the author's filter stays visible and
+      // editable as written.
+      filterIsPickable &&
+      // Same reasoning, different cause: a single-pick control has room for one
+      // value and the model's filter holds several. It rendered the first and
+      // dropped the rest as soon as the reader picked anything.
+      !(!multiple && selected.length > 1)
+   ) {
+      const commit = (next: string[]) => {
+         // ASK the encoder what survived; do not predict it from `next.length`.
+         // `encodeFilterList` drops any value with no non-whitespace character,
+         // so a single blank-looking pick (a run of spaces, a tab, an NBSP, all
+         // ordinary in scraped data and passed through untouched by
+         // `readOptionValues`) has length 1, skipped the revert arm below, and
+         // encoded to `""`: the EMPTY filter, sent as an explicit "match
+         // everything" override while the control redrew showing the model
+         // default as a ghost. This is the identical drift that made a blank
+         // cell drill to every row, at a second call site: `drillValueToFilter`
+         // was fixed to ask the encoder and this one still predicted it.
+         const encoded = filtered ? encodeFilterList(next) : undefined;
+         if (next.length === 0 || encoded === "") {
+            // `null` for every type, which is what the × means everywhere else
+            // in this file: drop the override and let the model's own value
+            // stand. This arm used to send `""` for a filter, the empty filter,
+            // meaning "match everything" as an explicit override. Same button,
+            // same given, opposite result set from the text box's ×, and
+            // nothing on screen said which one you were about to get.
+            //
+            // FORECLOSED by choosing revert: a reader cannot override a
+            // DECLARED default with "match everything", because the only
+            // gesture for it now means revert. Unreachable today (nothing
+            // carries `control`, so no picker renders here), and the honest fix is
+            // a separate affordance rather than two meanings for one ×. Worth
+            // settling before `control=` is wired up server-side.
+            onChange(null);
+            return;
+         }
+         // One value for a non-filter given, never the array. `GivenValue`
+         // admits no array at all now, and the URL codec could not round-trip
+         // one anyway: `givenToParam` refuses it rather than joining on `,`,
+         // because reading it back yields the joined string, not the list.
+         onChange(filtered ? (encoded as string) : next[0]);
+      };
+
+      return (
+         <Autocomplete
+            multiple={multiple}
+            // Picking one value out of several should not put the list away;
+            // MUI closes on select by default, which makes "and also Aurora"
+            // cost a second click to reopen.
+            disableCloseOnSelect={multiple}
+            // Free text keeps the control from being a cage: the suggest query
+            // returns the common values, not necessarily every legal one.
+            freeSolo
+            // Keeps text the reader typed but did not pick from the list. A
+            // `freeSolo` Autocomplete without this discards it on blur, so a
+            // value that is legal but absent from `suggest` could be typed and
+            // then silently vanish.
+            autoSelect
+            options={options ?? []}
+            loading={optionsLoading}
+            noOptionsText={
+               optionsFailed ? "Options unavailable" : "No matching values"
+            }
+            value={multiple ? selected : (selected[0] ?? null)}
+            onChange={(_event, next) =>
+               commit(
+                  next === null
+                     ? []
+                     : Array.isArray(next)
+                       ? (next as string[])
+                       : [next as string],
+               )
+            }
+            renderInput={(params) => (
+               <TextField
+                  {...params}
+                  label={label}
+                  size="small"
+                  // The model's own default when it has one, as a ghost, the
+                  // way every other unset control shows it. A hardcoded "All"
+                  // told the reader nothing would be filtered while the query
+                  // was about to run on the declared default.
+                  //
+                  // Except when an explicit `""` is in force. That is the EMPTY
+                  // filter, so the default is precisely what is NOT running,
+                  // and showing it as a ghost made the control assert one
+                  // filter while the query used another.
+                  placeholder={
+                     selected.length !== 0
+                        ? undefined
+                        : value === ""
+                          ? "All"
+                          : (defaultDisplay ?? "All")
+                  }
+                  error={optionsFailed}
+                  helperText={
+                     optionsFailed ? (
+                        <>
+                           Could not load the options for this control. Type a
+                           value to filter anyway.
+                           {helperNode ? <br /> : null}
+                           {helperNode}
+                        </>
+                     ) : (
+                        helperNode
+                     )
+                  }
+                  slotProps={{
+                     input: {
+                        ...params.InputProps,
+                        endAdornment: (
+                           <>
+                              {optionsLoading && <CircularProgress size={16} />}
+                              {params.InputProps.endAdornment}
+                           </>
+                        ),
+                     },
+                  }}
+               />
+            )}
+            fullWidth
+         />
+      );
+   }
+
+   // A slider, when the declaration bounded the range. Only a lower bound is
+   // expressible as a filter here (see `encodeAtLeast`), so this reads as
+   // "at least", which is what a threshold control is for.
+   const numericFilter =
+      isFilterType(type) && filterInnerType(type) === "number";
+   const { rangeMin, rangeMax } = given;
+   // A slider can only represent `>= N`, so a `filter<number>` carrying anything
+   // else (a range, an upper bound, a negation) falls through to the text box.
+   // Otherwise `decodeAtLeast` returns undefined, the slider claims "Any" while a
+   // filter is in force, and the first drag silently replaces the author's filter
+   // with a threshold. Same principle as the picker and the date guards above.
+   const sliderIsRepresentable =
+      !numericFilter ||
+      value === undefined ||
+      value === null ||
+      value === "" ||
+      (typeof value === "string" && decodeAtLeast(value) !== undefined);
+   if (
+      (numericFilter || type === "number") &&
+      rangeMin !== undefined &&
+      rangeMax !== undefined &&
+      sliderIsRepresentable
+   ) {
+      const current = numericFilter
+         ? typeof value === "string"
+            ? decodeAtLeast(value)
+            : undefined
+         : typeof value === "number"
+           ? value
+           : undefined;
+      // Same hazard as the number and date branches: a value that cannot be
+      // placed on the track would otherwise read as "Any" while still being
+      // sent. Unreachable without `rangeMin`/`rangeMax` on the given,
+      // which is exactly why it is worth closing before anything does.
+      if (
+         current === undefined &&
+         value !== undefined &&
+         value !== null &&
+         value !== ""
+      ) {
+         return unrepresentable("number");
+      }
+      // An unset control rests at the low end, which is the no-op threshold.
+      const position = current ?? rangeMin;
+      // `""` on a filter given is an explicit "no threshold" OVERRIDE, not an
+      // absence: `paramToGiven` keeps it because the empty string is a value a
+      // filter can mean, and `givensToRequest` sends it. Counting it as unset
+      // drew "Any" with no clear affordance, so the reader could see neither
+      // that an override was in force nor any way back to the model's default.
+      // An explicit empty filter is an override with NO threshold, which is a
+      // third state: not unset, and not `≥ position` either. Printing
+      // `≥ rangeMin` for it asserted a lower bound nobody had chosen, just as
+      // counting it unset had hidden that an override was in force at all.
+      const emptyFilterOverride = numericFilter && value === "";
+      const isOverridden = current !== undefined || emptyFilterOverride;
+      // TWO LIMITATIONS here, both reachable as soon as a given carries
+      // `rangeMin`/`rangeMax`, and both about the plain `number` arm rather than
+      // the filter arm. Written when no server populated those fields; slice 6
+      // now does, so treat these as live rather than theoretical.
+      // An unset control rests its thumb at `rangeMin` while the
+      // readout shows the model default, so the two disagree whenever the
+      // default is not the floor; and MUI fires no onChange for a click at the
+      // thumb's existing position, so the floor cannot be selected from the
+      // resting state. Fixing either means seeding the thumb from the default,
+      // which needs a default that parses as a number and a decision about what
+      // to show when it does not.
+      return (
+         <FormControl fullWidth>
+            {/* A slider is the one control with no box around it, so it has to
+                borrow the outlined inputs' metrics to sit in a row with them:
+                their content is inset 14px and their field is 42px tall, and
+                a control that matches both puts its helper text on the same
+                line as its neighbours'. Left to itself the label started at
+                the column edge and the helper sat 10px lower than the rest,
+                which is most of what made a mixed control row look crooked. */}
+            <Box
+               sx={{
+                  height: SLIDER_FIELD_HEIGHT,
+                  px: `${INPUT_CONTENT_INSET}px`,
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+               }}
+            >
+               <Stack direction="row" alignItems="center" spacing={1}>
+                  <Typography variant="body2" color="text.secondary" noWrap>
+                     {label}
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                     {/* `≥ N` only for a FILTER, whose value IS a lower
+                         bound. A plain `number` given is an ordinary value, and
+                         the onChange below says so by committing `picked`
+                         rather than a threshold, so labelling it `≥` described
+                         a query nobody was running. */}
+                     {!isOverridden
+                        ? numericFilter
+                           ? "Any"
+                           : (defaultDisplay ?? "Unset")
+                        : emptyFilterOverride
+                          ? "Any"
+                          : numericFilter
+                            ? `≥ ${position}`
+                            : String(position)}
+                  </Typography>
+                  {isOverridden && (
+                     <IconButton
+                        size="small"
+                        aria-label="clear value"
+                        // `null`, like every other × in this file: revert the
+                        // override. It used to send `""` for a filter, which
+                        // `decodeAtLeast` reads back as undefined, so the
+                        // control redrew as "Any" and hid this button while the
+                        // given was still explicitly set to the empty filter.
+                        // The reader could neither see the override nor undo it.
+                        onClick={() => onChange(null)}
+                        sx={{ p: 0 }}
+                     >
+                        <ClearIcon fontSize="small" />
+                     </IconButton>
+                  )}
+               </Stack>
+               <Slider
+                  size="small"
+                  min={rangeMin}
+                  max={rangeMax}
+                  value={position}
+                  valueLabelDisplay="auto"
+                  aria-label={label}
+                  // MUI pads a slider vertically for a touch target, which is
+                  // 26px this control cannot spare; the row above already
+                  // gives the thumb somewhere to be.
+                  sx={{ py: 0, mt: 0.5 }}
+                  onChange={(_event, next) => {
+                     const picked = Array.isArray(next) ? next[0] : next;
+                     // Back at the floor is no threshold at all for a FILTER,
+                     // not `>= min`, so dragging left the whole way clears
+                     // rather than leaving a filter that reads as a constraint.
+                     //
+                     // A plain `number` given is not a threshold, so its floor
+                     // is an ordinary value and clearing there made the minimum
+                     // the one number on the scale the reader could not pick.
+                     if (numericFilter && picked <= rangeMin) {
+                        onChange(null);
+                        return;
+                     }
+                     onChange(numericFilter ? encodeAtLeast(picked) : picked);
+                  }}
+               />
+            </Box>
+            {helperNode && (
+               <FormHelperText sx={{ mx: `${INPUT_CONTENT_INSET}px` }}>
+                  {helperNode}
+               </FormHelperText>
+            )}
+         </FormControl>
+      );
+   }
+
+   // A date-typed filter gets the same picker a plain date given gets. The
+   // value is filter syntax, but a bare ISO date is valid filter syntax for
+   // "on that day", so the round trip is direct.
+   const dateFilterInner = isFilterType(type)
+      ? filterInnerType(type)
+      : undefined;
+   const isDateFilter =
+      dateFilterInner === "date" ||
+      dateFilterInner === "timestamp" ||
+      dateFilterInner === "timestamptz";
+   // Only a bare `YYYY-MM-DD` is the picker's own spelling; anything else is a
+   // filter expression the picker cannot represent. Unset is fine, since the
+   // picker simply shows nothing.
+   //
+   // An explicit `""` is NOT fine and used to be allowed here. It is the empty
+   // filter, a live override that `givensToRequest` sends, and a DatePicker
+   // renders it byte-identical to unset: blank field, `Default: …` helper, and
+   // no clear button, because MUI emits none for a field with no value. So the
+   // screen said the model default was in force while the query matched every
+   // row, and there was no way back. Falling through to the text box is the
+   // remedy this file already uses for a filter a control cannot represent:
+   // there the value is visible as written and the × reverts it.
+   const bareDate =
+      typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+   const dateIsPickable = value === undefined || value === null || bareDate;
+   // An unrepresentable date filter falls through to the text box below, for the
+   // same reason a non-list string filter does: a range like
+   // `2024-01-01 to 2024-02-01` handed whole to `dayjs.utc` parses as its
+   // leading date, so the picker would claim a single wrong day while a range
+   // was in force. The text box shows the filter as written, and editable.
+   if (isDateFilter && dateIsPickable) {
+      const parsed = bareDate ? dayjs.utc(value as string) : null;
+      return (
+         <LocalizationProvider dateAdapter={AdapterDayjs}>
+            <DatePicker
+               label={label}
+               value={parsed?.isValid() ? parsed : null}
+               // Cleared means UNSET, `null`, not an empty filter expression.
+               // `""` is a value for a filter given (the empty string is
+               // meaningful there), so it reached the wire as a filter of no
+               // characters instead of dropping the override.
+               onChange={(next) =>
+                  onChange(next ? next.format("YYYY-MM-DD") : null)
+               }
+               slotProps={{
+                  textField: {
+                     fullWidth: true,
+                     size: "small",
+                     helperText: helperNode,
+                  },
+                  field: { clearable: true, onClear: () => onChange(null) },
+               }}
+            />
+         </LocalizationProvider>
+      );
+   }
+
    if (type === "boolean") {
       // Three states for a boolean. When unset, reflect the model DEFAULT so the
       // box shows what the query will actually run with (not a misleading
       // unchecked). A toggle is an explicit true/false override; the revert (×)
       // — shown only when overridden — drops the override back to the default.
       const isOverridden = typeof value === "boolean";
+      // A link carrying `?FLAG=yes` reaches here as a string, which `paramToGiven`
+      // passes through on purpose. Without this the checkbox rendered the model
+      // DEFAULT for it, so the box said one thing while `givensToRequest` sent
+      // "yes" and every cell failed, with nothing on screen to explain why.
+      // No `value !== ""` carve-out here, unlike the number branch it was copied
+      // from. `paramToGiven` returns null for an empty `boolean` parameter, so
+      // `""` cannot reach a checkbox from a URL or a host; if one ever did, a
+      // checkbox has no empty state to show it in, and saying so beats drawing
+      // the model default over a value that is still being sent.
+      if (!isOverridden && value !== undefined && value !== null) {
+         return unrepresentable("true or false");
+      }
       const defaultChecked = given.default?.trim() === "true";
       const checked = isOverridden ? value : defaultChecked;
       return (
@@ -146,6 +641,13 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
       // non-number renders blank (see `num` above), and keying the revert off
       // that blank left the user no way to clear it.
       const isOverridden = value !== undefined && value !== null;
+      // `""` is an empty box, not an unreadable value. `paramToGiven` now reads
+      // `?N=` as UNSET so it no longer arrives here at all, but a host passing
+      // values in directly still can, and calling that "Not a number" would put
+      // a red error over a field showing nothing.
+      if (isOverridden && value !== "" && typeof value !== "number") {
+         return unrepresentable("number");
+      }
       return (
          <TextField
             label={label}
@@ -171,7 +673,41 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
    }
 
    if (type === "date" || type === "timestamp" || type === "timestamptz") {
-      const dateValue = value instanceof Date ? dayjs.utc(value) : null;
+      // A string is read as a date first. `# drill { to=self }` onto a date
+      // given hands over a bare `YYYY-MM-DD` string, not a Date, so treating
+      // any non-Date as unreadable painted an error over a value the product
+      // itself had just produced.
+      const asDate =
+         value instanceof Date
+            ? value
+            : typeof value === "string"
+              ? ((parsed) => (parsed instanceof Date ? parsed : null))(
+                   paramToGiven(type, value),
+                )
+              : null;
+      const dateValue = asDate ? dayjs.utc(asDate) : null;
+      // Same lesson as `number` above, and it bit here too. A value the codec
+      // cannot read (a shared link carrying `?ORDER_DATE=last month`) is still
+      // filtering every cell, but a DatePicker can only render a date, so it
+      // showed blank, and the picker's own `clearable` appears only when it
+      // holds one: the state was invisible AND had no revert.
+      //
+      // `""` is an empty control, not an unreadable value; see the number
+      // branch above for the same distinction.
+      const unreadable =
+         value !== undefined &&
+         value !== null &&
+         value !== "" &&
+         asDate === null;
+
+      // Its own field rather than a badged DatePicker, which was tried twice.
+      // Putting the revert in `slotProps.textField.InputProps` REPLACES the
+      // picker's own "Choose date" button, because MUI merges that object
+      // shallowly and ours wins outright. And passing `error` through the same
+      // slot pins it: MUI's `useField` returns any defined `error` ahead of its
+      // own validation, so `error: false` suppressed the picker's real errors.
+      if (unreadable) return unrepresentable("date");
+
       // The date picker shows a format mask, not a placeholder, so the default
       // rides on the shared helper line.
       return (
@@ -179,7 +715,13 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
             <DatePicker
                label={label}
                value={dateValue}
-               onChange={(next) => onChange(next ? next.toDate() : null)}
+               // The clicked day rebuilt in UTC, never `next.toDate()`, which
+               // is local-mode and lands a day out. See `pickedDayToUtc`.
+               onChange={(next) =>
+                  onChange(
+                     next ? pickedDayToUtc(next, asDate ?? undefined) : null,
+                  )
+               }
                slotProps={{
                   textField: {
                      fullWidth: true,
@@ -193,30 +735,11 @@ export function GivenInput({ given, value, onChange }: GivenInputProps) {
       );
    }
 
-   if (type.startsWith("array<")) {
-      const list = Array.isArray(value) ? value.map(String) : [];
-      return (
-         <Autocomplete
-            multiple
-            freeSolo
-            options={[]}
-            value={list}
-            onChange={(_event, next) =>
-               onChange(next.length === 0 ? null : (next as string[]))
-            }
-            renderInput={(params) => (
-               <TextField
-                  {...params}
-                  label={label}
-                  size="small"
-                  placeholder={list.length === 0 ? defaultDisplay : undefined}
-                  helperText={helperNode}
-               />
-            )}
-            fullWidth
-         />
-      );
-   }
+   // No `array<…>` branch on purpose. `malloyGivenToApi` renders a non-filter
+   // given as the bare `type.type`, so the widest thing the server could ever
+   // send is `"array"`; `"array<…>"` is a spelling nothing produces. Malloy's
+   // grammar emits only scalar parameter types for givens today anyway
+   // (`service/given.ts`), so the case is doubly unreachable.
 
    // Default: string, filter<...>, or unknown types — plain text input.
    // An empty field is a deliberate `""` override, NOT a revert: typing the
