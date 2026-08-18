@@ -17,14 +17,14 @@ green on it: 43 passed, including all 27 data tests and 3 unit tests.
 | `products` | `products` | converted |
 | `supplies` | `supplies` | converted |
 | `locations` | `locations` | converted |
-| `stg_*` (6 models) | — | skipped in the semantic layer: staging output is already in the marts. Rebuilt in `transforms/` instead |
+| `stg_*` (6 models) | — | skipped in `adopt/`: staging output is already in the marts. Rebuilt in `convert/` instead |
 | `metricflow_time_spine` | — | skipped: scaffolding for cumulative metrics; Malloy truncates timestamps natively |
 
 ## Metric coverage: 20 measures, 2 views, 1 deferred
 
 All 23 metrics in dbt's semantic manifest are accounted for. **20 became measures and every one
 matches dbt's own output** — verified by running each measure against `mf query` on the same
-data; see `semantic-layer/jaffle_shop.malloynb`, which states dbt's number beside each query.
+data; see `adopt/jaffle_shop.malloynb`, which states dbt's number beside each query.
 
 | dbt metric | type | Malloy | Verdict |
 |---|---|---|---|
@@ -36,8 +36,8 @@ data; see `semantic-layer/jaffle_shop.malloynb`, which states dbt's number besid
 | `customers`, `count_lifetime_orders`, `lifetime_spend_pretax`, `lifetime_spend` | simple | measures on `customers` | match |
 | `average_order_value` | derived | measure on `customers` | match |
 | `average_tax_rate` | simple | measure on `locations` | match |
-| `revenue_growth_mom` | derived + offset | **view** in `analysis.malloy` | same digits, different scaling — below |
-| `cumulative_revenue` | cumulative | **view** in `analysis.malloy` | terminal value ties out — below |
+| `revenue_growth_mom` | derived + offset | **view** on `order_items` | same digits, different scaling — below |
+| `cumulative_revenue` | cumulative | **view** on `order_items` | terminal value ties out — below |
 | `median_revenue` | simple (median) | — | **deferred** — below |
 
 ### The three that are not measures
@@ -93,7 +93,7 @@ column directly, so the alias is dropped and the `large_orders` filter resolved 
 Six dbt metrics share a name with the column they aggregate (`order_total`, `tax_paid`,
 `order_cost`, `count_lifetime_orders`, `lifetime_spend_pretax`, `lifetime_spend`). Malloy rejects
 a measure that redefines an existing field name ("Cannot redefine 'order_total'"), so the
-**binding layer renames the passthrough column** to `<name>_raw` and the measure keeps dbt's
+**projection renames the passthrough column** to `<name>_raw` and the measure keeps dbt's
 name. Metric names are what analysts and agents search for, so the metric won the name.
 
 ## Why not the OSI export
@@ -111,19 +111,19 @@ input. It is also **lossy in two ways that produce wrong numbers**, both observe
    — identically zero. dbt emits a warning for `cumulative_revenue` losing meaning in OSI, but
    **no warning for this one**.
 
-`semantic_manifest.json` keeps the structured `filter` and the `offset_window`, so the converter
-reads that.
+`semantic_manifest.json` keeps the structured `filter` and the `offset_window`, so that is what
+the model was written from.
 
-## Layer C (`transforms/`): differences from dbt's marts
+## `convert/`: differences from dbt's marts
 
-`transforms/` rebuilds dbt's staging and marts in Malloy over the same raw data. All six marts
+`convert/` rebuilds dbt's staging and marts in Malloy over the same raw data. All six marts
 agree with dbt's built marts on row counts and every aggregate compared (25 values). Three
 differences are real and deliberate:
 
 **Money columns are floating point.** dbt's `cents_to_dollars` macro casts to `numeric(16,2)`;
 Malloy uses `round(x / 100, 2)` on a double. Sums agree to about 1e-9 relative but are not
-bit-identical: `sum(order_total)` is `105826.1800000045` in Malloy against dbt's exact
-`105826.18`. For money that matters, keep the cast in dbt.
+bit-identical: `sum(order_total)` comes back as `105826.18000000007` or
+`105826.17999999996` depending on summation order, against dbt's exact `105826.18`. For money that matters, keep the cast in dbt.
 
 **`supply_uuid` is a different value.** dbt builds it with
 `dbt_utils.generate_surrogate_key(['id','sku'])`, an md5 over the concatenated parts. The Malloy
@@ -136,7 +136,7 @@ left-joins an item summary, so those orders get **NULL** for `count_order_items`
 **0**, so the booleans are `false`. The sums agree (both total 14,250 items); the per-row values
 differ for those 77 orders.
 
-> This one is worth reading twice, because the first version of `transforms/marts.malloy` used
+> This one is worth reading twice, because the first version of `convert/marts.malloy` used
 > `order_items.count()` and summed to **14,327** — 77 too many, one per itemless order, because
 > `count()` counts the outer-join row. Comparing against dbt's marts is what caught it. That is
 > the entire argument for reconciling against the incumbent rather than eyeballing the output.

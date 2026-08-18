@@ -26,7 +26,7 @@ A ratio or derived metric names no model; follow its input metrics to theirs. If
 | `min` / `max` | `x.min()` / `x.max()` | |
 | `median`, `percentile` | **nothing** | See § What a measure cannot hold |
 
-If the metric name equals its column name, the column was renamed in the binding layer; aggregate the renamed column (`order_total_raw.sum()`) and keep the metric's name for the measure.
+If the metric name equals its column name, the column was renamed in the projection (`sources.md`); aggregate the renamed column (`order_total_raw.sum()`) and keep the metric's name for the measure.
 
 ## `type: simple` with a filter
 

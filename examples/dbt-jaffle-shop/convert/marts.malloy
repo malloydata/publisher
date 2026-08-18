@@ -1,0 +1,152 @@
+// The table layer: dbt's marts, rebuilt in Malloy and materialized.
+//
+// dbt materializes these six models as tables. Here they are query sources tagged
+// `#@ persist`, which is the whole of the translation: no materialization strategy to
+// choose, no incremental config, no model file per table. The build plan comes from the
+// annotations.
+//
+// These sources produce the same columns dbt's marts do, so the semantic layer in
+// jaffle_shop.malloy sits on top of them unchanged -- it is the same text as the `adopt`
+// package's semantic layer, which reads dbt's own marts instead. That is the point of the
+// pair: the interface an analyst or agent queries is identical, and only what is
+// underneath it differs.
+//
+// Two shape notes:
+//
+//   * Money columns are projected as `<name>_raw`. A dbt metric that shares its name with
+//     the column it aggregates cannot keep that name in Malloy, so the column moves and the
+//     metric keeps the name dbt published. The `adopt` package does the same thing when it
+//     projects dbt's marts.
+//   * The mart sources are named `<name>_mart` and the semantic layer names them `<name>`.
+//     That is not cosmetic: `customers` is built *from* `orders`, and the semantic `orders`
+//     joins `customers`. Splitting the built table from the semantic source is what keeps
+//     that from being a cycle.
+//
+// `##! experimental.persistence` is required on every .malloy file in the package, including
+// files that persist nothing. One unflagged file aborts the whole package's build plan.
+//
+// A standalone Publisher does not build on publish. Trigger it:
+//   malloy-pub materialize --environment examples --package jaffle-shop-convert --wait
+
+##! experimental.persistence
+
+import "staging.malloy"
+
+// Not a dbt model: dbt's own `order_items.sql` computes this per-product supply rollup
+// inline as a CTE. It is a source here so `order_items_mart` can join it.
+#(doc) Total supply cost per product, summed across every supply that product needs
+source: supply_costs is stg_supplies -> {
+   group_by: product_id
+   aggregate: supply_cost is supply_cost.sum()
+} extend {
+   primary_key: product_id
+}
+
+#(doc) Items contained in each order. The grain of the table is one row per order item.
+#@ persist name="order_items"
+source: order_items_mart is stg_order_items extend {
+   join_one: stg_orders with order_id
+   join_one: stg_products with product_id
+   join_one: supply_costs with product_id
+} -> {
+   select:
+      order_item_id
+      order_id
+      product_id
+      ordered_at is stg_orders.ordered_at
+      product_name is stg_products.product_name
+      product_price is stg_products.product_price
+      is_food_item is stg_products.is_food_item
+      is_drink_item is stg_products.is_drink_item
+      supply_cost is supply_costs.supply_cost
+} extend {
+   primary_key: order_item_id
+}
+
+#(doc) Order overview data mart, offering key details for each order including if it's a
+#(doc) customer's first order and a food vs. drink item breakdown. One row per order.
+#@ persist name="orders"
+source: orders_mart is stg_orders extend {
+   join_many: order_items_mart on order_id = order_items_mart.order_id
+} -> {
+   group_by:
+      order_id, location_id, customer_id
+      subtotal_cents, tax_paid_cents, order_total_cents
+      subtotal
+      tax_paid_raw is tax_paid
+      order_total_raw is order_total
+      ordered_at
+   aggregate:
+      order_cost_raw is order_items_mart.supply_cost.sum()
+      order_items_subtotal is order_items_mart.product_price.sum()
+      // `count(<joined>.<key>)`, not `<joined>.count()`. The latter counts the outer-join
+      // row, so an order with no items would count as 1 instead of 0. dbt's LEFT JOIN
+      // leaves those NULL; this returns 0. See ../COVERAGE.md.
+      count_order_items is count(order_items_mart.order_item_id)
+      count_food_items is count(order_items_mart.order_item_id) {
+         where: order_items_mart.is_food_item
+      }
+      count_drink_items is count(order_items_mart.order_item_id) {
+         where: order_items_mart.is_drink_item
+      }
+   // dbt's orders.sql closes with
+   //   row_number() over (partition by customer_id order by ordered_at asc)
+   // which is a window, not an aggregate, so in Malloy it is a `calculate:`.
+   calculate:
+      customer_order_number is row_number() {
+         partition_by: customer_id
+         order_by: ordered_at asc
+      }
+} -> {
+   // A second stage, so the two booleans are stored columns of the mart exactly as they are
+   // in dbt's, rather than expressions evaluated on read.
+   select: *
+      is_food_order is count_food_items > 0
+      is_drink_order is count_drink_items > 0
+} extend {
+   primary_key: order_id
+}
+
+#(doc) Customer overview data mart, offering key details for each unique customer.
+#(doc) One row per customer.
+#@ persist name="customers"
+source: customers_mart is stg_customers extend {
+   join_many: orders_mart on customer_id = orders_mart.customer_id
+} -> {
+   group_by:
+      customer_id, customer_name
+   aggregate:
+      count_lifetime_orders_raw is count(orders_mart.order_id)
+      first_ordered_at is orders_mart.ordered_at.min()
+      last_ordered_at is orders_mart.ordered_at.max()
+      lifetime_spend_pretax_raw is orders_mart.subtotal.sum()
+      lifetime_tax_paid is orders_mart.tax_paid_raw.sum()
+      lifetime_spend_raw is orders_mart.order_total_raw.sum()
+} -> {
+   select: *
+      customer_type is pick 'returning' when count_lifetime_orders_raw > 1 else 'new'
+} extend {
+   primary_key: customer_id
+}
+
+// dbt's mart files for these three select their staging model unchanged. They are persisted
+// because dbt materializes them as tables, and because they are join targets above.
+
+#(doc) Product dimension table. The grain of the table is one row per product.
+#@ persist name="products"
+source: products_mart is stg_products -> { select: * } extend {
+   primary_key: product_id
+}
+
+#(doc) Supplies dimension table. The grain of the table is one row per supply and product
+#(doc) combination.
+#@ persist name="supplies"
+source: supplies_mart is stg_supplies -> { select: * } extend {
+   primary_key: supply_uuid
+}
+
+#(doc) Location dimension table. The grain of the table is one row per location.
+#@ persist name="locations"
+source: locations_mart is stg_locations -> { select: * } extend {
+   primary_key: location_id
+}

@@ -1,0 +1,361 @@
+// dbt's semantic layer, expressed in Malloy.
+//
+// dbt's jaffle-shop semantic models, entities, dimensions, and metrics as Malloy sources,
+// primary keys, joins, measures, and views. dbt still owns the transformations: the
+// `data/*.parquet` files this reads are the marts dbt built.
+//
+// Written from dbt's `target/semantic_manifest.json` (entities, dimensions, metrics, saved
+// queries), `manifest.json` (the descriptions), and `catalog.json` (the column list) -- not
+// from `osi_document.json`, which flattens every metric to SQL and silently drops a derived
+// metric's offset window, turning month-over-month growth into a constant zero.
+//
+// Each source reads its table, projects every column dbt built carrying dbt's own
+// description as #(doc), then extends that with the keys, joins, measures, and views.
+//
+// Six columns are renamed to `<name>_raw`. A dbt metric that shares its name with the
+// column it aggregates cannot keep that name in Malloy, so the column moved and the metric
+// kept the name dbt published, which is the name analysts and agents search for.
+//
+// What did not convert, and every difference from dbt's numbers, is in ../COVERAGE.md.
+
+#(doc) Customer overview data mart, offering key details for each unique customer. One row per customer.
+source: customers is duckdb.table('data/customers.parquet') -> {
+  select:
+    #(doc) The unique key of the orders mart.
+    customer_id
+
+    #(doc) Customers' full name.
+    customer_name
+
+    #(doc) Total number of orders a customer has ever placed.
+    #(doc) Renamed from `count_lifetime_orders`: the dbt metric `count_lifetime_orders` owns that name in the semantic layer.
+    count_lifetime_orders_raw is count_lifetime_orders
+
+    #(doc) The timestamp when a customer placed their first order.
+    first_ordered_at
+
+    #(doc) The timestamp of a customer's most recent order.
+    last_ordered_at
+
+    #(doc) The sum of all the pre-tax subtotals of every order a customer has placed.
+    #(doc) Renamed from `lifetime_spend_pretax`: the dbt metric `lifetime_spend_pretax` owns that name in the semantic layer.
+    lifetime_spend_pretax_raw is lifetime_spend_pretax
+
+    #(doc) The sum of all the tax portion of every order a customer has placed.
+    lifetime_tax_paid
+
+    #(doc) The sum of all the order totals (including tax) that a customer has ever placed.
+    #(doc) Renamed from `lifetime_spend`: the dbt metric `lifetime_spend` owns that name in the semantic layer.
+    lifetime_spend_raw is lifetime_spend
+
+    #(doc) Options are 'new' or 'returning', indicating if a customer has ordered more than once or has only placed their first order to date.
+    customer_type
+} extend {
+  primary_key: customer_id
+
+  measure:
+    #(doc) LTV pre-tax / number of orders
+    # label="Average Order Value"
+    average_order_value is lifetime_spend_pretax / nullif(count_lifetime_orders, 0)
+
+    #(doc) Total count of orders per customer.
+    # label="Count Lifetime Orders"
+    count_lifetime_orders is count_lifetime_orders_raw.sum()
+
+    #(doc) Count of unique customers
+    # label="Customers"
+    customers is count(customer_id)
+
+    #(doc) Gross customer lifetime spend inclusive of taxes.
+    # label="Lifetime Spend"
+    lifetime_spend is lifetime_spend_raw.sum()
+
+    #(doc) Customer's lifetime spend before tax
+    # label="LTV Pre-tax"
+    lifetime_spend_pretax is lifetime_spend_pretax_raw.sum()
+
+  #(doc) Key customer order metrics grouped by customer.
+  view: customer_order_metrics is {
+    group_by:
+      customer_id
+    aggregate:
+      count_lifetime_orders
+      lifetime_spend_pretax
+      average_order_value
+  }
+}
+
+#(doc) Location dimension table. The grain of the table is one row per location.
+source: locations is duckdb.table('data/locations.parquet') -> {
+  select:
+    location_id
+
+    location_name
+
+    tax_rate
+
+    opened_date
+} extend {
+  primary_key: location_id
+
+  measure:
+    #(doc) Average tax rate.
+    # label="Average Tax Rate"
+    average_tax_rate is tax_rate.avg()
+}
+
+#(doc) Order overview data mart, offering key details for each order inlcluding if it's a customer's first order and a food vs. drink item breakdown. One row per order.
+source: orders is duckdb.table('data/orders.parquet') -> {
+  select:
+    #(doc) The unique key of the orders mart.
+    order_id
+
+    location_id
+
+    #(doc) The foreign key relating to the customer who placed the order.
+    customer_id
+
+    subtotal_cents
+
+    tax_paid_cents
+
+    order_total_cents
+
+    subtotal
+
+    #(doc) Renamed from `tax_paid`: the dbt metric `tax_paid` owns that name in the semantic layer.
+    tax_paid_raw is tax_paid
+
+    #(doc) The total amount of the order in USD including tax.
+    #(doc) Renamed from `order_total`: the dbt metric `order_total` owns that name in the semantic layer.
+    order_total_raw is order_total
+
+    #(doc) The timestamp the order was placed at.
+    ordered_at
+
+    #(doc) The sum of supply expenses to fulfill the order.
+    #(doc) Renamed from `order_cost`: the dbt metric `order_cost` owns that name in the semantic layer.
+    order_cost_raw is order_cost
+
+    order_items_subtotal
+
+    count_food_items
+
+    count_drink_items
+
+    count_order_items
+
+    #(doc) A boolean indicating if this order included any food items.
+    is_food_order
+
+    #(doc) A boolean indicating if this order included any drink items.
+    is_drink_order
+
+    customer_order_number
+} extend {
+  primary_key: order_id
+
+  join_one:
+    #(doc) The foreign key relating to the customer who placed the order.
+    customers with customer_id
+    locations with location_id
+
+  measure:
+    #(doc) Count of orders that contain drink order items
+    # label="Drink Orders"
+    drink_orders is count() { where: is_drink_order }
+
+    #(doc) Count of orders that contain food order items
+    # label="Food Orders"
+    food_orders is count() { where: is_food_order }
+
+    #(doc) Count of orders with order total over 20.
+    # label="Large Orders"
+    large_orders is count() { where: order_total_raw >= 20 }
+
+    #(doc) New customer's first order count
+    # label="New Customers"
+    new_customer_orders is count() { where: customer_order_number = 1 }
+
+    #(doc) The cost for each order item. Cost is calculated as a sum of the supply cost for each order item.
+    # label="Order Cost"
+    order_cost is order_cost_raw.sum()
+
+    #(doc) Sum of total order amount. Includes tax + revenue.
+    # label="Order Total"
+    order_total is order_total_raw.sum()
+
+    #(doc) Count of orders.
+    # label="Orders"
+    orders is count()
+
+    #(doc) The total tax paid on each order.
+    # label="Tax Paid"
+    tax_paid is tax_paid_raw.sum()
+
+  #(doc) Key order metrics grouped by day.
+  view: order_metrics is {
+    group_by:
+      ordered_at_day is ordered_at.day
+    aggregate:
+      orders
+      new_customer_orders
+      order_total
+      food_orders
+      drink_orders
+  }
+}
+
+#(doc) Product dimension table. The grain of the table is one row per product.
+source: products is duckdb.table('data/products.parquet') -> {
+  select:
+    product_id
+
+    product_name
+
+    product_type
+
+    product_description
+
+    product_price
+
+    is_food_item
+
+    is_drink_item
+} extend {
+  primary_key: product_id
+}
+
+#(doc) Items contained in each order. The grain of the table is one row per order item.
+source: order_items is duckdb.table('data/order_items.parquet') -> {
+  select:
+    order_item_id
+
+    order_id
+
+    product_id
+
+    ordered_at
+
+    product_name
+
+    product_price
+
+    is_food_item
+
+    is_drink_item
+
+    supply_cost
+} extend {
+  primary_key: order_item_id
+
+  join_one:
+    orders with order_id
+    products with product_id
+
+  measure:
+    #(doc) The revenue from drinks in each order
+    # label="Drink Revenue"
+    drink_revenue is product_price.sum() { where: is_drink_item }
+
+    #(doc) The % of order revenue from drinks.
+    # label="Drink Revenue %"
+    drink_revenue_pct is drink_revenue / nullif(revenue, 0)
+
+    #(doc) The revenue from food in each order
+    # label="Food Revenue"
+    food_revenue is product_price.sum() { where: is_food_item }
+
+    #(doc) The % of order revenue from food.
+    # label="Food Revenue %"
+    food_revenue_pct is food_revenue / nullif(revenue, 0)
+
+    #(doc) Gross profit from each order.
+    # label="Order Gross Profit"
+    order_gross_profit is revenue - orders.order_cost
+
+    #(doc) The revenue generated for each order item. Revenue is calculated as a sum of revenue associated with each product in an order.
+    # label="Revenue"
+    revenue is product_price.sum()
+
+  #(doc) Key revenue metrics grouped by day.
+  view: revenue_metrics is {
+    group_by:
+      ordered_at_day is ordered_at.day
+    aggregate:
+      revenue
+      food_revenue
+      drink_revenue
+  }
+
+   // dbt: metric `revenue_growth_mom`, type `derived`, expr
+   //   (current_revenue - revenue_prev_month)*100/revenue_prev_month
+   // with its second input offset by `offset_window: {count: 1, granularity: month}`.
+   //
+   // The offset is what makes this a window rather than an aggregate: the row for March
+   // has to see February's value. dbt's OSI export drops the offset and emits
+   // `(SUM(x) - SUM(x))*100/SUM(x)`, which is always zero -- see ../COVERAGE.md.
+   #(doc) Revenue by month with month-over-month growth as a percentage
+   # line_chart
+   view: revenue_growth_mom is {
+      group_by: revenue_month is ordered_at.month
+      aggregate: revenue
+      calculate: revenue_prev_month is lag(revenue)
+      calculate:
+         # percent
+         revenue_growth_mom is (revenue - lag(revenue)) / nullif(lag(revenue), 0)
+      order_by: revenue_month
+   }
+
+   // dbt: metric `cumulative_revenue`, type `cumulative`, over metric `revenue` with an
+   // all-time window. dbt itself warns this one cannot be represented in OSI.
+   #(doc) Running total of revenue over time, all-time cumulative
+   # line_chart
+   view: cumulative_revenue is {
+      group_by: revenue_month is ordered_at.month
+      aggregate: revenue
+      calculate:
+         # currency
+         cumulative_revenue is sum_cumulative(revenue)
+      order_by: revenue_month
+   }
+
+   #(doc) Revenue trend, growth, and running total in one view
+   # dashboard
+   view: revenue_over_time is {
+      nest:
+         # big_value
+         totals is {
+            aggregate:
+               # label="Revenue"
+               # currency
+               revenue
+               # label="Food revenue"
+               # currency
+               food_revenue
+               # label="Drink revenue"
+               # currency
+               drink_revenue
+         }
+      nest: revenue_growth_mom
+      nest: cumulative_revenue
+   }
+}
+
+#(doc) Supplies dimension table. The grain of the table is one row per supply and product combination.
+source: supplies is duckdb.table('data/supplies.parquet') -> {
+  select:
+    supply_uuid
+
+    supply_id
+
+    product_id
+
+    supply_name
+
+    supply_cost
+
+    is_perishable_supply
+} extend {
+  primary_key: supply_uuid
+}

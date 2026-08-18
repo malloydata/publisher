@@ -17,12 +17,12 @@
           "location": "../../examples/html-data-app"
         },
         {
-          "name": "dbt-jaffle-shop",
-          "location": "../../examples/dbt-jaffle-shop/semantic-layer"
+          "name": "jaffle-shop-adopt",
+          "location": "../../examples/dbt-jaffle-shop/adopt"
         },
         {
-          "name": "dbt-jaffle-shop-transforms",
-          "location": "../../examples/dbt-jaffle-shop/transforms"
+          "name": "jaffle-shop-convert",
+          "location": "../../examples/dbt-jaffle-shop/convert"
         }
       ],
       "connections": []

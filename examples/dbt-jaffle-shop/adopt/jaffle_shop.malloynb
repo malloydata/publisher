@@ -2,12 +2,11 @@
 # jaffle-shop: dbt's semantic layer, in Malloy
 
 This package is dbt's [jaffle-shop](https://github.com/dbt-labs/jaffle-shop) semantic layer,
-converted to Malloy by `../tools/dbt_to_malloy.ts`. dbt still owns the transformations; the
+expressed in Malloy. dbt still owns the transformations; the
 `data/*.parquet` files here are the marts **dbt built**. Malloy is the semantic layer over them.
 
-Nothing in this notebook was hand-tuned to make the numbers agree. `bindings.malloy` and
-`jaffle_shop.malloy` are generated from dbt's own artifacts, and the numbers below are what
-dbt's engine returns.
+Nothing in this notebook was hand-tuned to make the numbers agree. `jaffle_shop.malloy` was
+written from dbt's own artifacts, and the numbers stated below are what dbt's engine returns.
 
 **Reconciliation.** Every cell states the value dbt's own semantic layer (MetricFlow) produces,
 then runs the Malloy measure. If a number here stops matching, the conversion regressed.
@@ -103,7 +102,7 @@ run: customers -> customer_order_metrics + { limit: 10 }
 ## The two metrics that could not be measures
 
 A Malloy measure is a single aggregate expression. Two of dbt's metrics need a **window over
-ordered rows**, so they are views in `analysis.malloy` instead. This is a difference in shape,
+ordered rows**, so they are views on `order_items` instead. This is a difference in shape,
 not in capability — but it does mean an agent asking for "revenue growth" finds a view, not a
 measure.
 
@@ -116,9 +115,7 @@ view returns a fraction carrying a `# percent` render tag.
 > `(SUM(x) - SUM(x))*100/SUM(x)`, which is identically zero. That is why the converter reads
 > `semantic_manifest.json` and not `osi_document.json`.
 >>>malloy
-import "analysis.malloy"
-
-run: revenue_trends -> revenue_growth_mom
+run: order_items -> revenue_growth_mom
 >>>markdown
 `cumulative_revenue` is a dbt `cumulative` metric — a running total. Its terminal value ties
 out to dbt's all-time revenue exactly: **100441**.
@@ -127,7 +124,7 @@ dbt's per-month rows are not directly comparable, because dbt joins a day-grain 
 its `cumulative_type_params.period_agg` is `first`, so dbt reports the total as of each month's
 *first* day while this view reports it as of the month's *last* day.
 >>>malloy
-run: revenue_trends -> cumulative_revenue
+run: order_items -> cumulative_revenue
 >>>markdown
 ## What is not here
 
@@ -145,4 +142,4 @@ Full accounting in [../COVERAGE.md](../COVERAGE.md).
 
 Revenue trend, month-over-month growth, and the running total in one dashboard view.
 >>>malloy
-run: revenue_trends -> revenue_over_time
+run: order_items -> revenue_over_time

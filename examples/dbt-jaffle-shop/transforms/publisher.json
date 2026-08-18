@@ -1,5 +1,0 @@
-{
-  "name": "dbt-jaffle-shop-transforms",
-  "version": "1.0.0",
-  "description": "The other half of the seam: dbt's jaffle-shop staging and marts rebuilt in Malloy over the raw data, materialized with #@ persist instead of dbt's table configs."
-}
