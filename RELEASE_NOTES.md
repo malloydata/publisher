@@ -18,7 +18,6 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-
 ## [Unreleased] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
 
 A gate whose expression reads no row field works exactly as before; a gate that reads one — its
