@@ -76,40 +76,51 @@ stamped in advance can name a version that does not exist.
 
 ## Which number to bump
 
-**Breaking changes take a minor bump.** A change that turns a package which
-loaded or built yesterday into one that does not — a refused annotation, a
+**A breaking change should take a minor bump** — a change that turns a package
+which loaded or built yesterday into one that does not: a refused annotation, a
 refused `#@ persist` combination, a load-time failure on syntax that previously
-passed — is breaking, however small the diff. Everything else is a patch.
+passed. Everything else is a patch.
 
-Being on `0.x` is not a licence to ship breaks as patches. Read the release
-note's own claims rather than the heading: a section can be titled `(BREAKING)`
-while its individual bullets say *"this cannot affect an existing package"*, and
-the reverse happens too. What counts is whether an existing package changes
-behaviour or stops working.
+That is the direction, not yet the record. **Every release on this line has been
+a patch**, including 0.0.242's `/pages` → `/data-apps` rename, which was
+breaking. So do not infer the bump from the diff on your own: propose it and get
+the maintainer's call. A narrow break may still be judged patch-worthy, and that
+judgement is theirs.
 
-### The floor problem, and why it only appears above 0.0.x
+Read the release note's own claims rather than its heading, either way. A
+section can be titled `(BREAKING)` while its individual bullets say *"this
+cannot affect an existing package"*, and the reverse happens too.
 
-`prepare`'s default version is a **patch bump of `main`'s stale
-`packages/sdk/package.json`**, walked forward until the branch and tag are free.
-That file lags npm permanently, so the walk is only ever safe while the released
-line is `0.0.x` and the walk lands above the last release by accident.
+### `prepare`'s default version is not trustworthy — always pass `-f version=`
 
-The first minor bump ends that. Once `0.1.0` is on npm, a run dispatched with
-**no version input** walks up from `main`'s old number, finds `0.0.248`
-unclaimed, publishes it, and `npm publish` moves the `latest` dist-tag
-**backwards**. Nothing in the workflow catches it.
+`prepare`'s default patch-bumps **`main`'s `packages/sdk/package.json`**, which
+lags npm permanently because release branches are never merged back, then walks
+forward until it finds a version whose release branch and tag are both free.
+Three things are wrong with that, in rising order of consequence:
 
-Two things keep it closed:
+- **It grows.** `main` never advances, so the walk restarts from the same old
+  number every release and costs one `ls-remote` per step, forever.
+- **It stops at the first *free* number, not above the *highest*.** It is correct
+  today only because the tag sequence happens to be gapless and old release
+  branches are never deleted, giving it a second independent record. Neither is
+  enforced anywhere. Open a gap — delete a stale release branch whose tag was
+  never cut — and the next default run publishes *into* the gap, moving npm's
+  `latest` **backwards**.
+- **It never asks npm**, which is the only authority on what is actually
+  published.
 
-- **Always pass `-f version=`.** Never rely on the default walk.
-- **After a minor release, bump `main`'s sdk/app/server to the version that just
-  shipped**, in the post-release PR. That resets the floor so even the default
-  walk lands above it.
+The durable fix is to derive the floor from `npm view @malloy-publisher/sdk
+version` rather than from `main`. Until that lands, pass the version explicitly
+on every dispatch.
 
-Do that bump **after** the release, never before. `prepare` runs `set_version`
-and then `git add` + `git commit -s` over those three files only; if `main`
-already carries the version being released, there is no diff, `git commit` exits
-non-zero, and the step dies under `set -euo pipefail` before anything is pushed.
+**If the line ever moves off `0.0.x`,** the second problem stops being
+hypothetical: with `0.1.0` published, a default run walks up from `main`'s old
+number, finds `0.0.248` free, and publishes below `latest`. Reset the floor by
+setting `main`'s sdk/app/server to the version that just shipped — in the
+**post-release** PR, never before. `prepare` runs `set_version`, `git add` and
+`git commit -s` over those three files only; if `main` already carries the
+version being released there is no diff, `git commit` exits non-zero, and the
+step dies under `set -euo pipefail` before anything is pushed.
 
 ## The three version trains
 
@@ -198,8 +209,8 @@ need it while you have the mapping in front of you.
 
 Pass the version explicitly — always, and not merely to know the number in
 advance. Left to itself `prepare` patch-bumps `main`'s stale sdk version and
-walks forward until it finds a free branch and tag, which can publish *below*
-`latest`; see *The floor problem*, above.
+walks forward until it finds a free branch and tag, which is not the same as a
+version above `latest`; see *`prepare`'s default version is not trustworthy*.
 
 ```bash
 gh workflow run release.yml --repo malloydata/publisher --ref main -f version=<next>
@@ -235,7 +246,7 @@ Keep the generated header and append the sections beneath it. Then open the
 post-release PR to `main`, carrying:
 
 - the section stamped `## [<version>] — …`;
-- for a **minor or major** release, `packages/sdk`, `packages/app` and
+- for a **minor or major** release only, `packages/sdk`, `packages/app` and
   `packages/server` set to the version that just shipped, resetting the floor.
   Only now — doing it before the dispatch kills `prepare`'s commit.
 
