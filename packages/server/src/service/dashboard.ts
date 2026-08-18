@@ -825,14 +825,39 @@ export function lintDashboard(
    // was told nothing at all. Measured: that file built and produced zero
    // findings.
    //
-   // Scoped to this dashboard's OWN annotations rather than every query in the
-   // file, which is what the undiscovered lint reads. It has no dashboard to
-   // attribute to and casts wide on purpose; here a sibling query's broken tag
-   // would be reported against a dashboard that does not contain it.
+   // The file's model-level lines PLUS this dashboard's own, and not every
+   // query in the file, which is what the undiscovered lint reads. That lint
+   // has no dashboard to attribute to and casts wide on purpose; here a
+   // SIBLING query's broken tag would be reported against a dashboard that does
+   // not contain it. A model-level line is not that case: it belongs to the
+   // file either way, so it reaches this dashboard however the tag was written.
+   //
+   // Scoping to `ownAnnotations` alone was the first version and it left the
+   // single-query form silent, since there `ownAnnotations` is the QUERY's
+   // annotations. Measured, both shapes built a manifest and reported nothing:
+   // a `## note=@env.X` beside a query-level `# artifact`, and an unbalanced
+   // `## artifact { tiles=[…` beside one, where the composite tag is discarded,
+   // the file falls through to the single-query form, and it serves ONE TILE
+   // while saying nothing. Found in review by Sha-Bang, who measured both.
+   //
+   // Deduplicated as a SET OF ANNOTATIONS rather than by concatenating. On the
+   // composite path `ownAnnotations` IS `facts.modelAnnotations`, so the set
+   // collapses to that same list in that same order and the input is
+   // byte-identical: the no-op there is structural rather than something to be
+   // re-measured whenever the parser changes.
+   //
+   // Concatenating instead is not equivalent, though it passes: measured, a
+   // doubled syntax error comes back TWICE from `motlyParseErrors` and only the
+   // message-level Set below absorbs it. That works today and stops working the
+   // day a message carries anything that distinguishes two occurrences, such as
+   // a position. Deduplicating the input rather than the output also keeps the
+   // per-line rescue in `parseMotly` from running over every model-level line
+   // twice.
    //
    // Worded for a dashboard that exists. The undiscovered wording ("treated as
    // a shared include rather than a dashboard") is false on this path.
-   for (const message of new Set(motlyParseErrors(ownAnnotations))) {
+   const lintTargets = new Set([...facts.modelAnnotations, ...ownAnnotations]);
+   for (const message of new Set(motlyParseErrors([...lintTargets]))) {
       add(
          `Annotation ${describeParseFailure(message)}, so that line had no ` +
             `effect on this dashboard.`,

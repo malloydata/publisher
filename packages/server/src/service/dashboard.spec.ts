@@ -705,6 +705,66 @@ describe("service/dashboard lint", () => {
       ).toEqual([expect.stringContaining("@env.")]);
    });
 
+   // The SINGLE-QUERY form, where `ownAnnotations` is the query's annotations,
+   // so scoping the parse report to those alone left the file's own model-level
+   // lines unreported by either lint. Found in review by Sha-Bang, who measured
+   // both shapes rather than arguing them.
+   it("reports a model-level @env line dropped from a single-query dashboard", () => {
+      expect(
+         lint(
+            facts({
+               modelAnnotations: ["## note=@env.SLICE6_SECRET\n"],
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: ['# artifact { title="Overview" }\n'],
+                     givens: [],
+                  },
+               ],
+            }),
+         ),
+      ).toEqual([expect.stringContaining("@env.")]);
+   });
+
+   // The worse of the two, because the package does not merely stay silent: the
+   // broken composite tag is discarded, the file falls through to the
+   // single-query form, and it SERVES ONE TILE as though that were the whole
+   // dashboard. `lintUndiscoveredDashboard` carries the right message and never
+   // runs, because a manifest exists.
+   it("reports an unbalanced composite tag that left a single-query dashboard serving", () => {
+      const f = facts({
+         modelAnnotations: ['## artifact { tiles=["orders -> by_x" }\n'],
+         queries: [
+            {
+               name: "overview",
+               annotations: ['# artifact { title="Overview" }\n'],
+               givens: [],
+            },
+         ],
+      });
+      // The premise: it really did fall through to the single-query form.
+      expect(build(f)?.tiles).toBeUndefined();
+      expect(lint(f)).toEqual([expect.stringContaining("does not parse")]);
+   });
+
+   // The composite control. `ownAnnotations` IS `facts.modelAnnotations` there,
+   // so folding them together must not report the same line twice, and a clean
+   // composite must stay silent.
+   it("reports a model-level drop once on the composite form, not twice", () => {
+      expect(
+         lint(
+            facts({
+               modelAnnotations: [
+                  '## artifact { tiles=["orders -> by_brand"] }\n',
+                  "## note=@env.X\n",
+               ],
+               viewGivens: new Map([["orders -> by_brand", []]]),
+               sourceFields: new Map([["orders", new Set(["by_brand"])]]),
+            }),
+         ),
+      ).toEqual([expect.stringContaining("@env.")]);
+   });
+
    // Authored directly in the artifact tag, so no query mentions it and the two
    // query-side unbindable checks never see it. `Model.givens` is the surface
    // `filterGivensToModelSurface` enforces at query time, so the value is
