@@ -97,22 +97,26 @@ jobs:
       # Extra runs rather than a matrix entry: the suite is ~0.3s, a matrix would
       # double the whole job, and setting TZ on the existing run would trade away
       # UTC coverage instead of adding to it.
-      # Each run prints the zone the runtime actually resolved before testing in
-      # it. If TZ were ignored, these runs would silently become duplicate UTC
-      # ones: still green, still fast, detecting nothing, which is the same
-      # silhouette as a suite that collects no tests. The line makes that
-      # visible instead. It deliberately does not assert, because whether Bun
-      # honours TZ on the Windows leg is unverified; once a run confirms it, the
-      # echo can become a check.
+      # Each run checks the zone the runtime actually resolved before testing in
+      # it. Without that, a TZ that failed to take effect would leave a run that
+      # is green, fast and detecting nothing, the same silhouette as a suite
+      # collecting no tests at all.
+      #
+      # Fatal off Windows, printed everywhere. TZ propagation through `bun run`
+      # to the test child is confirmed on Linux and macOS, so a mismatch there
+      # is a real fault and should stop the job. Whether Bun honours an IANA TZ
+      # on Windows is still unconfirmed, so that leg logs the resolved zone
+      # without failing on it; when a run settles the question, drop the
+      # platform exemption.
       - name: Run SDK tests east of UTC
         run: |
-          TZ=Australia/Sydney bun -e 'console.log("resolved timezone:", Intl.DateTimeFormat().resolvedOptions().timeZone)'
+          TZ=Australia/Sydney bun -e 'const want="Australia/Sydney", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
           TZ=Australia/Sydney bun run --cwd packages/sdk test
         shell: bash
 
       - name: Run SDK tests west of UTC
         run: |
-          TZ=America/Los_Angeles bun -e 'console.log("resolved timezone:", Intl.DateTimeFormat().resolvedOptions().timeZone)'
+          TZ=America/Los_Angeles bun -e 'const want="America/Los_Angeles", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
           TZ=America/Los_Angeles bun run --cwd packages/sdk test
         shell: bash
 

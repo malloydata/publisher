@@ -246,7 +246,7 @@ describe("GivenInput: a date renders its UTC day, whatever zone the runner is in
       );
    });
 
-   // One case per type rather than a loop: a loop stops at the first failing
+   // One test case per type rather than a loop: a loop stops at the first failing
    // type and its message names neither, so dropping both from the branch costs
    // two round trips to diagnose instead of one.
    it.each(["timestamp", "timestamptz"])(
