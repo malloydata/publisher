@@ -18,7 +18,7 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 
 - `modelPath` is the model FILE path within the package, with `/` separators (`"subscriptions.malloy"`, `"models/events.malloy"`). It is not the source name.
 - `malloy` is any query string, written in standard Malloy. This skill covers only the JavaScript glue, not Malloy syntax.
-- `opts` (all optional): `sourceName`, `queryName`, `givens` (a `{ name: value }` map bound to the model's Malloy `given:` runtime parameters for this query; safe parameterization, values are bound by the runtime, not string-interpolated), `filterParams` (values for the model's legacy `#(filter)` source filters), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`). `givens` and `filterParams` compose (both apply).
+- `opts` (all optional): `sourceName`, `queryName` (`queryName` runs a saved query, with `sourceName` qualifying the source a view hangs off; `sourceName` on its own is a 400), `givens` (a `{ name: value }` map bound to the model's Malloy `given:` runtime parameters for this query; safe parameterization, values are bound by Publisher server-side, not string-interpolated), `filterParams` (values for the model's legacy `#(filter)` source filters), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`). `givens` and `filterParams` compose (both apply).
 
 ## Structure the app as modules, not one inline script
 
@@ -67,7 +67,7 @@ const rows = await Publisher.query(
 );
 ```
 
-Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: those values are bound by the runtime as typed parameters, not string-interpolated, so they can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a server upstream (a trusted gateway, or an operator's per-package config) strips or finalizes it. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
+Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: Publisher binds those values server-side as typed parameters, so they are never concatenated into query text and can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a trusted tier upstream sets it from verified identity. Publisher has no per-package control that strips or finalizes one; identity-bound givens are a planned milestone, not a shipped feature. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
 
 KPI or single-row view. Destructure element zero:
 

@@ -674,13 +674,25 @@ just the stored columns; it's the floor that guarantees the captured schema
 forms a valid DuckDB source.
 
 These are the checks derivable from the compiled source and the built schema
-alone. One more belongs here and is **not yet enforced**: a source protected by
-`#(authorize)` — directly, or transitively through a join or derivation — should
-not be materialized into a shared store, because the serve path rebinds it to a
-virtual source whose shape carries no `#(authorize)` annotation, so the gate
-can't be evaluated on the served table. Until that refusal lands (alongside the
-upstream transitive-`#(authorize)` enforcement it reuses), do not materialize an
-authorize-gated source; serve it live.
+alone. One more belongs here and **is enforced**: a source protected by
+`#(authorize)` — directly, or transitively through a join or derivation — is
+refused, because the serve path rebinds it to a virtual source whose shape
+carries no `#(authorize)` annotation, so the gate can't be evaluated on the
+served table. The check walks the compiled source for the gate and fails
+closed: a source it cannot prove gate-free is refused.
+
+A colocated `#@ persist` is refused too, but for a different reason than the one
+above, and the difference is worth stating because it is easy to over-claim. A
+colocated build has no virtual source: the substitution replaces only the
+source's relation SQL, while the gate is applied as the reading query's own
+`WHERE`, so the two compose and rows do come back filtered. The gate is not
+absent. What is frozen is the data the gate DECIDES AGAINST — the gating
+column's values are whatever they were at build time, so a row that changes
+hands keeps being served to its former owner. Adding a gate does not refresh
+anything either: the content address does not include the annotation, so an
+artifact built before the gate stays addressable while every rebuild is
+refused. That is what the refusal exists to prevent. See
+[materialization.md](materialization.md) for the author-facing refusal.
 
 ### Field-level hiding and the materialized table
 
