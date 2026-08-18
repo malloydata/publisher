@@ -1,0 +1,148 @@
+>>>markdown
+# jaffle-shop: dbt's semantic layer, in Malloy
+
+This package is dbt's [jaffle-shop](https://github.com/dbt-labs/jaffle-shop) semantic layer,
+converted to Malloy by `../tools/dbt_to_malloy.ts`. dbt still owns the transformations; the
+`data/*.parquet` files here are the marts **dbt built**. Malloy is the semantic layer over them.
+
+Nothing in this notebook was hand-tuned to make the numbers agree. `bindings.malloy` and
+`jaffle_shop.malloy` are generated from dbt's own artifacts, and the numbers below are what
+dbt's engine returns.
+
+**Reconciliation.** Every cell states the value dbt's own semantic layer (MetricFlow) produces,
+then runs the Malloy measure. If a number here stops matching, the conversion regressed.
+
+The dbt numbers were captured with:
+
+```
+dbt build && dbt docs generate
+mf query --metrics <names>
+```
+
+on the 150-customer sample committed in this example: 9,568 orders and 14,250 order items over
+2024-09-01 to 2025-08-31. Provenance: dbt-core 1.12.2, dbt-duckdb 1.11.0, metricflow 0.13.0,
+jaffle_shop 3.0.0.
+>>>malloy
+import "jaffle_shop.malloy"
+>>>markdown
+## Order metrics
+
+dbt's `orders` semantic model, with eight metrics. Two of them (`large_orders`,
+`new_customer_orders`) are filtered metrics, whose MetricFlow filter templates reference
+qualified dimension names like `Dimension('order_id__order_total_dim')`; the converter resolved
+those down to real columns.
+
+**dbt returns:** `order_total` 105826.18 · `orders` 9568 · `tax_paid` 5385.18 ·
+`order_cost` 20884.67 · `new_customer_orders` 150 · `large_orders` 1141 ·
+`food_orders` 2336 · `drink_orders` 9319
+>>>malloy
+run: orders -> {
+  aggregate:
+    order_total, orders, tax_paid, order_cost,
+    new_customer_orders, large_orders, food_orders, drink_orders
+}
+>>>markdown
+## Revenue metrics
+
+dbt's `order_items` semantic model. `revenue` sums a column; `food_revenue` and `drink_revenue`
+are `SUM(CASE WHEN ... THEN ... ELSE 0 END)` in dbt, which Malloy states as a filtered
+aggregate. The two `_pct` metrics are dbt `ratio` metrics, and `order_gross_profit` is a
+`derived` metric whose inputs live on **two different** semantic models — the cost comes from
+`orders` across a one-to-many join, which is exactly where hand-written SQL double-counts and
+where Malloy's symmetric aggregates do not.
+
+**dbt returns:** `revenue` 100441 · `food_revenue` 39036 · `drink_revenue` 61405 ·
+`food_revenue_pct` 0.38864607082765007 · `drink_revenue_pct` 0.61135392917235 ·
+`order_gross_profit` 79556.33
+>>>malloy
+run: order_items -> {
+  aggregate:
+    revenue, food_revenue, drink_revenue,
+    food_revenue_pct, drink_revenue_pct, order_gross_profit
+}
+>>>markdown
+## Customer metrics
+
+dbt's `customers` semantic model. `average_order_value` is a `derived` metric dividing two
+other metrics; the converter guards the division with `nullif`.
+
+**dbt returns:** `customers` 150 · `count_lifetime_orders` 9568 ·
+`lifetime_spend_pretax` 100441 · `lifetime_spend` 105826.18 ·
+`average_order_value` 10.497596153846153
+>>>malloy
+run: customers -> {
+  aggregate:
+    customers, count_lifetime_orders, lifetime_spend_pretax,
+    lifetime_spend, average_order_value
+}
+>>>markdown
+## Location metrics
+
+**dbt returns:** `average_tax_rate` 0.05958333333333333
+>>>malloy
+run: locations -> { aggregate: average_tax_rate }
+>>>markdown
+## dbt's saved queries became views
+
+dbt declares three `saved_queries`. Each one became a Malloy view on the source where its
+metrics resolve, so the questions the business already asks are part of the model rather than
+something a consumer has to reassemble.
+
+`order_metrics` is dbt's own saved query: five order metrics grouped by day.
+>>>malloy
+run: orders -> order_metrics + { limit: 10 }
+>>>markdown
+`revenue_metrics`, grouped by day.
+>>>malloy
+run: order_items -> revenue_metrics + { limit: 10 }
+>>>markdown
+`customer_order_metrics`, per customer.
+>>>malloy
+run: customers -> customer_order_metrics + { limit: 10 }
+>>>markdown
+## The two metrics that could not be measures
+
+A Malloy measure is a single aggregate expression. Two of dbt's metrics need a **window over
+ordered rows**, so they are views in `analysis.malloy` instead. This is a difference in shape,
+not in capability — but it does mean an agent asking for "revenue growth" finds a view, not a
+measure.
+
+`revenue_growth_mom` is a dbt `derived` metric whose second input is offset by
+`{count: 1, granularity: month}`. dbt returns **77.43409490333919** for 2025-03; the view
+returns **0.7743409490333919** — the same digits, because dbt returns percentage points and the
+view returns a fraction carrying a `# percent` render tag.
+
+> Worth knowing: dbt's OSI export drops the offset entirely and emits
+> `(SUM(x) - SUM(x))*100/SUM(x)`, which is identically zero. That is why the converter reads
+> `semantic_manifest.json` and not `osi_document.json`.
+>>>malloy
+import "analysis.malloy"
+
+run: revenue_trends -> revenue_growth_mom
+>>>markdown
+`cumulative_revenue` is a dbt `cumulative` metric — a running total. Its terminal value ties
+out to dbt's all-time revenue exactly: **100441**.
+
+dbt's per-month rows are not directly comparable, because dbt joins a day-grain time spine and
+its `cumulative_type_params.period_agg` is `first`, so dbt reports the total as of each month's
+*first* day while this view reports it as of the month's *last* day.
+>>>malloy
+run: revenue_trends -> cumulative_revenue
+>>>markdown
+## What is not here
+
+`median_revenue` (dbt returns 6.0) is **not implemented**. There is no scalar median in this
+Malloy build, and raw-SQL aggregates do not compile as measures. It is deferred rather than
+quietly shipped as an `avg`, which would be a different number wearing the same name.
+
+dbt also asserts **27 data tests and 3 unit tests** over these marts. None of them are carried
+into Malloy — Malloy has no test framework today. This semantic layer inherits the marts'
+correctness; it does not re-establish it, so `dbt build` still has to run.
+
+Full accounting in [../COVERAGE.md](../COVERAGE.md).
+>>>markdown
+## The whole thing at once
+
+Revenue trend, month-over-month growth, and the running total in one dashboard view.
+>>>malloy
+run: revenue_trends -> revenue_over_time

@@ -1,0 +1,128 @@
+// Layer C, part 1: dbt's staging layer in Malloy.
+//
+// dbt materializes these six models as views over the raw sources. Each one is renames,
+// unit casts, and a couple of coalesced booleans -- the least interesting SQL in the
+// project and the easiest to absorb. Nothing here is persisted: a view in dbt is a query
+// source in Malloy, and both are recomputed on read.
+//
+// `##! experimental.persistence` is required on EVERY .malloy file in a package that uses
+// persistence, including files like this one that persist nothing. One unflagged file
+// aborts the whole package's build plan.
+
+##! experimental.persistence
+
+// dbt's `cents_to_dollars` macro is `(col / 100)::numeric(16,2)`. In Malloy that is
+// `round(col / 100, 2)` -- there is no macro layer, so the cast is written where it applies.
+
+#(doc) Customer names, one row per customer
+source: stg_customers is duckdb.table('data/raw_customers.parquet') -> {
+   select:
+      #(doc) The unique key for each customer
+      customer_id is id
+      #(doc) Customer's full name
+      customer_name is `name`
+} extend {
+   primary_key: customer_id
+}
+
+#(doc) Order headers, one row per order, with money in dollars and the order date
+source: stg_orders is duckdb.table('data/raw_orders.parquet') -> {
+   select:
+      #(doc) The unique key for each order
+      order_id is id
+      #(doc) The store the order was placed at
+      location_id is store_id
+      #(doc) The customer who placed the order
+      customer_id is customer
+
+      #(doc) Order subtotal in cents, as landed
+      subtotal_cents is subtotal
+      #(doc) Tax paid in cents, as landed
+      tax_paid_cents is tax_paid
+      #(doc) Order total in cents, as landed
+      order_total_cents is order_total
+
+      #(doc) Order subtotal in USD, excluding tax
+      subtotal is round(subtotal / 100, 2)
+      #(doc) Tax paid on the order in USD
+      tax_paid is round(tax_paid / 100, 2)
+      #(doc) Order total in USD, including tax
+      order_total is round(order_total / 100, 2)
+
+      #(doc) The day the order was placed
+      ordered_at is ordered_at.day
+} extend {
+   primary_key: order_id
+}
+
+#(doc) Order line items, one row per item on an order
+source: stg_order_items is duckdb.table('data/raw_items.parquet') -> {
+   select:
+      #(doc) The unique key for each order item
+      order_item_id is id
+      #(doc) The order this item belongs to
+      order_id
+      #(doc) The product sold on this line
+      product_id is sku
+}
+
+#(doc) Product catalog, one row per product, with price in dollars and food/drink flags
+source: stg_products is duckdb.table('data/raw_products.parquet') -> {
+   select:
+      #(doc) The unique key for each product
+      product_id is sku
+      #(doc) Name of the product
+      product_name is `name`
+      #(doc) Product category, either `jaffle` or `beverage`
+      product_type is `type`
+      #(doc) Description of the product
+      product_description is description
+
+      #(doc) Price of the product in USD
+      product_price is round(price / 100, 2)
+
+      #(doc) Whether the product is a food item, per dbt's rule `type = 'jaffle'`
+      is_food_item is (`type` = 'jaffle') ?? false
+      #(doc) Whether the product is a drink item, per dbt's rule `type = 'beverage'`
+      is_drink_item is (`type` = 'beverage') ?? false
+} extend {
+   primary_key: product_id
+}
+
+#(doc) Store locations, one row per location
+source: stg_locations is duckdb.table('data/raw_stores.parquet') -> {
+   select:
+      #(doc) The unique key for each location
+      location_id is id
+      #(doc) Name of the location
+      location_name is `name`
+      #(doc) Sales tax rate applied at this location
+      tax_rate
+      #(doc) The day the location opened
+      opened_date is opened_at.day
+} extend {
+   primary_key: location_id
+}
+
+#(doc) Supplies used to make each product, one row per supply and product combination
+source: stg_supplies is duckdb.table('data/raw_supplies.parquet') -> {
+   select:
+      // dbt builds `supply_uuid` with dbt_utils.generate_surrogate_key(['id','sku']), an
+      // md5 over the concatenated parts. The key's only job is uniqueness, so this uses
+      // the concatenation directly rather than reproducing dbt's hash: the value differs
+      // from dbt's column by construction, and nothing joins across the two layers on it.
+      #(doc) Unique key for a supply and product pair
+      supply_uuid is concat(id, '-', sku)
+      #(doc) The supply's own key
+      supply_id is id
+      #(doc) The product this supply is used for
+      product_id is sku
+      #(doc) Name of the supply
+      supply_name is `name`
+
+      #(doc) Cost of the supply in USD
+      supply_cost is round(cost / 100, 2)
+
+      #(doc) Whether the supply is perishable
+      is_perishable_supply is perishable
+}

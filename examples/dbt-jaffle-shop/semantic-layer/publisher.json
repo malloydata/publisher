@@ -1,0 +1,5 @@
+{
+  "name": "dbt-jaffle-shop",
+  "version": "1.0.0",
+  "description": "dbt's jaffle-shop semantic layer, converted to Malloy: dbt's marts, docs, entities, and metrics as queryable Malloy sources, measures, and views."
+}

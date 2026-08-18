@@ -32,6 +32,7 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 | `skill:malloy-model` | Writing base and joined source .malloy files, review, curate (includes normalized schema support) |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
 | `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
+| `skill:malloy-dbt-review` | Prior-art adapter for dbt (marts, entities, metrics, docs, reconciliation) |
 
 **Analysis and presentation**
 
