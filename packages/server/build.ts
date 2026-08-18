@@ -27,6 +27,10 @@ await build({
       "@duckdb/node-api",
       "@duckdb/node-bindings",
       "@malloydata/malloy",
+      // Externalized alongside malloy itself: malloy loads its own copy of the
+      // tag parser at runtime, so bundling a second one ships two independent
+      // copies of the same Tag implementation in every entrypoint.
+      "@malloydata/malloy-tag",
       "@malloydata/malloy-sql",
       "@malloydata/render",
       "@malloydata/db-bigquery",
