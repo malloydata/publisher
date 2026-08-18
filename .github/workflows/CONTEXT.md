@@ -99,21 +99,26 @@ workflow file, and wire it into `release.yml`'s `publish-packages` so a release 
 
 ### Recovering a failed release
 
-The two independently-versioned packages are safe to retry: `publish-packages` asks the registry
-first and skips a version that is already published, so re-running it republishes nothing.
+The two independently-versioned packages are safe to retry **through `publish-packages`**: that job
+asks the registry first and skips a version that is already published, so re-running it republishes
+nothing. The skip lives in that job, not in the children — each child's "Verify this version is not
+already published" step `exit 1`s on a version npm already holds, so a hand-dispatched child that
+already published fails rather than no-opping.
 
 **If `publish-packages` is the only red job, do not re-run the release.** It sits outside
 `gh-release`'s `needs`, so it neither blocked nor undid the tag: the sdk/app/server release completed
 and only the two dispatches are outstanding. Use "Re-run failed jobs", which re-enters that job alone
-against a now-settled `main` and skips whatever already landed, or dispatch `skills-npm.yml` and then
-`create-malloy-package-npm.yml` on `main` by hand, in that order. Re-running `release.yml` instead
-walks the version forward and burns three npm versions for nothing.
+against a now-settled `main` and skips whatever already landed. Dispatching `skills-npm.yml` and then
+`create-malloy-package-npm.yml` on `main` by hand also works, in that order, but ask npm which of the
+two is still missing and dispatch only that one — per the note above, a child whose version is already
+published fails its own guard. Re-running `release.yml` instead walks the version forward and burns
+three npm versions for nothing.
 
 The "main moved during this release" abort is an expected, retryable failure of this kind. It fails
 before dispatching the package it names, but note it can fire on the second package after the first
 has already published, so read the job summary for what actually shipped rather than assuming the
-registry is untouched. Either recovery above is safe either way, because both skip a version that is
-already on npm.
+registry is untouched. Re-running `publish-packages` is safe either way, because it skips a version
+that is already on npm; a hand dispatch is safe only for the package that has not published yet.
 
 It fires only when `main` moved **under the paths that package's published content is built from**, not
 on any movement at all: the second package is checked after the first has finished a full

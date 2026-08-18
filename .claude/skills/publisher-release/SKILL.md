@@ -170,15 +170,32 @@ Check each against the commit that last set its version, over the paths its
   `packages/skills/package.json` (its publish job bakes the skills version into
   its dependency range)
 
+**First ask whether it is already bumped.** A push only runs `check_pack`, so a
+merged bump sits on `main` while npm still reports the old version — which is
+the normal state between a release-prep merge and the dispatch. Skip this whole
+step when `main` is already ahead:
+
+```bash
+npm view @malloy-publisher/skills version                       # what is published
+node -p "require('./packages/skills/package.json').version"     # what main declares
+```
+
+Different means it is bumped and pending; leave it alone. Only when they
+**match** does the content question arise:
+
 ```bash
 vb=$(git log --format=%h -S"\"version\": \"$(npm view @malloy-publisher/skills version)\"" \
        -- packages/skills/package.json | tail -1)
 git log --oneline "$vb..origin/main" -- skills/ packages/skills/ bun.lock package.json
 ```
 
-Any output means bump `packages/skills/package.json`. Same shape for the
+Any output there means bump `packages/skills/package.json`. Same shape for the
 scaffolder. This must be **merged to `main` before the dispatch**: the release
 reads `main`, not the release branch.
+
+Do not skip the equality check and read the log alone. Anchored at the commit
+that set npm's version, the log still reports a bump that has already merged,
+and "any output means bump" then walks the version a second time for nothing.
 
 ### 3. Stamp the release notes that already shipped
 
@@ -270,9 +287,21 @@ editing.
 
 - **Only `publish-packages` is red** → the sdk/app/server release completed and
   the tag exists; that job sits outside `gh-release`'s `needs`. Use *Re-run
-  failed jobs*, or dispatch `skills-npm.yml` then `create-malloy-package-npm.yml`
-  on `main`, in that order. Both skip a version already on npm. **Do not re-run
-  the release** — it walks the version forward and burns three npm versions.
+  failed jobs*, which re-enters that job alone and skips whatever already landed.
+  **Do not re-run the release** — it walks the version forward and burns three
+  npm versions.
+
+  Dispatching the children by hand also works, but it is *not* the same thing and
+  the skip does not come with it. Only `publish-packages` asks the registry and
+  skips; each child carries a **Verify this version is not already published**
+  step that `exit 1`s on a version npm already holds. So dispatching a child that
+  already published fails the run rather than no-opping. Ask npm first and
+  dispatch only the package still missing, keeping skills before the scaffolder:
+
+  ```bash
+  npm view @malloy-publisher/skills version
+  npm view @malloy-publisher/create-malloy-package version
+  ```
 - **"main moved during this release"** → expected and retryable, same recovery.
   It can fire on the second package after the first already published, so read
   the job summary rather than assuming nothing shipped.
