@@ -1104,7 +1104,19 @@ describe("service/model", () => {
          queries?: { name: string; sourceName: string }[];
       }) {
          const storageErr = new Error("store table missing");
+         // Both runnables stub `getPreparedQuery` even though nothing in these
+         // tests reads the compiled query: the authorize entry-point walk and
+         // the storage-routing row-level pre-check both call it, and a mock
+         // that omits it is not "a runnable with an irrelevant method
+         // missing" — it is a runnable whose compile THROWS, which the
+         // pre-check (correctly) treats as "cannot tell whether this entry
+         // point is row-level gated" and refuses to route. `{_query: {}}` is
+         // the no-run-target shape: `structRef` is undefined, so the walk
+         // resolves no struct, finds no gate, and routing proceeds — which is
+         // what these tests are actually about.
+         const preparedQueryStub = () => sinon.stub().resolves({ _query: {} });
          const storageRunnable = {
+            getPreparedQuery: preparedQueryStub(),
             getPreparedResult:
                opts.storageFailsAt === "prepare"
                   ? sinon.stub().rejects(storageErr)
@@ -1135,6 +1147,7 @@ describe("service/model", () => {
             : {};
          Object.assign(storageRunnable, preparedQuery);
          const liveRunnable = {
+            getPreparedQuery: preparedQueryStub(),
             getPreparedResult: sinon.stub().resolves({
                resultExplore: { limit: opts.livePreparedLimit ?? 0 },
                connectionName: "live_pg",
