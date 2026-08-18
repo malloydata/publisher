@@ -101,13 +101,23 @@ Three things are wrong with that, in rising order of consequence:
 - **It grows.** `main` never advances, so the walk restarts from the same old
   number every release and costs one `ls-remote` per step, forever.
 - **It stops at the first *free* number, not above the *highest*.** It is correct
-  today only because the tag sequence happens to be gapless and old release
-  branches are never deleted, giving it a second independent record. Neither is
-  enforced anywhere. Open a gap — delete a stale release branch whose tag was
-  never cut — and the next default run publishes *into* the gap, moving npm's
-  `latest` **backwards**.
+  today only because the tag sequence happens to be gapless, so "first free" and
+  "above the highest" are the same number. Nothing enforces that.
 - **It never asks npm**, which is the only authority on what is actually
-  published.
+  published — so a free branch-and-tag pair is all it takes, whatever the
+  registry holds.
+
+The two combine badly, and **passing an explicit version is what opens the
+hole.** Dispatch `0.0.250` while the walk would have reached `0.0.248`, and
+`0.0.248`/`0.0.249` become permanent gaps below the high-water mark. The next
+run dispatched *without* a version walks up, finds `0.0.248` free of branch and
+tag, publishes it, and `npm publish` moves the `latest` dist-tag **backwards** to
+a version older than the one before it. Nothing fails; the release goes green.
+
+Deleting a stale release branch whose tag was never cut opens a gap the same
+way. That one is likelier to fail loudly — if npm already holds the version, the
+publish 403s on immutability — but it fails loudly only by luck, and only if the
+version got as far as npm.
 
 The durable fix is to derive the floor from `npm view @malloy-publisher/sdk
 version` rather than from `main`. Until that lands, pass the version explicitly
