@@ -82,6 +82,44 @@ jobs:
         run: bun run --cwd packages/sdk test
         shell: bash
 
+      # Runners are UTC, the one zone where a local-vs-UTC date bug is invisible.
+      # Reverting GivenInput's `dayjs.utc` to `dayjs` fails 0 tests under UTC, 3
+      # under a zone ahead of it and 1 under a zone behind it.
+      #
+      # Both directions are needed, and they are not redundant: a date fixture
+      # only crosses midnight for zones on one side of UTC, so an ahead zone and
+      # a behind zone fail *different* tests. Running only ahead-of-UTC zones
+      # leaves the early-in-the-UTC-day test unable to fail anywhere it runs.
+      # Any zone ahead scores the same as any other, and likewise behind, so
+      # these two are representatives rather than special: do not add more for
+      # symmetry, and do not swap one for a zone picked for being unusual.
+      #
+      # Extra runs rather than a matrix entry: the suite is ~0.3s, a matrix would
+      # double the whole job, and setting TZ on the existing run would trade away
+      # UTC coverage instead of adding to it.
+      # Each run checks the zone the runtime actually resolved before testing in
+      # it. Without that, a TZ that failed to take effect would leave a run that
+      # is green, fast and detecting nothing, the same silhouette as a suite
+      # collecting no tests at all.
+      #
+      # Fatal off Windows, printed everywhere. TZ propagation through `bun run`
+      # to the test child is confirmed on Linux and macOS, so a mismatch there
+      # is a real fault and should stop the job. Whether Bun honours an IANA TZ
+      # on Windows is still unconfirmed, so that leg logs the resolved zone
+      # without failing on it; when a run settles the question, drop the
+      # platform exemption.
+      - name: Run SDK tests east of UTC
+        run: |
+          TZ=Australia/Sydney bun -e 'const want="Australia/Sydney", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
+          TZ=Australia/Sydney bun run --cwd packages/sdk test
+        shell: bash
+
+      - name: Run SDK tests west of UTC
+        run: |
+          TZ=America/Los_Angeles bun -e 'const want="America/Los_Angeles", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
+          TZ=America/Los_Angeles bun run --cwd packages/sdk test
+        shell: bash
+
       # The skills package copies a directory tree and resolves it back by
       # path, so it is exactly the kind of code that breaks on Windows only.
       - name: Run skills package tests
