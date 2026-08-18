@@ -52,6 +52,7 @@ export type PreaggregateViolationCode =
    // The declaration itself is unusable.
    | "missing_grain"
    | "empty_grain"
+   | "invalid_namespace"
    | "non_additive_measure"
    // The grain does not resolve against the base source.
    | "unknown_grain_dimension"

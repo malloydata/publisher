@@ -15,9 +15,12 @@ import {
    duckdbTestConnections,
    loadTestModel,
 } from "./incremental_test_harness";
+import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import {
    baseAlias,
    planModelPreaggregation,
+   isSpliceableNamespace,
+   persistNamespace,
    planSourcePreaggregation,
    rollupSourceName,
    synthesizePreaggregationModel,
@@ -159,7 +162,10 @@ describe("a rollup is created where its base lives", () => {
       // unqualified CREATE, so a bare name is not a cosmetic difference there.
       const plans = planSourcePreaggregation(
          "orders",
-         await compileAnnotatedOrders('#@ persist name="analytics.orders_tbl"', GRAIN),
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            GRAIN,
+         ),
       );
       expect(plans).toHaveLength(1);
       expect(plans[0].namespace).toBe("analytics");
@@ -173,9 +179,13 @@ describe("a rollup is created where its base lives", () => {
       // the base's table name would collide two different things in one name.
       const plans = planSourcePreaggregation(
          "orders",
-         await compileAnnotatedOrders('#@ persist name="analytics.orders_tbl"', GRAIN),
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            GRAIN,
+         ),
       );
-      const emitted = synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
+      const emitted =
+         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
       expect(emitted).not.toContain("orders_tbl__preagg");
    });
 
@@ -184,7 +194,10 @@ describe("a rollup is created where its base lives", () => {
       // the LAST dot: the rollup lands in the same dataset, not the same project.
       const plans = planSourcePreaggregation(
          "orders",
-         await compileAnnotatedOrders('#@ persist name="proj.analytics.orders_tbl"', GRAIN),
+         await compileAnnotatedOrders(
+            '#@ persist name="proj.analytics.orders_tbl"',
+            GRAIN,
+         ),
       );
       expect(plans[0].namespace).toBe("proj.analytics");
    });
@@ -214,6 +227,63 @@ describe("a rollup is created where its base lives", () => {
       expect(plans[0].namespace).toBe("rollups");
    });
 
+   it("derives nothing from a quoted or malformed base name", async () => {
+      // A quoted name is canonical SQL, not a dotted identifier path: `"My.Schema"`
+      // is ONE identifier containing a dot, and a last-dot split tears it in half.
+      // Even a well-formed `"A"."B"` would hand back a quoted prefix that joins to
+      // an unquoted derived segment, and the CREATE and bind sides quote a mixed
+      // path differently. Yield nothing and let the author name it explicitly.
+      expect(persistNamespace('"My.Schema"')).toBeUndefined();
+      expect(persistNamespace("`My.Schema`")).toBeUndefined();
+      expect(persistNamespace('"Analytics"."Orders Tbl"')).toBeUndefined();
+      // ...but a quoted TABLE beside a plain namespace is fine: the rollup takes
+      // only the namespace, so both of its segments are unquoted and the mixed-path
+      // disagreement never arises.
+      expect(persistNamespace('analytics."Orders Tbl"')).toBe("analytics");
+      // A trailing dot leaves the base's own table segment empty — malformed, so
+      // inventing a namespace from it would hide that.
+      expect(persistNamespace("trailing.")).toBeUndefined();
+      // The forms that ARE sound still work.
+      expect(persistNamespace("analytics.orders")).toBe("analytics");
+      expect(persistNamespace("proj.analytics.orders")).toBe("proj.analytics");
+      expect(persistNamespace("orders")).toBeUndefined();
+   });
+
+   it("refuses a quoted namespace= rather than emitting a broken annotation", async () => {
+      // The value is interpolated into a generated `#@ persist name="…"`, where a
+      // quote character ends the annotation's own string.
+      const source = await compileOrders(
+         `  measure:\n    #@ preaggregate grain="category" namespace="\\"Odd\\""\n    total is sum(amount)`,
+      );
+      const declaration = readPreaggregateAnnotation(
+         (source.fields ?? []).find(
+            (f) => (f.as ?? f.name) === "total",
+         ) as never,
+      );
+      expect(declaration.errors.map((e) => e.kind)).toContain(
+         "invalid_namespace",
+      );
+      expect(declaration.namespace).toBeUndefined();
+   });
+
+   it("accepts the namespaces a real deployment needs, and rejects the rest", () => {
+      // Dot-separated because BigQuery addresses a dataset as `project.dataset`,
+      // and hyphens because a BigQuery project id ordinarily carries them — the
+      // dialect this feature broke on requires both.
+      expect(isSpliceableNamespace("analytics")).toBe(true);
+      expect(isSpliceableNamespace("my-project.analytics")).toBe(true);
+      expect(isSpliceableNamespace("_staging$1")).toBe(true);
+      // A space or a quote cannot be written bare into a generated name; a leading
+      // digit is not an identifier; an empty part means a stray or doubled dot.
+      expect(isSpliceableNamespace("my schema")).toBe(false);
+      expect(isSpliceableNamespace('"Analytics"')).toBe(false);
+      expect(isSpliceableNamespace("1analytics")).toBe(false);
+      expect(isSpliceableNamespace("a..b")).toBe(false);
+      expect(isSpliceableNamespace("")).toBe(false);
+      // Nothing that could end the annotation's string or the statement.
+      expect(isSpliceableNamespace('a";DROP TABLE x;--')).toBe(false);
+   });
+
    it("emits a bare persist when the base names no namespace", async () => {
       // Nothing to inherit, so nothing is invented — nor is the previous behaviour
       // changed for the dialects that accept an unqualified name.
@@ -222,9 +292,9 @@ describe("a rollup is created where its base lives", () => {
          await compileAnnotatedOrders('#@ persist name="orders_tbl"', GRAIN),
       );
       expect(unqualified[0].namespace).toBeUndefined();
-      expect(synthesizePreaggregationModel(unqualified, "./orders.malloy")).toContain(
-         "#@ persist\nsource:",
-      );
+      expect(
+         synthesizePreaggregationModel(unqualified, "./orders.malloy"),
+      ).toContain("#@ persist\nsource:");
 
       const unpersisted = await planFor(GRAIN);
       expect(unpersisted[0].namespace).toBeUndefined();

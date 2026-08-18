@@ -131,6 +131,36 @@ export function rollupSourceName(
    return `${baseSourceName}__preagg__${slug}__${grainDigest(grainDimensions)}`;
 }
 
+/**
+ * One segment of a namespace: a plain identifier, plus the hyphen.
+ *
+ * The house rule for a bare-spliced identifier is {@link assertSafeSqlIdentifier}'s
+ * `[A-Za-z_][A-Za-z0-9_$]*`, and this is that with one addition. Its own reasoning
+ * is why: hyphens were left out because Snowflake, Trino and Unity Catalog all need
+ * a hyphenated name quoted, "and BigQuery, the one dialect whose names really do
+ * carry hyphens, never reaches this function". A rollup namespace DOES reach
+ * BigQuery, where a hyphenated project id is ordinary, so excluding it would refuse
+ * `my-project.analytics` — a name the dialect this feature broke on requires.
+ *
+ * Everything else is out: a space or a quote cannot be spliced bare, and a name
+ * needing quotes cannot be joined to a generated table name (see
+ * {@link persistNamespace}).
+ */
+const NAMESPACE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
+
+/**
+ * Whether every dot-separated segment can be spliced into a generated name.
+ *
+ * Dots are the one separator that survives: BigQuery addresses a dataset as
+ * `project.dataset`, so a namespace is a path, not a single identifier.
+ */
+export function isSpliceableNamespace(namespace: string): boolean {
+   const segments = namespace.split(".");
+   return (
+      segments.length > 0 && segments.every((s) => NAMESPACE_SEGMENT.test(s))
+   );
+}
+
 /** The alias the author's base source is imported under. */
 export function baseAlias(baseSourceName: string): string {
    return `${baseSourceName}${BASE_ALIAS_SUFFIX}`;
@@ -144,17 +174,28 @@ export function baseAlias(baseSourceName: string): string {
  * rather than the first because BigQuery names can carry a project as well as a
  * dataset, and the rollup belongs beside the base in whichever of those it names.
  *
- * A quoted name is returned as-is minus its final segment, so a base the author
- * quoted for their dialect keeps that quoting: the segments are re-joined
- * unchanged and the rollup's own segment is appended plain, which is what
- * `quoteManifestTablePath` expects of an already-canonical path.
+ * **A quoted name yields nothing, deliberately.** Splitting one on a dot is not
+ * sound — `"My.Schema"` is a single identifier containing a dot, and the last-dot
+ * rule tears it into `"My`. Even a well-formed `"A"."B"` would give a quoted
+ * prefix that this then joins to an unquoted derived segment, and the two sides of
+ * the bind disagree about a mixed path: `quoteManifestTablePath` passes anything
+ * already carrying a quote through untouched, while the CREATE side quotes every
+ * segment. That disagreement is a known defect for authored names
+ * (`quoted-persist-name-colocated`); a derived name must not extend it. Such an
+ * author names the rollup's namespace explicitly instead.
+ *
+ * A trailing dot yields nothing either: the base's own table segment is empty, so
+ * the name is malformed and inventing a namespace from it would hide that.
  */
 export function persistNamespace(
    persistName: string | undefined,
 ): string | undefined {
    if (!persistName) return undefined;
    const lastDot = persistName.lastIndexOf(".");
-   return lastDot > 0 ? persistName.slice(0, lastDot) : undefined;
+   if (lastDot <= 0) return undefined;
+   if (persistName.slice(lastDot + 1).trim() === "") return undefined;
+   const candidate = persistName.slice(0, lastDot);
+   return isSpliceableNamespace(candidate) ? candidate : undefined;
 }
 
 /**

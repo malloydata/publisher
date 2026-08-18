@@ -70,6 +70,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
+import { isSpliceableNamespace } from "./preaggregation_synthesis";
 import type { LogMessage } from "@malloydata/malloy";
 
 /** One grain a measure is declared at — one rollup. */
@@ -88,7 +89,7 @@ export interface PreaggregateGrain {
 
 /** A `#@ preaggregate` line that is present but unusable. */
 export interface PreaggregateDeclarationError {
-   kind: "missing_grain" | "empty_grain";
+   kind: "missing_grain" | "empty_grain" | "invalid_namespace";
    /** Names the measure and the fix; becomes the body of a publish-time 400. */
    message: string;
 }
@@ -238,7 +239,19 @@ export function readPreaggregateAnnotation(
       const namespaceText =
          tag.text("preaggregate", "namespace") ?? tag.text("namespace");
       if (namespaceText !== undefined && namespaceText.trim() !== "") {
-         namespace = namespaceText.trim();
+         const candidate = namespaceText.trim();
+         // The value is spliced into a generated `#@ persist name="…"`, so it has
+         // to survive being written bare: a quote would end the annotation's own
+         // string, and a name needing quotes cannot be joined to a generated table
+         // name at all (the CREATE and bind sides quote a mixed path differently).
+         if (!isSpliceableNamespace(candidate)) {
+            errors.push({
+               kind: "invalid_namespace",
+               message: `Measure \`${name}\` declares \`#@ preaggregate namespace="${candidate}"\`, which is not a plain namespace. Use letters, digits, underscore, dollar or hyphen per part, dot-separated for a qualified one (\`analytics\`, \`my-project.analytics\`) — the rollup's own table name is generated and appended, so a namespace needing quotes cannot be joined to it.`,
+            });
+            continue;
+         }
+         namespace = candidate;
       }
       if (grainText === undefined) {
          errors.push({
