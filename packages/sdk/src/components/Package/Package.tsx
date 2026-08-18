@@ -22,7 +22,6 @@ import React, { useState } from "react";
 import { Database } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { RetrievalFunction } from "../filter/DimensionFilter";
 import { Loading } from "../Loading";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
@@ -36,14 +35,11 @@ const README_NOTEBOOK = "README.malloynb";
 interface PackageProps {
    onClickPackageFile?: (to: string, event?: React.MouseEvent) => void;
    resourceUri: string;
-   /** Optional retrieval function for semantic search filters */
-   retrievalFn?: RetrievalFunction;
 }
 
 export default function Package({
    onClickPackageFile,
    resourceUri,
-   retrievalFn,
 }: PackageProps) {
    const { apiClients, server } = useServer();
    const onClick =
@@ -346,7 +342,6 @@ export default function Package({
                   <Box sx={{ mt: 6 }}>
                      <Notebook
                         resourceUri={readmeResourceUri}
-                        retrievalFn={retrievalFn}
                         onNavigate={onClick}
                      />
                   </Box>

@@ -1,35 +1,19 @@
 import "@malloydata/malloy-explorer/styles.css";
-import * as Malloy from "@malloydata/malloy-interfaces";
-import { Box, Paper, Stack, Typography } from "@mui/material";
-import {
-   MouseEvent,
-   useCallback,
-   useEffect,
-   useMemo,
-   useRef,
-   useState,
-} from "react";
-import { RawNotebook, Source } from "../../client";
-import {
-   getDimensionKey,
-   useDimensionalFilterRangeData,
-} from "../../hooks/useDimensionalFilterRangeData";
-import {
-   FilterSelection,
-   useDimensionFilters,
-} from "../../hooks/useDimensionFilters";
-import { GivenValue, useGivensForm } from "../../hooks/useGivensForm";
+import { Stack, Typography } from "@mui/material";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { planRun } from "./runPlan";
+import { RawNotebook } from "../../client";
+import { GivenValue } from "../../hooks/givenValue";
+import { useGivensState } from "../../hooks/useGivensState";
 import { useModelGivens } from "../../hooks/useModelGivens";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { DimensionFilter, RetrievalFunction } from "../filter/DimensionFilter";
-import {
-   extractDimensionSpecs,
-   parseAllSourceInfos,
-   parseNotebookFilterAnnotation,
-} from "../filter/utils";
+import type { NavigationClick } from "../click_helper";
+import { encodeDrillValue } from "../drill";
 import { GivensPanel } from "../given";
+import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
@@ -39,22 +23,88 @@ import { EnhancedNotebookCell } from "./types";
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
 
+/**
+ * How long a changed parameter has to stay changed before the notebook runs.
+ *
+ * Aborting the superseded run is not enough on its own: an abort cancels the
+ * HTTP request, but the cells already dispatched have reached the server and go
+ * on compiling and running against the customer's warehouse, and their answers
+ * are then thrown away. So autorun on a text control put one wave of doomed
+ * queries on that warehouse per keystroke. `origin/main` bounded the load by
+ * refusing to start a second run at all, which dropped the newest values;
+ * waiting for the value to settle bounds it without making that trade.
+ */
+const GIVEN_SETTLE_MS = 400;
+
+/**
+ * The server's own explanation of why a cell would not run.
+ *
+ * Publisher answers a refused query with `{code, message}`, and that message is
+ * the useful half: "filter 'state' is required", say. Falls back through the
+ * generic axios message to a fixed string, so a cell always has something to
+ * show rather than rendering an empty error box.
+ */
+function cellErrorMessage(error: unknown): string {
+   const body = (
+      error as { response?: { data?: { message?: unknown } } } | undefined
+   )?.response?.data?.message;
+   if (typeof body === "string" && body !== "") return body;
+   if (error instanceof Error && error.message !== "") return error.message;
+   return "The server did not say why.";
+}
+
 interface NotebookProps {
    resourceUri: string;
    maxResultSize?: number;
-   /** Optional retrieval function for semantic search filters */
-   retrievalFn?: RetrievalFunction;
-   /** Optional SPA navigation handler for links inside the notebook. When
+   /**
+    * Parameter values from the host, typically its URL query parameters: the
+    * same contract `Dashboard` takes, so a link into a filtered notebook works
+    * the way a link into a filtered dashboard does.
+    */
+   givens?: Record<string, string>;
+   /**
+    * Applied parameter values, for a host that wants them in its URL. Fires
+    * with what the cells actually ran with, which is what makes the URL a link
+    * that reproduces the view.
+    *
+    * That is every committed change, and today every change is committed: the
+    * Apply batching `useGivensState` implements is not reachable here while
+    * `autorun` is hardcoded true, so typing in a text control reports per
+    * keystroke. It does NOT run per keystroke: a changed value waits
+    * `GIVEN_SETTLE_MS` before anything is dispatched, so a burst of typing
+    * produces one run. A run that does start supersedes and aborts the one
+    * before it. The REPORTS are still per keystroke, so a host doing something
+    * expensive per call should debounce.
+    *
+    * `managed` names every given this notebook declares, set or not. A host
+    * writing to a shared query string needs it: `givens` alone says which
+    * parameters to write but not which to *remove*, and a host that guesses by
+    * removing everything it did not just receive deletes the unrelated
+    * parameters it has no business touching.
+    */
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
+   /**
+    * Optional SPA navigation handler for links inside the notebook. When
     * omitted, in-notebook links fall back to plain absolute anchors, so no
-    * react-router context is required to render a notebook. */
-   onNavigate?: (to: string, event?: MouseEvent) => void;
+    * react-router context is required to render a notebook.
+    *
+    * It does NOT carry drill. A `# drill { to=self }` filters this notebook
+    * through `given:` state and works with or without this handler, and a drill
+    * naming a dashboard is not wired at all yet: see the note in
+    * `NotebookCell` for why.
+    */
+   onNavigate?: (to: string, event?: NavigationClick) => void;
 }
 
 // Requires PackageProvider
 export default function Notebook({
    resourceUri,
    maxResultSize = 0,
-   retrievalFn,
+   givens,
+   onGivensChange,
    onNavigate,
 }: NotebookProps) {
    const { apiClients } = useServer();
@@ -89,265 +139,259 @@ export default function Notebook({
       [],
    );
    const [isExecuting, setIsExecuting] = useState(false);
+   // A run is scheduled but its settle window has not elapsed. Separate from
+   // `isExecuting`, which covers only a run actually in flight.
+   const [runScheduled, setRunScheduled] = useState(false);
+   // The document the last run belonged to, for abandoning its requests when
+   // the reader moves to another notebook without this component unmounting.
+   const lastDocumentRef = useRef<string | undefined>(undefined);
    const [executionError, setExecutionError] = useState<Error | null>(null);
 
-   // Parse filter configuration from notebook annotations (legacy ##(filters) approach)
-   const filterConfig = useMemo(() => {
-      if (!notebook) return null;
-      return parseNotebookFilterAnnotation(notebook.annotations);
-   }, [notebook]);
-
-   // Parse all SourceInfos from notebook cells and create a map
-   const sourceData = useMemo(() => {
-      if (!notebook?.notebookCells) return null;
-      return parseAllSourceInfos(notebook.notebookCells);
-   }, [notebook]);
-
-   const sourceInfoMap = useMemo(
-      () => sourceData?.sourceInfoMap ?? new Map<string, Malloy.SourceInfo>(),
-      [sourceData],
-   );
-   const modelPath = sourceData?.modelPath ?? null;
-
-   // Extract server-side filter definitions from notebook sources
-   // These come from #(filter) annotations parsed by the server
-   const serverFilters = useMemo(() => {
-      const result = new Map<string, Source["filters"]>();
-      if (!notebook?.sources) return result;
-      for (const source of notebook.sources as Source[]) {
-         if (source.name && source.filters && source.filters.length > 0) {
-            // Exclude implicit filters from the UI
-            const visibleFilters = source.filters.filter((f) => !f.implicit);
-            if (visibleFilters.length > 0) {
-               result.set(source.name, visibleFilters);
-            }
-         }
-      }
-      return result;
-   }, [notebook]);
-
-   // Determine if we're using server-driven filters (#(filter)) or legacy (##(filters))
-   const useServerFilters = serverFilters.size > 0;
-
-   // Build dimension specs from filter config and source info map
-   // Each spec includes source and model for proper query routing
-   const dimensionSpecs = useMemo(() => {
-      if (useServerFilters && modelPath) {
-         // Server-driven: build specs from #(filter) metadata
-         const specs: import("../../hooks/useDimensionalFilterRangeData").DimensionSpec[] =
-            [];
-         for (const [sourceName, filters] of serverFilters) {
-            for (const filter of filters ?? []) {
-               if (!filter.dimension || !filter.type) continue;
-
-               // Choose widget type based on the dimension's data type first,
-               // then fall back to the annotation's comparator type
-               type FT =
-                  import("../../hooks/useDimensionalFilterRangeData").FilterType;
-               let filterType: FT;
-               const dimType = filter.dimensionType;
-               if (dimType === "boolean") {
-                  filterType = "Boolean";
-               } else if (
-                  dimType === "date" ||
-                  dimType === "timestamp" ||
-                  dimType === "timestamptz"
-               ) {
-                  filterType = "DateMinMax";
-               } else if (dimType === "number") {
-                  filterType =
-                     filter.type === "equal" || filter.type === "in"
-                        ? "Star"
-                        : "MinMax";
-               } else {
-                  const filterTypeMap: Record<string, FT> = {
-                     equal: "Star",
-                     in: "Star",
-                     like: "Star",
-                     greater_than: "MinMax",
-                     less_than: "MinMax",
-                  };
-                  filterType = filterTypeMap[filter.type] ?? "Star";
-               }
-
-               // Derive the match type from the #(filter) annotation type so
-               // the UI never needs to show a match-type dropdown.
-               type MT = import("../../hooks/useDimensionFilters").MatchType;
-               const matchTypeMap: Record<string, MT> = {
-                  equal: "Equals",
-                  in: "Equals",
-                  like: "Contains",
-                  greater_than:
-                     filterType === "DateMinMax" ? "After" : "Greater Than",
-                  less_than:
-                     filterType === "DateMinMax" ? "Before" : "Less Than",
-               };
-               const defaultMatchType: MT | undefined =
-                  matchTypeMap[filter.type!];
-
-               const filterLabel =
-                  filter.name !== filter.dimension ? filter.name : undefined;
-               specs.push({
-                  source: sourceName,
-                  model: modelPath,
-                  dimensionName: filter.dimension!,
-                  filterType,
-                  label: filterLabel,
-                  filterName: filter.name ?? filter.dimension!,
-                  defaultMatchType,
-                  required: filter.required ?? false,
-               });
-            }
-         }
-         return specs;
-      }
-      // Legacy: use ##(filters) + #(filter) annotation approach
-      if (!filterConfig || sourceInfoMap.size === 0 || !modelPath) return [];
-      return extractDimensionSpecs(
-         sourceInfoMap,
-         filterConfig.filters,
-         modelPath,
-      );
-   }, [
-      useServerFilters,
-      serverFilters,
-      filterConfig,
-      sourceInfoMap,
-      modelPath,
-   ]);
-
-   // Initialize dimension filters hook
-   const { filterStates, updateFilter, getActiveFilters } = useDimensionFilters(
-      {
-         dimensionSpecs,
-      },
-   );
-
-   // Get active filters - include filterStates in deps to ensure updates when individual items change
-   const activeFilters = useMemo(
-      () => getActiveFilters(),
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [filterStates, getActiveFilters],
-   );
-
-   // Extract model-level givens declared via `given:` and manage user overrides
+   // Model-level `given:` declarations, and the state behind their controls.
+   // The same hook the dashboard viewer uses, so both surfaces get URL-
+   // addressable parameters, Apply batching, and `to=self` drill from one
+   // implementation rather than two that drift.
    const declaredGivens = useModelGivens(notebook);
-   const {
-      givenValues,
-      updateGiven,
-      clearAll: clearAllGivens,
-   } = useGivensForm(declaredGivens);
+   const declaredTypes = useMemo(
+      () =>
+         new Map(
+            declaredGivens
+               .filter((given) => given.name !== undefined)
+               .map((given) => [given.name as string, given.type]),
+         ),
+      [declaredGivens],
+   );
 
-   // Create a map of dimension key -> source name for quick lookup (used by filter UI)
-   const _dimensionToSourceMap = useMemo(() => {
-      const map = new Map<string, string>();
-      for (const spec of dimensionSpecs) {
-         const key = getDimensionKey(spec);
-         map.set(key, spec.source);
-      }
-      return map;
-   }, [dimensionSpecs]);
+   // Silent until the notebook has actually loaded. Which givens exist is not
+   // known before then: `useModelGivens(undefined)` is empty, so a report in
+   // that window says "no values, and I manage nothing", which a host reasonably
+   // reads as "clear what you wrote". During an in-app navigation from one
+   // notebook to another that window sits between the two, and the parameters it
+   // would clear can belong to the notebook now ARRIVING. A notebook that
+   // genuinely declares no givens still reports, because by then the empty set
+   // is the answer rather than the absence of one.
+   const reportGivens = useCallback(
+      (next: Record<string, string>) => {
+         if (!isSuccess) return;
+         onGivensChange?.(next, Array.from(declaredTypes.keys()));
+      },
+      [isSuccess, onGivensChange, declaredTypes],
+   );
 
-   // Fetch filter range data when we have dimension specs.
-   // Do NOT pass activeFilters here — the index query should return all
-   // possible values for each dimension, not just those matching the
-   // current selection. Otherwise selecting "FORD" would hide every other
-   // manufacturer from the dropdown.
-   const { data: filterValuesData } = useDimensionalFilterRangeData({
-      environment: environmentName,
-      package: packageName,
-      dimensionSpecs,
-      versionId,
-      enabled: dimensionSpecs.length > 0,
+   // Always on for now, and deliberately not read off the notebook. Batching
+   // matters more here than on a dashboard: one control change re-runs every
+   // cell in the document, and `useGivensState` implements it, but the
+   // file-level `## autorun=false` that would turn it off has no reader on the
+   // server yet, so `RawNotebook` carries no `autorun` field. Declaring one
+   // nothing produces would be a spec that lies. When the reader lands, this
+   // becomes `notebook?.autorun !== false` and the Apply button appears.
+   const autorun = true;
+   const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
+      declaredTypes,
+      // Where the controls start, from a file-level `## givens { … }`. A URL
+      // beats them, so a shared link still shows what the sender saw.
+      startingValues: notebook?.startingGivens,
+      params: givens,
+      // Withheld until the notebook has loaded, rather than accepted and
+      // dropped. `useGivensState` records what it last reported BEFORE calling
+      // out, so a report the callback throws away is remembered as delivered
+      // and never retried, leaving a parameter stranded in the host's URL.
+      // Passing undefined makes the hook skip the report entirely, which leaves
+      // its record untouched and the next real change still reportable.
+      onParamsChange: isSuccess ? reportGivens : undefined,
+      // Which notebook these edits belong to. Navigating between notebooks
+      // reuses this component, so without it one notebook's applied values
+      // carried into the next whenever both started from the same values.
+      documentKey: resourceUri,
+      autorun,
    });
 
-   /**
-    * Convert active FilterSelections into a flat { filterName: value } map
-    * suitable for the server's filter_params parameter.
-    * Uses filterName from the selection (propagated from the spec) as the
-    * API param key, falling back to dimensionName.
-    */
-   const buildFilterParams = useCallback(
-      (filtersToApply: FilterSelection[]): string | undefined => {
-         if (filtersToApply.length === 0) return undefined;
+   // A notebook's model path is the notebook itself: `suggest` queries run
+   // against the same model the cells do.
+   const {
+      options: givenOptions,
+      isLoading: givenOptionsLoading,
+      failed: givenOptionsFailed,
+   } = useSuggestOptions(
+      environmentName,
+      packageName,
+      notebookPath,
+      declaredGivens,
+   );
 
-         const toParamString = (v: unknown): string => {
-            if (v instanceof Date) {
-               return v.toISOString().slice(0, 10);
-            }
-            return String(v);
-         };
+   // The declared names, indexed case-insensitively, so a drill tag resolves
+   // whichever way the two were spelled.
+   //
+   // Neither convention can be assumed. `# drill` defaults the given name to
+   // the DIMENSION's name, which is conventionally lower_snake, while givens
+   // are conventionally SHOUTED (both in-repo examples declare `REGION` and
+   // `MIN_AMOUNT`). An exact match therefore failed for the common case, and
+   // upper-casing the dimension name, which is what this did first, only moved
+   // the failure onto models that spell their givens in lower case. Folding
+   // case resolves both instead of picking a side.
+   const givenNamesByFold = useMemo(() => {
+      const byFold = new Map<string, string>();
+      for (const name of declaredTypes.keys()) {
+         // First declaration wins, so a model with `REGION` and `region` keeps
+         // the one it declared first rather than silently flipping.
+         if (!byFold.has(name.toLowerCase()))
+            byFold.set(name.toLowerCase(), name);
+      }
+      return byFold;
+   }, [declaredTypes]);
 
-         const params: { [key: string]: string | string[] } = {};
-         for (const f of filtersToApply) {
-            const paramName = f.filterName ?? f.dimensionName;
-            const val = f.value;
-            if (Array.isArray(val)) {
-               params[paramName] = val.map(toParamString);
-            } else if (val !== undefined && val !== null) {
-               params[paramName] = toParamString(val);
-            }
+   /** The declared given a drill tag's name refers to, or undefined. */
+   const resolveGiven = useCallback(
+      (given: string) =>
+         declaredTypes.has(given)
+            ? given
+            : givenNamesByFold.get(given.toLowerCase()),
+      [declaredTypes, givenNamesByFold],
+   );
+
+   // `to=self` filters in place, which only works for a given this notebook
+   // actually declares: sending one it cannot bind would fail every cell. The
+   // mismatch is reported to the author rather than issued: same rule, same
+   // wording, as the dashboard viewer.
+   // Asked before a cell is painted as drillable, so the affordance matches what
+   // a click can actually do. The refusal below still stands as a backstop for a
+   // caller that does not ask.
+   const canDrillSelf = useCallback(
+      (given: string) => resolveGiven(given) !== undefined,
+      [resolveGiven],
+   );
+
+   const onDrillSelf = useCallback(
+      (given: string, rawValue: unknown) => {
+         const declared = resolveGiven(given);
+         if (declared === undefined) {
+            console.warn(
+               `# drill { to=self } tried to set '${given}', which ` +
+                  `'${notebookPath}' does not declare as a given. Name the ` +
+                  `given with 'given=' on the drill tag.`,
+            );
+            return;
          }
-         return Object.keys(params).length > 0
-            ? JSON.stringify(params)
-            : undefined;
+         // Encoded against the declared type of the given being set, which is
+         // knowable here and is not knowable at the click. Set under the name
+         // the MODEL declares, not the one the tag spelled, so the value goes
+         // into the URL and the request under the one name the server knows.
+         const declaredType = declaredTypes.get(declared);
+         const value = encodeDrillValue(rawValue, declaredType);
+         if (value === undefined) {
+            // Say so. Returning in silence left a whole column painted as
+            // clickable while every click did nothing, and a `given=` pointing
+            // at a type the clicked value cannot become is an authoring
+            // mistake the author has no other way to see. The sibling refusal
+            // in `resolveDrill` warns for the same reason.
+            console.warn(
+               `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
+                  (declaredType ? ` of type ${declaredType}` : ""),
+            );
+            return;
+         }
+         setGiven(declared, value);
       },
-      [],
+      [declaredTypes, notebookPath, resolveGiven, setGiven],
    );
 
    /**
-    * Serialize given-value overrides into the JSON-encoded string the server
-    * expects on the notebook-cell GET endpoint's `givens` query param.
-    * Date values are rendered as YYYY-MM-DD; everything else passes through
-    * the standard JSON encoder.
+    * The `givens` query param for the notebook-cell GET: the same map the
+    * dashboard's POST body carries, JSON-encoded because this endpoint takes it
+    * in the URL. Built by the shared codec so a given is encoded identically
+    * whichever surface runs it.
     */
    const buildGivens = useCallback(
       (values: Map<string, GivenValue>): string | undefined => {
-         if (values.size === 0) return undefined;
-         const encode = (v: GivenValue): unknown => {
-            if (v instanceof Date) return v.toISOString().slice(0, 10);
-            if (Array.isArray(v)) return v.map((item) => encode(item));
-            return v;
-         };
-         const params: Record<string, unknown> = {};
-         values.forEach((value, name) => {
-            if (value === null || value === undefined) return;
-            params[name] = encode(value);
-         });
-         return Object.keys(params).length > 0
-            ? JSON.stringify(params)
+         const request = givensToRequest(values, declaredTypes);
+         return Object.keys(request).length > 0
+            ? JSON.stringify(request)
             : undefined;
+      },
+      [declaredTypes],
+   );
+
+   /**
+    * Run every code cell with one set of given values, up to
+    * {@link MAX_CONCURRENT} at a time.
+    *
+    * Each run takes a number from `runIdRef`, and a run that is no longer the
+    * current one drops its results on the floor. Cells resolve independently
+    * and out of order, so without that a slow cell from the previous values
+    * would land after the new run's and leave a stale number on screen under a
+    * control row claiming otherwise.
+    */
+   const runIdRef = useRef(0);
+   const inFlightRef = useRef<AbortController | null>(null);
+   const lastRunRef = useRef<string | null>(null);
+   /** The run waiting out {@link GIVEN_SETTLE_MS}, so a re-render does not restart its clock. */
+   const pendingRunRef = useRef<
+      { key: string; timer: ReturnType<typeof setTimeout> } | undefined
+   >(undefined);
+
+   // Cancel whatever is in flight when this component goes away, so navigating
+   // off a twelve-cell notebook does not leave twelve requests to complete and be
+   // thrown away.
+   //
+   // Its OWN effect, with an empty dependency list, and that is the whole point:
+   // as the run effect's cleanup this ran on every dependency change instead. The
+   // host echoes each reported parameter back, which gives `applied` a new
+   // identity with identical content, so the cleanup fired and aborted the run
+   // the control change had just started, while the run effect's `runKey` guard
+   // saw an unchanged key and refused to start a replacement. Every cell was left
+   // blank, with no result, no error and no spinner, until a reload. Measured on
+   // `governed-analytics/orders.malloynb`: 4 rendered results before a control
+   // change, 0 after.
+   useEffect(
+      () => () => {
+         inFlightRef.current?.abort();
+         // Forget which run was last started, so a component that comes back
+         // runs again instead of trusting a key whose run was just cancelled.
+         // The case it is reasoned from, and NOT one I could reproduce: React's
+         // StrictMode mounts, cleans up, and mounts again in development, and
+         // refs survive that. A first mount that already had the notebook
+         // cached would start a run, this cleanup would abort it, and the
+         // second mount would see an unchanged `runKey` and decline to start a
+         // replacement. I could not get a browser into that state, so treat the
+         // reset as belt-and-braces rather than a measured fix. It is right on
+         // its own terms either way: a key that says "this run happened" must
+         // not outlive the run being cancelled.
+         lastRunRef.current = null;
+         clearTimeout(pendingRunRef.current?.timer);
+         pendingRunRef.current = undefined;
       },
       [],
    );
-
-   // Unified cell execution function
-   // Executes all notebook cells, passing server-side filter params and givens
-   // Runs up to 4 requests in parallel for better performance
    const executeCells = useCallback(
-      async (
-         filtersToApply: FilterSelection[] = [],
-         givensToApply: Map<string, GivenValue> = new Map(),
-      ) => {
+      async (givensToApply: Map<string, GivenValue> = new Map()) => {
          if (!isSuccess || !notebook?.notebookCells) return;
 
-         // Initialize or reset cells
-         setEnhancedCells((prev) => {
-            if (prev.length === 0) {
-               return notebook.notebookCells.map((cell) => ({ ...cell }));
-            }
-            return prev.map((cell) => ({
-               ...cell,
-               result: undefined,
-            }));
-         });
+         const runId = ++runIdRef.current;
+
+         // Cancel the run this one supersedes rather than just ignoring its
+         // results. Discarding results alone keeps the requests in flight, so
+         // three quick control changes on a twelve-cell notebook put three full
+         // runs on the server and use the answers from one. `origin/main`
+         // refused to start a second run at all, which was the wrong trade,
+         // it dropped the newest values, but it did bound the load, and
+         // nothing replaced that bound.
+         inFlightRef.current?.abort();
+         const controller = new AbortController();
+         inFlightRef.current = controller;
+
+         // Rebuilt from the notebook being run, never carried over from the
+         // previous render's cells. Reusing them kept the OLD document's
+         // `text` and `type` while the new document's results were written in
+         // on top, so navigating between two notebooks rendered one's prose
+         // with the other's charts, and a shorter second notebook left the
+         // first one's trailing cells on screen. Nothing worth preserving
+         // survived that branch anyway: `result` and `error` were cleared, and
+         // `newSources` is re-derived from the raw cell below.
+         setEnhancedCells(notebook.notebookCells.map((cell) => ({ ...cell })));
 
          setIsExecuting(true);
          setExecutionError(null);
 
-         const filterParams = useServerFilters
-            ? buildFilterParams(filtersToApply)
-            : undefined;
          const givensParam = buildGivens(givensToApply);
 
          try {
@@ -365,7 +409,12 @@ export default function Notebook({
 
                const executeCell = async () => {
                   try {
-                     // Use notebook cell execution API with optional filter_params and givens
+                     // `filterParams` and `bypassFilters` go over as undefined:
+                     // the `#(filter)` panel this component used to render is
+                     // gone, replaced by `given:`. The server still enforces a
+                     // `required` filter, so a model that has one now fails
+                     // here: visibly, via `error` below, rather than as the
+                     // blank cell it used to be. See RELEASE_NOTES.
                      const response =
                         await apiClients.notebooks.executeNotebookCell(
                            environmentName,
@@ -373,10 +422,13 @@ export default function Notebook({
                            notebookPath,
                            cellIndex,
                            versionId,
-                           filterParams,
+                           undefined,
                            undefined,
                            givensParam,
+                           { signal: controller.signal },
                         );
+
+                     if (runIdRef.current !== runId) return;
 
                      const executedCell = response.data;
                      const result = executedCell.result;
@@ -397,10 +449,29 @@ export default function Notebook({
                         return next;
                      });
                   } catch (cellError) {
+                     // A superseded or cancelled run is not a failure to
+                     // report; its cells are about to be re-run.
+                     if (
+                        controller.signal.aborted ||
+                        runIdRef.current !== runId
+                     )
+                        return;
                      console.error(
                         `Error executing cell ${cellIndex}:`,
                         cellError,
                      );
+                     const message = cellErrorMessage(cellError);
+                     setEnhancedCells((prev) => {
+                        const next = [...prev];
+                        if (!next[cellIndex]) {
+                           next[cellIndex] = { ...rawCell };
+                        }
+                        next[cellIndex] = {
+                           ...next[cellIndex],
+                           error: message,
+                        };
+                        return next;
+                     });
                   }
                };
 
@@ -424,17 +495,19 @@ export default function Notebook({
             // Wait for remaining tasks to complete
             await Promise.all(executing);
          } catch (error) {
+            if (controller.signal.aborted || runIdRef.current !== runId) return;
             console.error("Error executing notebook cells:", error);
             setExecutionError(error as Error);
          } finally {
-            setIsExecuting(false);
+            if (runIdRef.current === runId) {
+               setIsExecuting(false);
+               inFlightRef.current = null;
+            }
          }
       },
       [
          isSuccess,
          notebook,
-         useServerFilters,
-         buildFilterParams,
          buildGivens,
          environmentName,
          packageName,
@@ -444,148 +517,109 @@ export default function Notebook({
       ],
    );
 
-   // Execute cells when notebook is loaded (no filters or givens initially)
-   useEffect(() => {
-      if (!isSuccess || !notebook?.notebookCells) return;
-      executeCells([], new Map());
-   }, [isSuccess, notebook, executeCells]);
+   // Run the cells on load, and again whenever the applied parameters change.
+   // Applied, not draft: under `## autorun=false` the cells wait for Apply.
+   //
+   // One effect covers both, keyed on exactly what would go over the wire plus
+   // which notebook it is. Keying on the encoded givens means a change that
+   // encodes identically does not re-run, and a link carrying parameters runs
+   // once with them rather than running bare and running again when they land.
+   // A run already in flight is superseded rather than waited on, which the
+   // generation guard in `executeCells` makes safe.
+   //
+   // The notebook's own identity is part of that key. Its content can change
+   // under an open tab: a package reload, and react-query hands over a new
+   // object only when the content actually differs, so identity is exactly the
+   // "has this document changed" signal. Keying on `resourceUri` alone silently
+   // dropped that: a reloaded notebook kept rendering the previous run's
+   // results forever, because the URI and the givens were unchanged.
+   const notebookGenRef = useRef(0);
+   const seenNotebookRef = useRef<RawNotebook | undefined>(undefined);
+   if (seenNotebookRef.current !== notebook) {
+      seenNotebookRef.current = notebook;
+      notebookGenRef.current += 1;
+   }
+   const notebookGen = notebookGenRef.current;
 
-   // Re-execute when filters or givens change
-   // Track previous input shape to detect actual value changes (not just reference changes)
-   const prevInputsRef = useRef<string>("");
-
    useEffect(() => {
-      // Serialize activeFilters + givenValues to detect actual value changes.
-      // Encode dates to the same YYYY-MM-DD granularity buildGivens sends on the
-      // wire — otherwise JSON.stringify renders Date as a full ISO timestamp, so
-      // two times on the same day would look like a change and trigger a
-      // redundant re-run even though the sent value is identical.
-      const serialized = JSON.stringify({
-         filters: activeFilters.map((f) => ({
-            dim: f.dimensionName,
-            type: f.matchType,
-            val: f.value,
-            val2: f.value2,
-         })),
-         givens: Array.from(givenValues.entries())
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([name, v]) => [
-               name,
-               v instanceof Date ? v.toISOString().slice(0, 10) : v,
-            ]),
+      const documentKey = `${resourceUri}|${notebookGen}`;
+      const runKey = `${documentKey}|${buildGivens(applied) ?? ""}`;
+
+      // Abandon the previous notebook's requests when the document changes.
+      // The abort-on-unmount effect does not cover this: navigating from one
+      // notebook to another REUSES this component, so nothing unmounts and a
+      // twelve-cell notebook left twelve requests running against a document
+      // the reader had already left.
+      if (
+         lastDocumentRef.current !== undefined &&
+         lastDocumentRef.current !== documentKey
+      ) {
+         inFlightRef.current?.abort();
+         inFlightRef.current = null;
+      }
+      lastDocumentRef.current = documentKey;
+
+      const plan = planRun({
+         ready: isSuccess && !!notebook?.notebookCells,
+         lastRunKey: lastRunRef.current,
+         pendingKey: pendingRunRef.current?.key,
+         runKey,
+         documentKey,
       });
 
-      // Skip if no actual change
-      if (serialized === prevInputsRef.current) {
+      if (plan.cancelPending) {
+         clearTimeout(pendingRunRef.current?.timer);
+         pendingRunRef.current = undefined;
+         setRunScheduled(false);
+      }
+      if (plan.dispatch === "none") return;
+
+      const start = () => {
+         pendingRunRef.current = undefined;
+         setRunScheduled(false);
+         lastRunRef.current = runKey;
+         void executeCells(applied);
+      };
+
+      if (plan.dispatch === "now") {
+         start();
          return;
       }
-
-      // Skip the initial render when both inputs are empty
-      if (
-         prevInputsRef.current === "" &&
-         activeFilters.length === 0 &&
-         givenValues.size === 0
-      ) {
-         prevInputsRef.current = serialized;
-         return;
-      }
-
-      // Don't consume the change until we can act on it. If a run is already in
-      // flight, leave prevInputsRef stale and bail: this effect re-runs when
-      // isExecuting flips back to false (it's a dependency), and will then pick
-      // up the latest inputs. Updating prevInputsRef here instead would mark the
-      // change "seen" and drop it — a given/filter edited mid-run would never
-      // re-execute.
-      if (isExecuting) {
-         return;
-      }
-
-      prevInputsRef.current = serialized;
-      executeCells(activeFilters, givenValues);
-   }, [activeFilters, givenValues, isExecuting, executeCells]);
-
-   // Handle filter change using composite key
-   const handleFilterChange = useCallback(
-      (key: string) => (selection: FilterSelection | null) => {
-         updateFilter(key, selection);
-      },
-      [updateFilter],
-   );
-
-   // Check if retrieval is supported
-   const hasRetrievalFilters = dimensionSpecs.some(
-      (spec) => spec.filterType === "Retrieval",
-   );
-   const _retrievalSupported = !hasRetrievalFilters || !!retrievalFn;
+      // Flagged while the settle timer runs, so the cells say a run is coming.
+      // Without it the window was invisible: `isExecuting` is false until the
+      // timer fires, so a changed control sat above the PREVIOUS values with
+      // nothing on screen to say they were stale, and a reader who kept typing
+      // kept extending the window.
+      setRunScheduled(true);
+      pendingRunRef.current = {
+         key: runKey,
+         timer: setTimeout(start, GIVEN_SETTLE_MS),
+      };
+   }, [
+      isSuccess,
+      notebook,
+      notebookGen,
+      resourceUri,
+      applied,
+      buildGivens,
+      executeCells,
+   ]);
 
    return (
       <CleanNotebookContainer>
          <CleanNotebookSection>
             <Stack spacing={3} component="section">
-               {/* Givens Panel — runtime parameters declared via `given:` */}
+               {/* Parameters panel: the controls for `given:` declarations */}
                <GivensPanel
                   givens={declaredGivens}
-                  values={givenValues}
-                  onChange={updateGiven}
-                  onClearAll={clearAllGivens}
+                  values={draft}
+                  onChange={setGiven}
+                  onReset={reset}
+                  options={givenOptions}
+                  optionsLoading={givenOptionsLoading}
+                  optionsFailed={givenOptionsFailed}
+                  apply={autorun ? undefined : { onApply: apply, pending }}
                />
-
-               {/* Filter Panel */}
-               {dimensionSpecs.length > 0 && filterValuesData && (
-                  <Paper
-                     elevation={0}
-                     sx={{
-                        p: 3,
-                        backgroundColor: "transparent",
-                        border: "none",
-                        boxShadow: "none",
-                     }}
-                  >
-                     <Typography
-                        variant="subtitle2"
-                        sx={{
-                           fontWeight: 600,
-                           mb: 2,
-                           color: "#333",
-                        }}
-                     >
-                        Filters
-                     </Typography>
-                     <Box
-                        sx={{
-                           display: "grid",
-                           gridTemplateColumns:
-                              "repeat(auto-fill, minmax(250px, 1fr))",
-                           gap: 3,
-                        }}
-                     >
-                        {dimensionSpecs.map((spec) => {
-                           const key = getDimensionKey(spec);
-                           const values = filterValuesData.get(key) || [];
-                           const filterState = filterStates.get(key);
-                           // Skip Retrieval filters if no retrievalFn provided
-                           if (
-                              spec.filterType === "Retrieval" &&
-                              !retrievalFn
-                           ) {
-                              return null;
-                           }
-
-                           return (
-                              <Box key={key}>
-                                 <DimensionFilter
-                                    spec={spec}
-                                    values={values}
-                                    selection={filterState?.selection}
-                                    onChange={handleFilterChange(key)}
-                                    retrievalFn={retrievalFn}
-                                 />
-                              </Box>
-                           );
-                        })}
-                     </Box>
-                  </Paper>
-               )}
 
                {/* Loading State */}
                {!isSuccess && !isError && (
@@ -605,7 +639,16 @@ export default function Notebook({
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}
+                        // Distinct from `isExecuting`: the cell's spinner is
+                        // gated on `!cell.result`, so feeding this through it
+                        // showed nothing on a re-run, which is the only case
+                        // the settle window has to signal.
+                        pendingRerun={runScheduled}
                         onNavigate={onNavigate}
+                        onDrillSelf={
+                           declaredGivens.length > 0 ? onDrillSelf : undefined
+                        }
+                        canDrillSelf={canDrillSelf}
                      />
                   ))}
 

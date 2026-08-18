@@ -1,0 +1,29 @@
+##! experimental.givens
+
+// Control tags live on the declaration, not on the dashboards: a given is a
+// model concern, and each dashboard decides which ones it filters by.
+
+# label="Brand" control=select suggest { source=orders dimension=brand }
+given: BRAND :: filter<string> is f'Nike'
+
+# label="Minimum amount" range_min=0 range_max=500
+given: MIN_AMOUNT :: filter<number> is f''
+
+# label="Region" control=multiselect suggest { query=region_suggest dimension=region }
+given: REGION :: filter<string> is f''
+
+// A scalar (non-filter) given, and the only date one: it is what pins the
+// spelling the shared codec has to send for a `date`, which is a bare
+// YYYY-MM-DD — a full ISO timestamp is rejected.
+# label="Ordered since"
+given: SINCE :: date is @2024-01-01
+
+// Declared but referenced by no dashboard, so it must not appear in any
+// dashboard's control row.
+given: UNUSED :: filter<string> is f''
+
+// A plain string whose default READS like a filter literal. The manifest must
+// leave it untouched: only a filter-typed given carries the `f'…'` wrapper, so
+// unwrapping unconditionally would corrupt this one.
+# label="Looks like a filter"
+given: LOOKS_LIKE_FILTER :: string is "f'Nike'"
