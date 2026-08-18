@@ -409,22 +409,28 @@ describe("GivenInput: the whole type x control matrix", () => {
       expect(show("filter<number>", undefined, true, "1 to 5")).toBe("text");
    });
 
-   it("never renders nothing, for any combination", () => {
-      const types = [
-         "string",
-         "number",
-         "boolean",
-         "date",
-         "timestamp",
-         "timestamptz",
-         "filter<string>",
-         "filter<number>",
-         "filter<date>",
-         "filter<timestamp>",
-         "array<string>",
-         "record",
-         undefined,
-      ];
+   // One test per type rather than one test for the whole matrix. The matrix is
+   // 13 types x 3 controls x 2 range states x 9 values, so a single `it` runs
+   // 702 renders against bun's 5s default and tipped over it on a CI runner
+   // already executing three timezone passes (5872ms, measured). Splitting also
+   // means a failure names the type, which the combined assertion could not.
+   const MATRIX_TYPES = [
+      "string",
+      "number",
+      "boolean",
+      "date",
+      "timestamp",
+      "timestamptz",
+      "filter<string>",
+      "filter<number>",
+      "filter<date>",
+      "filter<timestamp>",
+      "array<string>",
+      "record",
+      undefined,
+   ];
+
+   it.each(MATRIX_TYPES)("never renders nothing, for %s", (type) => {
       const values = [
          undefined,
          "",
@@ -436,12 +442,10 @@ describe("GivenInput: the whole type x control matrix", () => {
          5,
          true,
       ] as GivenValue[];
-      for (const type of types) {
-         for (const control of [undefined, "select", "multiselect"]) {
-            for (const range of [false, true]) {
-               for (const value of values) {
-                  expect(show(type, control, range, value)).not.toBe("NONE");
-               }
+      for (const control of [undefined, "select", "multiselect"]) {
+         for (const range of [false, true]) {
+            for (const value of values) {
+               expect(show(type, control, range, value)).not.toBe("NONE");
             }
          }
       }

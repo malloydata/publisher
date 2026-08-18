@@ -65,7 +65,12 @@ test.describe("notebook givens are URL-addressable", () => {
    }) => {
       await openNotebook(page);
 
-      await expect(page.getByLabel("REGION")).toBeVisible();
+      // Role-scoped, not `getByLabel`. `getByLabel` matches case-insensitively
+      // on a substring, so once a cell's chart has rendered it also matches the
+      // Vega x-axis whose aria-label reads "X-axis titled 'region' ...", giving
+      // three hits and a strict-mode violation. It passed only while the
+      // assertion beat the chart render.
+      await expect(page.getByRole("textbox", { name: "REGION" })).toBeVisible();
       await expect(page.getByLabel("MIN_AMOUNT")).toBeVisible();
       // The `#(description=...)` annotation is the helper text, which is the
       // only thing telling a reader what a given means.
