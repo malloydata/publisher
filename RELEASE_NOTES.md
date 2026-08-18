@@ -202,6 +202,15 @@ A `storage=` build reads its source through DuckDB's native query-passthrough, w
 
 ---
 
+## [Unreleased]: a given's control contract is read off its own tags
+
+The `Given` control contract shipped in 0.0.242 as a schema with no reader: the fields were declared and no endpoint populated them. The server now derives them from the declaration's own tags, so they are populated wherever a `Given` is returned.
+
+### What changed
+
+- **`label`, `control`, `rangeMin`, `rangeMax` and `suggest` are now populated,** read from the `given:` declaration's own plain-`#` tags. How a given should be presented belongs to the given rather than to any one surface, which is what lets a notebook, a dashboard and an SDK host render the same control without restating it. Those tags sit in Malloy's reserved namespace and are dropped from `annotations`, so deriving them server-side is what lets a client read them without shipping a MOTLY parser of its own. A declaration carrying none of the tags carries none of the fields, and a value the contract does not accept (`control=radio`, a non-numeric bound) is dropped the same way rather than reported.
+- **`Given` gains `description`,** helper text read from a `# description=` tag. This does not replace `#(description="…")`, which still works and is still what the notebook UI renders: that form stays on `annotations`, where the client that parses it today keeps finding it. The tag form is the one that compiles without a `malformed-route` warning, since Malloy reads an annotation's route up to the first whitespace and a multi-word `#(description="…")` therefore is not well formed. Nothing renders the new field yet.
+
 ## [0.0.244] — queries report how they were served, and what they cost
 
 The server measured several things and then discarded them, and the query
