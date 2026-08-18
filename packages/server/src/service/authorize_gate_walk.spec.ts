@@ -26,6 +26,7 @@ interface GateEntry {
    label: string;
    exprs: string[];
    selfContained: boolean;
+   struct?: SourceDef;
 }
 interface GateWalker {
    collectEntryPointGates(
@@ -34,6 +35,10 @@ interface GateWalker {
       seen?: Set<SourceDef>,
       treatAsOwnGate?: boolean,
    ): GateEntry[];
+   resolveGateShape(
+      entry: GateEntry,
+      modelDef: ModelDef,
+   ): Promise<{ kind: string }>;
 }
 
 function tableSource(name: string, extra: object = {}): SourceDef {

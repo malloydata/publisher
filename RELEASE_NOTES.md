@@ -18,16 +18,145 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a build that loses one source keeps the rest
+## [Unreleased] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
+
+A gate whose expression reads no row field works exactly as before; a gate that reads one — its
+own source's, or a joined source's — now filters rows instead of only admitting or rejecting the
+whole source. This ships on, unconditionally — there is no flag to stage the rollout.
+
+### Breaking changes, in the order they bite
+
+- **A denied caller now gets 200 with zero rows instead of 403**, for a row-level gate.
+  `#(authorize) "org_id in $GROUPS"` and `#(authorize) "childtable.name = $BOB"` are now valid — the
+  join a joined-field gate needs is compiled in as part of the entry source's own build, before any
+  caller-controlled query stage exists. This cannot affect an existing package: a row-field gate
+  could not be written before this ships (it always failed the one-row probe, which has no real
+  columns for it to read), so no existing caller can be relying on the 403. It matters for gates
+  authors write from now on — check any consumer that keys logic on the 403 status. See
+  [docs/security-posture.md](docs/security-posture.md).
+- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED.** This DOES break
+  existing packages — one that has this will fail to build where it previously succeeded — so it is
+  worth being precise about what it does and does not close. It is **not** closing an unfiltered
+  leak: measured, a colocated substitution replaces only the source's relation SQL, while the gate
+  is applied as the reading query's own `WHERE`, so the two compose and rows come back filtered.
+  What it refuses is authorization decided against a **frozen** copy of the gating column. The
+  artifact is built once; a row whose `org_id` changes in the warehouse keeps being served to its
+  old owner and stays hidden from its new one. Nor does adding a gate refresh anything — the
+  content address does not include the annotation, so a pre-gate artifact stays addressable
+  indefinitely while every rebuild is refused. Note also that the check's reach is deliberately
+  wider than that: it also refuses a source that merely *joins* a gated source, which entry-point
+  semantics never enforced anyway. Drop `#@ persist` from the source, or move the gate to a source
+  that is not materialized. See [docs/materialization.md](docs/materialization.md).
+- **An `#(authorize)` in a position nothing enforces now fails the model load** — a top-level
+  `query:` statement, or a field (`dimension:`/`measure:`/`view:`) inside a source. This also
+  breaks existing packages, also deliberately: today such a gate silently protects nothing. Move
+  the annotation to the `source:` statement it is meant to protect.
+- **An `#(authorize)` on a `join_one:`/`join_many:` line fails the load, in the common case.**
+  Gating a join has no effect, so this is the same misplacement as the bullet above and is refused
+  the same way — move it to the joined source's own `source:` declaration. The one exception is a
+  join whose target is declared beyond what this model imported (a selective one-hop import of only
+  the joiner, or a source two-plus hops away): there the annotation is indistinguishable from
+  Malloy's own by-reference copy of the joined source's gate, so it is ignored silently rather than
+  risk refusing a correct package.
+- **`##(authorize)` (file-level) is deprecated and now fails the model load.** It was a mistake to
+  ship a model-wide override in the first place: the raw-warehouse path it existed to close is
+  already closed unconditionally by restricted mode, so the file-level fallback protected nothing a
+  source-level gate couldn't already cover, while being easy to misuse into unlocking every source
+  in a file at once. A `##(authorize)` annotation anywhere in the model — including one folded in
+  from an imported file — now fails the load rather than silently applying; the remedy is
+  `#(authorize)` on each `source:` it was meant to protect. See
+  [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates).
+- **A near-miss `authorize` spelling now fails the model load instead of silently doing nothing.**
+  `# (authorize)` / `## (authorize)` (a space after the `#`), `#( authorize )`, `#(authorize )`,
+  `#(authorize)X`, `#authorize`, and case variants of the name itself (`#(AUTHORIZE)`,
+  `#(Authorize)`) are not `authorize` annotations to the Malloy compiler — the spaced pair are plain
+  MOTLY/render tags, the next four are malformed prefixes, and the case variants route to a name that
+  is not ours — so a source carrying one has always served every row while its author read it as
+  locked, and the package loaded clean. A package with one of these will now fail to load, naming the
+  spelling and the fix (`#(authorize) "<expression>"` on the `source:` statement). Refusing is
+  deliberate rather than interpreting the intent: honouring the spelling would mean publisher
+  assigning meaning inside a namespace Malloy reserves for itself, and would silently start enforcing
+  a filter on packages that served every row yesterday. In the same change, the block form
+  `#|(authorize)` … `|#` and the other bracket pairs (`#[authorize]`, `#<authorize>`, `#{authorize}`)
+  are now recognized as gates, because the compiler routes them there — the block form in particular
+  was previously a live fail-open, unenforced at query time *and* eligible to be frozen into a
+  materialized artifact.
+
+  **What is deliberately NOT refused:** another application's `authorize`-prefixed route.
+  Classification now asks the compiler for a note's route rather than matching its text, so
+  `#(authorize-v2)`, `#(authorize.audit)`, `#(authorize/v2)`, `#(authorize_v2)` and `#(authorized)`
+  are valid distinct routes belonging to whoever declared them, and load untouched. An earlier draft
+  of this refusal matched them as near misses and failed the whole model load with advice aimed at
+  someone else.
+- **Known limitation — one notebook shape fails with a 400 instead of filtering.** A cell that both
+  declares a gated source and runs it in the same cell, where the gate reads a JOINED field and the
+  run query does not itself reference that field, is refused rather than answered. Reference the
+  joined field in the run query's own projection to avoid it. Never a leak — no rows are returned
+  either way, and the 400 is only the wrong status for a request that should have succeeded with
+  filtered rows. Every other same-cell shape (the first code cell, one preceded only by markdown, or
+  any later cell) filters correctly.
+
+### What changed
+
+- **A gate that references only givens is unaffected.** Most existing gates are this kind. They
+  keep the one-row DuckDB probe and the whole-source admit/deny decision unchanged.
+- **The accepted row-level shape is a restricted, positive allowlist**, and anything outside it —
+  including a given that isn't on the model's own given surface — is refused at package load,
+  naming the reason. A broken gate never serves. For exactly what is accepted and refused, and
+  why, see [docs/authorize.md § Row-level gates](docs/authorize.md#row-level-gates).
+
+### Author-facing behavior worth knowing
+
+- A gate on a joined field turns a `join_one` LEFT JOIN into an INNER JOIN — a parent row with no
+  matching child drops out rather than surviving with nulls.
+- A gate must resolve at every entry point the declaring source is reached through, and an entry
+  point where it cannot is closed rather than opened. `rename:`, `except:`, and `accept:` can remove
+  the field a gate was written against. Where the entry point declares its **own** gate, package
+  load fails with a 424 naming the source; where it only **inherits** one, load succeeds with a
+  warning and that entry point denies every request, leaving the rest of the model serving.
+- Entry-point-only semantics are unchanged: a gate on a source reached only through a join still
+  does not fire. A gate may now *reference* a joined field from the entry point's own expression —
+  that is not the same thing.
+
+---
+
+## [0.0.247] — a build that loses one source keeps the rest
 
 A build that failed on any source abandoned the whole command: it stopped at the first failure, reclaimed the tables already written, and reported one message for the entire run. A package where one source of five had a bad grant was indistinguishable from a package that was entirely broken, and the four tables that had already materialized were dropped on the way out.
 
 A source that fails is now recorded in the manifest with the reason it gave, and the build continues. The sources that materialized stay usable, and a consumer can tell which source failed rather than inferring it from an absent entry. A build that loses *every* source still fails — it produced nothing, so it must not report itself as a success with errors attached. A reuse-only run, which builds nothing of its own, is unaffected.
 
-**New response field.** `ManifestEntry.error` carries the reason, redacted against that source's own connection. A consumer generating a strict client from `api-doc.yaml` rejects the field until it regenerates. The entry still carries `physicalTableName`, because the schema requires it — so a consumer deciding whether a table exists must read `error`, not the presence of a name.
+**New response field.** `BuildManifest.failures` maps a sourceEntityId to a `SourceFailure` carrying `reason`, redacted against that source's own connection. A consumer generating a strict client from `api-doc.yaml` rejects the field until it regenerates; the key is absent on a run where every source built.
+
+Failures are reported *beside* `entries` rather than inside one, which is the part worth knowing if you consume a manifest. A failure carries the `physicalTableName` the source was headed for — useful for correlating with the request, and never a table to read: the build that would have created it is what failed, and a failed *rebuild* leaves the prior generation in place under that same name, so resolving it serves stale data rather than nothing.
+
+**`ManifestEntry.error` is deprecated.** 0.0.245 and 0.0.246 report a failed source as an entry carrying `error`, and that remains true for one more deprecation cycle: a failure is written to **both** `failures` and a mirrored entry, so a consumer reading `error` keeps working unchanged. Move to `failures` — `error` will be removed, and once it is, `entries` holds only sources that built.
+
+Until then a consumer that resolves an entry to a table must skip entries whose `error` is set. This is not hypothetical for stored manifests either: one committed by 0.0.245 or 0.0.246 on a partially-failed build records the failed source inside `entries` with a `physicalTableName` that was never created, and that state survives an upgrade. This build drops such entries where a persisted manifest is read back (serve rebind, reuse, reference resolution) rather than binding the name.
 
 **New metric label values.** `outcome` on the run counter gains `partial`, for a run that committed a manifest while some of its sources failed; the sources counter gains `failed`. A success-rate expression written as `success / (success + failed)` now drops `partial` into neither bucket, so a partial failure reads as a dip in volume rather than a failure. Alerting on that ratio should add `partial` to the denominator, or to the numerator's complement, depending on whether a partially served package counts as healthy for that deployment.
-## [Unreleased] — `publisher.db` picks up new columns on upgrade
+
+**One existing label value changes meaning.** `outcome="built"` on the sources counter is counted from what the build returned, where before this release it was the length of the instruction list. An instruction can be skipped without building — an incremental source whose boundary already covers the requested range, or one with no matching compiled source — and the old count reported those as built. The new figure is lower by however many a run skips, so a deployment trending `built` will see a step change at upgrade that is a correction rather than a drop in work done. The change came with the partial-failure work above; it is called out here because the counter itself predates it.
+
+---
+
+## [0.0.246] — measures can be pre-aggregated
+
+A measure annotated `#@ preaggregate grain="…"` is rolled up into a stored table at that grain, and a query the rollup covers reads the small table instead of the base. Queries name the original source and nothing about them changes; the rollup is selected behind it, or bypassed, with a per-query fallback to live for anything no rollup covers.
+
+[docs/preaggregation.md](docs/preaggregation.md) is the guide. Two limits to know before reaching for it, both of which cost acceleration and not correctness. **A query that names a `view:` does not route:** rollups are offered through a composite source, which carries its members' fields but not their views, so `run: orders -> by_category` serves live while the same query written out reads the rollup — which covers the REST `queryName` form and Console dashboards. **A query that supplies a `given:` does not route** either, since a model-level given does not cross into the synthesized model; that one is partly inherent, because a rollup is built with the givens in force at build time and could not answer a different value from stored rows anyway. Between them, a workload of named views or a filter-driven data app sees little benefit today.
+
+**The annotation is all it takes — there is no deployment flag to enable.** Writing one is the decision to build and serve a rollup, so a package that carries no `#@ preaggregate` is untouched: nothing extra is planned, built, or compiled for it. Worth knowing before adding your first annotation, because the build is not free: a rollup is materialized like any `#@ persist` source, and a grain whose cardinality approaches the base table's spends nearly as much as the base while saving little. `buildPlan.sources` with `origin: preaggregate` is where to see what a package will build before it builds it.
+
+**A measure may be declared at several grains, one annotation line each, and that is a cost decision.** A rollup also serves queries grouped by any *subset* of its grain, so one rollup at `category, order_day` correctly answers by-category, by-day and grand-total queries. But a combined grain has roughly the product of its dimensions' cardinalities, so `customer_id, order_day` can approach the base table's row count and save almost nothing where either grain alone is small. Declaring both separately gives each query a small table to read, at the price of two tables to build and refresh. Rollups are grouped by grain, not by measure: ten measures sharing a grain are one table and one `GROUP BY`. Note that where two declared grains both cover a query, the one used is the first in the composite's member order, which is by generated name rather than by size — so grains are worth declaring for queries they cover *differently*, not to offer the same query a choice.
+
+**Unusable annotations are refused at publish, and again at load.** Pre-aggregation's failure mode is an annotation that silently does nothing while the plan looks correct, so anything that cannot be built is a 400 rather than a warning. Refused: an annotation anywhere but on a measure; a measure whose aggregate cannot be re-aggregated from a stored partial (only `sum`, `count`, `min` and `max` can — pre-aggregate a sum and a count and divide them in a view instead); a grain naming anything but a dimension the source itself declares, which rules out an inline truncation like `grain="order_time.day"` (declare `dimension: order_day is order_time.day` and name that, after which coarser truncations of it route too); and a base source with a fan-out join, since `join_many` and `join_cross` can multiply rows. A `join_one` is permitted, and a measure that aggregates through one is served normally. Enforcing at load as well as at publish matters because re-aggregatability is derived from the compiled model: a Malloy version change can in principle reclassify a measure that published cleanly, and that surfaces as a package that stops loading (reported in `ServerStatus.loadErrors`) rather than one quietly paying for rollups that answer nothing.
+
+**API.** `PersistSourcePlan` gains `origin` (`persist` for a `#@ persist` the modeler wrote, `preaggregate` for a rollup the publisher synthesized) and `preaggregate`, a `PreaggregatePlan` naming the base source, the grain's dimensions, and the measures served at it. A synthesized rollup is declared by no file, so it reports the model holding the annotations it came from, which is where an author would go to change it. Nothing about a synthesized rollup appears in model discovery: the author's model is never edited, so it still exports the source it always did.
+
+---
+
+## [0.0.245] — `publisher.db` picks up new columns on upgrade
 
 An existing `publisher.db` has always picked up a new **table** added by a later build, because `CREATE TABLE IF NOT EXISTS` is idempotent. It never picked up a new **column**: that same statement is a no-op against a table that already exists, however its columns differ. So a store created before a column was introduced never gained it, schema initialization reported success anyway, and the first write naming that column failed at the binder.
 
@@ -58,25 +187,10 @@ Adding a column without a default is a catalog operation, not a data rewrite —
 ### Why it took an upgrade to find
 
 CI starts from a clean checkout with no `publisher.db`, so the create path always runs with the current DDL and the drift cannot arise. The gap was never a missing assertion — it was that no test had ever booted against a store older than the build. There is one now.
----
-
-## [Unreleased] — measures can be pre-aggregated
-
-A measure annotated `#@ preaggregate grain="…"` is rolled up into a stored table at that grain, and a query the rollup covers reads the small table instead of the base. Queries name the original source and nothing about them changes; the rollup is selected behind it, or bypassed, with a per-query fallback to live for anything no rollup covers.
-
-[docs/preaggregation.md](docs/preaggregation.md) is the guide. Two limits to know before reaching for it, both of which cost acceleration and not correctness. **A query that names a `view:` does not route:** rollups are offered through a composite source, which carries its members' fields but not their views, so `run: orders -> by_category` serves live while the same query written out reads the rollup — which covers the REST `queryName` form and Console dashboards. **A query that supplies a `given:` does not route** either, since a model-level given does not cross into the synthesized model; that one is partly inherent, because a rollup is built with the givens in force at build time and could not answer a different value from stored rows anyway. Between them, a workload of named views or a filter-driven data app sees little benefit today.
-
-**The annotation is all it takes — there is no deployment flag to enable.** Writing one is the decision to build and serve a rollup, so a package that carries no `#@ preaggregate` is untouched: nothing extra is planned, built, or compiled for it. Worth knowing before adding your first annotation, because the build is not free: a rollup is materialized like any `#@ persist` source, and a grain whose cardinality approaches the base table's spends nearly as much as the base while saving little. `buildPlan.sources` with `origin: preaggregate` is where to see what a package will build before it builds it.
-
-**A measure may be declared at several grains, one annotation line each, and that is a cost decision.** A rollup also serves queries grouped by any *subset* of its grain, so one rollup at `category, order_day` correctly answers by-category, by-day and grand-total queries. But a combined grain has roughly the product of its dimensions' cardinalities, so `customer_id, order_day` can approach the base table's row count and save almost nothing where either grain alone is small. Declaring both separately gives each query a small table to read, at the price of two tables to build and refresh. Rollups are grouped by grain, not by measure: ten measures sharing a grain are one table and one `GROUP BY`. Note that where two declared grains both cover a query, the one used is the first in the composite's member order, which is by generated name rather than by size — so grains are worth declaring for queries they cover *differently*, not to offer the same query a choice.
-
-**Unusable annotations are refused at publish, and again at load.** Pre-aggregation's failure mode is an annotation that silently does nothing while the plan looks correct, so anything that cannot be built is a 400 rather than a warning. Refused: an annotation anywhere but on a measure; a measure whose aggregate cannot be re-aggregated from a stored partial (only `sum`, `count`, `min` and `max` can — pre-aggregate a sum and a count and divide them in a view instead); a grain naming anything but a dimension the source itself declares, which rules out an inline truncation like `grain="order_time.day"` (declare `dimension: order_day is order_time.day` and name that, after which coarser truncations of it route too); and a base source with a fan-out join, since `join_many` and `join_cross` can multiply rows. A `join_one` is permitted, and a measure that aggregates through one is served normally. Enforcing at load as well as at publish matters because re-aggregatability is derived from the compiled model: a Malloy version change can in principle reclassify a measure that published cleanly, and that surfaces as a package that stops loading (reported in `ServerStatus.loadErrors`) rather than one quietly paying for rollups that answer nothing.
-
-**API.** `PersistSourcePlan` gains `origin` (`persist` for a `#@ persist` the modeler wrote, `preaggregate` for a rollup the publisher synthesized) and `preaggregate`, a `PreaggregatePlan` naming the base source, the grain's dimensions, and the measures served at it. A synthesized rollup is declared by no file, so it reports the model holding the annotations it came from, which is where an author would go to change it. Nothing about a synthesized rollup appears in model discovery: the author's model is never edited, so it still exports the source it always did.
 
 ---
 
-## [Unreleased] — a `storage=` build's warehouse read is now attributable
+## [0.0.244] — a `storage=` build's warehouse read is now attributable
 
 A `storage=` build reads its source through DuckDB's native query-passthrough, where no Malloy connector is in the call path to apply the query-metadata bag. Every such build therefore reached the warehouse untagged — the one kind of work a deployment could not attribute. It now carries the same bag the colocated path does, resolved through the same layering.
 
@@ -88,7 +202,7 @@ A `storage=` build reads its source through DuckDB's native query-passthrough, w
 
 ---
 
-## [Unreleased] — queries report how they were served, and what they cost
+## [0.0.244] — queries report how they were served, and what they cost
 
 The server measured several things and then discarded them, and the query
 histogram carried two labels that grew without bound. Both are addressed.
@@ -117,7 +231,7 @@ On the serve side, check `servedFrom` before reading a null as "free": a `storag
 
 ---
 
-## [Unreleased] — `storage=` builds from a Snowflake source now work (Docker image)
+## [0.0.243] — `storage=` builds from a Snowflake source now work (Docker image)
 
 The 0.0.236 notes below list `snowflake_query` among the native query-passthroughs a `storage=` source is materialized through. That was true of the code and never true of the published image: **materializing a Snowflake source into a storage destination has not worked at all.** Two independent faults, both fixed.
 
