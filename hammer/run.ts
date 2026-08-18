@@ -644,16 +644,33 @@ async function main(): Promise<void> {
          return `file://${file}`;
       };
 
-      // Operator DDL: the DuckLake destination `lake` is provisioned out-of-band
-      // via a read-write attach (the publisher's serve attach is read-only).
+      // Operator DDL: provisioning a scenario does out-of-band, as an operator
+      // would — never through the publisher, whose own paths are deliberately
+      // narrower (the serve attach is read-only, and the connection SQL endpoint
+      // cannot run a statement that returns no rows).
+      //
+      // Two backends, because a persist target can live in either: a DuckLake
+      // destination is reached by a read-write attach, and a source warehouse is
+      // reached by psql against the scenario's own database. A colocated persist
+      // whose `name=` carries a schema needs that schema to exist first, and only
+      // this path can create it.
       const operatorSqlFor =
          (r: ScenarioResources, lakes: Set<string>) =>
-         async (conn: string, sql: string): Promise<void> => {
+         async (
+            conn: string,
+            sql: string,
+         ): Promise<Record<string, string>[]> => {
             if (!lakes.has(conn)) {
-               throw new Error(
-                  `operatorSql: no read-write path wired for connection "${conn}" ` +
-                     `(this scenario's ducklake destinations: ${[...lakes].join(", ")})`,
-               );
+               // Not a lake: treat it as the scenario's source warehouse. Named
+               // connections all resolve to the one scenario database, so the
+               // connection name is a label here rather than a lookup key.
+               //
+               // `query` for a statement that returns rows, `sql` otherwise: psql
+               // errors on a no-result statement asked to produce tuples, and DDL
+               // is the common case here.
+               return /^\s*(select|with|show|table)\b/i.test(sql)
+                  ? await pg.query(r.sourceDb, sql)
+                  : (await pg.sql(r.sourceDb, sql), []);
             }
             await runLakeSql(
                {
@@ -666,6 +683,9 @@ async function main(): Promise<void> {
                },
                sql,
             );
+            // The lake arm provisions; asserting on a destination's contents is
+            // what `## Connection <lake>_probe` is for.
+            return [];
          };
 
       // A worker's port block. Publisher NAMES stride by 100 within a cluster, so

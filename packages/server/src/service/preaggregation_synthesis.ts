@@ -149,7 +149,9 @@ export function baseAlias(baseSourceName: string): string {
  * unchanged and the rollup's own segment is appended plain, which is what
  * `quoteManifestTablePath` expects of an already-canonical path.
  */
-export function persistNamespace(persistName: string | undefined): string | undefined {
+export function persistNamespace(
+   persistName: string | undefined,
+): string | undefined {
    if (!persistName) return undefined;
    const lastDot = persistName.lastIndexOf(".");
    return lastDot > 0 ? persistName.slice(0, lastDot) : undefined;
@@ -177,7 +179,9 @@ function basePersistName(source: ValidatableSource): string | undefined {
    if (!source.annotations) return undefined;
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tag = new Annotations(source.annotations as any).parseAsTag("@").tag;
+      const tag = new Annotations(source.annotations as any).parseAsTag(
+         "@",
+      ).tag;
       if (!tag.has("persist")) return undefined;
       // `#@ persist name="x"` parses as two SIBLING keys, not a nested one — the
       // same shape `readPreaggregateAnnotation` handles for `grain`. Nested form
@@ -193,6 +197,7 @@ export function planSourcePreaggregation(
    source: ValidatableSource,
 ): RollupPlan[] {
    const basePersistNamespace = persistNamespace(basePersistName(source));
+   let declaredNamespace: string | undefined;
    // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
    // two authors writing the same dimensions in either order land in one entry.
    const byGrain = new Map<
@@ -205,6 +210,12 @@ export function planSourcePreaggregation(
          field as AnnotatableMeasure,
       );
       if (!declaration.declared || declaration.errors.length > 0) continue;
+      // An author-named namespace wins over the base's. Read across measures
+      // rather than per grain: the rollup is a table, and two measures rolled up
+      // together cannot land in two places. First one named wins, in the field
+      // order the IR reports.
+      if (declaredNamespace === undefined)
+         declaredNamespace = declaration.namespace;
 
       const additivity = classifyMeasureAdditivity(field as never);
       if (!additivity.additive) continue;
@@ -233,7 +244,9 @@ export function planSourcePreaggregation(
       .map(({ grainDimensions, measures }) => ({
          baseSourceName,
          rollupSourceName: rollupSourceName(baseSourceName, grainDimensions),
-         namespace: basePersistNamespace,
+         // Author's choice first, the base's namespace as the fallback: a rollup of
+         // X belongs where X lives unless its author said otherwise.
+         namespace: declaredNamespace ?? basePersistNamespace,
          grainDimensions,
          // Sorted so the emitted text does not depend on field order in the IR.
          measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),

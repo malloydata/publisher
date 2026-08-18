@@ -101,6 +101,14 @@ export interface PreaggregateDeclaration {
     */
    declared: boolean;
    /**
+    * Where the rollup's table is created, when the author named it —
+    * `#@ preaggregate namespace="analytics"`. A dataset on BigQuery, a schema
+    * elsewhere; the rollup's own table name is always derived, so this names the
+    * container and never the table. Undefined when unspecified, in which case the
+    * base's own `#@ persist name=` supplies it.
+    */
+   namespace?: string;
+   /**
     * Every grain in effect, one per rollup, de-duplicated and ordered
     * canonically. Empty when the measure is undeclared or every declaration on it
     * is in error.
@@ -193,6 +201,7 @@ export function readPreaggregateAnnotation(
    let grains = new Map<string, PreaggregateGrain>();
    let errors: PreaggregateDeclarationError[] = [];
    let declared = false;
+   let namespace: string | undefined;
 
    for (const note of orderedNotes(measure.annotations)) {
       if (NEGATION.test(note.text)) {
@@ -223,6 +232,14 @@ export function readPreaggregateAnnotation(
       // Nested form wins; the documented sibling-key form is the fallback. Both
       // parse per line, so this is the same precedence the merged tag applied.
       const grainText = tag.text("preaggregate", "grain") ?? tag.text("grain");
+      // Same nested-then-sibling precedence as `grain`, for the same reason: the
+      // documented form parses as siblings. Last line naming one wins, so a
+      // refinement can move a rollup without restating the grain.
+      const namespaceText =
+         tag.text("preaggregate", "namespace") ?? tag.text("namespace");
+      if (namespaceText !== undefined && namespaceText.trim() !== "") {
+         namespace = namespaceText.trim();
+      }
       if (grainText === undefined) {
          errors.push({
             kind: "missing_grain",
@@ -243,6 +260,7 @@ export function readPreaggregateAnnotation(
 
    return {
       declared,
+      namespace,
       // Ordered by the canonical grain so a caller's output does not depend on
       // the order the annotations happened to be written in.
       grains: [...grains.values()].sort((a, b) =>

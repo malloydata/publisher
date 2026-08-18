@@ -189,6 +189,31 @@ describe("a rollup is created where its base lives", () => {
       expect(plans[0].namespace).toBe("proj.analytics");
    });
 
+   it("takes an author-declared namespace over the base's", async () => {
+      // `namespace=` is the answer for a base that is not persisted at all — which
+      // is legal, since `#@ preaggregate` goes on a measure — and an override when
+      // it is. It names the container only; the table name stays derived.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            `  measure:\n    #@ preaggregate grain="category" namespace="rollups"\n    total is sum(amount)`,
+         ),
+      );
+      expect(plans[0].namespace).toBe("rollups");
+      expect(synthesizePreaggregationModel(plans, "./orders.malloy")).toContain(
+         `#@ persist name="rollups.${plans[0].rollupSourceName}"`,
+      );
+   });
+
+   it("accepts a namespace on a base that is not persisted", async () => {
+      // The case the fallback cannot serve: nothing to inherit from.
+      const plans = await planFor(
+         `  measure:\n    #@ preaggregate grain="category" namespace="rollups"\n    total is sum(amount)`,
+      );
+      expect(plans[0].namespace).toBe("rollups");
+   });
+
    it("emits a bare persist when the base names no namespace", async () => {
       // Nothing to inherit, so nothing is invented — nor is the previous behaviour
       // changed for the dialects that accept an unqualified name.
