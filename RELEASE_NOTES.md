@@ -94,6 +94,105 @@ A `storage=` build reads its source through DuckDB's native query-passthrough, w
 **New operational prerequisite on BigQuery.** A labelled read locates its result table by listing the executed script's child job, an API surface the unsplit read never touched. A connection that cannot list its own jobs keeps the read it had before and loses attribution rather than its build — the fallback is decided by a probe issued _before_ anything runs, and counted by `publisher_storage_build_attribution_skipped_total`. Separately, and independent of tagging, the passthrough streams its results over the Storage Read API on every path: `bigquery.readsessions.create` (`roles/bigquery.readSessionUser`) is a standing requirement for materializing any BigQuery source into a storage destination.
 
 `ManifestEntry.queryCostBytes` is populated for a tagged `storage=` build, and the full per-engine cost — billed bytes, slot or execution time, the cache flag, the warehouse's own job ids — goes to the build's log line.
+## [Unreleased] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
+
+A gate whose expression reads no row field works exactly as before; a gate that reads one — its
+own source's, or a joined source's — now filters rows instead of only admitting or rejecting the
+whole source. This ships on, unconditionally — there is no flag to stage the rollout.
+
+### Breaking changes, in the order they bite
+
+- **A denied caller now gets 200 with zero rows instead of 403**, for a row-level gate.
+  `#(authorize) "org_id in $GROUPS"` and `#(authorize) "childtable.name = $BOB"` are now valid — the
+  join a joined-field gate needs is compiled in as part of the entry source's own build, before any
+  caller-controlled query stage exists. This cannot affect an existing package: a row-field gate
+  could not be written before this ships (it always failed the one-row probe, which has no real
+  columns for it to read), so no existing caller can be relying on the 403. It matters for gates
+  authors write from now on — check any consumer that keys logic on the 403 status. See
+  [docs/security-posture.md](docs/security-posture.md).
+- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED.** This DOES break
+  existing packages — one that has this will fail to build where it previously succeeded — so it is
+  worth being precise about what it does and does not close. It is **not** closing an unfiltered
+  leak: measured, a colocated substitution replaces only the source's relation SQL, while the gate
+  is applied as the reading query's own `WHERE`, so the two compose and rows come back filtered.
+  What it refuses is authorization decided against a **frozen** copy of the gating column. The
+  artifact is built once; a row whose `org_id` changes in the warehouse keeps being served to its
+  old owner and stays hidden from its new one. Nor does adding a gate refresh anything — the
+  content address does not include the annotation, so a pre-gate artifact stays addressable
+  indefinitely while every rebuild is refused. Note also that the check's reach is deliberately
+  wider than that: it also refuses a source that merely *joins* a gated source, which entry-point
+  semantics never enforced anyway. Drop `#@ persist` from the source, or move the gate to a source
+  that is not materialized. See [docs/materialization.md](docs/materialization.md).
+- **An `#(authorize)` in a position nothing enforces now fails the model load** — a top-level
+  `query:` statement, or a field (`dimension:`/`measure:`/`view:`) inside a source. This also
+  breaks existing packages, also deliberately: today such a gate silently protects nothing. Move
+  the annotation to the `source:` statement it is meant to protect.
+- **An `#(authorize)` on a `join_one:`/`join_many:` line fails the load, in the common case.**
+  Gating a join has no effect, so this is the same misplacement as the bullet above and is refused
+  the same way — move it to the joined source's own `source:` declaration. The one exception is a
+  join whose target is declared beyond what this model imported (a selective one-hop import of only
+  the joiner, or a source two-plus hops away): there the annotation is indistinguishable from
+  Malloy's own by-reference copy of the joined source's gate, so it is ignored silently rather than
+  risk refusing a correct package.
+- **`##(authorize)` (file-level) is deprecated and now fails the model load.** It was a mistake to
+  ship a model-wide override in the first place: the raw-warehouse path it existed to close is
+  already closed unconditionally by restricted mode, so the file-level fallback protected nothing a
+  source-level gate couldn't already cover, while being easy to misuse into unlocking every source
+  in a file at once. A `##(authorize)` annotation anywhere in the model — including one folded in
+  from an imported file — now fails the load rather than silently applying; the remedy is
+  `#(authorize)` on each `source:` it was meant to protect. See
+  [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates).
+- **A near-miss `authorize` spelling now fails the model load instead of silently doing nothing.**
+  `# (authorize)` / `## (authorize)` (a space after the `#`), `#( authorize )`, `#(authorize )`,
+  `#(authorize)X`, `#authorize`, and case variants of the name itself (`#(AUTHORIZE)`,
+  `#(Authorize)`) are not `authorize` annotations to the Malloy compiler — the spaced pair are plain
+  MOTLY/render tags, the next four are malformed prefixes, and the case variants route to a name that
+  is not ours — so a source carrying one has always served every row while its author read it as
+  locked, and the package loaded clean. A package with one of these will now fail to load, naming the
+  spelling and the fix (`#(authorize) "<expression>"` on the `source:` statement). Refusing is
+  deliberate rather than interpreting the intent: honouring the spelling would mean publisher
+  assigning meaning inside a namespace Malloy reserves for itself, and would silently start enforcing
+  a filter on packages that served every row yesterday. In the same change, the block form
+  `#|(authorize)` … `|#` and the other bracket pairs (`#[authorize]`, `#<authorize>`, `#{authorize}`)
+  are now recognized as gates, because the compiler routes them there — the block form in particular
+  was previously a live fail-open, unenforced at query time *and* eligible to be frozen into a
+  materialized artifact.
+
+  **What is deliberately NOT refused:** another application's `authorize`-prefixed route.
+  Classification now asks the compiler for a note's route rather than matching its text, so
+  `#(authorize-v2)`, `#(authorize.audit)`, `#(authorize/v2)`, `#(authorize_v2)` and `#(authorized)`
+  are valid distinct routes belonging to whoever declared them, and load untouched. An earlier draft
+  of this refusal matched them as near misses and failed the whole model load with advice aimed at
+  someone else.
+- **Known limitation — one notebook shape fails with a 400 instead of filtering.** A cell that both
+  declares a gated source and runs it in the same cell, where the gate reads a JOINED field and the
+  run query does not itself reference that field, is refused rather than answered. Reference the
+  joined field in the run query's own projection to avoid it. Never a leak — no rows are returned
+  either way, and the 400 is only the wrong status for a request that should have succeeded with
+  filtered rows. Every other same-cell shape (the first code cell, one preceded only by markdown, or
+  any later cell) filters correctly.
+
+### What changed
+
+- **A gate that references only givens is unaffected.** Most existing gates are this kind. They
+  keep the one-row DuckDB probe and the whole-source admit/deny decision unchanged.
+- **The accepted row-level shape is a restricted, positive allowlist**, and anything outside it —
+  including a given that isn't on the model's own given surface — is refused at package load,
+  naming the reason. A broken gate never serves. For exactly what is accepted and refused, and
+  why, see [docs/authorize.md § Row-level gates](docs/authorize.md#row-level-gates).
+
+### Author-facing behavior worth knowing
+
+- A gate on a joined field turns a `join_one` LEFT JOIN into an INNER JOIN — a parent row with no
+  matching child drops out rather than surviving with nulls.
+- A gate must resolve at every entry point the declaring source is reached through, and an entry
+  point where it cannot is closed rather than opened. `rename:`, `except:`, and `accept:` can remove
+  the field a gate was written against. Where the entry point declares its **own** gate, package
+  load fails with a 424 naming the source; where it only **inherits** one, load succeeds with a
+  warning and that entry point denies every request, leaving the rest of the model serving.
+- Entry-point-only semantics are unchanged: a gate on a source reached only through a join still
+  does not fire. A gate may now *reference* a joined field from the entry point's own expression —
+  that is not the same thing.
 
 ---
 

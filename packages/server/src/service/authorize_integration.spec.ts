@@ -17,7 +17,11 @@ import {
    readBypassAuthorize,
 } from "../authorize_bypass_header";
 import { resetAuthorizeGuardTelemetryForTesting } from "../authorize_metrics";
-import { AccessDeniedError, BadRequestError } from "../errors";
+import {
+   AccessDeniedError,
+   BadRequestError,
+   ModelCompilationError,
+} from "../errors";
 import { logger } from "../logger";
 import {
    startMetricsHarness,
@@ -100,39 +104,6 @@ afterAll(async () => {
 });
 
 describe("authorize annotation introspection", () => {
-   it("collects file-level then source-level expressions as one list", async () => {
-      await writeModel(
-         "disjunction.malloy",
-         `##! experimental.givens
-
-given:
-  ROLE :: string
-  REGION :: string
-
-##(authorize) "$ROLE = 'admin'"
-
-#(authorize) "$REGION = 'us-west'"
-source: regional is duckdb.table('customers')
-`,
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "disjunction.malloy",
-         getConnections(),
-      );
-
-      // File-level first, then the source's own.
-      expect(model.getAuthorize("regional")).toEqual([
-         "$ROLE = 'admin'",
-         "$REGION = 'us-west'",
-      ]);
-      expect(sourceNamed(model, "regional")?.authorize).toEqual([
-         "$ROLE = 'admin'",
-         "$REGION = 'us-west'",
-      ]);
-   });
-
    it("does NOT inherit a base source's authorize through extend", async () => {
       await writeModel(
          "extend.malloy",
@@ -167,7 +138,11 @@ source: customers_marketing is customers_raw extend {
       ]);
    });
 
-   it("applies a file-level gate to a source with no own authorize", async () => {
+   it("refuses to load a file-level ##(authorize) annotation, naming the remedy", async () => {
+      // File-level ##(authorize) is deprecated: it is now a load error rather
+      // than a model-wide gate, so an author who wrote one must be told what
+      // to do instead — never left with a package that silently loses the
+      // protection they thought they had.
       await writeModel(
          "file_only.malloy",
          `##! experimental.givens
@@ -187,16 +162,20 @@ source: plain is duckdb.table('customers')
          getConnections(),
       );
 
-      expect(model.getAuthorize("plain")).toEqual(["$ROLE = 'admin'"]);
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toMatch(/file level/i);
+      expect(err?.message).toMatch(/source:/);
+      expect(model.getSources()).toBeUndefined();
    });
 
-   it("applies a file-level gate inherited from an imported model", async () => {
+   it("refuses a ##(authorize) declared in an IMPORTED model too, not just the local file", async () => {
       // Regression for the hand-rolled model-annotation fold (malloy 0.0.405+
-      // removed ModelDef.annotation): a `##(authorize)` declared in an
-      // imported file must flow into the importing file's file-level gate even
-      // when the importer declares no `##` of its own. The fold must match
-      // malloy's getModelAnnotations (skip empty-ownNotes links) or `.notes`
-      // returns [] here and the gate silently drops — fail-open.
+      // removed ModelDef.annotation): the fold still has to surface an
+      // imported file's `##(authorize)` to the importing file's refusal check
+      // even when the importer declares no `##` of its own — otherwise a
+      // stray file-level gate escapes detection just by living one import hop
+      // away, which is the exact fail-open this refusal exists to close.
       await writeModel(
          "auth_base.malloy",
          `##! experimental.givens
@@ -223,7 +202,34 @@ source: inherited_gate is duckdb.table('customers') extend {
          getConnections(),
       );
 
-      expect(model.getAuthorize("inherited_gate")).toEqual(["$ROLE = 'admin'"]);
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toMatch(/file level/i);
+   });
+
+   it("loads successfully when a note merely MENTIONS the tag rather than declaring it", async () => {
+      // `containsAuthorizeAnnotationTag` anchors after trimming, matching
+      // `parseAuthorizeAnnotation` — so a note whose body happens to quote
+      // the tag (documenting it, not declaring it) is not mistaken for a
+      // misplaced gate. An unanchored scan would find "#(authorize)" as a
+      // substring of this `##(description)` note's body and refuse the
+      // whole load over an annotation the author never wrote.
+      await writeModel(
+         "mentions_only.malloy",
+         `##(description) "see the #(authorize) tag docs"
+
+source: plain is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "mentions_only.malloy",
+         getConnections(),
+      );
+
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(model.getSources()).toBeDefined();
    });
 
    it("fails model load on a malformed authorize annotation (no silent drop)", async () => {
@@ -367,32 +373,6 @@ source: gated is duckdb.table('customers')
       expect(model.getNotebookError()).toBeUndefined();
    });
 
-   it("fails model load when a file-level ##(authorize) references an unknown given", async () => {
-      await writeModel(
-         "file_unknown_given.malloy",
-         `##! experimental.givens
-
-given:
-  ROLE :: string
-
-##(authorize) "$NOPE = 'x'"
-
-source: gated is duckdb.table('customers')
-`,
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "file_unknown_given.malloy",
-         getConnections(),
-      );
-
-      const err = model.getNotebookError();
-      expect(err).toBeDefined();
-      expect(err?.message).toContain("gated");
-      expect(err?.message).toMatch(/NOPE|not declared/i);
-   });
-
    it("validates expressions over number and list givens, not just strings", async () => {
       await writeModel(
          "given_types.malloy",
@@ -502,61 +482,21 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   // A model that declares no `##` of its own and inherits its file-level gate
-   // entirely from an imported model. Exercises the model-annotation fold end
-   // to end: parse → fold → fileLevelAuthorize → runtime gate.
-   const IMPORT_BASE = `##! experimental.givens
-
-given:
-  ROLE :: string
-
-##(authorize) "$ROLE = 'admin'"
-`;
-   const IMPORT_GATED = `import "rt_auth_base.malloy"
-
-source: inherited_gate is duckdb.table('customers') extend {
-  measure: c is count()
-}
-`;
-
-   it("enforces a file-level gate inherited from an imported model (allow with role)", async () => {
-      await writeModel("rt_auth_base.malloy", IMPORT_BASE);
-      await writeModel("rt_import.malloy", IMPORT_GATED);
-      const { result } = await runGated(
-         "rt_import.malloy",
-         "run: inherited_gate -> { aggregate: c }",
-         { ROLE: "admin" },
-      );
-      expect(result.data).toBeDefined();
-   });
-
-   it("enforces a file-level gate inherited from an imported model (deny without role — not fail-open)", async () => {
-      await writeModel("rt_auth_base.malloy", IMPORT_BASE);
-      await writeModel("rt_import.malloy", IMPORT_GATED);
-      await expect(
-         runGated(
-            "rt_import.malloy",
-            "run: inherited_gate -> { aggregate: c }",
-            {
-               ROLE: "intern",
-            },
-         ),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
-   });
-
+   // Two OWN #(authorize) annotations on the same source — OR'd, same as a
+   // source-level gate plus what used to be a file-level one before that was
+   // deprecated.
    const DISJUNCTION = `##! experimental.givens
 
 given:
   ROLE :: string
   REGION :: string
 
-##(authorize) "$ROLE = 'admin'"
-
+#(authorize) "$ROLE = 'admin'"
 #(authorize) "$REGION = 'us-west'"
 source: regional is duckdb.table('customers') extend { measure: c is count() }
 `;
 
-   it("grants on the file-level gate even when the OTHER disjunct's given is missing", async () => {
+   it("grants on the first disjunct even when the OTHER disjunct's given is missing", async () => {
       // The key OR-semantics case: admin supplies only ROLE; REGION is absent.
       // A disjunct that can't evaluate (missing given) must not sink the whole
       // request — the satisfied $ROLE='admin' branch still grants.
@@ -569,7 +509,7 @@ source: regional is duckdb.table('customers') extend { measure: c is count() }
       expect(result.data).toBeDefined();
    });
 
-   it("grants on the source-level gate even when the file-level disjunct's given is missing", async () => {
+   it("grants on the second disjunct even when the FIRST disjunct's given is missing", async () => {
       await writeModel("rt_disj.malloy", DISJUNCTION);
       const { result } = await runGated(
          "rt_disj.malloy",
@@ -695,46 +635,18 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
       expect(result.data).toBeDefined();
    });
 
-   const FILE_LEVEL = `##! experimental.givens
-
-given:
-  ROLE :: string
-
-##(authorize) "$ROLE = 'admin'"
-
-source: declared is duckdb.table('customers') extend { measure: c is count() }
-`;
-
-   it("applies a file-level gate to an ad-hoc query (no gate bypass)", async () => {
-      await writeModel("rt_filelevel.malloy", FILE_LEVEL);
-      // The model-wide file-level gate must apply to any ad-hoc query against
-      // the model, denying a non-admin with a 403.
-      await expect(
-         runGated("rt_filelevel.malloy", "run: declared -> { aggregate: c }", {
-            ROLE: "user",
-         }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
-      // An admin (file-level gate satisfied) can run it.
-      const { result } = await runGated(
-         "rt_filelevel.malloy",
-         "run: declared -> { aggregate: c }",
-         { ROLE: "admin" },
-      );
-      expect(result.data).toBeDefined();
-   });
-
    it("rejects an ad-hoc inline-SQL query (restricted mode closes the raw-warehouse path)", async () => {
-      // Pre-#807 the file-level #(authorize) gate was the only thing between a
-      // caller and raw `duckdb.sql(...)`. #807's restricted mode now rejects
-      // inline raw SQL outright while resolving the compiled source — before the
-      // gate is reached — so the raw-warehouse path is closed at the compile
-      // layer regardless of givens (even for an admin who satisfies the gate).
-      await writeModel("rt_filelevel.malloy", FILE_LEVEL);
+      // Restricted mode rejects inline raw SQL outright while resolving the
+      // compiled source — before any `#(authorize)` gate is reached — so the
+      // raw-warehouse path is closed at the compile layer regardless of
+      // givens (even for a caller who satisfies a gate declared elsewhere in
+      // the model).
+      await writeModel("rt_single.malloy", SINGLE_GATE);
       await expect(
          runGated(
-            "rt_filelevel.malloy",
+            "rt_single.malloy",
             `run: duckdb.sql("SELECT 1 AS id") -> { aggregate: c is count() }`,
-            { ROLE: "admin" },
+            { ROLE: "analyst" },
          ),
       ).rejects.toThrow(/raw SQL is not permitted/);
    });
@@ -1214,43 +1126,6 @@ run: mine -> { aggregate: cc }
       expect(result.data).toBeDefined();
    });
 
-   const FILE_LEVEL_OVERRIDE_WITH_JOIN = `##! experimental.givens
-
-given:
-  ROLE :: string
-
-##(authorize) "$ROLE = 'admin'"
-
-#(authorize) "false"
-source: fl_locked is duckdb.table('customers') extend { measure: c is count() }
-
-source: fl_joiner is duckdb.table('customers') extend {
-  join_one: fl_locked on id = fl_locked.id
-  measure: c is count()
-}
-`;
-
-   it("allows a locked join for admin givens via the file-level ##(authorize) override", async () => {
-      await writeModel("rt_fl_override.malloy", FILE_LEVEL_OVERRIDE_WITH_JOIN);
-      const { result } = await runGated(
-         "rt_fl_override.malloy",
-         "run: fl_joiner -> { aggregate: c }",
-         { ROLE: "admin" },
-      );
-      expect(result.data).toBeDefined();
-   });
-
-   it("denies a locked join for a non-admin given despite the file-level override existing", async () => {
-      await writeModel("rt_fl_override.malloy", FILE_LEVEL_OVERRIDE_WITH_JOIN);
-      await expect(
-         runGated(
-            "rt_fl_override.malloy",
-            "run: fl_joiner -> { aggregate: c }",
-            { ROLE: "analyst" },
-         ),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
-   });
-
    it("does not gate a notebook cell whose run target merely JOINS a locked base", async () => {
       // The notebook path uses the same entry-point rule as every other path:
       // `secret_join`'s entry point is `joiner`, which is ungated.
@@ -1493,6 +1368,117 @@ source: combo_locked_first is compose(locked_src, open_src)
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
+
+   // `effectiveAncestorGateExprs` concatenates a query-source's base gates
+   // (`combo`'s own composite gate) and its composite-resolved base gates
+   // (`locked_src`'s row-level gate) into ONE probed expression list for
+   // `qs`, which — as a `query_source` — carries no `#(authorize)` note of
+   // its own. Neither gate is invalid standing alone (see the tests just
+   // above and `row-level authorize — grammar` in
+   // `row_level_authorize.integration.spec.ts`), but the CONCATENATION has
+   // field usage (from `region`) and so is walked under the row-level
+   // grammar, where `combo`'s `not (...)` is refused. `validateAuthorizeProbes`
+   // pass 1 used to throw on that rejection unconditionally, which emptied
+   // the WHOLE model's source list — not just `qs`'s — on load.
+   const COMPOSITE_QS_MODEL = `##! experimental.composite_sources
+##! experimental.givens
+
+given:
+  ROLE :: string
+  REGION :: string
+
+source: open_src is duckdb.table('customers') extend {
+  measure: c is count()
+  dimension: open_flag is 1
+}
+
+#(authorize) "region = $REGION"
+source: locked_src is duckdb.table('customers') extend {
+  measure: c is count()
+  dimension: locked_flag is 1
+}
+
+#(authorize) "not ($ROLE = 'blocked')"
+source: combo is compose(open_src, locked_src)
+
+source: qs is combo -> { group_by: locked_flag, region, name }
+`;
+
+   it("CRITICAL — a composite gate concatenated with a member's row-level gate onto a query_source loads, with every other source intact", async () => {
+      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "c_composite_qs.malloy",
+         getConnections(),
+      );
+      expect(model.getNotebookError()).toBeUndefined();
+      const names = model.getSources()?.map((s) => s.name);
+      expect(names).toContain("open_src");
+      expect(names).toContain("locked_src");
+      expect(names).toContain("combo");
+      expect(names).toContain("qs");
+   });
+
+   it("the composite's OWN gate — untouched by the relaxation above — still admits a caller it allows and denies one it excludes", async () => {
+      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
+      const { result } = await runGated(
+         "c_composite_qs.malloy",
+         "run: combo -> { aggregate: c is count() }",
+         { ROLE: "analyst", REGION: "us-west" },
+      );
+      expect(result.data).toBeDefined();
+      await expect(
+         runGated(
+            "c_composite_qs.malloy",
+            "run: combo -> { aggregate: c is count() }",
+            { ROLE: "blocked", REGION: "us-west" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   // Two gates authored on two DIFFERENT sources reach this query_source: the
+   // composite's own boolean and the member's row-level filter. They must AND.
+   // This previously denied every caller, which read as fail-closed but was an
+   // accident: the two were concatenated into ONE source's gate list, whose
+   // semantics are OR, and the merged list was rejected wholesale by the
+   // row-level grammar (`not (...)` is not an accepted node) into a
+   // deny-everything escape. Grouping them by declaring source lets each
+   // classify on its own — the boolean by probe, the filter by graft.
+   it("a composite's own gate and its member's row-level gate AND rather than OR — an admitted caller gets only their own rows, an excluded one is denied", async () => {
+      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
+      const query = "run: qs -> { group_by: region, name }";
+
+      const { result } = await runGated("c_composite_qs.malloy", query, {
+         ROLE: "analyst",
+         REGION: "us-west",
+      });
+      const west = JSON.stringify(result.data);
+      expect(west).toContain("us-west");
+      // The leak this pins: OR-ing the two gates satisfied the boolean and
+      // dropped the filter, returning every region.
+      expect(west).not.toContain("us-east");
+
+      // Same caller, other region — proves the filter tracks the given rather
+      // than admitting one fixed slice.
+      const { result: eastResult } = await runGated(
+         "c_composite_qs.malloy",
+         query,
+         { ROLE: "analyst", REGION: "us-east" },
+      );
+      const east = JSON.stringify(eastResult.data);
+      expect(east).toContain("us-east");
+      expect(east).not.toContain("us-west");
+
+      // The composite's own boolean still denies outright. Becoming a row
+      // filter must never soften a whole-source gate into one.
+      await expect(
+         runGated("c_composite_qs.malloy", query, {
+            ROLE: "blocked",
+            REGION: "us-west",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
 });
 
 // The sharpest consequence of entry-point-only evaluation, pinned deliberately
@@ -1541,15 +1527,6 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
 
 source: open_src is duckdb.table('customers') extend { measure: c is count() }
 `;
-   const CP_FILE_LEVEL = `##! experimental.givens
-
-given:
-  ROLE :: string
-
-##(authorize) "$ROLE = 'admin'"
-
-source: declared is duckdb.table('customers') extend { measure: c is count() }
-`;
    const CP_JOIN = `##! experimental.givens
 
 #(authorize) "false"
@@ -1585,19 +1562,14 @@ source: cp_joiner is duckdb.table('customers') extend {
       ).resolves.toBeUndefined();
    });
 
-   it("assertAuthorizedForText applies the model-wide file-level gate to inline/unnamed text", async () => {
-      const model = await cpModel("cp_file.malloy", CP_FILE_LEVEL);
-      // No named source the regex recognizes -> undefined -> file-level gate.
+   it("assertAuthorizedForText leaves inline/unnamed text unrestricted (nothing to name a gate on)", async () => {
+      const model = await cpModel("cp_gate.malloy", CP_GATE);
+      // No named source the regex recognizes -> undefined -> nothing gates
+      // it here; `#(authorize)` is declared only on a `source:`.
       await expect(
          model.assertAuthorizedForText(
             `run: duckdb.sql("SELECT 1 AS x") -> { aggregate: n is count() }`,
             {},
-         ),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
-      await expect(
-         model.assertAuthorizedForText(
-            `run: duckdb.sql("SELECT 1 AS x") -> { aggregate: n is count() }`,
-            { ROLE: "admin" },
          ),
       ).resolves.toBeUndefined();
    });
@@ -2303,21 +2275,235 @@ given:
    });
 });
 
-// The rejecter and the parser must accept the same spellings. A spelling only
-// the rejecter knows is an author-side fail-OPEN: verified against 0.0.427 that
-// `#( authorize ) "false"` left the source fully queryable, with no model-load
-// complaint, while the same bytes in caller text were refused.
-describe("inner whitespace in the annotation tag", () => {
-   it("gates the source when an author writes #( authorize )", async () => {
+// Which annotation SPELLINGS are gates is Malloy's decision, not publisher's: a
+// note is a gate iff Malloy routes it to `authorize`. Every row below was
+// confirmed against `@malloydata/malloy` 0.0.427's own prefix parser, and the
+// three outcomes are exhaustive — a gate, a refused near miss, or a note on
+// somebody else's route that this must leave completely alone.
+//
+// The two directions this pins are not symmetric in cost. A spelling Malloy
+// routes here that publisher misses (`#|(authorize)`, the block form) is a source
+// serving every row while its author reads it as locked — the fail-open a prefix
+// regex left open. A spelling publisher honours that Malloy routes elsewhere
+// (`# (authorize)`, route `''` — Malloy's reserved MOTLY/render namespace) means
+// publisher assigning meaning inside that namespace, and silently starting to
+// enforce a filter on packages that served every row yesterday.
+describe("authorize is classified by Malloy's annotation route", () => {
+   // Source-level (`#`): routed to `authorize` AND enforced on the source below.
+   const GATE_SPELLINGS = [
+      "#(authorize)",
+      // The block form. Malloy routes it to `authorize`, and the deprecated
+      // RegExp readers cannot see it at all — its own type docs say so.
+      "#|(authorize)",
+      // Malloy's bracket pairs are `()`, `<>`, `[]`, `{}`, all equivalent.
+      "#[authorize]",
+      "#<authorize>",
+      "#{authorize}",
+   ];
+
+   // File-level (`##`): routed to `authorize` too, which is exactly why the
+   // deprecation refusal reaches them — recognition is the precondition for
+   // refusing. A spelling that routed nowhere would load silently unenforced,
+   // which is the fail-open that refusal exists to close.
+   const FILE_LEVEL_GATE_SPELLINGS = ["##(authorize)", "##|(authorize)"];
+
+   // Refused — neither honoured nor ignored. Each is route `''` (a plain MOTLY
+   // tag), `malformed-route`, or a case variant of our own name, so nothing
+   // would ever enforce it. The case variants are the one place the rule refuses
+   // a note Malloy gives a perfectly good route of its own: honouring
+   // `#(AUTHORIZE)` would mean claiming a namespace that isn't ours, and leaving
+   // it silent is the fail-open — an author reads the source as locked while
+   // every row serves.
+   const NEAR_MISS_SPELLINGS = [
+      "# (authorize)",
+      "## (authorize)",
+      "#( authorize )",
+      "#(authorize )",
+      "#(authorize)X",
+      "#authorize",
+      "#(AUTHORIZE)",
+      "#(Authorize)",
+   ];
+
+   // A block annotation's closer mirrors its sigil: `#|` closes with `|#`,
+   // `##|` with `|##`.
+   const blockCloser = (tag: string) =>
+      tag.startsWith("##|") ? "\n|##" : tag.startsWith("#|") ? "\n|#" : "";
+
+   for (const tag of GATE_SPELLINGS) {
+      it(`enforces a gate written ${tag}`, async () => {
+         const closer = blockCloser(tag);
+         await writeModel(
+            "route.malloy",
+            `${tag} "false"${closer}
+source: route_locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "route.malloy",
+               "run: route_locked -> { aggregate: c }",
+               {},
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      it(`rejects ${tag} in caller-submitted text`, async () => {
+         // The rejecter reads raw pre-compile text where no route exists yet, so
+         // it stays a regex — and it must be a SUPERSET of the spellings the
+         // parser honours, or a caller mints a gate in a spelling only the
+         // compiler recognizes.
+         await writeModel(
+            "route_open.malloy",
+            `source: route_open is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "route_open.malloy",
+               `${tag} "true"\nrun: route_open -> { aggregate: c }`,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   }
+
+   for (const tag of FILE_LEVEL_GATE_SPELLINGS) {
+      it(`recognizes ${tag} at the file level and refuses it as deprecated`, async () => {
+         const closer = blockCloser(tag);
+         await writeModel(
+            "route_file.malloy",
+            `${tag} "false"${closer}
+
+source: route_file_plain is duckdb.table('customers')
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "route_file.malloy",
+            getConnections(),
+         );
+         const err = model.getNotebookError();
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/file level/i);
+      });
+
+      it(`rejects ${tag} in caller-submitted text`, async () => {
+         await writeModel(
+            "route_file_open.malloy",
+            `source: route_file_open is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "route_file_open.malloy",
+               `${tag} "true"\nrun: route_file_open -> { aggregate: c }`,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   }
+
+   for (const tag of NEAR_MISS_SPELLINGS) {
+      it(`refuses the load for the near miss ${tag}`, async () => {
+         await writeModel(
+            "near.malloy",
+            `${tag} "false"
+source: near_locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "near.malloy",
+            getConnections(),
+         );
+         const err = model.getNotebookError();
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         // Names the spelling, and what to write instead.
+         expect(err?.message).toContain(tag);
+         expect(err?.message).toContain('#(authorize) "<expression>"');
+         // Refused, never silently enforced as if it had been spelled right.
+         expect(model.getSources()).toBeUndefined();
+      });
+
+      it(`rejects the near miss ${tag} in caller-submitted text too`, async () => {
+         await writeModel(
+            "near_open.malloy",
+            `source: near_open is duckdb.table('customers') extend { measure: c is count() }
+`,
+         );
+         await expect(
+            runGated(
+               "near_open.malloy",
+               `${tag} "true"\nrun: near_open -> { aggregate: c }`,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   }
+
+   it("refuses a near miss reached only through a derivation hop", async () => {
+      // The spelling is on a source the entry model never names: `near_layer`
+      // imports `near_qs` alone, so `near_base_gated` reaches the sweep only as
+      // the inline struct on `near_qs`'s `query.structRef`. The near-miss sweep
+      // reads `contents` u `sourceRegistry`, which is not where that struct
+      // lives — without following the derivation hops, this is the one place a
+      // misspelled gate loads clean.
       await writeModel(
-         "ws.malloy",
-         `#( authorize ) "false"
-source: ws_locked is duckdb.table('customers') extend { measure: c is count() }
+         "near_base.malloy",
+         `# (authorize) "false"
+source: near_base_gated is duckdb.table('customers') extend { measure: c is count() }
 `,
       );
-      await expect(
-         runGated("ws.malloy", "run: ws_locked -> { aggregate: c }", {}),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      await writeModel(
+         "near_mid.malloy",
+         `import { near_base_gated } from "near_base.malloy"
+
+source: near_qs is near_base_gated -> { select: * }
+`,
+      );
+      await writeModel(
+         "near_layer.malloy",
+         `import { near_qs } from "near_mid.malloy"
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "near_layer.malloy",
+         getConnections(),
+      );
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toContain("# (authorize)");
+      expect(err?.message).toContain('#(authorize) "<expression>"');
+   });
+
+   // The other side of the near-miss detector: it is anchored at each note's own
+   // prefix and requires `authorize` to end at a non-word character, so ordinary
+   // annotations on other routes load untouched. `#(authorized)` is the sharp one
+   // — a legitimately different app route that a substring test would refuse.
+   it("leaves annotations on other routes alone", async () => {
+      await writeModel(
+         "other_routes.malloy",
+         `##(description) "see the #(authorize) tag"
+
+#(authorized) "not a gate"
+# bar_chart
+#(doc) "a doc note"
+source: other_routes is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "other_routes.malloy",
+         getConnections(),
+      );
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(sourceNamed(model, "other_routes")?.authorize).toBeUndefined();
    });
 });
 
@@ -2732,53 +2918,6 @@ source: rt_open is duckdb.table('customers') extend { measure: oc is count() }
    });
 });
 
-// A file-level ##(authorize) is the entry model's OWN annotation, so it must be
-// probed against the entry model's ambient given namespace — including a declared
-// given's DEFAULT. It shares one OR list with a gate inherited from a base (either
-// grants), and tagging that whole list `selfContained` to isolate the inherited
-// half also discarded the defaults the file-level half was written against.
-describe("a file-level gate keeps its own given defaults", () => {
-   const FILE_LEVEL_OVERRIDE = `##! experimental.givens
-
-given:
-  ROLE :: string is 'admin'
-
-##(authorize) "$ROLE = 'admin'"
-
-#(authorize) "false"
-source: fl_locked is duckdb.table('customers') extend { measure: cc is count() }
-
-source: fl_plain is fl_locked extend {}
-
-# bar_chart
-source: fl_tagged is fl_locked extend {}
-`;
-
-   it("grants through the model-wide override whether or not the extension is decorated", async () => {
-      await writeModel("fl.malloy", FILE_LEVEL_OVERRIDE);
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "fl.malloy",
-         getConnections(),
-      );
-      // Introspection reports both identically...
-      expect(model.getAuthorize("fl_plain")).toEqual(
-         model.getAuthorize("fl_tagged"),
-      );
-      // ...and so must enforcement. The render tag on `fl_tagged` moves the base's
-      // annotations under `inherits`, which used to flip this one to 403.
-      for (const target of ["fl_plain", "fl_tagged"]) {
-         const { result } = await runGated(
-            "fl.malloy",
-            `run: ${target} -> { aggregate: cc }`,
-            {},
-         );
-         expect(result.data).toBeDefined();
-      }
-   });
-});
-
 // A gate written above a standalone `source:` lands in `annotations.blockNotes`.
 // The SAME gate written inside a multi-definition `source:` block
 // (`source:\n  #(authorize)\n  name is ...`) lands in `annotations.notes`
@@ -2865,11 +3004,16 @@ source:
       expect(result.data).toBeDefined();
    });
 
-   it("does not over-gate a field/view-level annotation that merely mentions authorize-shaped text", async () => {
+   it("fails the load for a field/view-level annotation that merely mentions authorize-shaped text", async () => {
       // `notes`/`blockNotes` are populated only by SOURCE-level (block-item)
       // annotations. A dimension- or view-level annotation never lands on the
-      // source struct's own annotations at all, so it cannot be mistaken for a
-      // source gate by the wider read.
+      // source struct's own annotations at all, so `extractSourcesFromModelDef`
+      // cannot mistake it for a source gate — it also never enforces it as
+      // one. That used to mean this loaded and served as if the annotation did
+      // not exist (a fail-OPEN annotation, see `MisplacedAuthorizeAnnotation`'s
+      // doc); `assertNoMisplacedAuthorizeAnnotations` now refuses the load
+      // instead of silently protecting nothing, exactly as a field-level
+      // annotation already fails in `row_level_authorize.integration.spec.ts`.
       await writeModel(
          "block_field_level.malloy",
          `source: bf_field is duckdb.table('customers') extend {
@@ -2879,19 +3023,21 @@ source:
 }
 `,
       );
+      // `Model.create` itself does not reject here — a compile-time failure is
+      // caught inside it and stashed on `compilationError`, surfaced only when
+      // something asks the model for its compiled shape (`getModel()`).
       const model = await Model.create(
          "test-pkg",
          TEST_PKG_DIR,
          "block_field_level.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_field")).toEqual([]);
-      const { result } = await runGated(
-         "block_field_level.malloy",
-         "run: bf_field -> { aggregate: c }",
-         {},
+      await expect(model.getModel()).rejects.toBeInstanceOf(
+         ModelCompilationError,
       );
-      expect(result.data).toBeDefined();
+      await expect(model.getModel()).rejects.toThrow(
+         /field "region_copy" of source "bf_field"/,
+      );
    });
 
    it("carries a block-form base's gate to an extension through annotations.inherits", async () => {
@@ -3017,12 +3163,12 @@ source:
    });
 
    it("fails model load for a block-form gate naming an undeclared given", async () => {
-      // The `source_extraction.ts` half of the read, isolated. `ownAuthorizeSources`
-      // is the ONLY consumer of the extractor's own-gate answer that survives the
-      // Model constructor (which overwrites `sources[].authorize` from the
-      // enforcement walk in model.ts), so this is what pins the reporting half:
-      // with a `blockNotes`-only extractor the bad gate is invisible at load and
-      // the model compiles clean.
+      // The `source_extraction.ts` half of the read, isolated. Load-time
+      // validation works from the extractor's `authorizeMap`, and the Model
+      // constructor later overwrites `sources[].authorize` from the
+      // enforcement walk in model.ts — so this test is what pins the reporting
+      // half: with a `blockNotes`-only extractor the bad gate is invisible at
+      // load and the model compiles clean.
       await writeModel(
          "block_validate.malloy",
          `##! experimental.givens
@@ -3054,8 +3200,8 @@ source:
 // scan a source the author tagged `#(index)` but gated against the machine
 // identity that does the scanning.
 //
-// What is disabled is ONLY expressions collected from `#(authorize)` /
-// `##(authorize)`. The author's own `where:` is part of the source's definition
+// What is disabled is ONLY expressions collected from `#(authorize)`
+// annotations. The author's own `where:` is part of the source's definition
 // and is never bypassed — that is the whole authoring contract, and the
 // `where:`-still-applies test below is the one that pins it.
 describe("authorize bypass (private data-management path)", () => {

@@ -3530,14 +3530,21 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expressions gating this source via `#(authorize)`
-            / `##(authorize)` annotations — file-level expressions first, then the
-            source's own, or, when it declares none, the nearest source it extends
-            that does. Each is a Malloy boolean expression over declared givens,
-            evaluated as a disjunction (OR) and enforced at query time. A request
-            that reads this source is denied with HTTP 403 unless at least one
-            expression evaluates true for the supplied givens; an empty or absent
-            list means unrestricted.
+            Effective authorize expressions gating this source, declared with a
+            source-level `#(authorize)` annotation — the source's own, or, when it
+            declares none, the nearest source it extends that does. (File-level
+            `##(authorize)` is deprecated and fails the model load, so no
+            expression here ever comes from one.) Each is a Malloy boolean
+            expression over declared givens, evaluated as a disjunction (OR) and
+            enforced at query time. An empty or absent list means unrestricted.
+
+            How a denial surfaces depends on what the expression reads. An
+            expression referencing only givens is a whole-source gate: the request
+            is denied with HTTP 403 unless at least one expression evaluates true.
+            An expression that also references a row field of the source is a
+            row-level gate, applied as a filter instead — such a request succeeds
+            with HTTP 200 and returns only the rows the expression admits, which
+            may be none. Do not treat a 200 with zero rows as "no gate applied".
 
             IMPORTANT for anything re-implementing the decision: this flat list
             cannot always express the predicate. Expressions from one source are
