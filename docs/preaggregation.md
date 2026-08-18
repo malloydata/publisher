@@ -144,6 +144,41 @@ A rollup is declared by no file, so it reports the `modelPath` of the model whos
 
 Nothing about a rollup appears in model discovery. Your model is never edited, so it exports the sources it always did.
 
+## Where the rollup's table is created
+
+You do not name a rollup's table — Publisher derives it from the base, the grain and a
+digest, so the resolver and the content address can rely on it. You *do* choose the
+namespace it is created in, and on some warehouses you must.
+
+```malloy
+source: orders is bigquery.table('project.raw.orders') extend {
+  measure:
+    #@ preaggregate grain="category" namespace="analytics"
+    total is amount.sum()
+}
+```
+
+That builds `analytics.orders__preagg__category__<digest>`.
+
+**BigQuery requires it.** An unqualified `CREATE` is rejected outright there
+(`must be qualified with a dataset`), so a rollup without a namespace cannot be built
+on BigQuery at all. Name a dataset the connection can write — typically a scratch
+dataset, the same one you would give an authored `#@ persist name=`. Other engines
+accept an unqualified name and create the table in the connection's default schema, so
+`namespace` is optional there.
+
+**A persisted base lends its own.** If the base carries `#@ persist
+name="analytics.orders_tbl"`, its rollups are created in `analytics` without being told
+— a rollup of a table belongs beside it. An explicit `namespace` overrides that, and is
+the only option when the base is not persisted at all, which is common: the annotation
+goes on a measure, and the source it belongs to need not be materialized.
+
+**It is a namespace, not a name.** Write it as plain identifiers — letters, digits,
+underscore, dollar or hyphen — dot-separated where the warehouse needs more than one
+part (`analytics`, `my-project.analytics` on BigQuery). A value needing quotes is
+refused rather than mangled, because the generated table name is appended to it and the
+two halves would then be quoted inconsistently.
+
 ## Build and refresh
 
 Rollups build with the package's other materializations — on demand, or on the package's schedule. See [materialization.md](materialization.md) for triggering builds, the `malloy-pub` CLI, and scheduling.
