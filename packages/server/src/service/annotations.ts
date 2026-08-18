@@ -11,6 +11,17 @@ export type AnnotationsDef = NonNullable<
 >;
 
 /**
+ * One raw annotation note, as carried on `AnnotationsDef.blockNotes`/`.notes`.
+ * Exported so a caller can hold onto the OBJECT itself (see
+ * {@link ownLevelNotes}) rather than just its text — object identity is what
+ * lets `source_extraction.ts` and `validateAuthorizeProbes`
+ * (`./authorize`) tell "this position holds the SAME note Malloy copied
+ * here by reference from a base" from "this position independently
+ * declared identical text", which no amount of string comparison can do.
+ */
+export type AnnotationNote = NonNullable<AnnotationsDef["blockNotes"]>[number];
+
+/**
  * True if a route belongs to Malloy's own reserved namespace rather than an
  * application. Malloy claims the empty route (`''` — MOTLY tags / render
  * config) and the whole punctuation-sigil namespace (`!` `@` `"` `:`, and
@@ -42,11 +53,15 @@ export function isReservedRoute(route: string): boolean {
  * A model that contributes no `##` of its own adds NO link to the chain (we
  * skip empty `ownNotes`), so `.notes` returns the nearest ancestor that
  * actually has notes — not an empty local node. This matters because `.notes`
- * feeds file-level `##(authorize)` enforcement: an imported model's
- * `##(authorize)` must still flow into an importing file that declares no `##`
- * of its own. We also copy only `notes`/`blockNotes` rather than spreading
- * `ownNotes`, whose own `inherits` would otherwise leak in. Replace with a
- * direct `import { getModelAnnotations }` once malloy exports it.
+ * feeds `source_extraction.ts`'s file-level `##(authorize)` DETECTION: a
+ * `##(authorize)` is deprecated and always refused as a misplaced annotation
+ * (see `MisplacedAuthorizeAnnotation`'s `"file"` kind), but that refusal has
+ * to fire for an imported model's `##(authorize)` too, not just one written
+ * in the local file — silently loading a package because the stray tag
+ * happened to live in an import is the fail-open this walk exists to close.
+ * We also copy only `notes`/`blockNotes` rather than spreading `ownNotes`,
+ * whose own `inherits` would otherwise leak in. Replace with a direct
+ * `import { getModelAnnotations }` once malloy exports it.
  */
 /**
  * A model file's OWN `##` annotation bundle, ignoring everything it imports.
@@ -114,11 +129,12 @@ function foldModelAnnotations(
  * imports.
  *
  * This is the counterpart to {@link modelAnnotations}, and the difference is
- * not a detail. That function folds the import lineage on purpose, because
- * file-level `##(authorize)` has to flow into an importing file: a gate an
- * import could shed would be no gate at all. Every *other* model-level tag
- * describes one document, so folding it lets a shared include configure every
- * file that imports it. The one such tag a consumer reads today is
+ * not a detail. That function folds the import lineage on purpose, because a
+ * `##(authorize)` refusal has to reach an importing file too: a stray tag an
+ * import could shed by fiat of this function not looking would defeat the
+ * refusal it feeds. Every *other* model-level tag describes one document, so
+ * folding it lets a shared include configure every file that imports it. The
+ * one such tag a consumer reads today is
  * `##(filters)`, which the SDK's `parseNotebookFilterAnnotation` matches on the
  * notebook response: an include carrying it configured the filter panel of
  * every notebook that imported the include. Read through here unless the tag is
@@ -206,7 +222,22 @@ export function annotationTexts(
 export function ownLevelNoteTexts(
    annote: AnnotationsDef | undefined,
 ): string[] {
-   return [...(annote?.blockNotes ?? []), ...(annote?.notes ?? [])].map(
-      (note) => note.text,
-   );
+   return ownLevelNotes(annote).map((note) => note.text);
+}
+
+/**
+ * {@link ownLevelNoteTexts}, but the note OBJECTS themselves rather than
+ * their text. Malloy copies a base's annotation note objects onto a deriving
+ * struct's own annotations BY REFERENCE whenever the deriving statement adds
+ * no annotation of its own (`extend {}`, an unannotated `join_one:`/
+ * `join_many:`, …) — see `gate_registry_walk.ts`'s module doc. That makes
+ * object identity the only reliable way to tell "this note is a COPY Malloy
+ * placed here" from "this note is textually identical but independently
+ * authored" — text comparison cannot, since the copy is byte-for-byte the
+ * same string by construction.
+ */
+export function ownLevelNotes(
+   annote: AnnotationsDef | undefined,
+): AnnotationNote[] {
+   return [...(annote?.blockNotes ?? []), ...(annote?.notes ?? [])];
 }

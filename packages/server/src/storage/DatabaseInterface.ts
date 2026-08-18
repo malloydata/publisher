@@ -254,15 +254,39 @@ export interface IncrementalLedgerEntry {
 export type IncrementalStrategy = "merge" | "range_replace";
 
 /**
- * Whether a manifest entry records a source that failed to build.
+ * One source that failed to build, reported beside `entries` rather than inside
+ * one.
  *
- * A failed entry still carries the identifying fields it was instructed with,
- * including `physicalTableName`, so presence of a table name is not evidence a
- * table exists. Anything that resolves an entry to a real table -- serve
- * bindings, reuse decisions, seeds for a downstream build -- has to exclude
- * these, or it will name a table that was never created.
+ * A failure carries the identifying fields it was instructed with, including the
+ * `physicalTableName` it was HEADED for, so a table name here is not evidence a
+ * table exists. Keeping these out of `entries` is what lets a consumer that
+ * resolves an entry to a real table -- serve bindings, reuse decisions, seeds for
+ * a downstream build -- do so without a per-entry check.
  */
-export function isFailedEntry(entry: Pick<ManifestEntry, "error">): boolean {
+export type SourceFailure = components["schemas"]["SourceFailure"];
+
+/**
+ * Whether a manifest entry records a FAILED source, in the deprecated shape.
+ *
+ * Two things make this necessary rather than redundant with `failures`, and both
+ * end when `ManifestEntry.error` is removed:
+ *
+ *  - 0.0.245 and 0.0.246 wrote a failed source INTO `entries`, with the required
+ *    `physicalTableName` naming a table the build never created. Those manifests
+ *    are at rest in `publisher.db` and in bound manifest files, and they outlive
+ *    the upgrade -- so a read boundary that trusted `entries` to be built-only
+ *    would bind that name. Auto-run physical names are stable
+ *    (`selfAssignTableName`), which makes it the PREVIOUS generation's real table:
+ *    served as though fresh, not a miss.
+ *  - This build mirrors the failure into `entries` for the same window, so the
+ *    shape is produced as well as read.
+ *
+ * Applied at the READ boundaries a persisted manifest enters through, not at each
+ * consumer: `splitManifestEntries` (both the host-manifest fetch and the
+ * local-store rebind) and `getMostRecentManifestEntries` (reuse and reference
+ * resolution). Delete this with the field.
+ */
+export function isLegacyFailedEntry(entry: { error?: string | null }): boolean {
    return Boolean(entry?.error);
 }
 
