@@ -619,3 +619,64 @@ describe("GivenInput: a slider value the control cannot place", () => {
       expect(screen.getByRole("slider")).toBeDefined();
    });
 });
+
+describe("GivenInput: a date renders its UTC day, whatever zone the runner is in", () => {
+   // The component hydrates with `dayjs.utc(value)`, so the box shows the day
+   // the server will be sent, not the day the viewer happens to be living in.
+   // These two literals exist because one alone can only catch half the bug: a
+   // late-UTC instant crosses the date line only for zones AHEAD of UTC, and an
+   // early-UTC one only for zones BEHIND it. Both UTC days below are 1 March.
+   //
+   // This is the trap that shipped once already: a fixture picked without
+   // checking which side of midnight it lands on in the runner's zone sits on
+   // the same UTC day and cannot fail, however exotic the zone.
+   const utcDay = "03/01/2024";
+
+   it("late in the UTC day, which is the next day east of UTC", () => {
+      render(
+         <GivenInput
+            given={{ name: "since", type: "date" }}
+            value={new Date("2024-03-01T23:30:00Z")}
+            onChange={() => {}}
+         />,
+      );
+      // Reading local time here shows 03/02/2024 anywhere ahead of UTC.
+      expect((screen.getByLabelText("since") as HTMLInputElement).value).toBe(
+         utcDay,
+      );
+   });
+
+   it("early in the UTC day, which is the day before west of UTC", () => {
+      render(
+         <GivenInput
+            given={{ name: "since", type: "date" }}
+            value={new Date("2024-03-01T00:30:00Z")}
+            onChange={() => {}}
+         />,
+      );
+      // Reading local time here shows 02/29/2024 anywhere behind UTC, and 2024
+      // being a leap year makes that a doubly wrong answer.
+      expect((screen.getByLabelText("since") as HTMLInputElement).value).toBe(
+         utcDay,
+      );
+   });
+
+   // One test case per type rather than a loop: a loop stops at the first failing
+   // type and its message names neither, so dropping both from the branch costs
+   // two round trips to diagnose instead of one.
+   it.each(["timestamp", "timestamptz"])(
+      "applies to %s, which shares the date branch",
+      (type) => {
+         render(
+            <GivenInput
+               given={{ name: "at", type }}
+               value={new Date("2024-03-01T23:30:00Z")}
+               onChange={() => {}}
+            />,
+         );
+         expect((screen.getByLabelText("at") as HTMLInputElement).value).toBe(
+            utcDay,
+         );
+      },
+   );
+});

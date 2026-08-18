@@ -46,6 +46,44 @@ source: summary_fresh is order_summary extend {
 
 Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
 
+### `#(authorize)`-gated sources cannot be materialized
+
+A source protected by an `#(authorize)` gate — its own, or one carried from a joined or derived
+source — cannot be persisted, in either mode:
+
+- **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
+  reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
+  a materialized-once table is served frozen to every caller, and the served shape carries no gate
+  to re-evaluate.
+- **A colocated `#@ persist`** (no `storage=`) refuses too, though not for the same reason. Here the
+  gate is not lost: the substitution swaps only the source's relation SQL, the gate applies as the
+  reading query's own `WHERE`, and rows come back filtered. What is frozen is the data the gate
+  DECIDES AGAINST, so a row that changes hands keeps being served to its former owner — and because
+  the content address does not include the annotation, an artifact built before the gate was added
+  stays addressable while every rebuild is refused. Drop `#@ persist` from the source, or move the
+  gate to a source that is not materialized.
+
+The check is deliberately broader than that hazard: it also refuses a source that merely *joins* a
+gated source, whose gate entry-point semantics never enforced in the first place.
+
+**The colocated refusal also carries a second job, and narrowing it on the frozen-data reasoning
+alone would open a hole.** `#@ preaggregate` synthesizes each rollup as a colocated `#@ persist` over
+an import of the annotated base, and none of the pre-aggregation modules has any `#(authorize)`
+awareness of its own — so this refusal is the only thing standing between a gated source and the
+pre-aggregation tier. It holds because the eligibility walk follows the import → rename →
+`query_source` chain and finds the base's gate. A gated source therefore gets no rollups built, and
+the serve path never has a frozen rollup to route to. (The query path additionally declines to route
+a row-level-gated entry point through the pre-aggregation companion, so that containment does not
+rest on this refusal alone — but this refusal is what makes it true at build time.) A rollup is a
+sharper case than an ordinary persist, too: it groups *across* the gated column, so the column the
+gate filters on is not even present in the result to filter on afterwards. A refused rollup names
+`#@ preaggregate` and the gated source rather than the synthesized rollup's own name, which the
+author never wrote.
+
+Both refusals name the source and the remedy; a package carrying one fails to build (or, for
+`storage=`, fails that materialization run) rather than silently serving the gated source to
+everyone.
+
 ## The persistence policy (the publish gate)
 
 Package-level persistence policy lives at the root of `publisher.json`:

@@ -644,8 +644,10 @@ export class Environment {
          // from compile errors) and, with includeSql, leak its SQL. Gate the
          // named source the submitted text targets BEFORE compiling — mirrors
          // the query path's early surface-syntax gate. Unnamed/inline source
-         // text resolves to undefined, so only the model-wide file-level gate
-         // applies. The gate runs against the package's cached Model (its
+         // text resolves to undefined, so nothing gates it here — a `source:`
+         // is the only place `#(authorize)` is declared, and the compiled
+         // backstop below is what settles a target this cannot name. The
+         // gate runs against the package's cached Model (its
          // `given:` block + authorize annotations), independent of the virtual
          // compile below. A new model path has no cached Model, so its early
          // surface-syntax gate cannot run; the compiled backstop below instead

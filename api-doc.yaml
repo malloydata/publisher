@@ -3391,12 +3391,16 @@ components:
         that survives a URL), and a bare list of names is spelled `givenNames`.
 
         It also carries how the given should be presented as an input control
-        (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`), derived from
-        the declaration's own tags. That contract belongs to the given rather
-        than to any one surface, which is what lets a notebook and an SDK host
-        render the same control without restating it. Those five fields describe
-        the contract a renderer implements; no endpoint populates them yet, so
-        they are absent from every response today.
+        (`label`, `description`, `control`, `rangeMin`, `rangeMax`, `suggest`),
+        derived from the declaration's own tags. That contract belongs to the
+        given rather than to any one surface, which is what lets a notebook and
+        an SDK host render the same control without restating it. Each of those
+        six is present only when the declaration carries the tag it reads, so a
+        given tagged with none of them carries none of them. A tag whose value is
+        not one this contract accepts is dropped the same way rather than
+        reported, so an unrecognized `control`, or a `rangeMin`/`rangeMax` that is
+        not a number, is absent here and indistinguishable from never having been
+        written.
       properties:
         name:
           type: string
@@ -3420,6 +3424,15 @@ components:
         label:
           type: string
           description: Display label from the declaration's `# label=` tag
+        description:
+          type: string
+          description:
+            Helper text from the declaration's `# description=` tag. Distinct
+            from the older `#(description="…")` annotation, which is not derived
+            into this field and instead stays on `annotations` for the client
+            that already parses it. The tag form is also the one that compiles
+            without a `malformed-route` warning, because Malloy reads an
+            annotation's route up to the first whitespace.
         control:
           type: string
           enum:
@@ -3530,14 +3543,21 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expressions gating this source via `#(authorize)`
-            / `##(authorize)` annotations — file-level expressions first, then the
-            source's own, or, when it declares none, the nearest source it extends
-            that does. Each is a Malloy boolean expression over declared givens,
-            evaluated as a disjunction (OR) and enforced at query time. A request
-            that reads this source is denied with HTTP 403 unless at least one
-            expression evaluates true for the supplied givens; an empty or absent
-            list means unrestricted.
+            Effective authorize expressions gating this source, declared with a
+            source-level `#(authorize)` annotation — the source's own, or, when it
+            declares none, the nearest source it extends that does. (File-level
+            `##(authorize)` is deprecated and fails the model load, so no
+            expression here ever comes from one.) Each is a Malloy boolean
+            expression over declared givens, evaluated as a disjunction (OR) and
+            enforced at query time. An empty or absent list means unrestricted.
+
+            How a denial surfaces depends on what the expression reads. An
+            expression referencing only givens is a whole-source gate: the request
+            is denied with HTTP 403 unless at least one expression evaluates true.
+            An expression that also references a row field of the source is a
+            row-level gate, applied as a filter instead — such a request succeeds
+            with HTTP 200 and returns only the rows the expression admits, which
+            may be none. Do not treat a 200 with zero rows as "no gate applied".
 
             IMPORTANT for anything re-implementing the decision: this flat list
             cannot always express the predicate. Expressions from one source are
@@ -5469,27 +5489,88 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of sourceEntityId to manifest entry.
+          description: >-
+            Map of sourceEntityId to manifest entry. Every source that BUILT is
+            here. A source that FAILED is reported in `failures`, and during the
+            `ManifestEntry.error` deprecation window is also mirrored here
+            carrying that field -- so a consumer resolving an entry to a real
+            table must skip entries whose `error` is set until the field is
+            removed, after which `entries` is built-only.
+        failures:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SourceFailure"
+          description: >-
+            Map of sourceEntityId to the reason that source failed to
+            materialize, for the sources that did NOT build. A build that loses
+            some of its sources still returns the ones that succeeded in
+            `entries`, so this is how a consumer tells a partial failure from a
+            clean run and learns which source failed. Empty or absent on a run
+            where every source built.
         strict:
           type: boolean
           description: Whether unresolved references should error.
 
+    SourceFailure:
+      type: object
+      description: >-
+        One source that failed to materialize, and why. Kept beside `entries`
+        rather than inside a manifest entry because a failed source names no
+        table that exists: an entry carries a required `physicalTableName`, so
+        putting a failure there would hand every consumer a table name it must
+        know not to resolve.
+      required: [sourceEntityId, reason]
+      properties:
+        sourceEntityId:
+          type: string
+          description: The source's content address, as `entries` would have keyed it.
+        sourceName:
+          type: string
+          description: The persist source's declared name, for reporting.
+        reason:
+          type: string
+          description: >-
+            Why this source failed, in the words the warehouse or compiler
+            reported, redacted against that source's own connection.
+        materializedTableId:
+          type: string
+          description: >-
+            Echoes the caller-assigned id from the BuildInstruction, so an
+            orchestrator can match this failure to the row it dispatched without
+            deriving the content address itself.
+        physicalTableName:
+          type: string
+          description: >-
+            The table this source was HEADED for, echoing the instruction. NOT a
+            table that exists -- the build that would have created it is what
+            failed, and a source that failed a REBUILD leaves the prior
+            generation's table in place under this same name, so resolving it
+            serves stale data rather than missing. Present for correlating the
+            failure with the request; a consumer must never resolve or read it.
+
     ManifestEntry:
       type: object
-      description: A single entry in the build manifest.
+      description: >-
+        A single entry in the build manifest. An entry describing a source that
+        BUILT names a table that exists; `error` marks the one exception, kept for
+        one deprecation cycle (see that field).
       required: [sourceEntityId, physicalTableName]
       properties:
         sourceEntityId:
           type: string
         error:
           type: [string, "null"]
+          deprecated: true
           description: >-
-            Why this source failed to materialize, in the words the warehouse or
-            compiler reported. Present only on a source that failed; absent on one
-            that built, whose table the remaining fields describe. A build that
-            loses some of its sources still returns the ones that succeeded, so an
-            entry carrying this is how a consumer tells a failed source from a
-            healthy one.
+            DEPRECATED -- read `BuildManifest.failures` instead, which is where a
+            failed source is now reported. Mirrors `SourceFailure.reason` for the
+            same source, so a consumer written against 0.0.245-0.0.246 keeps
+            working unchanged; it will be removed once those consumers have moved.
+            An entry carrying this describes a source that FAILED, so its
+            `physicalTableName` names a table the build did not create -- which is
+            the defect the `failures` collection exists to remove, because the
+            field is required and a consumer resolving an entry to a real table has
+            no way to know it must check here first.
         sourceName:
           type: string
           description: >-
