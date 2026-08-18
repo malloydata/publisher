@@ -1,0 +1,12 @@
+##! experimental.givens
+import { orders } from '../orders.malloy'
+import { BRAND } from '../givens.malloy'
+
+// Out of the documented name pattern AND absent from `explores`. It must be
+// reported as withheld, and must NOT also be reported as served.
+# artifact { title="Withheld And Unconventional" }
+query: withheld_unconventional is orders -> {
+   where: brand_name ~ $BRAND
+   group_by: brand_name
+   aggregate: total_amount
+}

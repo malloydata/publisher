@@ -64,6 +64,10 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
+  - name: dashboards
+    description:
+      Discovery and manifests for `# artifact` dashboards - layout, tiles, and
+      the given specs behind their controls
   - name: data-apps
     description:
       In-package HTML data apps (static pages served from a package's public/
@@ -1715,6 +1719,150 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/dashboards:
+    get:
+      tags:
+        - dashboards
+      operationId: list-dashboards
+      summary: List package dashboards
+      description: |
+        Lists the dashboards in the specified package — every `.malloy` file in
+        the package's `dashboards/` directory that carries an `# artifact` (or
+        model-level `## artifact`) annotation. A file in that directory with no
+        artifact tag is a shared include and is not listed, whether or not it
+        compiles.
+
+        A tagged dashboard that failed to compile is listed carrying its
+        `error` where that state can arise at all, so a broken dashboard is
+        visibly broken rather than silently absent. In practice it rarely does:
+        a package whose model fails to compile is not loaded, and a reload that
+        would break one is refused and leaves the previously loaded package
+        serving, so `error` is only reachable on the paths that keep per-model
+        placeholders. Treat it as present-but-uncommon rather than the normal
+        way a broken dashboard surfaces. When the package curates its query surface
+        (`queryableSources: "declared"`), a dashboard whose entry file is not in
+        `explores` is omitted, because its query and given names would not be
+        runnable; the omission is reported in the package's `warnings` as of the
+        last load. A metadata `PATCH` that TIGHTENS curation takes effect on
+        this listing immediately; one that relaxes it takes effect on the next
+        package reload, because the withheld dashboards were never built into
+        the cached set. Either way the matching warning is computed at load, so
+        after a `PATCH` it appears only once the package reloads.
+
+        Where the boundary is active at all, which needs `explores` declared
+        AND `queryableSources` left at `"declared"`, being listed does not by
+        itself guarantee the dashboard runs: the queryable sources are the
+        union of every listed file's `export {}` closure, so a dashboard whose
+        tiles read a source that only an UNLISTED file exports is still served
+        while those queries are refused. The fix is to list that file too, or
+        to re-export the source from one already listed. It is served rather
+        than withheld because withholding on a guess would hide dashboards that
+        do work. Under `"all"` nothing is refused, so the situation does not
+        arise.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: A list of dashboards in the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/dashboards/{dashboardName}:
+    get:
+      tags:
+        - dashboards
+      operationId: get-dashboard
+      summary: Get a dashboard manifest
+      description: |
+        Retrieves everything a viewer needs to render one dashboard: the artifact
+        tag's declarations plus the control contract derived from the givens its
+        query references. Running the dashboard needs no further endpoint — its
+        query, each composite tile, and each control's suggest query all run
+        through the model query endpoint with `givens`, using the manifest's
+        `path` as the model.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: dashboardName
+          in: path
+          description: >-
+            The dashboard's name: its filename basename. Conventionally letters,
+            digits, "-" and "_", and a package is warned when one of its SERVED
+            dashboards falls outside that. A dashboard withheld by curation gets
+            no naming finding, because the naming check runs after the curation
+            gate and a withheld dashboard is already reported as withheld. It is NOT constrained to it, because
+            the name comes from a filename rather than being chosen: a file such
+            as `dashboards/v1.2.malloy` is served, and its published `resource`
+            carries the name percent-encoded. Send it percent-encoded.
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: The dashboard manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardManifest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/notebooks:
     get:
       tags:
@@ -2854,9 +3002,19 @@ components:
             collision, and materialization-config problems that degrade
             attribution. Discovery findings: a model listed in `explores` whose
             export closure surfaces no sources or named queries, so it lists as
-            empty and renders a blank page. Server-computed and read-only:
-            ignored on create/update requests and only returned in responses.
-            Present only when there are such findings.
+            empty and renders a blank page. Dashboard findings: a
+            `dashboards/` file whose `# artifact` tag does not parse or does not
+            describe a dashboard, a tile or suggest query that does not resolve,
+            a `# drill` naming a destination that is not a dashboard, and a
+            dashboard held back from the listing because its entry file is not
+            in `explores`. Two dashboard findings are about Publisher rather
+            than about the package: one when a file carrying an artifact tag
+            could not be read and so is not served at all, and one when the lint
+            stops early, in which case the list must be read as incomplete
+            rather than as a clean package. Server-computed and read-only:
+            ignored on
+            create/update requests and only returned in responses. Present only
+            when there are such findings.
 
 
             **Pre-aggregation contributes nothing to this array. A
@@ -2913,9 +3071,13 @@ components:
                 type: string
                 description: >-
                   What the finding is about: the query or view a render finding
-                  sits on (`by_carrier`, `flights -> by_carrier`), or the source
-                  a materialization finding belongs to. Absent when a finding
-                  spans several, in which case the message names them.
+                  sits on (`by_carrier`, `flights -> by_carrier`), the source a
+                  materialization finding belongs to, or, for a dashboard
+                  finding, the dashboard's name or the `source.dimension` a
+                  `# drill` is declared on. Absent when a finding sits on none
+                  of those, either because it spans several, in which case the
+                  message names them, or because it is about the lint itself
+                  rather than about any one dashboard.
               message:
                 type: string
                 description: A description of the problem.
@@ -2925,9 +3087,21 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Currently only `error`-severity render
-                  findings are surfaced here; lower-severity findings remain on
-                  the query-time `renderLogs` surface.
+                  Finding severity. Render findings are surfaced here only at
+                  `error` severity; lower-severity render findings remain on the
+                  query-time `renderLogs` surface. Materialization and dashboard
+                  findings use both: `error` for something that cannot work as
+                  written, such as a tile naming a view the source does not
+                  have, and `warn` for something that works but not as the
+                  author probably intended, such as a dashboard held back by
+                  curation. The two findings about Publisher rather than about
+                  the package split across both: a file that carries an artifact
+                  tag and could not be read is `error`, because the dashboard it
+                  should have produced does not exist, and a lint that stopped
+                  early is `warn`, because the lint failing is not itself a
+                  defect in the package. That `warn` does NOT mean the package is
+                  free of `error`-severity findings, since the ones the lint
+                  never reached are exactly what it cannot report.
         queryableSources:
           type: string
           enum:
@@ -3175,18 +3349,195 @@ components:
       type: object
       description: Malloy notebook metadata and status information
       properties:
-        resource:
+        environmentName:
           type: string
-          description: Resource path to the notebook
+          description: Name of the environment containing this notebook
         packageName:
           type: string
           description: Name of the package containing this notebook
         path:
           type: string
           description: Relative path to the notebook file within its package directory
+        title:
+          type: string
+          description:
+            Human title, resolved from the notebook's own `## title="…"`, then
+            its `#"` doc comment, then its first markdown heading. Absent when
+            none of those resolve, leaving the caller to show the path.
+        description:
+          type: string
+          description: The notebook's `#"` doc comment, when it has one
         error:
           type: string
           description: Error message if the notebook failed to compile or load
+
+    Dashboard:
+      type: object
+      description: |
+        A dashboard within a Malloy package: a self-contained `.malloy` file in
+        the package's `dashboards/` directory carrying an `# artifact` (or
+        model-level `## artifact`) annotation. The list entry; see
+        DashboardManifest for the detail a viewer needs to render one.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the dashboard
+        packageName:
+          type: string
+          description: Name of the package containing this dashboard
+        name:
+          type: string
+          description:
+            The dashboard's slug — its filename basename. Addresses it in a URL
+            and as a `# drill` target.
+        path:
+          type: string
+          description:
+            Relative path to the dashboard file within its package directory
+            (`dashboards/<name>.malloy`)
+        title:
+          type: string
+          description:
+            Human title from the artifact tag, falling back to the file's `#"`
+            doc comment and then to the slug
+        description:
+          type: string
+          description: The file's `#"` doc comment, when it has one
+        error:
+          type: string
+          description: Error message if the dashboard file failed to compile
+
+    DashboardManifest:
+      type: object
+      description: |
+        Everything a viewer needs to render one dashboard: the artifact tag's
+        declarations plus the control contract derived from the givens its query
+        references. Running needs no dashboard-specific endpoint — the query,
+        each composite tile, and each control's suggest query all run through
+        the ordinary model query endpoint with `givens`.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the dashboard
+        packageName:
+          type: string
+          description: Name of the package containing this dashboard
+        name:
+          type: string
+          description:
+            The dashboard's slug — its filename basename. Addresses it in a URL
+            and as a `# drill` target.
+        path:
+          type: string
+          description: |
+            Relative path to the dashboard file within its package directory
+            (`dashboards/<name>.malloy`). This is also the model to POST to:
+            `query`, each tile, and each control's suggest query all run through
+            `POST /environments/{environmentName}/packages/{packageName}/models/{path}/query`
+            with `givens`, which is why there is no dashboard-specific run
+            endpoint.
+        title:
+          type: string
+          description:
+            Human title from the artifact tag, falling back to the file's `#"`
+            doc comment and then to the slug
+        description:
+          type: string
+          description: The file's `#"` doc comment, when it has one
+        error:
+          type: string
+          description: Error message if the dashboard file failed to compile
+        query:
+          type: string
+          description: >-
+            Name of the tagged query to run. Present for the single-query form
+            only; a composite dashboard carries `tiles` instead. A NAME rather
+            than an expression, so it goes in the `queryName` field of a
+            `POST …/models/{path}/query` body. A tile's `query` is the other
+            shape and is not interchangeable with this one; see
+            `DashboardTile.query`.
+        tiles:
+          type: array
+          description:
+            Tiles of a composite dashboard, run separately and combined into one
+            grid. Present for the composite form only.
+          items:
+            $ref: "#/components/schemas/DashboardTile"
+        dashboardColumns:
+          type: integer
+          description:
+            Grid width — from the `# dashboard {columns=N}` render tag, or
+            `dashboard_columns=N` on a composite artifact tag
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Per-dashboard starting values for controls, from the artifact tag.
+            URL parameters override these, which is why the two share a shape.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true.
+        givens:
+          type: array
+          description: |
+            The control row. Normally one entry per given the dashboard runs
+            with, which is what its `query` references on the single-query form
+            and the union over `tiles` on a composite, and which the entry file
+            can bind. A composite widens it to
+            every given the entry file surfaces when any tile is one discovery
+            cannot resolve, because that tile's givens are otherwise absent from
+            the row it filters by; see `DashboardTile.givenNames`. So an entry
+            here is always bindable, but on a widened row it is not necessarily
+            referenced by any tile. A given reachable only
+            through an import chain the entry file does not import itself
+            cannot be bound at query time, so no control is offered for it and
+            it stays at its default; that case is reported in the package's
+            `warnings` rather than represented here by an unusable entry. Plain
+            `Given`s, because the presentation a control takes is declared on
+            the given itself, so a dashboard and a notebook render the same
+            control for the same given, `#(description=…)` helper text
+            included.
+
+            ONE DELIBERATE DIVERGENCE from `Given` as the model surface sends
+            it: `default` here is the value the QUERY ENDPOINT takes, not the
+            Malloy source literal. A `filter<…>` given declared `f'West'`
+            publishes `West`. As the literal it could not be used as a default
+            at all, since sending it back verbatim matches zero rows silently,
+            with no error to search for. Only filter-typed givens are unwrapped,
+            so a plain string default that merely reads like `f'x'` is
+            untouched. `startingGivens` uses the same shape for the same reason.
+          items:
+            $ref: "#/components/schemas/Given"
+
+    DashboardTile:
+      type: object
+      description: One tile of a composite dashboard
+      properties:
+        query:
+          type: string
+          description: >-
+            The run expression exactly as written in `tiles=[…]`, for example
+            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
+            the `query` field of a `POST …/models/{path}/query` body, prefixed
+            with `run:`. Sending it in `queryName`, the field
+            `DashboardManifest.query` takes, is rejected.
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            Names of the givens this tile references. This is a scoping hint,
+            not a binding constraint: it tells a caller which tiles a changed
+            control actually needs to re-run. Running a tile with the
+            dashboard's whole control row also works, because an unreferenced
+            given is ignored. Absent when the tile expression is not one
+            discovery can resolve, a refinement or a multi-stage pipeline for
+            instance, in which case send the whole control row. One such tile
+            widens `DashboardManifest.givens` to every given the entry file
+            surfaces, rather than the union over the resolvable tiles, so that
+            the row actually contains the givens that tile filters by.
 
     DataApp:
       type: object
@@ -3259,6 +3610,14 @@ components:
             Starting values for the notebook's controls, declared at its file
             level. URL parameters override these, which is why the two share a
             shape. Omitted when the notebook declares none.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true. The same flag, with
+            the same default, that `DashboardManifest.autorun` carries, so a
+            notebook's `## autorun=false` and a dashboard's
+            `# artifact { autorun=false }` arrive identically.
         sources:
           type: array
           description: Sources defined in the notebook's model
@@ -3500,10 +3859,13 @@ components:
 
         The role it names: a surface's URL parameters and the starting values a
         document declares share this shape, so the two can merge and then be
-        decoded once against the declarations and sent as `GivenValues`. No
-        endpoint returns it yet. `RawNotebook.startingGivens` is the first field
-        typed as it, and nothing populates that field so far, so today this
-        schema documents the contract rather than describing live traffic. The
+        decoded once against the declarations and sent as `GivenValues`.
+        `RawNotebook.startingGivens` and `DashboardManifest.startingGivens` are
+        both typed as it and both populated, so this schema now describes live
+        traffic rather than only the contract. A `filter<…>` value is unwrapped
+        to its body and every other type is published as declared, keyed on the
+        declared type, so a plain string default that reads like `f'x'` survives
+        untouched. The
         `givens` query parameter is not an instance of it: that carries a
         JSON-encoded `GivenValues`, with values typed rather than stringified.
       additionalProperties:

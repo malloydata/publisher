@@ -1,0 +1,7 @@
+{
+   "name": "dashboards-open",
+   "version": "1.0.0",
+   "description": "Curated for discovery only: explores is declared but queryableSources is all, so the query boundary is inert",
+   "queryableSources": "all",
+   "explores": ["orders.malloy", "dashboards/composite.malloy"]
+}

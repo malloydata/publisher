@@ -1,5 +1,11 @@
 import { Box } from "@mui/material";
-import React, { Suspense, useEffect, useLayoutEffect, useRef } from "react";
+import React, {
+   Suspense,
+   useCallback,
+   useEffect,
+   useLayoutEffect,
+   useRef,
+} from "react";
 import { buildMalloyExplicitTheme } from "../../theme/buildMalloyExplicitTheme";
 import { buildTableCssVars } from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
@@ -7,6 +13,14 @@ import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
+import {
+   DRILL_CELL_CLASS,
+   drillableFieldNames,
+   markDrillableCells,
+   type DrillMetadataSource,
+} from "../drill/markDrillableCells";
+import type { DrillClickPayload } from "../drill/resolveDrill";
+import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
 
@@ -16,7 +30,7 @@ type MalloyRenderElement = HTMLElement & Record<string, unknown>;
  * declared on the renderer's public type. Keep in sync with
  * `@malloydata/render` if more methods are needed.
  */
-interface MalloyVizHandle {
+interface MalloyVizHandle extends DrillMetadataSource {
    setResult: (result: unknown) => void;
    render: (element: HTMLElement) => void;
    remove: () => void;
@@ -43,12 +57,17 @@ interface RenderedResultProps {
    height?: number;
    isFillElement?: (boolean) => void;
    onSizeChange?: (height: number) => void;
-   onDrill?: (element: unknown) => void;
+   /**
+    * Makes `# drill` cells clickable, and makes them look it. From `useDrill`
+    * on the host surface, which decides where a click may go; omitted where
+    * nothing can act on one, and then the result renders inert.
+    */
+   drill?: DrillBinding;
 }
 
 const createRenderer = async (
    theme: ResolvedTheme,
-   onDrill?: (element: unknown) => void,
+   onClick?: DrillBinding["onClick"],
 ): Promise<MalloyVizHandle> => {
    if (typeof window === "undefined") {
       throw new Error("MalloyRenderer can only be used in browser environment");
@@ -56,7 +75,7 @@ const createRenderer = async (
 
    const { MalloyRenderer } = await import("@malloydata/render");
    const renderer = new MalloyRenderer({
-      onClick: onDrill,
+      onClick,
       vegaConfigOverride: buildVegaThemeOverride(theme),
       // Pass the explicit theme so table chrome and dashboard tiles
       // pick up the operator's colours directly. Without this the
@@ -138,18 +157,17 @@ function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
 }
 
 /**
- * The renderer puts its DOM inside a Shadow Root (attachShadow), so a
- * `<style>` tag in `document.head` cannot reach `.dashboard-item` or any
- * of the renderer's other internal classes — Shadow DOM blocks selector
- * matching across the boundary. CSS variables DO cross the boundary
- * (that's why `--malloy-render--background` already paints the top-level
- * `.malloy-render` container), but selectors don't.
+ * CSS overrides for the renderer's own hardcoded colours.
  *
- * The renderer's own API for "add a stylesheet that takes effect inside
- * the shadow root" is `MalloyViz.addStylesheet()`. We register our
- * overrides through that path once, at module load, before any viz is
- * constructed. The renderer dedupes by identity, so calling it multiple
- * times in dev (HMR) is safe.
+ * These are appended as a `<style>` in `document.head` by
+ * `injectRendererOverrides` below, which is the mechanism actually in use and
+ * is described where it happens. An earlier version of this block said the
+ * renderer puts its DOM in a Shadow Root and that we register through
+ * `MalloyViz.addStylesheet()`. Neither is true of this code: nothing here calls
+ * that API, and were the boundary real a `document.head` stylesheet could not
+ * reach `.malloy-dashboard` at all, which is precisely what these rules do and
+ * what the theming tests check. Selectors are written at higher specificity
+ * than the renderer's own so they win regardless of stylesheet order.
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
 /* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard
@@ -223,6 +241,19 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
 .malloy-render .cell-content.header {
    color: var(--malloy-render--table-header-color) !important;
 }
+/* A cell whose column declares a "# drill" this surface can honor, marked
+   by markDrillableCells. Ordinary text with a pointer cursor until hovered,
+   then it reads as a link: the same affordance Malloyyo gives the same tag,
+   and the only thing that tells a reader a cell navigates. Kept off the
+   resting state deliberately: a column painted blue competes with the data.
+   (No backticks in here: this is inside a template literal.) */
+.malloy-render .${DRILL_CELL_CLASS} {
+   cursor: pointer;
+}
+.malloy-render .${DRILL_CELL_CLASS}:hover > .cell-content {
+   color: var(--publisher-drill-link) !important;
+   text-decoration: underline;
+}
 `;
 
 /**
@@ -249,10 +280,37 @@ function injectRendererOverrides(): void {
 function RenderedResultInner({
    result,
    height: inputHeight,
-   onDrill,
+   drill,
    onSizeChange,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
+   // The renderer binds its click handler at construction, so a changing
+   // `drill` identity would otherwise re-run the render effect and rebuild the
+   // chart: undoing the no-flicker swap below every time the parent
+   // re-renders. Read the latest binding through a ref instead, and keep
+   // `drill` out of the effect's dependencies, so callers can pass an inline
+   // one safely.
+   const drillRef = useRef(drill);
+   drillRef.current = drill;
+   const handleDrillClick = useCallback((payload: DrillClickPayload) => {
+      drillRef.current?.onClick(payload);
+   }, []);
+   // Whether any drill is wired at all, which is what the effect reacts to: a
+   // surface that gains or loses the capability has to (re)mark its cells, but
+   // a new inline binding with the same capability must not rebuild anything.
+   //
+   // KNOWN LIMITATION, and the narrower alternative is worse. `canDrill` decides
+   // WHICH cells get marked and is read once per render pass, so a predicate
+   // that changes while the result stays put leaves the previous pass's marks in
+   // place. Depending on the predicate's identity instead was tried and reverted:
+   // `canDrill` chains back to the notebook's parameters, so every control edit
+   // tore down and rebuilt every chart, which is the flicker this component was
+   // fixed for. The stale case needs a host whose predicate resolves after first
+   // paint against an unchanged result; it cannot happen in the notebook, where
+   // anything that changes the declared givens also rebuilds the cells. Fixing
+   // it properly means re-marking without re-rendering, which is a change to the
+   // marking pass rather than to this dependency list.
+   const drillable = drill !== undefined;
    const hasMeasuredRef = useRef(false);
    // The chart currently painted into the container, held across renders. A
    // new render paints into a fresh offscreen stage and only swaps in (and
@@ -291,6 +349,8 @@ function RenderedResultInner({
       // if this render is superseded before it swaps itself into `liveRef`.
       let stage: HTMLDivElement | undefined;
       let viz: MalloyVizHandle | undefined;
+      let drillObserver: MutationObserver | null = null;
+      let drillFrame = 0;
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
       // Safety net so a render that never signals ready (an async renderer
@@ -349,7 +409,7 @@ function RenderedResultInner({
          if (!isCurrent()) return;
 
          try {
-            viz = await createRenderer(effectiveTheme, onDrill);
+            viz = await createRenderer(effectiveTheme, handleDrillClick);
          } catch (error) {
             console.error("Failed to create renderer:", error);
             return;
@@ -428,6 +488,58 @@ function RenderedResultInner({
             // in the SDK to avoid pinning to the malloy core types here.
             viz.setResult(parsed);
             viz.render(stage);
+
+            // Mark the cells a `# drill` makes clickable, so they read as
+            // links. The names come from the result's field metadata, which is
+            // complete as soon as it is set, but the DOM is not: a
+            // `# dashboard` result builds its cards over later frames, so a
+            // one-shot pass right after render() would miss every table that
+            // appears after it. Hence the observer, which re-marks (batched to
+            // a frame) as cards arrive.
+            const binding = drillRef.current;
+            // Isolated from the render above. The chart has already rendered by
+            // this point, and a throw in here would reach the same catch and
+            // replace a working result with an error message: the affordance
+            // would be taking the chart down with it. `drillableFieldNames`
+            // already guards its own metadata read on the same principle.
+            try {
+               if (binding) {
+                  const names = drillableFieldNames(viz, binding.canDrill);
+                  // Guarded INSIDE, not just at the first call. The try
+                  // below wraps this function's definition, not the frames the
+                  // observer schedules it on, so a throw on a re-mark escaped
+                  // to the window and the isolation only ever covered the
+                  // synchronous pass.
+                  const mark = () => {
+                     try {
+                        markDrillableCells(stageNode, names);
+                     } catch (markError) {
+                        console.warn("Drill affordance skipped:", markError);
+                     }
+                  };
+                  mark();
+                  if (
+                     names.size > 0 &&
+                     typeof MutationObserver !== "undefined"
+                  ) {
+                     drillObserver = new MutationObserver(() => {
+                        cancelAnimationFrame(drillFrame);
+                        drillFrame = requestAnimationFrame(mark);
+                     });
+                     // childList only: marking writes classes, and observing
+                     // attributes would have it retrigger itself every frame.
+                     drillObserver.observe(stageNode, {
+                        childList: true,
+                        subtree: true,
+                     });
+                  }
+               }
+            } catch (drillError) {
+               // No affordance, and the result stands. Clicks still resolve,
+               // because the renderer routes those itself.
+               console.warn("Drill affordance skipped:", drillError);
+            }
+
             viz.onReady(promote);
             // If onReady never fires (an async render error that only reaches
             // the renderer's onError), force the swap after a bounded wait so
@@ -437,6 +549,7 @@ function RenderedResultInner({
          } catch (error) {
             console.error("Error rendering visualization:", error);
             observer?.disconnect();
+            drillObserver?.disconnect();
             viz.remove();
             viz = undefined;
             if (stageNode.parentNode === element) {
@@ -448,6 +561,8 @@ function RenderedResultInner({
       return () => {
          cancelled = true;
          observer?.disconnect();
+         drillObserver?.disconnect();
+         cancelAnimationFrame(drillFrame);
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
          // If this render built a stage but never swapped it into `liveRef`
@@ -464,7 +579,15 @@ function RenderedResultInner({
             element.style.position = "";
          }
       };
-   }, [result, onDrill, onSizeChange, baseTheme, layers, mode]);
+   }, [
+      result,
+      handleDrillClick,
+      drillable,
+      onSizeChange,
+      baseTheme,
+      layers,
+      mode,
+   ]);
 
    // Malloy renderer requires explicit pixel height to render visualizations
    return (

@@ -384,7 +384,10 @@ describe("readGivenControlSpec", () => {
       // Still parsing normally afterwards, which is what pollution would break.
       expect(readGivenControlSpec([`# label="ok"`])).toEqual({ label: "ok" });
       expect(
-         readStartingGivens(motlyTag([`## givens { __proto__=x }`])),
+         readStartingGivens(
+            motlyTag([`## givens { __proto__=x }`]),
+            () => "filter<string>",
+         ),
       ).toBeUndefined();
       expect(polluted()).toBe(false);
    });
@@ -468,7 +471,10 @@ describe("parse-first rescue", () => {
 
    it("still rescues the documented filter-literal form", () => {
       expect(
-         readStartingGivens(motlyTag([`## givens { REGION=f'US' }`])),
+         readStartingGivens(
+            motlyTag([`## givens { REGION=f'US' }`]),
+            () => "filter<string>",
+         ),
       ).toEqual({ REGION: "US" });
    });
 });
@@ -624,10 +630,85 @@ describe("readAutorun", () => {
  * level or inside a dashboard's artifact tag.
  */
 describe("readStartingGivens", () => {
+   /**
+    * The case the required `declaredType` parameter exists for, and which
+    * nothing pinned: a PLAIN given whose starting value is shaped like a filter
+    * literal. Unwrapping it publishes `Nike`, which posts back as a different
+    * value entirely. Every other test here passes `filter<string>` for all
+    * names, so an unconditional unwrap survived the whole suite.
+    */
+   it("leaves a plain given's f-shaped value alone", () => {
+      expect(
+         readStartingGivens(
+            motlyTag([`## givens { NOTE=f'Nike' REGION=f'US' }`]),
+            (name) => (name === "REGION" ? "filter<string>" : "string"),
+         ),
+      ).toEqual({ NOTE: "f'Nike'", REGION: "US" });
+   });
+
+   /**
+    * The zone-pinned half, and the only one of the two that can fail in CI.
+    *
+    * `authoredDay` has two branches and this pins both, which needs a zone WEST
+    * of UTC and both literals. Under America/Los_Angeles: the bare date is UTC
+    * midnight, so forcing the local branch reads it as the previous day; the
+    * ISO 23:30 is 07:30Z the next day, so slicing the rendering reads it as the
+    * next one. East of UTC neither shows.
+    */
+   it("publishes the authored day under a non-UTC zone as well", () => {
+      const service = import.meta.dir;
+      const read = (literal: string) =>
+         `m.readStartingGivens(m.motlyTag(["## givens { X=${literal} }"]), () => "date")`;
+      const proc = Bun.spawnSync({
+         cmd: [
+            "bun",
+            "-e",
+            `const m = await import(${JSON.stringify(`${service}/motly.ts`)});
+             console.log(
+                JSON.stringify([
+                   ${read("@2024-03-01")},
+                   ${read("@2024-03-01T23:30")},
+                ]),
+             );`,
+         ],
+         env: { ...process.env, TZ: "America/Los_Angeles" },
+      });
+      // Surface the child's stderr, or a startup failure reports as an
+      // unhelpful `expected 1 to be 0` followed by JSON.parse("").
+      expect([proc.exitCode, proc.stderr.toString().trim()]).toEqual([0, ""]);
+      expect(JSON.parse(proc.stdout.toString().trim())).toEqual([
+         { X: "2024-03-01" },
+         { X: "2024-03-01" },
+      ]);
+   });
+
+   /**
+    * All four literal forms must agree. Cannot fail on its own: CI is UTC, and
+    * UTC is the one zone where slicing the ISO rendering is already correct.
+    * The subprocess test above is what pins it.
+    */
+   it("publishes the authored day for every date literal form", () => {
+      for (const literal of [
+         "@2024-03-01",
+         "@2024-03-01T10:30:15",
+         "@2024-03-01T23:30",
+         "@2024-03-01T00:30",
+      ]) {
+         expect([
+            literal,
+            readStartingGivens(
+               motlyTag([`## givens { X=${literal} }`]),
+               () => "filter<string>",
+            ),
+         ]).toEqual([literal, { X: "2024-03-01" }]);
+      }
+   });
+
    it("reads a notebook's file-level block", () => {
       expect(
          readStartingGivens(
             motlyTag([`## givens { SINCE="2024-03-01" REGION=f'US' }`]),
+            (name) => (name === "REGION" ? "filter<string>" : "string"),
          ),
       ).toEqual({ SINCE: "2024-03-01", REGION: "US" });
    });
@@ -636,6 +717,7 @@ describe("readStartingGivens", () => {
       expect(
          readStartingGivens(
             motlyTag([`## givens { REGION=f'us-east, us-west' }`]),
+            () => "filter<string>",
          )?.REGION,
       ).toBe("us-east, us-west");
    });
@@ -644,14 +726,26 @@ describe("readStartingGivens", () => {
       const artifact = motlyTag([
          `# artifact { givens { REGION=f'US' } }`,
       ])?.tag("artifact");
-      expect(readStartingGivens(artifact)).toEqual({ REGION: "US" });
+      expect(readStartingGivens(artifact, () => "filter<string>")).toEqual({
+         REGION: "US",
+      });
    });
 
    it("is undefined with no block, and with an empty one", () => {
-      expect(readStartingGivens(undefined)).toBeUndefined();
       expect(
-         readStartingGivens(motlyTag([`## autorun=false`])),
+         readStartingGivens(undefined, () => "filter<string>"),
       ).toBeUndefined();
-      expect(readStartingGivens(motlyTag([`## givens { }`]))).toBeUndefined();
+      expect(
+         readStartingGivens(
+            motlyTag([`## autorun=false`]),
+            () => "filter<string>",
+         ),
+      ).toBeUndefined();
+      expect(
+         readStartingGivens(
+            motlyTag([`## givens { }`]),
+            () => "filter<string>",
+         ),
+      ).toBeUndefined();
    });
 });

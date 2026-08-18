@@ -55,6 +55,15 @@ export interface ResolvedTheme {
     */
    dashboardRoot: string;
    /**
+    * Colour a `# drill` cell takes on hover, when it reads as a link. A link
+    * blue rather than anything from `palette.series`, deliberately: the
+    * affordance has to stay legible as a link against whatever the operator
+    * picked for the data, and a drillable bar or cell should not look like it
+    * belongs to a series. Mode-keyed and not operator-customizable, like
+    * `dashboardRoot`.
+    */
+   drillLink: string;
+   /**
     * Background for the renderer's table interior. Follows the
     * operator's `palette.background` (the chart canvas colour) so
     * tables and charts share a single "viz surface" colour. In dark

@@ -62,6 +62,22 @@ import {
 } from "./materialization_config_validation";
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
+import {
+   buildDashboardManifest,
+   COMPONENT_FILE_SUFFIXES,
+   DASHBOARDS_DIR,
+   dashboardSlug,
+   isDashboardModelPath,
+   matchesDocumentedDashboardName,
+   lintDashboard,
+   lintDrillTargets,
+   lintGivenTags,
+   lintSelfDrills,
+   lintUndiscoveredDashboard,
+   type DashboardManifest,
+   type DashboardModelFacts,
+   factsCarryArtifactTag,
+} from "./dashboard";
 import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model } from "./model";
@@ -70,6 +86,8 @@ import { assertPersistNamesQuoted } from "./persist_annotation_validation";
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiNotebook = components["schemas"]["Notebook"];
+type ApiDashboard = components["schemas"]["Dashboard"];
+type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type ApiColumn = components["schemas"]["Column"];
@@ -210,6 +228,16 @@ export class Package {
    // tag does not fail the load (see Model.validateRenderTags); this is the
    // response-level signal that a tag is misconfigured.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   // Load-time dashboard lint findings, on the same read-only warnings surface
+   // as the render-tag ones. Refreshed with the dashboards on load and reload.
+   private dashboardWarnings: ApiPackageWarning[] = [];
+   // Dashboards discovered in `dashboards/`, keyed by slug, in path order.
+   // Computed once per load/reload rather than per request: the artifact tag is
+   // a property of the compiled model, so it can only change when the models do.
+   // A dashboard file that failed to compile has no readable tag, so it lands
+   // here as a slug-titled entry carrying its error rather than disappearing.
+   private dashboards: Map<string, DashboardManifest & { error?: string }> =
+      new Map();
    /**
     * Manifest-shape deprecations the load tolerated (a root-level `scope`), kept
     * so publish can report a still-parsing-but-outdated manifest. Not on the wire
@@ -669,6 +697,7 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
+      await pkg.discoverDashboards();
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
@@ -977,10 +1006,12 @@ export class Package {
       if (warnings.length > 0) {
          metadata.exploresWarnings = warnings;
       }
-      // Render-tag findings and storage= warnings share the one operator-facing
-      // warnings array (the {model, subject, message} shape carries both).
+      // Render-tag findings, dashboard lint findings, and storage= warnings share
+      // the one operator-facing warnings array (the {model, subject, message}
+      // shape carries all of them).
       const allWarnings = [
          ...this.renderTagWarnings,
+         ...this.dashboardWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A listed model whose curated surface is empty. Advisory (an
@@ -1990,6 +2021,13 @@ export class Package {
          outcome.packageMetadata.manifestLocation ?? null;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      // AFTER the refreshed explore set is installed, never before. Dashboard
+      // discovery consults it (see isQueryableEntryPoint), so running it first
+      // computed the served set against the PREVIOUS policy: the reload that
+      // first curates a package would have kept serving the manifests that
+      // curation was meant to withhold, and gone on doing so until some later
+      // reload, since nothing recomputes them in between.
+      await this.discoverDashboards();
       // Remember what we just bound so /compile can route identically and
       // /status can report the binding. An empty map reverts to live (unbound).
       // Retains the full freshness entries so the serve-path gate can evaluate
@@ -2054,6 +2092,655 @@ export class Package {
       return values;
    }
 
+   /**
+    * Whether a model file may be a top-level query target, the FILE-LEVEL half
+    * of the policy `applyQueryBoundaryToModels` pushes onto each Model: inert
+    * unless `explores` is declared AND `queryableSources` is `"declared"`.
+    *
+    * Read here because a dashboard is only worth serving if the queries its
+    * manifest advertises can actually run.
+    *
+    * Deliberately only that half, and the gap is worth stating rather than
+    * leaving to be rediscovered. The boundary has a second, within-file level:
+    * `assertQueryBoundaryEarly` also requires the target to be inside the
+    * model's `export {}` closure. So a file listed in `explores` that only
+    * imports and re-exports nothing still refuses every query, and a COMPOSITE
+    * dashboard in such a file is served with a manifest whose every tile 404s.
+    * Mirroring that second level here would mean resolving each tile against
+    * the closure before the manifest exists, which is a bigger change than this
+    * slice should make.
+    *
+    * The warning below covers only the WHOLLY import-only case, which is what
+    * `hasEmptyDiscoverySurface` detects. A dashboard file that exports
+    * something, but not the source its tiles actually read, still serves a
+    * manifest whose tiles 404 and produces no finding at all. That gap is known
+    * and is not closed here; do not read the warning as complete coverage.
+    */
+   private isQueryableEntryPoint(modelPath: string): boolean {
+      if (!this.queryBoundaryActive()) return true;
+      const exploreSet = this.exploreSet();
+      return exploreSet ? exploreSet.has(modelPath) : true;
+   }
+
+   /**
+    * A reusable form of {@link isQueryableEntryPoint} that resolves the explore
+    * set once, for callers testing more than one path.
+    */
+   private servableEntryPoints(): (modelPath: string) => boolean {
+      if (!this.queryBoundaryActive()) return () => true;
+      const exploreSet = this.exploreSet();
+      return (modelPath: string) =>
+         exploreSet ? exploreSet.has(modelPath) : true;
+   }
+
+   /**
+    * Whether the query boundary restricts anything at all: `explores` declared
+    * AND `queryableSources` left at `"declared"`. Under `"all"` the boundary is
+    * inert and every compiled source stays directly queryable. An unrecognised
+    * `queryableSources` counts as `"declared"`, which is what the spec says.
+    *
+    * Shared so a finding cannot assert a policy the package does not have.
+    * `Model.hasEmptyDiscoverySurface` is about the DISCOVERY surface and is
+    * indifferent to this mode, so a warning about queries being refused has to
+    * check the mode itself rather than lean on that predicate.
+    */
+   private queryBoundaryActive(): boolean {
+      if (this.packageMetadata.queryableSources === "all") return false;
+      // `exploresDeclared` rather than an `exploreSet() !== null` comparison:
+      // the two coincide by construction, but this is the stated source of
+      // truth for the fact and it does not allocate a Set to answer it.
+      return this.exploresDeclared();
+   }
+
+   /**
+    * Whether a `dashboards/*.malloy` claims to be a dashboard, read from its
+    * source text rather than from a `ModelDef`.
+    *
+    * Consulted on two paths, both of which have in common that the tag cannot
+    * be read the normal way. The original is a file that failed to compile, so
+    * there is no `ModelDef` to read it off; the alternative there was to list
+    * every uncompilable file in the directory, which contradicts the documented
+    * rule that an untagged file is a shared include and produced a dashboard
+    * that existed only while a sibling include was broken. The second is a drop
+    * path: a file that produced no facts and no compile error, which a file
+    * that compiled cleanly can reach, so this is no longer only about broken
+    * files.
+    *
+    * NOT consulted on the third drop path, the one where the manifest build
+    * threw. There the facts are in scope and the tag is perfectly readable, so
+    * that site reads `factsCarryArtifactTag` and this heuristic would be the
+    * wrong tool; its comment says so.
+    *
+    * Deliberately textual and deliberately generous: it looks for an `artifact`
+    * annotation at the start of a line. Note the cost of a false positive is
+    * NOT the same on every path. On the original one it lists a broken file
+    * that was never a dashboard, which is merely noisy. On the drop paths it
+    * emits an `error` finding claiming a dashboard should exist and registers
+    * the slug, which silences a genuinely dangling `# drill` elsewhere. A false
+    * negative hides a real broken dashboard, which is still worse than either.
+    * Never throws: an unreadable file is simply not a dashboard.
+    */
+   private async claimsToBeADashboard(modelPath: string): Promise<boolean> {
+      try {
+         const source = await fs.readFile(
+            safeJoinUnderRoot(this.packagePath, modelPath),
+            "utf8",
+         );
+         return /^[ \t]*##?[ \t]*artifact\b/m.test(source);
+      } catch {
+         return false;
+      }
+   }
+
+   /**
+    * Re-read the package's dashboards from its compiled models. Called at load
+    * and after every reload, because a dashboard is defined by an annotation on
+    * a compiled model — it cannot change without the models changing.
+    *
+    * Never throws: a package whose dashboards can't be read still serves its
+    * models. A file in `dashboards/` with no artifact tag is a shared include
+    * and is skipped, exactly as Malloyyo treats it.
+    */
+   private async discoverDashboards(): Promise<void> {
+      const discovered = new Map<
+         string,
+         DashboardManifest & { error?: string }
+      >();
+      // Kept alongside the manifests so the lint runs once, after every
+      // dashboard is known: a drill target can only be checked against the
+      // complete slug set.
+      const factsByPath = new Map<string, DashboardModelFacts>();
+      // Every model, not just the dashboard files, because `# drill` is
+      // declared on a model dimension: a tag reachable only from a notebook, or
+      // one in a package with no dashboards at all, is exactly as breakable and
+      // would otherwise never be checked.
+      const allFacts = new Map<string, DashboardModelFacts>();
+      // Dashboards the curation gate held back, reported once discovery settles.
+      const heldBack: { modelPath: string; name: string }[] = [];
+      // Files whose derived slug is outside the documented name pattern. Served
+      // anyway; see the comment at the check below.
+      const unconventionalSlugs: { modelPath: string; name: string }[] = [];
+      // Dashboards served from a file that re-exports nothing, so every query
+      // against them is refused by the within-file half of the query boundary.
+      // Dashboard files dropped because something threw while reading them, as
+      // opposed to because they are not dashboards. Reported for the same
+      // reason the lint reports its own truncation: without this the file just
+      // vanishes from the listing and a missing dashboard is indistinguishable
+      // from one that was never written.
+      const droppedByError: { modelPath: string; name: string }[] = [];
+      // Every slug this package actually has a dashboard for, INCLUDING the
+      // ones withheld below. The drill lint resolves against this rather than
+      // against the served set, so withholding a dashboard does not turn a
+      // correct `# drill { to=... }` into "not a dashboard in this package".
+      const dashboardSlugs = new Set<string>();
+      for (const modelPath of Array.from(this.models.keys()).sort()) {
+         const model = this.models.get(modelPath);
+         if (!model) continue;
+
+         let facts: DashboardModelFacts | undefined;
+         try {
+            facts = model.getDashboardModelFacts();
+            if (facts) allFacts.set(modelPath, facts);
+         } catch (err) {
+            logger.warn("Reading a model's dashboard facts failed", {
+               packageName: this.packageName,
+               modelPath,
+               error: errMessage(err),
+            });
+         }
+
+         if (!isDashboardModelPath(modelPath)) continue;
+         const name = dashboardSlug(modelPath);
+
+         // Establish that the file IS a dashboard before any of the checks
+         // below, because every one of them reports on the assumption that it
+         // is. Ordering these the other way round told the author that
+         // `dashboards/_shared.malloy`, an untagged shared include the spec
+         // says is never listed, was a dashboard being withheld from them.
+         let manifest: (DashboardManifest & { error?: string }) | undefined;
+         if (facts) {
+            try {
+               manifest = buildDashboardManifest(facts);
+            } catch (err) {
+               logger.warn("Dashboard discovery failed", {
+                  packageName: this.packageName,
+                  modelPath,
+                  error: errMessage(err),
+               });
+               // Gated, because a throw in here says nothing about whether
+               // the file was ever a dashboard and a finding about a file with
+               // no artifact tag would invent one. Read off `facts`, which is
+               // in scope, rather than through the textual
+               // `claimsToBeADashboard`: the tag is perfectly readable on this
+               // path, it was the manifest CONSTRUCTION that failed, so the
+               // exact signal is available and the heuristic would be the wrong
+               // tool. This is also the drop site that pays most for a false
+               // positive.
+               if (factsCarryArtifactTag(facts)) {
+                  droppedByError.push({ modelPath, name });
+                  dashboardSlugs.add(name);
+               }
+               continue;
+            }
+            if (!manifest) {
+               // No artifact tag, so a shared include. Its facts are still
+               // kept, because a file that produced no dashboard has to be
+               // explained if the reason was a tag that failed to parse.
+               factsByPath.set(modelPath, facts);
+               continue;
+            }
+         } else {
+            // Unreadable, so the file failed to compile and its artifact tag
+            // cannot be read. It is listed anyway carrying the error, because a
+            // broken dashboard should be visibly broken rather than absent.
+            //
+            // Only if it actually claims to be one. `api-doc.yaml` promises a
+            // file with no artifact tag is a shared include and is not listed,
+            // and a compile failure must not turn that promise off: a syntax
+            // error in `dashboards/_shared.malloy` otherwise produced a phantom
+            // dashboard that vanished once the error was fixed. The tag cannot
+            // be read from a model that did not compile, so it is read from the
+            // source text, a heuristic used ONLY on this already-broken path.
+            const error = model.getCompilationError();
+            if (!error || !(await this.claimsToBeADashboard(modelPath))) {
+               // Reached with no facts AND no compile error to show, so the
+               // branch above drops the file. If it claims to be a dashboard,
+               // that is one disappearing with nothing said, which is the case
+               // worth reporting; a file that is simply not a dashboard is not,
+               // and `claimsToBeADashboard` is what tells them apart.
+               //
+               // The test is `!facts && !error`, deliberately, NOT "the facts
+               // read threw". Facts come back undefined without throwing
+               // whenever `modelDef` is undefined, and `Model.fromSerialized`
+               // builds exactly that with `compilationError` ALSO undefined.
+               // Reachable here from a corrupt worker payload; NOT from an
+               // empty notebook, which an earlier version of this comment gave
+               // as the example, because `isDashboardModelPath` admits only
+               // `.malloy` and the all-markdown shape is a notebook. Keying on
+               // the throw left the payload case dropping the file with no
+               // finding and no log line either, since the log sits in the
+               // catch. That was worse than the case this reports.
+               //
+               // `!error` is redundant with the `claims` result but is what
+               // stops `claimsToBeADashboard` running twice: when `error` is
+               // truthy the condition above already called it, and this
+               // short-circuits before calling it again. Do not "simplify" it
+               // away; that reinstates a second `readFile` per uncompilable
+               // non-dashboard.
+               if (!error && (await this.claimsToBeADashboard(modelPath))) {
+                  logger.warn("Dashboard file produced no facts and no error", {
+                     packageName: this.packageName,
+                     modelPath,
+                  });
+                  droppedByError.push({ modelPath, name });
+                  // Registered so `lintDrillTargets` does not additionally
+                  // report a `# drill` naming this slug as "not a dashboard in
+                  // this package", which is false: the package has the file.
+                  //
+                  // NOT the same as what the curation gate does, and the
+                  // difference is a known gap rather than a claim. A withheld
+                  // dashboard registers its slug AND gets a per-drill
+                  // `withheldDrills` finding saying the click dead-ends. A
+                  // dropped one registers the slug only, so a drill at it
+                  // dead-ends identically with nothing said against that
+                  // dimension. The drop finding above states the root cause,
+                  // which is why this is tolerable, but a consumer rendering
+                  // findings per `subject` shows nothing on the drill. Closing
+                  // it means giving the drop path its own `withheldDrills`
+                  // sibling.
+                  dashboardSlugs.add(name);
+               }
+               continue;
+            }
+            manifest = {
+               name,
+               title: name,
+               autorun: true,
+               entryFile: modelPath,
+               givens: [],
+               error: error.message,
+            };
+         }
+
+         // The file IS a dashboard, so a drill naming it resolves. Recorded
+         // before the curation gate below on purpose: a drill pointing at a
+         // dashboard this package really has must not be reported as naming
+         // something that does not exist merely because curation withholds it.
+         // Every dashboard gets a slug registered here, so a drill naming one
+         // always resolves. NOT that every dashboard is reachable: curation can
+         // withhold it and `getDashboard` then answers undefined, which is what
+         // the withheld-drill finding below reports.
+         dashboardSlugs.add(name);
+
+         // Curation gate. Every other listing path in this class consults
+         // `exploreSet()`; discovery did not, so a curated package served a
+         // full manifest, advertising a query name, given names and
+         // suggest-query names that the query boundary then refuses with 404.
+         // Held back rather than published unusable, with a warning saying so.
+         if (!this.isQueryableEntryPoint(modelPath)) {
+            heldBack.push({ modelPath, name });
+            continue;
+         }
+
+         // From here the dashboard IS served, which is where a finding may say
+         // so. Reported after the curation gate rather than before it: saying
+         // "is served" about a file the next branch withholds put two
+         // contradictory warnings on the same dashboard, and the confident one
+         // was the wrong one.
+         //
+         // A name outside the documented `dashboardName` pattern is served and
+         // only noted. Measured rather than assumed: the route is a plain
+         // Express param and nothing validates the pattern at runtime, so the
+         // encoded URL resolves. An earlier version withheld such a dashboard
+         // and told the author it "could not be addressed at a URL", which
+         // broke every working dashboard whose file carried a version in its
+         // name. The pattern still matters to a client generated from the
+         // spec, so it is worth saying; it is not worth refusing to serve.
+         if (!matchesDocumentedDashboardName(name)) {
+            unconventionalSlugs.push({ modelPath, name });
+         }
+
+         discovered.set(name, manifest);
+         if (facts) factsByPath.set(modelPath, facts);
+      }
+      this.dashboards = discovered;
+      this.dashboardWarnings = await this.lintDashboards(
+         factsByPath,
+         allFacts,
+         heldBack,
+         unconventionalSlugs,
+         dashboardSlugs,
+         droppedByError,
+      );
+      for (const warning of this.dashboardWarnings) {
+         logger.warn("Dashboard lint", {
+            packageName: this.packageName,
+            model: warning.model,
+            detail: warning.message,
+         });
+      }
+   }
+
+   /**
+    * Run the dashboard lint across the package once discovery has settled.
+    *
+    * Never throws: a lint failure must not cost the package its dashboards. The
+    * findings ride the package response as non-fatal `warnings`, the same
+    * surface render-tag findings use, rather than a separate verb.
+    */
+   private async lintDashboards(
+      factsByPath: ReadonlyMap<string, DashboardModelFacts>,
+      allFacts: ReadonlyMap<string, DashboardModelFacts>,
+      heldBack: readonly { modelPath: string; name: string }[],
+      unconventionalSlugs: readonly { modelPath: string; name: string }[],
+      knownSlugs: ReadonlySet<string>,
+      droppedByError: readonly { modelPath: string; name: string }[],
+   ): Promise<ApiPackageWarning[]> {
+      const warnings: ApiPackageWarning[] = [];
+      // Keyed on dimension + destination, so one drill is reported once for the
+      // package rather than once per file that imports its source.
+      const withheldDrills = new Map<string, ApiPackageWarning>();
+      try {
+         // First because it cannot throw, so these survive a truncation that
+         // costs everything after them, and a dashboard that vanished with no
+         // explanation is the worst thing on this surface to lose.
+         //
+         // Not because it is "the only finding about a dashboard missing from
+         // the listing", which an earlier version of this comment claimed and
+         // which is false three ways: a held-back dashboard `continue`s before
+         // `discovered.set`, its `withheldDrills` sibling describes the same
+         // withheld file, and `lintUndiscoveredDashboard` fires for files that
+         // produced no manifest AND whose facts reached `factsByPath`.
+         //
+         // That second condition is load-bearing and an earlier version of this
+         // sentence omitted it, which overstated the lint's reach in the one
+         // direction that matters. The loop below iterates `factsByPath`, and
+         // two paths `continue` before anything is added to it: a manifest
+         // build that threw, and a held-back file. Neither lint runs for those,
+         // so their parse failures are NOT reported and only the root-cause
+         // warning here says anything about them.
+         for (const { modelPath, name } of droppedByError) {
+            warnings.push({
+               model: modelPath,
+               subject: name,
+               message:
+                  `"${modelPath}" carries an artifact tag but could not be ` +
+                  `read, so it is not served and there is no dashboard ` +
+                  `"${name}". The cause is in the server log. Reload the ` +
+                  `package to try again.`,
+               severity: "error",
+            });
+         }
+         for (const { modelPath, name } of unconventionalSlugs) {
+            warnings.push({
+               model: modelPath,
+               subject: name,
+               message:
+                  `is served, but "${name}" is outside the conventional ` +
+                  `dashboard name shape (letters, digits, "-" and "_"). This ` +
+                  `server routes it and its published URL carries the name ` +
+                  `encoded, so the dashboard works. The convention is worth ` +
+                  `keeping anyway: a name outside it has to be percent-encoded ` +
+                  `by every caller that builds the URL by hand. Rename the ` +
+                  `file if that matters to yours.`,
+               severity: "warn",
+            });
+         }
+         for (const { modelPath, name } of heldBack) {
+            // A drill AT a withheld dashboard still dead-ends: the dashboard is
+            // real, so calling it "not a dashboard in this package" is false,
+            // but the click 404s all the same. Say which of the two it is.
+            //
+            // Deduplicated on the dimension and destination for the same reason
+            // `lintDrillTargets` is: a drill is declared on a model dimension,
+            // so every file importing that source carries it, and reporting per
+            // importer emitted the identical finding four times in the test
+            // fixture alone.
+            for (const file of allFacts.values()) {
+               for (const drill of file.drills) {
+                  if (!drill.to.includes(name)) continue;
+                  const where = `${drill.source}.${drill.dimension}`;
+                  withheldDrills.set(`${where}|${name}`, {
+                     subject: where,
+                     message:
+                        `# drill on ${where} targets "${name}", which IS a ` +
+                        `dashboard in this package but is not served (see the ` +
+                        `finding on "${modelPath}"), so the click has nowhere ` +
+                        `to land.`,
+                     // `error`, matching `lintDrillTargets`. The two describe
+                     // the same broken click and differ only in why the
+                     // destination is missing, so they should not differ in
+                     // how loudly they say it.
+                     severity: "error",
+                  });
+               }
+            }
+            warnings.push({
+               model: modelPath,
+               subject: name,
+               message:
+                  `is a dashboard, but "${modelPath}" is not listed in ` +
+                  `'explores' and this package sets ` +
+                  `queryableSources: "declared", so its query would be ` +
+                  `refused. It is not served. Add it to 'explores', or set ` +
+                  `queryableSources: "all" to keep the curated surface for ` +
+                  `discovery only. Listing it is not always sufficient on its ` +
+                  `own: the queryable sources are the union of every listed ` +
+                  `file's export closure, so a tile reading a source that only ` +
+                  `an UNLISTED file exports is still refused. List that file ` +
+                  `too, or re-export the source from one already listed.`,
+               severity: "warn",
+            });
+         }
+         for (const [modelPath, facts] of factsByPath) {
+            const manifest = this.dashboards.get(dashboardSlug(modelPath));
+            const findings = manifest
+               ? lintDashboard(facts, manifest)
+               : lintUndiscoveredDashboard(facts);
+            for (const finding of findings) {
+               warnings.push({ model: modelPath, ...finding });
+            }
+         }
+         // Drill tags live on model dimensions, not on any one dashboard, so
+         // they are reported against the package rather than a single file,
+         // and they are scanned across every model rather than only the
+         // dashboard files — a notebook cell drills from the same tag.
+         const drillFacts = Array.from(allFacts.values());
+         for (const finding of withheldDrills.values()) {
+            warnings.push(finding);
+         }
+         for (const finding of lintDrillTargets(drillFacts, knownSlugs)) {
+            warnings.push(finding);
+         }
+         for (const finding of lintSelfDrills(drillFacts)) {
+            warnings.push(finding);
+         }
+         // Scanned across every model for the same reason as the drill lints: a
+         // given is declared on a model and reached through imports, so a broken
+         // declaration in a file no dashboard imports is exactly as silent.
+         for (const finding of lintGivenTags(drillFacts)) {
+            warnings.push(finding);
+         }
+         for (const finding of await this.unsupportedComponentWarnings()) {
+            warnings.push(finding);
+         }
+      } catch (err) {
+         logger.warn("Dashboard lint failed", {
+            packageName: this.packageName,
+            error: errMessage(err),
+         });
+         // Say so on the surface the findings ride, not only in the server log.
+         // This catch wraps every phase above, so a throw keeps the findings
+         // collected up to that point and drops the rest, and a shorter list is
+         // indistinguishable from a cleaner package. An author acting on "no
+         // more findings" would be acting on a truncation.
+         //
+         // The message names the check CLASSES rather than a phase. The `try`
+         // opens on the dropped-by-error pass and runs well before the
+         // per-dashboard loop, covering the held-back, empty-surface and
+         // unconventional-name passes, and closes after the
+         // drill, given and component checks, so "the dashboards after the
+         // failure were not checked" would be false for most of its throw
+         // sites: a throw in `lintGivenTags` or `unsupportedComponentWarnings`
+         // costs a whole class with every dashboard already checked. Which of
+         // them was lost depends on where it failed and this catch cannot tell,
+         // so it names the full set and says the answer is unknown, rather than
+         // guessing and sending an operator after a broken dashboard file that
+         // need not exist.
+         //
+         // It deliberately omits the unconventional-name and empty-surface
+         // kinds, and that is not an oversight. Those two, plus the
+         // dropped-by-error pass, are the first three loops in this `try`, all
+         // pure pushes over arrays already computed in `discoverDashboards`, and
+         // the first thing that can throw is the held-back loop after them. So
+         // they always survive. Naming a kind that cannot be lost would tell an
+         // author to doubt a finding they can trust.
+         //
+         // The thrown message stays in the log above and off the wire because it
+         // is an ARBITRARY throw, so its text is unbounded and nothing else in
+         // this array carries one. That, and only that, is the reason. An
+         // earlier version of this comment justified it as protecting a
+         // path-free response surface; there is no such property to protect,
+         // because a Malloy compile error's message is built from
+         // `prettyErrors()`, which prepends `FILE: file:///<absolute path>`, and
+         // both `listModels` (via `modelError.message`) and these routes (via
+         // `manifest.error`) publish that text verbatim. Do NOT restate that as
+         // "pre-existing and identical on both", which an earlier draft did and
+         // which is false: `listModels` filters on `explores` alone, while the
+         // dashboard routes go through `queryBoundaryActive()` and so stop
+         // filtering entirely under `queryableSources: "all"`. In that one
+         // configuration a broken `dashboards/*.malloy` outside `explores` is
+         // hidden from the model listing and still published here. See the
+         // follow-up note in the tracker; it is not fixed in this commit.
+         //
+         // No `model` and no `subject`. The spec reserves `subject` for the one
+         // dashboard or `source.dimension` a finding sits on, and this finding
+         // sits on none: it is about the lint rather than about the package.
+         warnings.push({
+            message:
+               `Dashboard lint stopped early, so this list is incomplete: an ` +
+               `unknown subset of the curation, dashboard, drill, given and ` +
+               `unsupported-component checks did not run. Treat a missing ` +
+               `finding of any of those kinds as unknown rather than clean, ` +
+               `including the absence of a "held back from the listing" ` +
+               `finding. Reload the package to run the lint again. The ` +
+               `dashboards themselves are unaffected, because they are ` +
+               `discovered before the lint runs. An operator can find the ` +
+               `cause in the server log under "Dashboard lint failed".`,
+            severity: "warn",
+         });
+      }
+      return warnings;
+   }
+
+   /**
+    * A `dashboards/*.jsx` (or `.tsx`) in a package Publisher is serving.
+    *
+    * Malloyyo renders such a file as the dashboard's custom component;
+    * Publisher does not implement that, so the file is inert here. This exists
+    * for the migration case: a Malloyyo repo registered unchanged would
+    * otherwise show its custom dashboards as an empty tile grid, or as nothing
+    * at all, with no indication that a file was skipped. Say so at load, and
+    * name the surface that does run author-written code.
+    */
+   private async unsupportedComponentWarnings(): Promise<ApiPackageWarning[]> {
+      const dir = safeJoinUnderRoot(this.packagePath, DASHBOARDS_DIR);
+      let entries: string[];
+      try {
+         entries = await fs.readdir(dir);
+      } catch {
+         return [];
+      }
+      const warnings: ApiPackageWarning[] = [];
+      for (const entry of entries.sort()) {
+         const suffix = COMPONENT_FILE_SUFFIXES.find((s) => entry.endsWith(s));
+         if (!suffix) continue;
+         const base = entry.slice(0, -suffix.length);
+         warnings.push({
+            model: `${DASHBOARDS_DIR}/${entry}`,
+            subject: base,
+            message:
+               `Custom dashboard components are not supported, so ` +
+               `"${DASHBOARDS_DIR}/${entry}" is ignored. Any ` +
+               `${DASHBOARDS_DIR}/${base}${MODEL_FILE_SUFFIX} beside it still ` +
+               `renders from its tags. For a page that runs its own code, use ` +
+               `an HTML data app in the package's public/ directory.`,
+            severity: "warn",
+         });
+      }
+      return warnings;
+   }
+
+   public listDashboards(): ApiDashboard[] {
+      // Resolved once rather than per dashboard: `isQueryableEntryPoint` builds
+      // a Set from `explores` on every call.
+      const servable = this.servableEntryPoints();
+      return Array.from(this.dashboards.values())
+         .filter((manifest) => servable(manifest.entryFile))
+         .map((manifest) => ({
+            resource: this.dashboardResource(manifest.name),
+            packageName: this.packageName,
+            name: manifest.name,
+            path: manifest.entryFile,
+            title: manifest.title,
+            description: manifest.description,
+            error: manifest.error,
+         }));
+   }
+
+   /** The full manifest for one dashboard, or undefined if there is no such slug. */
+   public getDashboard(name: string): ApiDashboardManifest | undefined {
+      const manifest = this.dashboards.get(name);
+      // Re-checked here as well as at discovery, because the two can drift.
+      // `setPackageMetadata` (the metadata PATCH) installs a new explore set and
+      // re-applies the query boundary WITHOUT re-running discovery, so a PATCH
+      // that curates a package would otherwise leave this map serving the
+      // manifests curation was meant to withhold until some unrelated reload.
+      // The gate is a set lookup, so paying for it per request is free.
+      //
+      // This is deliberately one-directional: it can withhold a dashboard the
+      // cached map still holds, but it cannot surface one discovery already
+      // dropped, so RELAXING curation by PATCH needs a reload to take effect.
+      // That is the safe direction to be wrong in.
+      if (manifest && !this.isQueryableEntryPoint(manifest.entryFile)) {
+         return undefined;
+      }
+      if (!manifest) return undefined;
+      return {
+         resource: this.dashboardResource(manifest.name),
+         packageName: this.packageName,
+         name: manifest.name,
+         path: manifest.entryFile,
+         title: manifest.title,
+         description: manifest.description,
+         error: manifest.error,
+         query: manifest.query,
+         tiles: manifest.tiles,
+         dashboardColumns: manifest.dashboardColumns,
+         startingGivens: manifest.startingGivens,
+         autorun: manifest.autorun,
+         givens: manifest.givens,
+      };
+   }
+
+   /**
+    * The dashboard's own URL.
+    *
+    * The NAME is percent-encoded; the environment and package names are not,
+    * because both are validated on the way in and cannot carry a character that
+    * matters here. The name is different: it is a filename basename, so it can
+    * carry anything a filesystem allows. Serving such a dashboard is right, and
+    * measured: the route matches and the encoded URL answers 200. Publishing
+    * the name RAW was not. `dashboards/a#b.malloy` published
+    * `.../dashboards/a#b`, where the `#` opens a fragment, so a client
+    * following the link asked for `.../dashboards/a` and got a 404; `?` did the
+    * same via a query string, and a space is not a legal URL character at all.
+    * Encoded, all three answer 200.
+    */
+   private dashboardResource(name: string): string {
+      return `${API_PREFIX}/environments/${this.environmentName}/packages/${this.packageName}/dashboards/${encodeURIComponent(name)}`;
+   }
+
    public async listNotebooks(): Promise<ApiNotebook[]> {
       return await Promise.all(
          Array.from(this.models.keys())
@@ -2061,11 +2748,18 @@ export class Package {
                return modelPath.endsWith(NOTEBOOK_FILE_SUFFIX);
             })
             .map(async (modelPath) => {
-               const error = this.models.get(modelPath)?.getNotebookError();
+               const model = this.models.get(modelPath);
+               const error = model?.getNotebookError();
+               // A notebook that failed to compile has no cells and no
+               // annotations to read a title from, so it lists as its filename
+               // with the error — the same way a broken dashboard does.
+               const listing = model?.getNotebookListing() ?? {};
                return {
                   environmentName: this.environmentName,
                   packageName: this.packageName,
                   path: modelPath,
+                  title: listing.title,
+                  description: listing.description,
                   error: error?.message,
                };
             }),

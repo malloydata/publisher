@@ -77,7 +77,7 @@ The grammar, in brief (full reference: Malloyyo's `creating-dashboards.md`):
 | `## artifact { title tiles=["src -> view", …] dashboard_columns=N }` (model-level)                                       | Declares a **composite** dashboard: named existing views run separately and combined into one grid.                                                                                                                                                                    |
 | `# dashboard {columns=N}` + `# colspan=K` + `# break`                                                                    | The renderer grid. Standard `@malloydata/render` tags — a layout tag above an `aggregate:`/`nest:` block applies to every item in the block.                                                                                                                           |
 | `given:` declarations with `# label=`, `control=select\|multiselect`, `range_min/max`, `suggest { query=… dimension=… }` | Typed filter inputs (`filter<string\|number\|timestamp\|date>`). Each given a dashboard's query references auto-renders as a control; the dashboard applies it via `where: field ~ $NAME`. Declarations are a model concern; each dashboard decides its own filtering. |
-| `# drill { to=[slug\|self] given=… }` on a source `dimension:`                                                           | Clickable cells: navigate to another dashboard seeding the clicked value into its given (dimension name upper-cased unless `given=` overrides), or `self` to filter in place. Multiple destinations pop a menu.                                                        |
+| `# drill { to=[slug\|self] given=… }` on a source `dimension:`                                                           | Clickable cells: navigate to another dashboard seeding the clicked value into its given (the given is the dimension name verbatim unless `given=` overrides), or `self` to filter in place. Multiple destinations pop a menu.                                                        |
 | `dashboards/<name>.jsx` / `.tsx`                                                                                         | Malloyyo's custom React component. **Not supported** — ignored, with a load-time warning (§Custom JSX components: cut).                                                                                                                                                |
 | A `dashboards/*.malloy` with **no** artifact tag                                                                         | A shared include (skipped by discovery).                                                                                                                                                                                                                               |
 
@@ -491,8 +491,9 @@ model repo with an agent).
 ### `# drill` navigation
 
 Click handling attaches to rendered cells carrying a `# drill` tag. `to=<slug>` navigates to that
-dashboard's route with `?GIVEN=value` seeded (dimension name upper-cased unless `given=`
-overrides); `to=self` sets the given on the current document; two-plus destinations pop a menu.
+dashboard's route with the given seeded from the clicked value (the given is the dimension name
+verbatim unless `given=` overrides); `to=self` sets the given on the current document; two-plus
+destinations pop a menu.
 It wires the renderer's `onClick` in `RenderedResult` — the same `@malloydata/render` Malloyyo
 drives, so the event surface exists. Drill targets are validated at load (see lint above), never
 dead-ended at click time. Navigation itself is always delegated to the host's `onNavigate`
