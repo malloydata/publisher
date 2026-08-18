@@ -45,6 +45,14 @@ bumps sdk/app/server, commits to a fresh `release/sdk-<version>` branch, and pus
 and `docker-image.yml` are then called with that ref. `publish-packages` triggers the other two
 trains (see below). `gh-release` cuts the tag, and only after npm and Docker have both succeeded.
 
+`gh-release` also owns the release notes. It appends every `## [Unreleased]` section of
+`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then commits the heading
+back to `main` stamped with the shipped version. Both used to be manual post-release steps and were
+reliably skipped — 0.0.243 through 0.0.247 shipped with none of their narrative. The stamp is
+`continue-on-error`: by then the release is public and correct, and a failed docs commit must not
+redden it. Note the stamp pushes to `main` while `publish-packages` may still be polling; that guard
+ignores it only because `RELEASE_NOTES.md` is not among the paths it watches.
+
 npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token. There is no
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets
 (`DOCKERHUB_TOKEN`, `PYPI_TOKEN`); npm does not.

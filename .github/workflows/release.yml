@@ -89,7 +89,27 @@ jobs:
             fi
           else
             echo "::notice title=Version::No version provided — performing patch bump"
-            CURRENT="$(node -p "require('./packages/sdk/package.json').version")"
+
+            # The floor is what npm holds, not what main declares. Release
+            # branches are never merged back, so packages/sdk/package.json lags
+            # the registry permanently, and walking up from it stops at the
+            # first version whose branch and tag are FREE — which is not the
+            # same as one above the highest published. Skip a number (any
+            # explicit `-f version=` that jumps ahead does) and the walk later
+            # drops into the gap, publishes below `latest`, and moves the
+            # dist-tag BACKWARDS with nothing failing.
+            #
+            # Fail closed when the registry will not answer. The alternative is
+            # falling back to the stale file, which is the bug this exists to
+            # prevent, and the explicit-version path above is unaffected.
+            PUBLISHED="$(npm view @malloy-publisher/sdk version 2>/dev/null || true)"
+            if [ -z "$PUBLISHED" ]; then
+              echo "::error title=Version::could not read the published sdk version from npm, so the next version cannot be derived safely. Re-run with an explicit version input."
+              exit 1
+            fi
+            DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
+            CURRENT="$(printf '%s\n%s\n' "$PUBLISHED" "$DECLARED" | sort -V | tail -1)"
+            echo "::notice title=Version::floor is ${CURRENT} (npm ${PUBLISHED}, main ${DECLARED})"
             NEW_VERSION="$(bump_patch "$CURRENT")"
             while version_taken "$NEW_VERSION"; do
               echo "::notice title=Version::release/sdk-${NEW_VERSION} already exists — bumping again"
@@ -572,6 +592,11 @@ jobs:
           ref: ${{ needs.prepare.outputs.branch_name }}
           fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -599,6 +624,26 @@ jobs:
           - Release branch: \`${BRANCH}\`
           - Triggered by: @${{ github.actor }}
           EOF
+
+          # Append the hand-written narrative, if this release has any.
+          #
+          # --generate-notes below lists the merged PRs, which is enough for a
+          # routine patch but says nothing about a breaking change, a deprecation
+          # or a metric whose meaning moved. Those live in RELEASE_NOTES.md's
+          # `## [Unreleased]` sections, and used to reach the release page only
+          # if a human remembered to paste them after the fact. Nobody did for
+          # 0.0.243 through 0.0.247.
+          #
+          # Read from this checkout, which is the release branch: `prepare`
+          # touches only the three package.json files, so its RELEASE_NOTES.md is
+          # main's. Empty output is the normal case and adds nothing.
+          NARRATIVE="$(node scripts/release-notes.mjs extract)"
+          if [ -n "$NARRATIVE" ]; then
+            printf '\n%s\n' "$NARRATIVE" >> "$NOTES_FILE"
+            echo "::notice title=Release notes::attached $(grep -c '^## ' <<< "$NARRATIVE") narrative section(s) from RELEASE_NOTES.md"
+          else
+            echo "::notice title=Release notes::no [Unreleased] sections; the generated PR list stands alone"
+          fi
 
           if [[ "$VERSION" == *-* ]]; then
             echo "::notice title=GitHub Release::Skipping release creation for prerelease version ${VERSION}"
@@ -638,3 +683,67 @@ jobs:
 
           echo "## 🏷️ GitHub Release" >> $GITHUB_STEP_SUMMARY
           echo "Created release [\`${TAG}\`](https://github.com/${{ github.repository }}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY
+
+      # Stamp the sections this release just shipped, on main.
+      #
+      # Deliberately AFTER `gh release create`: the stamp records what shipped,
+      # so a release that failed to cut must not leave main claiming a version
+      # that does not exist. `set -e` on the step above is what enforces that
+      # ordering — this step is simply never reached.
+      #
+      # Failure here is not made fatal. The release is already public and
+      # correct by this point; the only casualty is a heading on main that still
+      # reads [Unreleased], which the next release stamps anyway and which a
+      # human can fix with one commit. Reddening a finished release over a docs
+      # commit would send someone hunting a publishing problem that does not
+      # exist.
+      #
+      # A note on timing that is invisible from this job: `publish-packages` is
+      # NOT in this job's `needs`, so it may still be polling npm while this
+      # pushes. Its "main moved during this release" guard compares against the
+      # paths each package's published content is built from — `skills/`,
+      # `packages/skills/`, `bun.lock`, root `package.json` — and RELEASE_NOTES.md
+      # is in none of them, so this push is seen and correctly judged
+      # irrelevant. Adding a watched path to that guard without re-reading this
+      # comment would turn every narrative release into an aborted dispatch.
+      - name: Stamp the shipped sections on main
+        if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
+        continue-on-error: true
+        env:
+          VERSION: ${{ needs.prepare.outputs.new_version }}
+        run: |
+          set -euo pipefail
+
+          git config --local user.email "${{ github.actor }}@users.noreply.github.com"
+          git config --local user.name "${{ github.actor }}"
+
+          # A fresh main, not this checkout: this job is on the release branch,
+          # and main may have moved since the release started.
+          git fetch origin main
+          git checkout -B main origin/main
+
+          STAMPED="$(node scripts/release-notes.mjs stamp "$VERSION")"
+          if [ "$STAMPED" = "0" ]; then
+            echo "::notice title=Release notes::nothing to stamp on main"
+            exit 0
+          fi
+
+          git add RELEASE_NOTES.md
+          git commit -s -m "docs: stamp the release notes shipped in ${VERSION}"
+
+          # One retry, re-running the stamp against whatever main became rather
+          # than rebasing a commit onto it. The stamp is a pure function of the
+          # file, so recomputing is both simpler and correct where a rebase
+          # could conflict with a section edited in the meantime.
+          if ! git push origin main; then
+            echo "::notice title=Release notes::main moved; recomputing the stamp"
+            git fetch origin main
+            git checkout -B main origin/main
+            node scripts/release-notes.mjs stamp "$VERSION" >/dev/null
+            git add RELEASE_NOTES.md
+            git diff --cached --quiet && { echo "::notice title=Release notes::already stamped"; exit 0; }
+            git commit -s -m "docs: stamp the release notes shipped in ${VERSION}"
+            git push origin main
+          fi
+
+          echo "Stamped ${STAMPED} section(s) as \`${VERSION}\` on main" >> $GITHUB_STEP_SUMMARY
