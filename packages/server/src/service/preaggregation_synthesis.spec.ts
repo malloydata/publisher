@@ -47,6 +47,29 @@ ${body}
 `;
 }
 
+/** An author model whose `orders` carries `annotation` above it. */
+function annotatedAuthorModel(annotation: string, body: string): string {
+   return `##! experimental { persistence composite_sources }
+${annotation}
+source: orders is duckdb.sql("""${ROWS}""") extend {
+${body}
+}
+`;
+}
+
+/** Compile an annotated author model and return source `orders`. */
+async function compileAnnotatedOrders(
+   annotation: string,
+   body: string,
+): Promise<ValidatableSource> {
+   const compiled = await loadTestModel(
+      connections,
+      annotatedAuthorModel(annotation, body),
+   ).getModel();
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   return (compiled as any)._modelDef.contents["orders"] as ValidatableSource;
+}
+
 /** Compile an author model and return source `orders` from its contents. */
 async function compileOrders(body: string): Promise<ValidatableSource> {
    const compiled = await loadTestModel(
@@ -124,6 +147,62 @@ describe("the plan groups by grain, not by measure", () => {
          await planFor(`  #@ -preaggregate
   measure: total is amount.sum()`),
       ).toEqual([]);
+   });
+});
+
+describe("a rollup is created where its base lives", () => {
+   const GRAIN = `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`;
+
+   it("qualifies the rollup with the base's namespace", async () => {
+      // A rollup of X belongs beside X. On a dialect that requires qualification
+      // this is also what makes it buildable at all: BigQuery rejects an
+      // unqualified CREATE, so a bare name is not a cosmetic difference there.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders('#@ persist name="analytics.orders_tbl"', GRAIN),
+      );
+      expect(plans).toHaveLength(1);
+      expect(plans[0].namespace).toBe("analytics");
+      expect(synthesizePreaggregationModel(plans, "./orders.malloy")).toContain(
+         `#@ persist name="analytics.${plans[0].rollupSourceName}"`,
+      );
+   });
+
+   it("takes the namespace, not the base's table name", async () => {
+      // The rollup is its own table; only the namespace is inherited. Appending to
+      // the base's table name would collide two different things in one name.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders('#@ persist name="analytics.orders_tbl"', GRAIN),
+      );
+      const emitted = synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
+      expect(emitted).not.toContain("orders_tbl__preagg");
+   });
+
+   it("keeps a project-qualified namespace whole", async () => {
+      // BigQuery names can carry a project as well as a dataset, so the split is on
+      // the LAST dot: the rollup lands in the same dataset, not the same project.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders('#@ persist name="proj.analytics.orders_tbl"', GRAIN),
+      );
+      expect(plans[0].namespace).toBe("proj.analytics");
+   });
+
+   it("emits a bare persist when the base names no namespace", async () => {
+      // Nothing to inherit, so nothing is invented — nor is the previous behaviour
+      // changed for the dialects that accept an unqualified name.
+      const unqualified = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders('#@ persist name="orders_tbl"', GRAIN),
+      );
+      expect(unqualified[0].namespace).toBeUndefined();
+      expect(synthesizePreaggregationModel(unqualified, "./orders.malloy")).toContain(
+         "#@ persist\nsource:",
+      );
+
+      const unpersisted = await planFor(GRAIN);
+      expect(unpersisted[0].namespace).toBeUndefined();
    });
 });
 

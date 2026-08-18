@@ -50,6 +50,7 @@
  * Pure: takes compiled IR, returns a plan and a string, touches no I/O.
  */
 
+import { Annotations } from "@malloydata/malloy";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -83,6 +84,16 @@ export interface RollupPlan {
    baseSourceName: string;
    /** The synthesized `#@ persist` source's name. Deterministic. */
    rollupSourceName: string;
+   /**
+    * The namespace the rollup's table is created in — everything before the last
+    * dot of the base's own `#@ persist name=`, or undefined when the base names
+    * no namespace (or is not persisted at all).
+    *
+    * A rollup of X belongs where X lives. It also decides whether the rollup can
+    * be built at all on a dialect that requires qualification: BigQuery rejects
+    * an unqualified CREATE, so a bare name is not a cosmetic difference there.
+    */
+   namespace?: string;
    /** The one grain, canonically sorted. */
    grainDimensions: string[];
    /** The measures served here, sorted by name. */
@@ -126,6 +137,25 @@ export function baseAlias(baseSourceName: string): string {
 }
 
 /**
+ * The namespace half of a `#@ persist name=` — everything before the LAST dot.
+ *
+ * `analytics.orders` yields `analytics`; `proj.analytics.orders` yields
+ * `proj.analytics`; a bare `orders` yields undefined. Split on the last dot
+ * rather than the first because BigQuery names can carry a project as well as a
+ * dataset, and the rollup belongs beside the base in whichever of those it names.
+ *
+ * A quoted name is returned as-is minus its final segment, so a base the author
+ * quoted for their dialect keeps that quoting: the segments are re-joined
+ * unchanged and the rollup's own segment is appended plain, which is what
+ * `quoteManifestTablePath` expects of an already-canonical path.
+ */
+export function persistNamespace(persistName: string | undefined): string | undefined {
+   if (!persistName) return undefined;
+   const lastDot = persistName.lastIndexOf(".");
+   return lastDot > 0 ? persistName.slice(0, lastDot) : undefined;
+}
+
+/**
  * Group one source's `#@ preaggregate` declarations into rollups — one per
  * distinct grain, because ten measures at one grain should be one table and one
  * `GROUP BY`, not ten.
@@ -134,10 +164,35 @@ export function baseAlias(baseSourceName: string): string {
  * declaration that would be refused at publish is skipped here rather than
  * re-reported, so the two never disagree about what is buildable.
  */
+/**
+ * The base's own `#@ persist name=`, or undefined when it declares none.
+ *
+ * Read from the source's annotations rather than from a build plan: synthesis runs
+ * before one exists, and the rollup's text has to carry the name it will be built
+ * under. Unreadable annotations are treated as absent for the same reason
+ * {@link readPreaggregateAnnotation} does — a malformed line must not take the
+ * package down.
+ */
+function basePersistName(source: ValidatableSource): string | undefined {
+   if (!source.annotations) return undefined;
+   try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tag = new Annotations(source.annotations as any).parseAsTag("@").tag;
+      if (!tag.has("persist")) return undefined;
+      // `#@ persist name="x"` parses as two SIBLING keys, not a nested one — the
+      // same shape `readPreaggregateAnnotation` handles for `grain`. Nested form
+      // first so a future nested spelling wins, sibling as the documented fallback.
+      return tag.text("persist", "name") ?? tag.text("name");
+   } catch {
+      return undefined;
+   }
+}
+
 export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
+   const basePersistNamespace = persistNamespace(basePersistName(source));
    // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
    // two authors writing the same dimensions in either order land in one entry.
    const byGrain = new Map<
@@ -178,6 +233,7 @@ export function planSourcePreaggregation(
       .map(({ grainDimensions, measures }) => ({
          baseSourceName,
          rollupSourceName: rollupSourceName(baseSourceName, grainDimensions),
+         namespace: basePersistNamespace,
          grainDimensions,
          // Sorted so the emitted text does not depend on field order in the IR.
          measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),
@@ -213,7 +269,13 @@ function emitRollup(plan: RollupPlan): string {
    const merged = plan.measures
       .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
       .join("\n");
-   return `#@ persist
+   // Named only when the base named a namespace. Without one the build self-assigns
+   // from the source name, which is what every dialect but BigQuery accepts — and
+   // there is nothing to inherit, so inventing a namespace here would be a guess.
+   const persist = plan.namespace
+      ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
+      : "#@ persist";
+   return `${persist}
 source: ${plan.rollupSourceName} is ${alias} -> {
   group_by:
 ${plan.grainDimensions.map((d) => `    ${d}`).join("\n")}
