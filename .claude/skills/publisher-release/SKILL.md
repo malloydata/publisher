@@ -10,8 +10,7 @@ A release is one `workflow_dispatch` of `Release (NPM + Docker)`
 work has to land on `main` **before** that dispatch, or be written **after** it
 completes — and the step that is always skipped is the last one.
 
-Read [`.github/workflows/CONTEXT.md`](../../../.github/workflows/CONTEXT.md)
-before acting. It carries the publishing rules that are not guessable from the
+Read `.github/workflows/CONTEXT.md` (path from the repo root) before acting. It carries the publishing rules that are not guessable from the
 YAML, and it is the authority when this file and it disagree.
 
 ## Release notes: when to write one, and what number goes on it
