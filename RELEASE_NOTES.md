@@ -143,18 +143,27 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   `#(authorize)` on each `source:` it was meant to protect. See
   [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates).
 - **A near-miss `authorize` spelling now fails the model load instead of silently doing nothing.**
-  `# (authorize)` / `## (authorize)` (a space after the `#`), `#( authorize )`, `#(authorize)X` and
-  `#authorize` are not `authorize` annotations to the Malloy compiler — the first two are plain
-  MOTLY/render tags, the rest are malformed prefixes — so a source carrying one has always served
-  every row while its author read it as locked, and the package loaded clean. A package with one of
-  these will now fail to load, naming the spelling and the fix (`#(authorize) "<expression>"` on the
-  `source:` statement). Refusing is deliberate rather than interpreting the intent: honouring the
-  spelling would mean publisher assigning meaning inside a namespace Malloy reserves for itself, and
-  would silently start enforcing a filter on packages that served every row yesterday. In the same
-  change, the block form `#|(authorize)` … `|#` and the other bracket pairs (`#[authorize]`,
-  `#<authorize>`, `#{authorize}`) are now recognized as gates, because the compiler routes them
-  there — the block form in particular was previously a live fail-open, unenforced at query time
-  *and* eligible to be frozen into a materialized artifact.
+  `# (authorize)` / `## (authorize)` (a space after the `#`), `#( authorize )`, `#(authorize )`,
+  `#(authorize)X`, `#authorize`, and case variants of the name itself (`#(AUTHORIZE)`,
+  `#(Authorize)`) are not `authorize` annotations to the Malloy compiler — the spaced pair are plain
+  MOTLY/render tags, the next four are malformed prefixes, and the case variants route to a name that
+  is not ours — so a source carrying one has always served every row while its author read it as
+  locked, and the package loaded clean. A package with one of these will now fail to load, naming the
+  spelling and the fix (`#(authorize) "<expression>"` on the `source:` statement). Refusing is
+  deliberate rather than interpreting the intent: honouring the spelling would mean publisher
+  assigning meaning inside a namespace Malloy reserves for itself, and would silently start enforcing
+  a filter on packages that served every row yesterday. In the same change, the block form
+  `#|(authorize)` … `|#` and the other bracket pairs (`#[authorize]`, `#<authorize>`, `#{authorize}`)
+  are now recognized as gates, because the compiler routes them there — the block form in particular
+  was previously a live fail-open, unenforced at query time *and* eligible to be frozen into a
+  materialized artifact.
+
+  **What is deliberately NOT refused:** another application's `authorize`-prefixed route.
+  Classification now asks the compiler for a note's route rather than matching its text, so
+  `#(authorize-v2)`, `#(authorize.audit)`, `#(authorize/v2)`, `#(authorize_v2)` and `#(authorized)`
+  are valid distinct routes belonging to whoever declared them, and load untouched. An earlier draft
+  of this refusal matched them as near misses and failed the whole model load with advice aimed at
+  someone else.
 - **Known limitation — one notebook shape fails with a 400 instead of filtering.** A cell that both
   declares a gated source and runs it in the same cell, where the gate reads a JOINED field and the
   run query does not itself reference that field, is refused rather than answered. Reference the
