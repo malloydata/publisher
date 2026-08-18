@@ -1,0 +1,41 @@
+// The layout recipe as a fixture: `columns=12`, colspans summing to 12 on each
+// row, and a `# break` so the tiles get a row of their own instead of flowing in
+// beside the KPI cards. Nothing here measures the rendered result: this slice
+// ships no UI, so what is pinned is only that the manifest carries the numbers
+// through. "The cards and the tiles line up" is a claim about pixels and belongs
+// to whichever slice builds the browser surface.
+//
+// The tiles are inline rather than the model's `by_brand` / `by_region`, whose
+// own `where:` clauses would add controls this page is not about.
+##! experimental.givens
+import { orders } from '../orders.malloy'
+import { BRAND } from '../givens.malloy'
+
+#" Two cards over two tiles.
+# artifact { title="Grid" } dashboard {columns=12}
+query: grid is orders -> {
+   where: brand_name ~ $BRAND
+
+   aggregate:
+      # label="Orders"
+      # colspan=6
+      order_count
+      # label="Revenue"
+      # colspan=6
+      total_amount
+
+   nest:
+      # break
+      # colspan=6
+      # label="By brand"
+      brand_tile is {
+         group_by: brand_name
+         aggregate: total_amount
+      }
+      # colspan=6
+      # label="By region"
+      region_tile is {
+         group_by: region_name
+         aggregate: order_count
+      }
+}

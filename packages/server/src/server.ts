@@ -18,6 +18,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
+import { DashboardController } from "./controller/dashboard.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -283,6 +284,7 @@ const memoryGovernor = memoryGovernorConfig
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
 const packageController = new PackageController(environmentStore);
+const dashboardController = new DashboardController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -1619,6 +1621,53 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                modelPath,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.listDashboards(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.getDashboard(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.dashboardName,
             ),
          );
       } catch (error) {
