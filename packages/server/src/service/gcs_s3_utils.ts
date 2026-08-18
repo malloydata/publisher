@@ -11,6 +11,17 @@ import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 type ApiTable = components["schemas"]["Table"];
 type CloudStorageType = "gcs" | "s3";
 
+// The provider order Publisher supplies when a chain-auth S3 connection names
+// none. DuckDB's own default is `config` alone — a shared credentials file,
+// which is the one source a container does not have — so leaving it unset is not
+// an option. `env` first so an explicit credential in the environment wins,
+// then `web_identity` for a projected service-account token (EKS IRSA, GKE
+// Workload Identity), then `instance` for a node's own profile.
+// Deliberately excluded: `config` (no credentials file in an image), `sts`
+// (needs ASSUME_ROLE_ARN, which this schema has no field for), and `sso` and
+// `process` (workstation flows).
+export const DEFAULT_S3_CREDENTIAL_CHAIN = "env;web_identity;instance";
+
 export interface CloudStorageCredentials {
    type: CloudStorageType;
    accessKeyId: string;
@@ -18,6 +29,12 @@ export interface CloudStorageCredentials {
    region?: string;
    endpoint?: string;
    sessionToken?: string;
+   // S3 only. `credential_chain` means the host supplies the credentials, so
+   // accessKeyId and secretAccessKey are empty and must not be signed with;
+   // `chain` is the provider order to try. GCS has no chain equivalent through
+   // this path — its secret is HMAC-only.
+   provider?: "config" | "credential_chain";
+   chain?: string;
 }
 
 interface CloudStorageBucket {
@@ -48,6 +65,8 @@ export function s3ConnectionToCredentials(s3Connection: {
    region?: string;
    endpoint?: string;
    sessionToken?: string;
+   provider?: "config" | "credential_chain";
+   chain?: string;
 }): CloudStorageCredentials {
    return {
       type: "s3",
@@ -56,22 +75,42 @@ export function s3ConnectionToCredentials(s3Connection: {
       region: s3Connection.region,
       endpoint: s3Connection.endpoint,
       sessionToken: s3Connection.sessionToken,
+      provider: s3Connection.provider,
+      chain: s3Connection.chain,
    };
 }
 
-function createCloudStorageClient(
+// Exported for tests: whether the client signs with the configured key pair or
+// leaves resolution to the AWS SDK is the whole of the chain-auth behaviour on
+// this path, and it is not observable through the listing functions below
+// without reaching a real bucket.
+export function createCloudStorageClient(
    credentials: CloudStorageCredentials,
 ): S3Client {
    const isGCS = credentials.type === "gcs";
 
+   // Under `credential_chain` there is no key pair to sign with, so the
+   // `credentials` key is omitted entirely and the AWS SDK resolves its own
+   // default chain. That chain is not DuckDB's: the SDK's covers a web-identity
+   // token natively, which is why the DuckDB secret has to name `web_identity`
+   // explicitly and this does not. Passing the empty strings through instead
+   // would sign every request with an empty key and fail on signature rather
+   // than on configuration.
+   const useHostCredentials =
+      !isGCS && credentials.provider === "credential_chain";
+
    const client = new S3Client({
       endpoint: isGCS ? "https://storage.googleapis.com" : credentials.endpoint,
       region: isGCS ? "auto" : credentials.region || "us-east-1",
-      credentials: {
-         accessKeyId: credentials.accessKeyId,
-         secretAccessKey: credentials.secretAccessKey,
-         sessionToken: credentials.sessionToken,
-      },
+      ...(useHostCredentials
+         ? {}
+         : {
+              credentials: {
+                 accessKeyId: credentials.accessKeyId,
+                 secretAccessKey: credentials.secretAccessKey,
+                 sessionToken: credentials.sessionToken,
+              },
+           }),
       forcePathStyle: isGCS || !!credentials.endpoint,
    });
 

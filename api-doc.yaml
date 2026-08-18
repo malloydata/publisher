@@ -4210,12 +4210,40 @@ components:
       type: object
       description: AWS S3 connection configuration for DuckDB
       properties:
+        # No schema `default:` here on purpose. openapi-typescript generates a
+        # property carrying a default as REQUIRED, so declaring one would force
+        # every existing caller to name a provider. The default is stated in the
+        # description and applied at attach time instead.
+        provider:
+          type: string
+          enum:
+            - config
+            - credential_chain
+          description: >-
+            How credentials are obtained; defaults to `config` when omitted.
+            `config` uses the accessKeyId and secretAccessKey on this object,
+            which are then required.
+            `credential_chain` resolves them from the host instead — an instance
+            profile, a web-identity token, or the environment — so no key is
+            stored, and supplying one is rejected. Chain resolution happens when
+            the connection is attached, so a host that cannot supply credentials
+            fails there rather than on first object access.
+        chain:
+          type: string
+          description: >-
+            Ordered list of credential providers to try, semicolon-separated,
+            for `provider: credential_chain` (DuckDB's CHAIN). Recognized
+            providers are env, config, sts, instance, sso, process, and
+            web_identity. Omit to use Publisher's default order, which covers
+            the environment, a web-identity token, and an instance profile.
+            Rejected under `provider: config`, where the key pair beside it
+            is what grants access.
         accessKeyId:
           type: string
-          description: AWS access key ID
+          description: "AWS access key ID (required for `provider: config`)"
         secretAccessKey:
           type: string
-          description: AWS secret access key
+          description: "AWS secret access key (required for `provider: config`)"
         region:
           type: string
           description: AWS region (e.g., us-east-1)
@@ -4226,9 +4254,6 @@ components:
         sessionToken:
           type: string
           description: AWS session token for temporary credentials (optional)
-      required:
-        - accessKeyId
-        - secretAccessKey
 
     AzureConnection:
       type: object

@@ -254,3 +254,81 @@ describe("EXTENSION_FETCH_POLICY=on-demand (default) — no behaviour change", (
       await config.releaseConnections().catch(() => {});
    });
 });
+
+// The `aws` extension implements PROVIDER credential_chain, and a chain secret
+// resolves when it is CREATEd rather than on first object access — so the load
+// has to happen first or the attach fails. The DuckLake attach path loads `aws`
+// unconditionally; this generic path reaches the same `attachCloudStorage`
+// through the handler table and does not, which is why the load lives with the
+// secret rather than with the caller.
+describe("credential_chain loads the aws extension before the secret", () => {
+   const envPath = path.join(process.cwd(), "test-extension-policy-chain");
+   const original = process.env.EXTENSION_FETCH_POLICY;
+
+   beforeEach(async () => {
+      await fs.mkdir(envPath, { recursive: true });
+   });
+   afterEach(async () => {
+      sinon.restore();
+      if (original === undefined) delete process.env.EXTENSION_FETCH_POLICY;
+      else process.env.EXTENSION_FETCH_POLICY = original;
+      await fs.rm(envPath, { recursive: true, force: true }).catch(() => {});
+   });
+
+   const attachGenericS3 = async (
+      s3Connection: Record<string, unknown>,
+   ): Promise<string[]> => {
+      const runSQL = sinon
+         .stub(DuckDBConnection.prototype, "runSQL")
+         .resolves({ rows: [] } as never);
+      const config = buildEnvironmentMalloyConfig(
+         [
+            {
+               name: "duckdb_generic_s3",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     { name: "root", type: "s3", s3Connection },
+                  ],
+               },
+            },
+         ] as never,
+         envPath,
+      );
+      await config.malloyConfig.connections.lookupConnection(
+         "duckdb_generic_s3",
+      );
+      await config.releaseConnections().catch(() => {});
+      return runSQL.getCalls().map((c) => String(c.args[0]));
+   };
+
+   it("issues LOAD aws ahead of CREATE SECRET on the generic attach path", async () => {
+      const sql = await attachGenericS3({ provider: "credential_chain" });
+      const loadedAws = sql.findIndex((s) => /^\s*LOAD aws/i.test(s));
+      const createdSecret = sql.findIndex((s) =>
+         /CREATE OR REPLACE SECRET/i.test(s),
+      );
+      expect(loadedAws).toBeGreaterThanOrEqual(0);
+      expect(createdSecret).toBeGreaterThanOrEqual(0);
+      expect(loadedAws).toBeLessThan(createdSecret);
+   });
+
+   it("does not load aws for a key-based attachment", async () => {
+      const sql = await attachGenericS3({
+         accessKeyId: "AKIA",
+         secretAccessKey: "shhh",
+      });
+      expect(sql.some((s) => /CREATE OR REPLACE SECRET/i.test(s))).toBe(true);
+      expect(sql.some((s) => /^\s*LOAD aws/i.test(s))).toBe(false);
+   });
+
+   // `aws` is baked into the image, so naming it does not reach the network and
+   // stays inside the policy. If it is ever dropped from the bake list, this is
+   // the test that should start failing.
+   it("never issues INSTALL aws under local-only", async () => {
+      process.env.EXTENSION_FETCH_POLICY = "local-only";
+      const sql = await attachGenericS3({ provider: "credential_chain" });
+      expect(sql.some((s) => /^\s*LOAD aws/i.test(s))).toBe(true);
+      expect(sql.some((s) => /^\s*INSTALL\s/i.test(s))).toBe(false);
+   });
+});
