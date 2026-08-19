@@ -159,15 +159,19 @@ export function markDrillableCells(
       for (const marked of table.querySelectorAll<HTMLElement>(
          `.${DRILL_CELL_CLASS}[tabindex="0"]`,
       )) {
-         // Belt and braces, NOT load-bearing, and measured as such: this query
-         // is scoped to `table`, whose subtree contains any nested table, so
-         // without this line an outer pass can see a nested table's stop and
-         // demote it. It is then restored when that nested table is processed
-         // moments later, because tables are walked in document order and each
-         // repairs its own columns. Compared the full tabindex map with and
-         // without the line across a fresh mark, a re-mark, and a re-mark after
-         // the stop was moved: identical every time. Kept for symmetry with the
-         // marking loop below, which needs its own `ownedByTable` guard.
+         // LOAD-BEARING, and a previous comment here claimed the opposite on
+         // the strength of a measurement that missed the case. This query is
+         // scoped to `table`, whose subtree contains any nested table, so
+         // without this line an outer pass sees a nested table's stop and
+         // demotes it as a duplicate of its own column. The nested pass then
+         // re-promotes, but it promotes the FIRST row, not the one the reader
+         // had roved to, so the restoration is not position-preserving.
+         //
+         // Measured both ways. Move the stop to the nested table's second row
+         // and re-mark: with this line, the stop stays there; without it, the
+         // stop is back on the nested table's first row. The earlier
+         // measurement moved the stop in the OUTER table, where the fallback
+         // lands on the same cell and the two are indistinguishable.
          if (!ownedByTable(marked)) continue;
          const column = gridColumnStart(marked);
          if (!column) continue;

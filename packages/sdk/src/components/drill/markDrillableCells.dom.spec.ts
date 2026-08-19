@@ -273,15 +273,27 @@ describe("moveDrillStop keeps a column to exactly one tab stop", () => {
       expect(outer[0].getAttribute("tabindex")).toBe("0");
       expect(inner[0].getAttribute("tabindex")).toBe("0");
 
-      // The RE-MARK is the case that matters, and a fresh mark cannot show it.
-      // The outer table's pre-scan queries its own subtree, which CONTAINS the
-      // nested table, so without the own-table filter it sees the inner table's
-      // stop as a duplicate of the outer column's and demotes it. The inner
-      // table would lose its only tab stop on every re-mark, and a settling
-      // `# dashboard` re-marks repeatedly.
+      // The case that matters is a re-mark with the nested stop MOVED OFF row
+      // zero. Asserting only that `inner0` still holds it proves nothing: that
+      // is where the fallback promotion lands anyway, so the assertion passes
+      // with the guard deleted. This is the shape that fails without it.
+      const inner1 = Array.from(
+         root.querySelectorAll<HTMLElement>(`.${DRILL_CELL_CLASS}`),
+      ).find((n) => n.textContent === "inner1");
+      expect(inner1).toBeDefined();
+      inner[0].tabIndex = -1;
+      (inner1 as HTMLElement).tabIndex = 0;
+
       markDrillableCells(root, new Set(["region"]));
+
+      // The outer pass sees the nested stop as a duplicate of its own column and
+      // demotes it; the nested pass then re-promotes the FIRST row rather than
+      // the roved one, so a reader who had arrowed down inside a nested table
+      // would be thrown back to its top on every re-mark, and a settling
+      // `# dashboard` re-marks repeatedly.
       expect(outer[0].getAttribute("tabindex")).toBe("0");
-      expect(inner[0].getAttribute("tabindex")).toBe("0");
+      expect(inner[0].getAttribute("tabindex")).toBe("-1");
+      expect((inner1 as HTMLElement).getAttribute("tabindex")).toBe("0");
    });
 
    // Belt and braces: even if some other path drifts a column, the next mark

@@ -476,7 +476,7 @@ import {
   ServerProvider,
 } from "@malloy-publisher/sdk";
 
-<ServerProvider baseURL="https://publisher.example.com">
+<ServerProvider baseURL="https://publisher.example.com/api/v0">
   <Dashboard
     resourceUri={encodeResourceUri({
       environmentName: "examples",

@@ -17,7 +17,12 @@ export interface DashboardTileProps {
    queryName?: string;
    /** A run expression (a composite tile). */
    tile?: string;
-   /** Control values to run with, already narrowed to this tile's givens. */
+   /**
+    * The whole applied control row, NOT this tile's share of it. The narrowing
+    * happens here, in `givensToRequest` below, using {@link givenNames}: the
+    * caller does not know which givens a tile references and this component
+    * does.
+    */
    givens: Map<string, GivenValue>;
    /** Declared type per given name, which decides how a value is encoded. */
    declaredTypes: ReadonlyMap<string, string | undefined>;
