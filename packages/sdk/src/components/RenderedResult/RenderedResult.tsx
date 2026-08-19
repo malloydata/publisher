@@ -15,7 +15,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
-   drillColumnSiblings,
+   moveDrillStop,
    drillableFieldNames,
    markDrillableCells,
    type DrillMetadataSource,
@@ -599,27 +599,12 @@ function RenderedResultInner({
                      cell: HTMLElement,
                      to: number | "first" | "last",
                   ) => {
-                     const siblings = drillColumnSiblings(cell);
-                     const at = siblings.indexOf(cell);
-                     if (at === -1) return false;
-                     const next =
-                        to === "first"
-                           ? siblings[0]
-                           : to === "last"
-                             ? siblings[siblings.length - 1]
-                             : siblings[
-                                  Math.min(
-                                     Math.max(at + to, 0),
-                                     siblings.length - 1,
-                                  )
-                               ];
-                     if (!next || next === cell) return false;
-                     // The stop moves with focus, so tabbing away and back
-                     // returns to the row the reader was on.
-                     cell.tabIndex = -1;
-                     next.tabIndex = 0;
-                     next.focus();
-                     return true;
+                     // The move lives in `markDrillableCells` beside the column
+                     // rule, because it has to hold the same invariant the
+                     // marking does: exactly one stop per column. Doing it here
+                     // by clearing the focused cell assumed that cell HELD the
+                     // stop, which a click-focused `tabindex="-1"` cell does not.
+                     moveDrillStop(cell, to)?.focus();
                   };
                   drillKeydown = (event: KeyboardEvent) => {
                      const cell = drillCell(event) as HTMLElement | null;
@@ -705,8 +690,6 @@ function RenderedResultInner({
       return () => {
          cancelled = true;
          observer?.disconnect();
-         drillObserver?.disconnect();
-         cancelAnimationFrame(drillFrame);
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
          // If this render built a stage but never swapped it into `liveRef`
@@ -727,6 +710,14 @@ function RenderedResultInner({
             if (drillKeydown)
                stage.removeEventListener("keydown", drillKeydown);
             if (drillKeyup) stage.removeEventListener("keyup", drillKeyup);
+            // The re-marker is scoped the same way, and for the same reason.
+            // Disconnecting it unconditionally tied it to the effect RUN: a
+            // re-run while a `# dashboard` was still building its cards stopped
+            // the LIVE stage being re-marked, so cards arriving after that point
+            // never became drillable. Like the listeners, it is collected with
+            // the node once a promoted stage is dropped.
+            drillObserver?.disconnect();
+            cancelAnimationFrame(drillFrame);
             viz?.remove();
             if (stage.parentNode === element) {
                element.removeChild(stage);

@@ -346,10 +346,16 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   given no model in the package declares is an error at load.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
-underlined under the pointer: plain text at rest, a link when you reach for them. They are also in
-the tab order and carry a button role, so a keyboard reaches them and Enter or Space fires the drill,
-with focus styled the way hover is. That matters because a pointer cursor and a hover colour are the
-two things a keyboard or touch user can never produce.
+underlined under the pointer: plain text at rest, a link when you reach for them. They carry a button
+role and are reachable from the keyboard, with focus styled the way hover is, and Enter or Space
+fires the drill. That matters because a pointer cursor and a hover colour are the two things a
+keyboard or touch user can never produce.
+
+**Tab reaches the column; the arrows move within it.** A drillable column puts ONE cell in the tab
+order, not one per row, so Tab does not walk a reader through a thousand cells to reach whatever
+follows the result. From a cell in the column, ArrowDown and ArrowUp step a row, Home and End jump to
+the ends, and the movement stops at the ends rather than wrapping. The tab stop follows the focused
+row, so leaving the result and tabbing back returns to the row you were on.
 
 Those signals are the only thing saying a cell does anything, so it is worth knowing what turns them
 off: a destination the surface cannot reach is not offered and not marked, deliberately, since a dead

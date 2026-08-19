@@ -161,7 +161,13 @@ export function markDrillableCells(
       )) {
          if (!ownedByTable(marked)) continue;
          const column = gridColumnStart(marked);
-         if (column) hasStop.add(column);
+         if (!column) continue;
+         // The first one keeps the stop and a duplicate is DEMOTED, not left
+         // alone. Preserving every `tabindex="0"` it found meant a column that
+         // had somehow gained a second stop kept both through every re-mark,
+         // which is the accumulation this whole scheme exists to prevent.
+         if (hasStop.has(column)) marked.tabIndex = -1;
+         else hasStop.add(column);
       }
 
       for (const cell of table.querySelectorAll<HTMLElement>(
@@ -253,4 +259,40 @@ export function drillColumnSiblings(cell: HTMLElement): HTMLElement[] {
          sibling.closest(".malloy-table") === table &&
          gridColumnStart(sibling) === column,
    );
+}
+
+/**
+ * Move a drillable column's single tab stop `to` rows from `from`, or to the
+ * first or last cell, and return the cell that should now take focus.
+ *
+ * Lives beside {@link drillColumnSiblings} because it enforces the same
+ * invariant the marking does: exactly one cell per column carries
+ * `tabindex="0"`.
+ */
+export function moveDrillStop(
+   from: HTMLElement,
+   to: number | "first" | "last",
+): HTMLElement | undefined {
+   const siblings = drillColumnSiblings(from);
+   const at = siblings.indexOf(from);
+   if (at === -1) return undefined;
+   const next =
+      to === "first"
+         ? siblings[0]
+         : to === "last"
+           ? siblings[siblings.length - 1]
+           : siblings[Math.min(Math.max(at + to, 0), siblings.length - 1)];
+   if (!next) return undefined;
+   // EVERY sibling is rewritten, not just `from`. A cell with `tabindex="-1"`
+   // is still click-focusable, so `from` is frequently NOT the cell holding the
+   // stop: clicking a cell mid-column and then pressing an arrow used to clear
+   // `from` (already -1, a no-op) and promote its neighbour, leaving the column
+   // with two stops. The marking pass then preserved both, so it stuck, and
+   // repeating the gesture accumulated more.
+   //
+   // Rewriting all of them also means a clamped move at either end, where
+   // `next === from`, repairs a column that had drifted rather than doing
+   // nothing.
+   for (const sibling of siblings) sibling.tabIndex = sibling === next ? 0 : -1;
+   return next;
 }

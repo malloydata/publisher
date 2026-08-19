@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
    DRILL_CELL_CLASS,
    drillColumnSiblings,
+   moveDrillStop,
    markDrillableCells,
 } from "./markDrillableCells";
 
@@ -116,5 +117,83 @@ describe("markDrillableCells and the tab order", () => {
       const orphan = document.createElement("div");
       orphan.className = DRILL_CELL_CLASS;
       expect(drillColumnSiblings(orphan)).toEqual([]);
+   });
+});
+
+describe("moveDrillStop keeps a column to exactly one tab stop", () => {
+   const table = (rows: number) => {
+      const root = document.createElement("div");
+      const cells = Array.from(
+         { length: rows },
+         (_unused, index) =>
+            `<div class="column-cell td" style="grid-column: 1 / 2;">v${index}</div>`,
+      ).join("");
+      root.innerHTML = `
+         <div class="malloy-table">
+            <div class="column-cell th" style="grid-column: 1 / 2;">region</div>
+            ${cells}
+         </div>`;
+      markDrillableCells(root, new Set(["region"]));
+      return root;
+   };
+   const marked = (root: HTMLElement) =>
+      Array.from(root.querySelectorAll<HTMLElement>(`.${DRILL_CELL_CLASS}`));
+   const stops = (root: HTMLElement) =>
+      marked(root)
+         .filter((n) => n.getAttribute("tabindex") === "0")
+         .map((n) => n.textContent);
+
+   // The case both earlier tests missed, because each simulated the move by
+   // hand-setting tabIndex on the cell that already held the stop. A cell with
+   // `tabindex="-1"` is still CLICK-focusable, so the cell an arrow moves from
+   // is frequently not the one holding the stop.
+   it("moves from a click-focused cell without leaving a second stop", () => {
+      const root = table(6);
+      const cells = marked(root);
+      expect(stops(root)).toEqual(["v0"]);
+
+      // The reader clicks row 3. Focus is there; the stop is still on row 0.
+      const next = moveDrillStop(cells[3], 1);
+
+      expect(next?.textContent).toBe("v4");
+      expect(stops(root)).toEqual(["v4"]);
+   });
+
+   it("repeating that gesture cannot accumulate stops", () => {
+      const root = table(6);
+      const cells = marked(root);
+      moveDrillStop(cells[3], 1);
+      moveDrillStop(cells[1], 1);
+      moveDrillStop(cells[5], -1);
+      expect(stops(root)).toEqual(["v4"]);
+   });
+
+   it("a clamped move at the end repairs a column rather than doing nothing", () => {
+      const root = table(4);
+      const cells = marked(root);
+      // Drift the column into two stops by hand, the state the old move left.
+      cells[2].tabIndex = 0;
+      expect(stops(root)).toEqual(["v0", "v2"]);
+
+      moveDrillStop(cells[3], 1); // already last, so it clamps to itself
+      expect(stops(root)).toEqual(["v3"]);
+   });
+
+   it("reports nothing for a cell outside a table", () => {
+      const orphan = document.createElement("div");
+      orphan.className = DRILL_CELL_CLASS;
+      expect(moveDrillStop(orphan, 1)).toBeUndefined();
+   });
+
+   // Belt and braces: even if some other path drifts a column, the next mark
+   // pass demotes the extra rather than preserving both for good.
+   it("a re-mark demotes a duplicate stop instead of keeping it", () => {
+      const root = table(4);
+      const cells = marked(root);
+      cells[2].tabIndex = 0;
+      expect(stops(root)).toEqual(["v0", "v2"]);
+
+      markDrillableCells(root, new Set(["region"]));
+      expect(stops(root)).toEqual(["v0"]);
    });
 });
