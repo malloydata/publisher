@@ -364,9 +364,12 @@ export const s3AttachedDatabaseFields: Array<ConnectionField> = [
    },
    // Neither key is `required` any more, because under `credential_chain` there is
    // no key to give and a hidden-but-required field blocks submit with nothing on
-   // screen to fix. Presence is enforced where it can be conditional: each dialog
-   // checks the pair only on the `config` path, and the server rejects a keyless
-   // `config` connection at config load.
+   // screen to fix. Presence is enforced where it can be conditional instead: each
+   // dialog checks the pair on the `config` path, in BOTH the DuckLake storage
+   // branch and the attached-database branch. Server-side, a keyless `config`
+   // storage DESTINATION is rejected at config load; a DuckLake connection or an
+   // attached database still fails at attach, because a load-time throw there would
+   // take the whole environment down with it.
    {
       label: "Access Key ID",
       name: "accessKeyId" as keyof S3Connection,

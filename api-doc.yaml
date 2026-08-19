@@ -4210,10 +4210,15 @@ components:
       type: object
       description: AWS S3 connection configuration for DuckDB
       properties:
-        # No schema `default:` here on purpose. openapi-typescript generates a
-        # property carrying a default as REQUIRED, so declaring one would force
-        # every existing caller to name a provider. The default is stated in the
-        # description and applied at attach time instead.
+        # No schema `default:` here on purpose, though the reason is narrower than
+        # it looks: at the pinned openapi-typescript (6.x) a defaulted property
+        # still generates as optional, so a `default:` would be harmless today. It
+        # is at 7.x that a default makes the property REQUIRED, which would force
+        # every caller to name a provider. Omitted for robustness across that bump,
+        # not to avoid a present-day break. Note `region` below carries a default
+        # and so already has that exposure — a 7.x upgrade has to deal with it
+        # either way. The default is stated in the description and applied when the
+        # connection is attached.
         provider:
           type: string
           enum:

@@ -188,6 +188,12 @@ export default function EditConnectionDialog({
                delete s3Config.secretAccessKey;
                delete s3Config.sessionToken;
             } else {
+               // Symmetric with the deletion above, and load-bearing on the edit
+               // path: switching the provider to a key pair unmounts the chain
+               // field, so it never resubmits and a carried-forward value would
+               // survive into a config the server rejects — naming a field the form
+               // is no longer showing.
+               delete s3Config.chain;
                if (!s3Config.accessKeyId) {
                   throw new Error("S3 Access Key ID is required");
                }
@@ -276,6 +282,31 @@ export default function EditConnectionDialog({
                         connectionConfig[field.name] = value;
                      }
                   });
+
+                  // The S3 key fields are no longer HTML-`required`, because under
+                  // `credential_chain` there is no key to give and a hidden required
+                  // field blocks submit with nothing on screen to fix. Enforce the
+                  // pair here instead, where it can be conditional — otherwise a
+                  // keyless key-based attachment would save and fail at attach. This
+                  // path has never carried an existing value forward, so requiring
+                  // re-entry is what the removed `required` already did.
+                  if (dbType === "s3") {
+                     if (connectionConfig.provider === "credential_chain") {
+                        delete connectionConfig.accessKeyId;
+                        delete connectionConfig.secretAccessKey;
+                        delete connectionConfig.sessionToken;
+                     } else {
+                        delete connectionConfig.chain;
+                        if (
+                           !connectionConfig.accessKeyId ||
+                           !connectionConfig.secretAccessKey
+                        ) {
+                           throw new Error(
+                              `Attached database "${dbName}" requires an S3 Access Key ID and Secret Access Key, or Credential Provider set to the host credential chain`,
+                           );
+                        }
+                     }
+                  }
 
                   const connectionFieldName =
                      attachedDatabaseConnectionFieldName[dbType];
