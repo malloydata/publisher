@@ -136,7 +136,7 @@ describe("compile-path authorize gate (compileSource)", () => {
 
    it("leaves an ungated source compilable without any given", async () => {
       const { problems } = await compile("run: open_src -> { aggregate: c }");
-      expect(problems).toBeDefined();
+      expect(problems).toEqual([]);
    });
 
    it("rejects an authorize annotation in the submitted source", async () => {
@@ -511,5 +511,25 @@ export { customers, visible_gated }`,
       // `includeSql: false`, not because the gate blocked it.
       expect(problems).toEqual([]);
       expect(sql).toBeUndefined();
+   });
+
+   it("with includeSql AND a non-satisfying given, returns the hidden source's UNGRAFTED SQL — the widest point of the accepted trade", async () => {
+      // Same admission as above (presence, not value, decides), but now with
+      // `includeSql: true` and `ROLE: "nobody"` — a value that would fail the
+      // gate at run time. `/compile` never runs the query, so there is no row
+      // filter to apply here even for a value that would have failed one:
+      // the returned SQL is the plain compiled query, with no `$ROLE`
+      // reference at all. This is the actual shape of the residual the
+      // product owner accepted, not just that some string was returned.
+      const { problems, sql } = await env.compileSource(
+         "pkg",
+         "secret.malloy",
+         "run: hidden_gated -> { aggregate: c }",
+         true,
+         { ROLE: "nobody" },
+      );
+      expect(problems).toEqual([]);
+      expect(sql).toContain("FROM (SELECT 1 as x) as base");
+      expect(sql).not.toMatch(/ROLE|analyst|nobody/i);
    });
 });
