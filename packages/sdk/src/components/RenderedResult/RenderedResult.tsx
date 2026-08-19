@@ -366,6 +366,7 @@ function RenderedResultInner({
       let drillFrame = 0;
       let drillKeydown: ((event: KeyboardEvent) => void) | null = null;
       let drillKeyup: ((event: KeyboardEvent) => void) | null = null;
+      let drillFocusIn: ((event: FocusEvent) => void) | null = null;
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
       // Safety net so a render that never signals ready (an async renderer
@@ -645,8 +646,23 @@ function RenderedResultInner({
                      event.preventDefault();
                      fire(cell);
                   };
+                  // Focus and the tab stop have to agree however focus got
+                  // there. The arrow handler moves the stop, but a
+                  // `tabindex="-1"` cell is still CLICK-focusable, so without
+                  // this a reader who clicked row 5, tabbed away and tabbed back
+                  // landed on row 0. That is the same asymmetry the arrow path
+                  // already fixes, for the one way of arriving that does not go
+                  // through it. `moveDrillStop(cell, 0)` resolves to the cell
+                  // itself, so it just makes that cell the column's stop.
+                  drillFocusIn = (event: FocusEvent) => {
+                     const cell = (
+                        event.target as HTMLElement | null
+                     )?.closest?.<HTMLElement>(`.${DRILL_CELL_CLASS}`);
+                     if (cell) moveDrillStop(cell, 0);
+                  };
                   stageNode.addEventListener("keydown", drillKeydown);
                   stageNode.addEventListener("keyup", drillKeyup);
+                  stageNode.addEventListener("focusin", drillFocusIn);
                   if (
                      names.size > 0 &&
                      typeof MutationObserver !== "undefined"
@@ -710,6 +726,8 @@ function RenderedResultInner({
             if (drillKeydown)
                stage.removeEventListener("keydown", drillKeydown);
             if (drillKeyup) stage.removeEventListener("keyup", drillKeyup);
+            if (drillFocusIn)
+               stage.removeEventListener("focusin", drillFocusIn);
             // The re-marker is scoped the same way, and for the same reason.
             // Disconnecting it unconditionally tied it to the effect RUN: a
             // re-run while a `# dashboard` was still building its cards stopped

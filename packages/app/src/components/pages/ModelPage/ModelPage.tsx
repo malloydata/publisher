@@ -82,6 +82,17 @@ function ModelPage() {
    // is what keeps those two apart: a route param matches any single segment,
    // dots included, so the literal route would have swallowed the file path
    // too. Same reasoning as the `data-apps/` branch below.
+   //
+   // The cost, stated the way `spa_fallback.ts` states its own: a slug is a
+   // filename with `.malloy` removed, so `dashboards/report.malloy.malloy`
+   // publishes the slug `report.malloy`, and this branch sends that URL to the
+   // Model viewer instead of the dashboard, which then finds no such file. That
+   // dashboard is listed and served by the API but has no working address here.
+   // Unhandled deliberately: `/{env}/{pkg}/dashboards/report.malloy` is
+   // genuinely ambiguous between the dashboard and a real model file of that
+   // path, and guessing would break the author's "view the Malloy" path, which
+   // is the commoner case by far. `report.csv` has no such ambiguity, which is
+   // why the server-side entry in SPA_OWNED_SEGMENTS can fix that one.
    if (
       modelPath?.startsWith("dashboards/") &&
       !modelPath.endsWith(".malloy") &&

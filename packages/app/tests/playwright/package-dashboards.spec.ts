@@ -744,6 +744,30 @@ test.describe("package-dashboards", () => {
       await expect(page.getByRole("menuitem")).toHaveCount(2);
    });
 
+   test("clicking a cell moves the tab stop to it", async ({ page }) => {
+      await openDashboard(page, "combined");
+      const tile = page.locator(".MuiPaper-root").filter({
+         has: page.locator('[title="orders -> by_region"]'),
+      });
+      const cells = tile.locator(".publisher-drill");
+      await expect(cells.first()).toBeVisible({ timeout: 30_000 });
+      await expect(cells.nth(0)).toHaveAttribute("tabindex", "0");
+      await expect(cells.nth(1)).toHaveAttribute("tabindex", "-1");
+
+      // A `tabindex="-1"` cell is still click-focusable, so focus can arrive
+      // without going through the arrow handler that moves the stop. Before the
+      // focusin handler, clicking row 2 then tabbing away and back returned the
+      // reader to row 1.
+      await cells.nth(1).click();
+      await page.keyboard.press("Escape");
+
+      await expect(cells.nth(1)).toHaveAttribute("tabindex", "0");
+      await expect(cells.nth(0)).toHaveAttribute("tabindex", "-1");
+      await expect(tile.locator('.publisher-drill[tabindex="0"]')).toHaveCount(
+         1,
+      );
+   });
+
    test("Space opens the drill menu without choosing from it", async ({
       page,
    }) => {

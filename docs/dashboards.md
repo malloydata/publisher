@@ -355,7 +355,15 @@ keyboard or touch user can never produce.
 order, not one per row, so Tab does not walk a reader through a thousand cells to reach whatever
 follows the result. From a cell in the column, ArrowDown and ArrowUp step a row, Home and End jump to
 the ends, and the movement stops at the ends rather than wrapping. The tab stop follows the focused
-row, so leaving the result and tabbing back returns to the row you were on.
+row however you got there, clicking included, so leaving the result and tabbing back returns to the
+row you were on.
+
+That is one stop per TABLE, which is not the same as one per result when a drill sits inside a
+`nest:`. The renderer draws a nested table per parent row, each with its own columns, so a drillable
+dimension inside a nest still contributes a stop per parent row: measured 2 parent rows, 2 stops,
+against 1 for the same dimension grouped flat. Sharing a stop across those tables needs the marking
+to match on field identity rather than on a rendered column, which is the same limitation noted in
+`markDrillableCells`.
 
 Those signals are the only thing saying a cell does anything, so it is worth knowing what turns them
 off: a destination the surface cannot reach is not offered and not marked, deliberately, since a dead
