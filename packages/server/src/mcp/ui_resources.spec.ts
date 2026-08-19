@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
-import { join } from "path";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
    EXECUTE_QUERY_UI_URI,
@@ -167,12 +168,24 @@ describe("ui_resources", () => {
    });
 
    describe("resolveWidgetDir", () => {
-      it("resolves beside the module when running from TypeScript source", () => {
+      it("resolves the widget package's build output when running from source", () => {
          // Under `bun test` this file runs from source, so the from-source branch
          // is the one exercised: packages/mcp-apps/dist, the widget package's own
          // build output. The bundled branch (dist/mcp-apps, beside server.mjs) is
          // covered by actually booting a built server.
-         expect(resolveWidgetDir()).toMatch(/packages\/mcp-apps\/dist$/);
+         //
+         // Built with join() against this spec's own directory rather than matched
+         // against a slash-separated literal. resolveWidgetDir returns a PLATFORM
+         // path, so a regex containing "/" passes on macOS and Linux and fails on
+         // Windows, where join() separates with backslashes. Loosening the regex
+         // would hide that rather than express it. This spec sits beside
+         // ui_resources.ts, so the expected value is the same walk the function
+         // makes, which also pins the number of parent steps: the old assertion
+         // only looked at the tail and would have accepted any depth.
+         const moduleDir = dirname(fileURLToPath(import.meta.url));
+         expect(resolveWidgetDir()).toBe(
+            join(moduleDir, "..", "..", "..", "mcp-apps", "dist"),
+         );
       });
    });
 });
