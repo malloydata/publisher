@@ -148,10 +148,10 @@ model.
 All of this applies equally to a `# dashboard` **view** run in a notebook cell: the two surfaces
 render through the same code, so a view laid out with these tags looks the same in a cell as on a
 dashboard page. The storefront model's `business_overview` view is the shipped `# dashboard` view,
-and the notebook's first cell is that view. Read it as a working example of the two surfaces
-agreeing, not of the layout recipe above, which it predates: it carries no `columns=`, no colspans,
-and it nests a `# big_value` for its KPIs, which is the one thing this page says not to do. Height
-is the one thing the surface decides rather than the tags: a single-query dashboard renders at its
+and the notebook's Business overview cell runs that view. Read it as a working example of the two
+surfaces agreeing, not of the layout recipe above, which it predates: it carries no `columns=`, no
+colspans, and it nests a `# big_value` for its KPIs, which is the one thing this page says not to do.
+Height is the one thing the surface decides rather than the tags: a single-query dashboard renders at its
 natural height when the result reports one, which a `# dashboard` grid does, a composite caps each
 tile so one long table cannot set its row's height, and a notebook caps a chart cell and lets a table
 cell hug its rows so one long result cannot push the prose off the page.
