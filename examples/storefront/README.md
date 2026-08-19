@@ -50,10 +50,14 @@ the model's views. No build step, no framework, no npm.
 
 Its control row is not written by hand. The page reads the model's `given:` declarations from the
 model metadata endpoint and renders the widget each one asks for, so adding a filter needs no edit to
-`public/app/` at all: declare the `given:` in `givens.malloy`, import it in `data_app.malloy`, and add
-a clause naming it to `scoped_orders`' `where:`. That third step is the one to remember. Without it
-the control still renders and the server still accepts the value, because the given is declared, and
-nothing is filtered.
+`public/app/` at all: declare the `given:` in `givens.malloy` **and tag it with a control this page
+draws**, import it in `data_app.malloy`, and add a clause naming it to `scoped_orders`' `where:`.
+
+Two of those steps fail quietly, which is why they are worth naming. Without the `where:` clause the
+control still renders and the server still accepts the value, because the given is declared, and
+nothing is filtered. Without a control tag nothing renders at all: a given the page has no widget for
+is skipped in silence. The tags it draws are `control=select`, `control=multiselect`, a `range_min`
+and `range_max` pair, and a `date` type.
 
 Picked values are bound as givens rather than pasted into query text, and the filter syntax a
 `filter<string>` given takes is printed by Malloy's own filter library (vendored in

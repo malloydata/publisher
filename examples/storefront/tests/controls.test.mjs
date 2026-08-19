@@ -209,6 +209,77 @@ const DATE = {
    default: "@2023-01-01",
 };
 
+test("a slider cannot sit between whole numbers, and says so", async () => {
+   // The input has no `step`, so a browser SNAPS a fractional bound to the
+   // nearest whole number and the readout is built from where the handle
+   // landed: `>= 75.5` drew "≥ $76", and `>= 0.4` drew "any" over filtered
+   // data. Asserted on the arithmetic rather than by driving the element,
+   // because happy-dom does NOT snap, so driving it here would prove nothing.
+   for (const filter of [">= 75.5", ">= 0.4", ">= 249.9"]) {
+      const { el } = await mount(RANGE, filter);
+      assert.equal(el.dataset.opaqueFilter, "true", filter);
+      assert.equal(
+         el.parentElement.querySelector("output").textContent,
+         filter,
+         `${filter} is shown as written rather than rounded`,
+      );
+   }
+});
+
+test("a slider follows Reset and Back", async () => {
+   const { widgets, el } = await mount(RANGE, ">= 75");
+   assert.equal(el.parentElement.querySelector("output").textContent, "\u2265 $75");
+   widgets[0].set("");
+   assert.equal(
+      el.parentElement.querySelector("output").textContent,
+      "any",
+      "Reset must not leave a bound on screen over unfiltered data",
+   );
+   assert.equal(el.dataset.opaqueFilter, "false");
+});
+
+test("dragging away from a filter the slider could not draw clears the warning", async () => {
+   const { el } = await mount(RANGE, "<= 100");
+   assert.equal(el.dataset.opaqueFilter, "true");
+   el.value = "120";
+   el.dispatchEvent(new window.Event("input", { bubbles: true }));
+   assert.equal(el.dataset.opaqueFilter, "false", "a drag IS a new lower bound");
+   assert.equal(el.title, "");
+   assert.equal(el.parentElement.querySelector("output").textContent, "\u2265 $120");
+   el.value = "0";
+   el.dispatchEvent(new window.Event("input", { bubbles: true }));
+   assert.equal(
+      el.parentElement.querySelector("output").textContent,
+      "any",
+      "dragging to the floor reads as no bound, not as a bound of zero",
+   );
+});
+
+test("a bound below the slider's own minimum is not drawn as its minimum", async () => {
+   const { el } = await mount(RANGE, ">= -5");
+   assert.equal(el.dataset.opaqueFilter, "true");
+   assert.equal(el.parentElement.querySelector("output").textContent, ">= -5");
+});
+
+test("the date box follows Reset back to the default that then filters", async () => {
+   const { widgets, el } = await mount(DATE, "2023-06-01");
+   widgets[0].set("");
+   assert.equal(el.value, "2023-01-01", "not blank, which would claim no bound");
+});
+
+test("every control draws the model's declared default when the URL carries none", async () => {
+   // An unset given falls back to its declared default server-side, so a
+   // control reading "All" or "any" over that states the one thing that is not
+   // true. Only the date box used to get this right.
+   const withDefault = (c, d) => ({ ...c, default: d });
+   const sel = await mount(withDefault(SELECT, "f'Denim'"), "", { choices: ["Denim"] });
+   assert.equal(shown(sel.el), "Denim");
+   const multi = await mount(withDefault(MULTI, "f'Nike'"), "", { choices: ["Nike"] });
+   assert.equal(multi.el.textContent, "Nike");
+   const rng = await mount(withDefault(RANGE, "f'>= 50'"), "");
+   assert.equal(rng.el.parentElement.querySelector("output").textContent, "\u2265 $50");
+});
+
 test("a slider says so when the filter is not a bound it can draw", async () => {
    // `filter<number>` can say things one slider cannot, and all of these parse
    // cleanly and ARE honoured by the server. Each used to draw "any" with the
@@ -364,11 +435,11 @@ test("a single select cannot show a two-value list, and says so", async () => {
    assert.equal(shown(el), "Denim, Outerwear");
    assert.equal(el.selectedOptions[0].disabled, true, "and is not re-encodable");
    assert.match(el.title, /written by hand/);
-   // `data-opaque-filter` reports whether the GRAMMAR could represent this, so
-   // a plain two-value list is false here even though the control cannot show
-   // it. Asserted because nothing else in the repo reads this attribute, and an
-   // unread attribute drifts.
-   assert.equal(el.dataset.opaqueFilter, "false");
+   // One meaning across all four controls: "this control cannot show it", which
+   // is what the tooltip beside it says. It used to report whether the GRAMMAR
+   // could represent the filter, which disagrees exactly here, since a
+   // `<select>` cannot draw a two-value list the grammar is happy with.
+   assert.equal(el.dataset.opaqueFilter, "true");
 });
 
 test("a pick the encoder refuses is not left on display", async () => {

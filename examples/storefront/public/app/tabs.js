@@ -6,8 +6,10 @@
 // is just a view name and how to draw it.
 //
 // Adding a tile is a row in this file. Adding a filter is a `given:` in
-// ../../givens.malloy, an import in data_app.malloy, and a clause naming it in
-// `scoped_orders`' `where:`. Neither needs a change to any other file in app/.
+// ../../givens.malloy carrying a control tag, an import in data_app.malloy, and
+// a clause naming it in `scoped_orders`' `where:`. Neither needs a change to
+// any other file in app/. See controls.js for which tags draw a widget, and for
+// why two of those steps fail without saying so.
 
 const SOURCE = "scoped_orders";
 const run = (view) => `run: ${SOURCE} -> ${view}`;

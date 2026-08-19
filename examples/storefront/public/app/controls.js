@@ -7,10 +7,15 @@
 // what lets a control appear here with no edit to this directory.
 //
 // Adding a filter is three edits, none of them in this directory: declare the
-// `given:` in givens.malloy, import it in data_app.malloy, and add a clause
-// naming it to `scoped_orders`' `where:`. Skipping the third is the quiet
-// failure: the control renders, the value rides the URL, the server accepts it
-// because the given IS declared, and not one row is filtered.
+// `given:` in givens.malloy WITH a control tag this file draws, import it in
+// data_app.malloy, and add a clause naming it to `scoped_orders`' `where:`.
+//
+// Two of the three fail quietly. Skip the `where:` clause and the control
+// renders, the value rides the URL, the server accepts it because the given IS
+// declared, and not one row is filtered. Skip the control tag and nothing
+// renders at all: see the end of `buildControls`, which leaves a given it has
+// no widget for alone. The tags drawn here are `control=select`,
+// `control=multiselect`, a `range_min`/`range_max` PAIR, and type `date`.
 //
 //   GET /api/v0/…/models/data_app.malloy  ->  { givens: [ { name, type, label,
 //     control, suggest, rangeMin, rangeMax, default, description, annotations } ] }
@@ -151,8 +156,21 @@ export function buildControls(host, { modelPath, contracts, values, onChange }) 
       // annotation grammar the server already parses.
       const description = contract.description;
       const value = values[contract.name] ?? "";
+      // `value || fallback`, for every control rather than just the date box.
+      // An unset given falls back to its DECLARED default server-side (see
+      // docs/givens.md), so a control drawing "All" or "any" over that is
+      // stating the one thing that is not true. Latent while every filter given
+      // here defaults to `f''`, and live the moment a reader copies the SINCE
+      // pattern onto one, which the README tells them how to do.
       const fallback = readGivenDefault(contract.default);
-      const args = { modelPath, contract, value, description, onChange };
+      const args = {
+         modelPath,
+         contract,
+         value: value || fallback,
+         fallback,
+         description,
+         onChange,
+      };
 
       if (contract.control === "multiselect") {
          widgets.push(multiSelect(host, args));
@@ -168,7 +186,7 @@ export function buildControls(host, { modelPath, contracts, values, onChange }) 
          // api-doc.yaml). Reading one bound alone would invent the other.
          widgets.push(range(host, args));
       } else if (contract.type === "date") {
-         widgets.push(date(host, { ...args, value: value || fallback }));
+         widgets.push(date(host, args));
       }
       // A given with no widget this page knows how to draw is left alone: its
       // model default still applies to every query.
@@ -187,7 +205,7 @@ export function buildControls(host, { modelPath, contracts, values, onChange }) 
 
 function singleSelect(
    host,
-   { modelPath, contract, value, description, onChange },
+   { modelPath, contract, value, fallback, description, onChange },
 ) {
    const select = document.createElement("select");
    select.id = `given-${contract.name}`;
@@ -229,8 +247,14 @@ function singleSelect(
          if (!carried.isConnected) select.appendChild(carried);
          select.value = carried.value;
       }
-      select.dataset.opaqueFilter = String(opaque);
-      composeTitle(select, plain || !filter ? "" : OPAQUE_HELP);
+      // "This control cannot show the filter", NOT "the grammar could not
+      // represent it". The two disagree for a plain two-value list, which a
+      // `<select>` cannot draw even though the grammar is perfectly happy, and
+      // the flag is meant to match the tooltip beside it. All four controls
+      // answer the same question now.
+      const undrawable = !!filter && !plain;
+      select.dataset.opaqueFilter = String(undrawable);
+      composeTitle(select, undrawable ? OPAQUE_HELP : "");
    };
 
    // `current` rather than the captured `value`: the options arrive a round trip
@@ -268,8 +292,8 @@ function singleSelect(
    return {
       name: contract.name,
       set: (next) => {
-         current = next;
-         showFilter(next);
+         current = next || fallback;
+         showFilter(current);
       },
    };
 }
@@ -280,7 +304,7 @@ function singleSelect(
  */
 function multiSelect(
    host,
-   { modelPath, contract, value, description, onChange },
+   { modelPath, contract, value, fallback, description, onChange },
 ) {
    const button = document.createElement("button");
    button.type = "button";
@@ -478,7 +502,7 @@ function multiSelect(
    return {
       name: contract.name,
       set: (next) => {
-         ({ values: selected, opaque } = readSelection(next));
+         ({ values: selected, opaque } = readSelection(next || fallback));
          paint();
          // An open panel has to follow too. Back with the popover open
          // otherwise repaints the button and leaves the ticks showing the
@@ -490,7 +514,7 @@ function multiSelect(
    };
 }
 
-function range(host, { contract, value, description, onChange }) {
+function range(host, { contract, value, fallback, description, onChange }) {
    const wrap = document.createElement("span");
    wrap.className = "range";
    const input = document.createElement("input");
@@ -516,7 +540,17 @@ function range(host, { contract, value, description, onChange }) {
       const bound = decodeAtLeast(filter);
       const unshowable =
          text !== "" &&
-         (bound === 0 || bound < contract.rangeMin || bound > contract.rangeMax);
+         (bound === 0 ||
+            bound < contract.rangeMin ||
+            bound > contract.rangeMax ||
+            // The handle only sits on whole numbers, because the input has no
+            // `step`. A browser SNAPS anything else, and the readout is built
+            // from where the handle landed, so `>= 75.5` drew "≥ $76" and
+            // `>= 0.4` drew "any" over data that is filtered. Worth knowing:
+            // happy-dom does not snap, so the suite cannot see this by driving
+            // the element. It is arithmetic here on purpose, which is why it
+            // can be tested at all.
+            !Number.isInteger(bound));
       input.value = String(bound);
       input.dataset.opaqueFilter = String(unshowable);
       composeTitle(input, unshowable ? OPAQUE_HELP : "");
@@ -543,7 +577,7 @@ function range(host, { contract, value, description, onChange }) {
    return {
       name: contract.name,
       set: (next) => {
-         showFilter(next);
+         showFilter(next || fallback);
       },
    };
 }
