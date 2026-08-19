@@ -87,8 +87,19 @@ async function loadOptions(modelPath, contract) {
    // screen that the caption and the URL both disagree with: measured, with the
    // list `[Nike, Nike]`, unticking one row cleared the filter while the other
    // stayed ticked.
+   //
+   // First-wins explicitly. `new Map(entries)` fixes the POSITION at the first
+   // key but the VALUE at the last, so the mixed-type case this comment is
+   // about, `[1, "1"]`, survived as the string and lost the type the sentence
+   // above promises. Measured, and not exposed by the `[Nike, Nike]` case,
+   // because there both entries are identical.
    const values = rows.map(pick).filter((v) => v != null);
-   return [...new Map(values.map((v) => [String(v), v])).values()];
+   const first = new Map();
+   for (const v of values) {
+      const key = String(v);
+      if (!first.has(key)) first.set(key, v);
+   }
+   return [...first.values()];
 }
 
 /**

@@ -9,11 +9,19 @@
 // The filter cases below are the point of this file. Every one of them is a
 // value a hand-rolled encoder turns into something Malloy matches differently
 // from what the reader picked, and every such failure is silent: the page
-// renders a table either way. They run against the real grammar through the
-// vendored bundle, so they fail if a Malloy bump changes the escaping and the
-// vendored copy has not been regenerated.
+// renders a table either way.
+//
+// They run against the VENDORED bundle, which is what the page loads, so they
+// prove the page and these expectations agree. They cannot prove the vendored
+// copy is current: after a `@malloydata/*` bump the page and these tests would
+// share the same stale grammar and agree with each other while the server
+// parsed with the new one, which is the silent mismatch this module exists to
+// prevent. `upgrade-malloy.sh` does not regenerate the bundle, so nothing else
+// closes that either. The drift test at the end of this file does.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
 import { StringFilterExpression } from "../public/vendor/malloy-filter.js";
 import {
    decodeAtLeast,
@@ -298,4 +306,30 @@ test("pluralizing a control's All option", () => {
    assert.equal(plural("category"), "categories");
    assert.equal(plural("brand"), "brands");
    assert.equal(plural("box"), "boxes");
+});
+
+// The guard the header refers to. Everything above compares the page against the
+// bundle it loads; this compares that bundle against the package it was built
+// from, which is the only comparison a stale bundle cannot satisfy by agreeing
+// with itself.
+//
+// Shaped like the repo's other pinned-version checks (`validate-duckdb-sync`,
+// `validate-pg-sync`) rather than inventing a mechanism: read the version the
+// generator stamped into the banner and require it to equal the installed one.
+test("the vendored grammar is the one currently installed", async () => {
+   const require = createRequire(import.meta.url);
+   const installed = require("@malloydata/malloy-filter/package.json").version;
+   const bundle = await readFile(
+      new URL("../public/vendor/malloy-filter.js", import.meta.url),
+      "utf8",
+   );
+   const stamped = /@malloydata\/malloy-filter@([^\s(]+)/.exec(
+      bundle.slice(0, 600),
+   )?.[1];
+   assert.ok(stamped, "the banner records which version was bundled");
+   assert.equal(
+      stamped,
+      installed,
+      `vendored ${stamped} against installed ${installed}: run \`bun run vendor:malloy-filter\` and commit the result`,
+   );
 });

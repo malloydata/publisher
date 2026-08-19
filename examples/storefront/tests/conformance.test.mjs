@@ -59,10 +59,21 @@ const KINDS = [
         el.value = "0";
         el.dispatchEvent(new window.Event("change", { bubbles: true }));
      } },
-   // `date` takes a date literal rather than filter syntax, and the server
-   // REJECTS anything it cannot parse (measured: 400, and the page shows an
-   // error on every tile). There is no filter it can silently draw wrongly, so
-   // it has no opaque concept to conform to.
+   // `date` takes a date literal rather than filter syntax, so the only way it
+   // could lie is by displaying nothing for a value that IS in force. The input
+   // blanks anything that is not `YYYY-MM-DD`, so the question is what the
+   // server does with those, and it rejects them.
+   //
+   // Measured against a running server for a `date`-typed given: `2023-06-01`
+   // is accepted, while `2023-06-01T00:00:00Z` and `2023-06-01T00:00:00` both
+   // return 400 `date must match 'YYYY-MM-DD'`, and the page then shows an
+   // error on every tile with the value named. Loud, not silent, so there is no
+   // opaque concept to conform to.
+   //
+   // The ISO timestamp form belongs to a `timestamp`-typed given (docs/givens.md
+   // §Wire format), and this page draws no widget for one at all: the dispatcher
+   // tests `contract.type === "date"`. That is a gap in what the page COVERS,
+   // recorded in the PR body, and not a case of this control drawing wrongly.
    { kind: "date", opaque: false,
      contract: { name: "D", label: "D", type: "date" },
      default: "@2023-01-01", shows: (el) => el.value, expect: "2023-01-01",

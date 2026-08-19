@@ -174,6 +174,12 @@
        still ends level with it. The canvas is taken out of flow so it reads its
        size from the wrapper rather than the wrapper reading its size from the
        canvas. */
+    /* The page this replaced wrapped its table in `overflow-x: auto`, and the
+       rewrite dropped the wrapper without replacing the rule, so a table wider
+       than its card escaped the card instead of scrolling inside it. Live for
+       `brand_performance` at six columns, and for any table below the 680px
+       breakpoint where a tile goes full width. */
+    .tile-body { overflow-x: auto; }
     .chart-wrap { position: relative; flex: 1 1 auto; min-height: 268px; }
     .chart-wrap canvas { position: absolute; inset: 0; }
     .empty { color: var(--text-secondary); font-size: 13px; margin: 8px 0; }

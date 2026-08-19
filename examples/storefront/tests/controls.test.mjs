@@ -368,6 +368,26 @@ test("a single select tracks the value it was last given, not the one it was bui
    assert.equal(shown(el), "All categories", "the late options must not restore it");
 });
 
+test("deduping a mixed-type option list keeps the original type", async () => {
+   // The comment on that dedup promises the FIRST occurrence and its original
+   // type. `new Map(entries)` keeps the last value at each key, so `[1, "1"]`
+   // came back as the string. Not exposed by an all-duplicates list, where both
+   // entries are identical, which is why the comment was false about the line
+   // directly beneath it while looking measured.
+   const { el } = await mount(MULTI, "1", { choices: [1, "1", 2] });
+   el.click();
+   await new Promise((r) => setTimeout(r, 0));
+   const labels = [...document.querySelectorAll(".check-panel input")].map((b) =>
+      b.closest("label").textContent.trim(),
+   );
+   assert.deepEqual(labels, ["1", "2"], "one row for the two spellings of 1");
+   assert.equal(
+      document.querySelectorAll(".check-panel input:checked").length,
+      1,
+      "and it ticks against the filter",
+   );
+});
+
 test("a numeric option column still ticks", async () => {
    // `selected` comes back from the grammar as strings while the column is
    // numbers, so comparing them raw ticks nothing while the button and the URL
