@@ -100,7 +100,7 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
     # label="Customers"
     customer_count is customers.count()
     #(doc) Average orders placed per customer
-    // A ratio of two counts is a long decimal by default (10.695), which reads
+    // A ratio of two counts is a long decimal by default (11.2936), which reads
     // as noise on a KPI card. One decimal place is the precision the number
     // actually carries.
     # number="#,##0.0"

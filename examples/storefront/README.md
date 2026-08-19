@@ -39,7 +39,7 @@ something real to show.
 - **Chart views:** `by_category` / `margin_by_category` / `top_brands` / `by_status`
   (`# bar_chart`), `sales_by_month` / `seasonality` (`# line_chart`),
   `sales_by_year` / `sales_by_region` (`# bar_chart`), `sales_by_state` (`# shape_map`).
-- **Table views:** `top_products`, `top_customers`.
+- **Table views:** `top_products`, `top_customers`, `category_performance`, `brand_performance`.
 - **Dashboard:** `business_overview` — `# big_value` KPI tiles + nested charts.
 
 ## The data app
@@ -57,7 +57,8 @@ Two of those steps fail quietly, which is why they are worth naming. Without the
 control still renders and the server still accepts the value, because the given is declared, and
 nothing is filtered. Without a control tag nothing renders at all: a given the page has no widget for
 is skipped in silence. The tags it draws are `control=select`, `control=multiselect`, a `range_min`
-and `range_max` pair, and a `date` type.
+and `range_max` pair on a `filter<number>` given, and a `date` type. The pair alone is not enough:
+this page sends `>= n` filter syntax, so it draws a slider only for a given that takes a filter.
 
 Picked values are bound as givens rather than pasted into query text, and the filter syntax a
 `filter<string>` given takes is printed by Malloy's own filter library (vendored in

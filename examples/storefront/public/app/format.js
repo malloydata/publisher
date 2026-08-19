@@ -24,9 +24,11 @@ const PERCENT = new Intl.NumberFormat(undefined, {
    maximumFractionDigits: 1,
 });
 // Minimum as well as maximum: a field tagged `# number="#,##0.0"` asked for a
-// decimal place, so a value that happens to round to a whole number keeps it.
-// Without the minimum, an orders-per-customer of 2.975 renders as "3" and reads
-// like a count rather than a rate.
+// decimal place, so a value that lands on a whole number keeps it. That is the
+// only case the minimum changes, measured: without it an orders-per-customer of
+// exactly 11 renders as "11" and reads like a count rather than a rate, while
+// today's 11.2936 gives "11.3" either way. The tag asked for one decimal, so the
+// field shows one whatever the data happens to be that day.
 const DECIMAL = new Intl.NumberFormat(undefined, {
    minimumFractionDigits: 1,
    maximumFractionDigits: 1,

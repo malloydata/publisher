@@ -15,7 +15,10 @@
 // declared, and not one row is filtered. Skip the control tag and nothing
 // renders at all: see the end of `buildControls`, which leaves a given it has
 // no widget for alone. The tags drawn here are `control=select`,
-// `control=multiselect`, a `range_min`/`range_max` PAIR, and type `date`.
+// `control=multiselect`, a `range_min`/`range_max` pair on a `filter<number>`
+// given, and type `date`. Note the type: this page sends `>= n` filter syntax,
+// so the bounds alone do not draw a slider on a plain `number` given, which is
+// narrower than the rule `api-doc.yaml` states for the contract itself.
 //
 //   GET /api/v0/…/models/data_app.malloy  ->  { givens: [ { name, type, label,
 //     control, suggest, rangeMin, rangeMax, default, description, annotations } ] }
@@ -160,8 +163,8 @@ export function buildControls(host, { modelPath, contracts, values, onChange }) 
       // An unset given falls back to its DECLARED default server-side (see
       // docs/givens.md), so a control drawing "All" or "any" over that is
       // stating the one thing that is not true. Latent while every filter given
-      // here defaults to `f''`, and live the moment a reader copies the SINCE
-      // pattern onto one, which the README tells them how to do.
+      // here defaults to `f''`, and live the moment a reader gives one a real
+      // default, as `SINCE` does in givens.malloy.
       const fallback = readGivenDefault(contract.default);
       const args = {
          modelPath,
@@ -250,8 +253,9 @@ function singleSelect(
       // "This control cannot show the filter", NOT "the grammar could not
       // represent it". The two disagree for a plain two-value list, which a
       // `<select>` cannot draw even though the grammar is perfectly happy, and
-      // the flag is meant to match the tooltip beside it. All four controls
-      // answer the same question now.
+      // the flag is meant to match the tooltip beside it. All three controls
+      // that can receive a filter answer the same question now; the date box
+      // takes a date literal and so has nothing it can fail to draw.
       const undrawable = !!filter && !plain;
       select.dataset.opaqueFilter = String(undrawable);
       composeTitle(select, undrawable ? OPAQUE_HELP : "");
@@ -375,14 +379,13 @@ function multiSelect(
       // Re-read the selection from what was actually ENCODED, not from what was
       // ticked. The encoder drops a value it cannot carry, so a caption counting
       // the dropped ones, and a box left ticked for one, state a filter that is
-      // not in force. `opaque` comes back false here, which is also what clears
-      // the hand-written filter the toggle dropped.
-      // `opaque` is always false here: the only caller clears it immediately
-      // before calling, which is where the hand-written filter gets dropped.
+      // not in force.
       const ticked = selected;
-      // `encoded || fallback`: unticking the last box sends `""` and the server
-      // re-applies the declared default, so the panel must show that rather
-      // than "All brands".
+      // `encoded || fallback`, and `opaque` re-derived rather than assumed:
+      // unticking the last box sends `""`, so the server re-applies the declared
+      // default and the panel must show that rather than "All brands". A default
+      // that is itself hand-written comes back opaque. Measured, with a default
+      // of `f'-Nike'` the button returns to `-Nike` with its warning intact.
       ({ values: selected, opaque } = readSelection(encoded || fallback));
       paint();
       // Repaint only when it would change something. `fillPanel` replaces every
