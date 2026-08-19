@@ -76,10 +76,20 @@ test("ticking a box REPLACES a hand-written filter, it does not extend it", asyn
    // into a search for those five characters ORed with the pick. The table
    // renders normally either way, which is why nothing caught it.
    const { sent, el } = await mount(MULTI, "-Nike", { choices: ["Levi's", "Nike"] });
+   assert.equal(el.textContent, "-Nike", "the button shows the filter as written");
+   assert.match(el.title, /written by hand/, "and says it will be replaced");
+   assert.equal(el.dataset.opaqueFilter, "true");
    el.click();
    await new Promise((r) => setTimeout(r, 0));
    const boxes = [...document.querySelectorAll(".check-panel input")];
-   assert.ok(boxes.length > 0, "the popover has checkboxes");
+   assert.deepEqual(
+      boxes.map((b) => b.closest("label").textContent.trim()),
+      ["Levi's", "Nike"],
+      // Without this the rows added for unlisted values happily give `-Nike` a
+      // row of its own, and clicking it sends `\-Nike`: a literal search for
+      // those five characters, which is the bug this whole file exists for.
+      "an opaque filter gets NO row, because it is not a value to tick",
+   );
    assert.equal(
       boxes.filter((b) => b.checked).length,
       0,
@@ -120,6 +130,63 @@ test("a value in force that the list does not offer still gets a row", async () 
       1,
       "so the panel agrees with the button rather than looking empty",
    );
+});
+
+test("an unlisted row can be unticked like any other", async () => {
+   // The row is ordinary, not disabled: a plain value IS one this control can
+   // encode, it simply is not in the suggestion list.
+   const { sent } = await mount(MULTI, "Ties", { choices: ["Levi's", "Nike"] });
+   document.querySelector("#given-BRAND").click();
+   await new Promise((r) => setTimeout(r, 0));
+   const rows = [...document.querySelectorAll(".check-panel input")];
+   assert.equal(rows[2].disabled, false, "not disabled");
+   rows[2].click();
+   assert.equal(sent.at(-1)[1], "", "unticking it clears the filter");
+   assert.deepEqual(
+      [...document.querySelectorAll(".check-panel input")].map((b) =>
+         b.closest("label").textContent.trim(),
+      ),
+      ["Levi's", "Nike"],
+      "and its row goes with it",
+   );
+});
+
+test("an unlisted row goes away even when another value stays selected", async () => {
+   // The repaint guard compared selections only, so it missed a change to the
+   // ROW SET: the row lingered, unticked, after the value behind it was gone.
+   const { sent } = await mount(MULTI, "Ties", { choices: ["Levi's", "Nike"] });
+   document.querySelector("#given-BRAND").click();
+   await new Promise((r) => setTimeout(r, 0));
+   document.querySelectorAll(".check-panel input")[0].click(); // + Levi's
+   const rows = [...document.querySelectorAll(".check-panel input")];
+   rows[rows.length - 1].click(); // - Ties
+   assert.equal(sent.at(-1)[1], "Levi's");
+   assert.deepEqual(
+      [...document.querySelectorAll(".check-panel input")].map((b) =>
+         b.closest("label").textContent.trim(),
+      ),
+      ["Levi's", "Nike"],
+   );
+});
+
+test("the same value twice does not become two rows or a wrong count", async () => {
+   // `suggest { query=… }` is author-written and need not return distinct rows,
+   // and `?BRAND=Nike, Nike` is a legal filter. Undeduped, unticking one of two
+   // identical rows cleared the filter while the other stayed ticked.
+   const dup = await mount(MULTI, "Nike", { choices: ["Nike", "Nike"] });
+   dup.el.click();
+   await new Promise((r) => setTimeout(r, 0));
+   assert.equal(document.querySelectorAll(".check-panel input").length, 1);
+   document.querySelector(".check-panel input").click();
+   assert.equal(dup.sent.at(-1)[1], "");
+   assert.equal(
+      document.querySelectorAll(".check-panel input:checked").length,
+      0,
+      "the panel agrees with the filter it just cleared",
+   );
+
+   const twice = await mount(MULTI, "Nike, Nike", { choices: ["Levi's", "Nike"] });
+   assert.equal(twice.el.textContent, "Nike", "not '2 selected' over one tick");
 });
 
 test("a single select drops a pick the encoder refuses, and says All", async () => {

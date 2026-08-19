@@ -73,7 +73,14 @@ async function loadOptions(modelPath, contract) {
    // than one.
    const pick = (row) =>
       suggest.dimension ? row[suggest.dimension] : Object.values(row)[0];
-   return rows.map(pick).filter((v) => v != null);
+   // Deduped by string identity, keeping the first occurrence and its original
+   // type. A `group_by` cannot repeat a value, but `suggest { query=… }` is a
+   // query the model author writes, and two rows for one value put a tick on
+   // screen that the caption and the URL both disagree with: measured, with the
+   // list `[Nike, Nike]`, unticking one row cleared the filter while the other
+   // stayed ticked.
+   const values = rows.map(pick).filter((v) => v != null);
+   return [...new Map(values.map((v) => [String(v), v])).values()];
 }
 
 /**
@@ -283,12 +290,36 @@ function multiSelect(
    // Both answers in one call: the values, and whether this control can
    // represent them. `readFilterForPicker` in format.js says why they have to
    // travel together, and what `opaque` costs if a caller ignores it.
-   let { values: initial, opaque: initiallyOpaque } = readFilterForPicker(value);
+   // Deduped for the same reason the option list is: `?BRAND=Nike, Nike` is a
+   // legal filter, and undeduped it captioned "2 selected" over a single ticked
+   // box.
+   const readSelection = (filter) => {
+      const { values, opaque } = readFilterForPicker(filter);
+      return { values: [...new Set(values)], opaque };
+   };
+
+   let { values: initial, opaque: initiallyOpaque } = readSelection(value);
    let opaque = initiallyOpaque;
 
    let selected = initial;
    let options = [];
    let panel = null;
+   let renderedRows = [];
+
+   /**
+    * The rows the panel should be showing: the suggested options, plus any
+    * value in force the list does not offer. `keys` is the same list as
+    * strings, so `commit` can tell whether a repaint would change anything
+    * without touching the DOM. One definition, because a second opinion about
+    * which rows belong is exactly how the panel and the button drift apart.
+    */
+   const panelRows = () => {
+      const offered = options.map(String);
+      const unlisted = opaque
+         ? []
+         : selected.filter((v) => !offered.includes(v));
+      return { rows: [...options, ...unlisted], keys: [...offered, ...unlisted] };
+   };
 
    const caption = () => {
       const noun = plural((contract.label ?? contract.name).toLowerCase());
@@ -317,19 +348,28 @@ function multiSelect(
       // the dropped ones, and a box left ticked for one, state a filter that is
       // not in force. `opaque` comes back false here, which is also what clears
       // the hand-written filter the toggle dropped.
-      const ticked = opaque ? null : selected;
-      ({ values: selected, opaque } = readFilterForPicker(encoded));
+      // `opaque` is always false here: the only caller clears it immediately
+      // before calling, which is where the hand-written filter gets dropped.
+      const ticked = selected;
+      ({ values: selected, opaque } = readSelection(encoded));
       paint();
-      // Only when the encoder actually changed the selection. `fillPanel`
-      // replaces every row, so doing it on each tick destroys the checkbox the
-      // reader is standing on: measured, focus fell to `<body>`, which makes
-      // ticking a second brand by keyboard impossible without tabbing back
-      // through the whole control row, and the panel scrolls, so a tick in its
-      // lower half jumped the list back to the top under the cursor.
+      // Repaint only when it would change something. `fillPanel` replaces every
+      // row, so doing it on each tick destroys the checkbox the reader is
+      // standing on: measured, focus fell to `<body>`, which makes ticking a
+      // second brand by keyboard impossible without tabbing back through the
+      // whole control row, and the panel scrolls, so a tick in its lower half
+      // jumped the list back to the top under the cursor.
+      //
+      // Two ways it changes. The encoder may have dropped a value, so a box is
+      // ticked for a filter that is not in force. Or the ROW SET may differ:
+      // unticking a value the suggestion list does not offer removes its row,
+      // and comparing selections alone missed that, leaving the row on screen.
+      const wanted = panelRows().keys;
       const changed =
-         !ticked ||
          ticked.length !== selected.length ||
-         selected.some((v, i) => v !== ticked[i]);
+         selected.some((v, i) => v !== ticked[i]) ||
+         wanted.length !== renderedRows.length ||
+         wanted.some((k, i) => k !== renderedRows[i]);
       // Mutual with `fillPanel`, whose checkboxes call this: one has to come
       // second, and both only ever run from a click.
       // eslint-disable-next-line no-use-before-define
@@ -374,9 +414,9 @@ function multiSelect(
       // These rows are ordinary, not disabled: a plain value IS one this control
       // can encode, it simply is not in the list, so it can be unticked like any
       // other. An opaque filter gets no row, because it has no value to tick.
-      const offered = options.map(String);
-      const unlisted = opaque ? [] : selected.filter((v) => !offered.includes(v));
-      for (const option of [...options, ...unlisted]) {
+      const { rows, keys } = panelRows();
+      renderedRows = keys;
+      for (const option of rows) {
          const row = document.createElement("label");
          row.className = "check-row";
          const box = document.createElement("input");
@@ -438,7 +478,7 @@ function multiSelect(
    return {
       name: contract.name,
       set: (next) => {
-         ({ values: selected, opaque } = readFilterForPicker(next));
+         ({ values: selected, opaque } = readSelection(next));
          paint();
          // An open panel has to follow too. Back with the popover open
          // otherwise repaints the button and leaves the ticks showing the

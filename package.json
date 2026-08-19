@@ -76,6 +76,8 @@
     "@types/ssh2": "^1.15.5",
     "eslint": "^8.50.0",
     "gts": "^6.0.2",
+    "@malloydata/malloy-filter": "^0.0.427",
+    "esbuild": "0.25.9",
     "happy-dom": "^20.11.1",
     "prettier": "^3.0.0",
     "rimraf": "^5.0.1",
