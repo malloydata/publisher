@@ -24,6 +24,14 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a filtered aggregate can be pre-aggregated
+
+Since 0.0.246, a measure filtering its aggregate — `paid is amount.sum() { where: is_paying }` — was refused at publish by `#@ preaggregate`, with the workaround of rewriting it as `amount.sum(pick amount when is_paying else null)`-style expressions or filtering in a view. The refusal was the fail-closed gate doing its job, not a soundness limit: the rollup computes each stored partial from the measure by name, so the filter rides into the build, and a row-level filter commutes with merging per-grain partials — filtering then merging equals filtering the whole, for every merge the feature hands out, including `count`'s (a filtered count stores a count of matching rows and still merges with `sum`).
+
+So the gate now accepts a filter **written directly on the measure's single aggregate**, and nothing else changed shape: a filter refining a derived measure, an aggregate wrapped in a further expression (`coalesce(amount.sum() { where: … }, 0)`), a chain of refinements, or a non-scalar condition is refused exactly as before. A filtered `avg` is still refused as `avg`. No action needed on existing packages — this only admits annotations that previously failed publish — but measures rewritten around the old refusal can return to the plain filtered form, which now also pre-aggregates.
+
+---
+
 ## [0.0.248] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
 
 A gate whose expression reads no row field works exactly as before; a gate that reads one — its

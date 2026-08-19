@@ -537,6 +537,49 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       expect(rows.find((r) => r.category === "A")?.order_count).toBe(2);
    });
 
+   it("a FILTERED measure routes and returns the filtered numbers", async () => {
+      // The rows are the trap: category 'A' has one row inside the filter (10 on
+      // 2024-01-01) and one outside it (30 on 2024-01-02). A rollup that dropped
+      // the filter while building the partial would store 40 for 'A' — a
+      // plausible wrong number at exactly the grain the rollup serves. The
+      // partial is computed from the measure by NAME, so the filter rides into
+      // the build; this is the value proof of that, and of the classifier's
+      // claim that a row-level filter commutes with merging per-grain partials.
+      const { load, manifest, tables } = await synthesizeAndBuild(
+         `  #@ preaggregate grain="category"
+  measure: paid is amount.sum() { where: order_date = @2024-01-01 }
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()`,
+      );
+      expect(tables).toHaveLength(1);
+
+      const query =
+         "run: orders -> { group_by: category; aggregate: paid, total; order_by: category asc }";
+      const sql = await load("synth.malloy")
+         .loadQuery(query)
+         .getSQL({ buildManifest: manifest });
+      expect(sql).toContain(tables[0]);
+
+      const served = await load("synth.malloy")
+         .loadQuery(query)
+         .run({ buildManifest: manifest });
+      const live = await load("author.malloy").loadQuery(query).run();
+      expect(served.data.toObject()).toEqual(live.data.toObject());
+      // Spelled out so the failure is unmissable: filtered and unfiltered
+      // values from ONE stored rollup, and 'A' reads 10, not 40.
+      expect(served.data.toObject()).toEqual([
+         { category: "A", paid: 10, total: 40 },
+         { category: "B", paid: 20, total: 20 },
+      ]);
+
+      // Coarser than the grain, the case the merge function exists for: the
+      // stored per-category partials 10 and 20 must SUM to 30, filter intact.
+      const coarse = await load("synth.malloy")
+         .loadQuery("run: orders -> { aggregate: paid }")
+         .run({ buildManifest: manifest });
+      expect(coarse.data.toObject()).toEqual([{ paid: 30 }]);
+   });
+
    it("one measure at TWO grains builds two rollups, and both route", async () => {
       // Why the reader walks annotation notes instead of trusting the merged tag.
       // Coverage alone would not justify this — the combined grain covers both
