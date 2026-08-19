@@ -829,15 +829,22 @@ export class Model {
     * Filter caller-supplied givens down to the ones safe to forward to the
     * REAL query's `getPreparedResult`/`run`. A caller may legitimately need
     * to supply a value only so a gate carried in from a derivation base can
-    * see it — that gate is evaluated separately, against the FULL unfiltered
-    * givens (see `assertAuthorizedForAllSources`, which runs before this
-    * filter is applied). Malloy's own given-resolution doesn't flatten a
-    * `given:` declared more than one import hop away into the entry model's
-    * namespace (see `docs/authorize.md`), so passing such an authorize-only
-    * name straight through to the real query throws ("givens: unknown
-    * given"). Dropping it here is safe: the query itself can't reference a
-    * given it doesn't declare, so there is nothing for the dropped value to
-    * have affected.
+    * see it. Malloy's own given-resolution doesn't flatten a `given:`
+    * declared more than one import hop away into the entry model's namespace
+    * (see `docs/authorize.md`), so passing such an authorize-only name
+    * straight through to the real query throws ("givens: unknown given").
+    *
+    * A gate is NOT evaluated separately from the query any more — it is
+    * grafted onto the run target and evaluated by the same `run()`, against
+    * this FILTERED set. What makes dropping safe is therefore an invariant,
+    * not an ordering: an ACCEPTED gate can only reference a given on this
+    * model's own surface, because `classifyAuthorizeGate` rejects
+    * (`unreachable_given`) any given absent from `declaredTypes` — which is
+    * that same surface (`computeGivenDeclaredTypes(this.givens)`). A name
+    * this method drops is off the surface by definition, so no gate that
+    * survived classification reads it. `resolveGateShape` re-checks that
+    * invariant on every accepted classification and denies if it ever fails,
+    * rather than leaving it to hold by coincidence.
     *
     * Only drops a name that is BOTH absent from this model's own given
     * surface ({@link givens}) AND referenced by an authorize gate reachable

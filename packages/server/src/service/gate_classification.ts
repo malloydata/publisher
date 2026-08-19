@@ -520,11 +520,39 @@ export async function resolveGateShape(
          });
          return { shape: "rejected" };
       }
-      const classification = classifyAuthorizeGate(
+      let classification = classifyAuthorizeGate(
          condition,
          deps.givenDeclaredTypes,
          deps.givenDeclaredDefaults,
       );
+      // `Model.filterGivensToModelSurface` drops a caller-supplied given that
+      // is off this model's own surface, and its safety rests on this: an
+      // ACCEPTED gate never references one, because `classifyAuthorizeGate`
+      // rejects a given absent from `declaredTypes` (which is that same
+      // surface). Re-checked here rather than assumed — a walk branch that
+      // records a given without routing it through `declaredTypeOf` would
+      // otherwise let the filter drop a value the grafted gate still reads,
+      // silently falling back to the declaration default.
+      if (classification.shape === "row_level") {
+         const unreachable = classification.givenNames.find(
+            (name) => !deps.givenDeclaredTypes.has(name),
+         );
+         if (unreachable !== undefined) {
+            logger.warn(
+               "Gate accepted a given off the model surface; denying",
+               {
+                  modelPath: deps.modelPath,
+                  graftTarget,
+                  givenName: unreachable,
+               },
+            );
+            classification = {
+               shape: "rejected",
+               cause: "unreachable_given",
+               detail: `\`$${unreachable}\` is not on this model's given surface`,
+            };
+         }
+      }
       cached = { classification, condition };
       deps.gateShapeCache.set(cacheKey, cached);
    }
