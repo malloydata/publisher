@@ -37,22 +37,19 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    looks like a picker but has no options, and only the package warnings name it.
 5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
    before you save, at the path the file will have. **Editing one that already exists needs
-   `"scope": "file"`**, which compiles your source AS that file; the default scope appends it instead
-   and every source collides with the saved copy, reporting as a wall of `Cannot redefine` errors that
-   look like broken Malloy rather than a wrong scope. Cheaper than a reload, and it catches a wrong
-   field or source
-   name outright. A clean compile is not a working dashboard: some tag mistakes surface at step 6,
-   and some only when you look at the page in step 7.
+   `"scope": "file"`**, which compiles your source AS that file; the default appends it instead, so
+   every imported name and the query name collide with the saved copy and you get a wall of
+   already-defined errors that reads as broken Malloy rather than a wrong scope. **Editing a shared
+   include wants `"scope": "package"`**, which recompiles every file as saved: `file` only checks the
+   one you are editing, so renaming a source in `_shared.malloy` passes it while breaking every
+   composite that imports it. A clean compile is not a working dashboard: some tag mistakes surface
+   at step 6, and some only when you look at the page in step 7.
 6. **SAVE IT, THEN RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
    `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
    a 424 means the package did not load and your edit is not live. **The `warnings` key is absent
    when there are none**, so an empty response is the pass, not a sign you are reading the wrong
    field. See "Read the lint" below.
 7. **OPEN IT AND LOOK.** Not optional; see "What 'done' means".
-
-Compiling before you save is worth the extra step: compile against a path that already holds the
-file and every source in it collides with itself, which reports as a wall of redefinition errors that
-look like a problem with your Malloy rather than with the order you did things in.
 
 ## The two forms
 
@@ -119,17 +116,19 @@ import { CATEGORY, SINCE } from '../givens.malloy'
 
 A composite has no query, so the filtering it applies must live in what it composes: a source that
 already has the givens applied. Put it in an untagged `dashboards/_shared.malloy`, which discovery
-treats as a shared include rather than a dashboard. Save it before you compile the dashboard that
-imports it: step 5 is protecting you from compiling a dashboard against its own saved copy, and the
-include is neither.
+treats as a shared include rather than a dashboard. **It has to apply every given the composite
+imports**: a given the composite imports but nothing references gets no control, silently, at reload
+200 with no warning. Note `SINCE` is a `date` rather than a `filter<>`, so it compares with `>=`
+rather than `~`. Save the include before you compile the dashboard that imports it, since an importer
+compiled against a sibling that is not on disk fails with an `import-error`.
 
 ```malloy
 ##! experimental.givens
 import { order_items } from '../storefront.malloy'
-import { CATEGORY } from '../givens.malloy'
+import { CATEGORY, SINCE } from '../givens.malloy'
 
 source: scoped_sales is order_items extend {
-  where: products.category ~ $CATEGORY
+  where: products.category ~ $CATEGORY and created_at >= $SINCE
 }
 ```
 
@@ -138,11 +137,12 @@ Its tiles are equal-width (there is no per-tile colspan), and each one takes a s
 `dashboard_columns=3`. Setting it to 12 out of habit gives you twelve columns and three tiles a
 twelfth of the page wide. Use the single-query form when one tile deserves more room than the others.
 
-**The two column spellings are form-specific and neither degrades into the other.**
-`dashboard_columns=N` on the artifact tag is composite-only; `# dashboard { columns=N }` is
-single-query-only. A composite forgives the mix, since both spellings feed the manifest field it
+**Write `dashboard_columns=N` on a composite and `# dashboard { columns=N }` on a single query.**
+A composite forgives the mix, since both spellings feed the manifest field it
 lays out from, but **a single query tagged `dashboard_columns` silently loses its whole layout**, and
-the manifest reports the count either way: see "Losing the grid". `tiles=` on a
+the manifest reports the count either way: see "Losing the grid". A composite's tiles also keep their
+own field names on their axes and column headers, and the Layout section's remedy, inlining the view,
+is not open to you here: naming existing views is the whole point of the form. `tiles=` on a
 single-query artifact tag is dropped the same way, silently.
 
 ## Layout: the four tags that make a page line up
@@ -305,8 +305,8 @@ A single-query dashboard can come out with its layout wrong in two visibly diffe
 reload is 200 and the manifest reports the column count you asked for in both.
 
 **Not a dashboard at all: one plain nested table**, every `# colspan` and `# break` dropped. Either
-the column spelling does not match the form (`dashboard_columns=N` is composite-only,
-`# dashboard { columns=N }` is single-query-only), or a `f'…'` filter literal in a `givens { … }`
+you tagged a single query with `dashboard_columns=N`, which only a composite reads, or a `f'…'`
+filter literal in a `givens { … }`
 block shares a line with `# dashboard`. For the second, put `# dashboard` on its own line: writing it
 first on the line does not help, a plain `'Outerwear'` or a bare date is fine, and the composite form
 is immune because its layout comes from the manifest rather than a re-parse.
@@ -315,8 +315,8 @@ is immune because its layout comes from the manifest rather than a re-parse.
 side by side at their natural widths instead of aligning to a grid.
 
 To tell them apart, run the dashboard's own query, `{"queryName": "<the manifest's query>"}`, and read
-`renderLogs` on the response. Like `warnings`, the key is absent when there is nothing to say. Single-query dashboards have no `tiles` in their manifest, so there is
-no tile query to run:
+`renderLogs` on the response. Like `warnings`, the key is absent when there is nothing to say.
+Single-query dashboards have no `tiles` in their manifest, so there is no tile query to run:
 
 | render log | what it means |
 |---|---|
