@@ -226,10 +226,19 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
       // path does — i.e. the artifact grants nothing a live query would not.
       // It is not safe merely because `attributed` reads `true` here.
       //
-      // `assertColocatedPersistNotAuthorizeGated` (`./materialization_eligibility`)
-      // still refuses this exact shape today — its `referencesAuthorize` walk
-      // has no notion of `attributed` and finds the gate regardless of how it
-      // got there.
+      // It DOES hold for this exact shape: `derived` is itself a top-level
+      // `modelDef.contents` entry (the `#@ persist name="derived"` source),
+      // and `entry.struct` from `collectEntryPointGates` (above) is `derived`'s
+      // OWN compiled struct — the same object. `resolveGraftTarget`'s FIRST
+      // branch (`findContentsKey` by identity) therefore resolves the graft
+      // target to `"derived"` directly, with no ancestor walk involved, for
+      // BOTH a live query of `derived` and a colocated-served one: the graft
+      // mechanism (`Model.buildGraftedMaterializer`) operates on `modelDef`,
+      // not on whether the entry point's rows come from a live recompute or a
+      // same-connection table substitution. So the row filter lands on
+      // `derived` either way, identically. `assertColocatedPersistNotAuthorizeGated`
+      // (`./materialization_eligibility`) now admits this shape given this
+      // exact `{classification: "row_level", attributed: true}` outcome.
       const { modelDef, materializer, deps, sources } = await compileModel(
          `##! experimental.persistence
 ##! experimental.givens
@@ -258,8 +267,13 @@ source: derived is locked extend {
          attributed: true,
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.derived),
-      ).toThrow();
+         assertColocatedPersistNotAuthorizeGated(
+            sources.derived,
+            sources.derived.name,
+            "persist",
+            outcome,
+         ),
+      ).not.toThrow();
    });
 
    it("records the fail-closed outcome when classification throws", async () => {

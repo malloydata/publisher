@@ -1631,7 +1631,10 @@ describe("deriveSelfInstructions", () => {
          delete process.env.PERSIST_STORAGE_MODE;
       });
 
-      it("refuses a colocated authorize-gated source", () => {
+      it("refuses a colocated authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
+         // No `sourceGateOutcomes` supplied — the relaxation below requires a
+         // PROVEN row_level+attributed outcome, so an unclassified gate keeps
+         // refusing exactly as it always has.
          const compiled = compiledWith({ s1: authorizeGatedColocated }, [
             ["s1"],
          ]);
@@ -1639,6 +1642,45 @@ describe("deriveSelfInstructions", () => {
             MaterializationEligibilityError,
          );
          expect(() => derive(compiled)).toThrow(/authorize/i);
+      });
+
+      // Flipped consciously: this shape used to be an unconditional refusal.
+      // A `row_level` + `attributed` compile-time gate outcome now proves the
+      // entry point's own gate is a row filter and nothing else is reachable
+      // beneath it, so colocated serving grafts exactly what a live query
+      // would — see `assertColocatedPersistNotAuthorizeGated`'s doc.
+      it("admits a colocated authorize-gated source whose compile-time outcome is row_level and attributed", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "row_level", attributed: true } },
+         );
+         expect(() => derive(compiled)).not.toThrow();
+      });
+
+      it("still refuses when the compile-time outcome is row_level but NOT attributed (a join-only gate outside identity reach)", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "row_level", attributed: false } },
+         );
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
+      });
+
+      it("still refuses when the compile-time outcome is rejected", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "rejected", attributed: true } },
+         );
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
       });
 
       it("leaves an ungated colocated source unaffected", () => {
