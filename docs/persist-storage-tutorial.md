@@ -681,18 +681,17 @@ carries no `#(authorize)` annotation, so the gate can't be evaluated on the
 served table. The check walks the compiled source for the gate and fails
 closed: a source it cannot prove gate-free is refused.
 
-A colocated `#@ persist` is refused too, but for a different reason than the one
-above, and the difference is worth stating because it is easy to over-claim. A
-colocated build has no virtual source: the substitution replaces only the
-source's relation SQL, while the gate is applied as the reading query's own
-`WHERE`, so the two compose and rows do come back filtered. The gate is not
-absent. What is frozen is the data the gate DECIDES AGAINST — the gating
-column's values are whatever they were at build time, so a row that changes
-hands keeps being served to its former owner. Adding a gate does not refresh
-anything either: the content address does not include the annotation, so an
-artifact built before the gate stays addressable while every rebuild is
-refused. That is what the refusal exists to prevent. See
-[materialization.md](materialization.md) for the author-facing refusal.
+A colocated `#@ persist` is a different case, and the difference is worth stating because it is easy
+to over-claim. A colocated build has no virtual source: the substitution replaces only the source's
+relation SQL, while the gate is applied as the reading query's own `WHERE`, so the two compose and
+rows do come back filtered. The gate is not absent — which is why a colocated source is admitted when
+the compiler can _prove_ the gate is the entry point's own row-level filter and nothing else is
+reachable beneath it, and refused otherwise (an unattributed or join-only gate, an unclassifiable one,
+or one that doesn't reduce to a row filter at all). When admitted, what is frozen is the data the gate
+DECIDES AGAINST — the gating column's values are whatever they were at build time, so a row that
+changes hands keeps being served to its former owner until the next rebuild. See
+[materialization.md](materialization.md) for the author-facing refusal and the freshness contract that
+follows from it.
 
 ### Field-level hiding and the materialized table
 
