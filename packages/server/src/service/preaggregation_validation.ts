@@ -265,8 +265,8 @@ export function validateSourcePreaggregation(
 
    const declaredFields: FieldLike[] = [];
    // Canonical grain -> each namespace named at it, and the first measure that
-   // named it. Keyed the same way synthesis groups rollups, so "one grain" means
-   // the same thing in both.
+   // named it. Joined on the same NUL separator `planSourcePreaggregation` keys
+   // `byGrain` with, so "one grain" cannot mean two things across the two modules.
    const namespacesByGrain = new Map<string, Map<string, string>>();
    const grainTextByKey = new Map<string, string>();
    for (const field of fields) {
@@ -350,7 +350,7 @@ export function validateSourcePreaggregation(
          // namespace on it — mirroring the same skip in `planSourcePreaggregation`
          // so the two never disagree about which grains exist.
          if (grain.namespace !== undefined && additivity.additive) {
-            const key = grain.dimensions.join(" ");
+            const key = grain.dimensions.join("\u0000");
             const named = namespacesByGrain.get(key) ?? new Map();
             if (!named.has(grain.namespace)) named.set(grain.namespace, name);
             namespacesByGrain.set(key, named);

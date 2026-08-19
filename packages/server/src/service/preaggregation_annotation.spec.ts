@@ -87,6 +87,10 @@ source: s is duckdb.sql("""
   #@ preaggregate grain="a_dim" namespace=""
   measure: m_empty_namespace is amount.sum()
 
+  #@ preaggregate grain="a_dim" namespace="ns_a"
+  #@ preaggregate grain="a_dim"
+  measure: m_restated_grain is amount.sum()
+
   #@ preaggregate grain="b_dim, a_dim"
   measure: m_unsorted is amount.sum()
 }
@@ -196,6 +200,24 @@ describe("#@ preaggregate reader: a measure may declare several grains", () => {
       ).toEqual([
          [["a_dim"], "ns_a"],
          [["b_dim"], "ns_b"],
+      ]);
+   });
+
+   it("re-stating a grain takes the namespace on its own line, including none", () => {
+      // The deliberate consequence of binding a namespace to its line: the second
+      // line re-declares this grain and names no namespace, so it has none. The
+      // alternative — a namespace that persists across lines that do not mention
+      // it — is the outranging this binding exists to prevent, and it would leave
+      // no way to drop one by re-declaring.
+      //
+      // It matters most through an extend chain, since inherited notes come first:
+      // an extending source that re-states its base's grain must restate the
+      // namespace too. `#@ -preaggregate` is how you turn a declaration off.
+      const declaration = readPreaggregateAnnotation(
+         lookup("m_restated_grain"),
+      );
+      expect(declaration.grains).toEqual([
+         { dimensions: ["a_dim"], text: "a_dim", namespace: undefined },
       ]);
    });
 

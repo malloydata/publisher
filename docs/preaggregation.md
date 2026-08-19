@@ -197,8 +197,16 @@ has no shared meaning — name the namespace explicitly there.
 
 **Changing it does not move a table that already exists.** A namespace is not part of
 what identifies a rollup's contents, so a package whose rollups have already built keeps
-them where they are: the annotation changes and the table does not. Drop the rollup's
-table to have the next build recreate it in the new namespace.
+them where they are: the annotation changes and the table does not. Ask for the rebuild
+explicitly — `malloy-pub materialize --force-refresh`, or `forceRefresh` on the build
+endpoint — which is what defeats the unchanged-content skip. Dropping the table by hand
+does not, and leaves the manifest pointing at something that is no longer there.
+
+**A re-stated grain takes the namespace on its own line, including none.** Writing
+`grain="category"` again without `namespace=` clears the one an earlier line gave that
+grain, which matters most across an extend chain: an extending source that re-states its
+base's grain must restate the namespace too, or the rollup moves. To turn a declaration
+off rather than replace it, negate with `#@ -preaggregate`.
 
 **It is a namespace, not a name.** Write it as plain identifiers — letters, digits,
 underscore, dollar or hyphen — dot-separated where the warehouse needs more than one
