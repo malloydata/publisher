@@ -142,10 +142,13 @@ function StackPath() {
  *
  * The neighbour to stay distinct from is the TABLE glyph, not the data app's
  * browser window. Both this and the table are a rounded rect with the same
- * `M3.5 9.5` divider, so with only the one vertical stroke the two differed by
- * that stroke's position alone and read as the same icon at 18px, with the
- * Dashboards and Databases sections on one page. The second divider is what
- * makes this one read as a grid rather than as columns.
+ * `M3.5 9.5` divider, so before the second divider the whole difference between
+ * them was one vertical stroke: `M12 9.5 V20.5` here against the table's
+ * `M9.5 3.5 V20.5`: shifted 2.5 across, and starting at the divider rather
+ * than at the top of the frame. That read as the
+ * same icon at 18px, with the Dashboards and Databases sections on one page.
+ * The second divider is what makes this one read as a grid rather than as
+ * columns.
  */
 function DashboardGridPath() {
    return (
