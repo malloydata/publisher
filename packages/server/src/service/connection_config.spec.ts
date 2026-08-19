@@ -1059,6 +1059,32 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
       expect(accepted).toHaveLength(1);
    });
 
+   // The GCS arm is the same late failure, so it gets the same treatment.
+   it("rejects a destination with a partial gcsConnection", () => {
+      const gcs = {
+         name: "credible",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            },
+            storage: {
+               bucketUrl: "gs://bucket/prefix",
+               gcsConnection: { keyId: "GOOG" },
+            },
+         },
+      } as unknown as ApiConnection;
+      const { accepted, rejected } = validateStorageDestinations([gcs]);
+      expect(accepted).toHaveLength(0);
+      expect(rejected[0].reason).toMatch(/GCS keyId and secret are required/);
+   });
+
    // The whole point of doing it here rather than in validateConnectionShape.
    it("rejects only the bad destination, leaving its neighbour accepted", () => {
       const good = destination({ provider: "credential_chain" });
