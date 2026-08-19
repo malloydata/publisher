@@ -241,6 +241,51 @@ async function buildGatedModel(
 }
 
 /**
+ * A stub runnable carrying its OWN `_modelDef`, compiled from the SAME gate
+ * text but under a SEPARATE declaring file URL — mimics append-scope
+ * `/compile`'s synthetic `__compile_check.malloy` recompile
+ * (`environment.ts`'s `compileSource`), whose struct and `ModelDef` share no
+ * object identity, `sourceID`, or annotation-note identity with the on-disk
+ * model's own copy. A stub with no `_modelDef` at all (the vacuous shape this
+ * replaces) falls back to `this.modelDef` in `resolveRunTargetStruct` and
+ * resolves the ON-DISK struct instead — erasing exactly the ephemeral-model
+ * property that made real `/compile` 403 every gated source at append scope.
+ */
+async function buildEphemeralRunnable(
+   text: string,
+   sourceName: string,
+   duckdb: DuckDBConnection,
+): Promise<{ getPreparedQuery(): Promise<unknown> }> {
+   const fullText = text.includes("experimental.givens")
+      ? text
+      : `##! experimental.givens\n\n${text}`;
+   const ephemeralPath = "__compile_check.malloy";
+   const urlReader = new InMemoryURLReader(
+      new Map([[`${ROOT}${ephemeralPath}`, fullText]]),
+   );
+   const runtime = new Runtime({
+      urlReader,
+      connections: new FixedConnectionMap(
+         new Map<string, Connection>([["duckdb", duckdb]]),
+         "duckdb",
+      ),
+   });
+   const mm = runtime.loadModel(new URL(`${ROOT}${ephemeralPath}`), {
+      importBaseURL: new URL(ROOT),
+   });
+   const compiled = await mm.getModel();
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   const modelDef = (compiled as any)._modelDef as ModelDef;
+   const structRef = modelDef.contents[sourceName] as SourceDef;
+   return {
+      getPreparedQuery: async () => ({
+         _query: { structRef },
+         _modelDef: modelDef,
+      }),
+   };
+}
+
+/**
  * Run `queryText` through the real `authorizeAndBindRunnable` and return the
  * SQL the bound runnable would issue — proof, from production code, of
  * exactly what a query compiled to, including whether a joined-field gate's
@@ -1828,7 +1873,7 @@ source: X is duckdb.table('parent') extend {
       // nothing while making a gated source un-authorable. `/compile` never
       // runs the query; it returns a schema (and, with includeSql, the
       // UNGRAFTED SQL — see `docs/authorize.md`).
-      const { model, duckdb } = await buildGatedModel(`
+      const text = `
 given:
   GROUPS :: number[]
 
@@ -1836,11 +1881,10 @@ given:
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
-`);
+`;
+      const { model, duckdb } = await buildGatedModel(text);
       try {
-         const stubRunnable = {
-            getPreparedQuery: async () => ({ _query: { structRef: "X" } }),
-         };
+         const stubRunnable = await buildEphemeralRunnable(text, "X", duckdb);
          await expect(
             model.assertAuthorizedForRunnable(stubRunnable, { GROUPS: [1] }),
          ).resolves.toBeUndefined();
@@ -1850,6 +1894,65 @@ source: X is duckdb.table('parent') extend {
    });
 
    it("/compile ADMITS a constant-true gate with no givens at all", async () => {
+      const text = `
+#(authorize) "true"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`;
+      const { model, duckdb } = await buildGatedModel(text);
+      try {
+         const stubRunnable = await buildEphemeralRunnable(text, "X", duckdb);
+         await expect(
+            model.assertAuthorizedForRunnable(stubRunnable, {}),
+         ).resolves.toBeUndefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   // The three tests below pin residual gaps the on-disk-twin fold-in does
+   // NOT close — known and chosen, not accidental. Each denies a caller who
+   // would be admitted if the gap were closed; a later change that flips one
+   // of these should be a deliberate decision, not a surprise.
+
+   it("KNOWN GAP — append-scope /compile of a caller-authored derivation (`source: mine is X extend {…}`) still denies with every given supplied", async () => {
+      // The fold-in only replaces an entry keyed on the run target's OWN
+      // source name (`ownSourceName`, here "mine"); `entryPointGatesBySource`
+      // has no on-disk entry for "mine" at all (it is declared only in the
+      // caller's ad-hoc text), so there is nothing to fold in and the walk's
+      // ephemeral copy of the INHERITED gate stands — `resolveGraftTarget`
+      // fails all three strategies against it, same as before the fix.
+      const text = `
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`;
+      const { model, duckdb } = await buildGatedModel(text);
+      try {
+         const derivedText = `${text}\nsource: mine is X extend {}\n`;
+         const stubRunnable = await buildEphemeralRunnable(
+            derivedText,
+            "mine",
+            duckdb,
+         );
+         await expect(
+            model.assertAuthorizedForRunnable(stubRunnable, { GROUPS: [1] }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("KNOWN GAP — a constant-true walk entry with no on-disk twin under the entry name still denies", async () => {
+      // "solo" exists only in the ephemeral compile, not in this model's own
+      // `entryPointGatesBySource`, so the fold-in never runs for it and
+      // `resolveGraftTarget` never gets a target to classify against —
+      // rejected before `classifyAuthorizeGate` ever sees the literal "true".
       const { model, duckdb } = await buildGatedModel(`
 #(authorize) "true"
 source: X is duckdb.table('parent') extend {
@@ -1857,12 +1960,46 @@ source: X is duckdb.table('parent') extend {
 }
 `);
       try {
-         const stubRunnable = {
-            getPreparedQuery: async () => ({ _query: { structRef: "X" } }),
-         };
+         const stubRunnable = await buildEphemeralRunnable(
+            `
+#(authorize) "true"
+source: solo is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`,
+            "solo",
+            duckdb,
+         );
          await expect(
             model.assertAuthorizedForRunnable(stubRunnable, {}),
-         ).resolves.toBeUndefined();
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("KNOWN GAP — a new-path compile importing a gated model (assertAuthorizedFromCompiledRunnable) still denies with every given supplied", async () => {
+      // `skipOwnSourceGate: true` is exactly what keeps the fold-in from
+      // running (it is gated on `!skipOwnSourceGate`), so this denies even
+      // though the run target IS the on-disk "X" with a satisfying given —
+      // the same case the fold-in fixes for `assertAuthorizedForRunnable`.
+      const text = `
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`;
+      const { model, duckdb } = await buildGatedModel(text);
+      try {
+         const stubRunnable = await buildEphemeralRunnable(text, "X", duckdb);
+         await expect(
+            model.assertAuthorizedFromCompiledRunnable(stubRunnable, {
+               GROUPS: [1],
+            }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }

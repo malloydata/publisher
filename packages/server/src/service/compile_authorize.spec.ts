@@ -92,38 +92,46 @@ describe("compile-path authorize gate (compileSource)", () => {
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("denies the gated source at APPEND scope even when the given satisfies the gate — the gate cannot be grafted onto the virtual model", async () => {
+   it("ADMITS the gated source at APPEND scope when every given the gate reads is supplied — the authoring loop", async () => {
       // Scope "append" compiles the caller's text against a VIRTUAL model, so
       // the run target's `SourceDef` belongs to a different `ModelDef` than
-      // the gate model's. `resolveGraftTarget` finds no entry to attach the
-      // filter to, the gate resolves `rejected`, and a rejected gate denies
-      // wherever it is found — the fail-closed backstop, not the
-      // `checkOnly` escape (which only applies once a gate has classified as
-      // an enforceable row filter). Scope "file", which compiles the whole
-      // replacement file, does admit an author who supplies the gate's
-      // givens — see the added-file test below.
-      await expect(
-         compile("run: gated -> { aggregate: c }", { ROLE: "analyst" }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // the gate model's — but `collectAuthorizeEntryPointGates`'s fold-in
+      // (`model.ts`) replaces that ephemeral entry with the ON-DISK "gated"
+      // entry by CONTENT (same label/exprs/selfContained), whose `struct` IS
+      // a `this.modelDef.contents` value. `resolveGraftTarget` then resolves
+      // it directly, and the `checkOnly` decidable escape admits: every given
+      // the gate reads (`ROLE`) was supplied. Denying here protected nothing
+      // the query path doesn't already enforce (a query still gets FILTERED
+      // rows, never raw ones) while making a gated source un-authorable.
+      const { problems } = await compile("run: gated -> { aggregate: c }", {
+         ROLE: "analyst",
+      });
+      expect(problems).toEqual([]);
    });
 
-   it("denies the gated source when the given does NOT satisfy the gate", async () => {
-      await expect(
-         compile("run: gated -> { aggregate: c }", { ROLE: "nobody" }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+   it("ADMITS at APPEND scope even when the given does NOT satisfy the gate — /compile decides on PRESENCE, not the value", async () => {
+      // The `checkOnly` decidable escape only asks whether the caller
+      // engaged with the gate (supplied SOME value for every given it
+      // reads), not whether that value would pass — the real row filter is
+      // evaluated against the actual value at RUN time, never here. `/compile`
+      // returns a schema, not rows, so admitting on presence alone reveals
+      // nothing a query wouldn't already answer with (possibly empty)
+      // filtered rows.
+      const { problems } = await compile("run: gated -> { aggregate: c }", {
+         ROLE: "nobody",
+      });
+      expect(problems).toEqual([]);
    });
 
-   it("CRITICAL — a row-level gate still denies even with a satisfying given, when the compile path cannot graft it", async () => {
-      // `row_gated`'s condition reads `org_id`, a real column. The same
-      // "independently recompiled model" shape that defeats
-      // `resolveGraftTarget` here has no fallback to fall back TO — every
-      // gate is a row filter now, and a filter with nowhere to attach
-      // rejects outright, so this must fail to compile and deny — never
-      // admit a caller whose given would satisfy the row condition, since
-      // there is no scope here to graft the row filter onto at all.
-      await expect(
-         compile("run: row_gated -> { aggregate: c }", { GROUPS: [1] }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+   it("ADMITS a row-field gate (`org_id`) at APPEND scope once its given is supplied", async () => {
+      // `row_gated`'s condition reads `org_id`, a real column — the fold-in
+      // still resolves the on-disk twin for it exactly as it does for the
+      // given-only "gated" case above, so the same decidable escape applies:
+      // `GROUPS` was supplied, so this compiles without running the query.
+      const { problems } = await compile("run: row_gated -> { aggregate: c }", {
+         GROUPS: [1],
+      });
+      expect(problems).toEqual([]);
    });
 
    it("leaves an ungated source compilable without any given", async () => {
@@ -476,19 +484,32 @@ export { customers, visible_gated }`,
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("denies (masked as NotQueryableError) the hidden source even when the given satisfies its gate", async () => {
-      // Every gate is a row filter now, and `/compile` has no recompile step
-      // to apply one to (see the identical case in "compile-path authorize
-      // gate" above) — a satisfied given no longer admits here, the same
-      // accepted narrowing as the given-only-to-row-level collapse elsewhere.
-      await expect(
-         env.compileSource(
-            "pkg",
-            "secret.malloy",
-            "run: hidden_gated -> { aggregate: c }",
-            false,
-            { ROLE: "analyst" },
-         ),
-      ).rejects.toBeInstanceOf(NotQueryableError);
+   it("ADMITS the hidden source once the gate's given is supplied — denyHiddenAsNotQueryable scrubs a denial, it is not an access check", async () => {
+      // `denyHiddenAsNotQueryable` (environment.ts) runs the gate first and
+      // only converts to `NotQueryableError` when the gate itself threw
+      // `AccessDeniedError`. That is intended: the query boundary
+      // (`explores`/`queryableSources`, the *what* axis) deliberately does
+      // NOT apply to `/compile` — a boundary-enforcing `/compile` made a
+      // curated package un-authorable (QA HANDOFF CR-5 had every per-file
+      // compile 404 the moment `queryableSources: "declared"` was set). Only
+      // `#(authorize)` (the *who* axis) gates `/compile`, and it still
+      // applies here in full. Once the fold-in (model.ts) lets the on-disk
+      // gate's `checkOnly` decidable escape admit on a supplied `$ROLE`, the
+      // gate succeeds, `convert()` never runs, and this resolves — the
+      // caller is authorized, so there is nothing left for the 404 mask to
+      // scrub.
+      const { problems, sql } = await env.compileSource(
+         "pkg",
+         "secret.malloy",
+         "run: hidden_gated -> { aggregate: c }",
+         false,
+         { ROLE: "analyst" },
+      );
+      // The disclosure surface: the schema resolved with no diagnostics
+      // (compile succeeded — the caller now knows `hidden_gated` exists and
+      // is queryable), and `sql` stays absent because this call passed
+      // `includeSql: false`, not because the gate blocked it.
+      expect(problems).toEqual([]);
+      expect(sql).toBeUndefined();
    });
 });
