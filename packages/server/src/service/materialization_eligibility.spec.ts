@@ -321,4 +321,86 @@ source: mz_colocated_given is base -> { where: tenant = $tenant; aggregate: c is
          assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),
       ).not.toThrow();
    });
+
+   describe("row-level relaxation (gateOutcome)", () => {
+      it("admits a gated colocated source given a proven row_level + attributed outcome", async () => {
+         const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(authorize) "$role = 'analyst'"
+#@ persist name="mz_relaxed"
+source: mz_relaxed is base -> { aggregate: c is count() }`);
+         expect(sources.mz_relaxed).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(
+               sources.mz_relaxed,
+               sources.mz_relaxed.name,
+               "persist",
+               { classification: "row_level", attributed: true },
+            ),
+         ).not.toThrow();
+      });
+
+      it("still refuses when the outcome is row_level but not attributed (a gate reachable only through a join)", async () => {
+         const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(authorize) "$role = 'analyst'"
+#@ persist name="mz_unattributed"
+source: mz_unattributed is base -> { aggregate: c is count() }`);
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(
+               sources.mz_unattributed,
+               sources.mz_unattributed.name,
+               "persist",
+               { classification: "row_level", attributed: false },
+            ),
+         ).toThrow(MaterializationEligibilityError);
+      });
+
+      it("still refuses when the outcome classifies rejected", async () => {
+         const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string is 'analyst'
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(authorize) "$role = 'analyst'"
+#@ persist name="mz_rejected_outcome"
+source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(
+               sources.mz_rejected_outcome,
+               sources.mz_rejected_outcome.name,
+               "persist",
+               { classification: "rejected", attributed: true },
+            ),
+         ).toThrow(MaterializationEligibilityError);
+      });
+
+      it("keeps refusing a pre-aggregation rollup UNCONDITIONALLY, even with a row_level + attributed outcome", async () => {
+         // A rollup groups across the gated column by construction, so there is
+         // no row left to filter afterward — the relaxation must never reach
+         // `origin === "preaggregate"` no matter what the outcome says.
+         const sources =
+            await persistSources(`##! experimental { persistence composite_sources givens }
+given: GROUPS :: number[]
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist
+source: orders__preagg__category is orders -> {
+  group_by: category
+  aggregate: total__partial is amount.sum()
+}`);
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(
+               sources.orders__preagg__category,
+               sources.orders__preagg__category.name,
+               "preaggregate",
+               { classification: "row_level", attributed: true },
+            ),
+         ).toThrow(/authorize/i);
+      });
+   });
 });

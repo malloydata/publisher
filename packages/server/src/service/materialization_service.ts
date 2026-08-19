@@ -1011,6 +1011,7 @@ export class MaterializationService {
                   compiled.preaggregatePlans?.[persistSource.sourceID]
                      ? "preaggregate"
                      : "persist",
+                  compiled.sourceGateOutcomes?.[persistSource.sourceID],
                );
             }
 
@@ -1637,25 +1638,28 @@ export class MaterializationService {
                   // The gate refusal above only fires for a STORAGE-targeted
                   // build, so on its own it leaves every other instruction —
                   // the colocated one with no destination, and any build while
-                  // the mode is off — putting a gated source into a frozen
-                  // table that carries no gate. An orchestrated host chooses
+                  // the mode is off — unexamined. An orchestrated host chooses
                   // the destination, so this path reaches that case with no
                   // `#@ persist`-vs-`storage=` distinction to lean on; refuse
-                  // a gated source however it was instructed. `else` rather
-                  // than an unconditional call: `assertMaterializationEligible`
-                  // already runs the identical `referencesAuthorize` IR walk,
-                  // so calling both on the storage path would walk every
-                  // persist source's whole `SourceDef` twice per build for an
-                  // answer the first call has already acted on. Before
-                  // computeSourceEntityId for the reason the comment above
-                  // gives: it calls getSQL(), which throws opaquely for a gate
-                  // that references a given, losing the clean 422.
+                  // a gated source however it was instructed, unless its
+                  // compile-time gate outcome proves the colocated relaxation
+                  // applies (see `assertColocatedPersistNotAuthorizeGated`'s
+                  // doc). `else` rather than an unconditional call:
+                  // `assertMaterializationEligible` already runs the identical
+                  // `referencesAuthorize` IR walk, so calling both on the
+                  // storage path would walk every persist source's whole
+                  // `SourceDef` twice per build for an answer the first call
+                  // has already acted on. Before computeSourceEntityId for the
+                  // reason the comment above gives: it calls getSQL(), which
+                  // throws opaquely for a gate that references a given, losing
+                  // the clean 422.
                   assertColocatedPersistNotAuthorizeGated(
                      persistSource,
                      persistSource.name,
                      compiled.preaggregatePlans?.[persistSource.sourceID]
                         ? "preaggregate"
                         : "persist",
+                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
                   );
                }
 

@@ -50,7 +50,11 @@ import {
 import { errMessage, ignoreDotfiles } from "../utils";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { deriveServeBindings } from "./materialization_serve_transform";
-import { computePackageBuildPlan, SourceEligibility } from "./build_plan";
+import {
+   ColocatedSourceEligibility,
+   computePackageBuildPlan,
+   SourceEligibility,
+} from "./build_plan";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
@@ -195,6 +199,12 @@ export class Package {
    // anyway. Distinct from "nothing is eligible", and refused the same way: an
    // unknown answer must not read as consent. See bindStorageServeBindings.
    private sourceEligibility: SourceEligibility | undefined = undefined;
+   // The colocated-tier analogue of `sourceEligibility`
+   // (build_plan.collectColocatedSourceEligibility), consulted when binding a
+   // colocated (same-connection) manifest. Keyed by sourceEntityId, not name —
+   // see that type's doc. Same "undefined means not known, refuse" rule.
+   private colocatedSourceEligibility: ColocatedSourceEligibility | undefined =
+      undefined;
    // Per-source incremental-refresh gate inputs (the resolved `refresh=` /
    // `watermark=` / `merge_key=` declaration), keyed by sourceID to match the
    // wire plan. Resolved at
@@ -692,11 +702,13 @@ export class Package {
             plan,
             droppedPersistSources,
             sourceEligibility,
+            colocatedSourceEligibility,
             incrementalDeclarations,
          } = await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
          pkg.sourceEligibility = sourceEligibility;
+         pkg.colocatedSourceEligibility = colocatedSourceEligibility;
          pkg.incrementalPolicySources = Object.entries(plan?.sources ?? {})
             .filter(([sourceID]) => incrementalDeclarations[sourceID])
             .map(([sourceID, source]) => ({
@@ -1196,9 +1208,40 @@ export class Package {
     * recompiles — the recompile is not what routes the query, so a pure
     * restore-on-load skips it (no double compile after the load-time compile).
     * An empty map clears the binding (reverts to serving live).
+    *
+    * Filtered against {@link colocatedSourceEligibility} the same way
+    * {@link bindStorageServeBindings} filters against `sourceEligibility` —
+    * POSITIVELY, and dropped rather than fatal on a miss. This is what stands
+    * between an authorize-gated colocated source and a self-built manifest
+    * entry that predates the model changing under it (a source built ungated,
+    * then re-annotated with an unattributed or unclassifiable gate before the
+    * next rebuild converges): the entry still names a real table, but this
+    * package's current compile no longer vouches for serving it.
     */
    public bindColocatedServeManifest(entries: FreshnessManifest): void {
-      this.recordManifestBinding(entries);
+      const eligibility = this.colocatedSourceEligibility;
+      const eligibleEntityIds = eligibility?.eligibleEntityIds;
+      const allowed: FreshnessManifest = {};
+      for (const [sourceEntityId, entry] of Object.entries(entries)) {
+         if (eligibleEntityIds?.has(sourceEntityId)) {
+            allowed[sourceEntityId] = entry;
+            continue;
+         }
+         const reason =
+            eligibility === undefined
+               ? "the package build plan could not be computed, so no source was examined for eligibility"
+               : (eligibility.refused[sourceEntityId] ??
+                 "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)");
+         logger.warn(
+            "Refusing a colocated serve binding: the source is not eligible to be served from a materialized table",
+            {
+               packageName: this.packageName,
+               sourceEntityId,
+               reason,
+            },
+         );
+      }
+      this.recordManifestBinding(allowed);
    }
 
    /**

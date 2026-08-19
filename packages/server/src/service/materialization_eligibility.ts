@@ -3,6 +3,7 @@ import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
 import type { AnnotationNote } from "./annotations";
 import { parseAuthorizeAnnotation } from "./authorize";
+import type { PersistSourceGateOutcome } from "./build_plan";
 
 /**
  * Compile-time eligibility gate for materializing a persist source into a
@@ -137,9 +138,28 @@ export function assertMaterializationEligible(
  * represent a per-query given or a free parameter; a colocated build has no
  * such constraint (it is still one relation per source, computed once, in the
  * source's own warehouse), so applying them here would refuse a large set of
- * packages that build and serve correctly today. Only the authorize gate is a
- * problem on this path: it is evaluated per request, and a colocated build is
- * just as frozen as a storage build, so the same leak applies.
+ * packages that build and serve correctly today.
+ *
+ * Unlike the storage tier, a colocated artifact is NOT served frozen with
+ * respect to the gate: the entry point's own `#(authorize)` is re-evaluated on
+ * every query, grafted onto the SAME entry point (`Model.buildGraftedMaterializer`
+ * / `resolveGraftTarget`) whether that entry point resolves to a live
+ * recompute or a same-connection substitution of the materialized table.
+ * Persistence changes only where the rows are read FROM, never whether the
+ * row filter is appended — so a `gateOutcome` of `{classification: "row_level",
+ * attributed: true}` (the entry point's gate is PROVEN to compile to a row
+ * filter, and PROVEN to be the only gate reachable beneath the source — see
+ * `isAuthorizeAttributedToEntryPoint`) is admitted: the served artifact grants
+ * nothing a live query would not, and the only thing lost is freshness (a row
+ * whose access decision changed is served under the OLD decision until the
+ * next rebuild, since the build itself never evaluates the gate).
+ *
+ * Refused with no `gateOutcome`, or one classifying `rejected` or unattributed,
+ * for the ORIGINAL reason: this pass alone (`referencesAuthorize`'s deep walk)
+ * cannot tell whether the entry point's own gate is even expressible as a row
+ * filter, or whether a second gate hides behind a join outside the entry
+ * point's own identity chain — either way there is nothing here to prove the
+ * artifact matches what a live query enforces, so it fails closed.
  *
  * This gate carries a SECOND job that its own justification above does not
  * mention, and narrowing it on the strength of that justification alone would
@@ -148,8 +168,12 @@ export function assertMaterializationEligible(
  * `preaggregation_*` modules has any authorize awareness of its own — so this
  * refusal is also the only thing standing between an `#(authorize)`-gated source
  * and the pre-aggregation tier. `referencesAuthorize` finds the gate through the
- * import → rename → `query_source` chain, which is why it holds. See
- * `docs/materialization.md`, and the rollup-shaped test in this module's spec.
+ * import → rename → `query_source` chain, which is why it holds. A rollup
+ * GROUPS across the gated column by construction, so the column is not even
+ * present to filter on afterwards — the relaxation above therefore never
+ * applies to `origin === "preaggregate"`, regardless of `gateOutcome`; that
+ * refusal stays unconditional. See `docs/materialization.md`, and the
+ * rollup-shaped test in this module's spec.
  *
  * `origin` names the annotation the AUTHOR wrote, so the refusal can be
  * actionable for a source they never typed. A rollup's name is synthesized
@@ -167,45 +191,63 @@ export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
    origin: "persist" | "preaggregate" = "persist",
+   gateOutcome?: PersistSourceGateOutcome,
 ): void {
-   if (referencesAuthorize(persistSource)) {
-      // Reuses the "authorize" reason: this is the same underlying refusal
-      // (a frozen table serving an authorize-gated relation to everyone) as
-      // the storage-destination case, just reached via the colocated path.
-      recordEligibilityRefused("authorize");
-      const gated =
-         origin === "preaggregate"
-            ? `the source '${sourceName}' rolls up is protected by an ` +
-              `#(authorize) gate (its own or a joined source's)`
-            : `it is protected by an #(authorize) gate (its own or a joined ` +
-              `source's)`;
-      const remedy =
-         origin === "preaggregate"
-            ? `Remove the '#@ preaggregate' annotation from the gated source's ` +
-              `measure(s), or move the gate to a source that is not ` +
-              `pre-aggregated.`
-            : `Drop '#@ persist' from this source, or move the gate to a source ` +
-              `that is not materialized.`;
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}' cannot be built`
-            : `Source '${sourceName}' cannot be materialized (colocated ` +
-              `'#@ persist')`;
-      // Only true of a rollup: it GROUPS, so the gated column is not even
-      // present to filter on afterwards.
-      const alsoRollup =
-         origin === "preaggregate"
-            ? ` A rollup also groups ACROSS the gated column, so it could not ` +
-              `be row-filtered afterwards even in principle.`
-            : "";
-      throw new MaterializationEligibilityError({
-         message:
-            `${what}: ${gated}. An authorize expression is evaluated per ` +
-            `request; a materialized-once table served frozen carries no gate, ` +
-            `so it would be served to everyone, bypassing authorization.` +
-            `${alsoRollup} This is refused for safety. ${remedy}`,
-      });
+   if (!referencesAuthorize(persistSource)) return;
+
+   if (
+      origin === "persist" &&
+      gateOutcome?.classification === "row_level" &&
+      gateOutcome.attributed
+   ) {
+      // Proven safe above: the entry point's own gate compiles to a row
+      // filter and nothing else is reachable beneath it, so colocated serving
+      // grafts exactly what a live query would.
+      return;
    }
+
+   // Reuses the "authorize" reason: this is the same underlying refusal
+   // (a frozen table serving an authorize-gated relation to everyone) as
+   // the storage-destination case, just reached via the colocated path.
+   recordEligibilityRefused("authorize");
+   const gated =
+      origin === "preaggregate"
+         ? `the source '${sourceName}' rolls up is protected by an ` +
+           `#(authorize) gate (its own or a joined source's)`
+         : `it is protected by an #(authorize) gate (its own or a joined ` +
+           `source's)`;
+   const remedy =
+      origin === "preaggregate"
+         ? `Remove the '#@ preaggregate' annotation from the gated source's ` +
+           `measure(s), or move the gate to a source that is not ` +
+           `pre-aggregated.`
+         : `Drop '#@ persist' from this source, or move the gate to a source ` +
+           `that is not materialized.`;
+   const what =
+      origin === "preaggregate"
+         ? `Pre-aggregation rollup '${sourceName}' cannot be built`
+         : `Source '${sourceName}' cannot be materialized (colocated ` +
+           `'#@ persist')`;
+   // Only true of a rollup: it GROUPS, so the gated column is not even
+   // present to filter on afterwards.
+   const alsoRollup =
+      origin === "preaggregate"
+         ? ` A rollup also groups ACROSS the gated column, so it could not ` +
+           `be row-filtered afterwards even in principle.`
+         : "";
+   // A plain `#@ persist` gate that is row-level but not (yet) proven
+   // attributed reads the same as an unclassifiable one here: this function
+   // has no visibility into WHY `gateOutcome` didn't clear the bar (missing,
+   // rejected, or a join-only gate outside its identity chain), so the
+   // message stays generic rather than guessing.
+   throw new MaterializationEligibilityError({
+      message:
+         `${what}: ${gated}. An authorize expression is evaluated per ` +
+         `request; without a proven row-level, fully-attributed ` +
+         `classification this pass cannot show the served artifact matches ` +
+         `what a live query would enforce.` +
+         `${alsoRollup} This is refused for safety. ${remedy}`,
+   });
 }
 
 /**

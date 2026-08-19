@@ -805,4 +805,114 @@ describe("computePackageBuildPlan", () => {
       expect(plan).toBeNull();
       expect(droppedPersistSources).toEqual([]);
    });
+
+   describe("colocatedSourceEligibility", () => {
+      let rootDir: string;
+
+      beforeEach(async () => {
+         rootDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "publisher-buildplan-colocated-"),
+         );
+      });
+
+      afterEach(async () => {
+         await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+      });
+
+      async function realPackageMulti(
+         files: Record<string, string>,
+      ): Promise<BuildPlanPackage> {
+         for (const [modelFile, modelText] of Object.entries(files)) {
+            await fs.writeFile(path.join(rootDir, modelFile), modelText);
+         }
+         const duckdb = new DuckDBConnection("duckdb", ":memory:");
+         const connections = new FixedConnectionMap(
+            new Map([["duckdb", duckdb]]),
+            "duckdb",
+         );
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(() => connections);
+         return {
+            getModelPaths: () => Object.keys(files),
+            getPackagePath: () => rootDir,
+            getMalloyConfig: () => malloyConfig,
+            getMalloyConnection: async () => duckdb,
+         };
+      }
+
+      it(
+         "keys eligibility so a same-NAMED source in a DIFFERENT model is judged independently — one eligible, one refused",
+         async () => {
+            // Two models each declare a persist source named "s". model_a's is
+            // row-level and attributed (colocated-eligible); model_b's carries a
+            // gate that classifies REJECTED (a literal-vs-field comparison). A
+            // name-keyed positive check ("is `s` eligible anywhere in the
+            // package?") would incorrectly authorize model_b's binding off
+            // model_a's eligibility. Keying by each source's own sourceEntityId
+            // (computed from ITS OWN connection digest + SQL, never looked up by
+            // name) cannot make that mistake — the two sources are examined,
+            // and recorded, independently.
+            const pkg = await realPackageMulti({
+               "model_a.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+source: base_a is duckdb.sql("select 1 as org_id")
+
+#@ persist name="s"
+#(authorize) "org_id = $ORG"
+source: s is base_a -> { select: org_id }
+`,
+               "model_b.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG2 :: number
+
+#(authorize) "org_id = 999"
+source: base_b is duckdb.sql("select 2 as org_id")
+
+#@ persist name="s"
+source: s is base_b -> { select: org_id }
+`,
+            });
+
+            const compiled = await compilePackageBuildPlan(pkg);
+            const { colocatedSourceEligibility } =
+               await computePackageBuildPlan(pkg);
+
+            const sourceIDA = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_a"),
+            );
+            const sourceIDB = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_b"),
+            );
+            expect(sourceIDA).toBeDefined();
+            expect(sourceIDB).toBeDefined();
+
+            const idA = computeSourceEntityId(
+               compiled.sources[sourceIDA as string],
+               compiled.connectionDigests,
+            );
+            const idB = computeSourceEntityId(
+               compiled.sources[sourceIDB as string],
+               compiled.connectionDigests,
+            );
+            // Distinct content ⇒ distinct entity ids, which is what makes this a
+            // real collision-avoidance test rather than a tautology.
+            expect(idA).not.toBe(idB);
+            expect(colocatedSourceEligibility.eligibleEntityIds.has(idA)).toBe(
+               true,
+            );
+            expect(colocatedSourceEligibility.eligibleEntityIds.has(idB)).toBe(
+               false,
+            );
+         },
+         { timeout: 20000 },
+      );
+   });
 });

@@ -32,6 +32,7 @@ import {
    type IncrementalDeclaration,
 } from "./incremental_declaration";
 import {
+   assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
    isAuthorizeAttributedToEntryPoint,
 } from "./materialization_eligibility";
@@ -1050,6 +1051,7 @@ export async function computePackageBuildPlan(
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
    sourceEligibility: SourceEligibility;
+   colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
@@ -1073,6 +1075,7 @@ export async function computePackageBuildPlan(
       plan,
       droppedPersistSources,
       sourceEligibility: collectSourceEligibility(compiled.sources),
+      colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,
    };
 }
@@ -1151,4 +1154,56 @@ function collectSourceEligibility(
       }
    }
    return { eligible, refused };
+}
+
+/**
+ * Which sources may be served from a COLOCATED (same-connection) materialized
+ * table, decided HERE for the same reason as {@link SourceEligibility}: the
+ * serve side (a manifest bind, whether self-produced or host-supplied) cannot
+ * recompile the model to re-derive this, so it needs a positive answer to
+ * check against.
+ *
+ * Keyed by `sourceEntityId`, NOT source name — deliberately unlike
+ * {@link SourceEligibility}, whose own doc admits the name key only because
+ * that is what a `storage=` serve binding carries. A colocated binding
+ * (`FreshnessManifest`) carries no name at all, only `sourceEntityId`, so a
+ * name key here would either be unusable at the binding boundary or require
+ * resolving a bare name back to a source — exactly the ambiguity the package
+ * permits: two different models may each declare a source of the same name,
+ * and a name-keyed positive check would let ONE of them being eligible
+ * authorize a binding for the OTHER, ineligible one. Iterating `sources`
+ * (keyed by sourceID — model path + declared name) and computing each one's
+ * OWN `sourceEntityId` never performs a name lookup, so this cannot happen:
+ * two same-named sources are examined, and recorded, independently.
+ */
+export type ColocatedSourceEligibility = {
+   /** sourceEntityId of colocated sources examined and found eligible. */
+   eligibleEntityIds: Set<string>;
+   /** sourceEntityId -> why it was refused; for the operator-facing log. */
+   refused: Record<string, string>;
+};
+
+function collectColocatedSourceEligibility(
+   compiled: CompiledBuildPlan,
+): ColocatedSourceEligibility {
+   const eligibleEntityIds = new Set<string>();
+   const refused: Record<string, string> = {};
+   for (const [sourceID, source] of Object.entries(compiled.sources)) {
+      const sourceEntityId = computeSourceEntityId(
+         source,
+         compiled.connectionDigests,
+      );
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            source,
+            source.name,
+            compiled.preaggregatePlans?.[sourceID] ? "preaggregate" : "persist",
+            compiled.sourceGateOutcomes?.[sourceID],
+         );
+         eligibleEntityIds.add(sourceEntityId);
+      } catch (err) {
+         refused[sourceEntityId] = errMessage(err);
+      }
+   }
+   return { eligibleEntityIds, refused };
 }
