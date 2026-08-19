@@ -1,6 +1,7 @@
 import type { PersistSource } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
+import type { AnnotationNote } from "./annotations";
 import { parseAuthorizeAnnotation } from "./authorize";
 
 /**
@@ -413,4 +414,112 @@ function walkForAuthorize(
       if (walkForAuthorize(value, seen, depth + 1)) return true;
    }
    return false;
+}
+
+/**
+ * Whether every `#(authorize)` note reachable (transitively, INCLUDING
+ * joins) beneath the compiled source is also reachable WITHOUT crossing a
+ * join — i.e. would still be found by the same walk `collectEntryPointGates`
+ * (`./gate_classification`) effectively sees, since that function does not
+ * trace joins either (see its doc). `false` means the deep walk found a note
+ * reachable ONLY through a join: `referencesAuthorize`'s refusal is real for
+ * it today, but a row-level CLASSIFICATION of the entry point's own gate
+ * would say nothing about it, so a caller deciding whether to relax the
+ * colocated-persist refusal must require this to be `true`, not just a
+ * `row_level` classification.
+ *
+ * Object identity (matching `ownLevelNotes`'s convention, and
+ * `findSourceByOwnAnnotationIdentity`'s in `./gate_classification`), not text
+ * — two independently authored gates can share text.
+ *
+ * Fail-closed: any introspection failure is treated as unattributed.
+ */
+export function isAuthorizeAttributedToEntryPoint(
+   persistSource: PersistSource,
+): boolean {
+   try {
+      const deep = new Set<AnnotationNote>();
+      walkForAuthorizeNotes(
+         persistSource._sourceDef,
+         new WeakSet(),
+         0,
+         deep,
+         true,
+      );
+      const noJoins = new Set<AnnotationNote>();
+      walkForAuthorizeNotes(
+         persistSource._sourceDef,
+         new WeakSet(),
+         0,
+         noJoins,
+         false,
+      );
+      for (const note of deep) {
+         if (!noJoins.has(note)) return false;
+      }
+      return true;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Deep walk collecting authorize annotation NOTE objects (by identity)
+ * rather than {@link walkForAuthorize}'s boolean — a caller needs to know
+ * WHICH notes were found, not just whether any were. Its own recursion,
+ * independent of `walkForAuthorize`'s (rather than a shared core), so that
+ * function's early-return-on-first-match stays untouched by this
+ * collect-everything walk.
+ *
+ * `crossJoins=false` stops at a join field — matched the same way malloy's
+ * own `isJoined` does (`'join' in sd`), duck-typed here rather than fighting
+ * `TypedDef`'s union to call the exported predicate on a generic IR node
+ * (same spirit as `gate_classification.ts`'s own duck-typed casts).
+ * `crossJoins=true` reduces to `walkForAuthorize`'s full reach.
+ */
+function walkForAuthorizeNotes(
+   node: unknown,
+   seen: WeakSet<object>,
+   depth: number,
+   found: Set<AnnotationNote>,
+   crossJoins: boolean,
+): void {
+   if (depth > MAX_GIVEN_WALK_DEPTH) {
+      throw new Error("authorize-usage walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return;
+   if (seen.has(node as object)) return;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      for (const item of node) {
+         walkForAuthorizeNotes(item, seen, depth + 1, found, crossJoins);
+      }
+      return;
+   }
+
+   const record = node as Record<string, unknown>;
+   if (!crossJoins && "join" in record) return;
+
+   for (const key of ["blockNotes", "notes"]) {
+      const arr = record[key];
+      if (!Array.isArray(arr)) continue;
+      for (const n of arr) {
+         const text =
+            typeof n === "string"
+               ? n
+               : n &&
+                   typeof n === "object" &&
+                   typeof (n as { text?: unknown }).text === "string"
+                 ? (n as { text: string }).text
+                 : undefined;
+         if (text !== undefined && isAuthorizeAnnotation(text)) {
+            found.add(n as AnnotationNote);
+         }
+      }
+   }
+
+   for (const value of Object.values(record)) {
+      walkForAuthorizeNotes(value, seen, depth + 1, found, crossJoins);
+   }
 }
