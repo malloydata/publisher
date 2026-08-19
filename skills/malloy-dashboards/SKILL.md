@@ -43,12 +43,15 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    include wants `"scope": "package"`**, which recompiles every file as saved: `file` only checks the
    one you are editing, so renaming a source in `_shared.malloy` passes it while breaking every
    composite that imports it. A clean compile is not a working dashboard: some tag mistakes surface
-   at step 6, and some only when you look at the page in step 7.
-6. **SAVE IT, THEN RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
+   at step 6, and some only when you look at the page in step 7. (The third scope, `append`, is the
+   default and is what a not-yet-saved file gets.)
+6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `malloy_reloadPackage`, or
    `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
    a 424 means the package did not load and your edit is not live. **The `warnings` key is absent
    when there are none**, so an empty response is the pass, not a sign you are reading the wrong
-   field. See "Read the lint" below.
+   field. Then read `GET …/packages/<pkg>/dashboards/<name>`: its `givens` are exactly the controls
+   that will render, which catches a given you imported but never referenced before you open the page,
+   and its `query` is the name to run in step 7. See "Read the lint" below.
 7. **OPEN IT AND LOOK.** Not optional; see "What 'done' means".
 
 ## The two forms
@@ -204,8 +207,9 @@ its rows.
 - **A model-level `##` tag must be on one line.** Wrapping one always breaks it, but how you find
   out depends on what follows. If the continuation is not valid Malloy you get a compile error. If it
   happens to be, an `import` say, the file compiles clean, quietly stops being a dashboard and
-  becomes a shared include, and only the package warnings tell you: "Tag does not parse (Unclosed
-  '{')". See "Losing the grid" below.
+  becomes a shared include, and only the package warnings tell you. Match on the shape rather than the
+  words: the message may say a tag "does not parse", or was "refused" or "dropped rather than parsed",
+  and on a file that still built it opens "Annotation" rather than "Tag". See "Losing the grid" below.
 - **In a `# dashboard` view, fields render by role.** A top-level `aggregate:` measure is a KPI card,
   so do not nest a `# big_value` view to get one. Each `nest:` is a tile. Give every KPI a
   `# label=`, or the card is headed `total_sales`.
@@ -235,6 +239,12 @@ given: MIN_SALE :: filter<number> is f''
 # label="Ordered since"
 given: SINCE :: date is @2023-01-01
 ```
+
+A sixth tag, `description`, is part of the contract and has two spellings that do different things:
+`# description="…"` publishes to the API but Publisher's own UI does not render it, while
+`#(description="…")` renders as helper text under the control but warns on any multi-word value, that
+the prefix "is not a well-formed route", because a route ends at the first space. Pick by which reader
+you care about.
 
 `control=select`/`multiselect` with a `suggest` renders a picker filled from the data;
 `range_min`/`range_max` on a `filter<number>` renders a slider; a `date` or `timestamp` renders a
@@ -335,20 +345,31 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
 - `to=self, but no model in this package declares a given "X"`: the clicked value has nowhere to go.
 - `given "X" suggests options from source "y", which this file does not define`: the dropdown will
   be empty, so import it.
+- `filters by given "X", which this file does not import, so no control is shown for it`: the trap
+  under "Importing a given is what makes it bindable", which the lint now names for you, with the file
+  to fix.
 - A tile that does not resolve to a real view, or a non-positive `dashboard_columns`.
+
+Findings carry a `severity` of `error` or `warn`, and one `warn` means the lint itself **stopped
+early**, in which case the list is incomplete rather than clean. Read the text rather than the count.
 
 **Read the status the reload itself returns, not the listing.** One dashboard that fails to compile
 fails the whole package load, and the reload answers **424** with the compile error. A package that
 was already serving then keeps serving its previous version, so the listing still answers 200 and
-looks perfectly healthy while your edit has silently not taken effect. That is the usual case and the
-one to watch for: a 424 you did not read, and a page that has not changed. A package that never loaded
-at all behaves differently: on a fresh boot its listing answers 424 too, and one added at runtime is
-refused outright. Either way it is absent from the package list; the difference is only where you are
-told, on your own POST or on the single-package GET and in `status.loadErrors`.
+looks perfectly healthy while your edit has silently not taken effect.
+
+**If you did not catch the 424, `GET /api/v0/status` still knows.** A package serving an older model
+than its files appears in `loadErrors` with **`stale: true`**, the compile message, and the time it
+failed, and the entry clears on the next reload that compiles. That is the one check that works after
+the fact, so make it the first thing you run when a page will not change. A package that never loaded
+at all appears there too, without `stale`, and is absent from the listing entirely.
 
 If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
 usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
-an untagged shared include.
+an untagged shared include. In a package with `queryableSources: "declared"` there is a second cause:
+a dashboard whose file is not listed in `explores` is withheld rather than served, and the warnings
+say so. Under that setting a `suggest` source has to be queryable as well as resolvable, so it needs
+exporting too.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
 separate warning for a tag that does not *parse* is syntax only: it carries no
