@@ -205,8 +205,22 @@ export default function Package({
    // dashboards call that resolves after the models call rendered the sections
    // with an empty `dashboardPaths`, so `dashboards/overview.malloy` appeared
    // under Semantic Models and then vanished: the double listing the filter
-   // exists to prevent, briefly on screen. It cannot hang the page: the query
-   // above turns a 404 or a transport failure into an empty list.
+   // exists to prevent, briefly on screen.
+   //
+   // What this covers and what it COSTS, since the two are different questions.
+   // It cannot hang the page on a FAILURE: the query above turns a 404 or a
+   // transport failure into an empty list. It does add LATENCY, and to every
+   // section rather than to the one that needs it: Notebooks, Semantic Models,
+   // Data Apps and Databases now wait on the dashboards call where they used to
+   // render as soon as notebooks resolved. The only thing that actually needs
+   // the gate is the `dashboardPaths` filter on the models list.
+   //
+   // Accepted rather than narrowed because the cost is bounded and small:
+   // `listDashboards` is a synchronous read off the already-loaded package
+   // (`service/package.ts`, reached with `getPackage(name, false)`, so no
+   // reload), which makes this one more parallel request and not a compile.
+   // Narrowing it means gating only the models section, which trades this
+   // whole-page wait for a models list that pops in after its neighbours.
    const isLoading =
       (!notebooksQuery.isSuccess && !notebooksQuery.isError) ||
       (!dashboardsQuery.isSuccess && !dashboardsQuery.isError);
