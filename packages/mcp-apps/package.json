@@ -17,13 +17,11 @@
       "format": "bunx prettier --write --parser typescript 'src/**/*.ts'",
       "test": "bun test src"
    },
-   "dependencies": {
-      "@malloydata/malloy-interfaces": "^0.0.427",
-      "@malloydata/render": "^0.0.427",
-      "@modelcontextprotocol/ext-apps": "^1.7.5"
-   },
    "devDependencies": {
       "@eslint/js": "^8.57.0",
+      "@malloydata/malloy-interfaces": "^0.0.427",
+      "@malloydata/render": "^0.0.427",
+      "@modelcontextprotocol/ext-apps": "^1.7.5",
       "@types/bun": "^1.2.21",
       "@typescript-eslint/eslint-plugin": "^8.16.0",
       "@typescript-eslint/parser": "^8.16.0",

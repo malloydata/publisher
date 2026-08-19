@@ -100,6 +100,13 @@ COPY --from=builder /publisher/packages/server/dist/ /publisher/packages/server/
 COPY --from=builder /publisher/packages/server/package.json /publisher/packages/server/package.json
 COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
 COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
+# The builder's `bun install` rewrites bun.lock to match the workspace members
+# present in the build context, and the final stage inherits that lockfile, so a
+# member named in it whose manifest is missing here makes the frozen production
+# install below fail. mcp-apps ships no runtime code (its output is inlined into
+# packages/server/dist/mcp-apps), so only the manifest is needed, and its
+# dependencies are devDependencies precisely so `--production` installs none.
+COPY --from=builder /publisher/packages/mcp-apps/package.json /publisher/packages/mcp-apps/package.json
 
 # Install production-only deps
 RUN --mount=type=cache,target=/root/.bun/install/cache \
