@@ -151,6 +151,19 @@ export function markDrillableCells(
       }
       if (columns.size === 0) continue;
 
+      // Which columns already own their single tab stop. Read off the DOM first
+      // so the roving position survives the re-runs a settling `# dashboard`
+      // triggers; rebuilding it from scratch each pass would snap the stop back
+      // to the first row under a reader who had arrowed down.
+      const hasStop = new Set<string>();
+      for (const marked of table.querySelectorAll<HTMLElement>(
+         `.${DRILL_CELL_CLASS}[tabindex="0"]`,
+      )) {
+         if (!ownedByTable(marked)) continue;
+         const column = gridColumnStart(marked);
+         if (column) hasStop.add(column);
+      }
+
       for (const cell of table.querySelectorAll<HTMLElement>(
          ".column-cell.td",
       )) {
@@ -196,9 +209,48 @@ export function markDrillableCells(
             // role is the one that promises less. Set alongside the class and
             // never separately, so the three can never disagree about which
             // cells are actionable.
-            cell.tabIndex = 0;
+            // ONE tab stop per drillable column, not one per cell. Making every
+            // cell tabbable put the whole column in the tab order, so a result at
+            // the server's row cap cost a reader hundreds of presses to reach the
+            // next tile, and a composite grid multiplied that by its tiles. That
+            // traded one accessibility problem for another. Arrow keys move
+            // within the column instead (see `drillColumnSiblings`, driven from
+            // RenderedResult), which is the ordinary pattern for a grid.
+            //
+            // A cell already holding the stop keeps it, so a re-run does not move
+            // focus out from under the reader.
+            if (cell.tabIndex === 0) {
+               hasStop.add(column);
+            } else {
+               const owned = hasStop.has(column);
+               if (!owned) hasStop.add(column);
+               cell.tabIndex = owned ? -1 : 0;
+            }
             cell.setAttribute("role", "button");
          }
       }
    }
+}
+
+/**
+ * The drillable cells sharing `cell`'s column, in row order, or an empty array
+ * when `cell` is not a marked cell.
+ *
+ * Lives here rather than in the keyboard handler that calls it because the
+ * column identity is this module's rule: a cell's column is its inline
+ * `grid-column` start, scoped to its own `.malloy-table` so a nested table's
+ * numbering never matches the parent's. Two sites deciding that separately is
+ * how they come to disagree, so the handler asks this one.
+ */
+export function drillColumnSiblings(cell: HTMLElement): HTMLElement[] {
+   const table = cell.closest<HTMLElement>(".malloy-table");
+   const column = gridColumnStart(cell);
+   if (!table || !column) return [];
+   return Array.from(
+      table.querySelectorAll<HTMLElement>(`.${DRILL_CELL_CLASS}`),
+   ).filter(
+      (sibling) =>
+         sibling.closest(".malloy-table") === table &&
+         gridColumnStart(sibling) === column,
+   );
 }

@@ -15,6 +15,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
+   drillColumnSiblings,
    drillableFieldNames,
    markDrillableCells,
    type DrillMetadataSource,
@@ -585,12 +586,62 @@ function RenderedResultInner({
                      );
                   };
                   const drillCell = (event: KeyboardEvent) =>
-                     (event.target as HTMLElement | null)?.closest?.(
-                        `.${DRILL_CELL_CLASS}`,
-                     ) ?? null;
+                     (
+                        event.target as HTMLElement | null
+                     )?.closest?.<HTMLElement>(`.${DRILL_CELL_CLASS}`) ?? null;
+                  // Move the single tab stop within a drillable column.
+                  // `markDrillableCells` gives a column one stop rather than one
+                  // per cell, so these keys are how a reader reaches the other
+                  // rows; without them the affordance would only ever fire on
+                  // whichever row held the stop. Clamped rather than wrapping,
+                  // which is what a table's rows read as.
+                  const rove = (
+                     cell: HTMLElement,
+                     to: number | "first" | "last",
+                  ) => {
+                     const siblings = drillColumnSiblings(cell);
+                     const at = siblings.indexOf(cell);
+                     if (at === -1) return false;
+                     const next =
+                        to === "first"
+                           ? siblings[0]
+                           : to === "last"
+                             ? siblings[siblings.length - 1]
+                             : siblings[
+                                  Math.min(
+                                     Math.max(at + to, 0),
+                                     siblings.length - 1,
+                                  )
+                               ];
+                     if (!next || next === cell) return false;
+                     // The stop moves with focus, so tabbing away and back
+                     // returns to the row the reader was on.
+                     cell.tabIndex = -1;
+                     next.tabIndex = 0;
+                     next.focus();
+                     return true;
+                  };
                   drillKeydown = (event: KeyboardEvent) => {
-                     const cell = drillCell(event);
+                     const cell = drillCell(event) as HTMLElement | null;
                      if (!cell) return;
+                     const roveKey =
+                        event.key === "ArrowDown"
+                           ? 1
+                           : event.key === "ArrowUp"
+                             ? -1
+                             : event.key === "Home"
+                               ? ("first" as const)
+                               : event.key === "End"
+                                 ? ("last" as const)
+                                 : undefined;
+                     if (roveKey !== undefined) {
+                        // Prevented whether or not the move happened, so the
+                        // first and last rows do not scroll the page out from
+                        // under a reader who is still inside the column.
+                        event.preventDefault();
+                        rove(cell, roveKey);
+                        return;
+                     }
                      if (event.key === "Enter") {
                         // Otherwise Enter submits an enclosing form on an
                         // embedding host.

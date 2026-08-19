@@ -682,15 +682,65 @@ test.describe("package-dashboards", () => {
       const target = cell(page, "orders -> by_region", "US").locator("..");
       await expect(target).toBeVisible({ timeout: 30_000 });
 
-      // Marked cells are in the tab order and announce themselves, which is the
-      // whole difference between a drill a keyboard user can find and one only
-      // a mouse can reach.
-      await expect(target).toHaveAttribute("tabindex", "0");
+      // Marked cells are reachable and announce themselves, which is the whole
+      // difference between a drill a keyboard user can find and one only a mouse
+      // can reach.
       await expect(target).toHaveAttribute("role", "button");
+      // Focusable, but not necessarily the column's tab stop: a drillable column
+      // gets ONE stop and the arrow keys move within it. Marking every cell
+      // tabbable instead put a whole result column in the tab order, which at the
+      // server's row cap is hundreds of presses to reach the next tile.
+      await expect(target).toHaveAttribute("tabindex", /^(0|-1)$/);
+      const tile = page.locator(".MuiPaper-root").filter({
+         has: page.locator('[title="orders -> by_region"]'),
+      });
+      await expect(tile.locator('.publisher-drill[tabindex="0"]')).toHaveCount(
+         1,
+      );
 
       await target.focus();
       await page.keyboard.press("Enter");
       // Two honorable destinations, so Enter opens the menu rather than acting.
+      await expect(page.getByRole("menuitem")).toHaveCount(2);
+   });
+
+   test("arrow keys move within a drillable column and the stop follows", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+      const tile = page.locator(".MuiPaper-root").filter({
+         has: page.locator('[title="orders -> by_region"]'),
+      });
+      const drillCells = tile.locator(".publisher-drill");
+      await expect(drillCells.first()).toBeVisible({ timeout: 30_000 });
+      const total = await drillCells.count();
+      expect(total).toBeGreaterThan(1);
+
+      // The stop starts on the first row, which is what Tab reaches.
+      await expect(drillCells.nth(0)).toHaveAttribute("tabindex", "0");
+      await drillCells.nth(0).focus();
+
+      await page.keyboard.press("ArrowDown");
+      // Focus AND the stop move together, so tabbing away and back returns to the
+      // row the reader was on rather than to the top of the column.
+      await expect(drillCells.nth(1)).toBeFocused();
+      await expect(drillCells.nth(1)).toHaveAttribute("tabindex", "0");
+      await expect(drillCells.nth(0)).toHaveAttribute("tabindex", "-1");
+      // Still exactly one stop: the point of the change.
+      await expect(tile.locator('.publisher-drill[tabindex="0"]')).toHaveCount(
+         1,
+      );
+
+      // Clamped rather than wrapping, which is how a table's rows read.
+      await page.keyboard.press("ArrowUp");
+      await expect(drillCells.nth(0)).toBeFocused();
+      await page.keyboard.press("ArrowUp");
+      await expect(drillCells.nth(0)).toBeFocused();
+
+      // End jumps to the last row, and the drill still fires from there.
+      await page.keyboard.press("End");
+      await expect(drillCells.nth(total - 1)).toBeFocused();
+      await page.keyboard.press("Enter");
       await expect(page.getByRole("menuitem")).toHaveCount(2);
    });
 

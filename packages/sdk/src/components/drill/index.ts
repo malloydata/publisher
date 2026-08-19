@@ -1,6 +1,7 @@
 export {
    DRILL_CELL_CLASS,
    drillableFieldNames,
+   drillColumnSiblings,
    markDrillableCells,
    type DrillMetadataSource,
 } from "./markDrillableCells";
