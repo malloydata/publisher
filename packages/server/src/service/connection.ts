@@ -1957,6 +1957,19 @@ export function buildEnvironmentMalloyConfig(
             connection,
             metadata.attachedDatabases,
          );
+         // Drop a rejected run from the cache so a later lookup can retry, rather
+         // than replaying one transient failure for the life of the process. Every
+         // attach handler reaches the network — postgres opens a real connection,
+         // bigquery and snowflake authenticate, and a cloud-storage secret under
+         // `credential_chain` resolves credentials at CREATE — and the loop in
+         // attachDatabasesToDuckDB rethrows, so without this the first blip is
+         // permanent and only rebuilding the environment clears it. Mirrors the
+         // eviction on proxyConnectionCache below.
+         attachPromise.catch(() => {
+            if (attachPromises.get(connection) === attachPromise) {
+               attachPromises.delete(connection);
+            }
+         });
          attachPromises.set(connection, attachPromise);
       }
       await attachPromise;
