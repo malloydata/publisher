@@ -804,7 +804,13 @@ function processConfigWithEnvironmentAttribution(raw: unknown): {
                   name: name ?? UNNAMED_ENVIRONMENT,
                   message,
                });
-               logger.error(
+               // warn, not error, to match the siblings for this same
+               // outcome, an entry being skipped ("Invalid environment ...
+               // Skipping entry"). No error site in this file logs a skipped
+               // entry. It also fires once per config read, so an API request
+               // against a failed environment re-emits it; the durable signal is
+               // the load_errors count and the /status entry, not this line.
+               logger.warn(
                   `Skipping environment ${
                      name ? `"${name}"` : UNNAMED_ENVIRONMENT
                   } in ${PUBLISHER_CONFIG_NAME}: ${message}`,
