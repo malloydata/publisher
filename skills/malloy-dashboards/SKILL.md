@@ -371,10 +371,11 @@ at all appears there too, without `stale`, and is absent from the listing entire
 
 If the reload is 200 and the others are listed but yours is not, discovery skipped the file instead,
 usually a missing or misspelled `# artifact` tag, which is the same mechanism that deliberately skips
-an untagged shared include. In a package with `queryableSources: "declared"` there is a second cause:
-a dashboard whose file is not listed in `explores` is withheld rather than served, and the warnings
-say so. Under that setting a `suggest` source has to be queryable as well as resolvable, so it needs
-exporting too.
+an untagged shared include. There is a second cause if the package's `publisher.json` carries an
+`explores` list: a dashboard whose file is missing from it is withheld rather than served, and the
+warning says so and names the fix. The list is what matters, not the `queryableSources` setting, which
+is `declared` by default; a package with no `explores` list withholds nothing. Where there is one, a
+`suggest` source has to be queryable as well as resolvable, so it needs to be on the list too.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
 separate warning for a tag that does not *parse* is syntax only: it carries no
