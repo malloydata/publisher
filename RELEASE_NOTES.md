@@ -51,18 +51,26 @@ gate is the entry point's own row-level filter and nothing else is reachable ben
 are unaffected; they remain unconditionally refused for any `#(authorize)`-gated source regardless of
 classification. See [docs/materialization.md](docs/materialization.md#authorize-gated-sources-and-materialization).
 
-**Nothing auto-enables on upgrade.** No package with a colocated `#@ persist` on an
-`#(authorize)`-gated source could exist before this shipped — the combination always 422'd — so a
-package that builds under this relaxation is one its author is publishing for the first time. No
-existing package's behavior changes.
+**This is not opt-in — read this before rolling out.** The refusal being relaxed never fired at
+package _load_; it fired inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`).
+A package with a colocated `#@ persist` on an `#(authorize)`-gated source therefore loads on the
+current release, appears in `plan.sources`, and serves live — what 422'd was its materialization run.
+So such packages already exist, and this release changes them: a run that used to fail now succeeds,
+and the next auto-run or scheduled build materializes the source and binds it for serving with no
+author action. A source that served live serves from a possibly-stale artifact afterwards, subject to
+the staleness below. `PERSIST_COLOCATED_RELAXATION_ENABLED=false` restores the unconditional refusal;
+it is read at package load, so an already-built artifact keeps serving until its package next loads.
 
 **What this does NOT make fresh: the row data the gate filters on, not the gate itself.** The gate
 expression and the querying principal's attributes are still evaluated live, every query, against the
 persisted table. Only the values in the gating column are frozen at build time, so a row whose access
-decision changes (say, it changes owner) keeps serving to its former owner until the next rebuild. Give
-a gated colocated persist source a real freshness declaration — `refresh=incremental` where the source
-supports it, or a `materialization.schedule` tight enough for your access-control SLA — rather than
-leaving its revocations to go stale indefinitely. See
+decision changes (say, it changes owner) keeps serving to its former owner until the next rebuild.
+Bound that with `materialization.freshness` `{ "window": …, "fallback": "live" }`: the serve path
+re-evaluates freshness per query, so a stale artifact drops out of the serving set and the query
+recomputes live whether or not a rebuild lands. A cadence alone is not a bound (a failed build or a
+stopped scheduler serves the old decisions indefinitely), and `refresh="incremental"` is not one
+either — its delta is bounded by the watermark, so a row that changes owner without its watermark
+advancing is never re-read. Only a full rebuild recomputes the gate column. See
 [docs/materialization.md § freshness contract](docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source).
 
 ## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
