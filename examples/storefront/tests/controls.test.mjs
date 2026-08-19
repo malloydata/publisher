@@ -226,6 +226,27 @@ test("a slider cannot sit between whole numbers, and says so", async () => {
    }
 });
 
+test("a slider whose floor is above zero does not invent a bound", async () => {
+   // Every other slider test uses range_min 0, which hides this: the element
+   // CLAMPS what it is given, so writing 0 for "no bound" reads back as the
+   // minimum, and a readout built from the element then states a number the
+   // reader never chose and the server never applied. happy-dom clamps here
+   // exactly as Chromium does, so this is testable; it just was not tested.
+   const FLOOR = { ...RANGE, rangeMin: 10 };
+   const none = await mount(FLOOR, "");
+   assert.equal(none.el.value, "10", "the handle sits at the floor, as inputs do");
+   assert.equal(
+      none.el.parentElement.querySelector("output").textContent,
+      "any",
+      "but nothing is in force, so the readout must not name a bound",
+   );
+   const some = await mount(FLOOR, ">= 40");
+   assert.equal(
+      some.el.parentElement.querySelector("output").textContent,
+      "\u2265 $40",
+   );
+});
+
 test("a slider follows Reset and Back", async () => {
    const { widgets, el } = await mount(RANGE, ">= 75");
    assert.equal(el.parentElement.querySelector("output").textContent, "\u2265 $75");
@@ -458,6 +479,55 @@ test("a pick the encoder refuses is not left on display", async () => {
       0,
       "and the box must not stay ticked",
    );
+});
+
+test("a pointerdown inside the popover does not close it", async () => {
+   // The containment guard is load-bearing in a real browser and invisible to
+   // `element.click()`, which dispatches no pointerdown at all. Measured in
+   // Chromium: a pointerdown on a checkbox INSIDE the panel does reach the
+   // document listener, so without the guard the popover shuts on the first
+   // tick, every time. Dispatched explicitly here for that reason.
+   const { el } = await mount(MULTI, "", { choices: ["Levi's", "Nike"] });
+   el.click();
+   await new Promise((r) => setTimeout(r, 0));
+   const box = document.querySelector(".check-panel input");
+   assert.ok(box, "the panel is open");
+   box.dispatchEvent(new window.Event("pointerdown", { bubbles: true }));
+   assert.ok(
+      document.querySelector(".check-panel"),
+      "ticking a box must not shut the panel",
+   );
+   document.dispatchEvent(new window.Event("pointerdown", { bubbles: true }));
+   assert.equal(
+      document.querySelector(".check-panel"),
+      null,
+      "but a pointerdown outside still closes it",
+   );
+});
+
+test("a drag sends one query, not one per pixel", async () => {
+   // `change` rather than `input`. Measured in Chromium, a real mouse drag
+   // across the track fires 15 `input` events and one `change`, so wiring the
+   // query to `input` would issue fifteen.
+   const { sent, el } = await mount(RANGE, "");
+   for (const v of ["10", "20", "30", "40"]) {
+      el.value = v;
+      el.dispatchEvent(new window.Event("input", { bubbles: true }));
+   }
+   assert.deepEqual(sent, [], "dragging alone sends nothing");
+   el.dispatchEvent(new window.Event("change", { bubbles: true }));
+   assert.equal(sent.length, 1, "releasing sends exactly one");
+});
+
+test("Reset asks for everything to be cleared, in one call", async () => {
+   // Every other test drives `set("")` directly, which is what app.js does
+   // AFTER this button reports. Nothing pinned the button itself, nor the
+   // `name === null` signal app.js keys the clear on.
+   const { sent } = await mount(SELECT, "Denim");
+   const reset = document.querySelector("#reset");
+   assert.ok(reset, "the row has a Reset button");
+   reset.click();
+   assert.deepEqual(sent.at(-1), [null, null], "null names the whole row");
 });
 
 test("an ordinary pick still works, in both pickers", async () => {

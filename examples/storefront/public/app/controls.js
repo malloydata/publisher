@@ -562,17 +562,19 @@ function range(host, { contract, value, fallback, description, onChange }) {
       input.value = String(bound);
       input.dataset.opaqueFilter = String(unshowable);
       composeTitle(input, unshowable ? OPAQUE_HELP : "");
-      readout.textContent = unshowable
-         ? text
-         : Number(input.value) > 0
-           ? `≥ $${input.value}`
-           : "any";
+      // From `bound`, NOT from `input.value`. The element clamps what it is
+      // given, so with `range_min=10` and nothing in force this wrote 0, read
+      // back 10, and stated "≥ $10" over unfiltered data: a number the reader
+      // never chose and the server never applied. Reading back a value you
+      // just wrote is how the clamp gets laundered into a fact.
+      readout.textContent = unshowable ? text : bound > 0 ? `≥ $${bound}` : "any";
    };
    showFilter(value);
    // Dragging clears the unshowable state, because a drag IS a new lower bound.
    input.addEventListener("input", () => {
       input.dataset.opaqueFilter = "false";
       composeTitle(input, "");
+      // Here `input.value` IS the truth: the reader just dragged the handle.
       readout.textContent =
          Number(input.value) > 0 ? `≥ $${input.value}` : "any";
    });

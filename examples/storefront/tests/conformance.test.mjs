@@ -69,6 +69,24 @@ const KINDS = [
      clear: (el) => { el.value = ""; el.dispatchEvent(new window.Event("change", { bubbles: true })); } },
 ];
 
+// The kinds selected by a `control=` tag, as opposed to by shape (`range`
+// needs both bounds) or by type (`date`).
+const TAGGED = new Set(["select", "multiselect"]);
+
+async function mountWithWidgets(contract, value) {
+   const host = document.createElement("div");
+   document.body.replaceChildren(host);
+   const { widgets } = buildControls(host, {
+      modelPath: "m",
+      contracts: [contract],
+      values: { [contract.name]: value },
+      onChange: () => {},
+   });
+   await new Promise((r) => setTimeout(r, 0));
+   await new Promise((r) => setTimeout(r, 0));
+   return { el: document.querySelector(`#given-${contract.name}`), widgets };
+}
+
 async function mount(contract, value) {
    const host = document.createElement("div");
    document.body.replaceChildren(host);
@@ -80,10 +98,36 @@ async function mount(contract, value) {
 }
 
 test("the table covers every control the dispatcher can build", async () => {
-   const src = await readFile(SRC, "utf8");
-   const branches = src.match(/widgets\.push\(/g) ?? [];
-   assert.equal(branches.length, KINDS.length,
-      "a control kind was added to buildControls without a row in KINDS");
+   // Counting `widgets.push(` was wrong in both directions, measured: a comment
+   // containing that text failed the test with a cause that had not happened,
+   // and widening a condition to `=== "select" || === "radio"` added a control
+   // kind while reusing one push, so it passed. Read the dispatch CONDITIONS
+   // instead, with comments stripped first.
+   const src = (await readFile(SRC, "utf8")).replace(/\/\/[^\n]*/g, "");
+   const body = src.slice(
+      src.indexOf("export function buildControls"),
+      src.indexOf("\nfunction singleSelect"),
+   );
+   assert.ok(body.includes("widgets.push("), "found the dispatcher");
+
+   // Branch count: one `if (`, then one `} else if (` per further kind.
+   const branches = 1 + (body.match(/\} else if \(/g) ?? []).length;
+   assert.equal(
+      branches,
+      KINDS.length,
+      "a control kind was added to buildControls without a row in KINDS",
+   );
+
+   // And the control-tag values it dispatches on must be exactly the tagged
+   // kinds in the table, so widening one condition cannot smuggle a kind in.
+   const tagged = new Set(
+      [...body.matchAll(/contract\.control === "([^"]+)"/g)].map((m) => m[1]),
+   );
+   assert.deepEqual(
+      [...tagged].sort(),
+      KINDS.filter((k) => TAGGED.has(k.kind)).map((k) => k.kind).sort(),
+      "buildControls dispatches on a control tag with no row in KINDS",
+   );
 });
 
 for (const k of KINDS.filter((k) => k.opaque)) {
@@ -119,5 +163,32 @@ for (const k of KINDS) {
          k.expect,
          "the given is dropped, so the default is what filters",
       );
+   });
+   test(`${k.kind}: still draws it through set(), which is Reset and Back`, async () => {
+      // `set("")` is the path `syncControls` takes after Reset and on popstate,
+      // and it is NOT the change path tested above. Pinned for the date box
+      // only until this existed, which is one path over from the bug the change
+      // path was just fixed for.
+      const { el, widgets } = await mountWithWidgets(
+         { ...k.contract, default: k.default },
+         "",
+      );
+      widgets[0].set("");
+      assert.equal(k.shows(el), k.expect);
+   });
+}
+
+// The table's `opaque` column is a claim about the code, so the FALSE rows are
+// asserted too. Without this, marking a control opaque-capable when it is not
+// (or the reverse) is invisible: the loop above simply skips it.
+for (const k of KINDS.filter((k) => !k.opaque)) {
+   test(`${k.kind}: has no opaque concept, as the table says`, async () => {
+      const el = await mount({ ...k.contract, default: k.default }, "");
+      assert.equal(
+         el.dataset.opaqueFilter,
+         undefined,
+         "a control with nothing it can fail to draw must not claim otherwise",
+      );
+      assert.equal(el.title, "");
    });
 }
