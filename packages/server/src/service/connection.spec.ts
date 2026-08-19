@@ -15,6 +15,7 @@ import { components } from "../api";
 import {
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
+   buildEnvironmentMalloyConfig,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    resolveProxiedTls,
@@ -2648,5 +2649,64 @@ describe("buildCloudStorageSecretSQL", () => {
          );
       `);
       });
+   });
+});
+
+// The attach run is cached per connection object so concurrent lookups share one
+// ATTACH. Caching a REJECTED run is different: every attach handler reaches the
+// network, so one blip would otherwise be replayed for the life of the process.
+describe("attach retry after a transient failure", () => {
+   const envPath = path.join(process.cwd(), "test-attach-retry");
+
+   beforeEach(async () => {
+      await fs.mkdir(envPath, { recursive: true });
+   });
+   afterEach(async () => {
+      sinon.restore();
+      await fs.rm(envPath, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("retries the attach on a later lookup instead of replaying the error", async () => {
+      let secretAttempts = 0;
+      sinon
+         .stub(DuckDBConnection.prototype, "runSQL")
+         .callsFake(async (sql: string) => {
+            if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
+               secretAttempts += 1;
+               if (secretAttempts === 1) {
+                  throw new Error("temporary failure in name resolution");
+               }
+            }
+            return { rows: [] } as never;
+         });
+
+      const config = buildEnvironmentMalloyConfig(
+         [
+            {
+               name: "duckdb_retry",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "root",
+                        type: "s3",
+                        s3Connection: { provider: "credential_chain" },
+                     },
+                  ],
+               },
+            },
+         ] as never,
+         envPath,
+      );
+
+      await expect(
+         config.malloyConfig.connections.lookupConnection("duckdb_retry"),
+      ).rejects.toThrow(/temporary failure in name resolution/);
+
+      // The retry is the point: a second lookup must run the attach again.
+      await config.malloyConfig.connections.lookupConnection("duckdb_retry");
+      expect(secretAttempts).toBe(2);
+
+      await config.releaseConnections().catch(() => {});
    });
 });
