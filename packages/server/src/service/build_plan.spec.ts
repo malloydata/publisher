@@ -1,8 +1,14 @@
 import type { PersistSource } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "fs/promises";
+import * as os from "os";
+import * as path from "path";
 import * as sinon from "sinon";
 import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
+   type BuildPlanPackage,
    compilePackageBuildPlan,
    computeSourceEntityId,
    computePackageBuildPlan,
@@ -675,6 +681,114 @@ describe("compilePackageBuildPlan", () => {
          getModelRuntime.restore();
       }
    });
+});
+
+// Real-compiler coverage of `compilePackageBuildPlan`'s gate-classification
+// wiring, over an actual temp-dir package (like `query_boundary.spec.ts`'s
+// `makeMalloyConfig` pattern), rather than the stubbed `Model.getModelRuntime`
+// above. `classifyPersistSourceGate` (`classifyPersistSourceGate.spec.ts`) is
+// otherwise only ever called directly; nothing else asserts that
+// `compilePackageBuildPlan`'s two call sites (the ordinary persist-source loop
+// and the pre-aggregation rollup branch) actually populate
+// `CompiledBuildPlan.sourceGateOutcomes`.
+describe("compilePackageBuildPlan populates sourceGateOutcomes", () => {
+   let rootDir: string;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(
+         path.join(os.tmpdir(), "publisher-buildplan-"),
+      );
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   async function realPackage(
+      modelText: string,
+      modelFile = "m.malloy",
+   ): Promise<BuildPlanPackage> {
+      await fs.writeFile(path.join(rootDir, modelFile), modelText);
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+      return {
+         getModelPaths: () => [modelFile],
+         getPackagePath: () => rootDir,
+         getMalloyConfig: () => malloyConfig,
+         getMalloyConnection: async () => duckdb,
+      };
+   }
+
+   it(
+      "records a row_level/attributed outcome for an ordinary #@ persist source's own gate",
+      async () => {
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+source: base is duckdb.sql("select 1 as org_id")
+
+#@ persist name="gated"
+#(authorize) "org_id = $ORG"
+source: gated is base -> { select: org_id }
+`);
+
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         const [sourceID] = Object.keys(compiled.sources).filter(
+            (id) => compiled.sources[id].name === "gated",
+         );
+         expect(sourceID).toBeDefined();
+         expect(compiled.sourceGateOutcomes?.[sourceID]).toEqual({
+            classification: "row_level",
+            attributed: true,
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "records a row_level/attributed outcome for a synthesized #@ preaggregate rollup, from the DIFFERENT {model, materializer} pair the rollup was compiled with",
+      async () => {
+         // No `#(authorize)` gate anywhere in this fixture, so the vacuous
+         // (no entry-point gate) case applies: `row_level` because there is
+         // no group to reject, `attributed: true` because both the deep and
+         // no-join walks find nothing. This is still a real assertion, not a
+         // vacuous one — if the rollup branch classified against the wrong
+         // model/materializer pair (see `preaggregation_compile.ts:105-107`)
+         // or degraded to blanket refusal, this would come back `rejected`.
+         const pkg =
+            await realPackage(`##! experimental { persistence composite_sources }
+
+source: orders is duckdb.sql("""
+  SELECT 1 AS order_id, 10 AS amount, 'A' AS category
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         const rollupEntries = Object.entries(
+            compiled.sourceGateOutcomes ?? {},
+         );
+         expect(rollupEntries).toHaveLength(1);
+         const [, outcome] = rollupEntries[0];
+         expect(outcome).toEqual({
+            classification: "row_level",
+            attributed: true,
+         });
+      },
+      { timeout: 20000 },
+   );
 });
 
 describe("computePackageBuildPlan", () => {

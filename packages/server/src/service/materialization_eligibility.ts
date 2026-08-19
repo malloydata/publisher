@@ -419,12 +419,16 @@ function walkForAuthorize(
 /**
  * Whether every `#(authorize)` note reachable (transitively, INCLUDING
  * joins) beneath the compiled source is also reachable WITHOUT crossing a
- * join — i.e. would still be found by the same walk `collectEntryPointGates`
- * (`./gate_classification`) effectively sees, since that function does not
- * trace joins either (see its doc). `false` means the deep walk found a note
- * reachable ONLY through a join: `referencesAuthorize`'s refusal is real for
- * it today, but a row-level CLASSIFICATION of the entry point's own gate
- * would say nothing about it, so a caller deciding whether to relax the
+ * join. The no-joins walk here is a superset of, and believed to cover, what
+ * `collectEntryPointGates` (`./gate_classification`) actually reaches by
+ * following only identity edges (own annotations -> `ancestorGateExprs`'s
+ * `extend` chain -> a query-source's derivation base -> its
+ * `compositeResolvedSourceDef`) — the two are not proven equivalent, so a gap
+ * (a note off every identity edge but still reachable without crossing a
+ * join) is not ruled out, only unobserved. `false` means the deep walk found
+ * a note reachable ONLY through a join: `referencesAuthorize`'s refusal is
+ * real for it today, but a row-level CLASSIFICATION of the entry point's own
+ * gate would say nothing about it, so a caller deciding whether to relax the
  * colocated-persist refusal must require this to be `true`, not just a
  * `row_level` classification.
  *
@@ -513,7 +517,16 @@ function walkForAuthorizeNotes(
                    typeof (n as { text?: unknown }).text === "string"
                  ? (n as { text: string }).text
                  : undefined;
-         if (text !== undefined && isAuthorizeAnnotation(text)) {
+         // Malloy's Note is always `{text, at}`, never a bare string, but Set
+         // identity is value equality for a string — two independently
+         // authored gates sharing text would collapse into one entry and
+         // could read as attributed for a join-only gate. Guard rather than
+         // rely on that never happening.
+         if (
+            text !== undefined &&
+            isAuthorizeAnnotation(text) &&
+            typeof n === "object"
+         ) {
             found.add(n as AnnotationNote);
          }
       }

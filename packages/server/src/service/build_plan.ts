@@ -128,10 +128,11 @@ export interface CompiledBuildPlan {
     * sourceID -> this source's entry-point `#(authorize)` gate classification,
     * computed HERE (compile time) because this is where the compiled
     * `{modelDef, materializer}` pair a classification needs exists — see
-    * {@link classifyPersistSourceGate}. A LATER step consumes this to relax
-    * the colocated `#@ persist` refusal (`assertColocatedPersistNotAuthorizeGated`);
-    * this step only records the outcome, changing no refusal. Optional so
-    * existing fixtures/callers that don't track it still typecheck.
+    * {@link classifyPersistSourceGate}. Consumed by a relaxation of the
+    * colocated `#@ persist` refusal (`assertColocatedPersistNotAuthorizeGated`)
+    * that decides whether to admit a gated source; recording the outcome here
+    * changes no refusal on its own. Optional so existing fixtures/callers
+    * that don't track it still typecheck.
     */
    sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
 }
@@ -141,13 +142,13 @@ export type PersistSourceGateClassification = "row_level" | "rejected";
 
 /**
  * `classification` is the entry-point gate's enforcement shape, per
- * `gate_classification.ts`'s post-`2ab6349e` vocabulary (every gate is now a
- * row predicate). `attributed` is `false` when `#(authorize) referencesAuthorize`'s
- * deep walk finds a note reachable only through a join — see
- * {@link isAuthorizeAttributedToEntryPoint}'s doc for why that must gate the
- * relaxation independently of `classification`: `collectEntryPointGates` does
- * not trace joins, so a join-carried gate can be entirely invisible to
- * `classification` while still being real and enforced-against today.
+ * `gate_classification.ts`'s vocabulary (every `#(authorize)` gate is a row
+ * predicate). `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
+ * deep walk finds a note reachable only through a join — see that function's
+ * doc for why that must gate the relaxation independently of
+ * `classification`: `collectEntryPointGates` does not trace joins, so a
+ * join-carried gate can be entirely invisible to `classification` while still
+ * being real and enforced-against today.
  */
 export interface PersistSourceGateOutcome {
    classification: PersistSourceGateClassification;
@@ -675,9 +676,9 @@ function detectDroppedPersistSources(
  * Classify one persist source's entry-point `#(authorize)` gate(s) and decide
  * whether it is `attributed` — see {@link PersistSourceGateOutcome}'s doc.
  *
- * Calls the `gate_classification.ts` API extracted in step 1 directly, rather
- * than standing up a throwaway `Model` — a build-plan compile has exactly the
- * `{modelDef, materializer}` shape that API was extracted around (a compiled
+ * Calls `gate_classification.ts`'s standalone functions directly, rather than
+ * standing up a throwaway `Model` — a build-plan compile has exactly the
+ * `{modelDef, materializer}` shape those functions operate on (a compiled
  * `ModelDef` plus the live `ModelMaterializer` that produced it), and nothing
  * else. `materializer` MUST be the same one that compiled `modelDef` — see
  * `liftGateCondition`'s doc for why a fresh `loadModel` cannot substitute (it
@@ -702,10 +703,12 @@ function detectDroppedPersistSources(
  * `resolveGateShape`'s lift (`liftGateCondition`) compiles a one-row PROBE
  * query through the SAME already-loaded `materializer` — a pure in-memory
  * semantic recompile that only generates SQL text, never opens the warehouse
- * connection or executes anything against it. Nothing wires
- * `gate_classification.ts` into the request-serving path yet (this is its
- * first production caller), so there is no load-time classification to reuse
- * here — this compile-time call is the only computation of it.
+ * connection or executes anything against it. Load time DOES classify every
+ * gate (`validateAuthorizeProbes` calls `classifyAuthorizeGate` per entry
+ * point/gate group), but that call returns `Promise<void>` and keeps nothing:
+ * the only survivor is `SerializedModel.authorizeWarnings: string[]`, so no
+ * classification result is reachable from here — this compile-time call is
+ * the only place that outcome is actually computed.
  */
 export async function classifyPersistSourceGate(
    persistSource: PersistSource,
