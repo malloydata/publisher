@@ -10,6 +10,7 @@ import simpleGit, { type SimpleGitProgressEvent } from "simple-git";
 import { Writable } from "stream";
 import { components } from "../api";
 import {
+   findEnvironmentConfigError,
    getProcessedPublisherConfig,
    getPublisherConfigDir,
    isPublisherConfigFrozen,
@@ -610,6 +611,19 @@ export class EnvironmentStore {
             await EnvironmentStore.reloadEnvironmentManifest(
                this.serverRootPath,
             );
+
+         // An environment whose config could not be resolved (an unset ${VAR})
+         // never reaches `this.environments`, so nothing downstream would report
+         // it. Record it here so it is counted in the readiness line's
+         // load_errors and listed in /status loadErrors, the same as any other
+         // environment that failed to load.
+         for (const configError of environmentManifest.environmentConfigErrors ??
+            []) {
+            this.failedEnvironments.set(
+               configError.name,
+               redactPgSecrets(configError.message),
+            );
+         }
 
          await this.cleanupAndCreatePublisherPath();
 
@@ -1533,8 +1547,16 @@ export class EnvironmentStore {
             existingEnvironment?.metadata.location ||
             environmentConfig?.packages[0]?.location;
          if (!environmentPath) {
+            const configError = findEnvironmentConfigError(
+               environmentManifest,
+               environmentName,
+            );
             throw new EnvironmentNotFoundError(
-               `Environment "${environmentName}" could not be resolved to a path.`,
+               configError
+                  ? `Environment "${environmentName}" could not be loaded: ${redactPgSecrets(
+                       configError,
+                    )}`
+                  : `Environment "${environmentName}" could not be resolved to a path.`,
             );
          }
          return await this.addEnvironment({
@@ -1766,8 +1788,19 @@ export class EnvironmentStore {
          return getProcessedPublisherConfig(serverRootPath);
       } catch (error) {
          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            // Serialise the message explicitly: an Error's `message` and `stack`
+            // are non-enumerable, so `{ error }` reaches the log as `{}` and the
+            // reason (e.g. which env var is unset) is lost at the one point a
+            // reader needs it.
+            //
+            // The message says what this branch does. It does NOT generate from
+            // the directory, which is the ENOENT branch below; saying so sent
+            // readers looking for a directory-derived config that was never
+            // built.
             logger.error(
-               `Error reading ${PUBLISHER_CONFIG_NAME}. Generating from directory`,
+               `Error reading ${PUBLISHER_CONFIG_NAME}; serving no environments: ${
+                  error instanceof Error ? error.message : String(error)
+               }`,
                { error },
             );
             return { frozenConfig: false, environments: [] };

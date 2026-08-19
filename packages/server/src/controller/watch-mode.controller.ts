@@ -3,6 +3,8 @@ import { EventEmitter } from "events";
 import { RequestHandler } from "express";
 import path from "path";
 import { components } from "../api";
+import { findEnvironmentConfigError } from "../config";
+import { redactPgSecrets } from "../pg_helpers";
 import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
@@ -215,8 +217,16 @@ export class WatchModeController {
          !environment.packages ||
          environment.packages.length === 0
       ) {
+         const configError = findEnvironmentConfigError(
+            environmentManifest,
+            watchName,
+         );
          res.status(404).json({
-            error: `Environment ${watchName} not found or has no packages`,
+            error: configError
+               ? `Environment ${watchName} could not be loaded: ${redactPgSecrets(
+                    configError,
+                 )}`
+               : `Environment ${watchName} not found or has no packages`,
          });
          return;
       }
