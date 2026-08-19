@@ -123,9 +123,11 @@ export function recordAuthorizeBypass(
  * side by side as one `decision` label, not two metric names to remember.
  *
  * `short_circuited` is a third, distinct outcome: the gate's compiled
- * condition is the bare literal `false` (see `classifyAuthorizeGate`'s
- * `kind === "false"` branch), so the row set is provably empty without
- * grafting, recompiling, or running anything against the warehouse. It is
+ * condition is the bare literal `false` and nothing else (accepted by
+ * `classifyAuthorizeGate`'s `kind === "true" || kind === "false"` branch and
+ * read back off `resolveGateShape`'s `constantFalse`), so the row set is
+ * provably empty without grafting, recompiling, or running anything against
+ * the warehouse. It is
  * NOT a rename of `empty_after_filter` — that decision still executes the
  * (possibly empty) filtered query; this one never dispatches at all.
  */
@@ -176,15 +178,19 @@ export function recordRowLevelGateDecision(
  * nonzero value from THAT call site, specifically, is worth its own look —
  * see the paired `cause` label and the source in the request's own logs.
  *
- * `cause: 'entry_point_unexpressible'` is the one exception to "blocks the
- * whole load": it fires at load for a gate that is valid but unexpressible at
- * ONE derived entry point (an `extend` that renamed/excluded/projected away
- * the gated field, or a `query_source` projection), which `validateAuthorize
- * Probes` deliberately does NOT fail the load for — the rest of the model
- * still loads and serves, and every request against that specific entry
- * point denies instead (never fires from `Model.resolveGateShape`, since that
- * path has no `cause` for a compile failure — see its call sites). A nonzero
- * value here is a per-entry-point authoring mistake to fix, not an outage.
+ * Two cases are exceptions to "blocks the whole load", both of which warn
+ * and leave the ONE affected entry point denying every request while the rest
+ * of the model serves. `cause: 'entry_point_unexpressible'` fires at load for
+ * a gate that is valid but unexpressible at one derived entry point (an
+ * `extend` that renamed/excluded/projected away the gated field, or a
+ * `query_source` projection) — never from `Model.resolveGateShape`, since
+ * that path has no `cause` for a compile failure. Any cause at all fires that
+ * way when the gate reads no row field, which is how a gate published before
+ * every gate became a row filter avoids taking its whole model file down (see
+ * `validateAuthorizeProbes`'s `readsRowField`). `vacuous_default_atom` is NOT
+ * one of them — it is found by probing, which the request path never repeats,
+ * so it always blocks the load. A nonzero value here is a per-entry-point
+ * authoring mistake to fix, not an outage.
  * "ONE derived entry point" is confirmed by `validateAuthorizeProbes` via the
  * gate's own annotation NOTE OBJECT (shared, by reference, with a base that
  * validated, or absent entirely) — not by gate text, which two unrelated

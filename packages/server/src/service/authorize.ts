@@ -478,7 +478,9 @@ export function referencedGivenNames(expr: string): string[] {
  *
  * The first six come from {@link classifyAuthorizeGate}: the gate's compiled
  * condition IS readable and is not an allowed shape — invalid IN ITSELF,
- * wherever it is probed from. `entry_point_unexpressible` is different in
+ * wherever it is probed from. `vacuous_default_atom` is also a property of the
+ * gate itself, found by probing rather than by shape — see
+ * `assertNoVacuousDefaultAtom`. `entry_point_unexpressible` is different in
  * kind: the gate is a valid, allowed shape, but at one entry point that did
  * not itself declare it — a derived source (an `extend` that
  * renamed/excluded/projected away the field, or a `query_source` projection)
@@ -496,6 +498,7 @@ export type RowLevelGateRejectionCause =
    | "unsupported_node"
    | "no_given_reference"
    | "unreachable_given"
+   | "vacuous_default_atom"
    | "entry_point_unexpressible";
 
 /**
@@ -528,6 +531,7 @@ export const ROW_LEVEL_GATE_REJECTION_CAUSES =
       "unsupported_node",
       "no_given_reference",
       "unreachable_given",
+      "vacuous_default_atom",
       "entry_point_unexpressible",
    );
 
@@ -789,6 +793,10 @@ export function classifyAuthorizeGate(
          // `assertNoVacuousDefaultAtom`.
          const otherGiven = givenOperand(n.e);
          if (otherGiven !== null) {
+            // Reachability is checked on THIS operand too, not just the
+            // membership side: an unreachable given binds its declaration
+            // default at request time instead of the caller's value.
+            if (declaredTypeOf(otherGiven) === null) return false;
             givenNames.push(otherGiven);
             literalAtoms.push(`$${otherGiven} in $${given}`);
             return true;
@@ -1718,6 +1726,20 @@ export async function validateAuthorizeProbes(
             declaredTypes,
             declaredDefaults,
          );
+         // Whether the compiled gate reads any row field, per Malloy's own
+         // reference-tracking walker. A field-LESS gate (`$ROLE like 'ana%'`,
+         // `1 = 1`, `$ROLE_D != 'blocked'`) was a whole-source boolean before
+         // every gate became a row filter, and it published under the looser
+         // rules that governed one; the row-level grammar can refuse it now.
+         // Failing the load for that turns the whole model FILE into a
+         // compilation-failure placeholder, taking every ungated source in it
+         // out of service too, so it takes the `onRowLevelGateUnexpressible`
+         // escape instead: warn, and let this ONE entry point deny every
+         // request (`resolveGateShape`). A field-READING gate is one the
+         // row-level grammar already governed, so it still fails the load.
+         const fieldUsage = condition.refSummary?.fieldUsage;
+         const readsRowField =
+            Array.isArray(fieldUsage) && fieldUsage.length > 0;
          if (classification.shape === "rejected") {
             options.onRowLevelGateRejected?.(classification.cause);
             // A source-level gate concatenates its own ancestor gates with
@@ -1734,7 +1756,7 @@ export async function validateAuthorizeProbes(
             // (`Model.resolveGateShape` still refuses every request against
             // this shape) instead of failing the whole load.
             const ownNotes = ownNotesOf.get(sourceName) ?? [];
-            if (ownNotes.length === 0) {
+            if (ownNotes.length === 0 || !readsRowField) {
                options.onRowLevelGateUnexpressible?.(
                   sourceName,
                   classification.detail,
@@ -1769,11 +1791,27 @@ export async function validateAuthorizeProbes(
          // spurious load FAILURE from it, so the effect is a correct refusal with
          // a misleading name in it. Pinned by the entry-point-naming test in
          // `row_level_authorize.integration.spec.ts`.
-         await assertNoVacuousDefaultAtom(
-            compiler,
-            sourceName,
-            classification.literalAtoms,
-         );
+         //
+         // The FIELD-LESS escape the `rejected` branch above takes does NOT
+         // apply here either, and for a sharper reason than the note-less
+         // one: that escape is only fail-closed because `resolveGateShape`
+         // re-runs the SAME shape classification per request and rejects
+         // independently. A vacuous default atom has no request-time
+         // counterpart — it is found by PROBING, which the request path does
+         // not do — so warning instead of throwing would leave the source
+         // serving and admitting every row to a caller who supplies nothing.
+         // A gate that admits everyone by default is broken rather than
+         // merely unexpressible, so it fails the load.
+         try {
+            await assertNoVacuousDefaultAtom(
+               compiler,
+               sourceName,
+               classification.literalAtoms,
+            );
+         } catch (err) {
+            options.onRowLevelGateRejected?.("vacuous_default_atom");
+            throw err;
+         }
          for (const note of ownNotesOf.get(sourceName) ?? []) {
             provenNoteObjects.add(note);
          }
