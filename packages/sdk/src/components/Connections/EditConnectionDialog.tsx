@@ -288,8 +288,9 @@ export default function EditConnectionDialog({
                   // field blocks submit with nothing on screen to fix. Enforce the
                   // pair here instead, where it can be conditional — otherwise a
                   // keyless key-based attachment would save and fail at attach. This
-                  // path has never carried an existing value forward, so requiring
-                  // re-entry is what the removed `required` already did.
+                  // does not ask anyone to retype a secret: the inputs are seeded
+                  // from the stored connection, so an untouched field resubmits its
+                  // existing value.
                   if (dbType === "s3") {
                      if (connectionConfig.provider === "credential_chain") {
                         delete connectionConfig.accessKeyId;

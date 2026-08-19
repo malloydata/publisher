@@ -823,12 +823,22 @@ export function validateStorageDestinations(
          // wanted, because a destination is only attached at its first BUILD, which
          // is where a missing storage credential would otherwise surface, hours
          // after the config change that caused it.
+         // Both arms, and in the attach path's own precedence (see
+         // attachDuckLakeWithMode, which takes s3 over gcs): a partial GCS
+         // credential is the same late failure as a partial S3 one, and
+         // resolveCloudStorageCredentials already enforces that pair too.
          const storage = destination.ducklakeConnection?.storage;
          if (storage?.s3Connection) {
             resolveCloudStorageCredentials({
                name,
                type: "s3",
                s3Connection: storage.s3Connection,
+            });
+         } else if (storage?.gcsConnection) {
+            resolveCloudStorageCredentials({
+               name,
+               type: "gcs",
+               gcsConnection: storage.gcsConnection,
             });
          }
       } catch (error) {
