@@ -20,8 +20,9 @@ export, and the Dashboards section are still ahead of `main`. Written July 2026,
 implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
-and, once they land, `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or
-an HTML data app) and `docs/dashboards.md` (how to use the feature rather than read its design).
+[choosing-a-surface.md](choosing-a-surface.md) (when to reach for a dashboard over a notebook or an
+HTML data app) and [dashboards.md](dashboards.md) (how to use the feature rather than read its
+design).
 Externally, Malloyyo's `docs/creating-dashboards.md`, `docs/composite-dashboards.md`, and
 `docs/dashboard-iframe-security.md` are the format and security posture this design adopts.
 
@@ -200,11 +201,11 @@ notebook side of 2; 9 is documentation, not code):
    a dashboard has none to read — and it is what makes existing notebooks stop showing
    filenames without anyone editing them, the same bargain a `DataApp` makes by reading its
    `<title>`.
-9. **Positioning guidance.** `docs/choosing-a-surface.md` carries the
+9. **Positioning guidance.** [choosing-a-surface.md](choosing-a-surface.md) carries the
    "notebook, dashboard, or HTML data app?" decision guide, and now says outright that
    interactivity is _not_ the axis to choose on, because these two surfaces behave the same;
-   what differs is the shape of the document. `docs/dashboards.md`, when written, links to it
-   rather than restating it. Cross-linking covers the seams: a notebook's markdown can link to
+   what differs is the shape of the document. [dashboards.md](dashboards.md) links to it rather
+   than restating it. Cross-linking covers the seams: a notebook's markdown can link to
    a dashboard (both are URL-addressable), and a drill can jump from a notebook cell to a
    dashboard.
 
@@ -583,11 +584,11 @@ real when it covers the surface that actually runs author code — see
 [security-posture.md](security-posture.md).
 
 **It duplicated a shipped surface, at a scope nobody agreed to.**
-`docs/choosing-a-surface.md` sold this as an escape hatch for a _tile_ that
-needs bespoke rendering, _"without giving up the rest"_. What was built replaced the entire
+This was argued as an escape hatch for a _tile_ that needs bespoke
+rendering, without giving up the rest. What was built replaced the entire
 page — the control row and every tile — because a component that draws its own visuals has no
-use for the grid around it. That is the whole-page custom UI job, which is the job that doc
-already assigns to HTML data apps.
+use for the grid around it. That is the whole-page custom UI job, which
+[choosing-a-surface.md](choosing-a-surface.md) already assigns to HTML data apps.
 
 **It cost two things to maintain.** A second widget library beside the SDK
 (`packages/dashboard-runtime`, its own hooks, controls, and `<VegaChart>`), and a compiler in

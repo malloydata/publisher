@@ -547,6 +547,8 @@ was built and then cut, is in
 
 ## See also
 
+- [choosing-a-surface.md](choosing-a-surface.md): whether this is the surface you want, against a
+  notebook and an HTML data app
 - [givens.md](givens.md): the parameter mechanism the controls are built on
 - [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md): the design, and the grammar's provenance
 - [console.md](console.md): the rest of the Publisher Console

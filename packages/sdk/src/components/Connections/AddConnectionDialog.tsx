@@ -355,7 +355,16 @@ export default function AddConnectionDialog({
 
    return (
       <React.Fragment>
-         <Button variant="outlined" onClick={handleClickOpen}>
+         {/* Contained with a start icon, matching AddEnvironmentDialog and
+             AddPackageDialog. This was the only add-trigger of the three still
+             outlined and icon-less, which read as the secondary action on a
+             screen where it is the primary one. */}
+         <Button
+            variant="contained"
+            color="primary"
+            startIcon={<AddIcon />}
+            onClick={handleClickOpen}
+         >
             Add Connection
          </Button>
          <Dialog open={open} onClose={handleClose}>
