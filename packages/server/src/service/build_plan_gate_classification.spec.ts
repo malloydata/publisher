@@ -1,6 +1,6 @@
-// Compile-time `#(authorize)` gate classification for persist sources
-// (Track A step 3): `classifyPersistSourceGate` (`./build_plan`) calls the
-// extracted `gate_classification.ts` API directly against a real compiled
+// Compile-time `#(authorize)` gate classification for persist sources:
+// `classifyPersistSourceGate` (`./build_plan`) calls `gate_classification.ts`'s
+// standalone functions directly against a real compiled
 // `{modelDef, materializer}` pair — no `Model` instance, no network/warehouse
 // access. Pinned against the real compiler (like `materialization_eligibility.spec.ts`)
 // rather than hand-built stubs, since the classification reads compiled IR
@@ -23,6 +23,7 @@ import {
    type GateClassificationDeps,
 } from "./gate_classification";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import { assertColocatedPersistNotAuthorizeGated } from "./materialization_eligibility";
 
 const ROOT = "file:///gate-classify/";
 let connections: FixedConnectionMap;
@@ -102,6 +103,16 @@ source: gated is base -> { select: org_id }
       // which `classifyAuthorizeGate` rejects (`no_given_reference`). The two
       // groups are AND'd, so the second's rejection must win regardless of
       // the first's shape.
+      //
+      // `base`'s literal-only gate could not survive a real local package
+      // load — `validateAuthorizeProbes` rejects a field-vs-literal
+      // comparison at load time. This fixture reaches `classifyPersistSourceGate`
+      // directly, skipping that validation, so the shape tested here is one
+      // load validation would in fact catch UNLESS `base` lived in a model
+      // this one only transitively imports: load validation covers only the
+      // importING model's own entry points (`authorize.ts`'s
+      // `validateAuthorizeProbes` doc), so a cross-model import is the one
+      // way this shape reaches compile time for real.
       const { modelDef, materializer, deps, sources } = await compileModel(
          `##! experimental.persistence
 ##! experimental.givens
@@ -197,6 +208,58 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
          classification: "row_level",
          attributed: false,
       });
+   });
+
+   it("pins {row_level, attributed:true} for a joined copy of the entry point's own extend-inherited gate — note-identity cannot see the join", async () => {
+      // `derived` writes no annotation of its own; `extend`ing `locked`
+      // unannotated copies `locked`'s note object BY REFERENCE onto
+      // `derived`'s own annotations (so `collectEntryPointGates` sees it as
+      // an own entry-point gate — `classification: "row_level"`). `derived`
+      // ALSO joins a second copy of `locked`, carrying the SAME note object.
+      // `isAuthorizeAttributedToEntryPoint` dedupes by object identity, so
+      // the joined copy contributes no note the no-join walk doesn't already
+      // have via the extend-inherited copy — `attributed` comes out `true`,
+      // indistinguishable from a source with no join-carried gate at all.
+      //
+      // This is safe ONLY IF the colocated relaxation this classification
+      // feeds grafts the row filter at serve time exactly as the live query
+      // path does — i.e. the artifact grants nothing a live query would not.
+      // It is not safe merely because `attributed` reads `true` here.
+      //
+      // `assertColocatedPersistNotAuthorizeGated` (`./materialization_eligibility`)
+      // still refuses this exact shape today — its `referencesAuthorize` walk
+      // has no notion of `attributed` and finds the gate regardless of how it
+      // got there.
+      const { modelDef, materializer, deps, sources } = await compileModel(
+         `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+#(authorize) "org_id = $ORG"
+source: locked is duckdb.sql("select 1 as org_id, 1 as x")
+
+#@ persist name="derived"
+source: derived is locked extend {
+   join_one: other is locked on x = other.x
+}
+`,
+      );
+      const outcome = await classifyPersistSourceGate(
+         sources.derived,
+         modelDef,
+         materializer,
+         deps,
+         "m.malloy",
+      );
+      expect(outcome).toEqual({
+         classification: "row_level",
+         attributed: true,
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.derived),
+      ).toThrow();
    });
 
    it("records the fail-closed outcome when classification throws", async () => {
