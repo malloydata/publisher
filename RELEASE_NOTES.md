@@ -35,7 +35,7 @@ only two outcomes, `row_level` and `rejected` — `given_only` is gone.
   of `AccessDeniedError`. Check any consumer that keys logic on the 403 status for this class of gate; the
   correct row-level equivalent is checking for zero rows.
 - **Package-level FGA denials are unaffected — still 403.** `can_read_package` and every other
-  organization/workspace access check remain exactly as they were; only a gate's *own* verdict moved to
+  organization/workspace access check remain exactly as they were; only a gate's _own_ verdict moved to
   filtering. Do not conflate the two: a package a caller cannot read at all still never reaches the gate.
 - **`/compile` now denies a row-level gate unconditionally, whether or not the given satisfies it.**
   `/compile` has no query execution step to apply a row filter to — it is a probe — so where a
@@ -46,7 +46,7 @@ only two outcomes, `row_level` and `rejected` — `given_only` is gone.
   previously reachable only because a field-less condition skipped the row-level grammar entirely; now that
   every gate goes through it, negating a single `<given-or-field> <op> <given-or-literal>` comparison is
   explicitly supported (equivalent to flipping the operator). A negated **membership test** (`not (x in
-  $GROUPS)`) is still refused — that one has a real emptying-the-set hazard a scalar negation does not.
+$GROUPS)`) is still refused — that one has a real emptying-the-set hazard a scalar negation does not.
 
 ### Known, accepted narrowing: the "no schema oracle" guarantee is smaller
 
@@ -58,17 +58,18 @@ compile error before the gate ever gets a chance to deny. This is accepted, not 
 executes either way, so no row data leaks — only whether a field name is recognized, which was already the
 case for a genuinely row-level gate before this change.
 
-### Known, unresolved security gap (not fixed in this change)
+### Fixed: `/compile` gate-stripping bypass
 
-`/compile`'s **`file`/`append`-scope backstop** discovers a run target's own gate by walking the *caller's
-own compiled struct*, not the on-disk model's. A caller who submits edited text with the `#(authorize)`
-annotation stripped can currently evade that backstop entirely for a row-level-classified gate — the
+`/compile`'s **`file`/`append`-scope backstop** used to discover a run target's own gate by walking the
+_caller's own compiled struct_, not the on-disk model's. A caller who submitted edited text with the
+`#(authorize)` annotation stripped could evade that backstop entirely for a row-level-classified gate — the
 early, best-effort check (`assertAuthorizedForText`) that DOES read the authoritative on-disk annotation
-only *defers* a row-level classification rather than denying, so nothing downstream re-checks it against
-the on-disk source of truth. This was closed for a given-only gate before this change (the early check
-denied it synchronously, no struct needed); it is not closed for a row-level one. See the tests marked
-"security gap, not fixed here" in `compile_authorize.spec.ts` for the reproduction, and this change's PR
-description for the traced root cause and fix shape.
+only _deferred_ a row-level classification rather than denying, so nothing downstream re-checked it against
+the on-disk source of truth. This was closed for a given-only gate before the row-filter collapse above
+(the early check denied it synchronously, no struct needed); it was not closed for a row-level one.
+`Model.collectAuthorizeEntryPointGates` now folds `entryPointGatesBySource` — computed once from this
+model's own on-disk `modelDef`, which caller text cannot edit — into the struct walk's result, so a gate
+the caller stripped from submitted text is still found and still denies.
 
 ---
 
@@ -98,7 +99,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   old owner and stays hidden from its new one. Nor does adding a gate refresh anything — the
   content address does not include the annotation, so a pre-gate artifact stays addressable
   indefinitely while every rebuild is refused. Note also that the check's reach is deliberately
-  wider than that: it also refuses a source that merely *joins* a gated source, which entry-point
+  wider than that: it also refuses a source that merely _joins_ a gated source, which entry-point
   semantics never enforced anyway. Drop `#@ persist` from the source, or move the gate to a source
   that is not materialized. See [docs/materialization.md](docs/materialization.md).
 - **An `#(authorize)` in a position nothing enforces now fails the model load** — a top-level
@@ -133,7 +134,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   a filter on packages that served every row yesterday. In the same change, the block form
   `#|(authorize)` … `|#` and the other bracket pairs (`#[authorize]`, `#<authorize>`, `#{authorize}`)
   are now recognized as gates, because the compiler routes them there — the block form in particular
-  was previously a live fail-open, unenforced at query time *and* eligible to be frozen into a
+  was previously a live fail-open, unenforced at query time _and_ eligible to be frozen into a
   materialized artifact.
 
   **What is deliberately NOT refused:** another application's `authorize`-prefixed route.
@@ -142,6 +143,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   are valid distinct routes belonging to whoever declared them, and load untouched. An earlier draft
   of this refusal matched them as near misses and failed the whole model load with advice aimed at
   someone else.
+
 - **Known limitation — one notebook shape fails with a 400 instead of filtering.** A cell that both
   declares a gated source and runs it in the same cell, where the gate reads a JOINED field and the
   run query does not itself reference that field, is refused rather than answered. Reference the
@@ -169,7 +171,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   load fails with a 424 naming the source; where it only **inherits** one, load succeeds with a
   warning and that entry point denies every request, leaving the rest of the model serving.
 - Entry-point-only semantics are unchanged: a gate on a source reached only through a join still
-  does not fire. A gate may now *reference* a joined field from the entry point's own expression —
+  does not fire. A gate may now _reference_ a joined field from the entry point's own expression —
   that is not the same thing.
 
 ---
@@ -178,11 +180,11 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
 
 A build that failed on any source abandoned the whole command: it stopped at the first failure, reclaimed the tables already written, and reported one message for the entire run. A package where one source of five had a bad grant was indistinguishable from a package that was entirely broken, and the four tables that had already materialized were dropped on the way out.
 
-A source that fails is now recorded in the manifest with the reason it gave, and the build continues. The sources that materialized stay usable, and a consumer can tell which source failed rather than inferring it from an absent entry. A build that loses *every* source still fails — it produced nothing, so it must not report itself as a success with errors attached. A reuse-only run, which builds nothing of its own, is unaffected.
+A source that fails is now recorded in the manifest with the reason it gave, and the build continues. The sources that materialized stay usable, and a consumer can tell which source failed rather than inferring it from an absent entry. A build that loses _every_ source still fails — it produced nothing, so it must not report itself as a success with errors attached. A reuse-only run, which builds nothing of its own, is unaffected.
 
 **New response field.** `BuildManifest.failures` maps a sourceEntityId to a `SourceFailure` carrying `reason`, redacted against that source's own connection. A consumer generating a strict client from `api-doc.yaml` rejects the field until it regenerates; the key is absent on a run where every source built.
 
-Failures are reported *beside* `entries` rather than inside one, which is the part worth knowing if you consume a manifest. A failure carries the `physicalTableName` the source was headed for — useful for correlating with the request, and never a table to read: the build that would have created it is what failed, and a failed *rebuild* leaves the prior generation in place under that same name, so resolving it serves stale data rather than nothing.
+Failures are reported _beside_ `entries` rather than inside one, which is the part worth knowing if you consume a manifest. A failure carries the `physicalTableName` the source was headed for — useful for correlating with the request, and never a table to read: the build that would have created it is what failed, and a failed _rebuild_ leaves the prior generation in place under that same name, so resolving it serves stale data rather than nothing.
 
 **`ManifestEntry.error` is deprecated.** 0.0.245 and 0.0.246 report a failed source as an entry carrying `error`, and that remains true for one more deprecation cycle: a failure is written to **both** `failures` and a mirrored entry, so a consumer reading `error` keeps working unchanged. Move to `failures` — `error` will be removed, and once it is, `entries` holds only sources that built.
 
@@ -202,7 +204,7 @@ A measure annotated `#@ preaggregate grain="…"` is rolled up into a stored tab
 
 **The annotation is all it takes — there is no deployment flag to enable.** Writing one is the decision to build and serve a rollup, so a package that carries no `#@ preaggregate` is untouched: nothing extra is planned, built, or compiled for it. Worth knowing before adding your first annotation, because the build is not free: a rollup is materialized like any `#@ persist` source, and a grain whose cardinality approaches the base table's spends nearly as much as the base while saving little. `buildPlan.sources` with `origin: preaggregate` is where to see what a package will build before it builds it.
 
-**A measure may be declared at several grains, one annotation line each, and that is a cost decision.** A rollup also serves queries grouped by any *subset* of its grain, so one rollup at `category, order_day` correctly answers by-category, by-day and grand-total queries. But a combined grain has roughly the product of its dimensions' cardinalities, so `customer_id, order_day` can approach the base table's row count and save almost nothing where either grain alone is small. Declaring both separately gives each query a small table to read, at the price of two tables to build and refresh. Rollups are grouped by grain, not by measure: ten measures sharing a grain are one table and one `GROUP BY`. Note that where two declared grains both cover a query, the one used is the first in the composite's member order, which is by generated name rather than by size — so grains are worth declaring for queries they cover *differently*, not to offer the same query a choice.
+**A measure may be declared at several grains, one annotation line each, and that is a cost decision.** A rollup also serves queries grouped by any _subset_ of its grain, so one rollup at `category, order_day` correctly answers by-category, by-day and grand-total queries. But a combined grain has roughly the product of its dimensions' cardinalities, so `customer_id, order_day` can approach the base table's row count and save almost nothing where either grain alone is small. Declaring both separately gives each query a small table to read, at the price of two tables to build and refresh. Rollups are grouped by grain, not by measure: ten measures sharing a grain are one table and one `GROUP BY`. Note that where two declared grains both cover a query, the one used is the first in the composite's member order, which is by generated name rather than by size — so grains are worth declaring for queries they cover _differently_, not to offer the same query a choice.
 
 **Unusable annotations are refused at publish, and again at load.** Pre-aggregation's failure mode is an annotation that silently does nothing while the plan looks correct, so anything that cannot be built is a 400 rather than a warning. Refused: an annotation anywhere but on a measure; a measure whose aggregate cannot be re-aggregated from a stored partial (only `sum`, `count`, `min` and `max` can — pre-aggregate a sum and a count and divide them in a view instead); a grain naming anything but a dimension the source itself declares, which rules out an inline truncation like `grain="order_time.day"` (declare `dimension: order_day is order_time.day` and name that, after which coarser truncations of it route too); and a base source with a fan-out join, since `join_many` and `join_cross` can multiply rows. A `join_one` is permitted, and a measure that aggregates through one is served normally. Enforcing at load as well as at publish matters because re-aggregatability is derived from the compiled model: a Malloy version change can in principle reclassify a measure that published cleanly, and that surfaces as a package that stops loading (reported in `ServerStatus.loadErrors`) rather than one quietly paying for rollups that answer nothing.
 

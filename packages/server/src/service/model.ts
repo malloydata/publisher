@@ -1312,6 +1312,52 @@ export class Model {
             ),
          );
       }
+      // Fold in THIS model's own on-disk gates for `ownSourceName` — the
+      // struct walk above just read `runnable`'s own compiled struct, which
+      // reflects whatever text the caller submitted (the `/compile` file/
+      // append backstop recompiles caller-edited text against `this`, the
+      // authoritative on-disk gateModel, but the run target's STRUCT comes
+      // from that edited text). A caller who strips the `#(authorize)`
+      // annotation from submitted text compiles a struct with no gate of its
+      // own, so the walk alone finds nothing — this is what closes that gap.
+      // `entryPointGatesBySource` is computed once from `this.modelDef` (the
+      // on-disk model), which caller text cannot edit, so it still finds the
+      // gate; `resolveGateShape`'s graft resolves it directly (`entry.struct`
+      // is already a `this.modelDef.contents` entry, so `findContentsKey`'s
+      // identity match succeeds regardless of what the walk's own `struct`
+      // came from), and a row-level gate found this way still denies
+      // /compile's no-`recompile` callers same as one the walk found itself.
+      // Skipped when `skipOwnSourceGate` is set — that flag means `this`
+      // gateModel is unrelated to `ownSourceName` (a new path with no cached
+      // Model of its own), so `entryPointGatesBySource` would resolve against
+      // the wrong file's namespace.
+      //
+      // Deduped by CONTENT (`label` + `exprs` + `selfContained`), not struct
+      // identity: for an ordinary (non-`/compile`) query, `struct` above is
+      // resolved off the runnable's OWN prepared query
+      // (`resolveRunTargetStruct`'s `prepared._modelDef`), a fresh compile
+      // that does not share object identity with `this.modelDef`'s own
+      // `contents` entry even when it describes the identical gate — a
+      // struct-identity dedup let a still-intact gate double-apply here
+      // (`org_id in $GROUPS` grafted twice, once per copy).
+      if (!skipOwnSourceGate && ownSourceName) {
+         const onDiskGates = this.entryPointGatesBySource.get(ownSourceName);
+         if (onDiskGates) {
+            const alreadyCollected = new Set(
+               entryPointGates.map(
+                  (entry) =>
+                     `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`,
+               ),
+            );
+            for (const entry of onDiskGates) {
+               const key = `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`;
+               if (!alreadyCollected.has(key)) {
+                  alreadyCollected.add(key);
+                  entryPointGates.push(entry);
+               }
+            }
+         }
+      }
       return { entryPointGates, modelDef };
    }
 
