@@ -61,8 +61,27 @@ jobs:
             done
           }
 
+          # Refuses anything that is not a plain major.minor.patch, rather than
+          # bumping it into nonsense. Splitting "0.0.250-rc.1" on "." gives
+          # ["0","0","250-rc","1"], and Number("250-rc") is NaN, so the naive
+          # form of this returned `0.0.NaN` and the walk below would have gone on
+          # to publish it. No prerelease can reach here today — npm-sdk.yml
+          # routes a hyphenated version to the `next` dist-tag, so one never
+          # becomes `latest` — but the floor is now read from the registry rather
+          # than from a file in this repo, and the registry is not ours to
+          # constrain.
           bump_patch() {
-            node -e 'const v=process.argv[1].split(".");v[2]=String(Number(v[2])+1);console.log(v.join("."))' "$1"
+            node -e '
+              const v = process.argv[1];
+              const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+              if (!m) {
+                console.error(
+                  `cannot patch-bump "${v}": expected exactly major.minor.patch`,
+                );
+                process.exit(1);
+              }
+              console.log(`${m[1]}.${m[2]}.${Number(m[3]) + 1}`);
+            ' "$1"
           }
 
           # A version is taken once its release branch or release tag exists, so
@@ -94,10 +113,22 @@ jobs:
             # branches are never merged back, so packages/sdk/package.json lags
             # the registry permanently, and walking up from it stops at the
             # first version whose branch and tag are FREE — which is not the
-            # same as one above the highest published. Skip a number (any
-            # explicit `-f version=` that jumps ahead does) and the walk later
-            # drops into the gap, publishes below `latest`, and moves the
-            # dist-tag BACKWARDS with nothing failing.
+            # same as one above `latest`. Skip a number (any explicit
+            # `-f version=` that jumps ahead does) and the walk later drops into
+            # the gap, publishes below `latest`, and moves the dist-tag
+            # BACKWARDS with nothing failing.
+            #
+            # `npm view <pkg> version` returns the version behind the `latest`
+            # dist-tag — deliberately, and NOT the highest version published.
+            # Those differ for this package, so the distinction is load-bearing
+            # rather than pedantic: `@malloy-publisher/sdk@1.0.1` really is on
+            # npm (an old off-line publish `latest` has long since moved off), so
+            # it is the maximum by version sort while `latest` sits on the 0.0.x
+            # line. "Correcting" this to the maximum (`npm view … versions` piped
+            # through a sort) would make the next release 1.0.2 and take the whole
+            # project's version line with it, permanently. `latest` is the tag
+            # `npm install` resolves and the one this release is about to move,
+            # so it is the right floor.
             #
             # Fail closed when the registry will not answer. The alternative is
             # falling back to the stale file, which is the bug this exists to
@@ -109,6 +140,15 @@ jobs:
             fi
             DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
             CURRENT="$(printf '%s\n%s\n' "$PUBLISHED" "$DECLARED" | sort -V | tail -1)"
+            # Annotate before bump_patch refuses it. A failing command
+            # substitution under `set -e` kills the step where it stands, so the
+            # function's own guard would abort with a bare stack trace and no
+            # annotation to read. Only the floor needs this: every later
+            # bump_patch input is a previous bump_patch output.
+            if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error title=Version::the floor resolved to '${CURRENT}' (npm ${PUBLISHED}, main ${DECLARED}), which is not a plain major.minor.patch, so patch-bumping it is meaningless. Re-run with an explicit version input."
+              exit 1
+            fi
             echo "::notice title=Version::floor is ${CURRENT} (npm ${PUBLISHED}, main ${DECLARED})"
             NEW_VERSION="$(bump_patch "$CURRENT")"
             while version_taken "$NEW_VERSION"; do
@@ -602,6 +642,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.new_version }}
           BRANCH: ${{ needs.prepare.outputs.branch_name }}
+          # The list of narrative headings this step puts on the release page,
+          # handed to the stamp step below. Under $RUNNER_TEMP and not in the
+          # repo: the stamp step runs `git checkout -B main origin/main`, which
+          # would discard an in-tree file before it could be read.
+          TITLES_FILE: ${{ runner.temp }}/release-notes-titles.txt
         run: |
           TAG="v${VERSION}"
 
@@ -637,11 +682,51 @@ jobs:
           # Read from this checkout, which is the release branch: `prepare`
           # touches only the three package.json files, so its RELEASE_NOTES.md is
           # main's. Empty output is the normal case and adds nothing.
-          NARRATIVE="$(node scripts/release-notes.mjs extract)"
+          #
+          # `--titles` records the exact heading lines that go on the page, so
+          # the stamp step can rewrite those and only those. Without it, `extract`
+          # reads the release branch's snapshot and `stamp` rewrites whatever main
+          # became several minutes later, and a section merged inside that window
+          # is stamped with a version it never shipped in — off this page, and
+          # ineligible for every later one, because its heading no longer says
+          # [Unreleased].
+          #
+          # Read through `if !`, not a bare assignment. This step has no `set -e`
+          # of its own, but the runner's default shell is `bash -e {0}`, so a
+          # non-zero exit from the substitution kills the step HERE — after npm
+          # and Docker have published and before `gh release create` runs, so the
+          # release would never be cut, over a docs-formatting problem. A missing
+          # narrative is not worth that: warn, and let the generated PR list stand
+          # alone. `publish-packages` uses the same form a few hundred lines up,
+          # for the same reason.
+          #
+          # stderr goes to a file rather than through `2>&1`: merging it would put
+          # anything the script ever writes there straight onto the public release
+          # page.
+          EXTRACT_LOG="$(mktemp)"
+          EXTRACT_OK=1
+          if ! NARRATIVE="$(node scripts/release-notes.mjs extract --titles "$TITLES_FILE" 2>"$EXTRACT_LOG")"; then
+            # Prefixed, not inlined: this is untrusted-shaped output on the
+            # failure path, and a line of it starting with `::` would otherwise be
+            # read by the runner as a workflow command.
+            sed 's/^/[release-notes] /' "$EXTRACT_LOG"
+            echo "::warning title=Release notes::could not read RELEASE_NOTES.md (logged above); this release's page carries the generated PR list only, and nothing is stamped on main"
+            echo "- release notes: narrative NOT attached and nothing stamped — \`release-notes.mjs extract\` failed" >> "$GITHUB_STEP_SUMMARY"
+            NARRATIVE=""
+            EXTRACT_OK=0
+            # An empty titles file, so the stamp step below finds no sections to
+            # rewrite instead of failing to read the artifact at all.
+            : > "$TITLES_FILE"
+          elif [ -s "$EXTRACT_LOG" ]; then
+            sed 's/^/[release-notes] /' "$EXTRACT_LOG"
+          fi
           if [ -n "$NARRATIVE" ]; then
             printf '\n%s\n' "$NARRATIVE" >> "$NOTES_FILE"
             echo "::notice title=Release notes::attached $(grep -c '^## ' <<< "$NARRATIVE") narrative section(s) from RELEASE_NOTES.md"
-          else
+          elif [ "$EXTRACT_OK" = 1 ]; then
+            # Only when the file was actually read. Saying "no sections" after a
+            # failed read describes the wrong situation, and it is the one a
+            # reader is most likely to skim past.
             echo "::notice title=Release notes::no [Unreleased] sections; the generated PR list stands alone"
           fi
 
@@ -688,15 +773,22 @@ jobs:
       #
       # Deliberately AFTER `gh release create`: the stamp records what shipped,
       # so a release that failed to cut must not leave main claiming a version
-      # that does not exist. `set -e` on the step above is what enforces that
-      # ordering — this step is simply never reached.
+      # that does not exist. Two things enforce that ordering, and neither is a
+      # `set -e` in the step above — it has none. The runner's default shell is
+      # `bash -e {0}`, so a failing command there exits the step non-zero; and
+      # this step's `if:` has no `always()`, so its implicit `success()` is what
+      # keeps it from running. Adding `always()` to that condition — or
+      # `continue-on-error` to the step above — removes the guarantee while this
+      # comment still claims it.
       #
-      # Failure here is not made fatal. The release is already public and
-      # correct by this point; the only casualty is a heading on main that still
-      # reads [Unreleased], which the next release stamps anyway and which a
-      # human can fix with one commit. Reddening a finished release over a docs
-      # commit would send someone hunting a publishing problem that does not
-      # exist.
+      # Failure here is not made fatal. The release is already public and correct
+      # by this point, and reddening a finished release over a docs commit would
+      # send someone hunting a publishing problem that does not exist. But the
+      # cost is NOT just a heading that still reads [Unreleased]. That heading is
+      # what the next release's `extract` matches, so the next release re-appends
+      # this release's narrative to its own page, and so does every release after
+      # it, until someone notices. Hence the annotations and summary lines below:
+      # a skipped stamp has to be visible without opening the logs.
       #
       # A note on timing that is invisible from this job: `publish-packages` is
       # NOT in this job's `needs`, so it may still be polling npm while this
@@ -708,42 +800,99 @@ jobs:
       # comment would turn every narrative release into an aborted dispatch.
       - name: Stamp the shipped sections on main
         if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
+        # A backstop, not the error handling: every failure below is reported
+        # explicitly, as a ::warning and a job-summary line, because a stamp that
+        # silently did not happen is re-shipped as narrative on the next release.
+        # This only keeps an unanticipated one from reddening a finished release.
         continue-on-error: true
         env:
           VERSION: ${{ needs.prepare.outputs.new_version }}
+          # Written by the step above: the exact heading lines that reached the
+          # release page. See that step for why it lives under $RUNNER_TEMP.
+          TITLES_FILE: ${{ runner.temp }}/release-notes-titles.txt
         run: |
           set -euo pipefail
 
           git config --local user.email "${{ github.actor }}@users.noreply.github.com"
           git config --local user.name "${{ github.actor }}"
 
-          # A fresh main, not this checkout: this job is on the release branch,
-          # and main may have moved since the release started.
-          git fetch origin main
-          git checkout -B main origin/main
+          STAMP_LOG="$(mktemp)"
+          FAILURE=""
+          STAMPED=0
 
-          STAMPED="$(node scripts/release-notes.mjs stamp "$VERSION")"
-          if [ "$STAMPED" = "0" ]; then
-            echo "::notice title=Release notes::nothing to stamp on main"
+          # One attempt and one retry, recomputing the stamp against whatever main
+          # became rather than rebasing a commit onto it: the stamp is a pure
+          # function of the file and the titles list, so recomputing is simpler
+          # and cannot conflict with a section edited in the meantime.
+          #
+          # `--titles` is what makes the retry safe. Unscoped, the recompute ran
+          # against an even newer main and claimed every section it found there,
+          # including ones that were never on this release's page. Scoped, both
+          # attempts rewrite exactly the headings the page carries.
+          #
+          # Each git command is checked rather than left to `set -e`. A bare
+          # failure would exit the step, and `continue-on-error` would then report
+          # it as a success with nothing in the summary — the silent skip this
+          # whole step exists to end.
+          for pass in 1 2; do
+            # Names the actual reason, before it is cleared. The retry is usually
+            # a rejected push (main moved), but a fetch or a stamp can fail into
+            # it too, and "main moved" would be the wrong thing to read then.
+            if [ "$pass" = 2 ]; then
+              echo "::notice title=Release notes::${FAILURE}; retrying against a fresh main"
+            fi
+            FAILURE=""
+
+            # A fresh main, not this checkout: this job is on the release branch,
+            # and main may have moved since the release started.
+            git fetch origin main || { FAILURE="could not fetch main"; continue; }
+            git checkout -B main origin/main || { FAILURE="could not check out main"; continue; }
+
+            if ! STAMPED="$(node scripts/release-notes.mjs stamp "$VERSION" --titles "$TITLES_FILE" 2>"$STAMP_LOG")"; then
+              sed 's/^/[release-notes] /' "$STAMP_LOG"
+              FAILURE="release-notes.mjs stamp failed (logged above)"
+              continue
+            fi
+            # Non-empty on success means a section that reached the release page
+            # was edited or removed on main during the release window, so there is
+            # no heading left to stamp. Nothing to undo — the narrative is already
+            # public — but it should not pass unremarked.
+            if [ -s "$STAMP_LOG" ]; then
+              sed 's/^/[release-notes] /' "$STAMP_LOG"
+              echo "::warning title=Release notes::a section on the release page is no longer in RELEASE_NOTES.md on main (logged above) and was not stamped"
+            fi
+            if [ "$STAMPED" = "0" ]; then
+              echo "::notice title=Release notes::nothing to stamp on main"
+              break
+            fi
+
+            git add RELEASE_NOTES.md || { FAILURE="could not stage RELEASE_NOTES.md"; continue; }
+            if git diff --cached --quiet; then
+              echo "::notice title=Release notes::already stamped on main"
+              break
+            fi
+            git commit -s -m "docs: stamp the release notes shipped in ${VERSION}" \
+              || { FAILURE="could not commit the stamp"; continue; }
+            # The only `git push origin main` in this repo, and whether this
+            # token is allowed to do it is genuinely unconfirmed: every recent
+            # commit on main arrived by squash-merge, and `maintain` permission
+            # reads branch protection as an ambiguous 404. So a rejection is
+            # reported rather than swallowed — see the summary line below.
+            git push origin main || { FAILURE="the push to main was rejected"; continue; }
+            break
+          done
+
+          if [ -n "$FAILURE" ]; then
+            echo "::warning title=Release notes::${FAILURE}, so RELEASE_NOTES.md on main is NOT stamped. Its heading still reads [Unreleased], which means the NEXT release re-appends this release's narrative to its own page, and so does every release after it. Fix it on main with: node scripts/release-notes.mjs stamp ${VERSION}"
+            {
+              echo "## 📝 Release notes"
+              echo "⚠️ **Not stamped on \`main\`** — ${FAILURE}."
+              echo
+              echo "\`RELEASE_NOTES.md\` still reads \`[Unreleased]\`, so the next release will re-append this release's narrative to its page. Fix it on \`main\` with \`node scripts/release-notes.mjs stamp ${VERSION}\` and commit."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          git add RELEASE_NOTES.md
-          git commit -s -m "docs: stamp the release notes shipped in ${VERSION}"
-
-          # One retry, re-running the stamp against whatever main became rather
-          # than rebasing a commit onto it. The stamp is a pure function of the
-          # file, so recomputing is both simpler and correct where a rebase
-          # could conflict with a section edited in the meantime.
-          if ! git push origin main; then
-            echo "::notice title=Release notes::main moved; recomputing the stamp"
-            git fetch origin main
-            git checkout -B main origin/main
-            node scripts/release-notes.mjs stamp "$VERSION" >/dev/null
-            git add RELEASE_NOTES.md
-            git diff --cached --quiet && { echo "::notice title=Release notes::already stamped"; exit 0; }
-            git commit -s -m "docs: stamp the release notes shipped in ${VERSION}"
-            git push origin main
+          if [ "$STAMPED" != "0" ]; then
+            echo "Stamped ${STAMPED} section(s) as \`${VERSION}\` on main" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-          echo "Stamped ${STAMPED} section(s) as \`${VERSION}\` on main" >> $GITHUB_STEP_SUMMARY

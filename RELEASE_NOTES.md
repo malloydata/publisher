@@ -10,6 +10,8 @@ For releases that warrant narrative — redesigns, breaking changes, migration s
 
 Both steps handle several sections, which matters because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives. That is precisely what the old manual process got wrong. It also simply stopped happening — 0.0.243 through 0.0.247 each shipped with none of their narrative, and the pages were backfilled by hand afterwards.
 
+Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
+
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
 ## Packages that version on their own line
