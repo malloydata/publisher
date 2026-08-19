@@ -165,6 +165,35 @@ In order, because each step rules out the one below it.
    rejecting it. Test the credential outside Publisher (`psql`, `bq`, `snowsql`) before changing the
    config.
 
+### Postgres, `PGSSLMODE`, and why `sslmode` is not the fix
+
+One Postgres failure has a cause nowhere near where it appears. If `PGSSLMODE` is set in the
+environment the server runs in, Publisher stops using your structured `host`/`port`/`databaseName`
+fields directly and builds a connection string with `sslmode` set from that variable. Against a
+Postgres with SSL off, the connection then fails with:
+
+```
+Error fetching schema for public.orders: The server does not support SSL connections
+```
+
+Measured on 0.0.244 against a local Postgres with `ssl` off: unset `PGSSLMODE` loads and queries
+fine; `PGSSLMODE=allow` gives `packages=0 load_errors=1` and that error.
+
+**Do not reach for the connection's own `sslmode` field.** It is only valid on a connection reached
+through a `proxy`, and on a direct connection it is rejected outright, taking the whole environment
+with it:
+
+```
+sslmode is only supported for proxied connections (direct connections use the deployment PGSSLMODE)
+```
+
+So adding it turns a broken package into a broken environment. The two things that do work are
+unsetting `PGSSLMODE` for the server process, or giving the connection a full `connectionString`,
+which Publisher returns verbatim without injecting anything.
+
+This only bites when `PGSSLMODE` is set. A plain local Postgres with it unset, which is the ordinary
+case, needs none of this.
+
 ## A note on what `${VAR}` does and does not protect
 
 It keeps the secret out of the config file, and out of your shell history. It does not make the
