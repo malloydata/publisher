@@ -51,7 +51,8 @@ collection rather than a field on `PersistSourcePlan`: constructing that plan en
 computes the source's content address, and a free-parameter or given-referencing source cannot reliably
 survive those calls, so a refused source needs a wire shape that requires neither. Each entry carries the
 source's name/sourceID/modelPath, which tier it was evaluated against (`storage` or `colocated` — the SAME
-tier the build path itself would use, post the colocated row-level relaxation), the bounded refusal reason,
+tier the build path itself would use, post the colocated row-level relaxation; see below for the later-added
+`preaggregate` tier), the bounded refusal reason,
 and the full refusal message. No new reason was added to the existing `free_parameter | given | authorize |
 not_duckdb_portable | public_surface_unknown` enum; the two compile-time asserts this collection is computed
 from can only ever produce the first three.
@@ -75,6 +76,18 @@ neither field until it moves to `BuildManifest.failures`.
 Also added a routing-outcome label, `blocked_by_row_level_gate`, on `publisher_storage_serve_routing_total` —
 previously a row-level-gated entry point that vetoed both the storage and pre-aggregation tiers recorded no
 routing outcome at all.
+
+## [Unreleased] — a gated `#@ preaggregate` rollup now reports its own refusal
+
+`BuildPlan.refusedSources` gains a `preaggregate` tier. A gated rollup's pre-aggregation gate refuses
+unconditionally when its base is `#(authorize)`-gated (rollups group away the gate column, so there is
+no row-level admission the way colocated has), and that refusal was previously invisible: the rollup
+still appears in `sources` (synthesis is unaffected by the gate — see the `refusedSources` entry above),
+but nothing said it would never materialize. Such a rollup now also appears in `refusedSources` with
+`tier: "preaggregate"` and `reason: "authorize"`, alongside its `sources` entry — the one tier where
+appearing in both maps at once is the correct, intended state, unlike `storage`/`colocated` where a
+refusal means absence from `sources`. A host inspecting the plan can now tell a gated rollup will 422 on
+instruction before instructing it.
 
 ---
 

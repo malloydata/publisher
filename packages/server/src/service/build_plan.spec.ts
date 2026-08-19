@@ -1143,4 +1143,47 @@ source: gated is base -> { select: org_id }
       },
       { timeout: 20000 },
    );
+
+   it(
+      "reports a gated preaggregate rollup as BOTH synthesized (sources) and refused (refusedSources, tier preaggregate)",
+      async () => {
+         // Rollups group away the gate column, so unlike colocated there is no
+         // row-level admission here: the pre-aggregation gate refuses this
+         // rollup unconditionally. Synthesis is unaffected by that refusal (see
+         // preaggregation_seams.spec.ts's "gate stops materialization, not
+         // synthesis" test), so the rollup still lands in `sources` — the plan
+         // now also has to say it will never materialize.
+         const pkg =
+            await realPackage(`##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         const [source] = Object.values(plan?.sources ?? {});
+         expect(source).toMatchObject({ origin: "preaggregate" });
+         const [refused] = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toMatchObject({
+            tier: "preaggregate",
+            reason: "authorize",
+            sourceID: source.sourceID,
+         });
+      },
+      { timeout: 20000 },
+   );
 });

@@ -1042,6 +1042,30 @@ export function deriveBuildPlan(
             };
             continue;
          }
+      } else {
+         try {
+            assertColocatedPersistNotAuthorizeGated(
+               source,
+               source.name,
+               "preaggregate",
+               options?.sourceGateOutcomes?.[sourceID],
+            );
+         } catch (err) {
+            // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
+            // (it will never materialize) and wireSources below (Malloy still
+            // synthesized it) — both true at once, only for the preaggregate tier.
+            refusedSources[sourceID] = {
+               name: source.name,
+               sourceID: source.sourceID,
+               modelPath: sourceModelPaths?.[sourceID],
+               tier: "preaggregate",
+               reason:
+                  (err instanceof MaterializationEligibilityError &&
+                     err.reason) ||
+                  "authorize",
+               message: errMessage(err),
+            };
+         }
       }
       // EFFECTIVE per-source freshness, resolved most-specific-wins
       // (source > model-file > package) and reported verbatim (null = unset at
