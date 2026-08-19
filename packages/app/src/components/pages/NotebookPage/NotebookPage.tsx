@@ -2,6 +2,7 @@ import {
    encodeResourceUri,
    Notebook,
    useRouterClickHandler,
+   type DrillNavigation,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
 import { useCallback, useMemo, useRef } from "react";
@@ -128,6 +129,25 @@ export default function NotebookPage({
       [routerNavigate, location],
    );
 
+   // A `# drill` naming a dashboard leaves the notebook, so unlike a filter
+   // change it pushes history: Back returns to the notebook the reader drilled
+   // from. `navigate` also honours cmd/ctrl-click by opening a new tab. Every
+   // segment is encoded, since the destination slug comes from a tag naming a
+   // filename and can hold characters that would read as structure in a path.
+   const onDrillNavigate = useCallback(
+      (target: DrillNavigation, event?: MouseEvent) => {
+         const query = new URLSearchParams(target.givens).toString();
+         const env = encodeURIComponent(environmentName);
+         const pkg = encodeURIComponent(packageName);
+         const slug = encodeURIComponent(target.dashboard);
+         navigate(
+            `/${env}/${pkg}/dashboards/${slug}` + (query ? `?${query}` : ""),
+            event,
+         );
+      },
+      [navigate, environmentName, packageName],
+   );
+
    return (
       <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
          <Notebook
@@ -140,6 +160,7 @@ export default function NotebookPage({
             givens={givens}
             onGivensChange={onGivensChange}
             onNavigate={navigate}
+            onDrillNavigate={onDrillNavigate}
          />
       </Box>
    );

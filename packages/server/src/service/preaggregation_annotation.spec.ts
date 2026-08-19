@@ -75,6 +75,22 @@ source: s is duckdb.sql("""
   #@ preaggregate grain="b_dim"
   measure: m_renegotiated is amount.sum()
 
+  #@ preaggregate grain="a_dim" namespace="scratch"
+  #@ -preaggregate
+  #@ preaggregate grain="a_dim"
+  measure: m_renegotiated_namespace is amount.sum()
+
+  #@ preaggregate grain="a_dim" namespace="ns_a"
+  #@ preaggregate grain="b_dim" namespace="ns_b"
+  measure: m_grain_own_namespace is amount.sum()
+
+  #@ preaggregate grain="a_dim" namespace=""
+  measure: m_empty_namespace is amount.sum()
+
+  #@ preaggregate grain="a_dim" namespace="ns_a"
+  #@ preaggregate grain="a_dim"
+  measure: m_restated_grain is amount.sum()
+
   #@ preaggregate grain="b_dim, a_dim"
   measure: m_unsorted is amount.sum()
 }
@@ -171,6 +187,40 @@ describe("#@ preaggregate reader: a measure may declare several grains", () => {
       ]);
    });
 
+   it("each grain keeps the namespace written on its own line", () => {
+      // A grain IS a table, so two grains can genuinely be created in two places.
+      // A namespace scoped to the measure instead would apply one line's choice to
+      // the other's table — a rollup moved somewhere its author never named, with
+      // no diagnostic, decided by whichever line the IR happened to report first.
+      const declaration = readPreaggregateAnnotation(
+         lookup("m_grain_own_namespace"),
+      );
+      expect(
+         declaration.grains.map((g) => [g.dimensions, g.namespace]),
+      ).toEqual([
+         [["a_dim"], "ns_a"],
+         [["b_dim"], "ns_b"],
+      ]);
+   });
+
+   it("re-stating a grain takes the namespace on its own line, including none", () => {
+      // The deliberate consequence of binding a namespace to its line: the second
+      // line re-declares this grain and names no namespace, so it has none. The
+      // alternative — a namespace that persists across lines that do not mention
+      // it — is the outranging this binding exists to prevent, and it would leave
+      // no way to drop one by re-declaring.
+      //
+      // It matters most through an extend chain, since inherited notes come first:
+      // an extending source that re-states its base's grain must restate the
+      // namespace too. `#@ -preaggregate` is how you turn a declaration off.
+      const declaration = readPreaggregateAnnotation(
+         lookup("m_restated_grain"),
+      );
+      expect(declaration.grains).toEqual([
+         { dimensions: ["a_dim"], text: "a_dim", namespace: undefined },
+      ]);
+   });
+
    it("an inherited annotation is still read on an extending source", () => {
       // Measured: an extending source carries the base's notes in its own
       // blockNotes, which is what lets the reader skip walking an inherits chain.
@@ -220,6 +270,21 @@ describe("#@ preaggregate reader: negation", () => {
       // effect — the earlier `a_dim` was cleared.
       expect(grainsOf("m_renegotiated")).toEqual([["b_dim"]]);
    });
+
+   it("a negation clears the namespace with the grain it was written for", () => {
+      // `namespace` rides its own grain, so "everything above is off" needs no
+      // separate rule for it. A namespace that outlived a negation would be the
+      // worst kind of survivor: the re-declaration below reads as clean, and the
+      // rollup would be built in `scratch` with nothing on the page saying so.
+      // Inherited notes are ordered FIRST, so a base that named one and an extend
+      // that negates and re-declares is exactly this shape.
+      const declaration = readPreaggregateAnnotation(
+         lookup("m_renegotiated_namespace"),
+      );
+      expect(declaration.grains).toEqual([
+         { dimensions: ["a_dim"], text: "a_dim", namespace: undefined },
+      ]);
+   });
 });
 
 describe("#@ preaggregate reader: unusable declarations are errors", () => {
@@ -240,6 +305,15 @@ describe("#@ preaggregate reader: unusable declarations are errors", () => {
       expect(result.declared).toBe(true);
       expect(result.errors[0].kind).toBe("empty_grain");
       expect(result.errors[0].message).toContain("`m_empty_grain`");
+   });
+
+   it("an empty namespace is an error, not an ignored key", () => {
+      // An author who typed `namespace=` meant something by it. Ignoring the empty
+      // value would build the rollup in the base's namespace or the connection
+      // default — a location they did not choose and were never told about.
+      const result = readPreaggregateAnnotation(lookup("m_empty_namespace"));
+      expect(result.errors.map((e) => e.kind)).toEqual(["invalid_namespace"]);
+      expect(result.grains).toEqual([]);
    });
 
    it("a good grain and a bad one are reported independently", () => {

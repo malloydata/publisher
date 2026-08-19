@@ -151,6 +151,38 @@ export function markDrillableCells(
       }
       if (columns.size === 0) continue;
 
+      // Which columns already own their single tab stop. Read off the DOM first
+      // so the roving position survives the re-runs a settling `# dashboard`
+      // triggers; rebuilding it from scratch each pass would snap the stop back
+      // to the first row under a reader who had arrowed down.
+      const hasStop = new Set<string>();
+      for (const marked of table.querySelectorAll<HTMLElement>(
+         `.${DRILL_CELL_CLASS}[tabindex="0"]`,
+      )) {
+         // LOAD-BEARING, and a previous comment here claimed the opposite on
+         // the strength of a measurement that missed the case. This query is
+         // scoped to `table`, whose subtree contains any nested table, so
+         // without this line an outer pass sees a nested table's stop and
+         // demotes it as a duplicate of its own column. The nested pass then
+         // re-promotes, but it promotes the FIRST row, not the one the reader
+         // had roved to, so the restoration is not position-preserving.
+         //
+         // Measured both ways. Move the stop to the nested table's second row
+         // and re-mark: with this line, the stop stays there; without it, the
+         // stop is back on the nested table's first row. The earlier
+         // measurement moved the stop in the OUTER table, where the fallback
+         // lands on the same cell and the two are indistinguishable.
+         if (!ownedByTable(marked)) continue;
+         const column = gridColumnStart(marked);
+         if (!column) continue;
+         // The first one keeps the stop and a duplicate is DEMOTED, not left
+         // alone. Preserving every `tabindex="0"` it found meant a column that
+         // had somehow gained a second stop kept both through every re-mark,
+         // which is the accumulation this whole scheme exists to prevent.
+         if (hasStop.has(column)) marked.tabIndex = -1;
+         else hasStop.add(column);
+      }
+
       for (const cell of table.querySelectorAll<HTMLElement>(
          ".column-cell.td",
       )) {
@@ -183,7 +215,97 @@ export function markDrillableCells(
             !cell.querySelector(".malloy-table")
          ) {
             cell.classList.add(DRILL_CELL_CLASS);
+            // Reachable without a mouse. The class alone gave a pointer cursor
+            // and a hover colour, both of which a keyboard user never sees and
+            // a touch user cannot produce, so the drill was discoverable only
+            // by clicking at random. `tabindex` puts the cell in the tab order
+            // and `role` tells a screen reader it does something; the cell's
+            // own text is its accessible name, which is the value that gets
+            // drilled on, so no `aria-label` is invented here.
+            //
+            // `button` rather than `link`: a `to=self` drill filters in place
+            // and does not navigate, and one tag can offer both, so the honest
+            // role is the one that promises less. Set alongside the class and
+            // never separately, so the three can never disagree about which
+            // cells are actionable.
+            // ONE tab stop per drillable column, not one per cell. Making every
+            // cell tabbable put the whole column in the tab order, so a result at
+            // the server's row cap cost a reader hundreds of presses to reach the
+            // next tile, and a composite grid multiplied that by its tiles. That
+            // traded one accessibility problem for another. Arrow keys move
+            // within the column instead (see `drillColumnSiblings`, driven from
+            // RenderedResult), which is the ordinary pattern for a grid.
+            //
+            // A cell already holding the stop keeps it, so a re-run does not move
+            // focus out from under the reader.
+            if (cell.tabIndex === 0) {
+               hasStop.add(column);
+            } else {
+               const owned = hasStop.has(column);
+               if (!owned) hasStop.add(column);
+               cell.tabIndex = owned ? -1 : 0;
+            }
+            cell.setAttribute("role", "button");
          }
       }
    }
+}
+
+/**
+ * The drillable cells sharing `cell`'s column, in row order, or an empty array
+ * when `cell` is not a marked cell.
+ *
+ * Lives here rather than in the keyboard handler that calls it because the
+ * column identity is this module's rule: a cell's column is its inline
+ * `grid-column` start, scoped to its own `.malloy-table` so a nested table's
+ * numbering never matches the parent's. Two sites deciding that separately is
+ * how they come to disagree, so the handler asks this one.
+ */
+export function drillColumnSiblings(cell: HTMLElement): HTMLElement[] {
+   const table = cell.closest<HTMLElement>(".malloy-table");
+   const column = gridColumnStart(cell);
+   if (!table || !column) return [];
+   return Array.from(
+      table.querySelectorAll<HTMLElement>(`.${DRILL_CELL_CLASS}`),
+   ).filter(
+      (sibling) =>
+         sibling.closest(".malloy-table") === table &&
+         gridColumnStart(sibling) === column,
+   );
+}
+
+/**
+ * Move a drillable column's single tab stop `to` rows from `from`, or to the
+ * first or last cell, and return the cell that should now take focus.
+ *
+ * Lives beside {@link drillColumnSiblings} because it enforces the same
+ * invariant the marking does: exactly one cell per column carries
+ * `tabindex="0"`.
+ */
+export function moveDrillStop(
+   from: HTMLElement,
+   to: number | "first" | "last",
+): HTMLElement | undefined {
+   const siblings = drillColumnSiblings(from);
+   const at = siblings.indexOf(from);
+   if (at === -1) return undefined;
+   const next =
+      to === "first"
+         ? siblings[0]
+         : to === "last"
+           ? siblings[siblings.length - 1]
+           : siblings[Math.min(Math.max(at + to, 0), siblings.length - 1)];
+   if (!next) return undefined;
+   // EVERY sibling is rewritten, not just `from`. A cell with `tabindex="-1"`
+   // is still click-focusable, so `from` is frequently NOT the cell holding the
+   // stop: clicking a cell mid-column and then pressing an arrow used to clear
+   // `from` (already -1, a no-op) and promote its neighbour, leaving the column
+   // with two stops. The marking pass then preserved both, so it stuck, and
+   // repeating the gesture accumulated more.
+   //
+   // Rewriting all of them also means a clamped move at either end, where
+   // `next === from`, repairs a column that had drifted rather than doing
+   // nothing.
+   for (const sibling of siblings) sibling.tabIndex = sibling === next ? 0 : -1;
+   return next;
 }

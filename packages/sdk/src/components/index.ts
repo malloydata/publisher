@@ -1,5 +1,6 @@
 export { AnalyzePackageButton } from "./AnalyzePackageButton";
 export { useRouterClickHandler, type NavigationClick } from "./click_helper";
+export * from "./Dashboard";
 export * from "./DataAppViewer";
 export * from "./drill";
 export * from "./Environment";
