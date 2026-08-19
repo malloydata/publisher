@@ -20,7 +20,6 @@ import {
    ModelDef,
    NamedModelObject,
    NamedQueryDef,
-   type FieldDef,
    type SourceDef,
    StructDef,
    TurtleDef,
@@ -206,9 +205,10 @@ function joinFieldNamesUnresolvableDeclaration(
  * `assertNoMisplacedAuthorizeAnnotations`'s doc for why that fails OPEN and
  * has to be refused at load rather than silently ignored. A `dimension:`/
  * `measure:`/`view:` field's OWN authorize note is no longer misplaced by
- * construction — it is collected into `gateDimensionCandidates` instead (the
- * dimension form of a gate), and `./gate_dimension`'s `validateGateDimension`
- * decides whether it is actually a legal one.
+ * construction — it is simply left alone here (the dimension form of a
+ * gate); `./gate_dimension`'s `findGateDimensionCandidates`/
+ * `validateGateDimensionsForModel` re-derive candidates directly from
+ * `modelDef.contents` at load time and decide whether one is actually legal.
  *
  * A `join_one:`/`join_many:` FIELD carrying a note this walk cannot identify
  * as that copy is routed by whether its declaration resolves INSIDE this
@@ -242,18 +242,9 @@ export function extractSourcesFromModelDef(
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
-   /**
-    * source name → its own field-position `#(authorize)`-tagged, non-join
-    * fields — candidates for the dimension form of a gate, fed to
-    * `./gate_dimension`'s `validateGateDimension` at load time. Not filtered
-    * for shape here (a measure or view annotated in error is still
-    * collected) — `validateGateDimension` is what decides legality.
-    */
-   gateDimensionCandidates: Map<string, FieldDef[]>;
 } {
    const filterMap = new Map<string, FilterDefinition[]>();
    const authorizeMap: AuthorizeMap = new Map();
-   const gateDimensionCandidates = new Map<string, FieldDef[]>();
    // `#(authorize)` written one line too low — on a `dimension:`/`measure:`/
    // `join_one:`/`view:` INSIDE a source rather than on the `source:` line
    // itself — lands on that FIELD's own annotations, which nothing walks for
@@ -598,14 +589,15 @@ export function extractSourcesFromModelDef(
                continue;
             }
             // A non-join field carrying its OWN authorize note — the
-            // dimension form. Collected as a candidate for
-            // `validateGateDimension` rather than refused: shape validation
-            // (is it actually a scalar boolean dimension, is there more than
-            // one, does it shadow an inherited one without re-annotating)
-            // belongs there, on the compiled `FieldDef`, not here.
-            const candidates = gateDimensionCandidates.get(sourceName) ?? [];
-            candidates.push(field);
-            gateDimensionCandidates.set(sourceName, candidates);
+            // dimension form. Not collected here at all: `./gate_dimension`'s
+            // `findGateDimensionCandidates`/`validateGateDimensionsForModel`
+            // re-derive candidates directly from `modelDef.contents` (the
+            // same compiled `FieldDef`s this loop is already walking), so a
+            // second collection here would just be a candidate list that can
+            // drift from the one actually validated. Shape validation (is it
+            // actually a scalar boolean dimension, is there more than one,
+            // does it shadow an inherited one without re-annotating) belongs
+            // there, not here.
          }
 
          return {
@@ -624,7 +616,6 @@ export function extractSourcesFromModelDef(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
-      gateDimensionCandidates,
    };
 }
 

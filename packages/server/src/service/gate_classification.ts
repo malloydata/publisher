@@ -244,7 +244,17 @@ function gateExprsForOwnAnnotations(
       const dimensionCandidates = findGateDimensionCandidates(struct);
       if (dimensionCandidates.length === 1) {
          const field = dimensionCandidates[0];
-         const givenNames = Array.from(expandGivenIds(struct, field))
+         // Load-time `validateGateDimensionsForModel` already refuses an
+         // unresolvable given reference (see `./gate_dimension`'s CRITICAL 1
+         // finding), so `!expansion.ok` here means a graft target this
+         // package-load validation never saw (e.g. a caller-declared ad-hoc
+         // run target) — defense in depth, fail closed rather than read it as
+         // "no givens".
+         const expansion = expandGivenIds(struct, field);
+         if (!expansion.ok) {
+            return { exprs: ["false"], fromAncestor: false };
+         }
+         const givenNames = Array.from(expansion.givenIds)
             .map((id) => modelDef?.givens?.[id]?.name)
             .filter((name): name is string => !!name);
          return {

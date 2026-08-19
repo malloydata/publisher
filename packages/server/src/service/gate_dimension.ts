@@ -77,13 +77,69 @@ export function findGateDimensionCandidates(struct: SourceDef): FieldDef[] {
 }
 
 /**
+ * Result of {@link expandGivenIds}: either the full transitively-reachable
+ * given id set, or a signal that some referenced field path could not be
+ * resolved. `ok: false` must NEVER be read as "zero givens" — an unresolvable
+ * reference means the expansion is incomplete, not that the gate references
+ * nothing, and a caller that fell back to an empty set here would silently
+ * bypass G3/G4 and the request-time given-unbound backstop for exactly the
+ * gate they exist to check (see the CRITICAL 1 review finding this type
+ * exists to close).
+ */
+export type GivenIdExpansion =
+   | { ok: true; givenIds: Set<string> }
+   | { ok: false; unresolvedPath: string };
+
+/**
+ * Resolve a `refSummary.fieldUsage` path (source-rooted, per-segment name —
+ * `["h", "ok"]` for `h.ok`) against `struct`, following a JOINED field's own
+ * embedded struct for every segment but the last. This is given-expansion
+ * ONLY — it does not widen gate DISCOVERY (Constraint 3 stays entry-point
+ * -only; `findGateDimensionCandidates` never recurses into a join) — it lets
+ * a gate dimension's OWN expression correctly account for a given reached
+ * through a join it references (`authorized is h.ok`), which the leaf-only
+ * match this replaces could not see at all.
+ *
+ * Matches each segment by full name, not by scanning `struct.fields` for
+ * something merely named like the leaf — the bug this replaces would let an
+ * unrelated LOCAL field that happens to share the leaf's name (e.g. `struct`
+ * has its own `ok`) silently substitute for the join-qualified `h.ok`.
+ */
+function resolveFieldUsagePath(
+   struct: SourceDef,
+   path: readonly string[],
+): { struct: SourceDef; field: FieldDef } | undefined {
+   let current = struct;
+   for (let i = 0; i < path.length - 1; i++) {
+      const seg = path[i];
+      const joinField = (current.fields ?? []).find(
+         (f) => gateFieldName(f) === seg && isJoined(f) && isSourceDef(f),
+      );
+      if (!joinField) return undefined;
+      current = joinField as unknown as SourceDef;
+   }
+   const leaf = path[path.length - 1];
+   const field = (current.fields ?? []).find((f) => gateFieldName(f) === leaf);
+   return field ? { struct: current, field } : undefined;
+}
+
+/**
  * Every given id transitively reachable from `field`'s expression on
  * `struct`. Malloy's own `refSummary.givenUsage` is NOT transitive — a
  * bare-reference wrapper dimension (`authorized is base_authorized`) carries
  * no `givenUsage` of its own even though `base_authorized` does (confirmed by
  * the spike this module implements, F5) — so this walks `refSummary
- * .fieldUsage` recursively and unions in each referenced field's own
- * `givenUsage`. `seen` (by name) guards a reference cycle.
+ * .fieldUsage` recursively (through {@link resolveFieldUsagePath}, so a
+ * join-qualified reference like `h.ok` is followed into `h`'s own struct
+ * rather than silently dropped) and unions in each referenced field's own
+ * `givenUsage`. `seen` is keyed by FIELD OBJECT IDENTITY, not name — a
+ * name-keyed set would misreport a cycle the first time a joined struct
+ * happens to reuse a local field name (e.g. both `struct` and a join both
+ * declare `org_id`), truncating the expansion.
+ *
+ * Returns `{ok: false}` — never an empty set — when a referenced path cannot
+ * be resolved at all; see {@link GivenIdExpansion}'s doc for why that
+ * distinction is load-bearing.
  *
  * Exported for `./gate_classification`'s `gateExprsForOwnAnnotations`, which
  * needs the same expansion to populate `GateEntry.dimensionForm.givenNames`
@@ -93,26 +149,26 @@ export function findGateDimensionCandidates(struct: SourceDef): FieldDef[] {
 export function expandGivenIds(
    struct: SourceDef,
    field: FieldDef,
-   seen: Set<string> = new Set(),
-): Set<string> {
-   const name = gateFieldName(field);
+   seen: Set<FieldDef> = new Set(),
+): GivenIdExpansion {
+   if (seen.has(field)) return { ok: true, givenIds: new Set() };
+   seen.add(field);
    const ids = new Set<string>();
-   if (seen.has(name)) return ids;
-   seen.add(name);
    const refSummary = (field as { refSummary?: unknown }).refSummary as
       | { fieldUsage?: { path: string[] }[]; givenUsage?: { id: string }[] }
       | undefined;
    for (const g of refSummary?.givenUsage ?? []) ids.add(g.id);
    for (const usage of refSummary?.fieldUsage ?? []) {
-      const refName = usage.path[usage.path.length - 1];
-      const refField = struct.fields.find((f) => gateFieldName(f) === refName);
-      if (refField && refField !== field) {
-         for (const id of expandGivenIds(struct, refField, seen)) {
-            ids.add(id);
-         }
+      const resolved = resolveFieldUsagePath(struct, usage.path);
+      if (!resolved) {
+         return { ok: false, unresolvedPath: usage.path.join(".") };
       }
+      if (resolved.field === field) continue;
+      const nested = expandGivenIds(resolved.struct, resolved.field, seen);
+      if (!nested.ok) return nested;
+      for (const id of nested.givenIds) ids.add(id);
    }
-   return ids;
+   return { ok: true, givenIds: ids };
 }
 
 /**
@@ -248,6 +304,26 @@ export function validateGateDimension(
    }
 
    const name = gateFieldName(field);
+   // Mixed forms on one source: a source-level (string form) `#(authorize)`
+   // block annotation is checked separately (`gateExprsForOwnAnnotations`
+   // tries the string form FIRST and returns on any match), so if `struct`
+   // ALSO carries this dimension candidate, the string form always wins
+   // silently and the stricter dimension gate never runs at request time —
+   // exactly the shape Task 3's transitional migration produces. Refuse it
+   // here, naming both, rather than let one silently shadow the other.
+   const ownBlockNotes = ownLevelNotes(struct.annotations);
+   if (
+      ownBlockNotes.some((note) => containsAuthorizeAnnotationTag([note.text]))
+   ) {
+      throw new ModelCompilationError({
+         message:
+            `Source "${sourceName}" declares both the STRING form of ` +
+            `#(authorize) (a source-level annotation) and the DIMENSION ` +
+            `form (on "${name}"); a source may declare at most one. The ` +
+            `string form is checked first and would always win, silently ` +
+            `disabling the dimension gate`,
+      });
+   }
    // `FieldDef` is a union of dimension/join/view shapes; only the dimension
    // member actually carries `expressionType`/`e`, so this reads through a
    // duck type rather than forcing a `hasExpression`-style narrowing that
@@ -280,7 +356,17 @@ export function validateGateDimension(
       });
    }
 
-   const givenIds = expandGivenIds(struct, field);
+   const expansion = expandGivenIds(struct, field);
+   if (!expansion.ok) {
+      throw new ModelCompilationError({
+         message:
+            `Gate dimension "${name}" on source "${sourceName}" references ` +
+            `"${expansion.unresolvedPath}", which could not be resolved to a ` +
+            `field this model can reach. An unresolvable reference is refused, ` +
+            `not treated as referencing no given`,
+      });
+   }
+   const givenIds = expansion.givenIds;
    for (const id of givenIds) {
       const given = modelDef.givens?.[id];
       if (!given || !declaredGivenNames.has(given.name)) {
