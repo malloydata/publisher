@@ -6,7 +6,7 @@
 
 ## Examples
 
-Three runnable packages ship in the default `examples` environment, plus one standalone React app —
+Three runnable packages ship in the default `examples` environment, plus one standalone React app and one opt-in package —
 every doc below points back to one of them, and each example's README points back to the docs.
 
 | Example                                              | What it shows                                                                                                                     |
@@ -15,6 +15,7 @@ every doc below points back to one of them, and each example's README points bac
 | [governed-analytics](../examples/governed-analytics) | Givens, `#(authorize)`, row-level access, and discovery curation in one small package.                                            |
 | [html-data-app](../examples/html-data-app)           | A no-build SaaS-subscriptions dashboard served from a package's `public/` directory.                                              |
 | [data-app](../examples/data-app)                     | _Advanced/internal:_ a standalone React app built on the SDK, reading from `storefront`. Not a served package — run it with Vite. |
+| [clickhouse](../examples/clickhouse)                 | A model over a remote ClickHouse server. Not in the default environment — it needs a running ClickHouse (a `docker-compose.yml` is included). |
 
 ## Concepts
 
@@ -55,6 +56,7 @@ there for the primitive, then follow the application you need.
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [deployment.md](deployment.md)                             | Run a built server via npx, Docker, or Docker Compose.                                                                                              |
 | [connections.md](connections.md)                           | Connect BigQuery, Snowflake, Postgres, DuckDB, and more.                                                                                            |
+| [clickhouse.md](clickhouse.md)                             | Query a remote ClickHouse server from a model — the config, the aggregate-server-side rule, and the type mapping.                                   |
 | [materialization.md](materialization.md)                   | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior. |
 | [preaggregation.md](preaggregation.md)                     | Roll a measure up to a coarse grain with `#@ preaggregate` so covered queries read a small table — what can be pre-aggregated, what routes, and what it costs. |
 | [query-metadata.md](query-metadata.md)                     | Tag the statements Publisher sends so the backend's own reporting can attribute them — layers, the contract, and correlating an API call with a backend query. Off unless `PUBLISHER_QUERY_METADATA=on`. |

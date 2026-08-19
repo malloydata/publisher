@@ -1,0 +1,5 @@
+{
+  "name": "clickhouse",
+  "version": "1.0.0",
+  "description": "A Malloy model over a remote ClickHouse server, reached through DuckDB's HTTP reader."
+}

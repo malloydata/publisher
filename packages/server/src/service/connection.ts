@@ -58,6 +58,7 @@ import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
+type ClickhouseServer = components["schemas"]["ClickhouseServer"];
 type ApiConnection = components["schemas"]["Connection"];
 type ApiConnectionAttributes = components["schemas"]["ConnectionAttributes"];
 type ApiConnectionStatus = components["schemas"]["ConnectionStatus"];
@@ -1289,6 +1290,152 @@ async function attachDatabasesToDuckDB(
    }
 }
 
+/**
+ * Shape a macro name must have. The name is quoted in the DDL below, so this
+ * is not the injection guard on its own -- it is what keeps a name callable
+ * from a model, where Malloy writes it bare.
+ */
+const CLICKHOUSE_MACRO_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/** Default port of the ClickHouse HTTP interface. */
+const CLICKHOUSE_DEFAULT_HTTP_PORT = 8123;
+
+/**
+ * Base URL of a ClickHouse server's HTTP interface, with no query string.
+ *
+ * Doubles as the DuckDB secret SCOPE, so it must be the exact prefix of the
+ * URLs the macro builds -- a mismatch silently drops the Authorization header
+ * and the server answers 403.
+ */
+function buildClickhouseBaseUrl(server: ClickhouseServer): string {
+   const scheme = server.useSsl ? "https" : "http";
+   const port = server.port ?? CLICKHOUSE_DEFAULT_HTTP_PORT;
+   return `${scheme}://${server.host}:${port}`;
+}
+
+/**
+ * Whether DuckDB's parser treats `name` as a reserved word. Read from
+ * `duckdb_keywords()` so the answer comes from the running parser rather than a
+ * list we would have to keep in sync across DuckDB upgrades.
+ */
+async function isReservedDuckDBKeyword(
+   connection: DuckDBConnection,
+   name: string,
+): Promise<boolean> {
+   const result = await connection.runSQL(
+      `SELECT count(*) AS reserved FROM duckdb_keywords()
+       WHERE keyword_category = 'reserved'
+         AND lower(keyword_name) = lower('${escapeSQL(name)}')`,
+   );
+   return Number(result.rows?.[0]?.["reserved"] ?? 0) > 0;
+}
+
+/**
+ * Register one table macro per configured ClickHouse server.
+ *
+ * ClickHouse's HTTP interface can emit Parquet, so `read_parquet()` over
+ * `?default_format=Parquet` streams a result set straight into DuckDB. The
+ * macro is the whole integration: there is no ClickHouse extension involved.
+ * (The `chsql` community extension ships the same idea as `ch_scan`, but it has
+ * no build for the DuckDB that Malloy embeds, and its macro neither URL-encodes
+ * the query nor supports password auth. Both are fixed here.)
+ *
+ * Credentials go into a DuckDB secret scoped to the server's base URL and are
+ * sent as an HTTP Basic header. They are deliberately kept out of the URL and
+ * out of the macro body: a macro definition is readable by any model author via
+ * `duckdb_functions()`, and query URLs show up in ClickHouse's `system.query_log`.
+ *
+ * NOTE: the macro argument is forwarded to ClickHouse verbatim. Nothing is
+ * pushed down, and Malloy's own filters and GROUP BY are applied by DuckDB to
+ * whatever the macro returns. Aggregate inside the argument for anything large.
+ */
+export async function registerClickhouseServers(
+   duckdbConnection: DuckDBConnection,
+   clickhouseServers: ClickhouseServer[],
+): Promise<void> {
+   if (clickhouseServers.length === 0) return;
+
+   await applyExtensionSessionSettings(duckdbConnection);
+   // read_parquet() over http:// needs httpfs, and the secret manager needs it
+   // loaded before `CREATE SECRET (TYPE http, ...)` will validate.
+   await installAndLoadExtension(duckdbConnection, "httpfs");
+
+   const seen = new Set<string>();
+   for (const server of clickhouseServers) {
+      const name = server.name;
+      if (!CLICKHOUSE_MACRO_NAME.test(name)) {
+         throw new Error(
+            `Invalid clickhouseServers[].name '${name}': expected a SQL identifier ` +
+               `matching ${CLICKHOUSE_MACRO_NAME.source}. Fix: "name": "events"`,
+         );
+      }
+      if (seen.has(name)) {
+         throw new Error(
+            `Duplicate clickhouseServers[].name '${name}': each server needs its own ` +
+               `macro name, because the last one registered would silently win. ` +
+               `Fix: rename one, e.g. "name": "${name}_replica"`,
+         );
+      }
+      seen.add(name);
+
+      if (!server.host) {
+         throw new Error(
+            `Missing clickhouseServers[].host on '${name}'. Fix: "host": "localhost"`,
+         );
+      }
+
+      // A reserved word parses as syntax, not as a name, so `primary(...)` in a
+      // model is a compile error however the macro was declared. Reject it here
+      // -- where we can say what to do -- rather than leaving a registered macro
+      // nobody can call. DuckDB's own keyword table is the source of truth, so
+      // this never drifts from the parser.
+      if (await isReservedDuckDBKeyword(duckdbConnection, name)) {
+         throw new Error(
+            `Invalid clickhouseServers[].name '${name}': that is a reserved SQL word ` +
+               `in DuckDB, so a model could not call ${name}('SELECT ...'). ` +
+               `Fix: pick a non-reserved name, e.g. "name": "${name}_ch"`,
+         );
+      }
+
+      const baseUrl = buildClickhouseBaseUrl(server);
+
+      // Auth first: the macro is useless without it, and creating the macro
+      // first would leave a working-looking macro behind on a bad credential.
+      if (server.user) {
+         const basic = Buffer.from(
+            `${server.user}:${server.password ?? ""}`,
+            "utf8",
+         ).toString("base64");
+         await duckdbConnection.runSQL(
+            `CREATE OR REPLACE SECRET ${sanitizeSecretName(`clickhouse_${name}`)} (
+               TYPE http,
+               EXTRA_HTTP_HEADERS MAP{'Authorization': 'Basic ${escapeSQL(basic)}'},
+               SCOPE '${escapeSQL(baseUrl)}'
+            );`,
+         );
+      }
+
+      // `database=` sets the default for unqualified names in the argument;
+      // an argument that fully qualifies its tables ignores it.
+      const databaseParam = server.database
+         ? `&database=${encodeURIComponent(server.database)}`
+         : "";
+      const urlPrefix = `${baseUrl}/?default_format=Parquet${databaseParam}&query=`;
+
+      await duckdbConnection.runSQL(
+         `CREATE OR REPLACE MACRO ${quoteIdentifier(name, "duckdb")}("query") AS TABLE
+             SELECT * FROM read_parquet('${escapeSQL(urlPrefix)}' || url_encode("query"));`,
+      );
+
+      logger.info("connection.duckdb.clickhouse.registered", {
+         macro: name,
+         url: baseUrl,
+         database: server.database,
+         authenticated: Boolean(server.user),
+      });
+   }
+}
+
 type ApiAzureConnection = components["schemas"]["AzureConnection"];
 
 /**
@@ -1816,7 +1963,8 @@ export function buildEnvironmentMalloyConfig(
       metadata: EnvironmentConnectionMetadata,
    ): Promise<void> {
       if (
-         metadata.attachedDatabases.length === 0 ||
+         (metadata.attachedDatabases.length === 0 &&
+            metadata.clickhouseServers.length === 0) ||
          !isDuckDBConnection(connection)
       ) {
          return;
@@ -1824,11 +1972,21 @@ export function buildEnvironmentMalloyConfig(
 
       let attachPromise = attachPromises.get(connection);
       if (!attachPromise) {
-         // One ATTACH run per connection object per config generation.
-         attachPromise = attachDatabasesToDuckDB(
-            connection,
-            metadata.attachedDatabases,
-         );
+         // One ATTACH + macro-registration run per connection object per config
+         // generation. Both share the promise so a caller that awaits the
+         // connection is guaranteed the macros exist before it compiles a model.
+         attachPromise = (async () => {
+            if (metadata.attachedDatabases.length > 0) {
+               await attachDatabasesToDuckDB(
+                  connection,
+                  metadata.attachedDatabases,
+               );
+            }
+            await registerClickhouseServers(
+               connection,
+               metadata.clickhouseServers,
+            );
+         })();
          attachPromises.set(connection, attachPromise);
       }
       await attachPromise;

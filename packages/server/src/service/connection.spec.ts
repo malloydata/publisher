@@ -1750,11 +1750,11 @@ describe("connection integration tests", () => {
             ).rejects.toThrow(/'duckdb' is reserved/);
          });
 
-         it("should reject DuckDB connections with no attachments", async () => {
-            // Env-level DuckDB connections must declare at least one
-            // attached foreign database; the empty-array case is operator
-            // confusion (the per-package "duckdb" sandbox already covers
-            // the plain-in-memory use case).
+         it("should reject DuckDB connections with no data sources", async () => {
+            // Env-level DuckDB connections must declare at least one data
+            // source -- an attached foreign database or a ClickHouse server;
+            // the empty case is operator confusion (the per-package "duckdb"
+            // sandbox already covers the plain-in-memory use case).
             await expect(
                createEnvironmentConnections(
                   [
@@ -1766,7 +1766,43 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(/has no attached databases/);
+            ).rejects.toThrow(/has no data sources/);
+         });
+
+         it("should accept a DuckDB connection with only clickhouseServers", async () => {
+            // clickhouseServers is the second kind of data source, so it alone
+            // makes an env-level DuckDB connection well-formed.
+            const connections = await createEnvironmentConnections(
+               [
+                  {
+                     name: "ch_only",
+                     type: "duckdb",
+                     duckdbConnection: {
+                        clickhouseServers: [
+                           { name: "events", host: "localhost", port: 8123 },
+                        ],
+                     },
+                  },
+               ],
+               testEnvironmentPath,
+            );
+
+            try {
+               const connection = connections.malloyConnections.get("ch_only");
+               expect(connection).toBeDefined();
+
+               // The macro is the whole point of the connection, so assert it
+               // is actually callable rather than that the build returned.
+               const result = await (
+                  connection as unknown as DuckDBConnection
+               ).runSQL(
+                  `SELECT count(*) AS n FROM duckdb_functions()
+                   WHERE function_name = 'events' AND function_type = 'table_macro'`,
+               );
+               expect(Number(result.rows[0]!["n"])).toBe(1);
+            } finally {
+               await connections.releaseConnections();
+            }
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {

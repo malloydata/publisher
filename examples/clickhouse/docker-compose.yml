@@ -1,0 +1,27 @@
+# Local ClickHouse for the `clickhouse` example package.
+#
+#   docker compose -f examples/clickhouse/docker-compose.yml up -d
+#
+# Seeds demo.orders on first start from seed.sql. Port 8123 is ClickHouse's
+# HTTP interface, which is the one Publisher reads.
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: malloy-clickhouse
+    ports:
+      - "8123:8123"
+    environment:
+      CLICKHOUSE_DB: demo
+      CLICKHOUSE_USER: malloy
+      CLICKHOUSE_PASSWORD: malloy
+    volumes:
+      - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
