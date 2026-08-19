@@ -64,6 +64,7 @@ import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import {
    CloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
+   resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
@@ -1227,81 +1228,6 @@ export function buildCloudStorageSecretSQL(
    }
 
    return createSecretCommand;
-}
-
-/**
- * Validates a GCS or S3 attachment's credential configuration and reduces it to
- * the shape both the DuckDB secret and Publisher's own storage client read.
- *
- * Split out from `attachCloudStorage` so each guard can be asserted directly:
- * whether a key pair is required depends on the S3 provider, and a guard only
- * reachable through a live DuckDB session is a guard nothing pins.
- */
-export function resolveCloudStorageCredentials(
-   attachedDb: AttachedDatabase,
-): CloudStorageCredentials {
-   if (attachedDb.type === "gcs") {
-      if (!attachedDb.gcsConnection) {
-         throw new Error(
-            `GCS connection configuration missing for: ${attachedDb.name}`,
-         );
-      }
-      if (!attachedDb.gcsConnection.keyId || !attachedDb.gcsConnection.secret) {
-         throw new Error(
-            `GCS keyId and secret are required for: ${attachedDb.name}`,
-         );
-      }
-      return {
-         type: "gcs",
-         accessKeyId: attachedDb.gcsConnection.keyId,
-         secretAccessKey: attachedDb.gcsConnection.secret,
-      };
-   }
-
-   if (attachedDb.type !== "s3") {
-      throw new Error(`Invalid cloud storage type: ${attachedDb.type}`);
-   }
-
-   if (!attachedDb.s3Connection) {
-      throw new Error(
-         `S3 connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-   const s3 = attachedDb.s3Connection;
-   if (s3.provider === "credential_chain") {
-      // A static credential supplied alongside chain auth is rejected rather
-      // than ignored: it would sit unused in the config, reading as the thing
-      // granting access while something else actually does.
-      if (s3.accessKeyId || s3.secretAccessKey || s3.sessionToken) {
-         throw new Error(
-            `S3 accessKeyId, secretAccessKey, and sessionToken must not be set when provider is 'credential_chain' for: ${attachedDb.name}`,
-         );
-      }
-   } else {
-      if (!s3.accessKeyId || !s3.secretAccessKey) {
-         throw new Error(
-            `S3 accessKeyId and secretAccessKey are required for: ${attachedDb.name}`,
-         );
-      }
-      // Rejected for the same reason as the mirror case above: a chain named
-      // under key-based auth reads as though the host supplies the credentials
-      // when the key pair beside it is what actually does.
-      if (s3.chain) {
-         throw new Error(
-            `S3 chain is only valid when provider is 'credential_chain' for: ${attachedDb.name}`,
-         );
-      }
-   }
-   return {
-      type: "s3",
-      accessKeyId: s3.accessKeyId || "",
-      secretAccessKey: s3.secretAccessKey || "",
-      region: s3.region,
-      endpoint: s3.endpoint,
-      sessionToken: s3.sessionToken,
-      provider: s3.provider,
-      chain: s3.chain,
-   };
 }
 
 async function attachCloudStorage(

@@ -20,11 +20,13 @@ import {
    buildCloudStorageSecretSQL,
    buildProxiedSslQuery,
    createEnvironmentConnections,
-   resolveCloudStorageCredentials,
    resolveProxiedTls,
    testConnectionConfig,
 } from "./connection";
-import { DEFAULT_S3_CREDENTIAL_CHAIN } from "./gcs_s3_utils";
+import {
+   DEFAULT_S3_CREDENTIAL_CHAIN,
+   resolveCloudStorageCredentials,
+} from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
 import { UnsupportedCatalogFormatError } from "../errors";
 import { EnvironmentStore } from "./environment_store";

@@ -56,6 +56,10 @@ export default function AddConnectionDialog({
    // DuckLake top-level connection state
    const [ducklakeCatalogType, setDucklakeCatalogType] = useState("postgres");
    const [ducklakeStorageType, setDucklakeStorageType] = useState("s3");
+   // Which S3 credential shape the storage fields are showing. Needed as state
+   // because this section renders uncontrolled inputs read from FormData, so
+   // `visibleWhen` has nothing to compare against without it.
+   const [ducklakeS3Provider, setDucklakeS3Provider] = useState("config");
 
    const handleClickOpen = () => {
       setOpen(true);
@@ -67,6 +71,7 @@ export default function AddConnectionDialog({
       setType("postgres");
       setDucklakeCatalogType("postgres");
       setDucklakeStorageType("s3");
+      setDucklakeS3Provider("config");
    };
 
    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -123,11 +128,20 @@ export default function AddConnectionDialog({
                }
             });
             // Validate required fields
-            if (!s3Config.accessKeyId) {
-               throw new Error("S3 Access Key ID is required");
-            }
-            if (!s3Config.secretAccessKey) {
-               throw new Error("S3 Secret Access Key is required");
+            // Under `credential_chain` the host supplies the credential, so a key
+            // pair is not merely optional — the server rejects one that is present
+            // and unused.
+            if (s3Config.provider === "credential_chain") {
+               delete s3Config.accessKeyId;
+               delete s3Config.secretAccessKey;
+               delete s3Config.sessionToken;
+            } else {
+               if (!s3Config.accessKeyId) {
+                  throw new Error("S3 Access Key ID is required");
+               }
+               if (!s3Config.secretAccessKey) {
+                  throw new Error("S3 Secret Access Key is required");
+               }
             }
             if (Object.keys(s3Config).length > 0) {
                storageConfig.s3Connection = s3Config;
@@ -512,24 +526,60 @@ export default function AddConnectionDialog({
                                  >
                                     S3 Credentials
                                  </Typography>
-                                 {s3AttachedDatabaseFields.map((field) => (
-                                    <TextField
-                                       key={`s3_${field.name}`}
-                                       margin="dense"
-                                       id={`ducklake_s3_${field.name}`}
-                                       name={`ducklake_s3_${field.name}`}
-                                       label={field.label}
-                                       type={field.type}
-                                       fullWidth
-                                       variant="standard"
-                                       required={field.required}
-                                       placeholder={
-                                          field.name === "region"
-                                             ? "us-east-1"
-                                             : undefined
-                                       }
-                                    />
-                                 ))}
+                                 {s3AttachedDatabaseFields
+                                    .filter((field) =>
+                                       field.visibleWhen
+                                          ? ducklakeS3Provider ===
+                                            field.visibleWhen.value
+                                          : true,
+                                    )
+                                    .map((field) => (
+                                       <TextField
+                                          key={`s3_${field.name}`}
+                                          margin="dense"
+                                          id={`ducklake_s3_${field.name}`}
+                                          name={`ducklake_s3_${field.name}`}
+                                          label={field.label}
+                                          type={
+                                             field.selectOptions
+                                                ? undefined
+                                                : field.type
+                                          }
+                                          fullWidth
+                                          variant="standard"
+                                          required={field.required}
+                                          select={!!field.selectOptions}
+                                          defaultValue={
+                                             field.selectOptions
+                                                ? ducklakeS3Provider
+                                                : undefined
+                                          }
+                                          onChange={
+                                             field.name === "provider"
+                                                ? (e) =>
+                                                     setDucklakeS3Provider(
+                                                        e.target.value,
+                                                     )
+                                                : undefined
+                                          }
+                                          placeholder={
+                                             field.name === "region"
+                                                ? "us-east-1"
+                                                : undefined
+                                          }
+                                       >
+                                          {field.selectOptions?.map(
+                                             (option) => (
+                                                <MenuItem
+                                                   key={option.value}
+                                                   value={option.value}
+                                                >
+                                                   {option.label}
+                                                </MenuItem>
+                                             ),
+                                          )}
+                                       </TextField>
+                                    ))}
                               </>
                            )}
                            {ducklakeStorageType === "gcs" && (
