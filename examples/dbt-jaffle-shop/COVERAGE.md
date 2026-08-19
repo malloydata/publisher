@@ -229,3 +229,49 @@ A reverse `join_many` from `locations` to `orders` would let the dimension lead 
 inactive stores, but it cannot be declared on `locations` itself: `locations` is defined before
 `orders` so that `orders` can join it, and the reverse reference is then undefined. It would have
 to be a separate source declared after `orders`.
+
+## Measures that change value when reached across a join
+
+The one class of silently-wrong answer found by auditing this model. It affects **dbt's own
+metrics as much as the ones added here**, and it is identical in all three packages.
+
+Malloy's symmetric aggregates handle fan-out correctly, verified against the known totals:
+
+| asked from | `orders.order_total` | `orders.customers.lifetime_spend` |
+|---|---|---|
+| `order_items` (item grain) | 105826.18 | 105826.18 |
+| `orders` / `customers` | 105826.18 | 105826.18 |
+
+Sums are safe. **`count()`-based measures are not**, because `count()` means "rows in scope" and a
+join narrows the scope. 77 of 9,568 orders have no items, so from the item side those orders are
+unreachable:
+
+| measure | from `orders` | from `order_items` | why |
+|---|---|---|---|
+| `orders` (dbt's) | 9,568 | **9,491** | the 77 itemless orders are not reachable |
+| `new_customer_orders` (dbt's) | 150 | **148** | two customers' first orders had no items |
+| `large_orders`, `food_orders` (dbt's) | 1,141 / 2,336 | 1,141 / 2,336 | unaffected: such orders necessarily have items |
+| `avg_order_value` (added here) | 11.060 | **11.150** | `order_total / count()`, so the denominator shrinks to 9,491 |
+| `items_per_order` (added here) | 1.489 | **1.501** | same shape |
+
+Both figures are arithmetically correct; they describe different populations. Nothing in the
+result says which one you got, and a 0.8% difference is small enough to pass review.
+
+A **ratio of two sums is grain-invariant**, which is the safe pattern:
+`average_order_value` on `customers` (`lifetime_spend_pretax.sum() / count_lifetime_orders.sum()`)
+returns 10.497596153846153 from the customer grain *and* from the item grain, in every package.
+
+`avg_order_value` and `items_per_order` cannot be made invariant, because the populations genuinely
+differ: there is no way to count all orders from the item side. Their `#(doc)` now says they are
+order-grain measures and names the value you get across a join. dbt's `orders` and
+`new_customer_orders` carry the same hazard and dbt does not record it anywhere, so a conversion
+inherits it silently.
+
+Two related notes from the same audit:
+
+- **`internal:` propagates across joins.** After curation, `orders.order_total_raw` is unreachable
+  from `order_items` as well as from `orders`. That is the right default (plumbing stays plumbing)
+  but it means a legitimate cross-grain use has to go through a measure.
+- **`all()` respects the query's filter.** `revenue / all(revenue)` inside
+  `where: is_food_item` returns 1.0, not food's share of total revenue. Correct, and a trap if you
+  wanted a share of the unfiltered total.

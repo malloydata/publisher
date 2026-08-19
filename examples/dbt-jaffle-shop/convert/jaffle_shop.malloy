@@ -255,11 +255,15 @@ source: orders is orders_built include {
       else '$20+'
 
   measure:
-    #(doc) Average value of an order in USD
+    #(doc) Average value of an order in USD. Meaningful at the order grain only: the
+    #(doc) denominator is a `count()`, so reaching this across a join narrows the population to
+    #(doc) the orders visible through that join. From `order_items` it reads 11.15 rather than
+    #(doc) 11.06, because the 77 orders with no items are not reachable from the item side.
     # currency
     avg_order_value is order_total / nullif(orders, 0)
 
-    #(doc) Average number of items on an order
+    #(doc) Average number of items on an order. Order-grain only, for the same reason as
+    #(doc) `avg_order_value`: from `order_items` it reads 1.50 rather than 1.49.
     items_per_order is count_order_items.sum() / nullif(orders, 0)
 
   #(doc) Order mix by value band over time: are larger orders growing as a share?
