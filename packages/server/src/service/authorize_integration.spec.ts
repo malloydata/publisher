@@ -3129,12 +3129,10 @@ source:
       // `notes`/`blockNotes` are populated only by SOURCE-level (block-item)
       // annotations. A dimension- or view-level annotation never lands on the
       // source struct's own annotations at all, so `extractSourcesFromModelDef`
-      // cannot mistake it for a source gate — it also never enforces it as
-      // one. That used to mean this loaded and served as if the annotation did
-      // not exist (a fail-OPEN annotation, see `MisplacedAuthorizeAnnotation`'s
-      // doc); `assertNoMisplacedAuthorizeAnnotations` now refuses the load
-      // instead of silently protecting nothing, exactly as a field-level
-      // annotation already fails in `row_level_authorize.integration.spec.ts`.
+      // cannot mistake it for a source gate. It IS now collected as a gate
+      // -dimension candidate (see `source_extraction.ts`), so this fails via
+      // `validateGateDimension`'s G1 instead: `region_copy` is a STRING
+      // dimension, not a scalar boolean one.
       await writeModel(
          "block_field_level.malloy",
          `source: bf_field is duckdb.table('customers') extend {
@@ -3157,7 +3155,7 @@ source:
          ModelCompilationError,
       );
       await expect(model.getModel()).rejects.toThrow(
-         /field "region_copy" of source "bf_field"/,
+         /"bf_field\.region_copy".*scalar boolean dimension/,
       );
    });
 
