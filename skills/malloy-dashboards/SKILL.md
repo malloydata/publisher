@@ -36,10 +36,11 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
    looks like a picker but has no options, and only the package warnings name it.
 5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
-   before you save. Compile against any path in `dashboards/` that does not already hold a file: a new
-   file's own path, or for an edit a throwaway sibling like `dashboards/__check.malloy`, since
-   compiling over the saved copy collides with it. The directory is what matters, because the relative
-   imports resolve from there. Cheaper than a reload, and it catches a wrong field or source
+   before you save, at the path the file will have. **Editing one that already exists needs
+   `"scope": "file"`**, which compiles your source AS that file; the default scope appends it instead
+   and every source collides with the saved copy, reporting as a wall of `Cannot redefine` errors that
+   look like broken Malloy rather than a wrong scope. Cheaper than a reload, and it catches a wrong
+   field or source
    name outright. A clean compile is not a working dashboard: some tag mistakes surface at step 6,
    and some only when you look at the page in step 7.
 6. **SAVE IT, THEN RELOAD AND READ THE WARNINGS.** `malloy_reloadPackage`, or
@@ -65,7 +66,7 @@ import { CATEGORY, MIN_SALE } from '../givens.malloy'
 #" Revenue and margin at a glance, and where they come from.
 # artifact { title="Business Overview" } dashboard { columns=12 }
 query: overview is order_items -> {
-  where: category ~ $CATEGORY and sale_price ~ $MIN_SALE
+  where: products.category ~ $CATEGORY and sale_price ~ $MIN_SALE
 
   aggregate:
     # label="Revenue"
@@ -95,7 +96,7 @@ query: overview is order_items -> {
   nest:
     # colspan=12
     # label="Category performance"
-    category_performance
+    by_category
 }
 ```
 
@@ -139,8 +140,9 @@ twelfth of the page wide. Use the single-query form when one tile deserves more 
 
 **The two column spellings are form-specific and neither degrades into the other.**
 `dashboard_columns=N` on the artifact tag is composite-only; `# dashboard { columns=N }` is
-single-query-only. Crossing them costs you the layout, quietly, and the manifest reports the count
-either way because both spellings feed the same field: see "Losing the grid". `tiles=` on a
+single-query-only. A composite forgives the mix, since both spellings feed the manifest field it
+lays out from, but **a single query tagged `dashboard_columns` silently loses its whole layout**, and
+the manifest reports the count either way: see "Losing the grid". `tiles=` on a
 single-query artifact tag is dropped the same way, silently.
 
 ## Layout: the four tags that make a page line up
@@ -160,7 +162,9 @@ single-query dashboard in the package so they read as one product:
 4. **`# label="…"` on every nest and every aggregate**, including the aggregates inside a table
    nest, whose column headers are field names too. The heading is otherwise the view's or field's
    name, and a wide table full of `total_sales` and `order_item_count` is the most visible thing
-   between a rough page and a finished one.
+   between a rough page and a finished one. A view nested **by name** is the exception: you can label
+   the tile, but its own field names still reach the chart axes and the column headers, so inline it
+   if you want those labelled too.
 
 Then the traps:
 
@@ -268,7 +272,7 @@ gives the identical output field name and the identical numbers, and carries the
 `to=self` survives that, because a surface folds case when it looks up its own given. A `to=<slug>`
 does not: it navigates, still looks like it worked, and arrives as `?category=…`, which the
 destination drops by exact match, so you land on an unfiltered page. Nothing errors, and the lint
-upper-cases when it checks, so it stays green too. That silence is specific to a name that folds onto
+folds case when it checks, so it stays green too. That silence is specific to a name that folds onto
 a declared given. A `to=self` whose name matches nothing at all is caught loudly and is not offered;
 a `to=<slug>` is not checked either way.
 
@@ -288,8 +292,10 @@ document that declares no control for its given.
 same header.** Put a "revenue by category" chart beside a drillable `category` table, which is the
 obvious thing to build, and that column's cells stop being marked. Marking matches columns by their
 rendered header text, so a name a non-drillable field also shows is dropped rather than risk painting
-a dead link. **Other drillable columns on the same page keep their marking**, so counting marked cells
-will not tell you: look at the column you care about. The clicks still work, so this is invisible
+a dead link. Only a **non-drillable** column suppresses: a second tile that groups by the same tagged
+dimension is fine, which is the arrangement the paragraph above already recommends. **Other drillable
+columns on the same page keep their marking**, so counting marked cells will not tell you: look at the
+column you care about. The clicks still work, so this is invisible
 unless you hover. Give the two different headings with `# label=`. A transposed table is never marked
 either, for a different reason.
 
@@ -309,7 +315,7 @@ is immune because its layout comes from the manifest rather than a re-parse.
 side by side at their natural widths instead of aligning to a grid.
 
 To tell them apart, run the dashboard's own query, `{"queryName": "<the manifest's query>"}`, and read
-`renderLogs` on the response. Single-query dashboards have no `tiles` in their manifest, so there is
+`renderLogs` on the response. Like `warnings`, the key is absent when there is nothing to say. Single-query dashboards have no `tiles` in their manifest, so there is
 no tile query to run:
 
 | render log | what it means |
