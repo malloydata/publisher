@@ -12,6 +12,7 @@ import {
 } from "./scaffold";
 import { REQUIRED_NODE_RANGE } from "./node_version";
 import { countSkills } from "./skills";
+import { buildConnection } from "./connection";
 import { skillsDir } from "@malloy-publisher/skills";
 
 /**
@@ -2883,5 +2884,185 @@ describe("scaffold: a start script whose server spec is not a version", () => {
       const result = run();
       expect(result.declinedStartScript?.reason).not.toBe("not-publisher");
       expectEveryBootIsPrivatePublisher();
+   });
+});
+
+describe("warehouse connections", () => {
+   const postgres = () =>
+      buildConnection({
+         connection: "postgres",
+         pgHost: "db.example.com",
+         pgDatabase: "analytics",
+         pgUser: "reader",
+      });
+
+   test("writes the connection into the environment, not the package", () => {
+      // Publisher reads `connections` off the environment entry and nowhere
+      // else, so a connection written into the package would simply not exist.
+      const result = run({ connection: postgres() });
+      const config = readJson("publisher.config.json") as {
+         environments: { connections: { name: string; type: string }[] }[];
+      };
+      expect(config.environments[0].connections).toHaveLength(1);
+      expect(config.environments[0].connections[0]).toMatchObject({
+         name: "postgres",
+         type: "postgres",
+      });
+      expect(result.connectionName).toBe("postgres");
+      expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
+   });
+
+   test("writes no secret into the config, only a ${VAR} reference", () => {
+      run({ connection: postgres() });
+      const raw = fs.readFileSync(
+         path.join(tmp, "publisher.config.json"),
+         "utf8",
+      );
+      expect(raw).toContain("${MALLOY_POSTGRES_PASSWORD}");
+      expect(raw).not.toContain("reader_password");
+   });
+
+   test("writes a .env.example naming the variable and no value", () => {
+      run({ connection: postgres() });
+      const env = fs.readFileSync(path.join(tmp, ".env.example"), "utf8");
+      expect(env).toMatch(/^MALLOY_POSTGRES_PASSWORD=\s*$/m);
+   });
+
+   test("leaves an existing .env.example alone without --force", () => {
+      // A real project's .env.example lists every other credential it uses;
+      // overwriting it to add one would delete the rest.
+      fs.writeFileSync(path.join(tmp, ".env.example"), "EXISTING=\n");
+      const result = run({ connection: postgres() });
+      expect(fs.readFileSync(path.join(tmp, ".env.example"), "utf8")).toBe(
+         "EXISTING=\n",
+      );
+      expect(result.skipped).toContain(".env.example");
+   });
+
+   test("ignores .env, so a filled-in copy is never committed", () => {
+      run({ connection: postgres() });
+      expect(fs.readFileSync(path.join(tmp, ".gitignore"), "utf8")).toMatch(
+         /^\.env$/m,
+      );
+   });
+
+   test("bigquery writes no .env.example, having no variable to name", () => {
+      run({
+         connection: buildConnection({
+            connection: "bigquery",
+            bqProject: "my-project",
+         }),
+      });
+      expect(exists(".env.example")).toBe(false);
+   });
+
+   test("a warehouse package gets no data/ directory", () => {
+      run({ connection: postgres() });
+      expect(exists("sales/data")).toBe(false);
+   });
+
+   test("a warehouse package gets no malloy-config.json", () => {
+      // That file exists only to anchor a relative local path, and the briefing
+      // used to describe it unconditionally, naming a file that is not there.
+      run({ connection: postgres() });
+      expect(exists("sales/malloy-config.json")).toBe(false);
+      expect(agentsFile()).not.toContain("malloy-config.json");
+   });
+
+   test("with a table, the model reads it through the connection", () => {
+      run({
+         connection: buildConnection({
+            connection: "postgres",
+            pgHost: "db.example.com",
+            pgDatabase: "analytics",
+            pgUser: "reader",
+            table: "public.orders",
+         }),
+      });
+      const model = fs.readFileSync(
+         path.join(tmp, "sales/sales.malloy"),
+         "utf8",
+      );
+      expect(model).toContain(
+         "source: sales is postgres.table('public.orders')",
+      );
+   });
+
+   test("without a table, the model has no source and says why", () => {
+      run({ connection: postgres() });
+      const model = fs.readFileSync(
+         path.join(tmp, "sales/sales.malloy"),
+         "utf8",
+      );
+      const uncommented = model
+         .split("\n")
+         .filter((line) => !line.trimStart().startsWith("//"));
+      expect(uncommented.join("\n")).not.toContain("source:");
+      expect(model).toContain("malloy_searchDatabaseSchema");
+      // And the briefing has to say so too, or an agent reads an empty model
+      // as a broken scaffold.
+      expect(agentsFile()).toContain("has NO source in it yet");
+   });
+
+   test("the briefing does not claim local data for a warehouse package", () => {
+      run({ connection: postgres() });
+      expect(agentsFile()).not.toContain("over local data");
+   });
+
+   test("the briefing names the credential variable and its silent failure", () => {
+      run({ connection: postgres() });
+      expect(agentsFile()).toContain("MALLOY_POSTGRES_PASSWORD");
+      expect(agentsFile()).toContain("loadErrors");
+   });
+
+   test("adds the connection to an existing config", () => {
+      run({ name: "first" });
+      const result = run({ name: "second", connection: postgres() });
+      const config = readJson("publisher.config.json") as {
+         environments: { connections: unknown[]; packages: unknown[] }[];
+      };
+      expect(config.environments[0].connections).toHaveLength(1);
+      expect(config.environments[0].packages).toHaveLength(2);
+      expect(result.configExtended).toBe(true);
+   });
+
+   test("a second identical run is a no-op rather than a duplicate", () => {
+      run({ name: "first", connection: postgres() });
+      run({ name: "second", connection: postgres() });
+      const config = readJson("publisher.config.json") as {
+         environments: { connections: unknown[] }[];
+      };
+      expect(config.environments[0].connections).toHaveLength(1);
+   });
+
+   test("refuses a differently-configured connection of the same name", () => {
+      run({ name: "first", connection: postgres() });
+      expect(() =>
+         run({
+            name: "second",
+            connection: buildConnection({
+               connection: "postgres",
+               pgHost: "elsewhere.example.com",
+               pgDatabase: "analytics",
+               pgUser: "reader",
+            }),
+         }),
+      ).toThrow(/already has a connection named/);
+   });
+
+   test("a connection needs a package name, like --data does", () => {
+      expect(() => run({ name: undefined, connection: postgres() })).toThrow(
+         /needs a package name/,
+      );
+   });
+
+   test("the CSV path still writes no connections at all", () => {
+      run({});
+      const config = readJson("publisher.config.json") as {
+         environments: { connections: unknown[] }[];
+      };
+      expect(config.environments[0].connections).toEqual([]);
+      expect(exists(".env.example")).toBe(false);
+      expect(exists("sales/malloy-config.json")).toBe(true);
    });
 });

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import type { ConnectionEntry } from "./connection";
 import { ScaffoldError } from "./errors";
 import { printable } from "./names";
 
@@ -38,10 +39,19 @@ export interface PublisherConfig {
    [key: string]: unknown;
 }
 
-/** A fresh config with a single environment, optionally holding one package. */
+/**
+ * A fresh config with a single environment, optionally holding one package and
+ * one connection.
+ *
+ * The connection belongs to the ENVIRONMENT rather than the package: Publisher
+ * reads `connections` off the environment entry and nowhere else, and a package
+ * reaches it by name from its model. A flat-file package needs no entry here at
+ * all, which is why this stays an empty array on the --data and bare paths.
+ */
 export function defaultConfig(
    envName: string,
    pkg?: PackageEntry,
+   connection?: ConnectionEntry,
 ): PublisherConfig {
    return {
       frozenConfig: false,
@@ -49,7 +59,7 @@ export function defaultConfig(
          {
             name: envName,
             packages: pkg ? [pkg] : [],
-            connections: [],
+            connections: connection ? [connection] : [],
          },
       ],
    };
@@ -292,6 +302,90 @@ export function assertCanAddPackage(
             `Choose another name.`,
       );
    }
+}
+
+/**
+ * Throw if a connection cannot be registered: the config is frozen, or the name
+ * is already taken by an entry that is not identical to this one. Re-registering
+ * the identical entry is allowed, so a --force re-run of the same command is a
+ * no-op rather than an error.
+ *
+ * Pure check, no mutation, so a whole invocation can be validated before
+ * anything is created on disk. Mirrors assertCanAddPackage deliberately: the two
+ * failures a user hits are the same two, and they should read the same way.
+ */
+export function assertCanAddConnection(
+   config: PublisherConfig,
+   envName: string,
+   connection: ConnectionEntry,
+): void {
+   if (config.frozenConfig === true) {
+      throw new ScaffoldError(
+         `publisher.config.json has "frozenConfig": true, which forbids adding ` +
+            `connections. Set it to false, or add "${shown(connection.name)}" ` +
+            `by hand.`,
+      );
+   }
+   const env = targetEnvironment(config, envName);
+   if (!Array.isArray(env?.connections)) {
+      return;
+   }
+   const existing = env.connections.find(
+      (entry) => asJsonObject(entry)?.name === connection.name,
+   );
+   if (existing === undefined) {
+      return;
+   }
+   // Compared by value rather than by identity: the entry is rebuilt from the
+   // flags on every run, so a re-run of the same command produces an equal
+   // object and never the same one.
+   if (JSON.stringify(existing) === JSON.stringify(connection)) {
+      return;
+   }
+   throw new ScaffoldError(
+      `Environment "${shown(env?.name)}" already has a connection named ` +
+         `"${shown(connection.name)}", configured differently from the one ` +
+         `this command would write. Nothing was written.\n\n` +
+         `Choose another name with --connection-name, or edit the existing ` +
+         `entry in publisher.config.json by hand.`,
+   );
+}
+
+/**
+ * Register a connection in a config by adding one entry to the environment's
+ * `connections`. Assumes assertCanAddConnection has been (or is) satisfied.
+ * Returns true when the config changed and has to be written back.
+ */
+export function addConnection(
+   config: PublisherConfig,
+   envName: string,
+   connection: ConnectionEntry,
+): boolean {
+   assertCanAddConnection(config, envName, connection);
+
+   let env = targetEnvironment(config, envName);
+   if (!env) {
+      env = { name: envName, packages: [], connections: [] };
+      config.environments.push(env);
+   }
+   if (!Array.isArray(env.connections)) {
+      // Absent is the ordinary case (an environment with no warehouse writes no
+      // key at all). A present-but-not-an-array value is replaced rather than
+      // refused, unlike "packages": nothing reads it, Publisher's own loader
+      // treats a non-array as no connections, so there is no user data here to
+      // write out of the file.
+      env.connections = [];
+   }
+   if (
+      env.connections.some(
+         (entry) => asJsonObject(entry)?.name === connection.name,
+      )
+   ) {
+      // A differing entry already threw, so this is the identical one: no-op.
+      return false;
+   }
+   env.connections.push(connection);
+   return true;
 }
 
 export interface AddPackageResult {

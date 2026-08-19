@@ -117,9 +117,54 @@ for what is missing: the scaffolder does not read your columns, so you get a row
 overview over your file, and the modelling starts there. That is the point at which pointing an agent
 at the workspace pays off.
 
-A package is just Malloy, so it is not limited to a local file: point its model at a database
-connection your config defines and the same workspace serves a warehouse. The directory it creates is
-ordinary, so you can commit it, move it, or hand it to someone else.
+The directory it creates is ordinary, so you can commit it, move it, or hand it to someone else.
+
+### Start from a warehouse instead
+
+If the data is already in BigQuery, Snowflake or Postgres, `--connection` points the package there
+instead of at a file. The scaffolder writes the connection into `publisher.config.json` for you:
+
+```bash
+npm create @malloy-publisher/malloy-package@latest analytics -- \
+  --connection postgres --pg-host db.example.com --pg-database analytics --pg-user reader \
+  --table public.orders
+```
+
+`--table` is optional. Pass it and you get a starter model over that table. Leave it off and you get
+the connection plus an empty model, which is the honest outcome when nobody has said what to read
+yet: ask your agent to find a table with `malloy_searchDatabaseSchema` and write the source itself.
+
+The per-dialect options are `--pg-host`, `--pg-port`, `--pg-database` and `--pg-user` for Postgres;
+`--bq-project` and `--bq-location` for BigQuery; `--sf-account`, `--sf-user`, `--sf-warehouse`,
+`--sf-database`, `--sf-schema` and `--sf-role` for Snowflake. `--connection-name` renames the
+connection, which otherwise takes the name of the warehouse type.
+
+**No option takes a password, a service-account key or a private key, deliberately.** A credential
+typed on a command line is in your shell history whatever the tool does with it afterwards. For
+Postgres and Snowflake the scaffolder writes an environment-variable reference into the config
+instead, and lists the name in a generated `.env.example`:
+
+```json
+"password": "${MALLOY_POSTGRES_PASSWORD}"
+```
+
+Export it before starting the server. Publisher substitutes it when it reads the config, so the value
+never goes near the file. Be careful to export it: a variable the config names and the environment
+does not set is not a startup failure, it is a server that starts, reports ready, and serves nothing,
+with no load errors and no mention of the variable anywhere. That is the single most confusing way to
+get this wrong.
+
+BigQuery needs nothing exported. Leave the key out and Publisher falls back to Application Default
+Credentials, so `gcloud auth application-default login` once is enough and no credential appears in
+the config at all.
+
+Two rules the server enforces and it is easier to know up front. A connection cannot be called
+`duckdb`, which is reserved for the per-package sandbox that every package gets for reading local
+files. And an environment-level DuckDB connection cannot point at a local `.duckdb` file; it only
+attaches remote databases. Neither applies if you take the defaults here.
+
+The `malloy-connections` skill in [`skills/`](skills/) covers the rest, including how to test a
+connection and how to read a failure.
 
 Either way the server serves your package rather than the bundled examples: `npm start` points it at
 the `publisher.config.json` the scaffolder wrote, and a bare `npx @malloy-publisher/server` run from
