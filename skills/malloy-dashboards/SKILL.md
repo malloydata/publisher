@@ -34,7 +34,8 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
    Import every given it filters by, and every source or query any of those givens names in a
    `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
-   looks like a picker but has no options, and only the package warnings name it.
+   looks like a picker but has no options, and says so underneath, "Could not load the options for
+   this control". The package warnings name it too.
 5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
    before you save, at the path the file will have. **Editing one that already exists needs
    `"scope": "file"`**, which compiles your source AS that file; the default appends it instead, so
@@ -174,8 +175,8 @@ Then the traps:
 - **No `# size=fill` on a dashboard tile.** Inside a dashboard it measures against the container the
   whole grid was handed, not the tile, so it yields a chart thousands of pixels tall. Tiles already
   size to their colspan.
-- **A KPI card's label is one line that ellipses.** "Orders / customer" reads as "ORDERS / CUSTOMEI"
-  in a 2-of-12 card. Widen the card or shorten the label.
+- **A KPI card's label is one line that ellipses** rather than wrapping, so a long label in a narrow
+  card is truncated with no other sign. Widen the card or shorten the label.
 - **A ratio needs a number format.** `order_count / customer_count` renders as `10.695` on a card;
   `# number="#,##0.0"` is the precision it actually carries.
 - **A `# shape_map` legend is titled with the measure's field _name_, not its `# label`.** Rename it
@@ -242,9 +243,10 @@ given: SINCE :: date is @2023-01-01
 
 A sixth tag, `description`, is part of the contract and has two spellings that do different things:
 `# description="…"` publishes to the API but Publisher's own UI does not render it, while
-`#(description="…")` renders as helper text under the control but warns on any multi-word value, that
-the prefix "is not a well-formed route", because a route ends at the first space. Pick by which reader
-you care about.
+`#(description="…")` renders as helper text under the control but complains about any multi-word
+value, that the prefix "is not a well-formed route", because a route ends at the first space. That
+complaint is a **compile** diagnostic on a compile that still succeeds, not a package warning, so
+step 6 will not show it. Pick by which reader you care about.
 
 `control=select`/`multiselect` with a `suggest` renders a picker filled from the data;
 `range_min`/`range_max` on a `filter<number>` renders a slider; a `date` or `timestamp` renders a
@@ -350,8 +352,11 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
   to fix.
 - A tile that does not resolve to a real view, or a non-positive `dashboard_columns`.
 
-Findings carry a `severity` of `error` or `warn`, and one `warn` means the lint itself **stopped
-early**, in which case the list is incomplete rather than clean. Read the text rather than the count.
+Findings carry a `severity`, but `warn` is the ordinary default and tells you nothing about how bad
+one is. Read the text, not the severity and not the count. One message is worth recognising because
+it changes what the rest of the list means: **"Dashboard lint stopped early, so this list is
+incomplete"**. A dashboard withheld from `explores` also loses its own findings, so a short list for a
+withheld file is not a clean bill of health.
 
 **Read the status the reload itself returns, not the listing.** One dashboard that fails to compile
 fails the whole package load, and the reload answers **424** with the compile error. A package that
