@@ -23,7 +23,7 @@ import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
 import type { NavigationClick } from "../click_helper";
-import { useDrill } from "../drill";
+import { useDrill, type DrillNavigation } from "../drill";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import ResultsDialog from "../ResultsDialog";
@@ -74,6 +74,16 @@ interface NotebookCellProps {
     * refusal only shows up in the console.
     */
    canDrillSelf?: (given: string) => boolean;
+   /**
+    * Opens a `# drill { to=<dashboard> }` destination, seeded with the clicked
+    * value. Distinct from {@link onNavigate}, which routes a markdown link and
+    * takes a URL: this one takes a destination and the givens to seed, and only
+    * the host knows how to turn those into a route.
+    *
+    * Omitted on a host with no dashboard route, which makes a cross-dashboard
+    * drill inert rather than dead-ended, and removes the affordance with it.
+    */
+   onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
 }
 
 interface NotebookMarkdownLinkProps {
@@ -164,6 +174,7 @@ export function NotebookCell({
    onNavigate,
    onDrillSelf,
    canDrillSelf,
+   onDrillNavigate,
 }: NotebookCellProps) {
    const [codeDialogOpen, setCodeDialogOpen] = React.useState<boolean>(false);
    const [embeddingDialogOpen, setEmbeddingDialogOpen] =
@@ -186,22 +197,22 @@ export function NotebookCell({
    // by that dimension is clickable for free: the same resolution, and the
    // same hook, the dashboard viewer uses.
    const { drill, drillMenu } = useDrill({
-      // No `onNavigate` yet, deliberately: a `# drill { to=<dashboard> }` would
-      // route to `/{env}/{pkg}/dashboards/<slug>`, and no such route exists.
-      // The Console's catch-all sends it to `ModelPage`, which answers "Nothing
-      // to open at this path". Wiring it now would paint those cells as links to a
-      // dead page, and `markDrillableCells` exists on the opposite principle:
-      // "a destination the surface cannot reach never becomes a link: a dead
-      // link is worse than none." Omitting it makes a named destination
-      // non-honorable, which removes the affordance as well as the navigation,
-      // so a `to=self` drill still works and a cross-dashboard one is simply
-      // inert until the slice that adds the route also passes this handler.
+      // The dashboards route now exists, so a `# drill { to=<dashboard> }` from
+      // a notebook cell is honoured: the host turns the destination and its
+      // seeded givens into `/{env}/{pkg}/dashboards/<slug>?GIVEN=value`. Passed
+      // through rather than built here, because only the host knows its routing.
       //
-      // One consequence to know rather than rediscover: `drillMenu` below is
-      // therefore unreachable for now. A menu only opens for two or more
-      // honorable destinations, and `self` is the only honorable one, so a
-      // drillable cell applies its filter on the first click. The menu comes
-      // back with the navigation handler.
+      // Still optional, and the reason matters: a host without a dashboard
+      // route omits it, which makes a named destination non-honorable and
+      // removes the AFFORDANCE along with the navigation. That is
+      // `markDrillableCells`'s principle, that a destination the surface cannot
+      // reach never becomes a link, and it is why this is a prop rather than
+      // something the cell assumes.
+      //
+      // Wiring it also makes `drillMenu` reachable for the first time: a menu
+      // opens only for two or more honorable destinations, so until there was a
+      // second one every drillable cell applied its filter on the first click.
+      onNavigate: onDrillNavigate,
       onSelf: onDrillSelf,
       // Only the notebook knows which givens it declares, and a self-drill onto
       // one it does not is refused. Asking here keeps the affordance honest

@@ -15,6 +15,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
+   moveDrillStop,
    drillableFieldNames,
    markDrillableCells,
    type DrillMetadataSource,
@@ -254,6 +255,18 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    color: var(--publisher-drill-link) !important;
    text-decoration: underline;
 }
+/* Keyboard focus reads the same as hover, plus a ring: a hover colour is not
+   something a keyboard user can produce, and a focus ring is not something a
+   mouse user sees. focus-visible rather than focus, so a click does not leave a
+   ring behind it. (No backticks in here: this is inside a template literal.) */
+.malloy-render .${DRILL_CELL_CLASS}:focus-visible {
+   outline: 2px solid var(--publisher-drill-link);
+   outline-offset: -2px;
+}
+.malloy-render .${DRILL_CELL_CLASS}:focus-visible > .cell-content {
+   color: var(--publisher-drill-link) !important;
+   text-decoration: underline;
+}
 `;
 
 /**
@@ -351,6 +364,9 @@ function RenderedResultInner({
       let viz: MalloyVizHandle | undefined;
       let drillObserver: MutationObserver | null = null;
       let drillFrame = 0;
+      let drillKeydown: ((event: KeyboardEvent) => void) | null = null;
+      let drillKeyup: ((event: KeyboardEvent) => void) | null = null;
+      let drillFocusIn: ((event: FocusEvent) => void) | null = null;
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
       // Safety net so a render that never signals ready (an async renderer
@@ -518,6 +534,135 @@ function RenderedResultInner({
                      }
                   };
                   mark();
+                  // Enter and Space fire the drill for a focused cell. Delegated
+                  // on the stage rather than bound per cell, because the
+                  // renderer rebuilds cells as a dashboard's cards arrive and a
+                  // per-cell listener would be lost with them; this one outlives
+                  // every re-mark.
+                  //
+                  // It synthesises a CLICK rather than calling the drill handler
+                  // directly, so the payload comes from the renderer's own click
+                  // path. Building one here would mean re-deriving which field
+                  // and value a cell represents, which is exactly the mapping
+                  // this module has no access to and the reason the affordance
+                  // is matched on rendered text in the first place.
+                  //
+                  // The click goes to the cell's INNER `.cell-content`, not to
+                  // the cell. Measured, because dispatching on the cell looked
+                  // right and silently did nothing: a real mouse click lands on
+                  // `.cell-content` and the renderer reads the event target to
+                  // identify the field, so a click on the outer cell reaches the
+                  // handler with a target it does not recognise and is dropped
+                  // without a sound. Falls back to the cell for a shape that has
+                  // no inner content node.
+                  //
+                  // Enter fires on keydown and Space on keyUP, which is the
+                  // native button rule and is load-bearing here rather than
+                  // pedantry. Firing Space on keydown opened the drill menu and
+                  // then the SAME keypress's keyup landed on the now-focused
+                  // first menu item and chose it, so a Space drill navigated
+                  // straight past the menu it had just opened. Measured: the
+                  // menu was visible while the key was held and gone, with the
+                  // URL already changed, once it was released.
+                  //
+                  // Dispatched with the cell's own coordinates rather than
+                  // through `HTMLElement.click()`, which reports `clientX/Y` as
+                  // 0. A drill offering two destinations anchors its menu on
+                  // those numbers (`useDrill` holds no ref into the renderer's
+                  // DOM), so a keyboard-opened menu appeared in the corner of
+                  // the viewport instead of beside the cell it came from.
+                  const fire = (cell: Element) => {
+                     const content =
+                        cell.querySelector<HTMLElement>(".cell-content");
+                     const target = content ?? (cell as HTMLElement);
+                     const rect = target.getBoundingClientRect();
+                     target.dispatchEvent(
+                        new MouseEvent("click", {
+                           bubbles: true,
+                           cancelable: true,
+                           view: target.ownerDocument.defaultView,
+                           clientX: Math.round(rect.left + rect.width / 2),
+                           clientY: Math.round(rect.bottom),
+                        }),
+                     );
+                  };
+                  const drillCell = (event: KeyboardEvent) =>
+                     (
+                        event.target as HTMLElement | null
+                     )?.closest?.<HTMLElement>(`.${DRILL_CELL_CLASS}`) ?? null;
+                  // Move the single tab stop within a drillable column.
+                  // `markDrillableCells` gives a column one stop rather than one
+                  // per cell, so these keys are how a reader reaches the other
+                  // rows; without them the affordance would only ever fire on
+                  // whichever row held the stop. Clamped rather than wrapping,
+                  // which is what a table's rows read as.
+                  const rove = (
+                     cell: HTMLElement,
+                     to: number | "first" | "last",
+                  ) => {
+                     // The move lives in `markDrillableCells` beside the column
+                     // rule, because it has to hold the same invariant the
+                     // marking does: exactly one stop per column. Doing it here
+                     // by clearing the focused cell assumed that cell HELD the
+                     // stop, which a click-focused `tabindex="-1"` cell does not.
+                     moveDrillStop(cell, to)?.focus();
+                  };
+                  drillKeydown = (event: KeyboardEvent) => {
+                     const cell = drillCell(event) as HTMLElement | null;
+                     if (!cell) return;
+                     const roveKey =
+                        event.key === "ArrowDown"
+                           ? 1
+                           : event.key === "ArrowUp"
+                             ? -1
+                             : event.key === "Home"
+                               ? ("first" as const)
+                               : event.key === "End"
+                                 ? ("last" as const)
+                                 : undefined;
+                     if (roveKey !== undefined) {
+                        // Prevented whether or not the move happened, so the
+                        // first and last rows do not scroll the page out from
+                        // under a reader who is still inside the column.
+                        event.preventDefault();
+                        rove(cell, roveKey);
+                        return;
+                     }
+                     if (event.key === "Enter") {
+                        // Otherwise Enter submits an enclosing form on an
+                        // embedding host.
+                        event.preventDefault();
+                        fire(cell);
+                     } else if (event.key === " ") {
+                        // Held Space scrolls the page; the activation itself
+                        // waits for keyup.
+                        event.preventDefault();
+                     }
+                  };
+                  drillKeyup = (event: KeyboardEvent) => {
+                     if (event.key !== " ") return;
+                     const cell = drillCell(event);
+                     if (!cell) return;
+                     event.preventDefault();
+                     fire(cell);
+                  };
+                  // Focus and the tab stop have to agree however focus got
+                  // there. The arrow handler moves the stop, but a
+                  // `tabindex="-1"` cell is still CLICK-focusable, so without
+                  // this a reader who clicked row 5, tabbed away and tabbed back
+                  // landed on row 0. That is the same asymmetry the arrow path
+                  // already fixes, for the one way of arriving that does not go
+                  // through it. `moveDrillStop(cell, 0)` resolves to the cell
+                  // itself, so it just makes that cell the column's stop.
+                  drillFocusIn = (event: FocusEvent) => {
+                     const cell = (
+                        event.target as HTMLElement | null
+                     )?.closest?.<HTMLElement>(`.${DRILL_CELL_CLASS}`);
+                     if (cell) moveDrillStop(cell, 0);
+                  };
+                  stageNode.addEventListener("keydown", drillKeydown);
+                  stageNode.addEventListener("keyup", drillKeyup);
+                  stageNode.addEventListener("focusin", drillFocusIn);
                   if (
                      names.size > 0 &&
                      typeof MutationObserver !== "undefined"
@@ -561,14 +706,36 @@ function RenderedResultInner({
       return () => {
          cancelled = true;
          observer?.disconnect();
-         drillObserver?.disconnect();
-         cancelAnimationFrame(drillFrame);
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
          // If this render built a stage but never swapped it into `liveRef`
          // (superseded, or unmounted mid-render), tear it down so it can't
          // leak a viz or leave an orphan node behind.
          if (stage && liveRef.current?.node !== stage) {
+            // The keyboard listeners go with the stage, and ONLY with the
+            // stage. Removing them unconditionally tied their lifetime to the
+            // effect RUN instead, while the stage's is tied to `liveRef`: a
+            // re-run tore them off the chart that is still on screen, which
+            // keeps its `tabindex` and `role="button"` and so still says Enter
+            // and Space do something. Usually that window closes when the new
+            // render promotes, but a render that never gets that far (a parse
+            // failure, a renderer that throws) leaves the visible chart
+            // permanently keyboard-dead while still advertising otherwise.
+            // Left on a promoted stage they are collected with the node when
+            // `promote` removes it, so nothing leaks by keeping them.
+            if (drillKeydown)
+               stage.removeEventListener("keydown", drillKeydown);
+            if (drillKeyup) stage.removeEventListener("keyup", drillKeyup);
+            if (drillFocusIn)
+               stage.removeEventListener("focusin", drillFocusIn);
+            // The re-marker is scoped the same way, and for the same reason.
+            // Disconnecting it unconditionally tied it to the effect RUN: a
+            // re-run while a `# dashboard` was still building its cards stopped
+            // the LIVE stage being re-marked, so cards arriving after that point
+            // never became drillable. Like the listeners, it is collected with
+            // the node once a promoted stage is dropped.
+            drillObserver?.disconnect();
+            cancelAnimationFrame(drillFrame);
             viz?.remove();
             if (stage.parentNode === element) {
                element.removeChild(stage);
