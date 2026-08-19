@@ -275,3 +275,72 @@ Two related notes from the same audit:
 - **`all()` respects the query's filter.** `revenue / all(revenue)` inside
   `where: is_food_item` returns 1.0, not food's share of total revenue. Correct, and a trap if you
   wanted a share of the unfiltered total.
+
+## Three business questions the mechanical model answers wrongly
+
+Not "cannot answer" -- answers, plausibly, with a wrong assumption baked in. All three come from
+dbt's own metric set, so the mechanical conversion inherits them faithfully. The rich packages
+resolve each one, and the resolution is the modelling.
+
+### 1. "What was our revenue?" -- two defensible answers, 5.4% apart
+
+| Field | Value | Source |
+|---|---|---|
+| `revenue`, `subtotal`, `lifetime_spend_pretax` | 100,441.00 | pretax |
+| `order_total`, `lifetime_spend` | 105,826.18 | includes tax |
+| `tax_paid` | 5,385.18 | the difference |
+
+Six metric names, two numbers, and nothing in dbt's artifacts says which is *the* revenue figure.
+Tax is collected for the state rather than earned, so 100,441 is the answer a finance team wants,
+but an agent asked for "revenue" can reach either.
+
+**Resolved:** `order_total`'s doc now says it is gross receipts and not revenue, names the
+difference, and points at `revenue`. The `revenue_reconciliation` view shows
+`subtotal + tax_paid = order_total` (100,441 + 5,385.18 = 105,826.18), so the relationship is
+checkable rather than folklore.
+
+### 2. "What share of orders are food versus drink?" -- the shares sum to 122%
+
+dbt's `food_orders` (2,336) and `drink_orders` (9,319) against 9,568 orders is 24.4% and 97.4%.
+They overlap: 2,164 orders contain both, and 77 contain nothing. Nothing says so, and a reader
+gets an impossible mix.
+
+**Resolved:** an `order_contents` dimension with four mutually exclusive, exhaustive buckets, plus
+caveats on both dbt metrics. It sums exactly, and it changes the story:
+
+| `order_contents` | orders | share |
+|---|---|---|
+| Drink only | 7,155 | 74.8% |
+| Food and drink | 2,164 | 22.6% |
+| Food only | **172** | **1.8%** |
+| No items | 77 | 0.8% |
+
+"24% of orders are food" was hiding that food-only is under 2% of orders. dbt's 2,336 is exactly
+2,164 + 172.
+
+### 3. "How much revenue comes from new customers?" -- a 400x error
+
+dbt ships **two** definitions of a new customer and never reconciles them:
+
+| Definition | Field | Answer |
+|---|---|---|
+| Current state: lifetime order count is still 1 | `customers.customer_type = 'new'` | **$6.36** (1 order) |
+| Event: the customer's first ever order | `customer_order_number = 1` | **$2,586.13** (150 orders) |
+
+Both readings are defensible from the field names and dbt's own descriptions. On this data 149 of
+150 customers are 'returning', so the state definition answers a question about acquisition with a
+number 400x too small, and it looks authoritative.
+
+**Resolved:** `customer_type`'s doc now says it is a current-state label, states that it is
+degenerate here, and names the 400x gap explicitly. `orders.is_first_order` carries the event
+definition, and the `acquisition_split` view answers the question with it: first orders 150 /
+$2,586.13, repeat 9,418 / $103,240.05, which sums to the full 9,568 and 105,826.18.
+
+### What this class of problem has in common
+
+None of the three is a capability gap, and none would be caught by reconciling against dbt: every
+number above is arithmetically correct and matches dbt exactly. They are **ambiguities of
+definition**, and a mechanical conversion preserves them perfectly because faithfulness is the
+whole objective. Settling them is modelling work, and it is the part that cannot be automated from
+dbt's artifacts -- there is nothing in the YAML that says tax is not revenue, that two boolean
+flags overlap, or which of two "new customer" definitions the business means.

@@ -42,6 +42,15 @@ automated translation reaches, because dbt's YAML does not carry the missing inf
   financial detail; `order_items_margin` adds margin and is gated with
   `#(authorize) "$role = 'finance'"`, so a caller asserting any other role gets **HTTP 403**.
 
+Three of dbt's own definitions are ambiguous enough to produce wrong business answers, and a
+faithful conversion preserves the ambiguity perfectly. "What was our revenue?" has two defensible
+answers 5.4% apart (tax). "What share of orders are food?" sums to 122%, because dbt's food and
+drink flags overlap on 2,164 orders and omit 77. "Revenue from new customers?" answers **$6.36**
+via `customer_type` or **$2,586.13** via first orders, a 400x difference, because dbt ships both
+definitions and reconciles neither. Every one of those numbers matches dbt exactly, so
+reconciliation cannot catch them. The rich packages settle all three; see
+[COVERAGE.md](COVERAGE.md).
+
 The useful test is not "is Malloy nicer" but: **can this construct be a reusable, composable model
 entity, or does it only exist inside one chart?** A running total, a cohort definition, a bucketing
 rule, an audience variant. Where those can only live in a chart or a UI side-car, the model is a

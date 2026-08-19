@@ -54,6 +54,13 @@ source: customers is duckdb.table('data/customers.parquet') -> {
     lifetime_spend_raw is lifetime_spend
 
     #(doc) Options are 'new' or 'returning', indicating if a customer has ordered more than once or has only placed their first order to date.
+    #(doc) This is dbt's own description, and it is a **current-state** label: a customer counts
+    #(doc) as 'new' only while their lifetime order count is still 1. It is not an acquisition
+    #(doc) period, and it is the wrong field for "revenue from new customers": on this data 149
+    #(doc) of 150 customers are 'returning', so that question answers $6.36 against the $2,586.13
+    #(doc) that first orders actually brought in, a 400x difference. For acquisition questions use
+    #(doc) `orders.is_first_order` or the `acquisition_split` view; for age-of-relationship
+    #(doc) questions use `first_order_month`.
     customer_type
 } include {
   // The `_raw` columns exist only to feed measures that took dbt's metric names, and are not
@@ -271,10 +278,16 @@ source: orders is duckdb.table('data/orders.parquet') -> {
 
   measure:
     #(doc) Count of orders that contain drink order items
+    #(doc) NOT mutually exclusive with `food_orders`: an order containing both is counted in both,
+    #(doc) and orders with no items are in neither. For a mix that sums to 100%, group by
+    #(doc) `order_contents`.
     # label="Drink Orders"
     drink_orders is count() { where: is_drink_order }
 
     #(doc) Count of orders that contain food order items
+    #(doc) NOT mutually exclusive with `drink_orders`: an order containing both is counted in both,
+    #(doc) and orders with no items are in neither. For a mix that sums to 100%, group by
+    #(doc) `order_contents`.
     # label="Food Orders"
     food_orders is count() { where: is_food_order }
 
@@ -292,6 +305,10 @@ source: orders is duckdb.table('data/orders.parquet') -> {
     order_cost is order_cost_raw.sum()
 
     #(doc) Sum of total order amount. Includes tax + revenue.
+    #(doc) This is gross receipts, NOT the revenue figure: it is 105,826.18 against `revenue`'s
+    #(doc) 100,441, and the 5,385.18 difference is `tax_paid`, which is collected on behalf of
+    #(doc) the state rather than earned. For "what was our revenue", use `revenue` on
+    #(doc) `order_items` (or `subtotal` here). See the `revenue_reconciliation` view.
     # label="Order Total"
     # currency
     order_total is order_total_raw.sum()
@@ -340,6 +357,22 @@ source: orders is duckdb.table('data/orders.parquet') -> {
 
   // ── Question: is order value growing, and is the mix shifting toward larger orders?
   dimension:
+    #(doc) What the order contained, as four mutually exclusive and exhaustive buckets that sum
+    #(doc) to the order count. Use this for mix questions rather than `food_orders` and
+    #(doc) `drink_orders`: those two overlap (an order with both counts in each) and omit orders
+    #(doc) with no items, so their shares sum to about 122% rather than 100%.
+    order_contents is
+      pick 'No items' when count_order_items = null
+      pick 'Food and drink' when is_food_order and is_drink_order
+      pick 'Food only' when is_food_order
+      pick 'Drink only' when is_drink_order
+      else 'Unclassified'
+
+    #(doc) Whether this is the customer's first ever order. This is the *event* definition of a
+    #(doc) new customer and the one to use for acquisition questions. It is not the same as
+    #(doc) `customers.customer_type`, which is a current-state label; see that field's note.
+    is_first_order is customer_order_number = 1
+
     #(doc) Order value band: Under $10, $10-$19, $20+.
     #(doc) $20 matches the threshold dbt's own `large_orders` metric uses; the $10 split is a
     #(doc) working convention for this model, not one the business confirmed.
@@ -359,6 +392,34 @@ source: orders is duckdb.table('data/orders.parquet') -> {
     #(doc) Average number of items on an order. Order-grain only, for the same reason as
     #(doc) `avg_order_value`: from `order_items` it reads 1.50 rather than 1.49.
     items_per_order is count_order_items.sum() / nullif(orders, 0)
+
+  #(doc) Gross receipts split into what was earned and what was collected for the state.
+  #(doc) subtotal + tax_paid = order_total, so the three tie out and the right figure for
+  #(doc) "revenue" is unambiguous.
+  view: revenue_reconciliation is {
+    aggregate:
+      net_revenue is subtotal.sum()
+      tax_paid
+      order_total
+  }
+
+  #(doc) Order mix that sums to 100%: four exclusive buckets, including orders with no items.
+  # bar_chart
+  view: order_contents_mix is {
+    group_by: order_contents
+    aggregate: orders, order_total
+    order_by: orders desc
+  }
+
+  #(doc) Revenue from newly acquired customers against repeat business, using the event
+  #(doc) definition (a customer's first order). This is the acquisition question; do not answer
+  #(doc) it from `customers.customer_type`, which is a current-state label.
+  # bar_chart
+  view: acquisition_split is {
+    group_by: customer_status is pick 'First order' when is_first_order else 'Repeat order'
+    aggregate: orders, order_total
+    order_by: order_total desc
+  }
 
   #(doc) Order mix by value band over time: are larger orders growing as a share?
   # bar_chart
