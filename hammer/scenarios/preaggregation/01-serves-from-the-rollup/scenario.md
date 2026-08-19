@@ -75,16 +75,21 @@ given. Two grains are two tables, so each answers for itself: `region` was sent 
 namespace — still inherited `analytics` from the base rather than picking up its
 neighbour's.
 
+Which grain landed where, not merely which schemas were used: the set alone passes
+whichever rollup went to which, so it would read as green if the two were swapped. The
+rollup's name carries its grain — `<base>__preagg__<grain>__<digest>` — so the catalog
+can be asked for the pairing without knowing the digest.
+
 ```sql
-SELECT table_schema FROM information_schema.tables WHERE table_name LIKE '%__preagg__%' ORDER BY table_schema
+SELECT table_schema, split_part(table_name, '__', 3) AS grain FROM information_schema.tables WHERE table_name LIKE '%__preagg__%' ORDER BY table_schema
 ```
 
 Expect:
 
-| table_schema |
-| ------------ |
-| analytics    |
-| rollups      |
+| table_schema | grain    |
+| ------------ | -------- |
+| analytics    | category |
+| rollups      | region   |
 
 ## Query by category
 
