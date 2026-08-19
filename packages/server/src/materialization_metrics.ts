@@ -200,6 +200,16 @@ const chainedStorageBuildCounter = lazyCounter(
       "'strict_refused'). The parent_reuse share is the headline signal for how " +
       "far the stack-on-the-parent path gets us vs recompute-from-raw.",
 );
+const colocatedBindDroppedCounter = lazyCounter(
+   "publisher_materialization_colocated_bind_dropped_total",
+   "Colocated serve-manifest entries dropped by bindColocatedServeManifest. " +
+      "Label: reason ('build_plan_unavailable' when the package's build plan " +
+      "failed to compute, so no source was examined at all; 'refused' when the " +
+      "source itself was examined and found ineligible). 'build_plan_unavailable' " +
+      "is a whole-package regression -- colocated is the default tier and is NOT " +
+      "gated by PERSIST_STORAGE_MODE, so every colocated binding for the package " +
+      "reverts to live recompute until a load succeeds.",
+);
 
 /**
  * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
@@ -414,6 +424,17 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
+}
+
+/**
+ * Record one colocated serve-manifest entry dropped by
+ * `Package.bindColocatedServeManifest`. See {@link colocatedBindDroppedCounter}
+ * for why `build_plan_unavailable` is the label worth alerting on.
+ */
+export function recordColocatedBindDropped(
+   reason: "build_plan_unavailable" | "refused",
+): void {
+   colocatedBindDroppedCounter().add(1, { reason });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

@@ -33,6 +33,7 @@ import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
 import {
    recordBuildPlanComputeDuration,
+   recordColocatedBindDropped,
    recordManifestBindDegraded,
 } from "../materialization_metrics";
 import {
@@ -696,6 +697,12 @@ export class Package {
       // storage serve binding until a load succeeds (see
       // bindStorageServeBindings). Serving live is a slower answer, not a wrong
       // one; admitting an unexamined binding would be a wrong one.
+      //
+      // It ALSO leaves `colocatedSourceEligibility` unknown, and that one is a
+      // bigger blast radius: colocated is the default tier, not gated by
+      // PERSIST_STORAGE_MODE, so this silently reverts EVERY colocated binding
+      // for the package to live recompute (see bindColocatedServeManifest and
+      // its recordColocatedBindDropped("build_plan_unavailable") counter).
       try {
          const buildPlanStart = Date.now();
          const {
@@ -1211,27 +1218,46 @@ export class Package {
     *
     * Filtered against {@link colocatedSourceEligibility} the same way
     * {@link bindStorageServeBindings} filters against `sourceEligibility` —
-    * POSITIVELY, and dropped rather than fatal on a miss. This is what stands
-    * between an authorize-gated colocated source and a self-built manifest
-    * entry that predates the model changing under it (a source built ungated,
-    * then re-annotated with an unattributed or unclassifiable gate before the
-    * next rebuild converges): the entry still names a real table, but this
-    * package's current compile no longer vouches for serving it.
+    * POSITIVELY, and dropped rather than fatal on a miss. For an authorize-gated
+    * colocated source with a self-built manifest entry that predates the model
+    * changing under it (a source built ungated, then re-annotated with an
+    * unattributed or unclassifiable gate before the next rebuild converges),
+    * THIS filter is what stops that stale entry from being bound here.
+    *
+    * It is ONE of four paths that reach {@link recordManifestBinding}, and the
+    * only one this filter covers — this is the load-time local-store restore
+    * path ({@link Environment}'s call at package-load time). The other three
+    * all go through {@link reloadAllModels} (`bindManifest`,
+    * `bindPackageColocatedServeManifest`, and the materialization service's own
+    * `reloadAllModelsForPackage`), which writes `entries` into
+    * `recordManifestBinding` UNFILTERED — no eligibility check runs there at
+    * all. Those three paths are safe anyway, but not because of anything here:
+    * they rely entirely on the per-query `#(authorize)` graft re-applying at
+    * read time (`Model.buildGraftedMaterializer`), the same mechanism that
+    * makes admitting a proven row-level gate safe in the first place. This
+    * function's positive check is a belt for the one path that has no
+    * recompile to re-derive eligibility from; it is not a boundary the other
+    * three paths pass through, and nothing should be built assuming it is.
     */
    public bindColocatedServeManifest(entries: FreshnessManifest): void {
       const eligibility = this.colocatedSourceEligibility;
       const eligibleEntityIds = eligibility?.eligibleEntityIds;
       const allowed: FreshnessManifest = {};
+      let dropped = 0;
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          if (eligibleEntityIds?.has(sourceEntityId)) {
             allowed[sourceEntityId] = entry;
             continue;
          }
+         dropped++;
          const reason =
             eligibility === undefined
                ? "the package build plan could not be computed, so no source was examined for eligibility"
                : (eligibility.refused[sourceEntityId] ??
                  "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)");
+         recordColocatedBindDropped(
+            eligibility === undefined ? "build_plan_unavailable" : "refused",
+         );
          logger.warn(
             "Refusing a colocated serve binding: the source is not eligible to be served from a materialized table",
             {
@@ -1239,6 +1265,17 @@ export class Package {
                sourceEntityId,
                reason,
             },
+         );
+      }
+      if (eligibility === undefined && dropped > 0) {
+         // Distinct from the per-entry warnings above: this package's build
+         // plan never computed at all, so EVERY colocated binding just
+         // dropped — not one source's own refusal. Colocated is the default
+         // tier (not gated by PERSIST_STORAGE_MODE), so this is a silent
+         // whole-tier availability regression until the next successful load.
+         logger.warn(
+            "Colocated serve bindings dropped package-wide: the build plan never computed, so no source could be examined for eligibility",
+            { packageName: this.packageName, droppedCount: dropped },
          );
       }
       this.recordManifestBinding(allowed);
