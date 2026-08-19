@@ -629,7 +629,11 @@ describe("classifyAuthorizeGate", () => {
       // grammar tests elsewhere), but there is no given to probe a
       // declared-default hazard against, so it must not reach the evaluator.
       expect(
-         classifyAuthorizeGate(condition({ node: "true" }, []), TYPES, DEFAULTS),
+         classifyAuthorizeGate(
+            condition({ node: "true" }, []),
+            TYPES,
+            DEFAULTS,
+         ),
       ).toEqual({
          shape: "row_level",
          givenNames: [],
@@ -637,7 +641,11 @@ describe("classifyAuthorizeGate", () => {
          literalAtomDetails: [],
       });
       expect(
-         classifyAuthorizeGate(condition({ node: "false" }, []), TYPES, DEFAULTS),
+         classifyAuthorizeGate(
+            condition({ node: "false" }, []),
+            TYPES,
+            DEFAULTS,
+         ),
       ).toEqual({
          shape: "row_level",
          givenNames: [],
@@ -701,7 +709,12 @@ describe("assertNoVacuousDefaultAtom", () => {
          op: "!=",
       });
       expect(() =>
-         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["ROLE", "''"]])),
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            TYPES,
+            new Map([["ROLE", "''"]]),
+         ),
       ).toThrow(
          /the atom `\$ROLE != 'admin'` evaluates to TRUE when a caller supplies no givens/,
       );
@@ -735,7 +748,12 @@ describe("assertNoVacuousDefaultAtom", () => {
          literalText: "10",
       });
       expect(() =>
-         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["NUM", "9"]])),
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            TYPES,
+            new Map([["NUM", "9"]]),
+         ),
       ).not.toThrow();
    });
 
@@ -747,7 +765,12 @@ describe("assertNoVacuousDefaultAtom", () => {
          literalText: "5",
       });
       expect(() =>
-         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["NUM", "9"]])),
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            TYPES,
+            new Map([["NUM", "9"]]),
+         ),
       ).toThrow(/evaluates to TRUE/);
    });
 
@@ -758,7 +781,12 @@ describe("assertNoVacuousDefaultAtom", () => {
          negate: true,
       });
       expect(() =>
-         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["ROLE", "'a'"]])),
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            TYPES,
+            new Map([["ROLE", "'a'"]]),
+         ),
       ).not.toThrow();
    });
 
@@ -769,7 +797,12 @@ describe("assertNoVacuousDefaultAtom", () => {
          negate: true,
       });
       expect(() =>
-         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["ROLE", "'b'"]])),
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            TYPES,
+            new Map([["ROLE", "'b'"]]),
+         ),
       ).toThrow(/the atom `not \(\$ROLE = 'a'\)` evaluates to TRUE/);
    });
 
