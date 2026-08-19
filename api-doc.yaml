@@ -4958,7 +4958,10 @@ components:
         too), so a source this reports as refused is refused for the tier it
         would actually build under — never the unconditional
         `storage=`-destination check applied to a source that declares no
-        `storage=`.
+        `storage=`. A `preaggregate`-tier entry can coexist with an entry of
+        the same sourceID in `BuildPlan.sources` — the one tier where
+        refused-and-present-in-sources is the correct, intended state, unlike
+        `storage`/`colocated` where a refusal means absence from `sources`.
       required: [name, sourceID, tier, reason, message]
       properties:
         name:
@@ -4975,14 +4978,18 @@ components:
             model path could not be resolved.
         tier:
           type: string
-          enum: [storage, colocated]
+          enum: [storage, colocated, preaggregate]
           description: >-
             Which build path this source was evaluated against: `storage` for
             a source declaring `#@ persist storage=<ref>` (evaluated against
             the full storage-destination eligibility gate, which never
             admits an `#(authorize)`-gated source); `colocated` for a plain
             `#@ persist` (evaluated against the colocated gate, which admits
-            a proven row-level, fully-attributed gate).
+            a proven row-level, fully-attributed gate); `preaggregate` for a
+            `#@ preaggregate` rollup (evaluated against the pre-aggregation
+            gate, which refuses unconditionally when the rollup's base is
+            `#(authorize)`-gated — rollups group away the gate column, so
+            there is no row-level admission the way colocated has).
         reason:
           type: string
           enum:
