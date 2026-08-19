@@ -43,6 +43,7 @@ import { quoteIdentifier } from "./quoting";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
+type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireColumn = components["schemas"]["Column"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
@@ -237,6 +238,7 @@ export function projectToPublicColumns(
    } catch (err) {
       recordEligibilityRefused("public_surface_unknown");
       throw new MaterializationEligibilityError({
+         reason: "public_surface_unknown",
          message:
             `Source '${persistSource.name}' cannot be materialized into a ` +
             `storage destination: its public column surface could not be ` +
@@ -969,7 +971,10 @@ export function deriveBuildPlan(
    sourceNames?: string[],
    sourceModelPaths?: Record<string, string>,
    packageMaterialization?: WirePackageMaterialization | null,
-   options?: { preaggregatePlans?: Record<string, RollupPlan> },
+   options?: {
+      preaggregatePlans?: Record<string, RollupPlan>;
+      sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
+   },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
@@ -984,9 +989,49 @@ export function deriveBuildPlan(
    }));
 
    const wireSources: Record<string, WirePersistSourcePlan> = {};
+   const refusedSources: Record<string, WireRefusedSource> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
       const annotationFields = deriveAnnotationFields(source);
+
+      // Tier-appropriate eligibility, BEFORE touching getSQL()/
+      // computeSourceEntityId() below: a free-parameter or given-referencing
+      // source fails those calls, so a refused source must be diverted into
+      // `refusedSources` (which needs neither) rather than attempted here. The
+      // tier mirrors the build path's own choice (deriveSelfInstructions /
+      // executeInstructedBuild): a declared `storage=` gets the full,
+      // unconditional storage-destination gate; a plain `#@ persist` gets the
+      // colocated gate, which — unlike the storage one — admits a proven
+      // row-level, fully-attributed `#(authorize)` gate. Using the storage
+      // gate for every source regardless of declared tier (the existing
+      // `SourceEligibility.refused`, kept for its own serve-binding purpose)
+      // would misreport a now-buildable colocated source as refused.
+      const declaresStorage = !!annotationFields.storage;
+      const rollup = options?.preaggregatePlans?.[sourceID];
+      try {
+         if (declaresStorage) {
+            assertMaterializationEligible(source);
+         } else {
+            assertColocatedPersistNotAuthorizeGated(
+               source,
+               source.name,
+               rollup ? "preaggregate" : "persist",
+               options?.sourceGateOutcomes?.[sourceID],
+            );
+         }
+      } catch (err) {
+         refusedSources[sourceID] = {
+            name: source.name,
+            sourceID: source.sourceID,
+            modelPath: sourceModelPaths?.[sourceID],
+            tier: declaresStorage ? "storage" : "colocated",
+            reason:
+               (err instanceof MaterializationEligibilityError && err.reason) ||
+               "authorize",
+            message: errMessage(err),
+         };
+         continue;
+      }
       // EFFECTIVE per-source freshness, resolved most-specific-wins
       // (source > model-file > package) and reported verbatim (null = unset at
       // every level). Freshness is a dotted/nested tag key, so it comes from
@@ -1000,7 +1045,6 @@ export function deriveBuildPlan(
       // authored one — which is why the plan has to say. `preaggregate` carries
       // what the rollup covers, since a query never names it and this is the only
       // place its grain and measure set are visible at all.
-      const rollup = options?.preaggregatePlans?.[sourceID];
       wireSources[sourceID] = {
          name: source.name,
          sourceID: source.sourceID,
@@ -1034,7 +1078,7 @@ export function deriveBuildPlan(
       };
    }
 
-   return { graphs: wireGraphs, sources: wireSources };
+   return { graphs: wireGraphs, sources: wireSources, refusedSources };
 }
 
 /**
@@ -1069,7 +1113,10 @@ export async function computePackageBuildPlan(
               undefined,
               compiled.sourceModelPaths,
               pkg.getMaterializationConfig?.() ?? null,
-              { preaggregatePlans: compiled.preaggregatePlans },
+              {
+                 preaggregatePlans: compiled.preaggregatePlans,
+                 sourceGateOutcomes: compiled.sourceGateOutcomes,
+              },
            );
    return {
       plan,

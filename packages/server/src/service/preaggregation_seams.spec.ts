@@ -12,6 +12,11 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
+import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 
@@ -638,6 +643,46 @@ source: orders is duckdb.sql("""
       },
       { timeout: 60000 },
    );
+
+   describe("routing metric", () => {
+      let harness: MetricsHarness;
+
+      beforeEach(async () => {
+         harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+      });
+
+      afterEach(async () => {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      });
+
+      const ROUTING_COUNTER = "publisher_storage_serve_routing_total";
+
+      it(
+         "meters blocked_by_row_level_gate exactly once for a gated query, computed at the single routingBlockedByRowLevelGate site rather than per tier",
+         async () => {
+            const pkg = await loadPackage(GATED);
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { GROUPS: [1] },
+            );
+
+            expect(
+               await harness.collectCounter(ROUTING_COUNTER, {
+                  outcome: "blocked_by_row_level_gate",
+               }),
+            ).toBe(1);
+            // Nothing else on this path should record a routing outcome: the
+            // storage tier never ran (no storage bindings configured for this
+            // package) and pre-aggregation's own guard emits no metric of its
+            // own — a per-tier emit would have doubled this count.
+            expect(await harness.collectCounter(ROUTING_COUNTER, {})).toBe(1);
+         },
+         { timeout: 60000 },
+      );
+   });
 });
 
 // ---------------------------------------------------------------------------

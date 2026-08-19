@@ -4931,6 +4931,79 @@ components:
           description: Map of sourceID ("sourceName@modelURL") to per-source plan.
           additionalProperties:
             $ref: "#/components/schemas/PersistSourcePlan"
+        refusedSources:
+          type: object
+          description: >-
+            Map of sourceID ("sourceName@modelURL") to the sources the package
+            declared `#@ persist` on but that are ineligible to build, so they
+            carry no entry in `sources`. A SEPARATE collection rather than a
+            field on `PersistSourcePlan`: constructing that plan entry requires
+            the source's SQL and content address, and a free-parameter or
+            given-referencing source cannot produce either, so a refused
+            source needs a wire shape that requires neither. Lets a host
+            distinguish "this package declares no persist source" (both maps
+            empty) from "every persist source was refused" (empty `sources`,
+            populated `refusedSources`) — silence otherwise reads as the
+            former.
+          additionalProperties:
+            $ref: "#/components/schemas/RefusedSource"
+
+    RefusedSource:
+      type: object
+      description: >-
+        One `#@ persist` source refused at compile time, and why. Computed
+        from the SAME tier-appropriate eligibility assert the build path
+        itself enforces (the colocated tier's post-relaxation admission for a
+        proven row-level, fully-attributed `#(authorize)` gate applies here
+        too), so a source this reports as refused is refused for the tier it
+        would actually build under — never the unconditional
+        `storage=`-destination check applied to a source that declares no
+        `storage=`.
+      required: [name, sourceID, tier, reason, message]
+      properties:
+        name:
+          type: string
+          description: The source's declared name.
+        sourceID:
+          type: string
+          description: "sourceName@modelURL — matches this entry's map key."
+        modelPath:
+          type: string
+          description: >-
+            Package-relative path of the `.malloy` model that declares this
+            source, mirroring `PersistSourcePlan.modelPath`. Absent if the
+            model path could not be resolved.
+        tier:
+          type: string
+          enum: [storage, colocated]
+          description: >-
+            Which build path this source was evaluated against: `storage` for
+            a source declaring `#@ persist storage=<ref>` (evaluated against
+            the full storage-destination eligibility gate, which never
+            admits an `#(authorize)`-gated source); `colocated` for a plain
+            `#@ persist` (evaluated against the colocated gate, which admits
+            a proven row-level, fully-attributed gate).
+        reason:
+          type: string
+          enum:
+            [
+              free_parameter,
+              given,
+              authorize,
+              not_duckdb_portable,
+              public_surface_unknown,
+            ]
+          description: >-
+            The bounded refusal reason. `not_duckdb_portable` cannot appear
+            here — it is decided against the post-build captured schema, which
+            does not exist at compile time — and is listed only because it
+            shares the enum the runtime eligibility metric uses.
+        message:
+          type: string
+          description: >-
+            The full, human-readable refusal message the eligibility assert
+            produced — the same text a build attempting this source would 422
+            with.
 
     BuildGraph:
       type: object
@@ -5547,6 +5620,24 @@ components:
             generation's table in place under this same name, so resolving it
             serves stale data rather than missing. Present for correlating the
             failure with the request; a consumer must never resolve or read it.
+        connectionName:
+          type: string
+          description: >-
+            The persist source's own connection (the source warehouse),
+            mirroring `ManifestEntry.connectionName`. Without this a failure-only
+            source carries no destination discriminator at all, so a consumer
+            cannot tell a colocated failure from a `storage=` one and, lacking
+            `storageDestinationName`, would resolve a destination-scoped claim
+            against the wrong key.
+        storageDestinationName:
+          type: string
+          description: >-
+            When the source was instructed to build into a `storage=`
+            destination, the destination name, mirroring
+            `ManifestEntry.storageDestinationName`. Absent for a colocated
+            failure. A consumer computes the same destination key a successful
+            build would (`storageDestinationName ?? connectionName`) whether the
+            source built or failed.
 
     ManifestEntry:
       type: object

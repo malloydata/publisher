@@ -18,6 +18,41 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
+
+**`BuildPlan` gains a `refusedSources` collection**, alongside the existing `sources` map, so a host can tell
+"this package declares no persist source" from "every persist source was refused". It is a SEPARATE
+collection rather than a field on `PersistSourcePlan`: constructing that plan entry calls `getSQL()` and
+computes the source's content address, and a free-parameter or given-referencing source cannot reliably
+survive those calls, so a refused source needs a wire shape that requires neither. Each entry carries the
+source's name/sourceID/modelPath, which tier it was evaluated against (`storage` or `colocated` — the SAME
+tier the build path itself would use, post the colocated row-level relaxation), the bounded refusal reason,
+and the full refusal message. No new reason was added to the existing `free_parameter | given | authorize |
+not_duckdb_portable | public_surface_unknown` enum; the two compile-time asserts this collection is computed
+from can only ever produce the first three.
+
+**Fixed: one refused, uninstructed persist source used to abort an entire orchestrated build.** The build
+loop checked a source's eligibility before checking whether the caller had actually instructed it, so a
+package with several persist sources — one refused, and never instructed, alongside others the caller DID
+instruct — threw on the refused one and lost every source in the run, not just the one that could not build.
+An uninstructed source is now skipped without an eligibility check; an instructed refused source still 422s
+exactly as before.
+
+**Also added: `SourceFailure.connectionName` / `SourceFailure.storageDestinationName`.** A consuming service
+resolving a failure-only source's destination (to release a destination-scoped claim) had no discriminator
+to key on and would default to colocated even for a `storage=` source that failed a rebuild — a live claim
+leak on a partially-successful run. Both fields mirror their `ManifestEntry` counterparts, so a consumer
+computes the same destination key (`storageDestinationName ?? connectionName`) whether the source built or
+failed. **This must land before the deprecated `ManifestEntry.error`/`entries`-mirror-for-failures removal**
+(see that field's own deprecation note) — a consumer still reading failures off the `entries` mirror gets
+neither field until it moves to `BuildManifest.failures`.
+
+Also added a routing-outcome label, `blocked_by_row_level_gate`, on `publisher_storage_serve_routing_total` —
+previously a row-level-gated entry point that vetoed both the storage and pre-aggregation tiers recorded no
+routing outcome at all.
+
+---
+
 ## [Unreleased] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
 
 This supersedes the "a gate that references only givens is unaffected" line in the section below, before
