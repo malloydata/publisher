@@ -118,6 +118,60 @@ test.describe("package-dashboards", () => {
       );
    });
 
+   test("both lists are ordered by the name they show", async ({ page }) => {
+      await gotoHome(page);
+      await openEnvironment(page, env);
+      await openPackage(page, env, PKG);
+      await expect(
+         page.getByRole("heading", { name: "Dashboards", level: 6 }),
+      ).toBeVisible({ timeout: 60_000 });
+
+      // Polled rather than snapshotted once: the rows arrive after the section
+      // heading does, and a single `allTextContents()` read them mid-render and
+      // reported a row as missing rather than as out of order.
+      const positions = async (names: string[]) => {
+         const labels = await page.getByRole("button").allTextContents();
+         return names.map((name) => labels.findIndex((l) => l.includes(name)));
+      };
+      const ascending = (xs: number[]) =>
+         xs.every((x, i) => x >= 0 && (i === 0 || x > xs[i - 1]));
+
+      // Sorted by the string on screen, not by the slug underneath it. By slug
+      // this reads Combined, Grid, Business Overview, Orders by region, which
+      // looks unsorted to anyone reading the titles.
+      await expect
+         .poll(
+            async () =>
+               ascending(
+                  await positions([
+                     "Business Overview",
+                     "Combined",
+                     "Grid",
+                     "Orders by region",
+                  ]),
+               ),
+            { timeout: 30_000 },
+         )
+         .toBe(true);
+
+      // Same for notebooks, which this release started labelling by title while
+      // still ordering them by filename: by path `orders-since` precedes
+      // `orders-start`, but "Orders from a start" precedes "Orders in a window".
+      await expect
+         .poll(
+            async () =>
+               ascending(
+                  await positions([
+                     "Brands",
+                     "Orders from a start",
+                     "Orders in a window",
+                  ]),
+               ),
+            { timeout: 30_000 },
+         )
+         .toBe(true);
+   });
+
    test("renders the title and the control row its given specs describe", async ({
       page,
    }) => {

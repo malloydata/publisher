@@ -149,13 +149,27 @@ export default function Package({
          }
       },
    });
+   // Sorted by the string the row actually SHOWS, not by the slug or the path
+   // underneath it. A list labelled by title and ordered by filename reads as
+   // unsorted: `overview` titled "Business Overview" sorts ahead of `regions`
+   // titled "Regional Sales". Notebooks acquired that mismatch here too, when
+   // they started being listed by title while still being ordered by path.
+   const dashboardLabel = (dashboard: { name?: string; title?: string }) =>
+      dashboard.title && dashboard.title !== dashboard.name
+         ? dashboard.title
+         : (dashboard.name ?? "");
+   const notebookLabel = (notebook: { path?: string; title?: string }) =>
+      notebook.title && notebook.title !== notebook.path
+         ? notebook.title
+         : (notebook.path ?? "");
+
    const dashboards = (dashboardsQuery.data?.data ?? [])
       .slice()
-      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+      .sort((a, b) => dashboardLabel(a).localeCompare(dashboardLabel(b)));
 
    const notebooks = (notebooksQuery.data?.data ?? [])
       .slice()
-      .sort((a, b) => a.path.localeCompare(b.path));
+      .sort((a, b) => notebookLabel(a).localeCompare(notebookLabel(b)));
    // A dashboard is listed once, under Dashboards. Its file is a model like any
    // other, so it would otherwise appear a second time under Semantic Models
    // where clicking it opens the Explorer rather than the dashboard. Untagged
