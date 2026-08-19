@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jaffle Shop — converted pipeline</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <span class="tag">convert · same model, Malloy pipeline</span>
+  <h1>Jaffle Shop revenue</h1>
+  <p>
+    The same semantic layer, over marts Malloy rebuilt from the raw files and materialized with
+    <code>#@ persist</code>. <strong>This app's <code>lib/</code> is byte-identical to the
+    <code>adopt-rich</code> package's</strong> — same tiles, same view names, same queries, not one
+    line changed. Where the tables come from is plumbing the page never sees.
+  </p>
+</header>
+<main><div id="grid"></div></main>
+<footer>
+  Data: a 150-customer sample of dbt's jaffle-shop, 9,568 orders over 2024-09 to 2025-08.
+  Money here is computed from cents in floating point rather than dbt's <code>numeric(16,2)</code>,
+  so totals differ from the adopt packages in the last few decimal places.
+  Charts are inline SVG: no library is loaded from anywhere.
+</footer>
+<script src="/sdk/publisher.js"></script>
+<script type="module">
+  import { mount } from "./lib/app.js";
+  import { tiles } from "./lib/tiles.js";
+  mount(tiles);
+</script>
+</body>
+</html>

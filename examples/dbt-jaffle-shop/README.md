@@ -91,6 +91,31 @@ explanation rather than quietly serving ungated rows.
 `orders_built`, while the semantic `orders` joins `customers`. Fusing them into one source is a
 cycle Malloy rejects.
 
+## The data apps
+
+Each package serves a hand-authored dashboard from its `public/` directory, at
+`/environments/examples/packages/<pkg>/index.html`. Same six tiles in all three, so the pages are
+the comparison rendered:
+
+| | `adopt-mechanical` | `adopt-rich` / `convert` |
+|---|---|---|
+| Revenue by month | page writes the monthly grouping | `revenue_by_month` view |
+| Month-over-month | page computes it in JavaScript | `revenue_growth_mom` view |
+| Food vs drink | page writes the join path | `revenue_by_product_type` view |
+| Top products | page picks the cutoff | `top_products` view |
+| Cohorts | shows the tenure-confounded total, with a note explaining that no correction exists | `spend_per_tenure_month` alongside the raw total |
+
+The numbers agree everywhere they exist: the page-computed month-over-month in the mechanical app
+matches the model-defined measure in the rich one. What differs is where the analysis lives, and
+therefore who inherits it.
+
+`convert/public/lib/` is **byte-identical** to `adopt-rich/public/lib/` -- same tiles, same view
+names, same queries. The app cannot tell whether its marts were built by dbt or by Malloy, which is
+the portability claim as a diff rather than an assertion.
+
+No chart library is loaded, from a CDN or otherwise: the charts are inline SVG, because embedded
+page JavaScript runs with the viewing user's data authority.
+
 ## The data
 
 `dbt build` was run on a deterministic 150-customer sample of jaffle-shop and its output committed

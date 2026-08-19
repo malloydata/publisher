@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jaffle Shop — rich model</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <span class="tag">adopt · rich model</span>
+  <h1>Jaffle Shop revenue</h1>
+  <p>
+    A semantic layer over the marts dbt built. Every tile below asks the model a question
+    <em>by name</em> — the page contains no analysis of its own, no hand-computed growth, and no
+    hardcoded thresholds. Compare with the same dashboard over the
+    <strong>mechanical</strong> package, where the page has to supply all of that itself.
+  </p>
+</header>
+<main><div id="grid"></div></main>
+<footer>
+  Data: a 150-customer sample of dbt's jaffle-shop, 9,568 orders over 2024-09 to 2025-08.
+  Money is exact here because dbt casts to <code>numeric(16,2)</code>.
+  Charts are inline SVG: no library is loaded from anywhere.
+</footer>
+<script src="/sdk/publisher.js"></script>
+<script type="module">
+  import { mount } from "./lib/app.js";
+  import { tiles } from "./lib/tiles.js";
+  mount(tiles);
+</script>
+</body>
+</html>

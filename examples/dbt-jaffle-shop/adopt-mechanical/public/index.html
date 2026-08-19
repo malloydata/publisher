@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jaffle Shop — mechanical model</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <span class="tag">adopt · mechanical model</span>
+  <h1>Jaffle Shop revenue</h1>
+  <p>
+    The same six tiles, over the mechanically converted model: dbt's metrics, entities and docs
+    mapped one-for-one, with no analytical judgment added. The numbers are identical and just as
+    correct. The difference is where the work lives — four of these tiles write their own Malloy,
+    one computes its growth column in JavaScript, and the last one <em>cannot be built</em>.
+  </p>
+</header>
+<main><div id="grid"></div></main>
+<footer>
+  Data: a 150-customer sample of dbt's jaffle-shop, 9,568 orders over 2024-09 to 2025-08.
+  Every caption below states what the page had to decide because the model did not.
+  Charts are inline SVG: no library is loaded from anywhere.
+</footer>
+<script src="/sdk/publisher.js"></script>
+<script type="module">
+  import { mount } from "./lib/app.js";
+  import { tiles } from "./lib/tiles.js";
+  mount(tiles);
+</script>
+</body>
+</html>
