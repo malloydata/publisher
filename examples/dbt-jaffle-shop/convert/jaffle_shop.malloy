@@ -1,0 +1,587 @@
+// The semantic layer, over marts Malloy built.
+//
+// Every source, measure, dimension, and view below is the same text as the `adopt-rich`
+// package. The only difference is what each source extends: `adopt-rich` reads the marts dbt
+// built, and this reads what pipeline.malloy derives from the raw files.
+//
+// Three sources extend a persisted table (`orders`, `customers`, `order_items`) because they
+// derive something expensive. The other three read their staging source directly, because a
+// rename does not earn a table.
+//
+// `run: order_items -> overview` is the same query, with the same numbers, against either
+// package. Where the tables come from is plumbing the query never sees.
+
+##! experimental { persistence, access_modifiers }
+
+import "pipeline.malloy"
+
+
+#(doc) Customer overview data mart, offering key details for each unique customer. One row per customer.
+source: customers is customers_built include {
+  // The `_raw` columns exist only to feed measures that took dbt's metric names, and are not
+  // things a caller should pick. `internal:` keeps them readable by the measures above while
+  // removing them from the public API, so the naming compromise is invisible to consumers.
+  internal: count_lifetime_orders_raw, lifetime_spend_pretax_raw, lifetime_spend_raw
+  public: *
+} extend {
+  primary_key: customer_id
+
+  measure:
+    #(doc) LTV pre-tax / number of orders
+    # label="Average Order Value"
+    # currency
+    average_order_value is lifetime_spend_pretax / nullif(count_lifetime_orders, 0)
+
+    #(doc) Total count of orders per customer.
+    # label="Count Lifetime Orders"
+    count_lifetime_orders is count_lifetime_orders_raw.sum()
+
+    #(doc) Count of unique customers
+    # label="Customers"
+    customers is count(customer_id)
+
+    #(doc) Gross customer lifetime spend inclusive of taxes.
+    # label="Lifetime Spend"
+    # currency
+    lifetime_spend is lifetime_spend_raw.sum()
+
+    #(doc) Customer's lifetime spend before tax
+    # label="LTV Pre-tax"
+    # currency
+    lifetime_spend_pretax is lifetime_spend_pretax_raw.sum()
+
+  #(doc) Key customer order metrics grouped by customer.
+  view: customer_order_metrics is {
+    group_by:
+      customer_id
+    aggregate:
+      count_lifetime_orders
+      lifetime_spend_pretax
+      average_order_value
+  }
+
+  #(doc) Customer count and lifetime spend by new against returning
+  # bar_chart
+  view: customers_by_type is {
+    group_by: customer_type
+    aggregate: customers, lifetime_spend
+    order_by: lifetime_spend desc
+  }
+
+  #(doc) Highest spending customers
+  view: top_customers is {
+    top: 10
+    group_by: customer_name, customer_id
+    aggregate: lifetime_spend, count_lifetime_orders, average_order_value
+  }
+
+  // ── Question: are new customers turning into repeat buyers, and what are they worth?
+  dimension:
+    #(doc) Month of the customer's first order, the cohort they belong to
+    first_order_month is first_ordered_at.month
+
+    #(doc) Whether the customer has ordered more than once
+    is_repeat_buyer is count_lifetime_orders_raw > 1
+
+    #(doc) Months from the customer's first order to their most recent, minimum 1.
+    #(doc) Cohort comparisons of lifetime totals are confounded by tenure: a cohort that
+    #(doc) joined 12 months ago has had 12x the time to accumulate. Normalize by this.
+    tenure_months is months(first_ordered_at::date to last_ordered_at::date) + 1
+
+    #(doc) Lifetime spend band: Low (<$500), Mid ($500-$999), High ($1000+).
+    #(doc) These boundaries are working conventions for this model, not settled by the
+    #(doc) business or derived from the distribution.
+    spend_band is
+      pick 'Low (<$500)' when lifetime_spend_raw < 500
+      pick 'Mid ($500-$999)' when lifetime_spend_raw < 1000
+      else 'High ($1000+)'
+
+  measure:
+    #(doc) Average number of orders placed per customer
+    orders_per_customer is count_lifetime_orders / nullif(customers, 0)
+
+    #(doc) Share of customers who have ordered more than once. On this sample it is close
+    #(doc) to 100% for every cohort (149 of 150 customers are repeat buyers), so it
+    #(doc) discriminates almost nothing here; kept because it is the standard definition.
+    # percent
+    repeat_buyer_rate is customers { where: is_repeat_buyer } / nullif(customers, 0)
+
+    #(doc) Lifetime spend divided by total months of customer tenure, so cohorts of
+    #(doc) different ages are comparable. Prefer this over `lifetime_spend` when comparing
+    #(doc) cohorts.
+    # currency
+    spend_per_tenure_month is lifetime_spend / nullif(tenure_months.sum(), 0)
+
+  #(doc) Customer cohorts by first-order month: size, spend, and spend normalized by tenure.
+  #(doc) Read `spend_per_tenure_month`, not `lifetime_spend`: the raw total falls off for
+  #(doc) recent cohorts because they have had less time, not because they are worse.
+  # line_chart
+  view: cohorts_by_first_order_month is {
+    group_by: first_order_month
+    aggregate: customers, lifetime_spend, spend_per_tenure_month, tenure_months_total is tenure_months.sum()
+    order_by: first_order_month
+  }
+
+  #(doc) How customers and spend distribute across the lifetime spend bands
+  # bar_chart
+  view: spend_band_mix is {
+    group_by: spend_band
+    aggregate: customers, lifetime_spend
+    order_by: lifetime_spend desc
+  }
+}
+
+#(doc) Location dimension table. The grain of the table is one row per location.
+#(doc) Coverage: six locations exist here, but only Philadelphia and Brooklyn have any
+#(doc) orders in this sample, so a revenue-by-location question returns two rows. That is
+#(doc) an artifact of sampling 150 customers, not the business having two stores. Asking
+#(doc) from `orders` cannot show a location with no rows at all, because the join runs
+#(doc) that way; lead with this source to see the inactive ones.
+source: locations is stg_locations extend {
+  primary_key: location_id
+
+  measure:
+    #(doc) Average tax rate.
+    # label="Average Tax Rate"
+    # percent
+    average_tax_rate is tax_rate.avg()
+
+    #(doc) Number of locations. Counts every location in the dimension, including the four
+    #(doc) with no orders in this sample.
+    location_count is count()
+
+  #(doc) Tax rate by location
+  # bar_chart
+  view: tax_rate_by_location is {
+    group_by: location_name
+    aggregate: average_tax_rate
+    order_by: average_tax_rate desc
+  }
+}
+
+#(doc) Order overview data mart, offering key details for each order inlcluding if it's a customer's first order and a food vs. drink item breakdown. One row per order.
+source: orders is orders_built include {
+  // Plumbing, hidden from the public API but still readable by the measures:
+  //   *_raw    took dbt's metric names, so the column had to move
+  //   *_cents  dbt's marts carry both cents and dollars; the dollar columns are the useful ones
+  internal: order_total_raw, tax_paid_raw, order_cost_raw
+  internal: subtotal_cents, tax_paid_cents, order_total_cents
+  public: *
+} extend {
+  primary_key: order_id
+
+  join_one:
+    #(doc) The foreign key relating to the customer who placed the order.
+    customers with customer_id
+    locations with location_id
+
+  measure:
+    #(doc) Count of orders that contain drink order items
+    #(doc) NOT mutually exclusive with `food_orders`: an order containing both is counted in both,
+    #(doc) and orders with no items are in neither. For a mix that sums to 100%, group by
+    #(doc) `order_contents`.
+    # label="Drink Orders"
+    drink_orders is count() { where: is_drink_order }
+
+    #(doc) Count of orders that contain food order items
+    #(doc) NOT mutually exclusive with `drink_orders`: an order containing both is counted in both,
+    #(doc) and orders with no items are in neither. For a mix that sums to 100%, group by
+    #(doc) `order_contents`.
+    # label="Food Orders"
+    food_orders is count() { where: is_food_order }
+
+    #(doc) Count of orders with order total over 20.
+    # label="Large Orders"
+    large_orders is count() { where: order_total_raw >= 20 }
+
+    #(doc) New customer's first order count
+    # label="New Customers"
+    new_customer_orders is count() { where: customer_order_number = 1 }
+
+    #(doc) The cost for each order item. Cost is calculated as a sum of the supply cost for each order item.
+    # label="Order Cost"
+    # currency
+    order_cost is order_cost_raw.sum()
+
+    #(doc) Sum of total order amount. Includes tax + revenue.
+    #(doc) This is gross receipts, NOT the revenue figure: it is 105,826.18 against `revenue`'s
+    #(doc) 100,441, and the 5,385.18 difference is `tax_paid`, which is collected on behalf of
+    #(doc) the state rather than earned. For "what was our revenue", use `revenue` on
+    #(doc) `order_items` (or `subtotal` here). See the `revenue_reconciliation` view.
+    # label="Order Total"
+    # currency
+    order_total is order_total_raw.sum()
+
+    #(doc) Count of orders.
+    # label="Orders"
+    orders is count()
+
+    #(doc) The total tax paid on each order.
+    # label="Tax Paid"
+    # currency
+    tax_paid is tax_paid_raw.sum()
+
+  #(doc) Key order metrics grouped by day.
+  view: order_metrics is {
+    group_by:
+      ordered_at_day is ordered_at.day
+    aggregate:
+      orders
+      new_customer_orders
+      order_total
+      food_orders
+      drink_orders
+  }
+
+  #(doc) Orders and order value by month
+  # line_chart
+  view: orders_by_month is {
+    group_by: order_month is ordered_at.month
+    aggregate: orders, order_total
+    order_by: order_month
+  }
+
+  #(doc) How the order mix breaks down: food, drink, large, and first orders
+  view: order_mix is {
+    aggregate: orders, food_orders, drink_orders, large_orders, new_customer_orders
+  }
+
+  #(doc) Orders and order value by store location
+  # bar_chart
+  view: orders_by_location is {
+    group_by: locations.location_name
+    aggregate: orders, order_total
+    order_by: order_total desc
+  }
+
+  // ── Question: is order value growing, and is the mix shifting toward larger orders?
+  dimension:
+    #(doc) What the order contained, as four mutually exclusive and exhaustive buckets that sum
+    #(doc) to the order count. Use this for mix questions rather than `food_orders` and
+    #(doc) `drink_orders`: those two overlap (an order with both counts in each) and omit orders
+    #(doc) with no items, so their shares sum to about 122% rather than 100%.
+    order_contents is
+      pick 'No items' when count_order_items = null
+      pick 'Food and drink' when is_food_order and is_drink_order
+      pick 'Food only' when is_food_order
+      pick 'Drink only' when is_drink_order
+      else 'Unclassified'
+
+    #(doc) Whether this is the customer's first ever order. This is the *event* definition of a
+    #(doc) new customer and the one to use for acquisition questions. It is not the same as
+    #(doc) `customers.customer_type`, which is a current-state label; see that field's note.
+    is_first_order is customer_order_number = 1
+
+    #(doc) Order value band: Under $10, $10-$19, $20+.
+    #(doc) $20 matches the threshold dbt's own `large_orders` metric uses; the $10 split is a
+    #(doc) working convention for this model, not one the business confirmed.
+    order_size_band is
+      pick 'Under $10' when order_total_raw < 10
+      pick '$10-$19' when order_total_raw < 20
+      else '$20+'
+
+  measure:
+    #(doc) Average value of an order in USD. Meaningful at the order grain only: the
+    #(doc) denominator is a `count()`, so reaching this across a join narrows the population to
+    #(doc) the orders visible through that join. From `order_items` it reads 11.15 rather than
+    #(doc) 11.06, because the 77 orders with no items are not reachable from the item side.
+    # currency
+    avg_order_value is order_total / nullif(orders, 0)
+
+    #(doc) Average number of items on an order. Order-grain only, for the same reason as
+    #(doc) `avg_order_value`: from `order_items` it reads 1.50 rather than 1.49.
+    items_per_order is count_order_items.sum() / nullif(orders, 0)
+
+  #(doc) Gross receipts split into what was earned and what was collected for the state.
+  #(doc) subtotal + tax_paid = order_total, so the three tie out and the right figure for
+  #(doc) "revenue" is unambiguous.
+  view: revenue_reconciliation is {
+    aggregate:
+      net_revenue is subtotal.sum()
+      tax_paid
+      order_total
+  }
+
+  #(doc) Order mix that sums to 100%: four exclusive buckets, including orders with no items.
+  # bar_chart
+  view: order_contents_mix is {
+    group_by: order_contents
+    aggregate: orders, order_total
+    order_by: orders desc
+  }
+
+  #(doc) Revenue from newly acquired customers against repeat business, using the event
+  #(doc) definition (a customer's first order). This is the acquisition question; do not answer
+  #(doc) it from `customers.customer_type`, which is a current-state label.
+  # bar_chart
+  view: acquisition_split is {
+    group_by: customer_status is pick 'First order' when is_first_order else 'Repeat order'
+    aggregate: orders, order_total
+    order_by: order_total desc
+  }
+
+  #(doc) Order mix by value band over time: are larger orders growing as a share?
+  # bar_chart
+  view: size_band_by_month is {
+    group_by:
+      order_month is ordered_at.month
+      order_size_band
+    aggregate: orders
+    order_by: order_month
+  }
+
+  #(doc) Average order value by month, with the month-over-month change
+  # line_chart
+  view: avg_order_value_trend is {
+    group_by: order_month is ordered_at.month
+    aggregate: avg_order_value
+    calculate:
+      # percent
+      change_vs_prior_month is (avg_order_value - lag(avg_order_value)) / nullif(lag(avg_order_value), 0)
+    order_by: order_month
+  }
+}
+
+#(doc) Product dimension table. The grain of the table is one row per product.
+source: products is stg_products extend {
+  primary_key: product_id
+
+  measure:
+    product_count is count()
+
+  #(doc) Products by category
+  # bar_chart
+  view: by_type is {
+    group_by: product_type
+    aggregate: product_count
+  }
+}
+
+#(doc) Items contained in each order. The grain of the table is one row per order item.
+source: order_items is order_items_built extend {
+  primary_key: order_item_id
+
+  join_one:
+    orders with order_id
+    products with product_id
+
+  measure:
+    #(doc) Number of order lines
+    order_item_count is count()
+
+    #(doc) The revenue from drinks in each order
+    # label="Drink Revenue"
+    # currency
+    drink_revenue is product_price.sum() { where: is_drink_item }
+
+    #(doc) The % of order revenue from drinks.
+    # label="Drink Revenue %"
+    # percent
+    drink_revenue_pct is drink_revenue / nullif(revenue, 0)
+
+    #(doc) The revenue from food in each order
+    # label="Food Revenue"
+    # currency
+    food_revenue is product_price.sum() { where: is_food_item }
+
+    #(doc) The % of order revenue from food.
+    # label="Food Revenue %"
+    # percent
+    food_revenue_pct is food_revenue / nullif(revenue, 0)
+
+    #(doc) Gross profit from each order.
+    # label="Order Gross Profit"
+    # currency
+    order_gross_profit is revenue - orders.order_cost
+
+    #(doc) The revenue generated for each order item. Revenue is calculated as a sum of revenue associated with each product in an order.
+    # label="Revenue"
+    # currency
+    revenue is product_price.sum()
+
+  #(doc) Key revenue metrics grouped by day.
+  view: revenue_metrics is {
+    group_by:
+      ordered_at_day is ordered_at.day
+    aggregate:
+      revenue
+      food_revenue
+      drink_revenue
+  }
+
+  // dbt: metric `revenue_growth_mom`, type `derived`, expr
+  //   (current_revenue - revenue_prev_month)*100/revenue_prev_month
+  // with its second input offset by `offset_window: {count: 1, granularity: month}`.
+  //
+  // The offset is what makes this a window rather than an aggregate: the row for March
+  // has to see February's value. dbt's OSI export drops the offset and emits
+  // `(SUM(x) - SUM(x))*100/SUM(x)`, which is always zero -- see ../COVERAGE.md.
+  #(doc) Revenue by month with month-over-month growth as a percentage
+  # line_chart
+  view: revenue_growth_mom is {
+      group_by: revenue_month is ordered_at.month
+      aggregate: revenue
+      calculate: revenue_prev_month is lag(revenue)
+      calculate:
+         # percent
+         revenue_growth_mom is (revenue - lag(revenue)) / nullif(lag(revenue), 0)
+      order_by: revenue_month
+  }
+
+  // dbt: metric `cumulative_revenue`, type `cumulative`, over metric `revenue` with an
+  // all-time window. dbt itself warns this one cannot be represented in OSI.
+  #(doc) Running total of revenue over time, all-time cumulative
+  # line_chart
+  view: cumulative_revenue is {
+      group_by: revenue_month is ordered_at.month
+      aggregate: revenue
+      calculate:
+         # currency
+         cumulative_revenue is sum_cumulative(revenue)
+      order_by: revenue_month
+  }
+
+  #(doc) Revenue trend, growth, and running total in one view
+  # dashboard
+  view: revenue_over_time is {
+      nest:
+         # big_value
+         totals is {
+            aggregate:
+               # label="Revenue"
+               # currency
+               revenue
+               # label="Food revenue"
+               # currency
+               food_revenue
+               # label="Drink revenue"
+               # currency
+               drink_revenue
+         }
+      nest: revenue_growth_mom
+      nest: cumulative_revenue
+  }
+
+  // ── Analysis layer ─────────────────────────────────────────────────────
+  // dbt's semantic layer stops at metrics; these are the views that make the
+  // metrics usable, plus the chart tags dbt does not record.
+
+  #(doc) Revenue by month
+  # line_chart
+  view: revenue_by_month is {
+    group_by: revenue_month is ordered_at.month
+    aggregate: revenue
+    order_by: revenue_month
+  }
+
+  #(doc) Revenue split by product category, food against drink
+  # bar_chart
+  view: revenue_by_product_type is {
+    group_by: products.product_type
+    aggregate: revenue
+    order_by: revenue desc
+  }
+
+  #(doc) Best selling products by revenue
+  view: top_products is {
+    top: 10
+    group_by: product_name
+    aggregate: revenue, order_item_count, order_gross_profit
+  }
+
+  #(doc) Revenue by store location
+  # bar_chart
+  view: revenue_by_location is {
+    group_by: orders.locations.location_name
+    aggregate: revenue
+    order_by: revenue desc
+  }
+
+  #(doc) Revenue from new against returning customers
+  # bar_chart
+  view: revenue_by_customer_type is {
+    group_by: orders.customers.customer_type
+    aggregate: revenue
+    order_by: revenue desc
+  }
+
+  #(doc) Start here: revenue KPIs, the monthly trend, product mix, and top sellers
+  # dashboard
+  view: overview is {
+    nest:
+      # big_value
+      kpis is {
+        aggregate: revenue, order_gross_profit, order_item_count
+      }
+    nest: revenue_by_month
+    nest: revenue_by_product_type
+    nest: top_products
+    nest: revenue_by_location
+    nest: revenue_by_customer_type
+  }
+
+  measure:
+    #(doc) Average revenue per order line in USD
+    # currency
+    revenue_per_item is revenue / nullif(order_item_count, 0)
+
+  #(doc) Product revenue leaderboard, ranked, with each product's share of revenue
+  view: product_leaderboard is {
+    group_by: product_name
+    aggregate: revenue, order_item_count
+    calculate: revenue_rank is row_number()
+    order_by: revenue desc
+  }
+
+  #(doc) Is the food against drink mix shifting month to month?
+  # line_chart
+  view: product_mix_by_month is {
+    group_by:
+      revenue_month is ordered_at.month
+      products.product_type
+    aggregate: revenue
+    order_by: revenue_month
+  }
+}
+
+#(doc) Supplies dimension table. The grain of the table is one row per supply and product combination.
+source: supplies is stg_supplies extend {
+  primary_key: supply_uuid
+
+  measure:
+    #(doc) Number of supply and product combinations
+    supply_count is count()
+    #(doc) Total cost of supplies
+    # currency
+    total_supply_cost is supply_cost.sum()
+
+  #(doc) Most expensive supplies
+  view: top_supplies is {
+    top: 10
+    group_by: supply_name
+    aggregate: total_supply_cost, supply_count
+  }
+}
+
+// ── Audience extensions ────────────────────────────────────────────────────
+// One base model, extended differently per audience. This is the composition a metric
+// catalogue cannot express: these are not copies of the model, they are the model with
+// a different surface, and they stay in step with it automatically.
+
+#(doc) Store operations view of order lines: volumes, products, and locations, with no
+#(doc) financial detail. Reaches the same joins as `order_items`.
+source: order_items_store_ops is order_items extend {
+  except: supply_cost, product_price
+}
+
+// The `order_items_margin` source from `adopt-rich` is deliberately absent here, and this is
+// the one place the two packages' semantic layers differ.
+//
+// Publisher refuses to materialize a package containing an `#(authorize)`-gated source in a
+// persisted lineage, and it is right to: an authorize expression is evaluated per request,
+// while a materialized table served frozen carries no gate, so the rows would reach everyone.
+// The build fails closed with that explanation rather than quietly serving ungated data.
+//
+// A per-request gate and a build-once table are incompatible by construction. Gate a source
+// that is not materialized, or scope rows with a `where:` over a given instead.
+// See ../COVERAGE.md.

@@ -32,6 +32,8 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 | `skill:malloy-model` | Writing base and joined source .malloy files, review, curate (includes normalized schema support) |
 | `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
 | `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
+| `skill:malloy-dbt-adopt` | dbt prior art: a semantic layer over the marts dbt already builds |
+| `skill:malloy-dbt-convert` | Moving a dbt pipeline into Malloy: staging and marts as persisted sources |
 
 **Analysis and presentation**
 
@@ -68,7 +70,7 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 | `skill:malloy-materialization` | Persisting an expensive source so queries read a pre-built table |
 | `skill:malloy-materialization-tuning` | Tuning what to persist, and on what schedule, for cost and speed |
 
-> **Adapter pattern:** Each prior art adapter (LookML, future dbt) follows the same structure: a coordinator SKILL.md plus reference files under `reference/` dispatched by phase skills.
+> **Adapter pattern:** Each prior art adapter (LookML, dbt) follows the same structure: a coordinator SKILL.md plus reference files under `reference/` dispatched by phase skills.
 
 ## Workflows
 

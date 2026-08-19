@@ -1,0 +1,90 @@
+>>>markdown
+# jaffle-shop: the pipeline moved into Malloy
+
+This is the **same semantic layer** as the `jaffle-shop-adopt` package. The sources, measures,
+and views are the same text. The difference is underneath: `adopt` reads the marts **dbt built**,
+and this package reads marts **Malloy rebuilt** from the raw data and materialized with
+`#@ persist`.
+
+Two files:
+
+```
+pipeline.malloy     stg_* renames and casts, then the three sources that earn a table
+jaffle_shop.malloy  orders, customers, ... -- the semantic layer, same text as adopt-rich
+```
+
+dbt splits this into a staging layer of views and a marts layer of tables. Here it is one
+transformation, and `#@ persist` is a latency knob rather than a layer: only `order_items`,
+`orders`, and `customers` build anything. `products`, `supplies`, and `locations` build nothing at
+all, because a rename does not earn a table.
+
+The built table and the semantic source are still separate (`orders_built` against `orders`), and
+that part is load-bearing: `customers_built` is derived *from* `orders_built` while the semantic
+`orders` joins `customers`, so fusing them is a cycle Malloy rejects.
+>>>malloy
+import "jaffle_shop.malloy"
+import "pipeline.malloy"
+>>>markdown
+## The same query, the same numbers
+
+This is the identical query the `adopt` notebook runs. dbt's own engine returns
+`order_total` 105826.18 · `orders` 9568 · `large_orders` 1141 · `food_orders` 2336.
+
+The counts match exactly. `order_total` differs from 105826.18 in the last few decimal places,
+in whichever direction the summation order happens to land: dbt's `cents_to_dollars` macro casts
+to `numeric(16,2)`, while this computes dollars from cents in floating point. That difference, and two others, are in [../COVERAGE.md](../COVERAGE.md).
+>>>malloy
+run: orders -> { aggregate: order_total, orders, large_orders, food_orders }
+>>>markdown
+dbt's saved query, as a view — same name, same definition, same output shape as in `adopt`.
+>>>malloy
+run: orders -> order_metrics + { limit: 10 }
+>>>markdown
+## What the pipeline layer actually does
+
+`orders_built` is one `#@ persist` annotation instead of a dbt model file plus a
+`+materialized: table` config. It aggregates the order items, then computes the two booleans in a
+second stage so they are stored columns of the mart exactly as they are in dbt's.
+
+It also carries the part that looks like it needs SQL: dbt's `orders.sql` closes with
+`row_number() over (partition by customer_id order by ordered_at asc)`, which is a `calculate:`.
+>>>malloy
+run: orders_built -> {
+  select: order_id, customer_id, ordered_at, customer_order_number, count_order_items, is_food_order
+  order_by: customer_id, customer_order_number
+  limit: 10
+}
+>>>markdown
+## The trap worth knowing
+
+77 of these 9,568 orders have no items. `count_order_items` sums to **14,250**, matching dbt.
+
+Written the obvious way — `order_items_built.count()` — it sums to 14,327, because Malloy's
+`count()` counts the outer-join row and returns 1 for an order with no items where dbt's
+`LEFT JOIN` leaves NULL. Nothing errors; the number is just wrong. The fix is to count the key:
+`count(order_items_built.order_item_id)`.
+>>>malloy
+run: orders -> {
+  aggregate:
+    order_count is count()
+    total_items is count_order_items.sum()
+    orders_with_no_items is count() { where: count_order_items = 0 }
+}
+>>>markdown
+## Building the tables
+
+A standalone Publisher does not build on publish. All six marts build on demand:
+
+```bash
+malloy-pub materialize --environment examples --package jaffle-shop-convert --wait
+```
+
+Until a build runs, these queries compute from the raw Parquet on every read. Afterwards they
+read the built tables, and the numbers above do not change.
+
+## What this does not carry
+
+dbt asserts **27 data tests and 3 unit tests** over these marts. Rebuilding the marts here does
+**not** rebuild those assertions — Malloy has no test framework today. A converted mart is an
+untested mart, which is why `adopt` is the recommended starting point and this package is a
+demonstration of what moving the pipeline costs and buys.

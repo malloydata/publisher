@@ -1,0 +1,9 @@
+{
+  "name": "jaffle-shop-adopt",
+  "version": "1.0.0",
+  "description": "Adopt: a Malloy semantic layer over the marts dbt built. dbt keeps the pipeline; Malloy becomes the interface analysts and agents query.",
+  "explores": [
+    "jaffle_shop.malloy"
+  ],
+  "queryableSources": "declared"
+}
