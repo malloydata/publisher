@@ -63,7 +63,7 @@ export const integer = (value) => {
  * Format a cell the way the field's own tags ask for, so the page never carries
  * a second opinion about how a number reads. `# currency` and `# percent` come
  * from the model; `id` is Malloy's "this is an identifier, do not group the
- * digits" format, which is why a customer id renders as 884 and not 884.
+ * digits" format, which is why a customer id renders as 8884 and not 8,884.
  */
 export function formatValue(value, format) {
    if (value === null || value === undefined) return "—";

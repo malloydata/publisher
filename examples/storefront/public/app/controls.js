@@ -3,12 +3,17 @@
 // This is the one thing a dashboard gets for free that a hand-authored page has
 // to do itself, and it is worth doing properly: the `given:` declarations in
 // ../../givens.malloy already say what each filter is called, what widget it
-// wants, where its options come from, and what its bounds are. Reading that
-// means adding a given to the model and importing it in data_app.malloy is the
-// whole job: a control appears here with no edit to this directory.
+// wants, where its options come from, and what its bounds are. Reading that is
+// what lets a control appear here with no edit to this directory.
+//
+// Adding a filter is three edits, none of them in this directory: declare the
+// `given:` in givens.malloy, import it in data_app.malloy, and add a clause
+// naming it to `scoped_orders`' `where:`. Skipping the third is the quiet
+// failure: the control renders, the value rides the URL, the server accepts it
+// because the given IS declared, and not one row is filtered.
 //
 //   GET /api/v0/…/models/data_app.malloy  ->  { givens: [ { name, type, label,
-//     control, suggest, rangeMin, rangeMax, default, annotations } ] }
+//     control, suggest, rangeMin, rangeMax, default, description, annotations } ] }
 //
 // The runtime has no helper for that endpoint, so the page fetches it. Every
 // *value* still goes over the wire as a given, never interpolated into a query.
@@ -52,12 +57,35 @@ export async function loadGivenContracts(modelPath) {
  */
 async function loadOptions(modelPath, contract) {
    const suggest = contract.suggest;
-   if (!suggest?.dimension) return [];
+   // The server publishes a `suggest` only when it is runnable, which is a
+   // query on its own OR a source-and-dimension pair (see `readGivenControlSpec`
+   // in packages/server/src/service/given.ts). Requiring a dimension here would
+   // silently drop the query-alone form, leaving a picker with nothing in it and
+   // no error to explain why.
+   if (!suggest || (!suggest.query && !(suggest.source && suggest.dimension)))
+      return [];
    const query = suggest.query
       ? `run: ${suggest.query}`
       : `run: ${suggest.source} -> { group_by: ${suggest.dimension}; order_by: ${suggest.dimension} }`;
    const rows = await Publisher.query(modelPath, query);
-   return rows.map((row) => row[suggest.dimension]).filter((v) => v != null);
+   // With `query` alone the first column of each row is the value, which is what
+   // the API documents; `dimension` names the column when a query returns more
+   // than one.
+   const pick = (row) =>
+      suggest.dimension ? row[suggest.dimension] : Object.values(row)[0];
+   return rows.map(pick).filter((v) => v != null);
+}
+
+/**
+ * An empty picker and a failed one look identical, and they mean opposite
+ * things: "this column has no values" versus "we never found out". Publisher's
+ * own SDK draws that distinction explicitly, so the example should not quietly
+ * collapse it into a silent empty list.
+ */
+function optionsFailed(control, contract, error) {
+   console.error(`options for ${contract.name}`, error);
+   control.title = `Could not load choices: ${error?.message ?? error}`;
+   control.dataset.optionsFailed = "true";
 }
 
 const isFilter = (contract) => String(contract.type).startsWith("filter<");
@@ -148,17 +176,25 @@ function singleSelect(
    );
    host.appendChild(labelled(contract, select, description));
 
-   loadOptions(modelPath, contract).then((options) => {
-      for (const option of options) {
-         const el = document.createElement("option");
-         el.value = el.textContent = option;
-         select.appendChild(el);
-      }
-      select.value = firstValue(value);
-   });
+   // `current` rather than the captured `value`: the options arrive a round trip
+   // later, and Reset (or a Back) can land inside that window. Restoring the
+   // value this widget was BUILT with would then show a filter that is not in
+   // force. `set` keeps this in step, so whatever arrives last wins.
+   let current = value;
+   loadOptions(modelPath, contract)
+      .then((options) => {
+         for (const option of options) {
+            const el = document.createElement("option");
+            el.value = el.textContent = option;
+            select.appendChild(el);
+         }
+         select.value = firstValue(current);
+      })
+      .catch((error) => optionsFailed(select, contract, error));
    return {
       name: contract.name,
       set: (next) => {
+         current = next;
          select.value = firstValue(next);
       },
    };
@@ -215,13 +251,12 @@ function multiSelect(
       panel = null;
    };
 
-   button.addEventListener("click", () => {
-      if (panel) {
-         close();
-         return;
-      }
-      panel = document.createElement("div");
-      panel.className = "check-panel";
+   // Rebuilt rather than built once: the options arrive a round trip after the
+   // button does, so a reader who opens the popover in that window would get an
+   // empty panel that stayed empty until they closed and reopened it.
+   const fillPanel = () => {
+      if (!panel) return;
+      panel.replaceChildren();
       for (const option of options) {
          const row = document.createElement("label");
          row.className = "check-row";
@@ -239,6 +274,16 @@ function multiSelect(
          row.append(box, text);
          panel.appendChild(row);
       }
+   };
+
+   button.addEventListener("click", () => {
+      if (panel) {
+         close();
+         return;
+      }
+      panel = document.createElement("div");
+      panel.className = "check-panel";
+      fillPanel();
       button.parentElement.appendChild(panel);
       requestAnimationFrame(() => {
          document.addEventListener("pointerdown", onOutsidePointerDown);
@@ -246,9 +291,12 @@ function multiSelect(
    });
 
    host.appendChild(labelled(contract, button, description));
-   loadOptions(modelPath, contract).then((loaded) => {
-      options = loaded;
-   });
+   loadOptions(modelPath, contract)
+      .then((loaded) => {
+         options = loaded;
+         fillPanel();
+      })
+      .catch((error) => optionsFailed(button, contract, error));
    return {
       name: contract.name,
       set: (next) => {

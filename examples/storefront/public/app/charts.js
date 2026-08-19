@@ -81,9 +81,20 @@ const timeAxis = (theme) => ({
    },
 });
 
+/**
+ * Chart.js keys `parsed` by AXIS NAME, not by role, so the value lives on
+ * whichever axis is not the index axis. On a horizontal bar (`indexAxis: "y"`)
+ * `parsed.y` is the category's index, so reading it shows 0, 1, 2 where the
+ * revenue should be, and a `?? parsed.x` fallback never fires because an index
+ * is a perfectly good number. Pick by orientation instead.
+ */
 const tooltip = (format) => ({
    callbacks: {
-      label: (item) => ` ${formatValue(item.parsed.y ?? item.parsed.x, format)}`,
+      label: (item) =>
+         ` ${formatValue(
+            item.chart.options.indexAxis === "y" ? item.parsed.x : item.parsed.y,
+            format,
+         )}`,
    },
 });
 
