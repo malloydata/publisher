@@ -35,13 +35,17 @@
  * annotations, and classifies a compiled gate against the row-level grammar
  * ({@link classifyAuthorizeGate}). It does not ENFORCE one: a gate is a row
  * filter grafted onto the entry point by `Model.authorizeAndBindRunnable`,
- * and the only queries this module runs are load-time probes. Kept light so
+ * and every probe this module builds is COMPILED, never RUN — the
+ * package-load worker's `ProxyConnection.runSQL` deliberately throws
+ * (`package_load_worker.ts`), so a vacuous-default check against a literal
+ * atom's given default is decided statically ({@link classifyAuthorizeGate}'s
+ * `literalAtomDetails`), not by executing SQL. Kept light so
  * it bundles cleanly into the
  * package-load worker: its only non-type imports are `../errors` and
  * `./annotations` (which the worker already bundles via `source_extraction.ts`).
  */
 
-import { payloadOf, routeOf, type GivenValue } from "@malloydata/malloy";
+import { payloadOf, routeOf } from "@malloydata/malloy";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { type AnnotationNote } from "./annotations";
 
@@ -536,14 +540,46 @@ export type RowLevelGateClassification =
    //
    // `literalAtoms` is the reconstructed source text of every `<given> <op>
    // <literal>` atom the walk accepted (e.g. `$ROLE != 'admin'` from the
-   // admin-override idiom) — self-contained Malloy boolean expressions,
-   // independently probeable. A gate is a per-request filter, so any one of
-   // these being TRUE under the given's own DECLARATION DEFAULT (the value a
-   // caller who supplies nothing gets) makes the whole disjunction it sits in
-   // admit every row for that caller — see `validateAuthorizeProbes`'s
-   // default-value probe, which is what actually evaluates these.
-   | { shape: "row_level"; givenNames: string[]; literalAtoms: string[] }
+   // admin-override idiom) — self-contained Malloy boolean expressions, kept
+   // purely for human-readable error messages. A gate is a per-request
+   // filter, so any one of these being TRUE under the given's own
+   // DECLARATION DEFAULT (the value a caller who supplies nothing gets)
+   // makes the whole disjunction it sits in admit every row for that caller
+   // — see `assertNoVacuousDefaultAtom`, which is what actually evaluates
+   // these, off `literalAtomDetails` rather than by re-parsing this text.
+   | {
+        shape: "row_level";
+        givenNames: string[];
+        literalAtoms: string[];
+        literalAtomDetails: LiteralAtomDetail[];
+     }
    | { shape: "rejected"; cause: RowLevelGateRejectionCause; detail: string };
+
+/**
+ * The structured form of one `literalAtoms` entry — the given, operator, and
+ * literal `classifyAuthorizeGate`'s walk already has in hand at the point it
+ * builds the text, captured instead of re-parsed back out of it, so
+ * `assertNoVacuousDefaultAtom` never has to reverse-engineer operands from a
+ * rendered string. `text` is the same string `literalAtoms` carries (for an
+ * error message that names the atom); the rest is what a static evaluator
+ * needs to decide the atom's truth against a given's declared default.
+ */
+export type LiteralAtomDetail =
+   | {
+        kind: "comparison";
+        text: string;
+        given: string;
+        op: string;
+        literalText: string;
+        givenOnLeft: boolean;
+        negate: boolean;
+     }
+   | {
+        kind: "membership";
+        text: string;
+        element: string;
+        container: string;
+     };
 
 /**
  * The compiled-condition node kinds a row-level gate may be built from, and
@@ -633,6 +669,7 @@ export function classifyAuthorizeGate(
 ): RowLevelGateClassification {
    const givenNames: string[] = [];
    const literalAtoms: string[] = [];
+   const literalAtomDetails: LiteralAtomDetail[] = [];
    let rejection: RowLevelGateClassification | undefined;
 
    const reject = (
@@ -785,7 +822,14 @@ export function classifyAuthorizeGate(
             // default at request time instead of the caller's value.
             if (declaredTypeOf(otherGiven) === null) return false;
             givenNames.push(otherGiven);
-            literalAtoms.push(`$${otherGiven} in $${given}`);
+            const text = `$${otherGiven} in $${given}`;
+            literalAtoms.push(text);
+            literalAtomDetails.push({
+               kind: "membership",
+               text,
+               element: otherGiven,
+               container: given,
+            });
             return true;
          }
          return walkFieldOperand(n.e);
@@ -872,14 +916,25 @@ export function classifyAuthorizeGate(
             // `<`, `>=`, `<=`): reconstruct `$given op literal` when the
             // given was on the left, `literal op $given` when it was on
             // the right, rather than always writing the given first.
-            const atom =
-               left !== null
-                  ? `$${given} ${kind} ${literalText}`
-                  : `${literalText} ${kind} $${given}`;
-            // `assertNoVacuousDefaultAtom` probes this exact text, so a
-            // negation must be reflected here — probing the un-negated atom
-            // would check the wrong condition.
-            literalAtoms.push(negate ? `not (${atom})` : atom);
+            const givenOnLeft = left !== null;
+            const atom = givenOnLeft
+               ? `$${given} ${kind} ${literalText}`
+               : `${literalText} ${kind} $${given}`;
+            // `assertNoVacuousDefaultAtom` evaluates this exact atom (via
+            // `literalAtomDetails`, not by re-parsing this text), so a
+            // negation must be reflected here — evaluating the un-negated
+            // atom would check the wrong condition.
+            const text = negate ? `not (${atom})` : atom;
+            literalAtoms.push(text);
+            literalAtomDetails.push({
+               kind: "comparison",
+               text,
+               given,
+               op: kind,
+               literalText,
+               givenOnLeft,
+               negate,
+            });
          }
          return true;
       }
@@ -957,7 +1012,7 @@ export function classifyAuthorizeGate(
             "source's own `where:`",
       };
    }
-   return { shape: "row_level", givenNames, literalAtoms };
+   return { shape: "row_level", givenNames, literalAtoms, literalAtomDetails };
 }
 
 /**
@@ -987,48 +1042,9 @@ function asNode(node: unknown): Record<string, unknown> | null {
       : null;
 }
 
-/**
- * Strict, fail-closed truthiness for a probe result cell. DuckDB (the probe's
- * connection) returns a native boolean, but normalize defensively: only a real
- * `true` / SQL `1` / `"true"` grants access. null, undefined, `0`, `false`, a
- * missing cell — anything else — denies.
- */
-export function isProbeTrue(cell: unknown): boolean {
-   return cell === true || cell === 1 || cell === "true";
-}
-
 /** Minimal materializer surface needed to compile (not run) the probe. */
 interface AuthorizeProbeCompiler {
    loadQuery(query: string): { getPreparedQuery(): Promise<unknown> };
-}
-
-/** Minimal materializer surface needed to run the probe (the runtime gate). */
-interface AuthorizeProbeExecutor {
-   loadQuery(query: string): {
-      run(opts: {
-         rowLimit?: number;
-         givens?: Record<string, GivenValue>;
-      }): Promise<{ data: { value: ReadonlyArray<Record<string, unknown>> } }>;
-   };
-}
-
-/**
- * Run one probe (already-built query text) and report whether it evaluated
- * true. Any throw (compile error, runtime "no value" for a referenced given,
- * a missing/malformed result) propagates to the caller, which decides how to
- * react — `assertNoVacuousDefaultAtom` treats one specific message as the
- * benign no-default case and every other as a load failure.
- */
-async function runProbe(
-   executor: AuthorizeProbeExecutor,
-   probeText: string,
-   givens: Record<string, GivenValue>,
-): Promise<boolean> {
-   const result = await executor
-      .loadQuery(probeText)
-      .run({ rowLimit: 1, givens });
-   const row = result?.data?.value?.[0];
-   return !!(row && isProbeTrue(row.__auth_0));
 }
 
 /**
@@ -1194,76 +1210,229 @@ async function runOneRowProbeOrThrow(
 }
 
 /**
- * Malloy's own wording (`expression_compiler.js`) when a given is referenced
- * with no caller-supplied value and no declared default — the ONE safe
- * outcome for {@link assertNoVacuousDefaultAtom}'s no-givens probe: a given
- * with no default cannot silently resolve to anything at request time
- * either, so there is no vacuous-default hazard to refuse. Matched by
- * substring rather than parsed structurally: this module has no access to
- * Malloy's internal error types, and the message is the only stable surface.
+ * A literal-atom operand or given-default, reduced to a JS value comparable
+ * under its given's own DECLARED type — never guessed from the literal's own
+ * syntax, so `$NUM = 'x'` (a type the walk never should have accepted) is
+ * caught as undecidable rather than compared some way SQL wouldn't.
  */
-const NO_DEFAULT_GIVEN_PATTERN = /has no value and no default/;
+type StaticLiteral =
+   | { kind: "string"; value: string }
+   | { kind: "number"; value: number }
+   | { kind: "boolean"; value: boolean };
 
 /**
- * Refuse a row-level gate whose accepted literal atom(s) (`literalAtoms` from
- * {@link classifyAuthorizeGate} — a `<given> <op> <literal>` comparison like
- * the admin-override `$ROLE != 'admin'`) evaluate TRUE against the given's
- * own DECLARATION DEFAULT — the value a caller who supplies nothing gets.
- * The admin-override idiom is an OR disjunct specifically so a caller need
- * not name every non-admin role; the flip side is that the atom's truth is
- * then decided by whichever value the given resolves to when the caller
- * supplies nothing, and the documented
- * convention is an EMPTY default. A `!=` (or any comparison the empty/zero
- * default doesn't happen to satisfy) atom is vacuously true there, and an
- * OR'd atom that is always true makes the whole disjunction — the whole row
- * filter — admit every row for that caller. This is the same failure mode a
- * negated membership test (`not in`) was refused for in
- * {@link classifyAuthorizeGate}: an authoring mistake to catch at load time,
- * not a runtime condition to document as a trap.
- *
- * Probes with NO supplied givens (`{}`), so each atom's own given resolves to
- * its declared default exactly as it would for a caller who supplied
- * nothing. A given with NO default at all cannot be vacuous this way — a
- * caller must supply a value or the request itself fails the identical "no
- * value and no default" way — so that one outcome is not a refusal; see
- * {@link NO_DEFAULT_GIVEN_PATTERN}. Any OTHER probe failure (a given the
- * classify walk already proved reachable should not fail its OWN atom's
- * probe) still fails the load — fail closed, matching every other check in
- * this function.
+ * Parse rendered Malloy literal source text — {@link literalOperandText}'s
+ * output, or a given's declared-default text (`ApiGiven.default cf.
+ * `given.ts`'s `malloyGivenToApi`) — into a {@link StaticLiteral}, per
+ * `declaredType`. Returns `null` when the type is not one this function
+ * reduces (`date`, `timestamp`, `filter expression`, an array, or text that
+ * doesn't match its type's own grammar) — the caller treats that as
+ * undecidable rather than guessing.
  */
-async function assertNoVacuousDefaultAtom(
-   executor: AuthorizeProbeExecutor,
+function parseStaticLiteral(
+   text: string,
+   declaredType: string,
+): StaticLiteral | null {
+   switch (declaredType.trim().toLowerCase()) {
+      case "boolean":
+         if (text === "true") return { kind: "boolean", value: true };
+         if (text === "false") return { kind: "boolean", value: false };
+         return null;
+      case "number": {
+         if (!/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(text)) return null;
+         const value = Number(text);
+         return Number.isFinite(value) ? { kind: "number", value } : null;
+      }
+      case "string": {
+         const match = /^'((?:\\.|[^'\\])*)'$/.exec(text);
+         return match
+            ? { kind: "string", value: match[1].replace(/\\(.)/g, "$1") }
+            : null;
+      }
+      default:
+         return null;
+   }
+}
+
+/**
+ * Split a rendered Malloy array-literal default (`['a', 'b']`, `[1, 2]`) into
+ * its element source texts, respecting single-quoted strings so a comma or
+ * bracket inside one is not mistaken for a delimiter. Returns `null` for
+ * anything that isn't bracket-delimited — the caller treats that as
+ * undecidable.
+ */
+function parseArrayLiteralElements(text: string): string[] | null {
+   const trimmed = text.trim();
+   if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+   const inner = trimmed.slice(1, -1).trim();
+   if (inner === "") return [];
+   const elements: string[] = [];
+   let current = "";
+   let inString = false;
+   for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (inString) {
+         current += ch;
+         if (ch === "\\" && i + 1 < inner.length) current += inner[++i];
+         else if (ch === "'") inString = false;
+         continue;
+      }
+      if (ch === "'") {
+         inString = true;
+         current += ch;
+      } else if (ch === ",") {
+         elements.push(current.trim());
+         current = "";
+      } else {
+         current += ch;
+      }
+   }
+   elements.push(current.trim());
+   return elements;
+}
+
+/**
+ * Evaluate one {@link LiteralAtomDetail} of kind `"comparison"` against its
+ * given's declared default, with SQL comparison semantics: `null` means
+ * "cannot be decided statically" (an unparseable literal, or an operator this
+ * function doesn't reduce), never a JS-truthy/falsy guess.
+ */
+function evaluateComparisonAtom(
+   atom: Extract<LiteralAtomDetail, { kind: "comparison" }>,
+   declaredTypes: Map<string, string>,
+   declaredDefaults: Map<string, string>,
+): boolean | null {
+   const givenDefault = declaredDefaults.get(atom.given);
+   // No declared default is DECIDED, not undecidable: a caller must supply a
+   // value or the request fails, so the atom cannot be vacuously true.
+   if (givenDefault === undefined) return false;
+   const declaredType = declaredTypes.get(atom.given);
+   if (declaredType === undefined) return null;
+   const givenValue = parseStaticLiteral(givenDefault, declaredType);
+   const literalValue = parseStaticLiteral(atom.literalText, declaredType);
+   if (givenValue === null || literalValue === null) return null;
+   const left = atom.givenOnLeft ? givenValue : literalValue;
+   const right = atom.givenOnLeft ? literalValue : givenValue;
+   let result: boolean;
+   switch (atom.op) {
+      case "=":
+         result = left.value === right.value;
+         break;
+      case "!=":
+         result = left.value !== right.value;
+         break;
+      case ">":
+         result = left.value > right.value;
+         break;
+      case ">=":
+         result = left.value >= right.value;
+         break;
+      case "<":
+         result = left.value < right.value;
+         break;
+      case "<=":
+         result = left.value <= right.value;
+         break;
+      default:
+         return null;
+   }
+   return atom.negate ? !result : result;
+}
+
+/**
+ * Evaluate one {@link LiteralAtomDetail} of kind `"membership"` (`$element in
+ * $container`) against both givens' declared defaults. `null` means "cannot
+ * be decided statically" — an unparseable element or array literal, same as
+ * {@link evaluateComparisonAtom}.
+ */
+function evaluateMembershipAtom(
+   atom: Extract<LiteralAtomDetail, { kind: "membership" }>,
+   declaredTypes: Map<string, string>,
+   declaredDefaults: Map<string, string>,
+): boolean | null {
+   const elementDefault = declaredDefaults.get(atom.element);
+   const containerDefault = declaredDefaults.get(atom.container);
+   // Either side lacking a default makes the membership test decidable as
+   // not-vacuous — see `evaluateComparisonAtom`.
+   if (elementDefault === undefined || containerDefault === undefined) {
+      return false;
+   }
+   const elementType = declaredTypes.get(atom.element);
+   if (elementType === undefined) return null;
+   const elementValue = parseStaticLiteral(elementDefault, elementType);
+   if (elementValue === null) return null;
+   const items = parseArrayLiteralElements(containerDefault);
+   if (items === null) return null;
+   for (const item of items) {
+      const itemValue = parseStaticLiteral(item, elementType);
+      if (itemValue === null) return null;
+      if (itemValue.value === elementValue.value) return true;
+   }
+   return false;
+}
+
+/**
+ * Refuse a row-level gate whose accepted literal atom(s)
+ * ({@link classifyAuthorizeGate}'s `literalAtomDetails` — a `<given> <op>
+ * <literal>` comparison like the admin-override `$ROLE != 'admin'`, or a
+ * `$element in $container` membership test) evaluate TRUE against the
+ * given's own DECLARATION DEFAULT — the value a caller who supplies nothing
+ * gets. The admin-override idiom is an OR disjunct specifically so a caller
+ * need not name every non-admin role; the flip side is that the atom's truth
+ * is then decided by whichever value the given resolves to when the caller
+ * supplies nothing, and the documented convention is an EMPTY default. A
+ * `!=` (or any comparison the empty/zero default doesn't happen to satisfy)
+ * atom is vacuously true there, and an OR'd atom that is always true makes
+ * the whole disjunction — the whole row filter — admit every row for that
+ * caller. This is the same failure mode a negated membership test (`not in`)
+ * was refused for in {@link classifyAuthorizeGate}: an authoring mistake to
+ * catch at load time, not a runtime condition to document as a trap.
+ *
+ * Evaluated STATICALLY rather than by probing the warehouse — this function
+ * runs inside the package-load worker too, whose `ProxyConnection.runSQL`
+ * deliberately throws (`package_load_worker.ts`), so a SQL round trip here
+ * would fail every load of a package carrying this idiom. Every atom's
+ * operand is a given resolved to its declared default (or a literal),
+ * exactly as `evaluateComparisonAtom`/`evaluateMembershipAtom` above reduce
+ * it — no warehouse involved. A given with NO declared default at all cannot
+ * be vacuous this way — a caller must supply a value or the request itself
+ * fails ("has no value and no default") — so that is `continue`, not a
+ * refusal, matching the prior probe-based behaviour. An atom this function
+ * cannot reduce (an unparseable literal, an array default, a type it doesn't
+ * know) is reported via `onRowLevelGateUnexpressible` instead of failing the
+ * whole load — the same escape `validateAuthorizeProbes` already takes for a
+ * gate shape it cannot express at one entry point.
+ *
+ * Exported for direct unit testing against hand-built `LiteralAtomDetail`s
+ * (`authorize.spec.ts`), the same idiom {@link classifyAuthorizeGate}'s own
+ * tests use — real callers still only reach it through
+ * `validateAuthorizeProbes`.
+ */
+export function assertNoVacuousDefaultAtom(
    sourceName: string,
-   literalAtoms: string[],
-): Promise<void> {
-   for (const atom of literalAtoms) {
-      // A bare boolean literal's truth value is already known statically —
-      // no given to probe, so no runtime connection is needed at all (this
-      // runs inside the package-load worker, whose `ProxyConnection` cannot
-      // `runSQL`). Neither is vacuous: this check exists to catch an atom
-      // that is UNINTENTIONALLY always true (a given resolving to its own
-      // declared default), not to forbid `#(authorize) "true"` — a deliberate
-      // constant admit, the direct replacement for the old whole-source
-      // admit/deny this task collapsed into a row predicate.
-      if (atom === "false" || atom === "true") continue;
-      let vacuous: boolean;
-      try {
-         vacuous = await runProbe(executor, buildAuthorizeProbe([atom]), {});
-      } catch (err) {
-         const detail = err instanceof Error ? err.message : String(err);
-         if (NO_DEFAULT_GIVEN_PATTERN.test(detail)) continue;
-         throw new ModelCompilationError({
-            message:
-               `Invalid #(authorize) annotation on source "${sourceName}": ` +
-               `the atom \`${atom}\` could not be evaluated against its ` +
-               `given's declared default (${detail}).`,
-         });
+   atoms: readonly LiteralAtomDetail[],
+   declaredTypes: Map<string, string>,
+   declaredDefaults: Map<string, string>,
+   onRowLevelGateUnexpressible?: (sourceName: string, detail: string) => void,
+): void {
+   for (const atom of atoms) {
+      const vacuous =
+         atom.kind === "comparison"
+            ? evaluateComparisonAtom(atom, declaredTypes, declaredDefaults)
+            : evaluateMembershipAtom(atom, declaredTypes, declaredDefaults);
+      if (vacuous === null) {
+         onRowLevelGateUnexpressible?.(
+            sourceName,
+            `the atom \`${atom.text}\` could not be evaluated statically ` +
+               `against its given's declared default`,
+         );
+         continue;
       }
       if (vacuous) {
          throw new ModelCompilationError({
             message:
                `Invalid #(authorize) annotation on source "${sourceName}": ` +
-               `the atom \`${atom}\` evaluates to TRUE when a caller supplies ` +
+               `the atom \`${atom.text}\` evaluates to TRUE when a caller supplies ` +
                `no givens (its given's own declared default). An OR'd atom ` +
                `that is true by default makes the whole row filter admit ` +
                `every row for that caller. Give the given a default this ` +
@@ -1405,13 +1574,7 @@ async function assertNoVacuousDefaultAtom(
  * compile paths validate identically.
  */
 export async function validateAuthorizeProbes(
-   // Widened from `AuthorizeProbeCompiler` to also RUN a probe, not just
-   // compile one: `assertNoVacuousDefaultAtom` (below) evaluates a
-   // `row_level` gate's literal atom against its given's declared default,
-   // which needs `.run()`, not just `.getPreparedQuery()`. Both real callers
-   // (`Model.create`, the package-load worker) already pass a full
-   // `ModelMaterializer`, which supports both.
-   compiler: AuthorizeProbeCompiler & AuthorizeProbeExecutor,
+   compiler: AuthorizeProbeCompiler,
    options: {
       authorizeMap?: AuthorizeMap;
       declaredTypes?: Map<string, string>;
@@ -1563,10 +1726,12 @@ export async function validateAuthorizeProbes(
          // A gate that admits everyone by default is broken rather than
          // merely unexpressible, so it fails the load.
          try {
-            await assertNoVacuousDefaultAtom(
-               compiler,
+            assertNoVacuousDefaultAtom(
                sourceName,
-               classification.literalAtoms,
+               classification.literalAtomDetails,
+               declaredTypes,
+               declaredDefaults,
+               options.onRowLevelGateUnexpressible,
             );
          } catch (err) {
             options.onRowLevelGateRejected?.("vacuous_default_atom");

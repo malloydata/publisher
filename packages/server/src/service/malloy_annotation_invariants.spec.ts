@@ -492,63 +492,6 @@ source: emp is duckdb.sql("SELECT 1 as id") extend {
       }
    });
 
-   // -------------------------------------------------------------------
-   // Invariant 7: Malloy's wording when a given is referenced with neither a
-   // caller value nor a declared default.
-   //
-   // `authorize.ts`'s `NO_DEFAULT_GIVEN_PATTERN` substring-matches this message
-   // — it has no access to Malloy's error types — and it is the ONE probe
-   // outcome `assertNoVacuousDefaultAtom` treats as safe rather than as a
-   // refusal. If the wording changes, that `continue` stops firing and the
-   // branch falls through to the ModelCompilationError below it: every
-   // row-level gate whose literal atom references a DEFAULTLESS given starts
-   // failing the load. Fail-closed, but a hard break on valid packages, with
-   // nothing else to point at the cause.
-   // -------------------------------------------------------------------
-   it("given: referencing a given with no value and no default fails with the wording NO_DEFAULT_GIVEN_PATTERN matches", async () => {
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      let message = "";
-      try {
-         const text = `##! experimental.givens
-
-given: NO_DEFAULT :: string
-
-source: s is duckdb.sql("SELECT 'a' as x") extend { measure: c is count() }
-`;
-         const urlReader = new InMemoryURLReader(
-            new Map([[`${ROOT}m.malloy`, text]]),
-         );
-         const runtime = new Runtime({
-            urlReader,
-            connections: new FixedConnectionMap(
-               new Map<string, Connection>([["duckdb", duckdb]]),
-               "duckdb",
-            ),
-         });
-         const mm = runtime.loadModel(new URL(`${ROOT}m.malloy`));
-         try {
-            // The same probe SHAPE `assertNoVacuousDefaultAtom` runs an accepted
-            // literal atom with — a one-row select of the atom, executed with NO
-            // supplied givens, so `$NO_DEFAULT` has neither a value nor a
-            // default. The message only appears when the givens actually bind,
-            // which is at run time, not at `getPreparedQuery`.
-            await mm
-               .loadQuery(
-                  `run: duckdb.sql("SELECT 1 AS r") -> { select: a is ($NO_DEFAULT = 'x') }`,
-               )
-               .run({ rowLimit: 1, givens: {} });
-         } catch (err) {
-            message = err instanceof Error ? err.message : String(err);
-         }
-      } finally {
-         await duckdb.close();
-      }
-      expect(message).not.toBe("");
-      // The literal `authorize.ts` depends on. Changing the expectation here
-      // must be accompanied by changing that pattern.
-      expect(message).toMatch(/has no value and no default/);
-   });
-
    it("given: `_internal.defaultText` is the rendered default literal, and is absent when no default is declared", async () => {
       // This one does not pin a discriminator — it pins an INPUT to a security
       // refusal. `service/given.ts` reads `_internal.defaultText` (Malloy's
