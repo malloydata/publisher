@@ -17,6 +17,7 @@ import {
 import { useState } from "react";
 import { Environment } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import { getEnvironmentDescription } from "../../utils/parsing";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -30,26 +31,80 @@ interface HomeProps {
    onClickEnvironment?: (to: string, event?: React.MouseEvent) => void;
 }
 
+/**
+ * What this server can do, in the order someone meets it: exploring first, then
+ * the three analytics surfaces a package can hold, then the endpoint agents come
+ * in through and the rules that govern all of it. Anything that does not earn a
+ * card is named in the closing paragraph rather than crowding this list.
+ */
 const FEATURES: Array<{ title: string; body: string; href: string }> = [
    {
       title: "Ad-hoc analysis",
-      body: "Browse semantic sources, build queries, and run nested logic in Explorer — no code.",
+      body: "Browse the semantic sources on this server and build nested queries in Explorer. Every click writes valid Malloy, so metrics stay correct even across joins.",
       href: DOC_LINKS.explorer,
    },
    {
-      title: "Notebook dashboards",
-      body: "Code-first dashboards using Malloy notebooks. Versioned alongside your models.",
-      href: DOC_LINKS.publishing,
+      title: "Notebooks",
+      body: "A data story: markdown and live query cells in one file, versioned beside the model it reads. Any givens it imports become a panel of filter controls above the cells.",
+      href: DOC_LINKS.surfaces,
+   },
+   {
+      title: "Dashboards",
+      body: "A tagged Malloy file is the page. Tags lay out the grid, the filter row is rendered from the query's parameters, and a tagged dimension clicks through to a detail page. No front-end code.",
+      href: DOC_LINKS.dashboards,
+   },
+   {
+      title: "Data apps",
+      body: "Hand-author an HTML page in a package's public directory and Publisher serves it, backed by that package's models. No build step, and it embeds in a host page.",
+      href: DOC_LINKS.dataApps,
    },
    {
       title: "AI data agents",
-      body: "Expose models via MCP so agents can discover sources and ask well-formed questions.",
+      body: "One MCP endpoint. Agents discover the sources, compile-check the Malloy they write, and ask well-formed questions instead of guessing at raw tables.",
       href: DOC_LINKS.mcpAgents,
+   },
+   {
+      // Deliberately not "so every caller sees only their rows". Givens are
+      // caller-asserted (docs/row-level-access.md), so a row-level filter is not
+      // a boundary on its own; `#(authorize)` is the thing that refuses. What is
+      // true, and what this says, is that the declarations live in the model, so
+      // no surface can define its own.
+      title: "Governed access",
+      body: "Runtime parameters, row-level filters, and per-source access gates are declared in the model, so every surface reads the same rules rather than reimplementing them.",
+      href: DOC_LINKS.givens,
    },
 ];
 
+function InlineLink({
+   href,
+   external = true,
+   children,
+}: {
+   href: string;
+   /**
+    * Whether to open in a new tab. False for the API spec, which is served by
+    * the Publisher server and replaces the console deliberately; true for
+    * off-site targets. `target` and `rel` are both driven from this one flag so
+    * they cannot desynchronise.
+    */
+   external?: boolean;
+   children: React.ReactNode;
+}) {
+   return (
+      <Box
+         component="a"
+         href={href}
+         target={external ? "_blank" : undefined}
+         rel={external ? "noopener noreferrer" : undefined}
+         sx={{ color: "text.primary", textDecoration: "underline" }}
+      >
+         {children}
+      </Box>
+   );
+}
+
 export default function Home({ onClickEnvironment }: HomeProps) {
-   const { apiClients, mutable } = useServer();
+   const { apiClients, mutable, server } = useServer();
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["environments"],
@@ -85,16 +140,24 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                color="text.secondary"
                sx={{ maxWidth: 720, lineHeight: 1.6 }}
             >
-               Define semantic models once — and use them everywhere. Publisher
-               serves Malloy models through clean APIs, enabling consistent,
-               interpretable, and AI-ready data access for tools, applications,
-               and agents.
+               Define semantic models once and use them everywhere. Publisher
+               serves Malloy models over a REST API and a single MCP endpoint,
+               so applications, BI tools, and AI agents compose queries against
+               the model instead of writing SQL, and the numbers come back right
+               by construction.
             </Typography>
          </Box>
 
+         {/* Two columns at every width above the phone breakpoint, and
+             deliberately not the three the environment grid below uses: these
+             bodies are prose rather than a name. Measured at 1440px, two across
+             gives every card a 410px column and a uniform three lines. Three
+             across is narrower than a third of the container, since the grid
+             subtracts its gutters, and the bodies then wrap unevenly so the row
+             heights stop matching. */}
          <Grid container spacing={4} sx={{ mb: 5 }}>
             {FEATURES.map((feature) => (
-               <Grid size={{ xs: 12, md: 4 }} key={feature.title}>
+               <Grid size={{ xs: 12, sm: 6 }} key={feature.title}>
                   <Stack spacing={1}>
                      <Typography
                         variant="body2"
@@ -198,21 +261,49 @@ export default function Home({ onClickEnvironment }: HomeProps) {
 
          <Divider sx={{ my: 4 }} />
 
-         <Typography variant="body2" color="text.secondary">
+         <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ maxWidth: 720, lineHeight: 1.6 }}
+         >
+            {/* Six of the ten types in the api-doc.yaml enum. connections.md
+                names eight. Two of the six named here, mysql and trino,
+                appear in connections.md exactly once, in the parenthetical that
+                ends "etc."; Databricks and MotherDuck it never names at all. "And more"
+                rather than a full list, because a list that reads as complete
+                while omitting Databricks is worse than a short one that says
+                it is short. */}
+            Also here:{" "}
+            <InlineLink href={DOC_LINKS.connections}>connections</InlineLink> to
+            BigQuery, Snowflake, Postgres, MySQL, Trino, DuckDB and more;{" "}
+            <InlineLink href={DOC_LINKS.materialization}>
+               materialized tables
+            </InlineLink>{" "}
+            built on demand or on a schedule; and a{" "}
+            {/* Built from the configured server rather than written as
+                "/api-doc.html". The spec is a static file off the Publisher
+                server's root, and an SDK consumer's page origin need not be
+                that server: a root-relative href resolves against the host and
+                404s. serverBaseUrl exists for exactly this. */}
+            <InlineLink
+               href={`${serverBaseUrl(server)}/api-doc.html`}
+               external={false}
+            >
+               REST API
+            </InlineLink>{" "}
+            that does everything this console does.
+         </Typography>
+
+         <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ maxWidth: 720, lineHeight: 1.6, mt: 2 }}
+         >
             Publisher is built on fully open infrastructure and designed for the
             AI era. Join the{" "}
-            <Box
-               component="a"
-               href="https://join.slack.com/t/malloy-community/shared_invite/zt-1kgfwgi5g-CrsdaRqs81QY67QW0~t_uw"
-               target="_blank"
-               rel="noopener noreferrer"
-               sx={{
-                  color: "text.primary",
-                  textDecoration: "underline",
-               }}
-            >
+            <InlineLink href="https://join.slack.com/t/malloy-community/shared_invite/zt-1kgfwgi5g-CrsdaRqs81QY67QW0~t_uw">
                Malloy Slack community
-            </Box>{" "}
+            </InlineLink>{" "}
             to ask questions, share ideas, and contribute.
          </Typography>
       </Container>

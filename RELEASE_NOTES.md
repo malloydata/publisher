@@ -211,6 +211,43 @@ The `Given` control contract shipped in 0.0.242 as a schema with no reader: the 
 - **`label`, `control`, `rangeMin`, `rangeMax` and `suggest` are now populated,** read from the `given:` declaration's own plain-`#` tags. How a given should be presented belongs to the given rather than to any one surface, which is what lets a notebook, a dashboard and an SDK host render the same control without restating it. Those tags sit in Malloy's reserved namespace and are dropped from `annotations`, so deriving them server-side is what lets a client read them without shipping a MOTLY parser of its own. A declaration carrying none of the tags carries none of the fields, and a value the contract does not accept (`control=radio`, a non-numeric bound) is dropped the same way rather than reported.
 - **`Given` gains `description`,** helper text read from a `# description=` tag. This does not replace `#(description="…")`, which still works and is still what the notebook UI renders: that form stays on `annotations`, where the client that parses it today keeps finding it. The tag form is the one that compiles without a `malformed-route` warning, since Malloy reads an annotation's route up to the first whitespace and a multi-word `#(description="…")` therefore is not well formed. Nothing renders the new field yet.
 
+## [Unreleased]: the Console says what this server can do
+
+The home page described a three-feature Publisher, the package page gave four of its six kinds of
+content the same colour, and Publisher's in-repo reference docs had nothing linking to them.
+
+### What changed
+
+- **Six feature cards on the home page instead of three**, covering notebooks, dashboards, data apps,
+  the MCP endpoint, ad-hoc analysis and the governance model, each linking the reference doc for it.
+  The card previously titled "Notebook dashboards" named a compound of the two surfaces it straddled rather than either of them, and
+  linked the publishing setup guide. A closing paragraph names connections, materialized tables and
+  the REST API, which have docs but do not earn a card.
+- **`DOC_LINKS` gains a `REPO_DOCS` block**, six links to Publisher's own reference docs, which live
+  in the repo rather than on the docs site and for several features are the only write-up there is.
+  A spec checks each target exists in the repo, case-sensitively, so a doc renamed, deleted or
+  mistyped fails the test suite rather than shipping a broken card. It cannot check that a target is
+  on `main` yet, which is a merge-ordering question: this change was sequenced behind the dashboards
+  slice for exactly that reason, and that slice has since landed.
+- **`docs/choosing-a-surface.md`**, a comparison of notebooks, dashboards and HTML data apps with a
+  decision guide. `docs/malloyyo-dashboards-design.md` has referenced it since it merged; it now
+  exists.
+- **Every content type on the package page has its own icon and its own colour.** Four of the six
+  rows had been passing the same teal from four separate call sites, so colour distinguished two
+  kinds out of six. The row now derives both from one `type` prop, which is why it cannot drift
+  again. The three added colours each clear WCAG's 3:1 against white, measured, since they sit behind
+  a white glyph.
+- **`Add Connection` is a contained button with an icon**, matching the add-triggers on the home
+  and environment screens. It was the only one of the three still outlined.
+
+### For SDK consumers
+
+Additive only. `DOC_LINKS` is a public export (`src/index.ts`) and gains six keys; none of the
+existing four changed. Everything else here is internal: `PackageItemRow` is a file-local function
+whose props changed, and `ContentTypeIcon`, `ContentType`, `CONTENT_TINT` and `MALLOY_ACCENT` are
+not re-exported from `components/index.ts` or `src/index.ts`, so they are not on the published
+surface at all.
+
 ## [0.0.244] — queries report how they were served, and what they cost
 
 The server measured several things and then discarded them, and the query
