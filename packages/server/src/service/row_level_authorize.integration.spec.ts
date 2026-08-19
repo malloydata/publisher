@@ -3782,7 +3782,7 @@ source: X is duckdb.table('parent') extend {
 // $GROUPS` is refused when negated because an empty default admits every row,
 // but `tenant != $EXCLUDED` / `amount > $FLOOR` carry the IDENTICAL hazard at
 // the documented default convention ('' / 0) and were previously accepted —
-// `assertNoVacuousDefaultAtom` only probes a `<given> <op> <literal>` atom,
+// `assertNoVacuousDefaultAtom` only evaluates a `<given> <op> <literal>` atom,
 // never a `<field> <op> <given>` comparison, so it structurally cannot catch
 // these. `classifyAuthorizeGate` now refuses a field comparison outright when
 // its given carries ANY declared default, regardless of operator — see its
@@ -4329,8 +4329,8 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
    }
 
    it("a VACUOUS-DEFAULT atom still fails the whole load, even field-less — it has no request-time counterpart to deny with", async () => {
-      // `assertNoVacuousDefaultAtom` is a load-time PROBE, and the request
-      // path never repeats it: `resolveGateShape` only re-runs the shape
+      // `assertNoVacuousDefaultAtom` is a load-time static CHECK, and the
+      // request path never repeats it: `resolveGateShape` only re-runs the shape
       // walk, which accepts `$ROLE_D != 'blocked'`. Warning instead of
       // throwing therefore leaves the source SERVING every row to a caller
       // who supplies nothing — the exact admission the check exists to stop.

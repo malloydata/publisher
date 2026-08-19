@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
+   assertNoVacuousDefaultAtom,
    classifyAuthorizeGate,
    collectAuthorizeExprs,
    containsAuthorizeAnnotationTag,
-   isProbeTrue,
+   type LiteralAtomDetail,
    parseAuthorizeAnnotation,
    referencedGivenNames,
 } from "./authorize";
@@ -26,20 +27,6 @@ describe("referencedGivenNames", () => {
          "X",
          "Z",
       ]);
-   });
-});
-
-describe("isProbeTrue", () => {
-   it("grants only on a genuine true / 1 / 'true'", () => {
-      expect(isProbeTrue(true)).toBe(true);
-      expect(isProbeTrue(1)).toBe(true);
-      expect(isProbeTrue("true")).toBe(true);
-   });
-
-   it("denies on anything else (fail closed)", () => {
-      for (const v of [false, 0, "false", "", null, undefined, {}, "TRUE", 2]) {
-         expect(isProbeTrue(v)).toBe(false);
-      }
    });
 });
 
@@ -299,6 +286,17 @@ describe("classifyAuthorizeGate", () => {
          shape: "row_level",
          givenNames: ["LVL"],
          literalAtoms: ["$LVL > 3"],
+         literalAtomDetails: [
+            {
+               kind: "comparison",
+               text: "$LVL > 3",
+               given: "LVL",
+               op: ">",
+               literalText: "3",
+               givenOnLeft: true,
+               negate: false,
+            },
+         ],
       });
    });
 
@@ -322,6 +320,7 @@ describe("classifyAuthorizeGate", () => {
          shape: "row_level",
          givenNames: ["GROUPS"],
          literalAtoms: [],
+         literalAtomDetails: [],
       });
    });
 
@@ -337,6 +336,7 @@ describe("classifyAuthorizeGate", () => {
          shape: "row_level",
          givenNames: ["BOB"],
          literalAtoms: [],
+         literalAtomDetails: [],
       });
    });
 
@@ -391,6 +391,17 @@ describe("classifyAuthorizeGate", () => {
          shape: "row_level",
          givenNames: ["GROUPS", "ROLE"],
          literalAtoms: ["$ROLE = 'admin'"],
+         literalAtomDetails: [
+            {
+               kind: "comparison",
+               text: "$ROLE = 'admin'",
+               given: "ROLE",
+               op: "=",
+               literalText: "'admin'",
+               givenOnLeft: true,
+               negate: false,
+            },
+         ],
       });
    });
 
@@ -414,6 +425,17 @@ describe("classifyAuthorizeGate", () => {
          shape: "row_level",
          givenNames: ["ROLE"],
          literalAtoms: ["$ROLE = 'admin'"],
+         literalAtomDetails: [
+            {
+               kind: "comparison",
+               text: "$ROLE = 'admin'",
+               given: "ROLE",
+               op: "=",
+               literalText: "'admin'",
+               givenOnLeft: true,
+               negate: false,
+            },
+         ],
       });
    });
 
@@ -600,5 +622,235 @@ describe("classifyAuthorizeGate", () => {
       expect(
          classifyAuthorizeGate(condition(deep, [["org_id"]]), TYPES, DEFAULTS),
       ).toMatchObject({ shape: "rejected", cause: "unsupported_node" });
+   });
+
+   it("a bare `true`/`false` literal contributes no `literalAtomDetails` entry — nothing for assertNoVacuousDefaultAtom to evaluate", () => {
+      // `literalAtoms` still carries the text (for the field-less-gate
+      // grammar tests elsewhere), but there is no given to probe a
+      // declared-default hazard against, so it must not reach the evaluator.
+      expect(
+         classifyAuthorizeGate(condition({ node: "true" }, []), TYPES, DEFAULTS),
+      ).toEqual({
+         shape: "row_level",
+         givenNames: [],
+         literalAtoms: ["true"],
+         literalAtomDetails: [],
+      });
+      expect(
+         classifyAuthorizeGate(condition({ node: "false" }, []), TYPES, DEFAULTS),
+      ).toEqual({
+         shape: "row_level",
+         givenNames: [],
+         literalAtoms: ["false"],
+         literalAtomDetails: [],
+      });
+   });
+});
+
+/**
+ * `assertNoVacuousDefaultAtom` used to decide these cases by compiling and
+ * RUNNING a one-row SQL probe (`runProbe`/`buildAuthorizeProbe`) — which the
+ * package-load worker's `ProxyConnection.runSQL` deliberately throws on
+ * (`package_load_worker.ts`), failing the load of every package whose gate
+ * carried this idiom. It is now a pure, statically-evaluated function, so
+ * these are hand-built `LiteralAtomDetail`s — the same idiom
+ * `classifyAuthorizeGate`'s own tests above use — rather than a compiled
+ * Malloy condition; the end-to-end path (a real gate loading through
+ * `Model.create`) is covered by `row_level_authorize.integration.spec.ts`'s
+ * "vacuous default atom" describe block.
+ */
+describe("assertNoVacuousDefaultAtom", () => {
+   const TYPES = new Map([
+      ["ROLE", "string"],
+      ["NUM", "number"],
+      ["NO_DEFAULT", "string"],
+      ["TENANT", "string"],
+      ["ALLOWED", "array"],
+   ]);
+
+   function comparisonAtom(
+      overrides: Partial<Extract<LiteralAtomDetail, { kind: "comparison" }>>,
+   ): LiteralAtomDetail {
+      return {
+         kind: "comparison",
+         text: "",
+         given: "ROLE",
+         op: "=",
+         literalText: "'admin'",
+         givenOnLeft: true,
+         negate: false,
+         ...overrides,
+      };
+   }
+
+   it("does not refuse `$ROLE = 'admin'` when ROLE defaults to 'guest' — the regression this task fixes", () => {
+      const atom = comparisonAtom({ text: "$ROLE = 'admin'" });
+      expect(() =>
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            TYPES,
+            new Map([["ROLE", "'guest'"]]),
+         ),
+      ).not.toThrow();
+   });
+
+   it("refuses `$ROLE != 'admin'` when ROLE defaults to '' — vacuously true, same message as before", () => {
+      const atom = comparisonAtom({
+         text: "$ROLE != 'admin'",
+         op: "!=",
+      });
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["ROLE", "''"]])),
+      ).toThrow(
+         /the atom `\$ROLE != 'admin'` evaluates to TRUE when a caller supplies no givens/,
+      );
+   });
+
+   it("does not refuse when the given carries no declared default", () => {
+      const atom = comparisonAtom({
+         text: "$NO_DEFAULT = 'admin'",
+         given: "NO_DEFAULT",
+      });
+      // Asserting the absence of a warning too: `not.toThrow()` alone also
+      // passes when the atom is treated as UNDECIDABLE, which warns and denies
+      // the source for every request — the opposite of "does not refuse".
+      const warnings: string[] = [];
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map(), (_s, d) =>
+            warnings.push(d),
+         ),
+      ).not.toThrow();
+      expect(warnings).toEqual([]);
+   });
+
+   it("compares a number-typed given numerically, not lexicographically", () => {
+      // Lexicographically "9" > "10" (string compare), but 9 > 10 is false —
+      // proving the numeric parse actually runs rather than falling back to
+      // JS's default `>` on the rendered text.
+      const atom = comparisonAtom({
+         text: "$NUM > 10",
+         given: "NUM",
+         op: ">",
+         literalText: "10",
+      });
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["NUM", "9"]])),
+      ).not.toThrow();
+   });
+
+   it("still refuses a numeric comparison that IS vacuous at the default", () => {
+      const atom = comparisonAtom({
+         text: "$NUM >= 5",
+         given: "NUM",
+         op: ">=",
+         literalText: "5",
+      });
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["NUM", "9"]])),
+      ).toThrow(/evaluates to TRUE/);
+   });
+
+   it("negation: `not ($X = 'a')` is false (not vacuous) when X defaults to 'a'", () => {
+      const atom = comparisonAtom({
+         text: "not ($ROLE = 'a')",
+         literalText: "'a'",
+         negate: true,
+      });
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["ROLE", "'a'"]])),
+      ).not.toThrow();
+   });
+
+   it("negation: `not ($X = 'a')` is TRUE (vacuous) when X defaults to 'b'", () => {
+      const atom = comparisonAtom({
+         text: "not ($ROLE = 'a')",
+         literalText: "'a'",
+         negate: true,
+      });
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map([["ROLE", "'b'"]])),
+      ).toThrow(/the atom `not \(\$ROLE = 'a'\)` evaluates to TRUE/);
+   });
+
+   it("membership: `$TENANT in $ALLOWED` is not refused when either given lacks a default", () => {
+      const atom: LiteralAtomDetail = {
+         kind: "membership",
+         text: "$TENANT in $ALLOWED",
+         element: "TENANT",
+         container: "ALLOWED",
+      };
+      // Neither given has a default.
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, new Map()),
+      ).not.toThrow();
+      // Only the element does (an array given cannot declare one at all —
+      // see `docs/givens.md` — so this is the only defaulted-container case
+      // reachable through a real gate; exercised directly here anyway since
+      // this function must not assume which side is missing).
+      expect(() =>
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            TYPES,
+            new Map([["TENANT", "'acme'"]]),
+         ),
+      ).not.toThrow();
+   });
+
+   it("membership: refuses when both givens have defaults and the element's default IS a member of the container's", () => {
+      const atom: LiteralAtomDetail = {
+         kind: "membership",
+         text: "$TENANT in $ALLOWED",
+         element: "TENANT",
+         container: "ALLOWED",
+      };
+      const defaults = new Map([
+         ["TENANT", "'acme'"],
+         ["ALLOWED", "['acme', 'other']"],
+      ]);
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, defaults),
+      ).toThrow(/the atom `\$TENANT in \$ALLOWED` evaluates to TRUE/);
+   });
+
+   it("membership: does not refuse when the element's default is NOT a member of the container's", () => {
+      const atom: LiteralAtomDetail = {
+         kind: "membership",
+         text: "$TENANT in $ALLOWED",
+         element: "TENANT",
+         container: "ALLOWED",
+      };
+      const defaults = new Map([
+         ["TENANT", "'acme'"],
+         ["ALLOWED", "['other']"],
+      ]);
+      expect(() =>
+         assertNoVacuousDefaultAtom("S", [atom], TYPES, defaults),
+      ).not.toThrow();
+   });
+
+   it("routes an atom it cannot decide statically to onRowLevelGateUnexpressible instead of failing the load", () => {
+      // A `date` given: this function only reduces string/number/boolean, so
+      // its default cannot be parsed — undecidable, not "vacuous" or "safe".
+      const atom = comparisonAtom({
+         text: "$SINCE = @2024-01-01",
+         given: "SINCE",
+         literalText: "@2024-01-01",
+      });
+      const typesWithDate = new Map([...TYPES, ["SINCE", "date"]]);
+      const defaults = new Map([["SINCE", "@2024-01-01"]]);
+      const warnings: Array<{ sourceName: string; detail: string }> = [];
+      expect(() =>
+         assertNoVacuousDefaultAtom(
+            "S",
+            [atom],
+            typesWithDate,
+            defaults,
+            (sourceName, detail) => warnings.push({ sourceName, detail }),
+         ),
+      ).not.toThrow();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].sourceName).toBe("S");
    });
 });
