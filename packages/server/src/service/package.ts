@@ -33,6 +33,7 @@ import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
 import {
    recordBuildPlanComputeDuration,
+   recordBuildPlanComputeFailed,
    recordColocatedBindDropped,
    recordManifestBindDegraded,
 } from "../materialization_metrics";
@@ -730,6 +731,7 @@ export class Package {
             }));
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
       } catch (err) {
+         recordBuildPlanComputeFailed();
          logger.warn(
             `Failed to compute build plan for package ${packageName}`,
             {

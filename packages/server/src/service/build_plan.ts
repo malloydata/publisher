@@ -992,125 +992,138 @@ export function deriveBuildPlan(
    const refusedSources: Record<string, WireRefusedSource> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
-      const annotationFields = deriveAnnotationFields(source);
+      // One unreadable source must not cost the package its plan (the same
+      // fallback collectIncrementalDeclarations takes). getSQL() and
+      // computeSourceEntityId below throw for a source the colocated tier
+      // deliberately admits — one referencing a given with no default — and an
+      // escaping throw leaves colocatedSourceEligibility unknown, which drops
+      // EVERY colocated binding for the package rather than this one source.
+      try {
+         const annotationFields = deriveAnnotationFields(source);
 
-      // Tier-appropriate eligibility, BEFORE touching getSQL()/
-      // computeSourceEntityId() below: a free-parameter or given-referencing
-      // source fails those calls, so a refused source must be diverted into
-      // `refusedSources` (which needs neither) rather than attempted here. The
-      // tier mirrors the build path's own choice (deriveSelfInstructions /
-      // executeInstructedBuild): a declared `storage=` gets the full,
-      // unconditional storage-destination gate; a plain `#@ persist` gets the
-      // colocated gate, which — unlike the storage one — admits a proven
-      // row-level, fully-attributed `#(authorize)` gate. Using the storage
-      // gate for every source regardless of declared tier (the existing
-      // `SourceEligibility.refused`, kept for its own serve-binding purpose)
-      // would misreport a now-buildable colocated source as refused.
-      const declaresStorage = !!annotationFields.storage;
-      const rollup = options?.preaggregatePlans?.[sourceID];
-      // A rollup's own eligibility gate refuses UNCONDITIONALLY when its base is
-      // gated (assertColocatedPersistNotAuthorizeGated's origin === "preaggregate"
-      // branch) — that refusal governs whether the rollup MATERIALIZES, enforced
-      // separately at build time (materialization_service.ts). Synthesis is
-      // unaffected by it: the plan still reports the rollup Malloy synthesized, so
-      // a gate stops materialization without also hiding the rollup from the plan.
-      // See preaggregation_seams.spec.ts's "gate stops materialization, not
-      // synthesis" test and docs/materialization.md.
-      if (!rollup) {
-         try {
-            if (declaresStorage) {
-               assertMaterializationEligible(source);
-            } else {
+         // Tier-appropriate eligibility, BEFORE touching getSQL()/
+         // computeSourceEntityId() below: a free-parameter or given-referencing
+         // source fails those calls, so a refused source must be diverted into
+         // `refusedSources` (which needs neither) rather than attempted here. The
+         // tier mirrors the build path's own choice (deriveSelfInstructions /
+         // executeInstructedBuild): a declared `storage=` gets the full,
+         // unconditional storage-destination gate; a plain `#@ persist` gets the
+         // colocated gate, which — unlike the storage one — admits a proven
+         // row-level, fully-attributed `#(authorize)` gate. Using the storage
+         // gate for every source regardless of declared tier (the existing
+         // `SourceEligibility.refused`, kept for its own serve-binding purpose)
+         // would misreport a now-buildable colocated source as refused.
+         const declaresStorage = !!annotationFields.storage;
+         const rollup = options?.preaggregatePlans?.[sourceID];
+         // A rollup's own eligibility gate refuses UNCONDITIONALLY when its base is
+         // gated (assertColocatedPersistNotAuthorizeGated's origin === "preaggregate"
+         // branch) — that refusal governs whether the rollup MATERIALIZES, enforced
+         // separately at build time (materialization_service.ts). Synthesis is
+         // unaffected by it: the plan still reports the rollup Malloy synthesized, so
+         // a gate stops materialization without also hiding the rollup from the plan.
+         // See preaggregation_seams.spec.ts's "gate stops materialization, not
+         // synthesis" test and docs/materialization.md.
+         if (!rollup) {
+            try {
+               if (declaresStorage) {
+                  assertMaterializationEligible(source);
+               } else {
+                  assertColocatedPersistNotAuthorizeGated(
+                     source,
+                     source.name,
+                     "persist",
+                     options?.sourceGateOutcomes?.[sourceID],
+                  );
+               }
+            } catch (err) {
+               // Only an eligibility refusal is reportable as one; an unexpected
+               // internal throw would otherwise reach the host as a SECURITY
+               // refusal it never earned.
+               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               refusedSources[sourceID] = {
+                  name: source.name,
+                  sourceID: source.sourceID,
+                  modelPath: sourceModelPaths?.[sourceID],
+                  tier: declaresStorage ? "storage" : "colocated",
+                  reason: err.reason || "authorize",
+                  message: errMessage(err),
+               };
+               continue;
+            }
+         } else {
+            try {
                assertColocatedPersistNotAuthorizeGated(
                   source,
                   source.name,
-                  "persist",
+                  "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                );
+            } catch (err) {
+               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
+               // (it will never materialize) and wireSources below (Malloy still
+               // synthesized it) — both true at once, only for the preaggregate tier.
+               refusedSources[sourceID] = {
+                  name: source.name,
+                  sourceID: source.sourceID,
+                  modelPath: sourceModelPaths?.[sourceID],
+                  tier: "preaggregate",
+                  reason: err.reason || "authorize",
+                  message: errMessage(err),
+               };
             }
-         } catch (err) {
-            refusedSources[sourceID] = {
-               name: source.name,
-               sourceID: source.sourceID,
-               modelPath: sourceModelPaths?.[sourceID],
-               tier: declaresStorage ? "storage" : "colocated",
-               reason:
-                  (err instanceof MaterializationEligibilityError &&
-                     err.reason) ||
-                  "authorize",
-               message: errMessage(err),
-            };
-            continue;
          }
-      } else {
-         try {
-            assertColocatedPersistNotAuthorizeGated(
-               source,
-               source.name,
-               "preaggregate",
-               options?.sourceGateOutcomes?.[sourceID],
-            );
-         } catch (err) {
-            // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
-            // (it will never materialize) and wireSources below (Malloy still
-            // synthesized it) — both true at once, only for the preaggregate tier.
-            refusedSources[sourceID] = {
-               name: source.name,
-               sourceID: source.sourceID,
-               modelPath: sourceModelPaths?.[sourceID],
-               tier: "preaggregate",
-               reason:
-                  (err instanceof MaterializationEligibilityError &&
-                     err.reason) ||
-                  "authorize",
-               message: errMessage(err),
-            };
-         }
+         // EFFECTIVE per-source freshness, resolved most-specific-wins
+         // (source > model-file > package) and reported verbatim (null = unset at
+         // every level). Freshness is a dotted/nested tag key, so it comes from
+         // resolveFreshness rather than the scalar annotationFields map, and is
+         // valid in both scope modes. Per-source `sharing`/`schedule` are NOT
+         // emitted (retired from the contract); if a source declares either it is
+         // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
+         // still ride `annotationFields` so the validator can detect them.
+         // Provenance. A synthesized rollup is an ordinary persist source in every
+         // mechanical respect, so nothing downstream can tell it apart from an
+         // authored one — which is why the plan has to say. `preaggregate` carries
+         // what the rollup covers, since a query never names it and this is the only
+         // place its grain and measure set are visible at all.
+         wireSources[sourceID] = {
+            name: source.name,
+            sourceID: source.sourceID,
+            connectionName: source.connectionName,
+            dialect: source.dialectName,
+            origin: rollup ? "preaggregate" : "persist",
+            preaggregate: rollup
+               ? {
+                    baseSourceName: rollup.baseSourceName,
+                    grainDimensions: rollup.grainDimensions,
+                    measures: rollup.measures.map((m) => m.name),
+                 }
+               : null,
+            sourceEntityId: computeSourceEntityId(source, connectionDigests),
+            sql: source.getSQL(),
+            // Reported verbatim, and no longer inert: the mode is resolved and
+            // validated alongside `watermark=`/`merge_key=` (see
+            // resolveIncrementalDeclaration, collected per source in
+            // computePackageBuildPlan). The resolution itself is deliberately NOT a
+            // wire field — the control plane reads the free-form annotationFields.
+            refresh: annotationFields.refresh ?? null,
+            freshness: resolveFreshness(source, packageMaterialization),
+            // EFFECTIVE per-source query metadata, resolved per property across the
+            // same layer stack as freshness. A property collection rather than a
+            // scalar, so it comes from resolveQueryMetadata rather than the
+            // annotationFields map.
+            queryMetadata: resolveQueryMetadata(source, packageMaterialization),
+            columns: deriveColumns(source),
+            annotationFields,
+            modelPath: sourceModelPaths?.[sourceID],
+         };
+      } catch (err) {
+         logger.warn("Failed to project a persist source into the build plan", {
+            sourceID,
+            sourceName: source.name,
+            error: errMessage(err),
+         });
       }
-      // EFFECTIVE per-source freshness, resolved most-specific-wins
-      // (source > model-file > package) and reported verbatim (null = unset at
-      // every level). Freshness is a dotted/nested tag key, so it comes from
-      // resolveFreshness rather than the scalar annotationFields map, and is
-      // valid in both scope modes. Per-source `sharing`/`schedule` are NOT
-      // emitted (retired from the contract); if a source declares either it is
-      // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
-      // still ride `annotationFields` so the validator can detect them.
-      // Provenance. A synthesized rollup is an ordinary persist source in every
-      // mechanical respect, so nothing downstream can tell it apart from an
-      // authored one — which is why the plan has to say. `preaggregate` carries
-      // what the rollup covers, since a query never names it and this is the only
-      // place its grain and measure set are visible at all.
-      wireSources[sourceID] = {
-         name: source.name,
-         sourceID: source.sourceID,
-         connectionName: source.connectionName,
-         dialect: source.dialectName,
-         origin: rollup ? "preaggregate" : "persist",
-         preaggregate: rollup
-            ? {
-                 baseSourceName: rollup.baseSourceName,
-                 grainDimensions: rollup.grainDimensions,
-                 measures: rollup.measures.map((m) => m.name),
-              }
-            : null,
-         sourceEntityId: computeSourceEntityId(source, connectionDigests),
-         sql: source.getSQL(),
-         // Reported verbatim, and no longer inert: the mode is resolved and
-         // validated alongside `watermark=`/`merge_key=` (see
-         // resolveIncrementalDeclaration, collected per source in
-         // computePackageBuildPlan). The resolution itself is deliberately NOT a
-         // wire field — the control plane reads the free-form annotationFields.
-         refresh: annotationFields.refresh ?? null,
-         freshness: resolveFreshness(source, packageMaterialization),
-         // EFFECTIVE per-source query metadata, resolved per property across the
-         // same layer stack as freshness. A property collection rather than a
-         // scalar, so it comes from resolveQueryMetadata rather than the
-         // annotationFields map.
-         queryMetadata: resolveQueryMetadata(source, packageMaterialization),
-         columns: deriveColumns(source),
-         annotationFields,
-         modelPath: sourceModelPaths?.[sourceID],
-      };
    }
 
    return { graphs: wireGraphs, sources: wireSources, refusedSources };
@@ -1301,7 +1314,19 @@ function collectColocatedSourceEligibility(
                source,
                compiled.connectionDigests,
             );
-         } catch {
+         } catch (idErr) {
+            // Dropped, not refused: bindColocatedServeManifest will report this
+            // id as never examined, so the log is the only place the operator
+            // can learn it WAS examined and refused.
+            logger.warn(
+               "Dropping a refused colocated source: its content address could not be computed",
+               {
+                  sourceID,
+                  sourceName: source.name,
+                  refusal: errMessage(err),
+                  error: errMessage(idErr),
+               },
+            );
             continue;
          }
          refused[sourceEntityId] = errMessage(err);
@@ -1311,10 +1336,22 @@ function collectColocatedSourceEligibility(
          eligibleEntityIds.delete(sourceEntityId);
          continue;
       }
-      const sourceEntityId = computeSourceEntityId(
-         source,
-         compiled.connectionDigests,
-      );
+      // The colocated tier admits a given-referencing source, whose getSQL()
+      // (and so its content address) can throw; an escaping throw here would
+      // cost the package its whole plan, not just this source's binding.
+      let sourceEntityId: string;
+      try {
+         sourceEntityId = computeSourceEntityId(
+            source,
+            compiled.connectionDigests,
+         );
+      } catch (err) {
+         logger.warn(
+            "Dropping an eligible colocated source: its content address could not be computed",
+            { sourceID, sourceName: source.name, error: errMessage(err) },
+         );
+         continue;
+      }
       // A refusal recorded for this id (from an earlier or a LATER
       // iteration, see above) must win, so only add when none exists yet.
       if (!(sourceEntityId in refused)) {

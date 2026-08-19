@@ -345,13 +345,16 @@ source: rollup is base_orders -> { select: org_id, amount }
 given:
   GROUPS :: number[]
 
+// Members carry DISTINGUISHABLE amounts so the assertion can tell WHICH
+// member the composite resolved to; identical member data would pass even
+// if the ungated member_b won.
 #(authorize) "org_id in $GROUPS"
 source: member_a is duckdb.sql("""
   SELECT * FROM (VALUES (7, 1), (8, 2)) AS t(org_id, amount)
 """)
 
 source: member_b is duckdb.sql("""
-  SELECT * FROM (VALUES (7, 1), (8, 2)) AS t(org_id, amount)
+  SELECT * FROM (VALUES (7, 51), (8, 52)) AS t(org_id, amount)
 """)
 
 source: combo is compose(member_a, member_b)
@@ -361,12 +364,14 @@ source: comp is combo -> { select: org_id, amount }
 `,
          });
          // Materialized data is DISTINCT from the live SQL above, so a
-         // correct answer proves the FROM substitution took effect.
+         // correct answer proves the FROM substitution took effect. The extra
+         // org_id 9 row exists only in the artifact, so a filtered answer
+         // proves the gate ran ON the artifact rather than over live rows.
          await buildAndBindColocated(
             pkg,
             "comp",
             "comp_materialized",
-            `SELECT * FROM (VALUES (7, 1000), (8, 2000)) AS t(org_id, amount)`,
+            `SELECT * FROM (VALUES (7, 1000), (8, 2000), (9, 3000)) AS t(org_id, amount)`,
          );
 
          const rows = await run(
