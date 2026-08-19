@@ -159,6 +159,15 @@ export function markDrillableCells(
       for (const marked of table.querySelectorAll<HTMLElement>(
          `.${DRILL_CELL_CLASS}[tabindex="0"]`,
       )) {
+         // Belt and braces, NOT load-bearing, and measured as such: this query
+         // is scoped to `table`, whose subtree contains any nested table, so
+         // without this line an outer pass can see a nested table's stop and
+         // demote it. It is then restored when that nested table is processed
+         // moments later, because tables are walked in document order and each
+         // repairs its own columns. Compared the full tabindex map with and
+         // without the line across a fresh mark, a re-mark, and a re-mark after
+         // the stop was moved: identical every time. Kept for symmetry with the
+         // marking loop below, which needs its own `ownedByTable` guard.
          if (!ownedByTable(marked)) continue;
          const column = gridColumnStart(marked);
          if (!column) continue;

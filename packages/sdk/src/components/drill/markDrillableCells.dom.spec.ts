@@ -217,6 +217,73 @@ describe("moveDrillStop keeps a column to exactly one tab stop", () => {
       expect(moveDrillStop(orphan, 1)).toBeUndefined();
    });
 
+   // Home and End. Untested until a mutation sweep showed that making "first"
+   // resolve to the LAST cell kept every other test green, so Home would have
+   // jumped a reader to the bottom row with nothing to catch it.
+   it("Home goes to the first row and End to the last", () => {
+      const root = table(5);
+      const cells = marked(root);
+
+      expect(moveDrillStop(cells[2], "first")?.textContent).toBe("v0");
+      expect(stops(root)).toEqual(["v0"]);
+
+      expect(moveDrillStop(cells[2], "last")?.textContent).toBe("v4");
+      expect(stops(root)).toEqual(["v4"]);
+   });
+
+   // A nested table has its own grid and its own column numbering. Untested
+   // until a mutation sweep showed that dropping the own-table filter kept
+   // everything green, because no fixture anywhere had a nested table: arrow
+   // keys would have walked out of the outer column into the inner one and
+   // stripped the outer column's stop on the way.
+   it("does not walk into a nested table that shares a column number", () => {
+      const root = document.createElement("div");
+      root.innerHTML = `
+         <div class="malloy-table">
+            <div class="column-cell th" style="grid-column: 1 / 2;">region</div>
+            <div class="column-cell td" style="grid-column: 1 / 2;">outer0</div>
+            <div class="column-cell td" style="grid-column: 1 / 2;">outer1</div>
+            <div class="column-cell td" style="grid-column: 1 / 2;">
+               <div class="malloy-table">
+                  <div class="column-cell th" style="grid-column: 1 / 2;">region</div>
+                  <div class="column-cell td" style="grid-column: 1 / 2;">inner0</div>
+                  <div class="column-cell td" style="grid-column: 1 / 2;">inner1</div>
+               </div>
+            </div>
+         </div>`;
+      markDrillableCells(root, new Set(["region"]));
+
+      const outer = Array.from(
+         root.querySelectorAll<HTMLElement>(`.${DRILL_CELL_CLASS}`),
+      ).filter((n) => n.textContent === "outer0");
+      expect(outer).toHaveLength(1);
+
+      // The outer column's siblings are its own rows only. The cell wrapping the
+      // nested table is not marked at all, so it is not among them either.
+      expect(
+         drillColumnSiblings(outer[0]).map((n) => n.textContent?.trim()),
+      ).toEqual(["outer0", "outer1"]);
+
+      // Each table keeps its own stop, so the nested one does not steal the
+      // outer one's.
+      const inner = Array.from(
+         root.querySelectorAll<HTMLElement>(`.${DRILL_CELL_CLASS}`),
+      ).filter((n) => n.textContent === "inner0");
+      expect(inner).toHaveLength(1);
+      expect(outer[0].getAttribute("tabindex")).toBe("0");
+      expect(inner[0].getAttribute("tabindex")).toBe("0");
+
+      // The RE-MARK is the case that matters, and a fresh mark cannot show it.
+      // The outer table's pre-scan queries its own subtree, which CONTAINS the
+      // nested table, so without the own-table filter it sees the inner table's
+      // stop as a duplicate of the outer column's and demotes it. The inner
+      // table would lose its only tab stop on every re-mark, and a settling
+      // `# dashboard` re-marks repeatedly.
+      markDrillableCells(root, new Set(["region"]));
+      expect(outer[0].getAttribute("tabindex")).toBe("0");
+      expect(inner[0].getAttribute("tabindex")).toBe("0");
+   });
+
    // Belt and braces: even if some other path drifts a column, the next mark
    // pass demotes the extra rather than preserving both for good.
    it("a re-mark demotes a duplicate stop instead of keeping it", () => {

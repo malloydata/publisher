@@ -89,7 +89,7 @@ query: overview is order_items -> {
   nest:
     # colspan=12
     # label="Category performance"
-    category_performance
+    by_category
 }
 ```
 
@@ -277,7 +277,10 @@ import { CATEGORY, SINCE } from '../givens.malloy'
 
 Each tile runs as its own query, which means a broken tile shows its error in place instead of
 blanking the page, and a control change re-runs only the tiles that reference it. The control row is
-the union across the tiles.
+the union across the tiles, with one exception worth knowing: if a tile cannot be resolved, the row
+widens to every given the entry file surfaces rather than narrowing to the tiles that did resolve. The
+unresolvable tile is a package warning of its own, so the state is visible, but the control row is
+usually where it is noticed first.
 
 A composite's tiles are equal-width: `dashboard_columns` is the whole layout, and there is no
 per-tile colspan, since each tile is a separate result rather than a field in one. So choose a column
@@ -359,12 +362,12 @@ row however you got there, clicking included, so leaving the result and tabbing 
 row you were on.
 
 That is one stop per drillable COLUMN, scoped to its table, which is not the same as one per result
-in two cases. A table that groups by two drilled dimensions gets a stop for each, measured: two
-drillable columns in one table produce two stops. And a drill inside a `nest:` The renderer draws a nested table per parent row, each with its own columns, so a drillable
-dimension inside a nest still contributes a stop per parent row: measured 2 parent rows, 2 stops,
-against 1 for the same dimension grouped flat. Sharing a stop across those tables needs the marking
-to match on field identity rather than on a rendered column, which is the same limitation noted in
-`markDrillableCells`.
+in two cases. A table grouping by two drilled dimensions gets a stop for each: measured, two drillable
+columns in one table produce two stops. And a drill inside a `nest:` gets one per parent row, because
+the renderer draws a nested table per row, each with its own columns: measured, 2 parent rows give 2
+stops against 1 for the same dimension grouped flat. Sharing a stop across those tables needs the
+marking to match on field identity rather than on a rendered column, which is the limitation
+`markDrillableCells` already records.
 
 Those signals are the only thing saying a cell does anything, so it is worth knowing what turns them
 off: a destination the surface cannot reach is not offered and not marked, deliberately, since a dead
@@ -383,8 +386,8 @@ tell the two columns apart, so it leaves both unmarked rather than painting a de
 
 Declaring it on the dimension is what makes it work everywhere: any result that groups by that
 dimension is clickable, in a dashboard tile and in a **notebook cell** alike, with no per-document
-wiring. A notebook cell grouping by a tagged dimension is clickable for exactly this reason, and
-says nothing about drill itself: it imports the given for its own Parameters panel, which is all
+wiring. A notebook cell that groups by a tagged dimension is clickable for exactly this reason, while
+saying nothing about drill itself: the notebook imports the given for its own controls, which is all
 `to=self` needs. Both surfaces run the same
 implementation, down to the hover styling and the menu, so a reader cannot tell from the
 interaction which kind of document they are in. Only the menu's `to=self` entry names it ("Filter
@@ -462,48 +465,58 @@ and a reload that fails to compile leaves the previously compiled model serving.
 consumer of it rather than its home. It takes props instead of reading a router, so the host decides
 what a drill and a filter change mean:
 
-```tsx
-import { Dashboard, encodeResourceUri } from "@malloy-publisher/sdk";
+`<Dashboard>` reads its server through context, so it has to sit inside a `<ServerProvider>`; without
+one it throws `useServer must be used within a ServerProvider`. Mount the provider once, near the root
+of your app, not per dashboard.
 
-<Dashboard
-  resourceUri={encodeResourceUri({
-    environmentName: "examples",
-    packageName: "storefront",
-  })}
-  dashboard="overview"
-  givens={Object.fromEntries(searchParams)}
-  // MERGE, do not replace. `managed` is every given this dashboard declares,
-  // including the ones holding no value right now, and it is there because
-  // `next` alone cannot tell a control the reader CLEARED from a parameter that
-  // was never yours. Replacing the whole query string drops an unrelated
-  // parameter as soon as the manifest arrives, before the reader touches
-  // anything.
-  onGivensChange={(next, managed) =>
-    setSearchParams(
-      (current) => {
-        for (const name of managed) {
-          if (!Object.prototype.hasOwnProperty.call(next, name)) {
-            current.delete(name);
+```tsx
+import {
+  Dashboard,
+  encodeResourceUri,
+  ServerProvider,
+} from "@malloy-publisher/sdk";
+
+<ServerProvider baseURL="https://publisher.example.com">
+  <Dashboard
+    resourceUri={encodeResourceUri({
+      environmentName: "examples",
+      packageName: "storefront",
+    })}
+    dashboard="overview"
+    givens={Object.fromEntries(searchParams)}
+    // MERGE, do not replace. `managed` is every given this dashboard declares,
+    // including the ones holding no value right now, and it is there because
+    // `next` alone cannot tell a control the reader CLEARED from a parameter
+    // that was never yours. Replacing the whole query string drops an unrelated
+    // parameter as soon as the manifest arrives, before the reader touches
+    // anything.
+    onGivensChange={(next, managed) =>
+      setSearchParams(
+        (current) => {
+          for (const name of managed) {
+            if (!Object.prototype.hasOwnProperty.call(next, name)) {
+              current.delete(name);
+            }
           }
-        }
-        for (const [name, value] of Object.entries(next)) {
-          current.set(name, value);
-        }
-        return current;
-      },
-      // Filtering is not a navigation step.
-      { replace: true },
-    )
-  }
-  // The slug is ENCODED, because it is a filename: it can hold a character that
-  // would read as structure in a path or start the query string early.
-  onNavigate={(target) =>
-    navigate(
-      `/dashboards/${encodeURIComponent(target.dashboard)}` +
-        `?${new URLSearchParams(target.givens)}`,
-    )
-  }
-/>;
+          for (const [name, value] of Object.entries(next)) {
+            current.set(name, value);
+          }
+          return current;
+        },
+        // Filtering is not a navigation step.
+        { replace: true },
+      )
+    }
+    // The slug is ENCODED, because it is a filename: it can hold a character
+    // that would read as structure in a path or start the query string early.
+    onNavigate={(target) =>
+      navigate(
+        `/dashboards/${encodeURIComponent(target.dashboard)}` +
+          `?${new URLSearchParams(target.givens)}`,
+      )
+    }
+  />
+</ServerProvider>;
 ```
 
 A host that keeps its own names in the query string should also remember the ones

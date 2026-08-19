@@ -88,7 +88,8 @@ const ASSET_EXTENSIONS = new Set([
  * The cost, which `pages` pays too and is worth stating for this one: a package
  * that ships a `public/dashboards/` directory can no longer address those files
  * as `/<env>/<pkg>/dashboards/<file>`, since that shape now opens the dashboard
- * viewer, which answers "no such dashboard". `data-apps` has a viewer one
+ * viewer, which reports that the package has no dashboard by that name.
+ * `data-apps` has a viewer one
  * segment down that catches its own collision; this route has no equivalent, so
  * those files are reachable only on the static URL
  * `/environments/<env>/packages/<pkg>/dashboards/<file>`.

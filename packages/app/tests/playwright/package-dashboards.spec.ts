@@ -255,6 +255,34 @@ test.describe("package-dashboards", () => {
       await expect(page).toHaveURL(/[?&]utm_campaign=spring/);
    });
 
+   test("clearing a control removes only its own parameter", async ({
+      page,
+   }) => {
+      // The DELETE half of the merge, which had no test at all: every other
+      // dashboard test only ever ADDS or changes a value, and a merge that never
+      // deletes passes all of them while leaving a cleared control's parameter
+      // stuck in the address bar, silently re-applying to anyone opening the
+      // link.
+      await page.goto(
+         `/${env}/${PKG}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
+      );
+      await expect(
+         page.getByRole("heading", { name: "Business Overview" }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(page).toHaveURL(/[?&]BRAND=Nike/);
+
+      const brand = page.locator(".MuiAutocomplete-root", {
+         has: page.getByRole("combobox", { name: "Brand" }),
+      });
+      await brand.hover();
+      await brand.getByRole("button", { name: "Clear" }).click();
+
+      // Its own parameter goes...
+      await expect(page).not.toHaveURL(/[?&]BRAND=/);
+      // ...and the one that was never the dashboard's stays.
+      await expect(page).toHaveURL(/[?&]utm_campaign=spring/);
+   });
+
    test("autorun=false gets an Apply button and its starting values", async ({
       page,
    }) => {

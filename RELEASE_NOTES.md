@@ -440,8 +440,8 @@ route. It has to be claimed, because a slug is a filename with `.malloy` removed
 `dashboards/report.csv.malloy` therefore publishes the slug `report.csv`, which would otherwise be
 diverted as an asset and 404 on a deep link or a refresh. The case to know about is a package that
 itself ships a `public/dashboards/` directory. Unlike `data-apps`, there is no viewer one segment
-down to catch those: `/{env}/{pkg}/dashboards/<file>` now opens the dashboard viewer, which answers
-"no such dashboard". Address them on the standalone URL,
+down to catch those: `/{env}/{pkg}/dashboards/<file>` now opens the dashboard viewer, which reports
+that the package has no dashboard by that name. Address them on the standalone URL,
 `/environments/{env}/packages/{pkg}/dashboards/<file>`, which serves them unchanged as it always
 did.
 
