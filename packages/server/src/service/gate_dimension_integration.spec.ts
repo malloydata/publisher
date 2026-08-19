@@ -246,6 +246,40 @@ describe("validateGateDimension — pure rules", () => {
       }
    });
 
+   it("mixed forms (I3) — a source declaring BOTH the string form (on itself) and the dimension form (on its own field) is refused", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\n#(authorize) "true"\nsource: entry is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\n`,
+      );
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/STRING form.*DIMENSION form/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("mixed forms (I3), REVERSE order — a source that INHERITS the dimension form from an ancestor and adds its OWN string form is also refused", async () => {
+      // The "order" this reverses relative to the test above: there, both
+      // forms are born together on the SAME source (string tag necessarily
+      // precedes the field tag textually, since it sits above `source:`).
+      // Here the dimension form is established FIRST, upstream, on X — Y
+      // only inherits it unchanged (Malloy flattens X's still-annotated
+      // field into Y's own `fields`, same as every other inheritance case
+      // in this file) — and Y's OWN string form is added downstream. Refusal
+      // must not depend on which form was declared first in the model.
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\n#(authorize) "true"\nsource: Y is X extend {}\n`,
+      );
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/STRING form.*DIMENSION form/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
    it("private refusal — a private gate dimension is an active load-time error, not merely inert", async () => {
       const duckdb = await newDuckdb();
       try {
@@ -393,6 +427,109 @@ describe("validateGateDimension — pure rules", () => {
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+describe("join-qualified given references (C1 regression — see task-2-report.md)", () => {
+   it("a join-qualified reference (`h.ok`) to a DEFAULTED given is followed, not silently dropped: G4 refuses", async () => {
+      const duckdb = await newDuckdb();
+      try {
+         const text =
+            `given:\n  ROLE :: string[] is ['org1','org2']\n\n` +
+            `source: helper is duckdb.table('accounts') extend {\n   dimension: ok is org_id in $ROLE\n   primary_key: id\n}\n` +
+            `source: entry is duckdb.table('accounts') extend {\n   join_one: h is helper on id = h.id\n   #(authorize)\n   internal dimension: authorized is h.ok\n}\n`;
+         const { modelDef, declaredGivenNames } = await compileModelDef(
+            text,
+            duckdb,
+         );
+         expect(() =>
+            validateGateDimension(
+               "entry",
+               sourceOf(modelDef, "entry"),
+               modelDef,
+               declaredGivenNames,
+            ),
+         ).toThrow(/declared with a default/);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("the same join-qualified gate, given UNDEFAULTED: filters per caller through the join, and denies opaquely when unbound", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  ROLE :: string[]\n\n` +
+            `source: helper is duckdb.table('accounts') extend {\n   dimension: ok is org_id in $ROLE\n   primary_key: id\n}\n` +
+            `source: entry is duckdb.table('accounts') extend {\n   join_one: h is helper on id = h.id\n   #(authorize)\n   internal dimension: authorized is h.ok\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "entry", { ROLE: ["org1"] })).toEqual([1, 2]);
+         await expect(ids(model, "entry", {})).rejects.toBeInstanceOf(
+            AccessDeniedError,
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a nested join chain (`b.c.flag`) resolves through BOTH joins, not just one hop", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  ROLE :: string[]\n\n` +
+            `source: innerSrc is duckdb.table('accounts') extend {\n   dimension: flag is org_id in $ROLE\n   primary_key: id\n}\n` +
+            `source: mid is duckdb.table('accounts') extend {\n   join_one: c is innerSrc on id = c.id\n   primary_key: id\n}\n` +
+            `source: entry is duckdb.table('accounts') extend {\n   join_one: b is mid on id = b.id\n   #(authorize)\n   internal dimension: authorized is b.c.flag\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "entry", { ROLE: ["org1"] })).toEqual([1, 2]);
+         // The filtering assertion above alone does NOT distinguish correct
+         // 2-hop expansion from the bug: the graft is by NAME regardless of
+         // whether `expandGivenIds` tracked the given correctly, so a bound
+         // query filters correctly either way. What the bug actually breaks
+         // is the DECLARED given-tracking used for defense-in-depth — an
+         // unbound `$ROLE` must deny opaquely (`AccessDeniedError`), not
+         // leak Malloy's raw "has no value and no default" error naming the
+         // given. Confirmed failing-first: under the pre-fix code, this
+         // request throws a raw `MalloyError` instead.
+         await expect(ids(model, "entry", {})).rejects.toBeInstanceOf(
+            AccessDeniedError,
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a LOCAL field sharing the join-qualified reference's LEAF name must not substitute its givens (the reverse-direction bug)", async () => {
+      // `entry` declares its OWN "ok" dimension (keyed on a DIFFERENT,
+      // DEFAULTED given) purely to create a leaf-name collision with the
+      // join-qualified reference "h.ok" (keyed on an UNDEFAULTED given). If
+      // resolution matched by leaf name alone rather than following the
+      // join segment first, it would wrongly resolve to entry's OWN "ok"
+      // and see the DEFAULTED given — G4 would incorrectly refuse this
+      // legal model. Fixed, resolution follows the "h" segment first and
+      // correctly reaches helper's "ok" (the undefaulted ROLE), so this
+      // loads clean.
+      const duckdb = await newDuckdb();
+      try {
+         const text =
+            `given:\n  ROLE :: string[]\n  OTHER :: string[] is ['x']\n\n` +
+            `source: helper is duckdb.table('accounts') extend {\n   dimension: ok is org_id in $ROLE\n   primary_key: id\n}\n` +
+            `source: entry is duckdb.table('accounts') extend {\n   join_one: h is helper on id = h.id\n   dimension: ok is org_id in $OTHER\n   #(authorize)\n   internal dimension: authorized is h.ok\n}\n`;
+         const { modelDef, declaredGivenNames } = await compileModelDef(
+            text,
+            duckdb,
+         );
+         expect(() =>
+            validateGateDimension(
+               "entry",
+               sourceOf(modelDef, "entry"),
+               modelDef,
+               declaredGivenNames,
+            ),
+         ).not.toThrow();
+      } finally {
+         await duckdb.close();
       }
    });
 });

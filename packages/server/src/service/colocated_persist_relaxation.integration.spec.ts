@@ -450,6 +450,61 @@ source: orders is base -> { select: id, org_id, amount } extend {
    );
 
    it(
+      "the DIMENSION form, $GROUPS-based: two different callers reading the SAME bound artifact get two DIFFERENT row sets — the gate is re-evaluated per query, never baked into the shared build",
+      async () => {
+         // The test above proves the classification/graft machinery with a
+         // givenless static predicate — itself a W1 shape, which cannot
+         // distinguish "the gate re-runs per caller" from "one caller's rows
+         // got baked into the shared artifact at build time" (they'd look
+         // identical for a fixed predicate). This test is the one that
+         // actually exercises that distinction: the SAME bound artifact,
+         // queried by two different principals, must filter differently for
+         // each — proving `materialization_eligibility.ts`'s design
+         // principle (persistence changes only WHERE rows come from, never
+         // WHETHER the filter is appended) rather than merely asserting it.
+         const pkg = await loadPackageFiles({
+            "model.malloy": `##! experimental { persistence givens }
+
+given: GROUPS :: string[]
+
+source: base is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'org1', 10), (2, 'org2', 20)) AS t(id, org_id, amount)
+""")
+
+#@ persist name="orders"
+source: orders is base -> { select: id, org_id, amount } extend {
+   #(authorize)
+   dimension: authorized is org_id in $GROUPS
+}
+`,
+         });
+         // Materialized data is DISTINCT from the live SQL above, so a
+         // correct answer proves the FROM substitution took effect AND that
+         // the gate still ran on top of it.
+         await buildAndBindColocated(
+            pkg,
+            "orders",
+            "orders_materialized",
+            `SELECT * FROM (VALUES (1, 'org1', 1000), (2, 'org2', 2000)) AS t(id, org_id, amount)`,
+         );
+
+         const asOrg1 = await run(
+            pkg,
+            "run: orders -> { select: org_id, amount }",
+            { GROUPS: ["org1"] },
+         );
+         const asOrg2 = await run(
+            pkg,
+            "run: orders -> { select: org_id, amount }",
+            { GROUPS: ["org2"] },
+         );
+         expect(asOrg1).toEqual([{ org_id: "org1", amount: 1000 }]);
+         expect(asOrg2).toEqual([{ org_id: "org2", amount: 2000 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "a derived query_source whose OWN projection drops the gate column: the whole package fails to load, never silently unfiltered",
       async () => {
          // `orders` authors its OWN `#(authorize)`, and its own projection
