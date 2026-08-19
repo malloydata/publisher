@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
 import {
    buildConnection,
+   connectionFlags,
    WAREHOUSE_TYPES,
    type BuiltConnection,
    type ConnectionFlags,
@@ -85,28 +86,17 @@ function resolveDataFile(cwd: string, data?: string): string | undefined {
  * the option is known, it just has nothing to attach to.
  */
 function resolveConnection(options: CliOptions): BuiltConnection | undefined {
-   const dialectFlags: [keyof ConnectionFlags, string][] = [
-      ["connectionName", "--connection-name"],
-      ["table", "--table"],
-      ["pgHost", "--pg-host"],
-      ["pgPort", "--pg-port"],
-      ["pgDatabase", "--pg-database"],
-      ["pgUser", "--pg-user"],
-      ["bqProject", "--bq-project"],
-      ["bqLocation", "--bq-location"],
-      ["sfAccount", "--sf-account"],
-      ["sfUser", "--sf-user"],
-      ["sfWarehouse", "--sf-warehouse"],
-      ["sfDatabase", "--sf-database"],
-      ["sfSchema", "--sf-schema"],
-      ["sfRole", "--sf-role"],
-   ];
-
    if (options.connection === undefined) {
-      const orphan = dialectFlags.find(([key]) => options[key] !== undefined);
+      // Derived from the dialect table rather than listed again here: a flag
+      // that appears in one list and not the other is owned by nobody and gets
+      // dropped in silence, which is exactly how --pg-port used to slip past
+      // the wrong-dialect check.
+      const orphan = connectionFlags().find(
+         (candidate) => options[candidate.from] !== undefined,
+      );
       if (orphan) {
          throw new ScaffoldError(
-            `${orphan[1]} only means something with --connection, which was ` +
+            `${orphan.flag} only means something with --connection, which was ` +
                `not passed. Nothing was written.\n\n` +
                `Add --connection with one of: ` +
                `${WAREHOUSE_TYPES.join(", ")}.`,

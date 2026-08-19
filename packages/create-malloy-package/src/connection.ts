@@ -141,12 +141,35 @@ interface FieldSpec {
    required: boolean;
 }
 
+/**
+ * A flag a dialect owns but that is not in its `fields` table, because it is
+ * applied by hand rather than copied straight across.
+ *
+ * This exists because leaving one out is not a cosmetic gap. Flag ownership
+ * drives the "that option belongs to another dialect" check, so a flag missing
+ * from both lists is owned by nobody, passes the check, and is then silently
+ * dropped. `--pg-port` did exactly that: `--connection bigquery --pg-port 5432`
+ * scaffolded a BigQuery connection and discarded the port without a word.
+ */
+interface ExtraFlag {
+   from: keyof ConnectionFlags;
+   flag: string;
+}
+
 const DIALECTS: Record<
    WarehouseType,
-   { payloadKey: string; fields: FieldSpec[]; credentialNote: string }
+   {
+      payloadKey: string;
+      fields: FieldSpec[];
+      extraFlags: ExtraFlag[];
+      credentialNote: string;
+   }
 > = {
    postgres: {
       payloadKey: "postgresConnection",
+      // --pg-port is not in `fields` because it has a default and is applied
+      // below; it still has to be declared as postgres' own.
+      extraFlags: [{ from: "pgPort", flag: "--pg-port" }],
       fields: [
          {
             key: "host",
@@ -173,6 +196,7 @@ const DIALECTS: Record<
    },
    bigquery: {
       payloadKey: "bigqueryConnection",
+      extraFlags: [],
       fields: [
          {
             key: "defaultProjectId",
@@ -198,6 +222,7 @@ const DIALECTS: Record<
    },
    snowflake: {
       payloadKey: "snowflakeConnection",
+      extraFlags: [],
       fields: [
          {
             key: "account",
@@ -242,9 +267,36 @@ const DIALECTS: Record<
    },
 };
 
+/**
+ * Every flag that only means something with --connection: the dialect-specific
+ * ones plus the two that apply to any dialect.
+ *
+ * Exported so the CLI can reject them when --connection is absent without
+ * keeping a second hand-written list of the same names. That duplication is
+ * what let `--pg-port` fall between the two checks.
+ */
+export function connectionFlags(): ExtraFlag[] {
+   return [
+      { from: "connectionName", flag: "--connection-name" },
+      { from: "table", flag: "--table" },
+      ...WAREHOUSE_TYPES.flatMap((type) => ownedFlags(type)),
+   ];
+}
+
+/** Every flag a dialect owns: its payload fields plus its hand-applied extras. */
+export function ownedFlags(type: WarehouseType): ExtraFlag[] {
+   return [
+      ...DIALECTS[type].fields.map((field) => ({
+         from: field.from,
+         flag: field.flag,
+      })),
+      ...DIALECTS[type].extraFlags,
+   ];
+}
+
 /** The flags that belong to a dialect, for the "wrong dialect" error. */
 function flagsFor(type: WarehouseType): string[] {
-   return DIALECTS[type].fields.map((field) => field.flag);
+   return ownedFlags(type).map((flag) => flag.flag);
 }
 
 /**
@@ -256,18 +308,21 @@ function assertNoForeignFlags(
    flags: ConnectionFlags,
    type: WarehouseType,
 ): void {
-   const own = new Set(DIALECTS[type].fields.map((field) => field.from));
+   const own = new Set(ownedFlags(type).map((flag) => flag.from));
    for (const other of WAREHOUSE_TYPES) {
       if (other === type) {
          continue;
       }
-      for (const field of DIALECTS[other].fields) {
-         if (own.has(field.from)) {
+      // ownedFlags, not `fields`: a flag applied outside the field table is
+      // still that dialect's, and one that appears in neither list is owned by
+      // nobody, passes this check, and is dropped in silence.
+      for (const candidate of ownedFlags(other)) {
+         if (own.has(candidate.from)) {
             continue;
          }
-         if (flags[field.from] !== undefined) {
+         if (flags[candidate.from] !== undefined) {
             throw new ScaffoldError(
-               `${field.flag} is a ${other} option, but --connection is ` +
+               `${candidate.flag} is a ${other} option, but --connection is ` +
                   `"${type}". Nothing would read it, so no connection was ` +
                   `written.\n\n` +
                   `The ${type} options are: ${flagsFor(type).join(", ")}.`,
@@ -441,11 +496,17 @@ export function buildConnection(flags: ConnectionFlags): BuiltConnection {
    if (type === "postgres" || type === "snowflake") {
       const variable = passwordEnvVar(name);
       payload.password = envVarReference(variable);
+      // preview(), because this string is written into .env.example as a
+      // comment line and the user name behind it is under no character rule at
+      // all. A newline in it would end the comment and put whatever follows on
+      // its own line of a file that is read line by line. The identity fields
+      // are written into JSON everywhere else, where the encoder handles it;
+      // this is the one place a raw flag value reaches a line-oriented format.
       envVars.push({
          name: variable,
-         describes: `the password for ${type} user "${
-            type === "postgres" ? flags.pgUser : flags.sfUser
-         }"`,
+         describes: `the password for ${type} user "${preview(
+            (type === "postgres" ? flags.pgUser : flags.sfUser) ?? "",
+         )}"`,
       });
    }
 

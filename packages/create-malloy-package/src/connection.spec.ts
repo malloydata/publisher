@@ -5,6 +5,7 @@ import {
    passwordEnvVar,
    renderEnvExample,
    resolveConnectionName,
+   ownedFlags,
    validateTablePath,
    WAREHOUSE_TYPES,
    type ConnectionFlags,
@@ -190,6 +191,39 @@ describe("buildConnection", () => {
       ).toThrow(/--pg-database/);
    });
 
+   test("every dialect-specific flag is owned by exactly one dialect", () => {
+      // The guard for the class of bug this table caused once: --pg-port was in
+      // no dialect's list, so it was owned by nobody, passed the wrong-dialect
+      // check, and was silently dropped. Any new pg/bq/sf flag added to
+      // ConnectionFlags without a table entry fails here.
+      const declared: (keyof ConnectionFlags)[] = [
+         "pgHost",
+         "pgPort",
+         "pgDatabase",
+         "pgUser",
+         "bqProject",
+         "bqLocation",
+         "sfAccount",
+         "sfUser",
+         "sfWarehouse",
+         "sfDatabase",
+         "sfSchema",
+         "sfRole",
+      ];
+      for (const flag of declared) {
+         const owners = WAREHOUSE_TYPES.filter((type) =>
+            ownedFlags(type).some((owned) => owned.from === flag),
+         );
+         expect({ flag, owners }).toEqual({ flag, owners: [owners[0]] });
+      }
+   });
+
+   test("refuses --pg-port passed with a non-postgres dialect", () => {
+      expect(() =>
+         buildConnection({ ...MINIMAL.bigquery, pgPort: "5432" }),
+      ).toThrow(/--pg-port is a postgres option/);
+   });
+
    test("refuses a flag belonging to another dialect", () => {
       // Without this the host is dropped on the floor and the user finds out at
       // the first query, not at the command line.
@@ -212,6 +246,19 @@ describe("buildConnection", () => {
 });
 
 describe("renderEnvExample", () => {
+   test("cannot inject a line into .env.example through a user name", () => {
+      // The user name is under no character rule, and this is the one place a
+      // raw flag value reaches a line-oriented file rather than JSON.
+      const built = buildConnection({
+         connection: "postgres",
+         pgHost: "localhost",
+         pgDatabase: "analytics",
+         pgUser: 'demo"\nMALLOY_INJECTED=surprise',
+      });
+      const rendered = renderEnvExample(built);
+      expect(rendered).not.toMatch(/^MALLOY_INJECTED=/m);
+   });
+
    test("lists every variable by name and none of them by value", () => {
       const built = buildConnection(MINIMAL.postgres);
       const rendered = renderEnvExample(built);

@@ -40,18 +40,16 @@ export interface PublisherConfig {
 }
 
 /**
- * A fresh config with a single environment, optionally holding one package and
- * one connection.
+ * A fresh config with a single environment, optionally holding one package.
  *
- * The connection belongs to the ENVIRONMENT rather than the package: Publisher
- * reads `connections` off the environment entry and nowhere else, and a package
- * reaches it by name from its model. A flat-file package needs no entry here at
- * all, which is why this stays an empty array on the --data and bare paths.
+ * `connections` starts empty on every path, including a warehouse run: the
+ * connection is added afterwards by addConnection, so that a fresh config and an
+ * existing one take the same code path and the duplicate-name and frozen-config
+ * checks cannot apply to only one of them.
  */
 export function defaultConfig(
    envName: string,
    pkg?: PackageEntry,
-   connection?: ConnectionEntry,
 ): PublisherConfig {
    return {
       frozenConfig: false,
@@ -59,7 +57,7 @@ export function defaultConfig(
          {
             name: envName,
             packages: pkg ? [pkg] : [],
-            connections: connection ? [connection] : [],
+            connections: [],
          },
       ],
    };
