@@ -108,7 +108,13 @@ export interface ScenarioContext extends ServerControl {
     * serve attach is read-only), mirroring how a orchestrator provisions the
     * catalog (e.g. `CREATE SCHEMA`).
     */
-   operatorSql(conn: string, sql: string): Promise<void>;
+   /**
+    * Out-of-band SQL on a persist target, as an operator would run it — never
+    * through the publisher. Returns rows so a scenario can ASSERT what the tier
+    * actually wrote (which schema received a table, what it is named), not only
+    * provision what it needs.
+    */
+   operatorSql(conn: string, sql: string): Promise<Record<string, string>[]>;
    /**
     * Act as the orchestrator's manifest store: write a build manifest
     * (`{ entries }`) to a local file and return a `file://` URI the publisher can

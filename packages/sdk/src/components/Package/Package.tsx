@@ -27,8 +27,11 @@ import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
-import { MALLOY_BRAND, MONO_FONT_FAMILY } from "../styles";
-import ContentTypeIcon from "./ContentTypeIcon";
+import { MONO_FONT_FAMILY } from "../styles";
+import ContentTypeIcon, {
+   CONTENT_TINT,
+   type ContentType,
+} from "./ContentTypeIcon";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -279,8 +282,7 @@ export default function Package({
                         return (
                            <PackageItemRow
                               key={dashboard.name}
-                              icon={<ContentTypeIcon type="dashboard" />}
-                              tint={MALLOY_BRAND.teal}
+                              type="dashboard"
                               label={
                                  hasTitle ? dashboard.title! : dashboard.name!
                               }
@@ -313,8 +315,7 @@ export default function Package({
                      return (
                         <PackageItemRow
                            key={notebook.path}
-                           icon={<ContentTypeIcon type="report" />}
-                           tint={MALLOY_BRAND.teal}
+                           type="report"
                            label={hasTitle ? notebook.title! : notebook.path}
                            rightLabel={hasTitle ? notebook.path : undefined}
                            onClick={(event) =>
@@ -345,8 +346,7 @@ export default function Package({
                         return (
                            <PackageItemRow
                               key={dataApp.path}
-                              icon={<ContentTypeIcon type="dataApp" />}
-                              tint={MALLOY_BRAND.teal}
+                              type="dataApp"
                               label={hasTitle ? dataApp.title : dataApp.path}
                               rightLabel={hasTitle ? dataApp.path : undefined}
                               onClick={(event) => {
@@ -399,8 +399,7 @@ export default function Package({
                   {models.map((model) => (
                      <PackageItemRow
                         key={model.path}
-                        icon={<ContentTypeIcon type="model" />}
-                        tint={MALLOY_BRAND.orange}
+                        type="model"
                         label={model.path}
                         onClick={(event) =>
                            onClick(
@@ -417,8 +416,7 @@ export default function Package({
                   {databases.map((database) => (
                      <PackageItemRow
                         key={database.path}
-                        icon={<ContentTypeIcon type="data" />}
-                        tint={MALLOY_BRAND.darkBlue}
+                        type="data"
                         label={database.path}
                         rightLabel={
                            // A file the server could not probe is listed with
@@ -436,8 +434,7 @@ export default function Package({
 
                <PackageSection title="Materializations">
                   <PackageItemRow
-                     icon={<ContentTypeIcon type="materialization" />}
-                     tint={MALLOY_BRAND.teal}
+                     type="materialization"
                      label="Materializations"
                      onClick={(event) =>
                         onClick(
@@ -541,16 +538,24 @@ function PackageSection({
    );
 }
 
+/**
+ * A row names its content type once. The glyph and the color behind it are two
+ * halves of one signal, so the row derives both rather than letting a caller
+ * pair a dashboard's icon with a model's color.
+ *
+ * That is not hypothetical tidying: with the two passed separately, four of the
+ * six rows on this page had been handed the same teal, so color told a reader
+ * nothing about four of the kinds it was there to distinguish. A rule each call
+ * site has to remember is a rule some call sites will forget.
+ */
 function PackageItemRow({
-   icon,
-   tint,
+   type,
    label,
    rightLabel,
    onClick,
    trailingAction,
 }: {
-   icon: React.ReactNode;
-   tint: string;
+   type: ContentType;
    label: string;
    rightLabel?: string;
    onClick?: (event: React.MouseEvent) => void;
@@ -605,7 +610,7 @@ function PackageItemRow({
                width: 32,
                height: 32,
                borderRadius: 1,
-               bgcolor: tint,
+               bgcolor: CONTENT_TINT[type],
                color: "#FFFFFF",
                display: "flex",
                alignItems: "center",
@@ -613,7 +618,7 @@ function PackageItemRow({
                flexShrink: 0,
             }}
          >
-            {icon}
+            <ContentTypeIcon type={type} />
          </Box>
          <Typography
             variant="body2"

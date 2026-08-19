@@ -231,6 +231,44 @@ describe("unusable declarations on a measure are refused", () => {
       expect(violations[0].message).toContain("`avg_amount`");
    });
 
+   it("two measures at one grain naming different namespaces", async () => {
+      // One grain is one table, so this is unsatisfiable rather than merely
+      // ambiguous. Resolving it by field order would put a rollup somewhere its
+      // author never chose and say nothing — the failure this feature must not
+      // have, since a rollup in the wrong place still returns correct numbers.
+      const violations =
+         await validate(`  #@ preaggregate grain="category" namespace="ns_a"
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="category" namespace="ns_b"
+  measure: order_count is count()`);
+      expect(violations.map((v) => v.code)).toEqual(["conflicting_namespace"]);
+      // Names both choices and which measure asked for each, so the author knows
+      // what to change without reading the whole source.
+      expect(violations[0].message).toContain("`ns_a`");
+      expect(violations[0].message).toContain("`revenue`");
+      expect(violations[0].message).toContain("`ns_b`");
+      expect(violations[0].message).toContain("`order_count`");
+   });
+
+   it("the same namespace at one grain is not a conflict", async () => {
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" namespace="ns_a"
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="category" namespace="ns_a"
+  measure: order_count is count()`),
+      ).toEqual([]);
+   });
+
+   it("different namespaces at DIFFERENT grains are not a conflict", async () => {
+      // Two grains are two tables, so there is nothing to reconcile.
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" namespace="ns_a"
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="order_date" namespace="ns_b"
+  measure: order_count is count()`),
+      ).toEqual([]);
+   });
+
    it("a non-additive measure ALSO gets its grain checked", async () => {
       // Otherwise fixing the measure reveals a second failure on the next
       // publish, which is a bad loop to put someone in.
