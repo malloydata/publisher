@@ -46,6 +46,26 @@ describe("classifySpaFallback", () => {
          });
       });
 
+      it("keeps a dashboard whose slug ends in an asset extension", () => {
+         // A slug is a FILENAME with `.malloy` removed, so
+         // `dashboards/report.csv.malloy` publishes the slug `report.csv`
+         // through no choice of the reader's. Measured before this entry
+         // existed: that dashboard was listed on the package page, served by
+         // the API, and reachable by in-app navigation, while a deep link or a
+         // refresh 302d to the static route and answered 404.
+         expect(classify("/examples/storefront/dashboards/report.csv")).toEqual(
+            {
+               kind: "spa",
+            },
+         );
+         // The ordinary shape reaches the app without needing this set at all,
+         // asserted so a regression that removes the entry is distinguishable
+         // from one that breaks the whole route.
+         expect(classify("/examples/storefront/dashboards/overview")).toEqual({
+            kind: "spa",
+         });
+      });
+
       it("still claims the OLD `pages` segment, which the app redirects", () => {
          // Kept deliberately, and load-bearing for the deprecation: an old
          // bookmark has to REACH the app, because the app is what rewrites it to

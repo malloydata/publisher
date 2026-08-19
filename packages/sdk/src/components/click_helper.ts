@@ -2,6 +2,19 @@ import { useNavigate } from "react-router-dom";
 import { MouseEvent } from "react";
 
 /**
+ * The modifier state a navigation decision reads, and nothing more.
+ *
+ * Both React's synthetic mouse event and the DOM's satisfy it, which is the
+ * point. A click can reach navigation from a React handler, or from outside
+ * React entirely (a `# drill` click arrives from the Malloy renderer as a plain
+ * DOM event), and neither should have to be converted to the other first.
+ */
+export type NavigationClick = Pick<
+   MouseEvent,
+   "metaKey" | "ctrlKey" | "shiftKey" | "button"
+>;
+
+/**
  * Custom hook that returns a function for handling clicks with proper modifier key support.
  * The returned function handles CMD/Ctrl clicks to open in new tabs, regular clicks for navigation.
  *
@@ -10,7 +23,7 @@ import { MouseEvent } from "react";
 export function useRouterClickHandler() {
    const navigate = useNavigate();
 
-   return (to: string, event?: MouseEvent) => {
+   return (to: string, event?: NavigationClick) => {
       // If no event or no modifier keys, use normal navigation
       if (
          !event ||

@@ -15,9 +15,12 @@ import {
    duckdbTestConnections,
    loadTestModel,
 } from "./incremental_test_harness";
+import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import {
    baseAlias,
    planModelPreaggregation,
+   isSpliceableNamespace,
+   persistNamespace,
    planSourcePreaggregation,
    rollupSourceName,
    synthesizePreaggregationModel,
@@ -45,6 +48,29 @@ source: orders is duckdb.sql("""${ROWS}""") extend {
 ${body}
 }
 `;
+}
+
+/** An author model whose `orders` carries `annotation` above it. */
+function annotatedAuthorModel(annotation: string, body: string): string {
+   return `##! experimental { persistence composite_sources }
+${annotation}
+source: orders is duckdb.sql("""${ROWS}""") extend {
+${body}
+}
+`;
+}
+
+/** Compile an annotated author model and return source `orders`. */
+async function compileAnnotatedOrders(
+   annotation: string,
+   body: string,
+): Promise<ValidatableSource> {
+   const compiled = await loadTestModel(
+      connections,
+      annotatedAuthorModel(annotation, body),
+   ).getModel();
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   return (compiled as any)._modelDef.contents["orders"] as ValidatableSource;
 }
 
 /** Compile an author model and return source `orders` from its contents. */
@@ -124,6 +150,194 @@ describe("the plan groups by grain, not by measure", () => {
          await planFor(`  #@ -preaggregate
   measure: total is amount.sum()`),
       ).toEqual([]);
+   });
+});
+
+describe("a rollup is created where its base lives", () => {
+   const GRAIN = `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`;
+
+   it("qualifies the rollup with the base's namespace", async () => {
+      // A rollup of X belongs beside X. On a dialect that requires qualification
+      // this is also what makes it buildable at all: BigQuery rejects an
+      // unqualified CREATE, so a bare name is not a cosmetic difference there.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            GRAIN,
+         ),
+      );
+      expect(plans).toHaveLength(1);
+      expect(plans[0].namespace).toBe("analytics");
+      expect(synthesizePreaggregationModel(plans, "./orders.malloy")).toContain(
+         `#@ persist name="analytics.${plans[0].rollupSourceName}"`,
+      );
+   });
+
+   it("takes the namespace, not the base's table name", async () => {
+      // The rollup is its own table; only the namespace is inherited. Appending to
+      // the base's table name would collide two different things in one name.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            GRAIN,
+         ),
+      );
+      const emitted =
+         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
+      expect(emitted).not.toContain("orders_tbl__preagg");
+   });
+
+   it("keeps a project-qualified namespace whole", async () => {
+      // BigQuery names can carry a project as well as a dataset, so the split is on
+      // the LAST dot: the rollup lands in the same dataset, not the same project.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist name="proj.analytics.orders_tbl"',
+            GRAIN,
+         ),
+      );
+      expect(plans[0].namespace).toBe("proj.analytics");
+   });
+
+   it("takes an author-declared namespace over the base's", async () => {
+      // `namespace=` is the answer for a base that is not persisted at all — which
+      // is legal, since `#@ preaggregate` goes on a measure — and an override when
+      // it is. It names the container only; the table name stays derived.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            `  measure:\n    #@ preaggregate grain="category" namespace="rollups"\n    total is sum(amount)`,
+         ),
+      );
+      expect(plans[0].namespace).toBe("rollups");
+      expect(synthesizePreaggregationModel(plans, "./orders.malloy")).toContain(
+         `#@ persist name="rollups.${plans[0].rollupSourceName}"`,
+      );
+   });
+
+   it("accepts a namespace on a base that is not persisted", async () => {
+      // The case the fallback cannot serve: nothing to inherit from.
+      const plans = await planFor(
+         `  measure:\n    #@ preaggregate grain="category" namespace="rollups"\n    total is sum(amount)`,
+      );
+      expect(plans[0].namespace).toBe("rollups");
+   });
+
+   it("gives each grain the namespace named at it", async () => {
+      // Two grains are two tables and can be created in two places. A namespace
+      // resolved across the source would apply one grain's choice to the other's
+      // table, silently, decided by whichever the IR reported first.
+      const plans = await planFor(
+         `  measure:\n    #@ preaggregate grain="category" namespace="ns_a"\n    total is sum(amount)\n  measure:\n    #@ preaggregate grain="order_date" namespace="ns_b"\n    daily is sum(amount)`,
+      );
+      expect(plans.map((p) => [p.grainDimensions, p.namespace])).toEqual([
+         [["category"], "ns_a"],
+         [["order_date"], "ns_b"],
+      ]);
+   });
+
+   it("does not lend a storage= base's namespace to a colocated rollup", async () => {
+      // A `storage=` base's `name=` is a name in the DESTINATION's catalog, while
+      // the rollup is colocated — synthesis emits a bare `#@ persist`. Inheriting
+      // across that boundary would aim CREATE TABLE at a schema of the
+      // destination's that need not exist in the source warehouse, so adding
+      // `storage=` to a working base would break its rollup.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist storage="lake" name="lakeschema.orders_tbl"',
+            `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+         ),
+      );
+      expect(plans[0].namespace).toBeUndefined();
+      // An author who wants one still says so, and that is honoured.
+      const declared = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist storage="lake" name="lakeschema.orders_tbl"',
+            `  measure:\n    #@ preaggregate grain="category" namespace="rollups"\n    total is sum(amount)`,
+         ),
+      );
+      expect(declared[0].namespace).toBe("rollups");
+   });
+
+   it("derives nothing from a quoted or malformed base name", async () => {
+      // A quoted name is canonical SQL, not a dotted identifier path: `"My.Schema"`
+      // is ONE identifier containing a dot, and a last-dot split tears it in half.
+      // Even a well-formed `"A"."B"` would hand back a quoted prefix that joins to
+      // an unquoted derived segment, and the CREATE and bind sides quote a mixed
+      // path differently. Yield nothing and let the author name it explicitly.
+      expect(persistNamespace('"My.Schema"')).toBeUndefined();
+      expect(persistNamespace("`My.Schema`")).toBeUndefined();
+      expect(persistNamespace('"Analytics"."Orders Tbl"')).toBeUndefined();
+      // ...but a quoted TABLE beside a plain namespace is fine: the rollup takes
+      // only the namespace, so both of its segments are unquoted and the mixed-path
+      // disagreement never arises.
+      expect(persistNamespace('analytics."Orders Tbl"')).toBe("analytics");
+      // A trailing dot leaves the base's own table segment empty — malformed, so
+      // inventing a namespace from it would hide that.
+      expect(persistNamespace("trailing.")).toBeUndefined();
+      // The forms that ARE sound still work.
+      expect(persistNamespace("analytics.orders")).toBe("analytics");
+      expect(persistNamespace("proj.analytics.orders")).toBe("proj.analytics");
+      expect(persistNamespace("orders")).toBeUndefined();
+   });
+
+   it("refuses a quoted namespace= rather than emitting a broken annotation", async () => {
+      // The value is interpolated into a generated `#@ persist name="…"`, where a
+      // quote character ends the annotation's own string.
+      const source = await compileOrders(
+         `  measure:\n    #@ preaggregate grain="category" namespace="\\"Odd\\""\n    total is sum(amount)`,
+      );
+      const declaration = readPreaggregateAnnotation(
+         (source.fields ?? []).find(
+            (f) => (f.as ?? f.name) === "total",
+         ) as never,
+      );
+      expect(declaration.errors.map((e) => e.kind)).toContain(
+         "invalid_namespace",
+      );
+      // The line is refused whole, so its grain goes with it: a rollup must never
+      // be built in a namespace the author did not get to choose.
+      expect(declaration.grains).toHaveLength(0);
+   });
+
+   it("accepts the namespaces a real deployment needs, and rejects the rest", () => {
+      // Dot-separated because BigQuery addresses a dataset as `project.dataset`,
+      // and hyphens because a BigQuery project id ordinarily carries them — the
+      // dialect this feature broke on requires both.
+      expect(isSpliceableNamespace("analytics")).toBe(true);
+      expect(isSpliceableNamespace("my-project.analytics")).toBe(true);
+      expect(isSpliceableNamespace("_staging$1")).toBe(true);
+      // A space or a quote cannot be written bare into a generated name; a leading
+      // digit is not an identifier; an empty part means a stray or doubled dot.
+      expect(isSpliceableNamespace("my schema")).toBe(false);
+      expect(isSpliceableNamespace('"Analytics"')).toBe(false);
+      expect(isSpliceableNamespace("1analytics")).toBe(false);
+      expect(isSpliceableNamespace("a..b")).toBe(false);
+      expect(isSpliceableNamespace("")).toBe(false);
+      // Nothing that could end the annotation's string or the statement.
+      expect(isSpliceableNamespace('a";DROP TABLE x;--')).toBe(false);
+   });
+
+   it("emits a bare persist when the base names no namespace", async () => {
+      // Nothing to inherit, so nothing is invented — nor is the previous behaviour
+      // changed for the dialects that accept an unqualified name.
+      const unqualified = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders('#@ persist name="orders_tbl"', GRAIN),
+      );
+      expect(unqualified[0].namespace).toBeUndefined();
+      expect(
+         synthesizePreaggregationModel(unqualified, "./orders.malloy"),
+      ).toContain("#@ persist\nsource:");
+
+      const unpersisted = await planFor(GRAIN);
+      expect(unpersisted[0].namespace).toBeUndefined();
    });
 });
 

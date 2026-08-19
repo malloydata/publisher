@@ -9,6 +9,7 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
+import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
 import { EnvironmentStore } from "../../service/environment_store";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
@@ -264,7 +265,9 @@ export function registerExecuteQueryTool(
             const { validateRenderTags } = await import(
                "@malloydata/render-validator"
             );
-            const renderLogs = validateRenderTags(result);
+            const renderLogs = filterPublisherOwnedRenderLogs(
+               validateRenderTags(result),
+            );
 
             const resultUri = buildMalloyUri(
                {
