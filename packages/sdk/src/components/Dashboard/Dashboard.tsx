@@ -95,14 +95,19 @@ export function Dashboard({
    height,
    maxResultSize,
 }: DashboardProps) {
-   const { environmentName, packageName } = parseResourceUri(resourceUri);
+   const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
 
-   if (!environmentName || !packageName) {
-      throw new Error(
-         "A Dashboard resource URI must name an environment and a package.",
-      );
-   }
+   // Degraded, not thrown. `Notebook`, `Model` and `Package` all let a bad URI
+   // fail into an error display; a throw in the render body takes the host's
+   // whole tree down with it instead, which is a white screen rather than a
+   // message. The Console cannot reach this, because `DashboardPage` builds the
+   // URI from params `ModelPage` has already guarded, so the only caller a throw
+   // could punish is the embedding host the docs invite. Reported below rather
+   // than here, so every hook still runs in the same order.
+   const environmentName = parsed.environmentName ?? "";
+   const packageName = parsed.packageName ?? "";
+   const uriNamesBoth = !!parsed.environmentName && !!parsed.packageName;
 
    const {
       data: manifestResponse,
@@ -117,6 +122,8 @@ export function Dashboard({
             packageName,
             dashboard,
          ),
+      // No point asking for a dashboard under a name the URI never carried.
+      enabled: uriNamesBoth,
    });
    const manifest = manifestResponse?.data;
 
@@ -242,6 +249,16 @@ export function Dashboard({
       canSelf,
       selfLabel: "Filter this dashboard",
    });
+
+   // After every hook, so the hook order does not depend on the URI.
+   if (!uriNamesBoth) {
+      return (
+         <Alert severity="error">
+            A dashboard resource URI must name an environment and a package.
+            Received: {resourceUri}
+         </Alert>
+      );
+   }
 
    if (isError) {
       return (

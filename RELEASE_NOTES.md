@@ -411,8 +411,9 @@ embedding host renders the same component the Console does.
   drillable column takes ONE tab stop rather than one per row, with ArrowUp/ArrowDown and Home/End
   moving within it: tabbing through every cell of a result would have been its own accessibility
   problem, since a result at the row cap would have stood between the reader and everything after
-  it. The stop is per table, so a drill inside a `nest:`, which the renderer draws as a table per
-  parent row, still contributes one stop per parent row.
+  it. The stop is per drillable COLUMN within a table, so a table grouping by two drilled dimensions
+  carries two, and a drill inside a `nest:`, which the renderer draws as a table per parent row, still
+  contributes one stop per parent row.
 - **A `select` control looks like one.** MUI hides the dropdown arrow whenever a combobox accepts
   free text, which it must here since a `suggest` returns the common values rather than every legal
   one, so a picker rendered as a plain text box and its option list was undiscoverable.

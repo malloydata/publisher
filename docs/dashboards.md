@@ -358,8 +358,9 @@ the ends, and the movement stops at the ends rather than wrapping. The tab stop 
 row however you got there, clicking included, so leaving the result and tabbing back returns to the
 row you were on.
 
-That is one stop per TABLE, which is not the same as one per result when a drill sits inside a
-`nest:`. The renderer draws a nested table per parent row, each with its own columns, so a drillable
+That is one stop per drillable COLUMN, scoped to its table, which is not the same as one per result
+in two cases. A table that groups by two drilled dimensions gets a stop for each, measured: two
+drillable columns in one table produce two stops. And a drill inside a `nest:` The renderer draws a nested table per parent row, each with its own columns, so a drillable
 dimension inside a nest still contributes a stop per parent row: measured 2 parent rows, 2 stops,
 against 1 for the same dimension grouped flat. Sharing a stop across those tables needs the marking
 to match on field identity rather than on a rendered column, which is the same limitation noted in
@@ -369,7 +370,16 @@ Those signals are the only thing saying a cell does anything, so it is worth kno
 off: a destination the surface cannot reach is not offered and not marked, deliberately, since a dead
 link is worse than none. A `to=self` drill read in a document that declares no control for its given
 is the usual case, and it stays plain text rather than swallowing the click. The same rule decides
-the menu, so what looks clickable and what a click does cannot drift apart.
+the menu, so on an ordinary table what looks clickable and what a click does agree.
+
+**One layout where they do not agree: `# transpose`.** The renderer lays a transposed table out
+without the per-cell `grid-column` the marking reads, so no cell in one is marked: no pointer cursor,
+no hover colour, no button role, no tab stop. The renderer still routes the click, so the drill FIRES
+if a reader hits the cell anyway. A transposed tile therefore navigates on a click that looked like
+plain text. Marking it needs a second strategy keyed on that layout, and until then a `# drill`
+dimension is better kept out of a `# transpose` tile. The same gap applies, for a different reason, to
+a drillable column whose header text is also rendered by a non-drillable field: the marking cannot
+tell the two columns apart, so it leaves both unmarked rather than painting a dead link.
 
 Declaring it on the dimension is what makes it work everywhere: any result that groups by that
 dimension is clickable, in a dashboard tile and in a **notebook cell** alike, with no per-document

@@ -120,6 +120,38 @@ describe("markDrillableCells and the tab order", () => {
    });
 });
 
+describe("markDrillableCells across two drillable columns", () => {
+   // The stop is per drillable COLUMN, scoped to its table, not per table. The
+   // guide said "one stop per TABLE" for two rounds, which is wrong the moment a
+   // dashboard groups by two drilled dimensions.
+   it("gives each drillable column its own stop", () => {
+      const root = document.createElement("div");
+      root.innerHTML = `
+         <div class="malloy-table">
+            <div class="column-cell th" style="grid-column: 1 / 2;">category</div>
+            <div class="column-cell th" style="grid-column: 2 / 3;">brand</div>
+            <div class="column-cell th" style="grid-column: 3 / 4;">sales</div>
+            <div class="column-cell td" style="grid-column: 1 / 2;">c0</div>
+            <div class="column-cell td" style="grid-column: 2 / 3;">b0</div>
+            <div class="column-cell td" style="grid-column: 3 / 4;">1</div>
+            <div class="column-cell td" style="grid-column: 1 / 2;">c1</div>
+            <div class="column-cell td" style="grid-column: 2 / 3;">b1</div>
+            <div class="column-cell td" style="grid-column: 3 / 4;">2</div>
+         </div>`;
+      markDrillableCells(root, new Set(["category", "brand"]));
+
+      const stops = Array.from(
+         root.querySelectorAll<HTMLElement>(`.${DRILL_CELL_CLASS}`),
+      )
+         .filter((n) => n.getAttribute("tabindex") === "0")
+         .map((n) => n.textContent);
+      // One per column, both on the first row, and the undrilled column
+      // contributes none.
+      expect(stops).toEqual(["c0", "b0"]);
+      expect(root.querySelectorAll(`.${DRILL_CELL_CLASS}`).length).toBe(4);
+   });
+});
+
 describe("moveDrillStop keeps a column to exactly one tab stop", () => {
    const table = (rows: number) => {
       const root = document.createElement("div");
