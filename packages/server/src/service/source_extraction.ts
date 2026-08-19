@@ -157,7 +157,8 @@ function joinFieldNamesUnresolvableDeclaration(
  * Authorize (`#(authorize)`) is collected own-gate-first and then from the
  * nearest ancestor that declares one, via {@link effectiveAncestorGateExprs}
  * (`./gate_registry_walk`) — its `annotations.inherits`/`sourceRegistry` half
- * is shared verbatim with `Model.gateExprsForOwnAnnotations`; its
+ * is shared verbatim with `./gate_classification`'s
+ * `gateExprsForOwnAnnotations`; its
  * `query_source` hop is NOT (see that module's doc comment for why
  * `Model.collectEntryPointGates` takes it as its own separate, already-tested
  * recursion instead). For `X is Y extend {...}`: if X declares its own
@@ -172,8 +173,8 @@ function joinFieldNamesUnresolvableDeclaration(
  * carries no annotation of its OWN; any annotation — a render tag, a doc
  * comment, an unrelated `#(filter)` — demotes Y's to `annotations.inherits`, at
  * which point own-blockNotes reports a locked source as ungated. So the chain is
- * walked, nearest declaration wins, matching `Model.gateExprsForOwnAnnotations`.
- * Joins are a separate concern and are not gated.
+ * walked, nearest declaration wins, matching `./gate_classification`'s
+ * `gateExprsForOwnAnnotations`. Joins are a separate concern and are not gated.
  *
  * `blockNotes` alone is also not sufficient WITHIN one level, because which
  * note key a declaration lands in is decided by the author's syntax. The
@@ -446,8 +447,9 @@ export function extractSourcesFromModelDef(
                containsAuthorizeAnnotationTag([note.text]),
             ),
          );
-         // Shared with `Model.gateExprsForOwnAnnotations` (`./gate_registry_walk`)
-         // rather than walking `struct.annotations.inherits` by hand here: that
+         // Shared with `./gate_classification`'s `gateExprsForOwnAnnotations`
+         // via the `./gate_registry_walk` walk both call into, rather than
+         // walking `struct.annotations.inherits` by hand here: that
          // chain alone misses a `query_source` entry point (`Z is X -> {...}`),
          // whose compiled `StructDef` carries no `annotations` at all, so the
          // ONLY link back to `X`'s gate is the `sourceRegistry` fallback the

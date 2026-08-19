@@ -86,6 +86,10 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { classifyAuthorizeGate } from "./authorize";
+import {
+   createGateClassificationDeps,
+   resolveGateShape,
+} from "./gate_classification";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import { Model } from "./model";
 import { Package } from "./package";
@@ -1595,6 +1599,76 @@ source: X is duckdb.table('parent') extend {
             graftScope,
          );
          expect(resolution.shape).toBe("rejected");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("CRITICAL — a differing given surface does not collide on a cached entry", async () => {
+      // `resolveGateShape`'s cache key is `(cacheScope, graftTarget,
+      // filterText)` — no fingerprint of the given surface a classification
+      // was computed against. Safe only because `createGateClassificationDeps`
+      // mints a `gateShapeCache` and its given-declared-type/default maps
+      // TOGETHER, so two deps structs for two different given surfaces can
+      // never share a Map: the SAME (graftTarget, filterText) classifies
+      // independently under each, rather than one reusing a stale
+      // classification the other cached.
+      const { internals, duckdb } = await buildGatedModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         const modelDef = internals.modelDef as ModelDef;
+         const graftScope = {
+            modelDef,
+            materializer: (
+               internals as unknown as { modelMaterializer: ModelMaterializer }
+            ).modelMaterializer,
+            cacheScope: "model",
+         };
+         const entry = {
+            label: "X",
+            exprs: ["org_id in $GROUPS"],
+            selfContained: false,
+            struct: modelDef.contents["X"] as unknown as SourceDef,
+         };
+
+         // Surface A: `GROUPS` is declared as an array — the gate compiles
+         // and classifies as a real row filter.
+         const depsWithGroups = createGateClassificationDeps([
+            { name: "GROUPS", type: "number[]" },
+         ]);
+         const admitted = await resolveGateShape(
+            entry,
+            modelDef,
+            graftScope,
+            depsWithGroups,
+         );
+         expect(admitted.shape).toBe("row_level");
+
+         // Surface B: `GROUPS` is not on this surface at all. A fresh deps
+         // struct never shares a Map with surface A's, so the IDENTICAL
+         // (graftTarget, filterText) must reject as unreachable, not silently
+         // reuse surface A's cached admit.
+         const depsWithoutGroups = createGateClassificationDeps([]);
+         expect(depsWithoutGroups.gateShapeCache).not.toBe(
+            depsWithGroups.gateShapeCache,
+         );
+         const rejected = await resolveGateShape(
+            entry,
+            modelDef,
+            graftScope,
+            depsWithoutGroups,
+         );
+         expect(rejected.shape).toBe("rejected");
+         if (rejected.shape === "rejected") {
+            expect(rejected.cause).toBe("unreachable_given");
+         }
       } finally {
          await duckdb.close();
       }

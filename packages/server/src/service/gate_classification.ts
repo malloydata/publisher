@@ -89,6 +89,23 @@ export interface GraftScope {
  * instance, while a one-shot build-time classification must pass its own
  * (typically fresh, single-pass) cache rather than silently inheriting or
  * polluting a request-serving `Model`'s.
+ *
+ * Construct this ONLY through {@link createGateClassificationDeps} — never
+ * assemble the three fields by hand, and never reassign one on an existing
+ * instance. `gateShapeCache`'s entries are computed FROM
+ * `givenDeclaredTypes`/`givenDeclaredDefaults` (a classification reads them
+ * inside {@link resolveGateShape}'s cache-miss branch), but the cache key
+ * carries no fingerprint of the given surface — before this type had a
+ * single constructor, that was safe only because its one caller (`Model`)
+ * kept the cache and the given maps as three fields of the SAME `this`,
+ * which could not disagree. Once a caller can build this struct directly (a
+ * one-shot build-time classification, or any future second caller), a cache
+ * computed under one given surface but paired with a DIFFERENT one would
+ * return a stale classification with no error — `row_level` where the
+ * correct answer is `rejected` is fail-OPEN. The factory closes this
+ * structurally: a `gateShapeCache` and the given maps it was computed
+ * against are always minted together, in the same call, so one can never
+ * outlive or cross the given surface it belongs to.
  */
 export interface GateClassificationDeps {
    /**
@@ -107,6 +124,34 @@ export interface GateClassificationDeps {
    givenDeclaredDefaults: Map<string, string>;
    /** Debug-log context only; never read for a decision. */
    modelPath?: string;
+}
+
+/**
+ * The one sanctioned way to build a {@link GateClassificationDeps} — see its
+ * doc for the drift hazard this closes. `givens` is read ONCE, here, into a
+ * brand-new `gateShapeCache` (never a `Map` the caller already had lying
+ * around) and the given-declared-type/default maps derived from that SAME
+ * `givens` array, so the cache and the given surface it classifies against
+ * can never be assembled from two different calls and therefore never
+ * disagree.
+ *
+ * A caller that needs one long-lived deps struct per given surface (`Model`)
+ * calls this ONCE and holds onto the result for as long as that surface is
+ * valid (`Model`'s own `givens` is fixed for the life of the instance — a
+ * package reload constructs a fresh `Model`, never patches this one); a
+ * one-shot build-time classification calls it fresh per build, same as it
+ * would have passed a fresh `Map()` before this existed.
+ */
+export function createGateClassificationDeps(
+   givens: ReadonlyArray<{ name?: string; type?: string; default?: unknown }>,
+   modelPath?: string,
+): GateClassificationDeps {
+   return {
+      gateShapeCache: new Map(),
+      givenDeclaredTypes: computeGivenDeclaredTypes(givens),
+      givenDeclaredDefaults: computeGivenDeclaredDefaults(givens),
+      modelPath,
+   };
 }
 
 /**
@@ -141,7 +186,7 @@ export interface GateClassificationDeps {
  * parameter exists to close. Empty for every caller except the
  * composite-member recursion in {@link collectEntryPointGates}.
  */
-export function gateExprsForOwnAnnotations(
+function gateExprsForOwnAnnotations(
    struct: SourceDef,
    modelDef?: ModelDef,
    excludeNotes: readonly AnnotationNote[] = [],
@@ -583,7 +628,7 @@ export function resolveGraftTarget(
 
 /** `modelDef.contents` key whose value IS `struct` (identity), else whose
  *  value shares `struct`'s `sourceID`, else `undefined`. */
-export function findContentsKey(
+function findContentsKey(
    struct: SourceDef,
    modelDef: ModelDef,
 ): string | undefined {
@@ -607,7 +652,7 @@ export function findContentsKey(
  * `exclude` keeps this from re-matching a struct already visited in the
  * ancestor walk.
  */
-export function findSourceByOwnAnnotationIdentity(
+function findSourceByOwnAnnotationIdentity(
    struct: SourceDef,
    modelDef: ModelDef,
    exclude: Set<SourceDef>,
@@ -663,7 +708,7 @@ export function findSourceByOwnAnnotationIdentity(
  * `Model.assertGateLanded`'s proof. A failure throws, which
  * {@link resolveGateShape}'s caller already turns into a deny.
  */
-export async function liftGateCondition(
+async function liftGateCondition(
    graftTarget: string,
    filterText: string,
    materializer: ModelMaterializer,
