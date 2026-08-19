@@ -462,14 +462,43 @@ import { Dashboard, encodeResourceUri } from "@malloy-publisher/sdk";
   })}
   dashboard="overview"
   givens={Object.fromEntries(searchParams)}
-  onGivensChange={(next) => setSearchParams(next, { replace: true })}
+  // MERGE, do not replace. `managed` is every given this dashboard declares,
+  // including the ones holding no value right now, and it is there because
+  // `next` alone cannot tell a control the reader CLEARED from a parameter that
+  // was never yours. Replacing the whole query string drops an unrelated
+  // parameter as soon as the manifest arrives, before the reader touches
+  // anything.
+  onGivensChange={(next, managed) =>
+    setSearchParams(
+      (current) => {
+        for (const name of managed) {
+          if (!Object.prototype.hasOwnProperty.call(next, name)) {
+            current.delete(name);
+          }
+        }
+        for (const [name, value] of Object.entries(next)) {
+          current.set(name, value);
+        }
+        return current;
+      },
+      // Filtering is not a navigation step.
+      { replace: true },
+    )
+  }
+  // The slug is ENCODED, because it is a filename: it can hold a character that
+  // would read as structure in a path or start the query string early.
   onNavigate={(target) =>
     navigate(
-      `/dashboards/${target.dashboard}?${new URLSearchParams(target.givens)}`,
+      `/dashboards/${encodeURIComponent(target.dashboard)}` +
+        `?${new URLSearchParams(target.givens)}`,
     )
   }
 />;
 ```
+
+A host that keeps its own names in the query string should also remember the ones
+it has written, so a given the dashboard stops declaring is still cleaned up;
+`DashboardPage` does that with a `writtenRef`.
 
 Without `onNavigate`, drilling to another dashboard is inert, and by the rule above those cells do
 not read as clickable either, so a host that has not wired navigation shows no affordance rather than
