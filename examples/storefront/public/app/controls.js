@@ -275,9 +275,14 @@ function singleSelect(
       // encoder DROPS a value it cannot carry, so the control must show what
       // was sent. A value with a stray tab encodes to "" (All), and without
       // this the box went on naming that value over unfiltered data.
-      current = encodeFilterValue(select.value);
+      // Send first, then draw what is in FORCE. Choosing "All" sends `""`, the
+      // given is dropped, and the server then re-applies the model's declared
+      // default, so a box reading "All categories" over that is the same lie
+      // this control was fixed for. The date box already worked this way.
+      const sent = encodeFilterValue(select.value);
+      onChange(contract.name, sent);
+      current = sent || fallback;
       showFilter(current);
-      onChange(contract.name, current);
    });
    loadOptions(modelPath, contract)
       .then((options) => {
@@ -375,7 +380,10 @@ function multiSelect(
       // `opaque` is always false here: the only caller clears it immediately
       // before calling, which is where the hand-written filter gets dropped.
       const ticked = selected;
-      ({ values: selected, opaque } = readSelection(encoded));
+      // `encoded || fallback`: unticking the last box sends `""` and the server
+      // re-applies the declared default, so the panel must show that rather
+      // than "All brands".
+      ({ values: selected, opaque } = readSelection(encoded || fallback));
       paint();
       // Repaint only when it would change something. `fillPanel` replaces every
       // row, so doing it on each tick destroys the checkbox the reader is
@@ -569,9 +577,13 @@ function range(host, { contract, value, fallback, description, onChange }) {
          Number(input.value) > 0 ? `≥ $${input.value}` : "any";
    });
    // On `change`, not `input`: one query when the drag ends, not one per pixel.
-   input.addEventListener("change", () =>
-      onChange(contract.name, encodeAtLeast(input.value)),
-   );
+   // Send, then redraw from what is in force: dragging to the floor sends `""`
+   // and the server re-applies the declared default, which is not "any".
+   input.addEventListener("change", () => {
+      const sent = encodeAtLeast(input.value);
+      onChange(contract.name, sent);
+      showFilter(sent || fallback);
+   });
    wrap.append(input, readout);
    host.appendChild(labelled(contract, wrap, description));
    return {

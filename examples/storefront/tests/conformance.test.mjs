@@ -35,20 +35,38 @@ const KINDS = [
    { kind: "select", opaque: true,
      contract: { name: "A", label: "A", type: "filter<string>", control: "select",
                  suggest: { source: "s", dimension: "v" } },
-     unshowable: "-Denim", ordinary: "Denim" },
+     unshowable: "-Denim", ordinary: "Denim",
+     default: "f'Denim'", shows: (el) => el.selectedOptions[0]?.textContent ?? "",
+     expect: "Denim",
+     clear: (el) => { el.value = ""; el.dispatchEvent(new window.Event("change", { bubbles: true })); } },
    { kind: "multiselect", opaque: true,
      contract: { name: "B", label: "B", type: "filter<string>", control: "multiselect",
                  suggest: { source: "s", dimension: "v" } },
-     unshowable: "-Denim", ordinary: "Denim" },
+     unshowable: "-Denim", ordinary: "Denim",
+     default: "f'Denim'", shows: (el) => el.textContent, expect: "Denim",
+     clear: async (el) => {
+        el.click();
+        await new Promise((r) => setTimeout(r, 0));
+        document.querySelector(".check-panel input:checked")?.click();
+     } },
    { kind: "range", opaque: true,
      contract: { name: "C", label: "C", type: "filter<number>", rangeMin: 0, rangeMax: 250 },
-     unshowable: "<= 100", ordinary: ">= 75" },
+     unshowable: "<= 100", ordinary: ">= 75",
+     default: "f'>= 50'",
+     shows: (el) => el.parentElement.querySelector("output").textContent,
+     expect: "\u2265 $50",
+     clear: (el) => {
+        el.value = "0";
+        el.dispatchEvent(new window.Event("change", { bubbles: true }));
+     } },
    // `date` takes a date literal rather than filter syntax, and the server
    // REJECTS anything it cannot parse (measured: 400, and the page shows an
    // error on every tile). There is no filter it can silently draw wrongly, so
    // it has no opaque concept to conform to.
    { kind: "date", opaque: false,
-     contract: { name: "D", label: "D", type: "date", default: "@2023-01-01" } },
+     contract: { name: "D", label: "D", type: "date" },
+     default: "@2023-01-01", shows: (el) => el.value, expect: "2023-01-01",
+     clear: (el) => { el.value = ""; el.dispatchEvent(new window.Event("change", { bubbles: true })); } },
 ];
 
 async function mount(contract, value) {
@@ -80,5 +98,26 @@ for (const k of KINDS.filter((k) => k.opaque)) {
       const el = await mount(k.contract, k.ordinary);
       assert.equal(el.dataset.opaqueFilter, "false", `${k.kind} flag`);
       assert.equal(el.title, "", `${k.kind} tooltip`);
+   });
+}
+
+// The server re-applies a given's declared default whenever the given is
+// absent, so a control that has just been cleared is showing a filtered result
+// and must say which. Every control gets this rule, not the one a bug surfaced
+// through: it was fixed for the date box first, then had to be fixed again for
+// the other three.
+for (const k of KINDS) {
+   test(`${k.kind}: draws the declared default when the URL carries none`, async () => {
+      const el = await mount({ ...k.contract, default: k.default }, "");
+      assert.equal(k.shows(el), k.expect);
+   });
+   test(`${k.kind}: still draws it after the reader clears the control`, async () => {
+      const el = await mount({ ...k.contract, default: k.default }, "");
+      await k.clear(el);
+      assert.equal(
+         k.shows(el),
+         k.expect,
+         "the given is dropped, so the default is what filters",
+      );
    });
 }
