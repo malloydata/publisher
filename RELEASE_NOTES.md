@@ -227,8 +227,8 @@ content the same colour, and Publisher's in-repo reference docs had nothing link
   in the repo rather than on the docs site and for several features are the only write-up there is.
   A spec checks each target exists in the repo, case-sensitively, so a doc renamed, deleted or
   mistyped fails the test suite rather than shipping a broken card. It cannot check that a target is
-  on `main` yet, which is a merge-ordering question: this change is sequenced behind the dashboards
-  slice for exactly that reason.
+  on `main` yet, which is a merge-ordering question: this change was sequenced behind the dashboards
+  slice for exactly that reason, and that slice has since landed.
 - **`docs/choosing-a-surface.md`**, a comparison of notebooks, dashboards and HTML data apps with a
   decision guide. `docs/malloyyo-dashboards-design.md` has referenced it since it merged; it now
   exists.
