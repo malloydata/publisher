@@ -1,6 +1,6 @@
 ---
 name: malloy-document
-description: Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to "add documentation", "add doc tags", "document the model", or wants fields and sources described for natural-language search and discovery. For declaring parameterizable filters with #(filter), see the malloy-model skill. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag.
+description: 'Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to "add documentation", "add doc tags", "document the model", or wants fields and sources described for natural-language search and discovery. For declaring parameterizable filters with #(filter), see the malloy-model skill. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag.'
 ---
 
 # Documenting a Malloy Model
