@@ -22,7 +22,7 @@ no conversion step. **No credentials required.**
 | `public/app/` | The page's ES modules (state and rendering, controls, charts, tables, formatting). No build step: the browser loads them directly. |
 | `public/vendor/chart.umd.js` | Chart.js v4.5.0 (MIT), vendored so the page renders where a CDN is blocked. |
 | `public/vendor/malloy-filter.js` | `@malloydata/malloy-filter`, bundled for the browser, so the page escapes filter values with Malloy's own printer. Regenerate with `bun run vendor:malloy-filter`. |
-| `tests/` | `node --test` coverage for the page's pure module (`bun run test:examples`). |
+| `tests/` | `node --test` coverage (`bun run test:examples`): the filter encoding, and the controls themselves against a real DOM. |
 | `eslint.config.mjs` | Lints `public/app/`, which nothing else reads: no bundler, no typechecker. Run by the root `bun run lint`. |
 
 The data is generated deterministically by [`scripts/generate-example-data.mjs`](../../scripts/generate-example-data.mjs)

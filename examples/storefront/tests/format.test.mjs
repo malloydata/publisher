@@ -194,10 +194,11 @@ test("a picker reads values and representability in one call", () => {
 });
 
 test("what a picker must do with an opaque filter, as data", () => {
-   // The picker itself needs a DOM and so is not covered here. What IS covered
-   // is the decision it makes: an opaque filter contributes NOTHING to a new
-   // selection, because extending it re-encodes it. This is the assertion that
-   // fails if a caller goes back to appending.
+   // This models the decision the picker makes, in encoder terms: an opaque
+   // filter contributes NOTHING to a new selection, because extending it
+   // re-encodes it. It does NOT pin the picker. Reverting `controls.js` to
+   // appending leaves every assertion here green, which was measured rather
+   // than assumed. `controls.test.mjs` is what fails in that case.
    const { values, opaque } = readFilterForPicker("-Nike");
    const base = opaque ? [] : values;
    assert.deepEqual(base, [], "an opaque filter must be replaced, not extended");
@@ -239,7 +240,20 @@ test("a given's default literal, unwrapped for a control", () => {
    assert.equal(readGivenDefault(undefined), "");
 });
 
-test("cells format the way their field's tags ask", () => {
+// The expectations below are written in en-US, because `formatValue` formats in
+// the READER's locale, which is the right behaviour for a page and the wrong
+// thing to hardcode in an assertion. Measured: under de-DE the same call gives
+// `1.235 $` rather than `$1,235`. Stated and skipped rather than left to fail
+// with a confusing diff, and CI runs en-US so it does run there.
+const EN_US = new Intl.NumberFormat()
+   .resolvedOptions()
+   .locale.startsWith("en-US");
+
+test("cells format the way their field's tags ask", {
+   skip: EN_US
+      ? false
+      : "written for en-US; this run formats in another locale",
+}, () => {
    assert.equal(formatValue(null), "—");
    assert.equal(formatValue(undefined), "—");
    assert.equal(formatValue(1234.5, "currency"), "$1,235");

@@ -84,23 +84,32 @@ async function loadOptions(modelPath, contract) {
  */
 function optionsFailed(control, contract, error) {
    console.error(`options for ${contract.name}`, error);
-   control.title = `Could not load choices: ${error?.message ?? error}`;
    control.dataset.optionsFailed = "true";
+   control.dataset.optionsError = `Could not load choices: ${error?.message ?? error}`;
+   composeTitle(control);
+}
+
+/**
+ * The tooltip has two independent authors: the failed-choices message, written
+ * once, and the control's own help, rewritten on every repaint. Whoever wrote
+ * last used to win, so a repaint erased the explanation of an empty picker.
+ * Both are stored and the title is composed from them here, so neither can
+ * silently delete the other.
+ */
+function composeTitle(control, help) {
+   if (help !== undefined) {
+      if (help) control.dataset.controlHelp = help;
+      else delete control.dataset.controlHelp;
+   }
+   control.title = [control.dataset.optionsError, control.dataset.controlHelp]
+      .filter(Boolean)
+      .join(" ");
 }
 
 const OPAQUE_HELP =
    "This filter was written by hand and this control cannot show it. Changing the selection replaces it.";
 
 const isFilter = (contract) => String(contract.type).startsWith("filter<");
-
-/**
- * What a single select should display for a filter, and whether it can display
- * it faithfully. A `<select>` cannot show `-Outerwear` (everything EXCEPT
- * Outerwear) as one of its options, and without this it silently rendered
- * BLANK while the data behind it stayed filtered. Both `CATEGORY` and `REGION`
- * are `control=select` in this model, so that was live rather than latent.
- */
-const firstValue = (filter) => readFilterForPicker(filter).values[0] ?? "";
 
 /**
  * A div rather than a label around the whole thing: a label forwards clicks to
@@ -182,25 +191,39 @@ function singleSelect(
    select.appendChild(all);
    host.appendChild(labelled(contract, select, description));
 
-   // A filter this control cannot represent gets its own disabled option, so it
-   // is visible rather than rendering as a blank box over filtered data.
-   // Choosing any real option replaces it, which is what the title says.
-   const opaqueOption = document.createElement("option");
-   opaqueOption.disabled = true;
-   const showOpaque = (filter) => {
+   // The control has to show the filter actually in force, and the option list
+   // is not always able to. It is empty until the choices arrive a round trip
+   // later, it stays empty if that query fails, the value may not be among the
+   // choices, and some filters are things one `<select>` cannot express at all:
+   // `-Outerwear` (everything EXCEPT Outerwear), or the two-value list
+   // `Denim, Outerwear`. Measured, each of those rendered either "All
+   // categories" or a blank box while the data behind it stayed filtered, which
+   // is the same lie the rest of this page exists to remove.
+   //
+   // So one option element carries whatever the list cannot. It stays
+   // selectable while it holds a plain single value, because picking it again
+   // is a no-op and the change handler can encode it. It is disabled when it
+   // holds a filter this control could not re-encode without changing its
+   // meaning, and then the tooltip says choosing something replaces it.
+   const carried = document.createElement("option");
+   const showFilter = (filter) => {
       const { values, opaque } = readFilterForPicker(filter);
-      if (opaque) {
-         opaqueOption.value = filter;
-         opaqueOption.textContent = values[0] ?? filter;
-         if (!opaqueOption.isConnected) select.appendChild(opaqueOption);
-         select.value = filter;
-         select.title = OPAQUE_HELP;
+      const plain = !opaque && values.length === 1;
+      const listed =
+         plain &&
+         [...select.options].some((o) => o !== carried && o.value === values[0]);
+      if (!filter || listed) {
+         carried.remove();
+         select.value = plain ? values[0] : "";
       } else {
-         opaqueOption.remove();
-         if (!select.dataset.optionsFailed) select.title = "";
+         carried.disabled = !plain;
+         carried.value = plain ? values[0] : filter;
+         carried.textContent = values.length ? values.join(", ") : filter;
+         if (!carried.isConnected) select.appendChild(carried);
+         select.value = carried.value;
       }
       select.dataset.opaqueFilter = String(opaque);
-      return opaque;
+      composeTitle(select, plain || !filter ? "" : OPAQUE_HELP);
    };
 
    // `current` rather than the captured `value`: the options arrive a round trip
@@ -208,17 +231,21 @@ function singleSelect(
    // value this widget was BUILT with would then show a filter that is not in
    // force. `set` keeps this in step, so whatever arrives last wins.
    let current = value;
-   showOpaque(value);
+   showFilter(value);
 
    // Registered here rather than beside the element because it needs `current`
-   // and `showOpaque`. It has to clear its own opaque state: the app does not
+   // and `showFilter`. It has to clear its own opaque state: the app does not
    // call `set` on the widget that raised the change, so nothing else will, and
    // the control would go on showing the hand-written filter it just replaced.
    // Updating `current` matters for the same reason, since options can arrive
    // after this and would otherwise restore the filter that is no longer set.
    select.addEventListener("change", () => {
+      // Re-read the display from `current` rather than trusting the click: the
+      // encoder DROPS a value it cannot carry, so the control must show what
+      // was sent. A value with a stray tab encodes to "" (All), and without
+      // this the box went on naming that value over unfiltered data.
       current = encodeFilterValue(select.value);
-      showOpaque(current);
+      showFilter(current);
       onChange(contract.name, current);
    });
    loadOptions(modelPath, contract)
@@ -228,14 +255,14 @@ function singleSelect(
             el.value = el.textContent = option;
             select.appendChild(el);
          }
-         if (!showOpaque(current)) select.value = firstValue(current);
+         showFilter(current);
       })
       .catch((error) => optionsFailed(select, contract, error));
    return {
       name: contract.name,
       set: (next) => {
          current = next;
-         if (!showOpaque(next)) select.value = firstValue(next);
+         showFilter(next);
       },
    };
 }
@@ -272,15 +299,10 @@ function multiSelect(
    };
    const paint = () => {
       button.textContent = caption();
-      // Say so rather than silently converting on the next click. Guarded on
-      // `optionsFailed`, because that writes an explanation to the same
-      // attribute and an unconditional write here would erase it on the next
-      // repaint, leaving an empty picker with nothing to say why.
-      if (opaque) {
-         button.title = OPAQUE_HELP;
-      } else if (!button.dataset.optionsFailed) {
-         button.title = "";
-      }
+      // Say so rather than silently converting on the next click. Through
+      // `composeTitle`, because a failed options query writes to the same
+      // attribute and whichever ran last used to erase the other.
+      composeTitle(button, opaque ? OPAQUE_HELP : "");
       button.dataset.opaqueFilter = String(opaque);
    };
    paint();
@@ -289,10 +311,19 @@ function multiSelect(
    // which values a filter can carry, and joining its output here would be this
    // page keeping a second opinion about that.
    const commit = () => {
-      // `opaque` is already cleared by the toggle that got us here, which is
-      // also where the hand-written filter was dropped.
+      const encoded = encodeFilterList(selected);
+      // Re-read the selection from what was actually ENCODED, not from what was
+      // ticked. The encoder drops a value it cannot carry, so a caption counting
+      // the dropped ones, and a box left ticked for one, state a filter that is
+      // not in force. `opaque` comes back false here, which is also what clears
+      // the hand-written filter the toggle dropped.
+      ({ values: selected, opaque } = readFilterForPicker(encoded));
       paint();
-      onChange(contract.name, encodeFilterList(selected));
+      // Mutual with `fillPanel`, whose checkboxes call this: one has to come
+      // second, and both only ever run from a click.
+      // eslint-disable-next-line no-use-before-define
+      fillPanel();
+      onChange(contract.name, encoded);
    };
 
    // Not `{ once: true }`: a pointerdown INSIDE the panel (ticking a checkbox)

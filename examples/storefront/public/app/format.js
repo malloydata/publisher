@@ -86,9 +86,11 @@ export function formatValue(value, format) {
       default: {
          // An untagged number still reads better grouped, and Malloy hands a
          // large integer back as a string, so a numeric-looking string counts.
-         // A boolean and an empty string do NOT: `Number` turns those into 1
-         // and 0, which would render a `true` as "1" and a blank cell as "0".
-         if (typeof value === "boolean") return String(value);
+         // A boolean and a blank cell must NOT: both are excluded by the two
+         // tests below rather than by a branch of their own. `Number("true")`
+         // is NaN, and a blank fails the trim, so each falls through to its own
+         // text. Measured, because the obvious guard is against `Number(value)`,
+         // which would indeed make `true` into 1, and that is not what runs.
          const text = String(value);
          return text.trim() !== "" && !Number.isNaN(Number(text))
             ? integer(text)
@@ -334,7 +336,8 @@ export function decodeAtLeast(filter) {
 /** `@2023-01-01` and `f''` are Malloy literals; a control needs the value inside. */
 export function readGivenDefault(literal) {
    const text = String(literal ?? "");
-   if (/^f''$/.test(text)) return "";
+   // No special case for `f''`: the pattern below already captures the empty
+   // string and returns it.
    const filter = /^f'(.*)'$/s.exec(text);
    if (filter) return filter[1];
    return text.replace(/^@/, "");
