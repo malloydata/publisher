@@ -149,7 +149,7 @@ interface ModelInternals {
               cacheScope: string;
            }
          | undefined,
-   ): Promise<{ kind: string }>;
+   ): Promise<{ shape: string }>;
    queryEntryPointHasRowLevelGate(runnable: {
       getPreparedQuery(): Promise<unknown>;
    }): Promise<boolean>;
@@ -1554,17 +1554,12 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — a genuinely row-level gate with no resolvable graft target still DENIES, never falls back to the given-only boolean path", async () => {
+   it("CRITICAL — a row-level gate with no resolvable graft target still REJECTS, with nothing to attach a filter to", async () => {
       // Same orphan shape as the test above (an unresolvable graft target —
       // `resolveGraftTarget` returns `undefined`), but exercised through the
-      // FULL `resolveGateShape`, whose fallback for that case
-      // (`Model.classifyWithoutGraft`) must tell a genuine row-level gate
-      // apart from a given-only one before deciding whether it is safe to
-      // treat as a boolean. `org_id in $GROUPS` reads a real column, so the
-      // fallback's own one-row probe (which has no real columns at all) must
-      // fail to compile — proving this can only ever resolve to `deny`, never
-      // `given_only` (which would let the caller's given decide row access
-      // it never should) and never `row_level` (nothing here to graft onto).
+      // FULL `resolveGateShape`: every gate is a row filter now, and a filter
+      // with nowhere to attach cannot be enforced, so a missing graft target
+      // rejects outright rather than attempting any fallback classification.
       const { internals, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
@@ -1599,7 +1594,7 @@ source: X is duckdb.table('parent') extend {
             modelDef,
             graftScope,
          );
-         expect(resolution.kind).toBe("deny");
+         expect(resolution.shape).toBe("rejected");
       } finally {
          await duckdb.close();
       }
@@ -2235,7 +2230,7 @@ run: local2 -> { aggregate: n is count() }
       }
    });
 
-   it("CRITICAL — a cell whose #(filter) refinement does not compile still DENIES (403, not 400)", async () => {
+   it("CRITICAL — a cell whose #(filter) refinement does not compile surfaces that failure, never a silent unfiltered admit", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
       try {
@@ -2269,19 +2264,21 @@ run: gated -> { aggregate: n is count() }
          // filterParams supplies a value for the `nonexistent_field` filter,
          // so the `#(filter)` refinement rebuild appends
          // `+ {where: nonexistent_field = 'x'}` to the cell's text — which
-         // fails to compile, since `gated` has no such field. Without the
-         // PRE-refinement gate call, resolving the broken runnable's source
-         // swallows that compile failure and returns `undefined`, so no
-         // gate is found and the eventual failure surfaces as a
-         // Malloy-worded 400. `$ROLE` is deliberately NOT 'admin', so the
-         // pre-refinement call — which runs BEFORE the refinement is ever
-         // built — must deny with a 403 before the broken refinement is
-         // even attempted.
+         // fails to compile, since `gated` has no such field. Every gate is a
+         // row filter now (there is no more given-only fast path), so the
+         // PRE-refinement gate call can only reject a structurally invalid
+         // gate synchronously — a `$ROLE = 'admin'` mismatch is DEFERRED to
+         // the post-refinement authoritative bind, same as any other
+         // row-level gate. That authoritative step never runs here: the
+         // broken refinement fails to compile first. Nothing leaks either
+         // way — no query ever executes — so what this pins is that the
+         // refinement's own compile failure surfaces cleanly, not that it is
+         // reclassified as a 403.
          await expect(
             model.executeNotebookCell(0, { nonexistent_field: "x" }, false, {
                ROLE: "analyst",
             }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         ).rejects.toThrow(/nonexistent_field/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -2936,6 +2933,88 @@ source: W_except is X extend { except: org_id }
          await duckdb.close();
       }
    });
+
+   it("CRITICAL — a gate whose condition references no row field still blocks storage routing (there is no more given-only escape)", async () => {
+      // Before the given_only/row_level split collapsed to one concept, a
+      // gate like `$ROLE = 'analyst'` (no field reference at all) was exempt
+      // from this routing block — safe under the OLD design because it was
+      // enforced by a whole-source boolean probe that ran regardless of
+      // routing. That escape is gone: EVERY gate blocks storage now, whether
+      // or not its condition happens to mention a column.
+      const originalMode = process.env.PERSIST_STORAGE_MODE;
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-storage-given-only-"),
+      );
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeUndefined();
+
+         // A storage binding for X that, if routed to, would answer with a
+         // value ("999") the live, gate-filtered query could never produce.
+         await duckdb.runSQL(
+            "CREATE OR REPLACE TABLE mz_real AS SELECT 999 AS n",
+         );
+         const connMap = new Map<string, Connection>([["duckdb", duckdb]]);
+         const serveConfig = new MalloyConfig({ connections: {} });
+         serveConfig.wrapConnections(
+            () => new FixedConnectionMap(connMap, "duckdb"),
+         );
+         model.setServeDestinationConfig(() => serveConfig);
+         model.setServeBindings([
+            {
+               sourceName: "X",
+               destinationName: "duckdb",
+               virtualHandle: "h",
+               tablePath: "mz_real",
+               schema: [{ name: "n", type: "BIGINT" }],
+            },
+         ]);
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { ROLE: "analyst" },
+         );
+         expect(result.servedFrom).not.toBe("storage");
+         // The live, unfiltered count (no row field is gated) is 4 — not the
+         // storage stub's 999.
+         const rows = result.compactResult as unknown as { n: number }[];
+         expect(rows[0].n).toBe(4);
+      } finally {
+         if (originalMode === undefined) {
+            delete process.env.PERSIST_STORAGE_MODE;
+         } else {
+            process.env.PERSIST_STORAGE_MODE = originalMode;
+         }
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
 });
 
 // ---------------------------------------------------------------------------
@@ -3359,23 +3438,25 @@ source: qs is combo -> { group_by: org_id, region }
    });
 
    // THE LOAD-SIDE FAILURE: before groups, `qs`'s effective gate concatenated
-   // `combo`'s given-only atom with `member_a`'s row-level condition into ONE
-   // OR'd list — `["$ROLE != 'admin'", "$ROLE != 'admin'", "org_id in
-   // $GROUPS"]` (the ancestor copy doubling it) — which classified as
-   // row_level (a field IS referenced, by the `org_id` disjunct) and handed
-   // the given-only atom to the vacuous-default check, which threw: `ROLE`
-   // defaults to `''`, and `'' != 'admin'` is vacuously true. Keeping the two
-   // sources' gates as separate groups means `combo`'s atom is classified
-   // and validated entirely on its own — `given_only`, exactly the
-   // whole-source boolean it always was — and never reaches the row-level
-   // vacuous-atom check at all.
-   it("CRITICAL — a composite gate and its resolved member's row-level gate load independently, with no vacuous-atom false positive", async () => {
+   // `combo`'s atom with `member_a`'s condition into ONE OR'd list —
+   // `["$ROLE != 'admin'", "$ROLE != 'admin'", "org_id in $GROUPS"]` (the
+   // ancestor copy doubling it) — which the vacuous-default check would walk
+   // as one list, potentially misattributing a hazard found in one source's
+   // atom to a DIFFERENT source's declared note. Keeping the two sources'
+   // gates as separate groups means `combo`'s atom is classified and
+   // validated entirely on its own — every gate is a row filter now (there is
+   // no more given-only vs row-level split), so `ROLE` here carries NO
+   // declared default: the point of this test is grouping independence, not
+   // the vacuous-default check itself (that check has its own dedicated
+   // coverage elsewhere), and a defaulting `ROLE` would make this atom
+   // genuinely vacuous on its own regardless of grouping.
+   it("CRITICAL — a composite gate and its resolved member's row-level gate load independently, with no cross-group interference", async () => {
       const { model, duckdb, dir } = await createModel(
          `##! experimental.composite_sources
 ##! experimental.givens
 
 given:
-  ROLE :: string is ''
+  ROLE :: string
   GROUPS :: number[]
 
 #(authorize) "org_id in $GROUPS"
@@ -3397,13 +3478,8 @@ source: qs is combo -> { group_by: org_id }
             "run: qs -> { select: org_id }",
             {},
             true,
-            // ROLE is supplied explicitly (not relying on its declared
-            // default) — a self-contained gate denies unless every given it
-            // references is explicitly bound (see `evaluateSelfContainedFirst`
-            // in `authorize.ts`), a separate, pre-existing constraint this
-            // test isn't exercising. The vacuous-default behavior IS
-            // exercised, but only at LOAD time (the `compilationError`
-            // assertion above), which probes with no supplied givens.
+            // ROLE has no default, so it must be supplied explicitly — a
+            // separate, pre-existing constraint this test isn't exercising.
             { ROLE: "analyst", GROUPS: [7] },
          );
          const rows = result.compactResult as unknown as { org_id: number }[];

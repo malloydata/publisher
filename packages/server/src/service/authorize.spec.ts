@@ -277,11 +277,12 @@ function condition(e: unknown, fieldPaths: string[][]) {
 }
 
 describe("classifyAuthorizeGate", () => {
-   it("treats an empty fieldUsage as the pre-existing given-only gate", () => {
-      // The whole-source boolean every gate was before row-level gates existed.
-      // Misclassifying this would change the enforcement mechanism of every
-      // already-published gate on upgrade, so it is the one case that must not
-      // depend on any judgement about the expression's shape.
+   it("classifies an empty fieldUsage as row_level too — a given-vs-literal atom needs no field", () => {
+      // `$LVL > 3` references no row field at all (`fieldUsage` is empty), but
+      // there is only one gate concept now: every gate is a row filter, and a
+      // field-less one is simply constant across every row. `fieldUsage` is
+      // therefore not consulted at all any more — the walk below is what
+      // decides the shape, uniformly.
       expect(
          classifyAuthorizeGate(
             {
@@ -294,12 +295,20 @@ describe("classifyAuthorizeGate", () => {
             TYPES,
             DEFAULTS,
          ),
-      ).toEqual({ shape: "given_only" });
+      ).toEqual({
+         shape: "row_level",
+         givenNames: ["LVL"],
+         literalAtoms: ["$LVL > 3"],
+      });
    });
 
-   it("treats an absent refSummary as given-only rather than guessing", () => {
+   it("rejects an absent condition (no `e` at all) as unreadable, fail closed", () => {
+      // No compiled expression to walk — this is not "given-only", it is
+      // nothing to classify at all.
       expect(classifyAuthorizeGate({}, TYPES, DEFAULTS)).toEqual({
-         shape: "given_only",
+         shape: "rejected",
+         cause: "unsupported_node",
+         detail: "the gate has an unreadable shape",
       });
    });
 
@@ -385,13 +394,11 @@ describe("classifyAuthorizeGate", () => {
       });
    });
 
-   it("keeps an all-given-only expression given_only, not row_level", () => {
-      // `$ROLE = 'admin'` alone (no row field anywhere in the expression)
-      // must stay on the pre-existing whole-source-boolean enforcement —
-      // driven by Malloy's own `refSummary.fieldUsage` being empty, which is
-      // checked before the walk ever runs. Already-published given-only
-      // gates must not change enforcement mechanism just because a
-      // given-vs-literal atom is now a legal ROW-LEVEL atom too.
+   it("classifies an all-given expression as row_level, not a separate given-only shape", () => {
+      // `$ROLE = 'admin'` alone (no row field anywhere in the expression) is
+      // a given-vs-literal atom — a legal row-level gate whose filter simply
+      // doesn't mention a column. There is no separate given-only shape any
+      // more: every gate is one concept, `row_level` (or `rejected`).
       const result = classifyAuthorizeGate(
          condition(
             binary("=", given("ROLE"), {
@@ -403,7 +410,11 @@ describe("classifyAuthorizeGate", () => {
          TYPES,
          DEFAULTS,
       );
-      expect(result).toEqual({ shape: "given_only" });
+      expect(result).toEqual({
+         shape: "row_level",
+         givenNames: ["ROLE"],
+         literalAtoms: ["$ROLE = 'admin'"],
+      });
    });
 
    it("rejects a given-vs-literal atom with a disallowed operator", () => {

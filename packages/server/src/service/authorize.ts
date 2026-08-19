@@ -474,19 +474,6 @@ export function referencedGivenNames(expr: string): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * How a gate expression is enforced.
- *
- *  - `given_only` — references no row field. Evaluated by the synthetic one-row
- *    DuckDB probe, unchanged: a whole-source boolean, exactly as every gate was
- *    before row-level gates existed.
- *  - `row_level` — references at least one field of the source, or of a source
- *    joined into it. Enforced as a row filter on the entry source. There is no
- *    boolean answer to fall back on, so every path that cannot apply the filter
- *    must deny.
- */
-export type AuthorizeGateShape = "given_only" | "row_level";
-
-/**
  * Why a row-level gate was refused at publish. Also the metric label.
  *
  * The first six come from {@link classifyAuthorizeGate}: the gate's compiled
@@ -545,7 +532,6 @@ export const ROW_LEVEL_GATE_REJECTION_CAUSES =
    );
 
 export type RowLevelGateClassification =
-   | { shape: "given_only" }
    // `givenNames` is the walker's own record of which givens the gate compared,
    // and it earns its place by driving the `no_given_reference` rejection below.
    // A companion list of the FIELD paths the walk visited is deliberately NOT
@@ -575,7 +561,9 @@ export type RowLevelGateClassification =
  * A gate is an access-control rule, so the set of shapes it may take should be
  * small enough to read in one screen. Everything absent from this table is
  * refused at publish — a function call, arithmetic, a literal comparison, a
- * `like`, a bare `true`. Widening it is a decision someone makes on purpose.
+ * `like`. Widening it is a decision someone makes on purpose. A bare boolean
+ * literal (`true`/`false`) IS accepted, handled separately below — it is the
+ * old whole-source admit/deny, expressed as a constant row filter.
  */
 const BOOLEAN_NODES = new Set(["and", "or"]);
 /** Wrappers that contribute no semantics of their own; descend through `.e`. */
@@ -607,13 +595,11 @@ export interface CompiledGateCondition {
  *
  * Reading the compiled IR rather than the annotation text is what keeps this
  * exact. Malloy has already resolved which names are fields and which are
- * givens, so `refSummary.fieldUsage` answers "does this gate reference a row
- * field" with no guessing — the one question that decides which enforcement
- * mechanism the gate gets. A text scan cannot answer it: `$ROLE` and `region`
- * are both bare words, and being wrong in either direction is a security bug
- * (a field-referencing gate sent to the one-row probe never admits anybody; a
- * given-only gate sent to the row filter changes the meaning of every gate
- * already published).
+ * givens, so the walk below tells a field reference from a given reference
+ * with no guessing. A text scan cannot answer it: `$ROLE` and `region` are
+ * both bare words. Every gate is enforced as a row filter now, whether or not
+ * its condition happens to read a field — a field-less condition (`$ROLE =
+ * 'admin'`) is simply constant across every row.
  *
  * It also collapses a distinction the plan expected to police by hand. `org_id
  * ? $GROUPS` and `org_id = $GROUPS` compile to the SAME `=` node, so there is
@@ -654,14 +640,6 @@ export function classifyAuthorizeGate(
    declaredTypes: Map<string, string>,
    declaredDefaults: Map<string, string>,
 ): RowLevelGateClassification {
-   const fieldUsage = condition.refSummary?.fieldUsage;
-   // Malloy's own reference-tracking walker populated this. Absent or empty
-   // means the gate reads no row field, which is the pre-existing whole-source
-   // boolean — it MUST keep the probe, or every published gate changes
-   // enforcement mechanism on upgrade.
-   if (!Array.isArray(fieldUsage) || fieldUsage.length === 0) {
-      return { shape: "given_only" };
-   }
    const givenNames: string[] = [];
    const literalAtoms: string[] = [];
    let rejection: RowLevelGateClassification | undefined;
@@ -763,6 +741,17 @@ export function classifyAuthorizeGate(
       if (TRANSPARENT_NODES.has(kind)) {
          return walk(n.e, depth + 1);
       }
+      if (kind === "true" || kind === "false") {
+         // A bare boolean literal — the old whole-source admit/deny, now
+         // expressed as a constant row filter (`where: true` / `where:
+         // false`) rather than a separate enforcement mechanism. Recorded as
+         // a literal atom purely so `assertNoVacuousDefaultAtom` can skip it
+         // by name without a runtime probe — its truth is already static,
+         // and neither value is the vacuous-default hazard that check exists
+         // to catch.
+         literalAtoms.push(kind);
+         return true;
+      }
       if (kind === "inGiven") {
          // `field in $ARRAY` — the only correct spelling for an array given,
          // and the only one that fails CLOSED on an empty array (`WHERE FALSE`).
@@ -791,90 +780,136 @@ export function classifyAuthorizeGate(
             );
          }
          givenNames.push(given);
+         // The membership side is usually a FIELD (`org_id in $GROUPS`, the
+         // row-level idiom), but it can also be another GIVEN (`$TENANT in
+         // $ALLOWED` — is the caller's tenant one of the values it also
+         // supplied). That reads no row field at all, so — same as a `<given>
+         // <op> <literal>` atom — it is self-contained and constant for the
+         // life of one request; probed the same way by
+         // `assertNoVacuousDefaultAtom`.
+         const otherGiven = givenOperand(n.e);
+         if (otherGiven !== null) {
+            givenNames.push(otherGiven);
+            literalAtoms.push(`$${otherGiven} in $${given}`);
+            return true;
+         }
          return walkFieldOperand(n.e);
       }
       if (SCALAR_COMPARISON_NODES.has(kind)) {
-         const kids = asNode(n.kids);
-         if (!kids) {
-            return reject("unsupported_node", `\`${kind}\` has no operands`);
+         return walkScalarComparison(kind, n.kids, false);
+      }
+      if (kind === "not") {
+         // Negating a membership test (`not in`) is refused above — an empty
+         // given then matches every row. Negating a plain scalar comparison
+         // carries no such hazard (`not ($ROLE = 'blocked')` is exactly
+         // `$ROLE != 'blocked'`), so it is accepted for that one shape only;
+         // anything else under a `not` (a compound `and`/`or`, a membership
+         // test) is refused rather than reasoned about generically.
+         let inner = asNode(n.e);
+         while (inner && TRANSPARENT_NODES.has(inner.node as string)) {
+            inner = asNode(inner.e);
          }
-         const left = givenOperand(kids.left);
-         const right = givenOperand(kids.right);
-         const given = left ?? right;
-         if (given === null) {
+         if (!inner || !SCALAR_COMPARISON_NODES.has(inner.node as string)) {
             return reject(
-               "no_given_reference",
-               `\`${kind}\` must compare a field against a given; a comparison ` +
-                  `against a constant is a fixed filter and belongs in the ` +
-                  `source's own \`where:\``,
+               "unsupported_node",
+               "`not` may only wrap a single `<field-or-given> <operator> " +
+                  "<given-or-literal>` comparison; a negated membership test " +
+                  "or compound condition is not an access rule",
             );
          }
-         const declared = declaredTypeOf(given);
-         if (declared === null) return false;
-         if (isArrayType(declared)) {
-            // Both `org_id = $GROUPS` and `org_id ? $GROUPS` arrive here: they
-            // compile to the same node. Each one compiles clean and then fails
-            // in the warehouse (`WHERE "org_id"=ARRAY[7,8]` is a cast error),
-            // so it is a broken gate rather than a strict one.
-            return reject(
-               "array_given_needs_in",
-               `\`$${given}\` is declared \`${declared}\` (an array), so ` +
-                  `comparing it with \`${kind}\` compiles and then fails in the ` +
-                  `warehouse. Write \`in $${given}\` — it is also the spelling ` +
-                  `that matches no rows when the array is empty`,
-            );
-         }
-         const otherSide = left === null ? kids.left : kids.right;
-         if (isLiteralOperand(otherSide)) {
-            // `<given> <op> <literal>` — e.g. the admin-override disjunct
-            // `$ROLE = 'admin'`. Constant for the life of one request, so
-            // it is an all-rows-or-no-rows term inside the `where:`, exactly
-            // like the whole-source boolean this gate would have been before
-            // row-level gates existed. Legal as an ATOM inside a row-level
-            // gate.
-            givenNames.push(given);
-            const literalText = literalOperandText(otherSide);
-            if (literalText !== null) {
-               // Side order matters for a non-commutative operator (`>`,
-               // `<`, `>=`, `<=`): reconstruct `$given op literal` when the
-               // given was on the left, `literal op $given` when it was on
-               // the right, rather than always writing the given first.
-               literalAtoms.push(
-                  left !== null
-                     ? `$${given} ${kind} ${literalText}`
-                     : `${literalText} ${kind} $${given}`,
-               );
-            }
-            return true;
-         }
-         // A real row-level comparison — the given's other side is a FIELD,
-         // which ranges over every row. Refuse it outright if `$given` carries
-         // a declared default: a caller who supplies nothing gets whatever
-         // rows that default admits (`> 0`, `!= ''`, … each admit nearly every
-         // row), and there is no way to probe a field-vs-given comparison the
-         // way `assertNoVacuousDefaultAtom` probes a literal atom, because the
-         // FIELD side isn't a fixed value to evaluate against. A given with NO
-         // default carries no such hazard — see the function doc — so only a
-         // DECLARED default is refused here, not the comparison operator.
-         if (declaredDefaults.has(given)) {
-            return reject(
-               "field_given_has_default",
-               `\`${kind}\` compares row field data against \`$${given}\`, ` +
-                  `which is declared with a default (\`${declaredDefaults.get(given)}\`). ` +
-                  `A caller who supplies no value for \`$${given}\` gets that ` +
-                  `default, and the comparison then applies to every row — ` +
-                  `admitting rows it was meant to exclude. Declare \`$${given}\` ` +
-                  `with no default so a caller must supply one explicitly`,
-            );
-         }
-         givenNames.push(given);
-         return walkFieldOperand(otherSide);
+         return walkScalarComparison(inner.node as string, inner.kids, true);
       }
       return reject(
          "unsupported_node",
          `\`${kind}\` is not permitted in a gate; a row-level gate is a ` +
             `boolean combination of \`<field> <operator> $GIVEN\` comparisons`,
       );
+   };
+
+   /** `<given> <op> <literal-or-field>`, optionally wrapped in `not (...)`. */
+   const walkScalarComparison = (
+      kind: string,
+      kidsNode: unknown,
+      negate: boolean,
+   ): boolean => {
+      const kids = asNode(kidsNode);
+      if (!kids) {
+         return reject("unsupported_node", `\`${kind}\` has no operands`);
+      }
+      const left = givenOperand(kids.left);
+      const right = givenOperand(kids.right);
+      const given = left ?? right;
+      if (given === null) {
+         return reject(
+            "no_given_reference",
+            `\`${kind}\` must compare a field against a given; a comparison ` +
+               `against a constant is a fixed filter and belongs in the ` +
+               `source's own \`where:\``,
+         );
+      }
+      const declared = declaredTypeOf(given);
+      if (declared === null) return false;
+      if (isArrayType(declared)) {
+         // Both `org_id = $GROUPS` and `org_id ? $GROUPS` arrive here: they
+         // compile to the same node. Each one compiles clean and then fails
+         // in the warehouse (`WHERE "org_id"=ARRAY[7,8]` is a cast error),
+         // so it is a broken gate rather than a strict one.
+         return reject(
+            "array_given_needs_in",
+            `\`$${given}\` is declared \`${declared}\` (an array), so ` +
+               `comparing it with \`${kind}\` compiles and then fails in the ` +
+               `warehouse. Write \`in $${given}\` — it is also the spelling ` +
+               `that matches no rows when the array is empty`,
+         );
+      }
+      const otherSide = left === null ? kids.left : kids.right;
+      if (isLiteralOperand(otherSide)) {
+         // `<given> <op> <literal>` — e.g. the admin-override disjunct
+         // `$ROLE = 'admin'`. Constant for the life of one request, so
+         // it is an all-rows-or-no-rows term inside the `where:`, exactly
+         // like the whole-source boolean this gate would have been before
+         // row-level gates existed. Legal as an ATOM inside a row-level
+         // gate.
+         givenNames.push(given);
+         const literalText = literalOperandText(otherSide);
+         if (literalText !== null) {
+            // Side order matters for a non-commutative operator (`>`,
+            // `<`, `>=`, `<=`): reconstruct `$given op literal` when the
+            // given was on the left, `literal op $given` when it was on
+            // the right, rather than always writing the given first.
+            const atom =
+               left !== null
+                  ? `$${given} ${kind} ${literalText}`
+                  : `${literalText} ${kind} $${given}`;
+            // `assertNoVacuousDefaultAtom` probes this exact text, so a
+            // negation must be reflected here — probing the un-negated atom
+            // would check the wrong condition.
+            literalAtoms.push(negate ? `not (${atom})` : atom);
+         }
+         return true;
+      }
+      // A real row-level comparison — the given's other side is a FIELD,
+      // which ranges over every row. Refuse it outright if `$given` carries
+      // a declared default: a caller who supplies nothing gets whatever
+      // rows that default admits (`> 0`, `!= ''`, … each admit nearly every
+      // row), and there is no way to probe a field-vs-given comparison the
+      // way `assertNoVacuousDefaultAtom` probes a literal atom, because the
+      // FIELD side isn't a fixed value to evaluate against. A given with NO
+      // default carries no such hazard — see the function doc — so only a
+      // DECLARED default is refused here, not the comparison operator.
+      if (declaredDefaults.has(given)) {
+         return reject(
+            "field_given_has_default",
+            `\`${kind}\` compares row field data against \`$${given}\`, ` +
+               `which is declared with a default (\`${declaredDefaults.get(given)}\`). ` +
+               `A caller who supplies no value for \`$${given}\` gets that ` +
+               `default, and the comparison then applies to every row — ` +
+               `admitting rows it was meant to exclude. Declare \`$${given}\` ` +
+               `with no default so a caller must supply one explicitly`,
+         );
+      }
+      givenNames.push(given);
+      return walkFieldOperand(otherSide);
    };
 
    /** The non-given side of a comparison: a plain field reference, nothing else. */
@@ -911,7 +946,13 @@ export function classifyAuthorizeGate(
          }
       );
    }
-   if (givenNames.length === 0) {
+   // A bare boolean literal (`true`/`false`) reaches here with no given
+   // reference at all — that is the accepted constant-predicate idiom (see
+   // the `walk` branch above), not the case this guards against. Anything
+   // else that walked successfully with no given pushed to `literalAtoms`
+   // either — every accepted node either names a given or is a bare literal
+   // — so `literalAtoms.length === 0` here means the walk found neither.
+   if (givenNames.length === 0 && literalAtoms.length === 0) {
       return {
          shape: "rejected",
          cause: "no_given_reference",
@@ -1266,7 +1307,7 @@ export function buildRowLevelProbe(
  *    `where:` — or a Malloy ordering change — hands back the AUTHOR's condition
  *    instead of the gate's. At load time `classifyAuthorizeGate` would then decide
  *    the gate's enforcement shape from a filter that is not the gate (a real
- *    row-level gate reads `given_only`; a plain author filter reads `rejected`,
+ *    gate reads `row_level`; a plain author filter reads `rejected`,
  *    failing the load of a package whose gate is fine). At request time it is
  *    worse: `assertGateLanded` "proves" the graft landed by matching this same
  *    entry's `code`, so the proof would pass against the author's filter and the
@@ -1363,9 +1404,10 @@ async function liftRowLevelCondition(
  * answers to a caller's query. The author-only assumption is NOT what makes it
  * safe; what makes it safe is that the effective expressions are published
  * already.
- * Shared by the `given_only` path and the "no ancestor to blame this on"
- * fallback so a genuinely broken gate reports the identical message
- * regardless of which path found it.
+ * Called by the "no ancestor to blame this on" fallback below, when a
+ * row-level probe failed to compile and no other entry point already proved
+ * this exact gate object sound — surfacing the plain one-row probe's error
+ * is a friendlier diagnostic than the row-level probe's own compile failure.
  */
 async function runOneRowProbeOrThrow(
    compiler: AuthorizeProbeCompiler,
@@ -1426,6 +1468,15 @@ async function assertNoVacuousDefaultAtom(
    literalAtoms: string[],
 ): Promise<void> {
    for (const atom of literalAtoms) {
+      // A bare boolean literal's truth value is already known statically —
+      // no given to probe, so no runtime connection is needed at all (this
+      // runs inside the package-load worker, whose `ProxyConnection` cannot
+      // `runSQL`). Neither is vacuous: this check exists to catch an atom
+      // that is UNINTENTIONALLY always true (a given resolving to its own
+      // declared default), not to forbid `#(authorize) "true"` — a deliberate
+      // constant admit, the direct replacement for the old whole-source
+      // admit/deny this task collapsed into a row predicate.
+      if (atom === "false" || atom === "true") continue;
       let vacuous: boolean;
       try {
          vacuous = await runProbe(executor, buildAuthorizeProbe([atom]), {});
@@ -1484,11 +1535,10 @@ async function assertNoVacuousDefaultAtom(
  *    confused with a field-resolution failure).
  *  - If it compiles, lift the condition and classify it with
  *    {@link classifyAuthorizeGate}:
- *     - `given_only` — ALSO run the pre-existing one-row probe, unchanged,
- *       so a gate that has always been a whole-source boolean keeps being
- *       validated exactly as it always was.
- *     - `row_level` — the field(s) it reads resolved at this entry point;
- *       valid, nothing further to do.
+ *     - `row_level` — the gate's compiled shape is a valid row filter (whether
+ *       or not it happens to read a field), and its field(s), if any, resolved
+ *       at this entry point; still checked for a vacuous default atom below,
+ *       nothing further beyond that.
  *     - `rejected` — record {@link recordRowLevelGateRejected} (via
  *       `options.onRowLevelGateRejected`, so this module itself never
  *       imports the telemetry stack) and throw, naming the source, the gate
@@ -1560,8 +1610,8 @@ async function assertNoVacuousDefaultAtom(
  *     the compiled condition's SHAPE (an `and`/`or`/`inGiven` tree) does not
  *     depend on which entry point it was probed from, only on whether it
  *     compiles there at all, so a grammar violation in an author's OWN gate
- *     is invalid wherever it is found, full stop. `given_only` and
- *     `row_level` both count as this entry SUCCEEDING — its own
+ *     is invalid wherever it is found, full stop. A `row_level` classification
+ *     counts as this entry SUCCEEDING — its own
  *     `#(authorize)`-tagged note objects (`options.authorizeOwnNotes`, from
  *     `extractSourcesFromModelDef`) are added to a set of "proven" note
  *     objects. A compile failure is recorded as PENDING (source name, exprs,
@@ -1667,13 +1717,6 @@ export async function validateAuthorizeProbes(
             declaredTypes,
             declaredDefaults,
          );
-         if (classification.shape === "given_only") {
-            await runOneRowProbeOrThrow(compiler, sourceName, exprs);
-            for (const note of ownNotesOf.get(sourceName) ?? []) {
-               provenNoteObjects.add(note);
-            }
-            continue;
-         }
          if (classification.shape === "rejected") {
             options.onRowLevelGateRejected?.(classification.cause);
             // A source-level gate concatenates its own ancestor gates with
