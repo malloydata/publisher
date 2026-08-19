@@ -914,6 +914,80 @@ source: s is base_b -> { select: org_id }
          },
          { timeout: 20000 },
       );
+
+      it(
+         "a refusal wins a real sourceEntityId collision — identical compiled SQL, different gates",
+         async () => {
+            // `sourceEntityId` is `makeBuildId(connectionDigest, getSQL())`,
+            // which excludes annotation bytes: model_a's `s` and model_b's `s`
+            // compile to the exact same SQL on the same connection, so they
+            // collide on the same id despite model_a's gate being eligible
+            // (row-level, attributed to the entry point) and model_b's being
+            // refused (the gate is reachable only through a join, so it is
+            // unattributed). A positive-eligibility check that lets either
+            // source's outcome win nondeterministically is fail-open; the
+            // refusal must win regardless of iteration order.
+            const pkg = await realPackageMulti({
+               "model_a.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+source: base is duckdb.sql("select 1 as x")
+
+#@ persist name="s"
+#(authorize) "x = $ORG"
+source: s is base -> { select: x }
+`,
+               "model_b.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+#(authorize) "x = 1"
+source: locked is duckdb.sql("select 1 as x")
+
+#@ persist name="s"
+source: s is duckdb.sql("select 1 as x") extend {
+   join_one: locked on 1 = 1
+} -> { select: x }
+`,
+            });
+
+            const compiled = await compilePackageBuildPlan(pkg);
+            const { colocatedSourceEligibility } =
+               await computePackageBuildPlan(pkg);
+
+            const sourceIDA = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_a"),
+            );
+            const sourceIDB = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_b"),
+            );
+            expect(sourceIDA).toBeDefined();
+            expect(sourceIDB).toBeDefined();
+
+            const idA = computeSourceEntityId(
+               compiled.sources[sourceIDA as string],
+               compiled.connectionDigests,
+            );
+            const idB = computeSourceEntityId(
+               compiled.sources[sourceIDB as string],
+               compiled.connectionDigests,
+            );
+            // Same id: this is the real collision, not a tautology.
+            expect(idA).toBe(idB);
+            expect(colocatedSourceEligibility.refused[idA]).toBeDefined();
+            expect(colocatedSourceEligibility.eligibleEntityIds.has(idA)).toBe(
+               false,
+            );
+         },
+         { timeout: 20000 },
+      );
    });
 });
 
