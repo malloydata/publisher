@@ -2,6 +2,7 @@ import fs from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { logger } from "../logger";
 
 /**
@@ -184,20 +185,39 @@ export function registerUiResources(
             "Renders a malloy_executeQuery result with the Malloy renderer: charts, tables and dashboards as the query's annotation tags describe them.",
          mimeType: MCP_APP_MIME_TYPE,
       },
-      // Read on demand rather than closed over: see widgetExistsCache above. A
-      // read that fails here surfaces as a JSON-RPC error on that one request,
-      // which is the honest answer when the bundle was deleted under a running
-      // server; the alternative is serving an empty document that renders as a
-      // blank card with no explanation.
-      () => ({
-         contents: [
-            {
-               uri: EXECUTE_QUERY_UI_URI,
-               mimeType: MCP_APP_MIME_TYPE,
-               text: fs.readFileSync(path, "utf8"),
-            },
-         ],
-      }),
+      // Read on demand rather than closed over: see widgetExistsCache above.
+      //
+      // The catch is not decoration. This endpoint is unauthenticated, and a raw
+      // fs error carries the absolute path, which on a developer machine means
+      // the OS user name and on a deployment means the install layout. Node's
+      // message is logged where an operator can act on it and replaced with one
+      // that says what to do, so a failed read stays a failed read rather than
+      // becoming disclosure. Throwing at all is deliberate: serving an empty
+      // document instead would render as a blank card explaining nothing.
+      () => {
+         let html: string;
+         try {
+            html = fs.readFileSync(path, "utf8");
+         } catch (error) {
+            logger.error("[MCP Apps] Failed to read widget bundle", {
+               path,
+               code: (error as NodeJS.ErrnoException).code,
+            });
+            throw new McpError(
+               ErrorCode.InternalError,
+               "The MCP Apps widget bundle could not be read. Rebuild it with `bun run build:mcp-apps`.",
+            );
+         }
+         return {
+            contents: [
+               {
+                  uri: EXECUTE_QUERY_UI_URI,
+                  mimeType: MCP_APP_MIME_TYPE,
+                  text: html,
+               },
+            ],
+         };
+      },
    );
 
    return [EXECUTE_QUERY_UI_URI];

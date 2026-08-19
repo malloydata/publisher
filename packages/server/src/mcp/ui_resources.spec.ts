@@ -137,15 +137,32 @@ describe("ui_resources", () => {
       });
 
       it("errors on the one request rather than serving a blank document", async () => {
-         // The bundle deleted under a running server. A JSON-RPC error names the
-         // problem; an empty document would render as a blank card with no
-         // explanation anywhere.
+         // The bundle deleted under a running server. An error names the problem;
+         // an empty document would render as a blank card explaining nothing.
          const server = newServer();
          registerUiResources(server, widgetDir);
          fs.rmSync(join(widgetDir, EXECUTE_QUERY_WIDGET_FILE));
          await expect(
             readResource(server, EXECUTE_QUERY_UI_URI),
-         ).rejects.toThrow();
+         ).rejects.toThrow(/could not be read/i);
+      });
+
+      it("does not put the filesystem path in the error a client sees", async () => {
+         // This endpoint is unauthenticated. Node's own ENOENT message carries the
+         // absolute path, which leaks the OS user name on a developer machine and
+         // the install layout on a deployment, so the message is replaced rather
+         // than passed through. The path still reaches the server log.
+         const server = newServer();
+         registerUiResources(server, widgetDir);
+         fs.rmSync(join(widgetDir, EXECUTE_QUERY_WIDGET_FILE));
+         const message = await readResource(server, EXECUTE_QUERY_UI_URI).then(
+            () => "resolved, but it should have thrown",
+            (error: unknown) => (error as Error).message,
+         );
+         expect(message).not.toContain(widgetDir);
+         expect(message).not.toContain(EXECUTE_QUERY_WIDGET_FILE);
+         expect(message).not.toMatch(/ENOENT|no such file/i);
+         expect(message).toMatch(/build:mcp-apps/);
       });
    });
 
