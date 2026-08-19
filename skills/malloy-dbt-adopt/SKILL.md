@@ -110,6 +110,13 @@ of the job:
 Say which parts came from dbt and which you authored. The metrics are dbt's and reconcile against
 it; the tags, views, and dashboards are yours and do not.
 
+**The test to apply to each construct** is not whether Malloy can express it, but whether it can be
+a *reusable, composable model entity*: a running total, a cohort definition, a bucketing rule, an
+audience variant. Where the incumbent can only hold those inside a single chart or a UI side-car,
+the model is a metric catalogue and the analytical judgment lives outside it. That is the gap the
+authoring pass closes, and it is worth naming for the user in those terms rather than as a feature
+comparison.
+
 ## Governance: name the gap
 
 dbt's test framework is the clearest place dbt leads, and a conversion must say so out loud.
@@ -124,6 +131,13 @@ Malloy**. Two things to tell the user plainly:
 
 Never present a converted model as equivalent to the dbt project when the tests did not come
 with it.
+
+### One gate/materialization constraint
+
+An `#(authorize)`-gated source cannot sit in a materialized lineage. Publisher refuses the build,
+because an authorize expression is evaluated per request while a materialized table served frozen
+carries no gate. If a package needs both, gate a source that is not persisted, or scope rows with a
+`where:` over a given instead. Discover this at design time, not when the first build fails closed.
 
 ## Recording the work
 

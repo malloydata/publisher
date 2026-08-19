@@ -1,22 +1,61 @@
-// The semantic layer, over marts Malloy built.
+// dbt's semantic layer, expressed in Malloy.
 //
-// Every source, measure, dimension, and view below is the same text as the `adopt-rich`
-// package. The only difference is what each source extends: `adopt-rich` reads the marts dbt
-// built, and this reads what pipeline.malloy derives from the raw files.
+// dbt's jaffle-shop semantic models, entities, dimensions, and metrics as Malloy sources,
+// primary keys, joins, measures, and views. dbt still owns the transformations: the
+// `data/*.parquet` files this reads are the marts dbt built.
 //
-// Three sources extend a persisted table (`orders`, `customers`, `order_items`) because they
-// derive something expensive. The other three read their staging source directly, because a
-// rename does not earn a table.
+// Written from dbt's `target/semantic_manifest.json` (entities, dimensions, metrics, saved
+// queries), `manifest.json` (the descriptions), and `catalog.json` (the column list) -- not
+// from `osi_document.json`, which flattens every metric to SQL and silently drops a derived
+// metric's offset window, turning month-over-month growth into a constant zero.
 //
-// `run: order_items -> overview` is the same query, with the same numbers, against either
-// package. Where the tables come from is plumbing the query never sees.
+// Each source reads its table, projects every column dbt built carrying dbt's own
+// description as #(doc), then extends that with the keys, joins, measures, and views.
+//
+// Six columns are renamed to `<name>_raw`. A dbt metric that shares its name with the
+// column it aggregates cannot keep that name in Malloy, so the column moved and the metric
+// kept the name dbt published, which is the name analysts and agents search for.
+//
+// What did not convert, and every difference from dbt's numbers, is in ../COVERAGE.md.
 
-##! experimental.persistence
+##! experimental.givens
 
-import "pipeline.malloy"
+#(description="Caller role. The margin source below is gated to the finance role.")
+given: role :: string is 'analyst'
 
 #(doc) Customer overview data mart, offering key details for each unique customer. One row per customer.
-source: customers is customers_built extend {
+source: customers is duckdb.table('data/customers.parquet') -> {
+  select:
+    #(doc) The unique key of the orders mart.
+    customer_id
+
+    #(doc) Customers' full name.
+    customer_name
+
+    #(doc) Total number of orders a customer has ever placed.
+    #(doc) Renamed from `count_lifetime_orders`: the dbt metric `count_lifetime_orders` owns that name in the semantic layer.
+    count_lifetime_orders_raw is count_lifetime_orders
+
+    #(doc) The timestamp when a customer placed their first order.
+    first_ordered_at
+
+    #(doc) The timestamp of a customer's most recent order.
+    last_ordered_at
+
+    #(doc) The sum of all the pre-tax subtotals of every order a customer has placed.
+    #(doc) Renamed from `lifetime_spend_pretax`: the dbt metric `lifetime_spend_pretax` owns that name in the semantic layer.
+    lifetime_spend_pretax_raw is lifetime_spend_pretax
+
+    #(doc) The sum of all the tax portion of every order a customer has placed.
+    lifetime_tax_paid
+
+    #(doc) The sum of all the order totals (including tax) that a customer has ever placed.
+    #(doc) Renamed from `lifetime_spend`: the dbt metric `lifetime_spend` owns that name in the semantic layer.
+    lifetime_spend_raw is lifetime_spend
+
+    #(doc) Options are 'new' or 'returning', indicating if a customer has ordered more than once or has only placed their first order to date.
+    customer_type
+} extend {
   primary_key: customer_id
 
   measure:
@@ -110,7 +149,16 @@ source: customers is customers_built extend {
 }
 
 #(doc) Location dimension table. The grain of the table is one row per location.
-source: locations is stg_locations extend {
+source: locations is duckdb.table('data/locations.parquet') -> {
+  select:
+    location_id
+
+    location_name
+
+    tax_rate
+
+    opened_date
+} extend {
   primary_key: location_id
 
   measure:
@@ -129,7 +177,54 @@ source: locations is stg_locations extend {
 }
 
 #(doc) Order overview data mart, offering key details for each order inlcluding if it's a customer's first order and a food vs. drink item breakdown. One row per order.
-source: orders is orders_built extend {
+source: orders is duckdb.table('data/orders.parquet') -> {
+  select:
+    #(doc) The unique key of the orders mart.
+    order_id
+
+    location_id
+
+    #(doc) The foreign key relating to the customer who placed the order.
+    customer_id
+
+    subtotal_cents
+
+    tax_paid_cents
+
+    order_total_cents
+
+    subtotal
+
+    #(doc) Renamed from `tax_paid`: the dbt metric `tax_paid` owns that name in the semantic layer.
+    tax_paid_raw is tax_paid
+
+    #(doc) The total amount of the order in USD including tax.
+    #(doc) Renamed from `order_total`: the dbt metric `order_total` owns that name in the semantic layer.
+    order_total_raw is order_total
+
+    #(doc) The timestamp the order was placed at.
+    ordered_at
+
+    #(doc) The sum of supply expenses to fulfill the order.
+    #(doc) Renamed from `order_cost`: the dbt metric `order_cost` owns that name in the semantic layer.
+    order_cost_raw is order_cost
+
+    order_items_subtotal
+
+    count_food_items
+
+    count_drink_items
+
+    count_order_items
+
+    #(doc) A boolean indicating if this order included any food items.
+    is_food_order
+
+    #(doc) A boolean indicating if this order included any drink items.
+    is_drink_order
+
+    customer_order_number
+} extend {
   primary_key: order_id
 
   join_one:
@@ -247,7 +342,22 @@ source: orders is orders_built extend {
 }
 
 #(doc) Product dimension table. The grain of the table is one row per product.
-source: products is stg_products extend {
+source: products is duckdb.table('data/products.parquet') -> {
+  select:
+    product_id
+
+    product_name
+
+    product_type
+
+    product_description
+
+    product_price
+
+    is_food_item
+
+    is_drink_item
+} extend {
   primary_key: product_id
 
   measure:
@@ -262,7 +372,26 @@ source: products is stg_products extend {
 }
 
 #(doc) Items contained in each order. The grain of the table is one row per order item.
-source: order_items is order_items_built extend {
+source: order_items is duckdb.table('data/order_items.parquet') -> {
+  select:
+    order_item_id
+
+    order_id
+
+    product_id
+
+    ordered_at
+
+    product_name
+
+    product_price
+
+    is_food_item
+
+    is_drink_item
+
+    supply_cost
+} extend {
   primary_key: order_item_id
 
   join_one:
@@ -449,7 +578,20 @@ source: order_items is order_items_built extend {
 }
 
 #(doc) Supplies dimension table. The grain of the table is one row per supply and product combination.
-source: supplies is stg_supplies extend {
+source: supplies is duckdb.table('data/supplies.parquet') -> {
+  select:
+    supply_uuid
+
+    supply_id
+
+    product_id
+
+    supply_name
+
+    supply_cost
+
+    is_perishable_supply
+} extend {
   primary_key: supply_uuid
 
   measure:
@@ -467,6 +609,7 @@ source: supplies is stg_supplies extend {
   }
 }
 
+
 // ── Audience extensions ────────────────────────────────────────────────────
 // One base model, extended differently per audience. This is the composition a metric
 // catalogue cannot express: these are not copies of the model, they are the model with
@@ -478,14 +621,12 @@ source: order_items_store_ops is order_items extend {
   except: supply_cost, product_price
 }
 
-// The `order_items_margin` source from `adopt-rich` is deliberately absent here.
-//
-// Publisher refuses to materialize a package containing an `#(authorize)`-gated source in a
-// persisted lineage, and it is right to: an authorize expression is evaluated per request,
-// while a materialized table served frozen carries no gate, so the rows would reach everyone.
-// The build fails closed with that explanation rather than quietly serving ungated data.
-//
-// So the semantic layer is portable across both foundations with exactly one exception, and
-// the exception is a real constraint worth knowing before designing around it: a per-request
-// gate and a build-once table are incompatible by construction. Gate a source that is not
-// materialized, or scope rows with a `where:` on a given instead. See ../COVERAGE.md.
+#(doc) Finance view of order lines: revenue, cost, and margin, gated to callers asserting
+#(doc) the finance role. A caller with any other role is refused with HTTP 403.
+#(authorize) "$role = 'finance'"
+source: order_items_margin is order_items extend {
+  measure:
+    #(doc) Revenue minus supply cost, as a share of revenue
+    # percent
+    margin_rate is order_gross_profit / nullif(revenue, 0)
+}

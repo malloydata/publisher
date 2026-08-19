@@ -17,14 +17,14 @@ green on it: 43 passed, including all 27 data tests and 3 unit tests.
 | `products` | `products` | converted |
 | `supplies` | `supplies` | converted |
 | `locations` | `locations` | converted |
-| `stg_*` (6 models) | — | skipped in `adopt/`: staging output is already in the marts. Rebuilt in `convert/` instead |
+| `stg_*` (6 models) | — | skipped in the adopt packages: staging output is already in the marts. Rebuilt in `convert/` instead |
 | `metricflow_time_spine` | — | skipped: scaffolding for cumulative metrics; Malloy truncates timestamps natively |
 
 ## Metric coverage: 20 measures, 2 views, 1 deferred
 
 All 23 metrics in dbt's semantic manifest are accounted for. **20 became measures and every one
 matches dbt's own output** — verified by running each measure against `mf query` on the same
-data; see `adopt/jaffle_shop.malloynb`, which states dbt's number beside each query.
+data; see `adopt-rich/jaffle_shop.malloynb`, which states dbt's number beside each query.
 
 | dbt metric | type | Malloy | Verdict |
 |---|---|---|---|
@@ -167,3 +167,32 @@ alongside them and do not affect those numbers.
 ")"`: the limit refinement reaches a nested dashboard and emits
 `ROW_NUMBER() OVER (PARTITION BY group_set ORDER BY )`. The dashboard itself runs fine; only a
 limit refinement on it breaks. Worth reporting upstream.
+
+## The authorize / materialization constraint
+
+`adopt-rich` gates `order_items_margin` with `#(authorize) "$role = 'finance'"`; a caller asserting
+the default `analyst` role is refused with HTTP 403, verified against a running Publisher.
+
+`convert` deliberately omits that source. Publisher **refuses to materialize** a package where an
+`#(authorize)`-gated source sits in a persisted lineage, with this error:
+
+> An authorize expression is evaluated per request; a materialized-once table served frozen carries
+> no gate, so it would be served to everyone, bypassing authorization. This is refused for safety.
+
+That is the correct call, and it is a real design constraint rather than a rough edge: a per-request
+gate and a build-once table are incompatible by construction. Gate a source that is not
+materialized, or scope rows with a `where:` over a given instead. It is the one place the semantic
+layer is not portable between the two foundations.
+
+## Package comparison
+
+| | `adopt-mechanical` | `adopt-rich` | `convert` |
+|---|---|---|---|
+| Reads | dbt's marts | dbt's marts | raw files |
+| dbt metrics reconciled | 20/20 | 20/20 | 20/20 (money to ~1e-9) |
+| Views | 3 (dbt's saved queries) | 20 | 20 |
+| Chart / format tags | 0 | yes | yes |
+| Dimensions added | 0 | cohorts, spend and size bands, repeat-buyer flag | same |
+| Window entities | 0 | 4 | 4 |
+| Audience extensions | 0 | 2 (one gated) | 1 (gate not permitted) |
+| Tables built | none | none | 3 |

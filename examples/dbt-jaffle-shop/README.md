@@ -1,168 +1,119 @@
-# dbt + Malloy: jaffle-shop, two ways
+# dbt + Malloy: jaffle-shop, three ways
 
-Two Malloy packages over dbt's [jaffle-shop](https://github.com/dbt-labs/jaffle-shop). **Both are
-the same semantic layer.** They differ only in what sits underneath it:
+Three Malloy packages over dbt's [jaffle-shop](https://github.com/dbt-labs/jaffle-shop). They vary
+two things independently, one at a time, so each comparison has a single variable:
 
-| Package | Underneath | The motion |
-|---|---|---|
-| `adopt/` | the marts **dbt built** (Parquet), dbt pipeline untouched | Adopt: sit on top of what exists |
-| `convert/` | marts **Malloy rebuilt** from the raw data, materialized with `#@ persist` | Convert: move the pipeline |
-
-The point of shipping both is that the interface does not change. The same query, naming the same
-sources and measures, runs against either package:
-
-```malloy
-run: orders -> { aggregate: order_total, orders, large_orders, food_orders }
-```
-
-```
-adopt    105826.18          9568   1141   2336
-convert  105826.18000000007 9568   1141   2336
-```
-
-Integers match exactly. Money differs in the last few decimal places, in whichever direction the
-summation order lands, because `convert` computes dollars from cents in floating point while dbt
-casts to `numeric(16,2)` — one of three differences catalogued in [COVERAGE.md](COVERAGE.md). Where the tables come from is a plumbing
-decision the people and agents querying the model never see.
+| Package | Model | Transformation | What the comparison shows |
+|---|---|---|---|
+| `adopt-mechanical/` | mechanical | dbt's | the ceiling of automated conversion |
+| `adopt-rich/` | rich | dbt's | **diff vs above = modelling only** |
+| `convert/` | rich | Malloy's | **diff vs above = plumbing only** |
 
 Everything runs with no warehouse, no credentials, and no dbt installed. DuckDB reads the
 committed Parquet in place.
 
 ```bash
 bun run start
-# environment `examples`: jaffle-shop-adopt and jaffle-shop-convert
+# environment `examples`: jaffle-shop-mechanical, jaffle-shop-adopt, jaffle-shop-convert
 ```
 
-Start with [`adopt/jaffle_shop.malloynb`](adopt/jaffle_shop.malloynb). It states the number dbt's
-own engine returns beside each Malloy query.
+## mechanical → rich: what does modelling buy?
 
-## Where to start: `order_items -> overview`
+`adopt-mechanical` is a faithful, complete conversion of dbt's semantic layer: every model becomes
+a source, every column doc a `#(doc)`, every entity a key or a join, every metric a measure, every
+saved query a view. 20 of dbt's 23 metrics, and **all 20 match dbt's own output exactly**. Nothing
+was skipped out of laziness.
 
-`order_items` is the entry point. It is the finest grain and it reaches everything: `products`
-directly, and `customers` and `locations` through `orders`. Its `overview` view is a
-`# dashboard` — revenue KPIs, the monthly trend, product mix, top sellers, and revenue by
-location and customer type in one query.
+It is also close to unusable: no entry point, no chart or format tags, money rendering as bare
+floats, three of six sources with no measures at all, and dimension tables that are two-column dead
+ends when opened. That is not a criticism of the converter. It is the ceiling of what *any*
+automated translation reaches, because dbt's YAML does not carry the missing information.
+
+`adopt-rich` is the same six marts and the same 20 reconciled measures, plus the modelling:
+
+- **Cohorts and bands** — `first_order_month`, `spend_band`, `order_size_band`, `is_repeat_buyer`,
+  each with its thresholds flagged in its `#(doc)` as a convention rather than a fact.
+- **Windows as model entities** — `revenue_growth_mom`, `cumulative_revenue`,
+  `avg_order_value_trend`, and `product_leaderboard` with a rank. Not per-chart calculations: views
+  that other queries can nest and refine.
+- **An entry point** — `order_items -> overview`, a `# dashboard` whose doc says to start there.
+- **Render tags** — `# currency`, `# percent`, and a chart type per view. dbt records none of this.
+- **Audience extensions** — one base model surfaced differently. `order_items_store_ops` drops
+  financial detail; `order_items_margin` adds margin and is gated with
+  `#(authorize) "$role = 'finance'"`, so a caller asserting any other role gets **HTTP 403**.
+
+The useful test is not "is Malloy nicer" but: **can this construct be a reusable, composable model
+entity, or does it only exist inside one chart?** A running total, a cohort definition, a bucketing
+rule, an audience variant. Where those can only live in a chart or a UI side-car, the model is a
+metric catalogue and the analysis lives outside it.
+
+## rich → convert: where does the transformation live?
+
+`convert/` is the same semantic layer — same sources, measures, dimensions, views — reading what
+Malloy derives from the raw files instead of what dbt built. The interface does not change:
 
 ```malloy
-run: order_items -> overview
+run: orders -> { aggregate: order_total, orders, large_orders, food_orders }
 ```
 
-The other five sources are entry points too, each with its own measures and views: `orders` for
-order-level questions, `customers` for lifetime value, and `products` / `locations` / `supplies`
-as catalogs.
-
-**dbt's metrics alone do not make a usable model.** dbt's semantic layer gives you 23 metrics and
-3 saved queries, and no indication of where to start, how anything should render, or which
-questions matter. The measures here are dbt's; the chart tags (`# currency`, `# percent`,
-`# bar_chart`, `# line_chart`), the analysis views, and the dashboard are additions, because dbt
-records no display formatting and its saved queries cover three questions. That authoring step is
-part of the conversion, not an optional polish pass.
-
-Both packages declare `explores: ["jaffle_shop.malloy"]`, so the staging and mart plumbing in
-`convert/` stays out of listings. Each package shows the same six sources and nothing else.
-
-## The short version
-
-**23 dbt metrics: 20 became Malloy measures and all 20 match dbt's output exactly.** Two became
-views because a measure cannot hold a window. One is deferred. dbt's 27 data tests and 3 unit
-tests are *not* carried over. Full accounting in [COVERAGE.md](COVERAGE.md).
-
-## `adopt/` — the semantic layer over dbt's marts
-
-The default and the recommended shape. dbt keeps the transformations and the tests; Malloy
-becomes the layer analysts and agents query, with no warehouse changes.
-
-`jaffle_shop.malloy` holds six sources, one per dbt mart. Each reads its table, projects every
-column dbt built carrying dbt's own description as `#(doc)`, then extends that with the keys,
-joins, measures, and views:
-
-```malloy
-#(doc) Order overview data mart ... One row per order.
-source: orders is duckdb.table('data/orders.parquet') -> {
-  select:
-    #(doc) The unique key of the orders mart.
-    order_id
-    ...
-} extend {
-  primary_key: order_id
-  join_one: customers with customer_id
-  measure: order_total is order_total_raw.sum()
-  view: order_metrics is { ... }
-}
+```
+adopt-mechanical  105826.18          9568  1141  2336
+adopt-rich        105826.18          9568  1141  2336
+convert           105826.17999999982 9568  1141  2336
 ```
 
-Written from dbt's `target/` artifacts: `semantic_manifest.json` for entities, dimensions,
-metrics, and saved queries; `manifest.json` for the descriptions; `catalog.json` for the column
-list. **Not** from `osi_document.json` — see COVERAGE.md for the two ways that export produces
-wrong numbers.
+Integers match exactly. Money differs in the last few decimal places, in whichever direction the
+summation order lands, because `convert` computes dollars from cents in floating point while dbt
+casts to `numeric(16,2)`.
 
-What the conversion carries:
-
-- **Documentation** — every dbt model and column description, authored once in `schema.yml`.
-- **Joins with declared cardinality** — dbt entities name their targets by entity name, so
-  there is no join-key guessing.
-- **Metric definitions, including the awkward ones** — filtered metrics, ratios, and
-  `order_gross_profit`, a derived metric subtracting a cost on `orders` from revenue on
-  `order_items` across a one-to-many join. It matches dbt to the cent.
-- **The questions people ask** — dbt's three `saved_queries` became views.
-
-## `convert/` — the same layer, over marts Malloy builds
-
-Three files, one per job:
-
-```
-staging.malloy      stg_orders, stg_customers, ...     renames and casts over the raw Parquet
-marts.malloy        orders_mart, customers_mart, ...   #@ persist; the table layer
-jaffle_shop.malloy  orders, customers, ...             the semantic layer (same text as adopt/)
-```
-
-What dbt expresses as a `+materialized: table` config plus a model file is one annotation:
-
-```malloy
-#@ persist name="orders"
-source: orders_mart is stg_orders extend { ... } -> { ... }
-```
-
-Including the part that looks like it needs SQL: dbt's `orders.sql` closes with
-`row_number() over (partition by customer_id order by ordered_at)`, which is a `calculate:`.
-
-The built table and the semantic source are deliberately separate (`orders_mart` vs `orders`).
-That is not cosmetic — `customers_mart` is built *from* `orders_mart`, while the semantic
-`orders` joins `customers`. Collapsing the two would make that a cycle.
-
-A standalone Publisher does not build on publish. Trigger it:
+**There is no marts layer.** dbt splits this into staging views and mart tables; `pipeline.malloy`
+is one transformation, and `#@ persist` is a latency knob applied where derivation is expensive.
+Only `order_items`, `orders`, and `customers` build a table. `products`, `supplies`, and
+`locations` build nothing, because a rename does not earn one.
 
 ```bash
 malloy-pub materialize --environment examples --package jaffle-shop-convert --wait
+# builds 3 tables, not 6
 ```
 
-All six marts build (`COPY`, 1–23ms each on this sample) and queries then read the built tables.
+`convert/` rebuilds tested marts and dbt's tests do not come with them, so it demonstrates what
+moving the pipeline costs and buys rather than recommending it.
 
-**`convert/` is a demonstration, not a recommendation.** It rebuilds tested marts, and the tests
-do not come with them. See COVERAGE.md for the three real differences from dbt's output.
+## Two constraints worth knowing before copying this
+
+**An `#(authorize)` gate cannot live in a materialized lineage.** `adopt-rich` has the
+finance-gated margin source; `convert` deliberately does not. Publisher refuses to build a package
+where a gated source sits in a persisted lineage, because an authorize expression is evaluated per
+request while a materialized table served frozen carries no gate. It fails closed with that
+explanation rather than quietly serving ungated rows.
+
+**Build and semantics stay separate in `convert`.** `customers_built` is derived *from*
+`orders_built`, while the semantic `orders` joins `customers`. Fusing them into one source is a
+cycle Malloy rejects.
 
 ## The data
 
-`dbt build` was run on a deterministic 150-customer sample of jaffle-shop and its output
-committed as Parquet: 9,568 orders and 14,250 order items over 12 months (2024-09-01 to
-2025-08-31), so the month-over-month and cumulative metrics have something real to say. The full
-jafgen dataset is ~16MB of CSV; this is ~1.6MB of Parquet. `dbt build` is green on the sample: 43
-passed, all 27 data tests and 3 unit tests included.
+`dbt build` was run on a deterministic 150-customer sample of jaffle-shop and its output committed
+as Parquet: 9,568 orders and 14,250 order items over 12 months (2024-09-01 to 2025-08-31), so the
+month-over-month, cohort, and cumulative work has something real to say. `dbt build` is green on
+the sample: 43 passed, including all 27 data tests and 3 unit tests.
 
-`adopt/data/` holds the marts dbt built. `convert/data/` holds the raw inputs dbt starts from.
+`adopt-mechanical/data/` and `adopt-rich/data/` hold the marts dbt built; `convert/data/` holds the
+raw inputs dbt starts from.
 
-To reproduce from scratch: clone jaffle-shop, sample the seeds in `seeds/jaffle-data/` down to
-150 customers (keeping their orders and those orders' items, and all products, stores, and
-supplies), then `dbt seed --vars 'load_source_data: true' && dbt build && dbt docs generate` on
-a DuckDB profile, and export `main.*` and `raw.*` to Parquet.
+To reproduce: clone jaffle-shop, sample `seeds/jaffle-data/` down to 150 customers (keeping their
+orders, those orders' items, and all products, stores, and supplies), then
+`dbt seed --vars 'load_source_data: true' && dbt build && dbt docs generate` on a DuckDB profile,
+and export `main.*` and `raw.*` to Parquet.
+
+Full metric-by-metric accounting, and every difference from dbt's numbers, in
+[COVERAGE.md](COVERAGE.md).
 
 ## Doing this to your own dbt project
 
-Two skills, one per motion:
-
-- [`malloy-dbt-adopt`](../../skills/malloy-dbt-adopt/SKILL.md) — which artifacts to read, the
-  source shape that carries dbt's docs, the two naming collisions, every metric type, and how to
-  reconcile against dbt's own engine.
-- [`malloy-dbt-convert`](../../skills/malloy-dbt-convert/SKILL.md) — moving staging and marts
-  into Malloy with `#@ persist`, the four traps that compile clean and return wrong values, and
-  what leaves the building with the dbt model.
+- [`malloy-dbt-adopt`](../../skills/malloy-dbt-adopt/SKILL.md) — which artifacts to read, the source
+  shape that carries dbt's docs, the two naming collisions, every metric type, reconciling against
+  dbt's own engine, and why a converted model is not yet a usable one.
+- [`malloy-dbt-convert`](../../skills/malloy-dbt-convert/SKILL.md) — moving the transformation into
+  Malloy, `#@ persist` as a latency decision, the four traps that compile clean and return wrong
+  values, and what leaves the building with the dbt model.

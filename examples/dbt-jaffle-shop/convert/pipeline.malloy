@@ -1,0 +1,237 @@
+// The transformation, in Malloy.
+//
+// dbt splits this into a staging layer of views and a marts layer of tables. Here it is one
+// file, because the split is a materialization decision rather than a modelling one: the
+// renames and casts stay query sources (recomputed on read, like dbt's staging views), and
+// `#@ persist` goes on the three sources that actually derive something expensive.
+//
+// `products`, `supplies`, and `locations` have no entry here at all. dbt materializes them as
+// tables, but they are pure renames of their raw files, so the semantic layer reads the staging
+// source directly and nothing is built. That is the point: a mart is not a layer you owe the
+// system, it is a latency knob you turn where it pays.
+//
+// The built sources are named `<name>_built` and the semantic layer defines `<name>` on top.
+// That separation is load-bearing: `customers_built` is derived *from* `orders_built`, while the
+// semantic `orders` joins `customers`, so fusing build and semantics is a cycle Malloy rejects.
+//
+// `##! experimental.persistence` is required on every .malloy file in the package, including
+// files that persist nothing. One unflagged file aborts the whole package's build plan.
+//
+// Build the three tables:
+//   malloy-pub materialize --environment examples --package jaffle-shop-convert --wait
+
+##! experimental.persistence
+
+// ── Staging: renames, unit casts, and coalesced booleans over the raw files ──
+// dbt's `cents_to_dollars` macro is `(col / 100)::numeric(16,2)`; in Malloy that is
+// `round(col / 100, 2)`, written where it applies because there is no macro layer.
+
+#(doc) Customer names, one row per customer
+source: stg_customers is duckdb.table('data/raw_customers.parquet') -> {
+   select:
+      #(doc) The unique key for each customer
+      customer_id is id
+      #(doc) Customer's full name
+      customer_name is `name`
+} extend {
+   primary_key: customer_id
+}
+
+#(doc) Order headers, one row per order, with money in dollars and the order date
+source: stg_orders is duckdb.table('data/raw_orders.parquet') -> {
+   select:
+      #(doc) The unique key for each order
+      order_id is id
+      #(doc) The store the order was placed at
+      location_id is store_id
+      #(doc) The customer who placed the order
+      customer_id is customer
+
+      #(doc) Order subtotal in cents, as landed
+      subtotal_cents is subtotal
+      #(doc) Tax paid in cents, as landed
+      tax_paid_cents is tax_paid
+      #(doc) Order total in cents, as landed
+      order_total_cents is order_total
+
+      #(doc) Order subtotal in USD, excluding tax
+      subtotal is round(subtotal / 100, 2)
+      #(doc) Tax paid on the order in USD
+      tax_paid is round(tax_paid / 100, 2)
+      #(doc) Order total in USD, including tax
+      order_total is round(order_total / 100, 2)
+
+      #(doc) The day the order was placed
+      ordered_at is ordered_at.day
+} extend {
+   primary_key: order_id
+}
+
+#(doc) Order line items, one row per item on an order
+source: stg_order_items is duckdb.table('data/raw_items.parquet') -> {
+   select:
+      #(doc) The unique key for each order item
+      order_item_id is id
+      #(doc) The order this item belongs to
+      order_id
+      #(doc) The product sold on this line
+      product_id is sku
+}
+
+#(doc) Product catalog, one row per product, with price in dollars and food/drink flags
+source: stg_products is duckdb.table('data/raw_products.parquet') -> {
+   select:
+      #(doc) The unique key for each product
+      product_id is sku
+      #(doc) Name of the product
+      product_name is `name`
+      #(doc) Product category, either `jaffle` or `beverage`
+      product_type is `type`
+      #(doc) Description of the product
+      product_description is description
+
+      #(doc) Price of the product in USD
+      product_price is round(price / 100, 2)
+
+      #(doc) Whether the product is a food item, per dbt's rule `type = 'jaffle'`
+      is_food_item is (`type` = 'jaffle') ?? false
+      #(doc) Whether the product is a drink item, per dbt's rule `type = 'beverage'`
+      is_drink_item is (`type` = 'beverage') ?? false
+} extend {
+   primary_key: product_id
+}
+
+#(doc) Store locations, one row per location
+source: stg_locations is duckdb.table('data/raw_stores.parquet') -> {
+   select:
+      #(doc) The unique key for each location
+      location_id is id
+      #(doc) Name of the location
+      location_name is `name`
+      #(doc) Sales tax rate applied at this location
+      tax_rate
+      #(doc) The day the location opened
+      opened_date is opened_at.day
+} extend {
+   primary_key: location_id
+}
+
+#(doc) Supplies used to make each product, one row per supply and product combination
+source: stg_supplies is duckdb.table('data/raw_supplies.parquet') -> {
+   select:
+      // dbt builds `supply_uuid` with dbt_utils.generate_surrogate_key(['id','sku']), an
+      // md5 over the concatenated parts. The key's only job is uniqueness, so this uses
+      // the concatenation directly rather than reproducing dbt's hash: the value differs
+      // from dbt's column by construction, and nothing joins across the two layers on it.
+      #(doc) Unique key for a supply and product pair
+      supply_uuid is concat(id, '-', sku)
+      #(doc) The supply's own key
+      supply_id is id
+      #(doc) The product this supply is used for
+      product_id is sku
+      #(doc) Name of the supply
+      supply_name is `name`
+
+      #(doc) Cost of the supply in USD
+      supply_cost is round(cost / 100, 2)
+
+      #(doc) Whether the supply is perishable
+      is_perishable_supply is perishable
+}
+
+// ── Derived and materialized: the only three that earn a table ──────────────
+
+#(doc) Total supply cost per product, summed across every supply that product needs
+source: supply_costs is stg_supplies -> {
+   group_by: product_id
+   aggregate: supply_cost is supply_cost.sum()
+} extend {
+   primary_key: product_id
+}
+
+#(doc) Items contained in each order. The grain of the table is one row per order item.
+#@ persist name="order_items"
+source: order_items_built is stg_order_items extend {
+   join_one: stg_orders with order_id
+   join_one: stg_products with product_id
+   join_one: supply_costs with product_id
+} -> {
+   select:
+      order_item_id
+      order_id
+      product_id
+      ordered_at is stg_orders.ordered_at
+      product_name is stg_products.product_name
+      product_price is stg_products.product_price
+      is_food_item is stg_products.is_food_item
+      is_drink_item is stg_products.is_drink_item
+      supply_cost is supply_costs.supply_cost
+} extend {
+   primary_key: order_item_id
+}
+
+#(doc) Order overview data mart, offering key details for each order including if it's a
+#(doc) customer's first order and a food vs. drink item breakdown. One row per order.
+#@ persist name="orders"
+source: orders_built is stg_orders extend {
+   join_many: order_items_built on order_id = order_items_built.order_id
+} -> {
+   group_by:
+      order_id, location_id, customer_id
+      subtotal_cents, tax_paid_cents, order_total_cents
+      subtotal
+      tax_paid_raw is tax_paid
+      order_total_raw is order_total
+      ordered_at
+   aggregate:
+      order_cost_raw is order_items_built.supply_cost.sum()
+      order_items_subtotal is order_items_built.product_price.sum()
+      // `count(<joined>.<key>)`, not `<joined>.count()`. The latter counts the outer-join
+      // row, so an order with no items would count as 1 instead of 0. dbt's LEFT JOIN
+      // leaves those NULL; this returns 0. See ../COVERAGE.md.
+      count_order_items is count(order_items_built.order_item_id)
+      count_food_items is count(order_items_built.order_item_id) {
+         where: order_items_built.is_food_item
+      }
+      count_drink_items is count(order_items_built.order_item_id) {
+         where: order_items_built.is_drink_item
+      }
+   // dbt's orders.sql closes with
+   //   row_number() over (partition by customer_id order by ordered_at asc)
+   // which is a window, not an aggregate, so in Malloy it is a `calculate:`.
+   calculate:
+      customer_order_number is row_number() {
+         partition_by: customer_id
+         order_by: ordered_at asc
+      }
+} -> {
+   // A second stage, so the two booleans are stored columns of the mart exactly as they are
+   // in dbt's, rather than expressions evaluated on read.
+   select: *
+      is_food_order is count_food_items > 0
+      is_drink_order is count_drink_items > 0
+} extend {
+   primary_key: order_id
+}
+
+#(doc) Customer overview data mart, offering key details for each unique customer.
+#(doc) One row per customer.
+#@ persist name="customers"
+source: customers_built is stg_customers extend {
+   join_many: orders_built on customer_id = orders_built.customer_id
+} -> {
+   group_by:
+      customer_id, customer_name
+   aggregate:
+      count_lifetime_orders_raw is count(orders_built.order_id)
+      first_ordered_at is orders_built.ordered_at.min()
+      last_ordered_at is orders_built.ordered_at.max()
+      lifetime_spend_pretax_raw is orders_built.subtotal.sum()
+      lifetime_tax_paid is orders_built.tax_paid_raw.sum()
+      lifetime_spend_raw is orders_built.order_total_raw.sum()
+} -> {
+   select: *
+      customer_type is pick 'returning' when count_lifetime_orders_raw > 1 else 'new'
+} extend {
+   primary_key: customer_id
+}

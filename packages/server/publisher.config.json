@@ -17,8 +17,12 @@
           "location": "../../examples/html-data-app"
         },
         {
+          "name": "jaffle-shop-mechanical",
+          "location": "../../examples/dbt-jaffle-shop/adopt-mechanical"
+        },
+        {
           "name": "jaffle-shop-adopt",
-          "location": "../../examples/dbt-jaffle-shop/adopt"
+          "location": "../../examples/dbt-jaffle-shop/adopt-rich"
         },
         {
           "name": "jaffle-shop-convert",

@@ -1,0 +1,7 @@
+{
+  "name": "jaffle-shop-mechanical",
+  "version": "1.0.0",
+  "description": "The ceiling of automated conversion: dbt's metrics, entities, and docs mapped one-for-one into Malloy, with no analytical judgment added.",
+  "explores": ["jaffle_shop.malloy"],
+  "queryableSources": "declared"
+}
