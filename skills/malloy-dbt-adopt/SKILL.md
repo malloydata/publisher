@@ -73,6 +73,7 @@ guessing. A `foreign` entity names its target by entity name, not by table name.
 | `reference/sources.md` | The source shape that carries dbt's column docs, and the two naming collisions |
 | `reference/metrics.md` | Every metric type, and the three a measure cannot hold |
 | `reference/reconcile.md` | Proving the Malloy number matches dbt's, using dbt's own engine |
+| `reference/ambiguity.md` | Auditing dbt's definitions for the wrong answers reconciliation cannot catch |
 
 ## What to skip
 
@@ -109,6 +110,12 @@ of the job:
 
 Say which parts came from dbt and which you authored. The metrics are dbt's and reconcile against
 it; the tags, views, and dashboards are yours and do not.
+
+**Then audit the definitions themselves.** A faithful conversion also inherits dbt's ambiguities:
+two metrics that both mean "revenue" and differ by tax, boolean flags whose shares sum to 122%
+because they overlap, two fields that both mean "new customer" and answer 400x apart. Every one of
+those matches dbt exactly and answers the wrong question, so reconciliation cannot catch any of
+them. `reference/ambiguity.md` has the five patterns, the test for each, and how to settle it.
 
 **The test to apply to each construct** is not whether Malloy can express it, but whether it can be
 a *reusable, composable model entity*: a running total, a cohort definition, a bucketing rule, an

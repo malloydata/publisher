@@ -53,3 +53,11 @@ Be precise about the three outcomes, and never blur them:
 - **Not reproduced.** The metric is deferred, with the reason. A deferred metric is not a passing check, and it must not be counted in the match tally.
 
 In artifacts-only mode none of this is available. Say plainly that no number was verified, rather than reporting a conversion as complete.
+
+## What reconciliation does not prove
+
+It proves you computed dbt's definition faithfully. It says nothing about whether that definition answers the question being asked, and the two are easy to confuse when a report says 20 of 20 matched.
+
+Every ambiguity in `reference/ambiguity.md` passes reconciliation: the gross figure that is not revenue, the overlapping flags whose shares sum to 122%, the current-state field that answers an acquisition question 400x too small. They match dbt to the digit, because they *are* dbt's definitions. A green reconciliation and a wrong answer are fully compatible.
+
+So report the two separately, and never let the first stand in for the second: "20 of 20 measures match dbt's own engine" and "three definitions were ambiguous; here is what each was settled to and who confirmed it".
