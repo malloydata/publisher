@@ -196,3 +196,36 @@ layer is not portable between the two foundations.
 | Window entities | 0 | 4 | 4 |
 | Audience extensions | 0 | 2 (one gated) | 1 (gate not permitted) |
 | Tables built | none | none | 3 |
+
+## Curation: the plumbing is hidden, not just renamed
+
+`adopt-rich` and `convert` use `include { internal: ... }` (with
+`##! experimental.access_modifiers`) so the columns a caller should never pick are absent from
+the public API while the measures that need them still read them:
+
+- the six `<name>_raw` columns, which exist only because a dbt metric took the column's name
+- `subtotal_cents`, `tax_paid_cents`, `order_total_cents`, which duplicate the dollar columns
+  dbt also builds
+
+A caller naming one gets `'order_total_raw' is internal`. The measures over them are unchanged
+and still reconcile exactly, so the naming compromise is now invisible to consumers rather than
+merely documented.
+
+`adopt-mechanical` keeps them all public, because nothing in dbt's artifacts says which columns
+are plumbing. Deciding that is modelling.
+
+## A coverage cliff worth knowing about
+
+Six locations exist in the `locations` dimension; **only Philadelphia and Brooklyn have any
+orders** in this sample. `location_count` returns 6 while a revenue-by-location question returns
+2 rows. That is the 150-customer sampling, not the business having two stores.
+
+It is also structural: `orders` joins `locations`, so a question asked from the fact side can
+only ever return locations that have rows. Nothing about the empty result says four stores are
+missing. Both rich packages carry the caveat in the `locations` source's `#(doc)`, which is the
+only place a consumer or an agent will see it.
+
+A reverse `join_many` from `locations` to `orders` would let the dimension lead and show the
+inactive stores, but it cannot be declared on `locations` itself: `locations` is defined before
+`orders` so that `orders` can join it, and the reverse reference is then undefined. It would have
+to be a separate source declared after `orders`.

@@ -11,12 +11,19 @@
 // `run: order_items -> overview` is the same query, with the same numbers, against either
 // package. Where the tables come from is plumbing the query never sees.
 
-##! experimental.persistence
+##! experimental { persistence, access_modifiers }
 
 import "pipeline.malloy"
 
+
 #(doc) Customer overview data mart, offering key details for each unique customer. One row per customer.
-source: customers is customers_built extend {
+source: customers is customers_built include {
+  // The `_raw` columns exist only to feed measures that took dbt's metric names, and are not
+  // things a caller should pick. `internal:` keeps them readable by the measures above while
+  // removing them from the public API, so the naming compromise is invisible to consumers.
+  internal: count_lifetime_orders_raw, lifetime_spend_pretax_raw, lifetime_spend_raw
+  public: *
+} extend {
   primary_key: customer_id
 
   measure:
@@ -76,6 +83,11 @@ source: customers is customers_built extend {
     #(doc) Whether the customer has ordered more than once
     is_repeat_buyer is count_lifetime_orders_raw > 1
 
+    #(doc) Months from the customer's first order to their most recent, minimum 1.
+    #(doc) Cohort comparisons of lifetime totals are confounded by tenure: a cohort that
+    #(doc) joined 12 months ago has had 12x the time to accumulate. Normalize by this.
+    tenure_months is months(first_ordered_at::date to last_ordered_at::date) + 1
+
     #(doc) Lifetime spend band: Low (<$500), Mid ($500-$999), High ($1000+).
     #(doc) These boundaries are working conventions for this model, not settled by the
     #(doc) business or derived from the distribution.
@@ -88,15 +100,25 @@ source: customers is customers_built extend {
     #(doc) Average number of orders placed per customer
     orders_per_customer is count_lifetime_orders / nullif(customers, 0)
 
-    #(doc) Share of customers who have ordered more than once
+    #(doc) Share of customers who have ordered more than once. On this sample it is close
+    #(doc) to 100% for every cohort (149 of 150 customers are repeat buyers), so it
+    #(doc) discriminates almost nothing here; kept because it is the standard definition.
     # percent
     repeat_buyer_rate is customers { where: is_repeat_buyer } / nullif(customers, 0)
 
-  #(doc) Customer cohorts by first-order month: how many joined and what they spend
+    #(doc) Lifetime spend divided by total months of customer tenure, so cohorts of
+    #(doc) different ages are comparable. Prefer this over `lifetime_spend` when comparing
+    #(doc) cohorts.
+    # currency
+    spend_per_tenure_month is lifetime_spend / nullif(tenure_months.sum(), 0)
+
+  #(doc) Customer cohorts by first-order month: size, spend, and spend normalized by tenure.
+  #(doc) Read `spend_per_tenure_month`, not `lifetime_spend`: the raw total falls off for
+  #(doc) recent cohorts because they have had less time, not because they are worse.
   # line_chart
   view: cohorts_by_first_order_month is {
     group_by: first_order_month
-    aggregate: customers, lifetime_spend, repeat_buyer_rate
+    aggregate: customers, lifetime_spend, spend_per_tenure_month, tenure_months_total is tenure_months.sum()
     order_by: first_order_month
   }
 
@@ -110,6 +132,11 @@ source: customers is customers_built extend {
 }
 
 #(doc) Location dimension table. The grain of the table is one row per location.
+#(doc) Coverage: six locations exist here, but only Philadelphia and Brooklyn have any
+#(doc) orders in this sample, so a revenue-by-location question returns two rows. That is
+#(doc) an artifact of sampling 150 customers, not the business having two stores. Asking
+#(doc) from `orders` cannot show a location with no rows at all, because the join runs
+#(doc) that way; lead with this source to see the inactive ones.
 source: locations is stg_locations extend {
   primary_key: location_id
 
@@ -118,6 +145,10 @@ source: locations is stg_locations extend {
     # label="Average Tax Rate"
     # percent
     average_tax_rate is tax_rate.avg()
+
+    #(doc) Number of locations. Counts every location in the dimension, including the four
+    #(doc) with no orders in this sample.
+    location_count is count()
 
   #(doc) Tax rate by location
   # bar_chart
@@ -129,7 +160,14 @@ source: locations is stg_locations extend {
 }
 
 #(doc) Order overview data mart, offering key details for each order inlcluding if it's a customer's first order and a food vs. drink item breakdown. One row per order.
-source: orders is orders_built extend {
+source: orders is orders_built include {
+  // Plumbing, hidden from the public API but still readable by the measures:
+  //   *_raw    took dbt's metric names, so the column had to move
+  //   *_cents  dbt's marts carry both cents and dollars; the dollar columns are the useful ones
+  internal: order_total_raw, tax_paid_raw, order_cost_raw
+  internal: subtotal_cents, tax_paid_cents, order_total_cents
+  public: *
+} extend {
   primary_key: order_id
 
   join_one:
@@ -478,14 +516,14 @@ source: order_items_store_ops is order_items extend {
   except: supply_cost, product_price
 }
 
-// The `order_items_margin` source from `adopt-rich` is deliberately absent here.
+// The `order_items_margin` source from `adopt-rich` is deliberately absent here, and this is
+// the one place the two packages' semantic layers differ.
 //
 // Publisher refuses to materialize a package containing an `#(authorize)`-gated source in a
 // persisted lineage, and it is right to: an authorize expression is evaluated per request,
 // while a materialized table served frozen carries no gate, so the rows would reach everyone.
 // The build fails closed with that explanation rather than quietly serving ungated data.
 //
-// So the semantic layer is portable across both foundations with exactly one exception, and
-// the exception is a real constraint worth knowing before designing around it: a per-request
-// gate and a build-once table are incompatible by construction. Gate a source that is not
-// materialized, or scope rows with a `where:` on a given instead. See ../COVERAGE.md.
+// A per-request gate and a build-once table are incompatible by construction. Gate a source
+// that is not materialized, or scope rows with a `where:` over a given instead.
+// See ../COVERAGE.md.

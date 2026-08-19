@@ -3,11 +3,11 @@
 > How to write a source that carries dbt's column documentation, and the two naming
 > collisions that are compile errors on essentially every real dbt project.
 
-## Carry dbt's column docs with an annotated projection
+## Carry dbt's column docs onto the fields
 
 The highest-value, lowest-risk part of adopting dbt is the documentation: descriptions are
 authored once in `schema.yml` and reach Malloy, the Explorer UI, and any agent reading the
-model over MCP. Getting them there has one specific requirement.
+model over MCP. Getting them there has one specific requirement, and two shapes that satisfy it.
 
 **`#(doc)` attaches to a field you declare, not to a passthrough table column.** Three things
 that do not work, all verified:
@@ -27,31 +27,68 @@ source: orders is duckdb.table('orders.parquet') extend {
 }
 ```
 
-**What works is a `select:` projection**, which accepts annotations on passthrough columns.
-Project the columns, then extend with the semantics:
+**Two shapes work.** The better one for most conversions is an `include {}` block, which
+annotates the table's own columns in place. It needs `##! experimental.access_modifiers`:
 
 ```malloy
+##! experimental.access_modifiers
+
 #(doc) Order overview data mart. One row per order.
+source: orders is duckdb.table('data/orders.parquet') include {
+  #(doc) The unique key of the orders mart.
+  public: order_id
+  #(doc) The foreign key relating to the customer who placed the order.
+  public: customer_id
+  public: *
+} extend {
+  primary_key: order_id
+  join_one: customers with customer_id
+}
+```
+
+`public: *` exposes everything you did not name, so you only write out the columns that have a
+dbt description. That is a large saving over enumerating a wide mart, and the source stays a
+plain table source.
+
+The same block is where you **curate**, which a dbt conversion usually needs: dbt's marts often
+carry both `subtotal_cents` and `subtotal`, and a conversion adds `<name>_raw` columns (below).
+None of those are things a caller should pick. `internal:` removes them from the public API while
+leaving them readable by the measures that need them:
+
+```malloy
+} include {
+  internal: order_total_raw, tax_paid_raw, order_cost_raw
+  internal: subtotal_cents, tax_paid_cents, order_total_cents
+  public: *
+} extend {
+  measure: order_total is order_total_raw.sum()   // still reads the internal column
+}
+```
+
+A caller naming a hidden column gets `'order_total_raw' is internal`. Use `private:` instead when
+the concern is sensitive data rather than surface curation.
+
+**The other shape is a `select:` projection**, which also accepts annotations on passthrough
+columns:
+
+```malloy
 source: orders is duckdb.table('data/orders.parquet') -> {
   select:
     #(doc) The unique key of the orders mart.
     order_id
-
-    #(doc) The foreign key relating to the customer who placed the order.
-    customer_id
-
-    #(doc) The timestamp the order was placed at.
-    ordered_at
-} extend {
-  primary_key: order_id
-  join_one: customers with customer_id
-  measure: order_total is order_total_raw.sum()
-}
+} extend { primary_key: order_id }
 ```
 
-This shape has a second benefit: a query source is the only thing `#@ persist` can
-materialize, so the same structure is ready for `skill:malloy-materialization` if the mart is
-expensive enough to warrant it.
+Prefer `include {}` unless you need one of the projection's two properties: it needs no
+experimental flag, and it makes the source a **query source**, which is the only thing
+`#@ persist` can materialize (`skill:malloy-materialization`). A plain table source with an
+`include {}` block can still sit upstream of a persisted query source, so this only decides
+whether *that* source is the materialization target.
+
+The two compose with `rename:` in either order, as long as each block names a field by the name
+it has at that point in the chain. Annotating `order_total` in an `include {}` and renaming it to
+`order_total_raw` in the following `extend {}` is fine; naming the post-rename field in an
+`include {}` that runs before the rename is not.
 
 Rules for the projection:
 

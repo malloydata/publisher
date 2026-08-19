@@ -18,7 +18,7 @@
 //
 // What did not convert, and every difference from dbt's numbers, is in ../COVERAGE.md.
 
-##! experimental.givens
+##! experimental { givens, access_modifiers }
 
 #(description="Caller role. The margin source below is gated to the finance role.")
 given: role :: string is 'analyst'
@@ -55,6 +55,12 @@ source: customers is duckdb.table('data/customers.parquet') -> {
 
     #(doc) Options are 'new' or 'returning', indicating if a customer has ordered more than once or has only placed their first order to date.
     customer_type
+} include {
+  // The `_raw` columns exist only to feed measures that took dbt's metric names, and are not
+  // things a caller should pick. `internal:` keeps them readable by the measures above while
+  // removing them from the public API, so the naming compromise is invisible to consumers.
+  internal: count_lifetime_orders_raw, lifetime_spend_pretax_raw, lifetime_spend_raw
+  public: *
 } extend {
   primary_key: customer_id
 
@@ -164,6 +170,11 @@ source: customers is duckdb.table('data/customers.parquet') -> {
 }
 
 #(doc) Location dimension table. The grain of the table is one row per location.
+#(doc) Coverage: six locations exist here, but only Philadelphia and Brooklyn have any
+#(doc) orders in this sample, so a revenue-by-location question returns two rows. That is
+#(doc) an artifact of sampling 150 customers, not the business having two stores. Asking
+#(doc) from `orders` cannot show a location with no rows at all, because the join runs
+#(doc) that way; lead with this source to see the inactive ones.
 source: locations is duckdb.table('data/locations.parquet') -> {
   select:
     location_id
@@ -181,6 +192,10 @@ source: locations is duckdb.table('data/locations.parquet') -> {
     # label="Average Tax Rate"
     # percent
     average_tax_rate is tax_rate.avg()
+
+    #(doc) Number of locations. Counts every location in the dimension, including the four
+    #(doc) with no orders in this sample.
+    location_count is count()
 
   #(doc) Tax rate by location
   # bar_chart
@@ -239,6 +254,13 @@ source: orders is duckdb.table('data/orders.parquet') -> {
     is_drink_order
 
     customer_order_number
+} include {
+  // Plumbing, hidden from the public API but still readable by the measures:
+  //   *_raw    took dbt's metric names, so the column had to move
+  //   *_cents  dbt's marts carry both cents and dollars; the dollar columns are the useful ones
+  internal: order_total_raw, tax_paid_raw, order_cost_raw
+  internal: subtotal_cents, tax_paid_cents, order_total_cents
+  public: *
 } extend {
   primary_key: order_id
 
