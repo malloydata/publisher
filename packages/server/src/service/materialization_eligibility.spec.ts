@@ -342,7 +342,7 @@ source: mz_relaxed is base -> { aggregate: c is count() }`);
          ).not.toThrow();
       });
 
-      it("still refuses when the outcome is row_level but not attributed (a gate reachable only through a join)", async () => {
+      it("still refuses when the outcome is row_level but not attributed", async () => {
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: role :: string is 'analyst'

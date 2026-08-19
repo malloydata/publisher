@@ -237,8 +237,8 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
       // not on whether the entry point's rows come from a live recompute or a
       // same-connection table substitution. So the row filter lands on
       // `derived` either way, identically. `assertColocatedPersistNotAuthorizeGated`
-      // (`./materialization_eligibility`) now admits this shape given this
-      // exact `{classification: "row_level", attributed: true}` outcome.
+      // (`./materialization_eligibility`) admits this shape given this exact
+      // `{classification: "row_level", attributed: true}` outcome.
       const { modelDef, materializer, deps, sources } = await compileModel(
          `##! experimental.persistence
 ##! experimental.givens
@@ -270,6 +270,51 @@ source: derived is locked extend {
          assertColocatedPersistNotAuthorizeGated(
             sources.derived,
             sources.derived.name,
+            "persist",
+            outcome,
+         ),
+      ).not.toThrow();
+   });
+
+   it("classifies row_level/attributed for a persist source over a composite entry point, gated on one member", async () => {
+      // `comp` is a query_source whose base is `compose(member_a, member_b)`.
+      // Only `member_a` carries the gate; Malloy resolves the composite to
+      // ONE concrete member per query and copies that member's own notes
+      // onto `query.compositeResolvedSourceDef` (see
+      // `malloy_annotation_invariants.spec.ts`), which `collectEntryPointGates`
+      // reads as the entry point's OWN gate — no join or deep walk involved.
+      const { modelDef, materializer, deps, sources } = await compileModel(
+         `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: member_a is duckdb.sql("select 7 as org_id, 1 as amount")
+
+source: member_b is duckdb.sql("select 99 as org_id, 2 as amount")
+
+source: combo is compose(member_a, member_b)
+
+#@ persist name="comp"
+source: comp is combo -> { select: org_id, amount }
+`,
+      );
+      const outcome = await classifyPersistSourceGate(
+         sources.comp,
+         modelDef,
+         materializer,
+         deps,
+         "m.malloy",
+      );
+      expect(outcome).toEqual({
+         classification: "row_level",
+         attributed: true,
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            sources.comp,
+            sources.comp.name,
             "persist",
             outcome,
          ),

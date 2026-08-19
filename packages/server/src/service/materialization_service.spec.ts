@@ -1644,8 +1644,7 @@ describe("deriveSelfInstructions", () => {
          expect(() => derive(compiled)).toThrow(/authorize/i);
       });
 
-      // Flipped consciously: this shape used to be an unconditional refusal.
-      // A `row_level` + `attributed` compile-time gate outcome now proves the
+      // A `row_level` + `attributed` compile-time gate outcome proves the
       // entry point's own gate is a row filter and nothing else is reachable
       // beneath it, so colocated serving grafts exactly what a live query
       // would — see `assertColocatedPersistNotAuthorizeGated`'s doc.
