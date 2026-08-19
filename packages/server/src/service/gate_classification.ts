@@ -45,6 +45,14 @@ import {
 export type GateEntry = {
    label: string;
    exprs: string[];
+   /**
+    * Whether this gate was authored somewhere OTHER than the entry point it
+    * applies to — carried in from a derivation base or an `extend` ancestor.
+    * It once picked a per-branch probe order; a gate is grafted onto the
+    * entry point now, identically either way, so its only remaining reader is
+    * `Model.collectAuthorizeEntryPointGates`'s content dedup key, where it
+    * keeps two same-text gates of different provenance from collapsing.
+    */
    selfContained: boolean;
    /**
     * The ENTRY POINT this gate applies to — the run target itself, or its
@@ -170,12 +178,6 @@ export function createGateClassificationDeps(
  * unsatisfiable `"false"` expr) rather than treating the parse failure as "no
  * gate" (fail-open).
  *
- * `fromAncestor` reports that the gate came from the derivation base rather
- * than from `struct`'s own notes, which decides how the caller must PROBE it
- * (see {@link collectEntryPointGates}'s `selfContained`): an ancestor's gate
- * lives in a different source, and possibly a different given namespace, even
- * when the struct carrying it is the entry point.
- *
  * `excludeNotes` is subtracted, by object IDENTITY, from `struct`'s own notes
  * before they are read — see {@link collectEntryPointGates}'s doc for why:
  * Malloy's composite resolver copies a `query_source` base's own annotation
@@ -185,6 +187,9 @@ export function createGateClassificationDeps(
  * landing in THIS source's disjunction, which is the AND-becomes-OR leak this
  * parameter exists to close. Empty for every caller except the
  * composite-member recursion in {@link collectEntryPointGates}.
+ *
+ * `fromAncestor` reports that the gate came from the derivation base rather
+ * than from `struct`'s own notes — see {@link GateEntry}'s `selfContained`.
  */
 function gateExprsForOwnAnnotations(
    struct: SourceDef,
@@ -251,17 +256,11 @@ function gateExprsForOwnAnnotations(
  * `.type` and reaches `.query.structRef` through a local shape rather than
  * importing the real type.
  *
- * Each returned entry carries `selfContained`, telling the caller which order
- * `evaluateAuthorize` should try for that gate (see
- * `assertAuthorizedExprs`'s `selfContainedFirst`). `treatAsOwnGate` — true
- * only for the run target's own struct and its own resolved composite branch,
- * the two call sites that represent the entry point ITSELF — marks that
- * entry's own annotations `selfContained: false` (ambient-first, matching
- * `Model.assertAuthorized`). A gate reached through a derivation is tagged
- * `selfContained: true`: it lives in a DIFFERENT source (possibly a different
- * file/given-namespace), so evaluating it ambiently against the entry model's
- * namespace risks a name collision silently granting access off the wrong
- * given (see `evaluateAuthorize`'s `selfContainedFirst` doc).
+ * Each returned entry carries `selfContained` — see its doc on
+ * {@link GateEntry}. `treatAsOwnGate` is true only for the run target's own
+ * struct and its own resolved composite branch, the two call sites that
+ * represent the entry point ITSELF, and is what makes those entries' own
+ * annotations NOT self-contained.
  */
 export function collectEntryPointGates(
    struct: SourceDef | undefined,
@@ -297,11 +296,8 @@ export function collectEntryPointGates(
       results.push({
          label,
          exprs: ownExprs,
-         // A gate CARRIED IN from a derivation base is self-contained even
-         // when `struct` is the entry point: it was authored in a different
-         // source, possibly a different file's given namespace, so probing it
-         // ambiently would let a colliding entry-model given of the same name
-         // decide it (see `evaluateAuthorize`'s `selfContainedFirst` doc).
+         // A gate CARRIED IN from a derivation base counts as authored
+         // elsewhere even when `struct` IS the entry point.
          selfContained: fromAncestor || !treatAsOwnGate,
          // The ENTRY POINT, not `struct` — see `entryPointStruct`'s doc
          // above. Carried so a row-level classification of THIS entry knows
@@ -456,9 +452,9 @@ export async function resolveGateShape(
         /**
          * Whether this gate's compiled condition reduces to the bare
          * literal `false` and nothing else — the accepted constant-predicate
-         * idiom `classifyAuthorizeGate` already recognizes (see its `kind ===
-         * "false"` branch), read back off the classification rather than
-         * re-derived. True only when every accepted literal atom is `"false"`
+         * idiom `classifyAuthorizeGate` already recognizes (its `kind ===
+         * "true" || kind === "false"` branch, which accepts both literals),
+         * read back off the classification rather than re-derived. True only when every accepted literal atom is `"false"`
          * and no given was referenced, so an OR'd admin-override disjunct
          * (`false or $ROLE = 'admin'`) is correctly NOT constant-false. A
          * caller can use this to skip dispatching the graft to the warehouse
