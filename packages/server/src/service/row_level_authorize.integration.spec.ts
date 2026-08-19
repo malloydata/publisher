@@ -638,7 +638,11 @@ query: q is X -> { aggregate: n is count() }
       }
    });
 
-   it("a #(authorize) annotation on a FIELD inside a source (not the source: line) fails the load", async () => {
+   it("a #(authorize) annotation on a FIELD inside a source (not the source: line) fails the load unless the field is a legal gate dimension", async () => {
+      // A field-position `#(authorize)` is now COLLECTED as a gate-dimension
+      // candidate (see `source_extraction.ts`), not refused outright —
+      // `validateGateDimension`'s G1 is what fails this one: `n` is a
+      // MEASURE (`count()`, an aggregate), not a scalar boolean dimension.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
@@ -654,7 +658,7 @@ source: X is duckdb.table('parent') extend {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/field "n" of source "X"/);
+         expect(err?.message).toMatch(/"X\.n".*scalar boolean dimension/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -872,7 +876,7 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/field "arr" of source "s"/);
+         expect(err?.message).toMatch(/"s\.arr".*scalar boolean dimension/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -900,7 +904,7 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/field "rec" of source "s"/);
+         expect(err?.message).toMatch(/"s\.rec".*scalar boolean dimension/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
