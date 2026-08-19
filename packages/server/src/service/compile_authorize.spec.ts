@@ -163,52 +163,44 @@ describe("compile-path authorize gate (compileSource)", () => {
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   // KNOWN SECURITY GAP — found while collapsing given-only gates into row
-   // filters, NOT fixed here (see the final report for this change; it needs
-   // its own dedicated fix and review). Root cause: `Model.
-   // collectAuthorizeEntryPointGates`'s entry-point discovery walks the
-   // CALLER's own compiled struct (`resolveRunTargetStruct(runnable)`), not
-   // `gateModel`'s on-disk one — `assertAuthorized`'s own-source-name check,
-   // which DOES read `gateModel`'s authoritative annotations, only DEFERS
-   // for a row-level classification (`continue`, no throw) rather than
-   // denying, trusting the struct walk to enforce it later. That was safe
-   // for a given-only gate, which `assertAuthorized` evaluated and denied
-   // SYNCHRONOUSLY, needing no struct at all. It is not safe for a row-level
-   // classification: if the caller's submitted text has stripped the
-   // `#(authorize)` annotation, the struct walk finds nothing to enforce,
-   // and nothing else picks up what `assertAuthorized` deferred. The fix is
-   // to fold `gateModel`'s own `entryPointGatesBySource` entries into the
-   // struct walk's result (verified safe: `resolveGraftTarget`'s direct
-   // identity match against `graftScope.modelDef` — `gateModel`'s own scope
-   // — succeeds regardless of what modelDef the walk's `struct` came from,
-   // so this denies unconditionally for `/compile`, consistent with "a
-   // row-level gate with no recompile step denies" elsewhere in this file).
-   it("file scope currently ADMITS when the submitted edit deletes the gate (security gap, not fixed here)", async () => {
+   // The `file`-scope backstop discovers a run target's gate by walking the
+   // COMPILED RUNNABLE's own struct (`resolveRunTargetStruct`), which reflects
+   // whatever text the caller submitted. A caller who strips the
+   // `#(authorize)` annotation from that text compiles a struct with no gate
+   // of its own — so the walk alone finds nothing. `Model.
+   // collectAuthorizeEntryPointGates` also folds in `gateModel`'s own
+   // on-disk `entryPointGatesBySource` entries for the run target's source
+   // name, which the caller's submitted text cannot edit, so the gate is
+   // still found and — being row-level with no `recompile` step to apply a
+   // filter to — still denies.
+   it("denies when the submitted edit deletes the gate (file scope)", async () => {
       const withoutGate = withoutGates(MODEL);
-      const { problems } = await env.compileSource(
-         "pkg",
-         "model.malloy",
-         `${withoutGate}\nrun: gated -> { aggregate: c }`,
-         false,
-         undefined,
-         "file",
-      );
-      expect(problems).toBeDefined();
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGate}\nrun: gated -> { aggregate: c }`,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("file scope currently ADMITS a gated final run after an open decoy (security gap, not fixed here)", async () => {
+   it("denies a gated final run after an open decoy, with the gate stripped (file scope)", async () => {
       const withoutGate = withoutGates(MODEL);
-      const { problems } = await env.compileSource(
-         "pkg",
-         "model.malloy",
-         `${withoutGate}
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGate}
 run: open_src -> { aggregate: c }
 run: gated -> { aggregate: c }`,
-         false,
-         undefined,
-         "file",
-      );
-      expect(problems).toBeDefined();
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("a brand-new model path cannot bypass an imported source gate", async () => {
@@ -225,25 +217,28 @@ run: gated -> { aggregate: c }`,
       ).rejects.toBeInstanceOf(NotQueryableError);
    });
 
-   // See the KNOWN SECURITY GAP note above "file scope currently ADMITS...":
-   // the same struct-walk gap applies here — the on-disk gate is discovered
-   // but not enforced once the submitted text strips it, regardless of ROLE.
-   it("currently ADMITS for a file added since the last load, with its gate stripped (security gap, not fixed here)", async () => {
+   // Same fold-in as the two tests above, for a file added since the last
+   // package load: `Environment.compileSource` compiles that on-disk file
+   // fresh as an ephemeral `gateModel` (`Model.create`, reading the real
+   // file, not the caller's substituted text), so its
+   // `entryPointGatesBySource` is still authoritative and still denies.
+   it("denies for a file added since the last load, with its gate stripped, regardless of ROLE", async () => {
       await fs.writeFile(
          path.join(rootDir, "env", "pkg", "stale.malloy"),
          MODEL,
       );
       const submitted = `${withoutGates(MODEL)}\nrun: gated -> { aggregate: c }`;
 
-      const { problems } = await env.compileSource(
-         "pkg",
-         "stale.malloy",
-         submitted,
-         false,
-         undefined,
-         "file",
-      );
-      expect(problems).toBeDefined();
+      await expect(
+         env.compileSource(
+            "pkg",
+            "stale.malloy",
+            submitted,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
 
       await expect(
          env.compileSource(
@@ -254,7 +249,7 @@ run: gated -> { aggregate: c }`,
             { ROLE: "analyst" },
             "file",
          ),
-      ).resolves.toMatchObject({ problems: [] });
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });
 
@@ -493,5 +488,4 @@ export { customers, visible_gated }`,
          ),
       ).rejects.toBeInstanceOf(NotQueryableError);
    });
-
 });
