@@ -393,6 +393,63 @@ source: comp is combo -> { select: org_id, amount }
    );
 
    it(
+      "the DIMENSION form of #(authorize): a colocated persist over a gate dimension composes the same way the string form does",
+      async () => {
+         // `build_plan.ts` now classifies a dimension-form gate as `row_level`
+         // (`resolveGateShape` skips `classifyAuthorizeGate` for it — see
+         // `./gate_dimension`'s doc) and `isAuthorizeAttributedToEntryPoint`
+         // reads it the same way it reads the string form (both are plain
+         // annotation-NOTE walks, form-agnostic) — this is the new reachable
+         // state IMPORTANT 6 flagged.
+         //
+         // The gate dimension is added via `extend {}` AFTER the `->`
+         // pipeline, not selected INSIDE it — a real wrinkle found writing
+         // this test. Selecting the dimension as an output column of the
+         // persist source's own defining query (`-> {select: ..., authorized}`)
+         // forces `PersistSource.getSQL()` — which compiles the physical
+         // CREATE-TABLE-AS with no request/given context at all — to
+         // evaluate it at BUILD time, so a given-referencing gate fails the
+         // build itself ("Given ... has no value and no default"),
+         // independent of G3/G4/request-time enforcement; and even a
+         // givenless one produced SQL that qualified the graft's `WHERE`
+         // against the wrong table alias. Declared via `extend {}` instead,
+         // it stays a LAZY field layered on the persisted query's own output
+         // — exactly how it behaves on an unpersisted source — and the
+         // by-name graft resolves against it normally. This is a narrower
+         // limitation of one specific shape (dimension SELECTED into a
+         // persist source's own projection), not a defect in this task's
+         // fix — flagged in the report.
+         const pkg = await loadPackageFiles({
+            "model.malloy": `##! experimental.persistence
+
+source: base is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'org1', 10), (2, 'org2', 20)) AS t(id, org_id, amount)
+""")
+
+#@ persist name="orders"
+source: orders is base -> { select: id, org_id, amount } extend {
+   #(authorize)
+   dimension: authorized is org_id = 'org1'
+}
+`,
+         });
+         await buildAndBindColocated(
+            pkg,
+            "orders",
+            "orders_materialized",
+            `SELECT * FROM (VALUES (1, 'org1', 1000), (2, 'org2', 2000)) AS t(id, org_id, amount)`,
+         );
+
+         const rows = await run(
+            pkg,
+            "run: orders -> { select: org_id, amount }",
+         );
+         expect(rows).toEqual([{ org_id: "org1", amount: 1000 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "a derived query_source whose OWN projection drops the gate column: the whole package fails to load, never silently unfiltered",
       async () => {
          // `orders` authors its OWN `#(authorize)`, and its own projection
