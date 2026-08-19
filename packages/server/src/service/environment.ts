@@ -916,7 +916,11 @@ export class Environment {
                queryMaterializer = modelMaterializer.loadFinalQuery();
             } catch {
                // No runnable query (e.g. only source definitions) — nothing to
-               // gate or extract beyond the early text gate already applied.
+               // gate or extract. The early text gate ran, but it only REFUSES
+               // a gate it cannot classify or graft: every expressible one is
+               // deferred to the compiled backstop below, which needs a
+               // runnable. Nothing is exposed by skipping it here, since
+               // without a runnable there is no result and no SQL.
             }
 
             // Compiled-source backstops — run REGARDLESS of includeSql. They

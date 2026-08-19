@@ -3218,8 +3218,8 @@ source: bf_reg_derived is bf_reg_base -> { select: id, secret }
 
    it("evaluates a block-form gate that references a given", async () => {
       // Every other test here uses a constant gate, which never reaches
-      // `bindProbeGivens`/`validateAuthorizeProbes` with a real `$NAME`. The
-      // realistic block-form gate does, so pin both directions of the probe.
+      // `validateAuthorizeProbes` with a real `$NAME`. The realistic
+      // block-form gate does, so pin both directions of the gate.
       await writeModel(
          "block_given.malloy",
          `##! experimental.givens

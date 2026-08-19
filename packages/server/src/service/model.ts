@@ -1071,11 +1071,12 @@ export class Model {
          this.noteAuthorizeBypass("source", sourceName);
          return;
       }
-      // A named, declared source is gated from the entry-point walk, with each
-      // gate's own `selfContained` flag — the SAME answer the compiled backstop
-      // reaches. Before this, the two disagreed in both directions: the walk
-      // followed a query-source's derivation base and this did not, and this
-      // probed every gate ambient-first while the walk isolated inherited ones.
+      // A named, declared source is gated from the entry-point walk — the SAME
+      // walk, and so the same answer, the compiled backstop reaches. Before
+      // this, the two disagreed in both directions: the walk followed a
+      // query-source's derivation base and this did not, and this probed every
+      // gate ambient-first while the walk isolated inherited ones (both gates
+      // classify the compiled shape now, so neither probes at all).
       // Either disagreement is a schema oracle, not just an inconsistency: this
       // gate runs BEFORE compilation, so a source it wrongly admits gets its
       // compile errors (`'no_such_field' is not defined`) returned to a caller the
@@ -1131,11 +1132,13 @@ export class Model {
    /**
     * Counter + audit line for one skipped gate evaluation.
     *
-    * Every authorize bypass in the process funnels through here, because the
-    * only two methods that evaluate a gate ({@link assertAuthorized} and
-    * {@link assertAuthorizedForAllSources}) both short-circuit into it. So
-    * this is the complete audit surface: a bypass that does not appear here
-    * did not happen.
+    * Every authorize bypass in the process funnels through here, because both
+    * places a bypass can be honoured short-circuit into it: the surface-name
+    * gate ({@link assertAuthorized}) and {@link authorizeAndBindRunnable},
+    * which is what actually ENFORCES a gate — by grafting it — and which
+    * {@link assertAuthorizedForAllSources} is only a check-shaped wrapper
+    * around. So this is the complete audit surface: a bypass that does not
+    * appear here did not happen.
     *
     * The identifiers live on the log line rather than the counter labels; see
     * {@link recordAuthorizeBypass} for why. `Model` knows its package and path
@@ -5197,6 +5200,11 @@ export class Model {
             // query is read again below, so this costs nothing new.
             const cellCompiledSource =
                await this.resolveAuthorizeSourceFromRunnable(runnableToExecute);
+            // A notebook cell never takes `getQueryResults`' constant-false
+            // short circuit: it always runs, even for a gate proven to admit
+            // no row. That is a cost (one zero-scan warehouse round trip),
+            // never a correctness gap — the grafted `where: false` is what
+            // produces the empty result either way.
             const result = await runnableToExecute.run({
                rowLimit,
                givens: cellSurfaceGivens,
