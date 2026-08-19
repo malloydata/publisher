@@ -21,7 +21,8 @@ import { AccessDeniedError } from "../errors";
 import { Model } from "./model";
 
 const REPORT_PATH =
-   "/Users/nathanhuff/.claude/jobs/868d0594/tmp/authorize-syntax-report.md";
+   process.env.AUTHORIZE_SYNTAX_REPORT ??
+   path.join(os.tmpdir(), "authorize-syntax-report.md");
 
 /**
  * Fixture: `accounts` carries the columns the conformance matrix gates on —
@@ -267,7 +268,15 @@ afterAll(() => {
          "kind rather than the author's own syntax (`upper(region)`) — technically accurate, but " +
          "not in the vocabulary an author who never sees the compiled IR would recognize.",
    );
-   fs.writeFileSync(REPORT_PATH, lines.join("\n") + "\n");
+   // The report is a courtesy artifact, not test evidence — RESULTS above
+   // already carries every assertion. A write failure (read-only tmpdir,
+   // disk full, ...) must never fail the suite over it.
+   try {
+      fs.mkdirSync(path.dirname(REPORT_PATH), { recursive: true });
+      fs.writeFileSync(REPORT_PATH, lines.join("\n") + "\n");
+   } catch {
+      // Non-fatal by design — see above.
+   }
 });
 
 // ---------------------------------------------------------------------------
