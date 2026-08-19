@@ -279,6 +279,25 @@ export interface RenderTagWarning {
    severity: "error" | "warn";
 }
 
+/**
+ * Whether `err` is Malloy refusing to BIND a given: the runtime form carries
+ * a `runtime-given-*` code on the error itself, while a prepare-time failure
+ * arrives as a `MalloyError` whose `problems` carry a `compiler-given-*` one.
+ * Duck-typed on `.code` for the same reason every other check here is —
+ * neither error class is root-exported.
+ */
+function isGivenBindingFailure(err: unknown): boolean {
+   const isGivenCode = (code: unknown): boolean =>
+      typeof code === "string" &&
+      (code.startsWith("runtime-given-") || code.startsWith("compiler-given-"));
+   if (isGivenCode((err as { code?: unknown })?.code)) return true;
+   const problems = (err as { problems?: unknown })?.problems;
+   return (
+      Array.isArray(problems) &&
+      problems.some((p) => isGivenCode((p as { code?: unknown })?.code))
+   );
+}
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -1167,6 +1186,7 @@ export class Model {
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
       bypassAuthorize = false,
+      options?: { checkOnly?: boolean },
    ): Promise<void> {
       // No `recompile`: this method has no runnable to swap in, so it is the
       // right shape only for a caller that wants a check, not a rewritten
@@ -1179,6 +1199,7 @@ export class Model {
          givens,
          {
             bypassAuthorize,
+            checkOnly: options?.checkOnly,
          },
       );
    }
@@ -1372,6 +1393,7 @@ export class Model {
          givens,
          {
             skipOwnSourceGate: true,
+            checkOnly: true,
          },
       );
    }
@@ -1536,6 +1558,8 @@ export class Model {
          filterText: string;
          condition: FilterCondition;
          constantFalse: boolean;
+         constantTrue: boolean;
+         givenNames: readonly string[];
       }>
    > {
       const { entryPointGates, modelDef } =
@@ -1559,6 +1583,8 @@ export class Model {
          filterText: string;
          condition: FilterCondition;
          constantFalse: boolean;
+         constantTrue: boolean;
+         givenNames: readonly string[];
       }> = [];
       for (const entry of entryPointGates) {
          const resolution = modelDef
@@ -1571,6 +1597,8 @@ export class Model {
                filterText: resolution.filterText,
                condition: resolution.condition,
                constantFalse: resolution.constantFalse,
+               constantTrue: resolution.constantTrue,
+               givenNames: resolution.givenNames,
             });
             continue;
          }
@@ -1737,6 +1765,13 @@ export class Model {
          graftScope?: GraftScope;
          /** See {@link assertAuthorizedFromCompiledRunnable}. */
          skipOwnSourceGate?: boolean;
+         /**
+          * The caller will NEVER execute this runnable — it wants a decision,
+          * not a query to run (`/compile`). Only such a caller may be handed
+          * back an ungrafted runnable when a gate resolved; see the
+          * `recompile` branch below.
+          */
+         checkOnly?: boolean;
       },
    ): Promise<QueryMaterializer> {
       // Returns BEFORE the entry-point walk below, so this books at most one
@@ -1765,10 +1800,35 @@ export class Model {
       if (rowLevel.length === 0) return runnable;
 
       if (!options?.recompile) {
-         recordRowLevelGateDecision("denied_by_gate");
-         throw new AccessDeniedError(
-            `Access denied for source "${rowLevel[0].label}".`,
-         );
+         // No `recompile` means no way to attach the filter, so returning
+         // `runnable` to a caller that will RUN it serves unfiltered rows.
+         // A `checkOnly` caller runs nothing, and for it a refusal here was
+         // strictly harsher than the query path: since every gate became a
+         // row filter, a query against a gated source answers with FILTERED
+         // rows, never a 403. Denying `/compile` therefore protected nothing
+         // the query path protects while making a gated source
+         // un-authorable — the same class of breakage as gating `/compile`
+         // on the query boundary (see `environment.ts`'s note on the QA
+         // session where every per-file compile 404'd).
+         //
+         // Admitted only when the gate is decided WITHOUT running it: a
+         // constant-true predicate (the old whole-source admit), or one whose
+         // every given the caller actually supplied — the author's own
+         // authoring loop. A gate whose givens are missing still denies, so an
+         // anonymous caller learns nothing new about a gated source; so does a
+         // constant-FALSE one, which names no given and admits no row (the old
+         // whole-source deny, preserved).
+         const decidable = (g: (typeof rowLevel)[number]) =>
+            g.constantTrue ||
+            (g.givenNames.length > 0 &&
+               g.givenNames.every((name) => name in givens));
+         if (!options?.checkOnly || !rowLevel.every(decidable)) {
+            recordRowLevelGateDecision("denied_by_gate");
+            throw new AccessDeniedError(
+               `Access denied for source "${rowLevel[0].label}".`,
+            );
+         }
+         return runnable;
       }
 
       try {
@@ -1913,6 +1973,8 @@ export class Model {
            filterText: string;
            condition: FilterCondition;
            constantFalse: boolean;
+           constantTrue: boolean;
+           givenNames: readonly string[];
         }
       | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
    > {
@@ -2151,7 +2213,9 @@ export class Model {
       runnable: { getPreparedQuery(): Promise<unknown> },
       givens: Record<string, GivenValue>,
    ): Promise<void> {
-      await this.assertAuthorizedForAllSources(runnable, givens);
+      await this.assertAuthorizedForAllSources(runnable, givens, false, {
+         checkOnly: true,
+      });
    }
 
    /**
@@ -4313,6 +4377,36 @@ export class Model {
             // if they're renamed upstream, update it here (and in environment.ts) —
             // otherwise these fall through to the generic 400 below with a worse
             // message, and the /compile path silently omits `sql`.
+            // A gate is grafted INTO the query now, so its own givens are
+            // bound by the same prepare/run — and Malloy's failure names the
+            // one that could not bind ("Given 'ROLE' has no value and no
+            // default. To fix: supply it via `.run({givens: {ROLE: …}})`").
+            // Passing that through tells a denied caller the gate's given by
+            // name, which `docs/authorize.md` promises never happens and
+            // `authorizeReferencedGivenNames` exists to prevent. Refuse
+            // opaquely instead whenever a gate applied to this query and one
+            // of the names it reads went unsupplied — the same 403 a
+            // whole-source gate returned before the graft existed. Checked
+            // ahead of the `MalloyError` rethrow below, which is where a
+            // PREPARE-time binding failure would otherwise escape.
+            if (
+               isGivenBindingFailure(err) &&
+               this.queryHadRowLevelFilterAttached(runnable) &&
+               [...this.authorizeReferencedGivenNames].some(
+                  (name) => !(name in (givens ?? {})),
+               )
+            ) {
+               logger.debug("Gate given unbound; denying opaquely", {
+                  environmentName: this.packageName,
+                  modelPath: this.modelPath,
+                  error: err instanceof Error ? err.message : String(err),
+               });
+               recordRowLevelGateDecision("denied_by_gate");
+               throw new AccessDeniedError(
+                  `Access denied for source "${compiledSource ?? sourceName ?? "unknown"}".`,
+               );
+            }
+
             const givenCode = (err as { code?: string })?.code;
             if (
                typeof givenCode === "string" &&

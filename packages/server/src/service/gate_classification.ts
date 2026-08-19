@@ -465,6 +465,17 @@ export async function resolveGateShape(
          * at all: the row set it would return is provably empty.
          */
         constantFalse: boolean;
+        /**
+         * The mirror of `constantFalse`: every accepted literal atom is
+         * `true` and no given was referenced, so the filter excludes no row —
+         * the old whole-source ADMIT expressed as a row predicate. A
+         * check-only caller (`/compile`) uses it to tell "this gate lets
+         * everything through" apart from "this gate needs caller values it
+         * has no way to apply".
+         */
+        constantTrue: boolean;
+        /** The givens the gate compares — `classifyAuthorizeGate`'s own record. */
+        givenNames: readonly string[];
      }
    | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
 > {
@@ -569,6 +580,11 @@ export async function resolveGateShape(
          cached.classification.givenNames.length === 0 &&
          cached.classification.literalAtoms.length > 0 &&
          cached.classification.literalAtoms.every((atom) => atom === "false"),
+      constantTrue:
+         cached.classification.givenNames.length === 0 &&
+         cached.classification.literalAtoms.length > 0 &&
+         cached.classification.literalAtoms.every((atom) => atom === "true"),
+      givenNames: cached.classification.givenNames,
    };
 }
 

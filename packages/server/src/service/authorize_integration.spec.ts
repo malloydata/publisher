@@ -1661,14 +1661,11 @@ source: cp_joiner is duckdb.table('customers') extend {
       const model = await cpModel("cp_gate.malloy", CP_GATE);
       // Stub a runnable whose compiled query reads `gated` (e.g. via an alias
       // the surface-syntax gate would miss). This is the AUTHORITATIVE path
-      // (`authorizeAndBindRunnable`), which must recompile against a grafted
-      // materializer to enforce a row-level gate — something this stub, with
-      // no genuine compiled query behind its fabricated `structRef`, can
-      // never provide. So it denies regardless of the given supplied: not
-      // proof the given was checked and failed, but proof this path refuses
-      // to admit a row-level gate it cannot actually graft, exactly the
-      // fail-closed behavior the OLD given-only boolean evaluation (which
-      // needed no graft at all) could not exercise.
+      // (`authorizeAndBindRunnable`), and on `/compile` it has no `recompile`
+      // hook to attach the row filter with. A caller who supplied nothing for
+      // the gate's given is refused; one who supplied every given the gate
+      // reads is compiling their own authoring loop and is admitted — see
+      // `authorizeAndBindRunnable`'s `checkOnly` branch.
       const gatedRunnable = {
          getPreparedQuery: async () => ({ _query: { structRef: "gated" } }),
       };
@@ -1677,7 +1674,7 @@ source: cp_joiner is duckdb.table('customers') extend {
       ).rejects.toBeInstanceOf(AccessDeniedError);
       await expect(
          model.assertAuthorizedForRunnable(gatedRunnable, { ROLE: "analyst" }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      ).resolves.toBeUndefined();
       // Ungated compiled source -> unrestricted.
       const openRunnable = {
          getPreparedQuery: async () => ({ _query: { structRef: "open_src" } }),
@@ -2840,11 +2837,9 @@ source: headcount_by_dept is duckdb.table('departments') extend {
    for (const [name, query] of denied) {
       it(`denies (zero rows) ${name} regardless of givens`, async () => {
          await writeModel("doc_example.malloy", DOC_EXAMPLE);
-         const { compactResult } = await runGated(
-            "doc_example.malloy",
-            query,
-            { ROLE: "hr" },
-         );
+         const { compactResult } = await runGated("doc_example.malloy", query, {
+            ROLE: "hr",
+         });
          const rows = compactResult as unknown as Record<string, number>[];
          expect(Object.values(rows[0])[0]).toBe(0);
       });
@@ -2963,7 +2958,8 @@ given:
   LEVEL :: number is 99
 `,
       );
-      const vacuousAtomError = /evaluates to TRUE when a caller supplies no givens/;
+      const vacuousAtomError =
+         /evaluates to TRUE when a caller supplies no givens/;
       await expect(
          runGated(
             "oc_entry.malloy",
@@ -3019,9 +3015,9 @@ source: rt_open is duckdb.table('customers') extend { measure: oc is count() }
    for (const [name, query, expectedError] of shapes) {
       it(`surfaces the caller's own compile error for ${name}`, async () => {
          await writeModel("rt_expr.malloy", DECLARED);
-         await expect(
-            runGated("rt_expr.malloy", query, {}),
-         ).rejects.toThrow(expectedError);
+         await expect(runGated("rt_expr.malloy", query, {})).rejects.toThrow(
+            expectedError,
+         );
       });
    }
 

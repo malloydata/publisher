@@ -92,16 +92,16 @@ describe("compile-path authorize gate (compileSource)", () => {
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("denies the gated source even when the given satisfies the gate — /compile has no recompile step", async () => {
-      // Every gate is a row filter now, and `/compile`'s backstop
-      // (`assertAuthorizedForRunnable`, called with no `recompile` option)
-      // has nothing to apply that filter to — it is a probe, not a query
-      // execution. `Model.authorizeAndBindRunnable`'s own doc: "A row-level
-      // gate with no `options.recompile` denies". This used to admit when
-      // `$ROLE = 'analyst'` was given-only (a whole-source boolean with a
-      // real admit/deny answer, no filter to apply); the collapse to one
-      // gate concept removes that shortcut, so a satisfied given no longer
-      // matters here.
+   it("denies the gated source at APPEND scope even when the given satisfies the gate — the gate cannot be grafted onto the virtual model", async () => {
+      // Scope "append" compiles the caller's text against a VIRTUAL model, so
+      // the run target's `SourceDef` belongs to a different `ModelDef` than
+      // the gate model's. `resolveGraftTarget` finds no entry to attach the
+      // filter to, the gate resolves `rejected`, and a rejected gate denies
+      // wherever it is found — the fail-closed backstop, not the
+      // `checkOnly` escape (which only applies once a gate has classified as
+      // an enforceable row filter). Scope "file", which compiles the whole
+      // replacement file, does admit an author who supplies the gate's
+      // givens — see the added-file test below.
       await expect(
          compile("run: gated -> { aggregate: c }", { ROLE: "analyst" }),
       ).rejects.toBeInstanceOf(AccessDeniedError);
@@ -221,7 +221,7 @@ run: gated -> { aggregate: c }`,
    // fresh as an ephemeral `gateModel` (`Model.create`, reading the real
    // file, not the caller's substituted text), so its
    // `entryPointGatesBySource` is still authoritative and still denies.
-   it("denies for a file added since the last load, with its gate stripped, regardless of ROLE", async () => {
+   it("denies for a file added since the last load, with its gate stripped, when the caller supplies no given", async () => {
       await fs.writeFile(
          path.join(rootDir, "env", "pkg", "stale.malloy"),
          MODEL,
@@ -239,6 +239,10 @@ run: gated -> { aggregate: c }`,
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
 
+      // A caller who DOES supply every given the on-disk gate reads is
+      // compiling their own authoring loop, and compile never runs the query
+      // — see `Model.authorizeAndBindRunnable`'s `checkOnly` branch. The gate
+      // still applies in full on the query path.
       await expect(
          env.compileSource(
             "pkg",
@@ -248,7 +252,7 @@ run: gated -> { aggregate: c }`,
             { ROLE: "analyst" },
             "file",
          ),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      ).resolves.toBeDefined();
    });
 });
 
