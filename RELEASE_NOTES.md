@@ -220,7 +220,7 @@ content the same colour, and Publisher's in-repo reference docs had nothing link
 
 - **Six feature cards on the home page instead of three**, covering notebooks, dashboards, data apps,
   the MCP endpoint, ad-hoc analysis and the governance model, each linking the reference doc for it.
-  The card previously titled "Notebook dashboards" named neither of the two surfaces it straddled and
+  The card previously titled "Notebook dashboards" named a compound of the two surfaces it straddled rather than either of them, and
   linked the publishing setup guide. A closing paragraph names connections, materialized tables and
   the REST API, which have docs but do not earn a card.
 - **`DOC_LINKS` gains a `REPO_DOCS` block**, six links to Publisher's own reference docs, which live

@@ -24,8 +24,9 @@ export default defineConfig({
    // One worker, because `fullyParallel: false` only serializes tests WITHIN a
    // file; separate files still run concurrently, and several of these write to
    // the same shared state. `notebook-givens` and `notebook-authorize` both
-   // write fixture files into `publisher_data/examples/storefront` and both POST
-   // `?reload=true` on it, as does `notebook-readme-links`. `packages.spec`
+   // write fixture files into `publisher_data/examples/storefront`, and those
+   // two plus `notebook-readme-links` are exactly the three specs that POST
+   // `?reload=true` on that package. `packages.spec`
    // contends differently: it creates and deletes a whole temporary
    // environment, which appears and vanishes from the listings other specs
    // navigate through. Observed: a `notebook-givens` navigation timed out

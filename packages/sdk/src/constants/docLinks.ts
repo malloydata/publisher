@@ -13,6 +13,11 @@ const PUBLISHING_BASE = `${DOCS_BASE}/user_guides/publishing`;
 // a rename or a deletion but cannot catch a doc that is here and not yet on
 // `main`; adding a key for a doc still on a branch is a sequencing decision, not
 // something the build can see.
+//
+// Two of these are in that state right now and both resolve on the way in:
+// `dashboards.md` arrives with the dashboards slice this branch is stacked on,
+// and `choosing-a-surface.md` ships in this change. Merging ahead of that slice
+// would put a 404 behind the Dashboards card.
 const REPO_DOCS = "https://github.com/malloydata/publisher/blob/main/docs";
 
 export const DOC_LINKS = {

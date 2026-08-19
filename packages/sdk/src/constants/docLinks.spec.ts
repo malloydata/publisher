@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync } from "fs";
+import { readdirSync } from "fs";
 import { join } from "path";
 import { DOC_LINKS } from "./docLinks";
 
@@ -21,6 +21,12 @@ const REPO_DOCS_PREFIX =
  * merge-ordering question, handled by sequencing the pull request, not by a
  * test. What this does catch is the durable half: a rename, a deletion, or a
  * typo, from the moment it happens.
+ *
+ * Compared against exact basenames rather than with `existsSync`, because macOS
+ * is case-insensitive: `dashboards.md` mistyped as `Dashboards.md` passes an
+ * existence check on the author's machine and 404s on GitHub, which is
+ * case-sensitive. Linux CI would catch it, but only after the author had seen
+ * green.
  */
 describe("DOC_LINKS", () => {
    const repoDocs = Object.entries(DOC_LINKS).filter(([, url]) =>
@@ -40,6 +46,6 @@ describe("DOC_LINKS", () => {
 
    it.each(repoDocs)("%s resolves to a file in docs/", (_key, url) => {
       const relative = url.slice(REPO_DOCS_PREFIX.length);
-      expect(existsSync(join(REPO_ROOT, "docs", relative))).toBe(true);
+      expect(readdirSync(join(REPO_ROOT, "docs"))).toContain(relative);
    });
 });

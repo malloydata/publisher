@@ -77,7 +77,10 @@ export default function ContentTypeIcon({
  * type-checks with no arm for a new content type and renders an empty `<svg>`
  * on a coloured backplate: the colour half of the signal failed loudly at
  * compile time and the glyph half failed silently at runtime. Two halves of one
- * signal should fail the same way.
+ * signal should fail the same way. The failure mode differs at runtime as well
+ * as at compile time: an unknown type throws here, where the old chain rendered
+ * an empty `<svg>`. Unreachable today, since every call site passes a literal,
+ * and a crash is the better of the two if it ever is reachable.
  */
 const CONTENT_GLYPH: Record<ContentType, () => React.ReactElement> = {
    report: FileChartPath,

@@ -82,9 +82,10 @@ function InlineLink({
 }: {
    href: string;
    /**
-    * Set false for a target on the Publisher server rather than off-site. That
-    * is usually this page's origin but need not be, so it is a statement about
-    * where the link points rather than a guarantee of same-origin.
+    * Whether to open in a new tab. False for the API spec, which is served by
+    * the Publisher server and replaces the console deliberately; true for
+    * off-site targets. `target` and `rel` are both driven from this one flag so
+    * they cannot desynchronise.
     */
    external?: boolean;
    children: React.ReactNode;
@@ -150,8 +151,9 @@ export default function Home({ onClickEnvironment }: HomeProps) {
          {/* Two columns at every width above the phone breakpoint, and
              deliberately not the three the environment grid below uses: these
              bodies are prose rather than a name. Measured at 1440px, two across
-             gives every card a 410px column and a uniform three lines; three
-             across gives 284px, four lines, and one card at five, so the row
+             gives every card a 410px column and a uniform three lines. Three
+             across is narrower than a third of the container, since the grid
+             subtracts its gutters, and the bodies then wrap unevenly so the row
              heights stop matching. */}
          <Grid container spacing={4} sx={{ mb: 5 }}>
             {FEATURES.map((feature) => (
@@ -265,9 +267,9 @@ export default function Home({ onClickEnvironment }: HomeProps) {
             sx={{ maxWidth: 720, lineHeight: 1.6 }}
          >
             {/* Six of the ten types in the api-doc.yaml enum. connections.md
-                names eight, but only six with any real treatment: mysql and
-                trino appear once each, in the same parenthetical that ends
-                "etc.". Databricks and MotherDuck it never names. "And more"
+                names eight. Two of the six named here, mysql and trino,
+                appear in connections.md exactly once, in the parenthetical that
+                ends "etc."; Databricks and MotherDuck it never names at all. "And more"
                 rather than a full list, because a list that reads as complete
                 while omitting Databricks is worse than a short one that says
                 it is short. */}
