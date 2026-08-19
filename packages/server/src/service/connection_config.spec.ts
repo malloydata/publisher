@@ -7,6 +7,7 @@ import { components } from "../api";
 import {
    assembleEnvironmentConnections,
    normalizeSnowflakePrivateKey,
+   validateStorageDestinations,
 } from "./connection_config";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -926,11 +927,17 @@ describe("assembleEnvironmentConnections — S3 credential shape at config load"
          },
       }) as unknown as ApiConnection;
 
-   describe("ducklake storage — checked in full", () => {
-      it("rejects a keyless key-based storage root at load", () => {
-         expect(() =>
-            assembleEnvironmentConnections([ducklake({ region: "us-east-1" })]),
-         ).toThrow(/accessKeyId and secretAccessKey are required for: tier/);
+   describe("ducklake connection — shape only, to bound the blast radius", () => {
+      // The counterpart of the duckdb case below, and the reason both are shape-only:
+      // this validator's throw fails the WHOLE environment. A DuckLake carrying a
+      // present-but-incomplete s3Connection has always loaded and failed when used,
+      // and taking every other connection down with it is the worse trade. A storage
+      // DESTINATION gets the full check instead — see the describe below.
+      it("still LOADS a keyless key-based storage root", () => {
+         const { pojo } = assembleEnvironmentConnections([
+            ducklake({ region: "us-east-1" }),
+         ]);
+         expect(pojo.connections["tier"]).toBeDefined();
       });
 
       it("accepts a chain-auth storage root with no key pair", () => {
@@ -1007,5 +1014,59 @@ describe("assembleEnvironmentConnections — S3 credential shape at config load"
          ]);
          expect(pojo.connections["generic"]).toBeDefined();
       });
+   });
+});
+
+// A storage destination is rejected on its own, so it can afford the check the
+// environment-wide validator cannot: a destination is only attached at its first
+// BUILD, which is the late failure that motivated moving these guards at all.
+describe("validateStorageDestinations — S3 credential, checked in full", () => {
+   const destination = (s3Connection: Record<string, unknown>): ApiConnection =>
+      ({
+         name: "credible",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            },
+            storage: { bucketUrl: "s3://bucket/prefix", s3Connection },
+         },
+      }) as unknown as ApiConnection;
+
+   it("rejects a keyless key-based destination, naming it", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         destination({ region: "us-east-1" }),
+      ]);
+      expect(accepted).toHaveLength(0);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0].name).toBe("credible");
+      expect(rejected[0].reason).toMatch(
+         /accessKeyId and secretAccessKey are required/,
+      );
+   });
+
+   it("accepts a chain-auth destination with no key pair", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         destination({ provider: "credential_chain" }),
+      ]);
+      expect(rejected).toHaveLength(0);
+      expect(accepted).toHaveLength(1);
+   });
+
+   // The whole point of doing it here rather than in validateConnectionShape.
+   it("rejects only the bad destination, leaving its neighbour accepted", () => {
+      const good = destination({ provider: "credential_chain" });
+      good.name = "good";
+      const bad = destination({ region: "us-east-1" });
+      bad.name = "bad";
+      const { accepted, rejected } = validateStorageDestinations([good, bad]);
+      expect(accepted.map((d) => d.name)).toEqual(["good"]);
+      expect(rejected.map((r) => r.name)).toEqual(["bad"]);
    });
 });

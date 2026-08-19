@@ -580,21 +580,24 @@ function validateConnectionShape(connection: ApiConnection): void {
                `Storage bucketUrl is required for DuckLake: ${connection.name}`,
             );
          }
-         // The storage credential belongs in the same list as bucketUrl, for the
-         // same reason: it is a field the ATTACH demands, and a destination is only
-         // attached at its first BUILD. Checked in full here — unlike the duckdb
-         // branch above — because this branch already fails a DuckLake at load for
-         // a missing bucket or catalog, and because a storage destination's failure
-         // is caught per-destination (see resolveStorageDestinations) rather than
-         // failing the environment.
+         // Shape only, matching the duckdb branch above, and for the same reason:
+         // this validator's throw reaches assembleEnvironmentConnections, which has
+         // no per-connection recovery, so a rule enforced here fails the ENTIRE
+         // environment. The mutual-exclusion and enum guards are safe to apply
+         // because no config that loads today can violate them. The key-pair
+         // requirement is NOT applied here — a DuckLake carrying a present but
+         // incomplete s3Connection has always loaded and failed when used, and
+         // making it fail every other connection in the environment is a worse
+         // trade than reporting it late.
+         //
+         // A storage DESTINATION is different: validateStorageDestinations rejects
+         // one entry without touching the rest, so it can afford the full check and
+         // does it there. That is the case that motivated moving these guards at
+         // all — a destination is only attached at its first BUILD.
          {
             const storage = connection.ducklakeConnection.storage;
             if (storage.s3Connection) {
-               resolveCloudStorageCredentials({
-                  name: connection.name,
-                  type: "s3",
-                  s3Connection: storage.s3Connection,
-               });
+               validateS3ProviderShape(storage.s3Connection, connection.name);
             }
          }
          // metadataSchema is optional, but when present it reaches the ATTACH as a
@@ -868,6 +871,20 @@ export function validateStorageDestinations(
 
       try {
          validateConnectionShape(destination);
+         // Stricter than validateConnectionShape is allowed to be. It stops at the
+         // credential SHAPE because its throw fails a whole environment; here a bad
+         // entry is rejected on its own, so the full check is affordable — and it is
+         // wanted, because a destination is only attached at its first BUILD, which
+         // is where a missing storage credential would otherwise surface, hours
+         // after the config change that caused it.
+         const storage = destination.ducklakeConnection?.storage;
+         if (storage?.s3Connection) {
+            resolveCloudStorageCredentials({
+               name,
+               type: "s3",
+               s3Connection: storage.s3Connection,
+            });
+         }
       } catch (error) {
          rejected.push({ name, reason: (error as Error).message });
          continue;
