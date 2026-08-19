@@ -499,14 +499,41 @@ function range(host, { contract, value, description, onChange }) {
    input.dataset.given = contract.name;
    input.min = String(contract.rangeMin);
    input.max = String(contract.rangeMax);
-   input.value = String(decodeAtLeast(value));
    const readout = document.createElement("output");
-   const paint = () => {
+
+   // A slider can express one thing, a lower bound, and `filter<number>` can
+   // express many. `<= 100`, `not >= 100`, `> 50` and a bare `100` all parse
+   // cleanly and are all honoured by the server, and every one of them decoded
+   // to 0 here and drew "any": the slider parked at the left over data that IS
+   // filtered. A bound past `range_max` is worse, because the input clamps it
+   // and the readout then states a number that is not the one in force: `>= 500`
+   // drew "≥ $250".
+   //
+   // Same rule as the two pickers, and the same words: show that something is
+   // in force, say the control cannot draw it, and do not pretend otherwise.
+   const showFilter = (filter) => {
+      const text = String(filter ?? "").trim();
+      const bound = decodeAtLeast(filter);
+      const unshowable =
+         text !== "" &&
+         (bound === 0 || bound < contract.rangeMin || bound > contract.rangeMax);
+      input.value = String(bound);
+      input.dataset.opaqueFilter = String(unshowable);
+      composeTitle(input, unshowable ? OPAQUE_HELP : "");
+      readout.textContent = unshowable
+         ? text
+         : Number(input.value) > 0
+           ? `≥ $${input.value}`
+           : "any";
+   };
+   showFilter(value);
+   // Dragging clears the unshowable state, because a drag IS a new lower bound.
+   input.addEventListener("input", () => {
+      input.dataset.opaqueFilter = "false";
+      composeTitle(input, "");
       readout.textContent =
          Number(input.value) > 0 ? `≥ $${input.value}` : "any";
-   };
-   paint();
-   input.addEventListener("input", paint);
+   });
    // On `change`, not `input`: one query when the drag ends, not one per pixel.
    input.addEventListener("change", () =>
       onChange(contract.name, encodeAtLeast(input.value)),
@@ -516,8 +543,7 @@ function range(host, { contract, value, description, onChange }) {
    return {
       name: contract.name,
       set: (next) => {
-         input.value = String(decodeAtLeast(next));
-         paint();
+         showFilter(next);
       },
    };
 }
@@ -528,7 +554,17 @@ function date(host, { contract, value, description, onChange }) {
    input.id = `given-${contract.name}`;
    input.dataset.given = contract.name;
    input.value = value;
-   input.addEventListener("change", () => onChange(contract.name, input.value));
+   // Repaint after sending, not before. Clearing the box (the browser's own
+   // clear affordance, or select-all and delete) fires `change` with `""`, the
+   // given is dropped, and the model's own default is then what filters. The
+   // box read blank over data with a lower bound: "no bound" is exactly what it
+   // was not. `set` already did this, which is why Reset was right and this
+   // path was not. Order matters: send `""` so the URL stays clean, then draw
+   // what is actually in force.
+   input.addEventListener("change", () => {
+      onChange(contract.name, input.value);
+      input.value = input.value || readGivenDefault(contract.default);
+   });
    host.appendChild(labelled(contract, input, description));
    return {
       name: contract.name,

@@ -22,10 +22,13 @@ globalThis.window = window;
 globalThis.document = window.document;
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 
-let options = { rows: [], fail: null };
+let options = { rows: [], fail: null, gate: null };
 globalThis.Publisher = {
    context: { environment: "examples", package: "storefront" },
    query: async () => {
+      // `gate` holds the query open so a test can act inside the round trip the
+      // real page has, which is where Reset and Back actually land.
+      if (options.gate) await options.gate;
       if (options.fail) throw options.fail;
       return options.rows;
    },
@@ -49,8 +52,11 @@ async function mount(contract, value, { choices = ["Denim", "Outerwear"], fail =
    const realError = console.error;
    if (fail) console.error = () => {};
    options = {
-      rows: choices.map((v) => ({ [contract.suggest.dimension]: v })),
+      rows: choices.map((v) => ({
+         [contract.suggest?.dimension ?? "value"]: v,
+      })),
       fail,
+      gate: null,
    };
    const host = document.createElement("div");
    document.body.replaceChildren(host);
@@ -187,6 +193,108 @@ test("the same value twice does not become two rows or a wrong count", async () 
 
    const twice = await mount(MULTI, "Nike, Nike", { choices: ["Levi's", "Nike"] });
    assert.equal(twice.el.textContent, "Nike", "not '2 selected' over one tick");
+});
+
+const RANGE = {
+   name: "MIN_SALE",
+   label: "Min sale",
+   type: "filter<number>",
+   rangeMin: 0,
+   rangeMax: 250,
+};
+const DATE = {
+   name: "SINCE",
+   label: "Since",
+   type: "date",
+   default: "@2023-01-01",
+};
+
+test("a slider says so when the filter is not a bound it can draw", async () => {
+   // `filter<number>` can say things one slider cannot, and all of these parse
+   // cleanly and ARE honoured by the server. Each used to draw "any" with the
+   // handle at the left, over data that was filtered.
+   for (const filter of ["<= 100", "not >= 100", "> 50", "100"]) {
+      const { el } = await mount(RANGE, filter);
+      const out = el.parentElement.querySelector("output");
+      assert.equal(el.dataset.opaqueFilter, "true", filter);
+      assert.equal(out.textContent, filter, `${filter} is shown as written`);
+      assert.match(el.title, /written by hand/, filter);
+   }
+});
+
+test("a bound past the slider's own maximum is not restated as the maximum", async () => {
+   // The input clamps out-of-range values, so the readout stated $250 while the
+   // filter in force was $500.
+   const { el } = await mount(RANGE, ">= 500");
+   assert.equal(el.value, "250", "the handle clamps, as inputs do");
+   assert.equal(
+      el.parentElement.querySelector("output").textContent,
+      ">= 500",
+      "but the readout must not claim 250",
+   );
+   assert.equal(el.dataset.opaqueFilter, "true");
+});
+
+test("an ordinary bound still draws as a bound", async () => {
+   const { el } = await mount(RANGE, ">= 75");
+   assert.equal(el.value, "75");
+   assert.equal(el.parentElement.querySelector("output").textContent, "\u2265 $75");
+   assert.equal(el.dataset.opaqueFilter, "false");
+   assert.equal(el.title, "");
+});
+
+test("clearing the date box shows the default that then filters", async () => {
+   // Clearing fires change with "", the given is dropped, and the model's own
+   // default is what filters. The box read blank, which is the one thing that
+   // is not true.
+   const { sent, el } = await mount(DATE, "2023-06-01");
+   el.value = "";
+   el.dispatchEvent(new window.Event("change", { bubbles: true }));
+   assert.deepEqual(sent.at(-1), ["SINCE", ""], "the URL still loses the given");
+   assert.equal(el.value, "2023-01-01", "and the box shows what is in force");
+});
+
+test("a single select tracks the value it was last given, not the one it was built with", async () => {
+   // Reset landing inside the options round trip: without tracking, the options
+   // arrive and restore the filter that is no longer set.
+   let release;
+   const gate = new Promise((r) => (release = r));
+   options = { rows: [{ category: "Denim" }], fail: null, gate };
+   const host = document.createElement("div");
+   document.body.replaceChildren(host);
+   const { widgets } = buildControls(host, {
+      modelPath: "data_app.malloy",
+      contracts: [SELECT],
+      values: { CATEGORY: "Denim" },
+      onChange: () => {},
+   });
+   const el = document.querySelector("#given-CATEGORY");
+   widgets[0].set(""); // Reset, while the options query is still open
+   release();
+   await new Promise((r) => setTimeout(r, 0));
+   await new Promise((r) => setTimeout(r, 0));
+   assert.equal(shown(el), "All categories", "the late options must not restore it");
+});
+
+test("a numeric option column still ticks", async () => {
+   // `selected` comes back from the grammar as strings while the column is
+   // numbers, so comparing them raw ticks nothing while the button and the URL
+   // both say the filter is on.
+   const { el } = await mount(MULTI, "10", { choices: [1, 2, 10] });
+   assert.equal(el.textContent, "10");
+   el.click();
+   await new Promise((r) => setTimeout(r, 0));
+   const ticked = [...document.querySelectorAll(".check-panel input")]
+      .filter((b) => b.checked)
+      .map((b) => b.closest("label").textContent.trim());
+   assert.deepEqual(ticked, ["10"], "the number ticks despite the type mismatch");
+});
+
+test("a multiselect whose choices fail to load says why", async () => {
+   // The single select has this; its sibling did not.
+   const { el } = await mount(MULTI, "", { fail: new Error("boom") });
+   assert.equal(el.dataset.optionsFailed, "true");
+   assert.match(el.title, /Could not load choices/);
 });
 
 test("a single select drops a pick the encoder refuses, and says All", async () => {

@@ -223,6 +223,15 @@ test("a slider's lower bound, both ways", () => {
    assert.equal(encodeAtLeast("nope"), "");
 });
 
+test("a NEGATED lower bound is not a lower bound", () => {
+   // `not >= 100` parses to the same operator and value as `>= 100` with a
+   // `not` flag, so a reader that ignores the flag draws the slider at $100
+   // over data filtered to BELOW $100: the bound inverted, and the control
+   // stating the opposite of what is in force.
+   assert.equal(decodeAtLeast("not >= 100"), 0);
+   assert.equal(decodeAtLeast(">= 100"), 100);
+});
+
 test("a filter that is not a lower bound reads as no bound", () => {
    // The regex this replaced returned 2 for `<= 2`, 9 for `!= 9`, and 5 for
    // `>= .5`: a bound the filter never expressed, or ten times the real one.
