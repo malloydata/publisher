@@ -24,6 +24,7 @@ import {
    encodeAtLeast,
    encodeFilterList,
    encodeFilterValue,
+   isPlainFilterList,
    plural,
    readGivenDefault,
 } from "./format.js";
@@ -217,14 +218,29 @@ function multiSelect(
    let options = [];
    let panel = null;
 
+   // A filter this picker cannot represent, such as `-Nike` (everything EXCEPT
+   // Nike) arriving in the URL. `decodeFilterList` hands it back as one opaque
+   // entry so the control can show something, but ticking any box would then
+   // re-encode that entry as a literal and turn "everything except Nike" into a
+   // search for those five characters, with a different result set and nothing
+   // on screen to say so. `format.js` documents that hazard and exports
+   // `isPlainFilterList` for callers to ask first; this is the caller.
+   let opaque = !isPlainFilterList(value);
+
    const caption = () => {
       const noun = plural((contract.label ?? contract.name).toLowerCase());
+      if (opaque) return selected[0] ?? `All ${noun}`;
       if (selected.length === 0) return `All ${noun}`;
       if (selected.length === 1) return selected[0];
       return `${selected.length} selected`;
    };
    const paint = () => {
       button.textContent = caption();
+      // Say so rather than silently converting on the next click.
+      button.title = opaque
+         ? "This filter was written by hand and this control cannot show it. Changing the selection replaces it."
+         : "";
+      button.dataset.opaqueFilter = String(opaque);
    };
    paint();
 
@@ -232,6 +248,9 @@ function multiSelect(
    // which values a filter can carry, and joining its output here would be this
    // page keeping a second opinion about that.
    const commit = () => {
+      // The reader has now chosen, so the hand-written filter is deliberately
+      // replaced rather than re-encoded as a literal.
+      opaque = false;
       paint();
       onChange(contract.name, encodeFilterList(selected));
    };
@@ -262,11 +281,17 @@ function multiSelect(
          row.className = "check-row";
          const box = document.createElement("input");
          box.type = "checkbox";
-         box.checked = selected.includes(option);
+         // `String(option)`: `selected` comes back from the filter grammar as
+         // strings, while `options` holds whatever the column is. Compare a
+         // number column raw and nothing ticks, while the button and the URL
+         // both say the filter is on. Latent for `BRAND`, live for anyone
+         // copying this onto a numeric dimension.
+         box.checked = !opaque && selected.includes(String(option));
          box.addEventListener("change", () => {
+            const value = String(option);
             selected = box.checked
-               ? [...selected, option]
-               : selected.filter((v) => v !== option);
+               ? [...selected, value]
+               : selected.filter((v) => v !== value);
             commit();
          });
          const text = document.createElement("span");
@@ -301,7 +326,14 @@ function multiSelect(
       name: contract.name,
       set: (next) => {
          selected = decodeFilterList(next);
+         opaque = !isPlainFilterList(next);
          paint();
+         // An open panel has to follow too. Back with the popover open
+         // otherwise repaints the button and leaves the ticks showing the
+         // previous selection, so the panel contradicts its own caption and
+         // the URL. Reset escapes this only because its pointerdown closes
+         // the panel first.
+         fillPanel();
       },
    };
 }

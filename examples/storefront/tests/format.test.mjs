@@ -200,7 +200,11 @@ test("cells format the way their field's tags ask", () => {
    assert.equal(formatValue(undefined), "—");
    assert.equal(formatValue(1234.5, "currency"), "$1,235");
    assert.equal(formatValue(0.125, "percent"), "12.5%");
-   assert.equal(formatValue(884, "id"), "884");
+   // Five digits, because the assertion has to be able to FAIL: a 3-digit
+   // number is ungrouped by every locale, so `formatValue(884, "id")` passes
+   // identically with the `id` branch deleted. Mutation-checked.
+   assert.equal(formatValue(88884, "id"), "88884");
+   assert.notEqual(formatValue(88884, "integer"), "88884");
    // The model asks for `#,##0.0` on orders-per-customer, so a value that
    // rounds to a whole number still shows its decimal place. Dropping it made
    // a deliberately-one-decimal KPI render as "3" and read like a count.
