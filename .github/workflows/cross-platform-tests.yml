@@ -131,14 +131,29 @@ jobs:
       # no-build ES module the browser loads directly, and node is the runtime
       # closest to that: no bundler, no transform, no test-runner globals.
       #
-      # The script names the test file rather than globbing it, which is the
-      # whole point: `node --test` on a glob that matches nothing exits 0 and
-      # reports "tests 0", so a moved or renamed directory would turn this step
-      # green while running none of it. Named explicitly, a missing file exits 1.
-      # The cost is that a NEW test file has to be added to the script by hand.
-      # Expect 24 tests here; a smaller number means collection, not coverage.
+      # Two ways this step could pass while testing nothing, both closed here
+      # rather than left to a comment.
+      #
+      # The script NAMES its test files instead of globbing them: `node --test`
+      # on a glob that matches nothing exits 0 and reports "tests 0", so a moved
+      # or renamed directory would turn this step green while running none of
+      # it. Named explicitly, a missing file exits 1. The cost is that a new
+      # test file has to be added to the script by hand.
+      #
+      # And a skip counts toward the total, so an expected-count comment cannot
+      # tell a skipped case from a run one. One suite skips itself off en-US,
+      # where its currency assertions do not hold, and CI is en-US, so any skip
+      # here means the runner is not what we think it is. No count is written
+      # down: this branch has had four different totals, and every one of them
+      # was stale in a later commit.
       - name: Run example package tests
-        run: bun run test:examples
+        run: |
+          set -o pipefail
+          bun run test:examples 2>&1 | tee examples-tests.log
+          grep -q "skipped 0" examples-tests.log || {
+            echo "::error::example tests reported a skip; this suite must run in full on CI"
+            exit 1
+          }
         shell: bash
 
       # The scaffolder copies the skills tree into a generated project and

@@ -55,7 +55,7 @@ async function mount(contract, value, { choices = ["Denim", "Outerwear"], fail =
    const host = document.createElement("div");
    document.body.replaceChildren(host);
    const sent = [];
-   buildControls(host, {
+   const { widgets } = buildControls(host, {
       modelPath: "data_app.malloy",
       contracts: [contract],
       values: { [contract.name]: value },
@@ -65,7 +65,7 @@ async function mount(contract, value, { choices = ["Denim", "Outerwear"], fail =
    await new Promise((r) => setTimeout(r, 0));
    await new Promise((r) => setTimeout(r, 0));
    console.error = realError;
-   return { sent, el: document.querySelector(`#given-${contract.name}`) };
+   return { sent, widgets, el: document.querySelector(`#given-${contract.name}`) };
 }
 
 const shown = (select) => select.selectedOptions[0]?.textContent ?? "";
@@ -90,6 +90,72 @@ test("ticking a box REPLACES a hand-written filter, it does not extend it", asyn
    const [, value] = sent.at(-1);
    assert.equal(value, "Levi's", "only the pick is sent");
    assert.ok(!value.includes("Nike"), "the hand-written filter is gone, not OR'd in");
+});
+
+test("the panel pre-ticks the values actually in force", async () => {
+   // Without this, the "nothing is pre-ticked while opaque" assertion above is
+   // satisfied by a control that never pre-ticks anything at all.
+   const { el } = await mount(MULTI, "Nike", { choices: ["Levi's", "Nike"] });
+   el.click();
+   await new Promise((r) => setTimeout(r, 0));
+   const ticked = [...document.querySelectorAll(".check-panel input")]
+      .filter((b) => b.checked)
+      .map((b) => b.closest("label").textContent.trim());
+   assert.deepEqual(ticked, ["Nike"]);
+});
+
+test("a value in force that the list does not offer still gets a row", async () => {
+   // Otherwise the panel reads as "nothing selected" while the button says
+   // otherwise, and the next tick ORs the unseen value back in. Measured before
+   // the fix: one click on Levi's sent `Ties, Levi's`.
+   const { el } = await mount(MULTI, "Ties", { choices: ["Levi's", "Nike"] });
+   el.click();
+   await new Promise((r) => setTimeout(r, 0));
+   const rows = [...document.querySelectorAll(".check-panel input")];
+   const labels = rows.map((b) => b.closest("label").textContent.trim());
+   assert.deepEqual(labels, ["Levi's", "Nike", "Ties"], "the unlisted value has a row");
+   assert.equal(rows[2].checked, true, "and it is ticked, matching the caption");
+   assert.equal(
+      rows.filter((b) => b.checked).length,
+      1,
+      "so the panel agrees with the button rather than looking empty",
+   );
+});
+
+test("a single select drops a pick the encoder refuses, and says All", async () => {
+   // The single-select half of the same rule the multiselect is tested for
+   // below: display what was SENT, not what was clicked.
+   const { sent, el } = await mount(SELECT, "", { choices: ["Nike\t"] });
+   el.value = "Nike\t";
+   el.dispatchEvent(new window.Event("change", { bubbles: true }));
+   assert.equal(sent.at(-1)[1], "", "nothing could be encoded, so nothing is sent");
+   assert.equal(shown(el), "All categories", "and the box must not name the value");
+});
+
+test("a value already in the list is shown by its own option", async () => {
+   // Not by the carried element, which exists only for what the list cannot
+   // show. Otherwise every ordinary filter would render through the fallback.
+   const { el } = await mount(SELECT, "Denim", { choices: ["Denim", "Outerwear"] });
+   assert.equal(shown(el), "Denim");
+   assert.equal(el.options.length, 3, "All plus the two choices, and nothing extra");
+   assert.equal(el.selectedOptions[0].disabled, false);
+});
+
+test("set() follows through to an open popover", async () => {
+   // Back with the panel open otherwise repaints the button and leaves the
+   // ticks showing the previous selection, so the panel contradicts its own
+   // caption and the URL.
+   const { widgets, el } = await mount(MULTI, "Nike", { choices: ["Levi's", "Nike"] });
+   el.click();
+   await new Promise((r) => setTimeout(r, 0));
+   assert.equal(document.querySelectorAll(".check-panel input:checked").length, 1);
+   widgets[0].set("");
+   assert.equal(
+      document.querySelectorAll(".check-panel input:checked").length,
+      0,
+      "the open panel follows the new value",
+   );
+   assert.equal(el.textContent, "All brands");
 });
 
 test("a single select shows a value that is not among its choices", async () => {

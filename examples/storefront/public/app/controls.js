@@ -317,12 +317,23 @@ function multiSelect(
       // the dropped ones, and a box left ticked for one, state a filter that is
       // not in force. `opaque` comes back false here, which is also what clears
       // the hand-written filter the toggle dropped.
+      const ticked = opaque ? null : selected;
       ({ values: selected, opaque } = readFilterForPicker(encoded));
       paint();
+      // Only when the encoder actually changed the selection. `fillPanel`
+      // replaces every row, so doing it on each tick destroys the checkbox the
+      // reader is standing on: measured, focus fell to `<body>`, which makes
+      // ticking a second brand by keyboard impossible without tabbing back
+      // through the whole control row, and the panel scrolls, so a tick in its
+      // lower half jumped the list back to the top under the cursor.
+      const changed =
+         !ticked ||
+         ticked.length !== selected.length ||
+         selected.some((v, i) => v !== ticked[i]);
       // Mutual with `fillPanel`, whose checkboxes call this: one has to come
       // second, and both only ever run from a click.
       // eslint-disable-next-line no-use-before-define
-      fillPanel();
+      if (changed) fillPanel();
       onChange(contract.name, encoded);
    };
 
@@ -352,7 +363,20 @@ function multiSelect(
    const fillPanel = () => {
       if (!panel) return;
       panel.replaceChildren();
-      for (const option of options) {
+      // A value in force that the suggestion list does not offer still needs a
+      // row. Without one the panel reads as "nothing selected" while the button
+      // says otherwise, and the next tick ORs the unseen value back in: measured,
+      // `?BRAND=Ties` with Ties absent from the list sent `Ties, Levi's` from a
+      // single click on Levi's. It also made the picker's behaviour turn on
+      // something invisible, since `?BRAND=-Ties` replaced while `?BRAND=Ties`
+      // extended, from identical-looking panels.
+      //
+      // These rows are ordinary, not disabled: a plain value IS one this control
+      // can encode, it simply is not in the list, so it can be unticked like any
+      // other. An opaque filter gets no row, because it has no value to tick.
+      const offered = options.map(String);
+      const unlisted = opaque ? [] : selected.filter((v) => !offered.includes(v));
+      for (const option of [...options, ...unlisted]) {
          const row = document.createElement("label");
          row.className = "check-row";
          const box = document.createElement("input");
