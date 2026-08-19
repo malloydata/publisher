@@ -85,7 +85,11 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
-import { classifyAuthorizeGate } from "./authorize";
+import {
+   buildRowLevelProbe,
+   classifyAuthorizeGate,
+   liftProbeFilterCondition,
+} from "./authorize";
 import {
    createGateClassificationDeps,
    resolveGateShape,
@@ -2081,6 +2085,90 @@ describe("row-level authorize — other", () => {
       expect(rejectedEq.shape).toBe("rejected");
    });
 
+   it("`$X in $Y` checks reachability on BOTH operands — an unreachable membership CANDIDATE is rejected, not accepted", async () => {
+      // Real compiled IR (never hand-typed), classified against a given
+      // surface that omits `TENANT` — the shape a gate two import hops from
+      // its `given:` declaration presents. Every other operand position
+      // routes through `declaredTypeOf`; this one used to return `true`
+      // straight off `givenOperand`, so the gate classified `row_level` with
+      // `TENANT` in `givenNames` and bound TENANT's DECLARATION DEFAULT at
+      // request time instead of the caller's value.
+      const duckdb = await newDuckdb();
+      try {
+         const urlReader = new InMemoryURLReader(
+            new Map([
+               [
+                  `${ROOT}m.malloy`,
+                  `##! experimental.givens
+
+given:
+  TENANT :: number
+  ALLOWED :: number[]
+
+source: X is duckdb.table('parent') extend { measure: n is count() }
+`,
+               ],
+            ]),
+         );
+         const runtime = new Runtime({
+            urlReader,
+            connections: new FixedConnectionMap(
+               new Map<string, Connection>([["duckdb", duckdb]]),
+               "duckdb",
+            ),
+         });
+         const mm = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
+            importBaseURL: new URL(ROOT),
+         });
+         const classifyWithSurface = async (
+            expr: string,
+            surface: Map<string, string>,
+         ) => {
+            const prepared = await mm
+               .loadQuery(buildRowLevelProbe("X", `(${expr})`))
+               .getPreparedQuery();
+            const condition = liftProbeFilterCondition(
+               prepared as never,
+               "test",
+               `(${expr})`,
+            );
+            return classifyAuthorizeGate(condition, surface, new Map());
+         };
+         const partialSurface = new Map([["ALLOWED", "array"]]);
+
+         const membership = await classifyWithSurface(
+            "$TENANT in $ALLOWED",
+            partialSurface,
+         );
+         expect(membership.shape).toBe("rejected");
+         expect((membership as { cause?: string }).cause).toBe(
+            "unreachable_given",
+         );
+
+         // The control every other operand position already satisfied.
+         const comparison = await classifyWithSurface(
+            "org_id = $TENANT",
+            partialSurface,
+         );
+         expect(comparison.shape).toBe("rejected");
+         expect((comparison as { cause?: string }).cause).toBe(
+            "unreachable_given",
+         );
+
+         // Both givens reachable: still the accepted self-contained shape.
+         const reachable = await classifyWithSurface(
+            "$TENANT in $ALLOWED",
+            new Map([
+               ["ALLOWED", "array"],
+               ["TENANT", "number"],
+            ]),
+         );
+         expect(reachable.shape).toBe("row_level");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("error scrubbing: a fail-closed row-level deny never names the column/join/expression to the caller", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
@@ -3240,10 +3328,13 @@ source: X is duckdb.table('parent') extend {
          const runSqlSpy = spyOn(duckdb, "runSQL");
          runSqlSpy.mockClear();
 
+         // GROUPED, not a bare `aggregate:` — an ungrouped aggregate is
+         // vetoed by `pipelineRowCountFollowsInput` whatever the gate says,
+         // so it can never observe the short circuit failing to fire.
          const result = await model.getQueryResults(
             undefined,
             undefined,
-            "run: X -> { aggregate: n is count() }",
+            "run: X -> { group_by: org_id; aggregate: n is count() }",
             {},
             true,
             {},
@@ -3254,10 +3345,11 @@ source: X is duckdb.table('parent') extend {
          );
 
          expect(result.servedFrom).not.toBe("short_circuited");
-         // The unfiltered live count — bypassing authorize skips the "false"
-         // gate entirely, so all 4 seed rows are counted.
+         // The unfiltered live rows — bypassing authorize skips the "false"
+         // gate entirely, so both org groups (4 seed rows) come back.
          const rows = result.compactResult as unknown as { n: number }[];
-         expect(rows[0].n).toBe(4);
+         expect(rows.length).toBe(2);
+         expect(rows.reduce((sum, r) => sum + r.n, 0)).toBe(4);
          expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
       } finally {
          await duckdb.close();
@@ -3278,17 +3370,24 @@ source: X is duckdb.table('parent') extend {
       try {
          const runSqlSpy = spyOn(duckdb, "runSQL");
          runSqlSpy.mockClear();
+         // GROUPED — see the bypass test above for why a bare `aggregate:`
+         // cannot observe this.
          const result = await model.getQueryResults(
             undefined,
             undefined,
-            "run: X -> { aggregate: n is count() }",
+            "run: X -> { group_by: org_id; aggregate: n is count() }",
             {},
             true,
             { GROUPS: [1] },
          );
          expect(result.servedFrom).not.toBe("short_circuited");
-         const rows = result.compactResult as unknown as { n: number }[];
-         // org_id=1 rows are ids 1,2 — the live, gate-filtered count.
+         const rows = result.compactResult as unknown as {
+            org_id: number;
+            n: number;
+         }[];
+         // org_id=1 rows are ids 1,2 — the live, gate-filtered group.
+         expect(rows.length).toBe(1);
+         expect(rows[0].org_id).toBe(1);
          expect(rows[0].n).toBe(2);
          expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
       } finally {
@@ -3309,17 +3408,20 @@ source: X is duckdb.table('parent') extend {
       try {
          const runSqlSpy = spyOn(duckdb, "runSQL");
          runSqlSpy.mockClear();
+         // GROUPED — see the bypass test above for why a bare `aggregate:`
+         // cannot observe this.
          const result = await model.getQueryResults(
             undefined,
             undefined,
-            "run: X -> { aggregate: n is count() }",
+            "run: X -> { group_by: org_id; aggregate: n is count() }",
             {},
             true,
             { ROLE: "admin" },
          );
          expect(result.servedFrom).not.toBe("short_circuited");
          const rows = result.compactResult as unknown as { n: number }[];
-         expect(rows[0].n).toBe(4);
+         expect(rows.length).toBe(2);
+         expect(rows.reduce((sum, r) => sum + r.n, 0)).toBe(4);
          expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
       } finally {
          await duckdb.close();
@@ -4009,6 +4111,170 @@ source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
          const keys = [...cache.keys()];
          expect(keys.some((k) => k.startsWith("cell:0\u0000"))).toBe(true);
          expect(keys.some((k) => k.startsWith("cell:1\u0000"))).toBe(false);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Field-LESS gates: the row-level grammar can refuse a gate that published
+// fine as a whole-source boolean. Refusing it must cost that ONE source, not
+// the whole model file (see `validateAuthorizeProbes`'s `readsRowField`).
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — a field-less gate the grammar refuses", () => {
+   /**
+    * Every one of these loads on the pre-row-level publisher: each reads no
+    * row field, so it classified as `given_only` and was validated by a plain
+    * one-row probe rather than by the row-level grammar, which now refuses
+    * them all. The escape is fail-closed because `resolveGateShape` re-runs
+    * the identical SHAPE classification per request and rejects
+    * independently — asserted below by the request-time denial, not assumed.
+    */
+   const REFUSED_FIELD_LESS_GATES = [
+      "1 = 1",
+      "'a' = 'a'",
+      "$ROLE like 'ana%'",
+      "$ROLE is not null",
+      "$ROLE = 'a' and 1 = 1",
+      "not false",
+      "$ROLE = $ROLE_D",
+   ];
+
+   function modelText(gate: string): string {
+      return `##! experimental.givens
+
+given:
+  ROLE :: string
+  ROLE_D :: string is 'x'
+
+#(authorize) "${gate}"
+source: Gated is duckdb.table('parent') extend { measure: n is count() }
+
+source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
+`;
+   }
+
+   for (const gate of REFUSED_FIELD_LESS_GATES) {
+      it(`\`${gate}\`: the model file still loads and serves, the gated source denies`, async () => {
+         const warnSpy = spyOn(logger, "warn");
+         warnSpy.mockClear();
+         const duckdb = await newDuckdb();
+         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldless-"));
+         try {
+            fs.writeFileSync(path.join(dir, "m.malloy"), modelText(gate));
+            const model = await Model.create(
+               "test-pkg",
+               dir,
+               "m.malloy",
+               new Map<string, Connection>([["duckdb", duckdb]]),
+            );
+            // The blocker this pins: a `compilationError` here turns the
+            // WHOLE file into a placeholder, taking `Ungated` down with it.
+            expect(
+               (model as unknown as { compilationError?: Error })
+                  .compilationError,
+            ).toBeUndefined();
+            expect(
+               (warnSpy.mock.calls as unknown[][]).some((call) => {
+                  const [message, fields] = call as [
+                     string,
+                     { sourceName?: string }?,
+                  ];
+                  return (
+                     typeof message === "string" &&
+                     message.includes("not expressible at this entry point") &&
+                     fields?.sourceName === "Gated"
+                  );
+               }),
+            ).toBe(true);
+
+            // Fails CLOSED on the one source the refused gate protects …
+            await expect(
+               model.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: Gated -> { aggregate: n is count() }",
+                  {},
+                  true,
+                  { ROLE: "a" },
+               ),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+
+            // … while the rest of the file keeps serving.
+            const ungated = await model.getQueryResults(
+               undefined,
+               undefined,
+               "run: Ungated -> { aggregate: n is count() }",
+               {},
+               true,
+            );
+            expect(
+               (ungated.compactResult as unknown as { n: number }[])[0].n,
+            ).toBe(2);
+         } finally {
+            await duckdb.close();
+            fs.rmSync(dir, { recursive: true, force: true });
+         }
+      });
+   }
+
+   it("a VACUOUS-DEFAULT atom still fails the whole load, even field-less — it has no request-time counterpart to deny with", async () => {
+      // `assertNoVacuousDefaultAtom` is a load-time PROBE, and the request
+      // path never repeats it: `resolveGateShape` only re-runs the shape
+      // walk, which accepts `$ROLE_D != 'blocked'`. Warning instead of
+      // throwing therefore leaves the source SERVING every row to a caller
+      // who supplies nothing — the exact admission the check exists to stop.
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-vacuous-"));
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            modelText("$ROLE_D != 'blocked'"),
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeDefined();
+         expect(String(err?.message)).toContain("evaluates to TRUE");
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a gate that DOES read a row field still fails the whole load — the escape is scoped to field-less gates", async () => {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldful-"));
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id = $GROUPS"
+source: Gated is duckdb.table('parent') extend { measure: n is count() }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeDefined();
+         expect(String(err?.message)).toContain("is declared `array`");
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
