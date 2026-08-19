@@ -1,4 +1,5 @@
 import type { PersistSource } from "@malloydata/malloy";
+import { getColocatedPersistRelaxationEnabled } from "../config";
 import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
 import type { AnnotationNote } from "./annotations";
@@ -187,6 +188,10 @@ export function assertMaterializationEligible(
  * `"preaggregate"` when `CompiledBuildPlan.preaggregatePlans` has an entry for
  * the source — the same signal `build_plan.ts` reports as `origin`.
  *
+ * Gated by `getColocatedPersistRelaxationEnabled()` (`PERSIST_COLOCATED_RELAXATION_ENABLED`,
+ * default on): disabling it skips this relaxation entirely and refuses
+ * unconditionally, matching the pre-relaxation behavior.
+ *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
  *   annotation to remove, and the alternative of moving the gate to a source
  *   that is not materialized.
@@ -200,6 +205,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    if (!referencesAuthorize(persistSource)) return;
 
    if (
+      getColocatedPersistRelaxationEnabled() &&
       origin === "persist" &&
       gateOutcome?.classification === "row_level" &&
       gateOutcome.attributed

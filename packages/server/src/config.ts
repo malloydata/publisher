@@ -642,6 +642,19 @@ export const getPersistCollisionEnforce = (): boolean =>
    parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
 /**
+ * Whether a colocated `#@ persist` source may be admitted despite an
+ * `#(authorize)` gate when the gate is proven row-level and attributed to the
+ * entry point, from `PERSIST_COLOCATED_RELAXATION_ENABLED` (default `true`).
+ *
+ * A ROLLBACK LEVER, not an opt-in: the relaxation ships live by default, and
+ * this flag exists to fall back to the pre-relaxation behavior (unconditional
+ * refusal of any authorize-gated colocated persist source, proven or not) if
+ * it needs to come down in an incident. Set to `false` to disable it fleet-wide.
+ */
+export const getColocatedPersistRelaxationEnabled = (): boolean =>
+   parseBoolEnv("PERSIST_COLOCATED_RELAXATION_ENABLED") ?? true;
+
+/**
  * Whether the publisher attaches per-query metadata at all, from
  * `PUBLISHER_QUERY_METADATA` (default `off`).
  *
