@@ -798,3 +798,120 @@ describe("ducklake shape validation", () => {
       }
    });
 });
+
+// A credential problem used to surface only at the connection's first ATTACH — for a
+// storage destination, the first BUILD, hours after the config change that caused it.
+// These pin where each check now fires, including the one deliberately NOT moved.
+describe("assembleEnvironmentConnections — S3 credential shape at config load", () => {
+   const ducklake = (s3Connection: Record<string, unknown>): ApiConnection =>
+      ({
+         name: "tier",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            },
+            storage: { bucketUrl: "s3://bucket/prefix", s3Connection },
+         },
+      }) as unknown as ApiConnection;
+
+   const duckdbWithS3 = (
+      s3Connection: Record<string, unknown>,
+   ): ApiConnection =>
+      ({
+         name: "generic",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [{ name: "root", type: "s3", s3Connection }],
+         },
+      }) as unknown as ApiConnection;
+
+   describe("ducklake storage — checked in full", () => {
+      it("rejects a keyless key-based storage root at load", () => {
+         expect(() =>
+            assembleEnvironmentConnections([ducklake({ region: "us-east-1" })]),
+         ).toThrow(/accessKeyId and secretAccessKey are required for: tier/);
+      });
+
+      it("accepts a chain-auth storage root with no key pair", () => {
+         const { pojo } = assembleEnvironmentConnections([
+            ducklake({ provider: "credential_chain" }),
+         ]);
+         expect(pojo.connections["tier"]).toBeDefined();
+      });
+
+      it("rejects a key supplied alongside chain auth at load", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               ducklake({ provider: "credential_chain", accessKeyId: "AKIA" }),
+            ]),
+         ).toThrow(/must not be set when provider is 'credential_chain'/);
+      });
+
+      // Without the enum check this reads as `config`, and the error names a missing
+      // access key — pointing at the wrong field for what is a typo in `provider`.
+      it("names the provider field for a misspelled provider", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               ducklake({ provider: "credentialchain" }),
+            ]),
+         ).toThrow(
+            /provider must be one of config, credential_chain for: tier/,
+         );
+      });
+
+      it("rejects a non-string provider rather than treating it as config", () => {
+         expect(() =>
+            assembleEnvironmentConnections([ducklake({ provider: true })]),
+         ).toThrow(/provider must be one of/);
+      });
+
+      it("rejects a non-string chain before it reaches trim()", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               ducklake({ provider: "credential_chain", chain: 7 }),
+            ]),
+         ).toThrow(/chain must be a string for: tier/);
+      });
+   });
+
+   describe("duckdb attached database — shape only, on purpose", () => {
+      it("rejects a misspelled provider at load", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               duckdbWithS3({ provider: "credentialchain" }),
+            ]),
+         ).toThrow(
+            /provider must be one of config, credential_chain for: root/,
+         );
+      });
+
+      it("rejects a key supplied alongside chain auth at load", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               duckdbWithS3({
+                  provider: "credential_chain",
+                  secretAccessKey: "shhh",
+               }),
+            ]),
+         ).toThrow(/must not be set when provider is 'credential_chain'/);
+      });
+
+      // The deliberate asymmetry with the ducklake branch above. This validator's
+      // throw fails the WHOLE environment, and nothing here checked an attached
+      // database's credentials before, so moving the key-pair requirement to load
+      // would stop environments loading that load today. It still fails at attach.
+      it("still LOADS a keyless key-based attachment", () => {
+         const { pojo } = assembleEnvironmentConnections([
+            duckdbWithS3({ region: "us-east-1" }),
+         ]);
+         expect(pojo.connections["generic"]).toBeDefined();
+      });
+   });
+});

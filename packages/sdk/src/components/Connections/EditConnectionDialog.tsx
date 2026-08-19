@@ -77,10 +77,22 @@ export default function EditConnectionDialog({
    const [ducklakeStorageType, setDucklakeStorageType] = useState(() =>
       initDucklakeStorageType(connection),
    );
+   // Which S3 credential shape the storage fields are showing. Seeded from the
+   // connection being edited, so opening a host-credential connection shows the
+   // chain fields rather than empty key fields it does not use.
+   const [ducklakeS3Provider, setDucklakeS3Provider] = useState<string>(
+      () =>
+         connection.ducklakeConnection?.storage?.s3Connection?.provider ??
+         "config",
+   );
 
    const handleClickOpen = () => {
       setAttachedDatabases(initAttachedDatabases(connection));
       setType(connection.type);
+      setDucklakeS3Provider(
+         connection.ducklakeConnection?.storage?.s3Connection?.provider ??
+            "config",
+      );
       setDucklakeCatalogType("postgres");
       setDucklakeStorageType(initDucklakeStorageType(connection));
       setOpen(true);
@@ -144,10 +156,23 @@ export default function EditConnectionDialog({
                   s3Config[field.name] = value;
                }
             });
-            // For updates, use existing values if not provided
+            // For updates, use existing values if not provided. `provider` and
+            // `chain` are carried forward for the same reason the key pair is:
+            // this form rebuilds the whole s3Connection from its own fields, so
+            // anything it does not resubmit is dropped. Losing `provider` here
+            // silently downgrades a host-credential connection to a key-based one
+            // that has no key — and because the checks below used to be
+            // unconditional, it also made a chain-auth connection impossible to
+            // edit at all, including just its bucket URL.
             const existingS3 =
                connection.ducklakeConnection?.storage?.s3Connection;
             if (existingS3) {
+               if (!s3Config.provider && existingS3.provider) {
+                  s3Config.provider = existingS3.provider;
+               }
+               if (!s3Config.chain && existingS3.chain) {
+                  s3Config.chain = existingS3.chain;
+               }
                if (!s3Config.accessKeyId && existingS3.accessKeyId) {
                   s3Config.accessKeyId = existingS3.accessKeyId;
                }
@@ -155,12 +180,20 @@ export default function EditConnectionDialog({
                   s3Config.secretAccessKey = existingS3.secretAccessKey;
                }
             }
-            // Validate required fields
-            if (!s3Config.accessKeyId) {
-               throw new Error("S3 Access Key ID is required");
-            }
-            if (!s3Config.secretAccessKey) {
-               throw new Error("S3 Secret Access Key is required");
+            // Validate required fields. Under `credential_chain` the host supplies
+            // the credential, so a key pair is not merely optional — the server
+            // rejects one that is present and unused.
+            if (s3Config.provider === "credential_chain") {
+               delete s3Config.accessKeyId;
+               delete s3Config.secretAccessKey;
+               delete s3Config.sessionToken;
+            } else {
+               if (!s3Config.accessKeyId) {
+                  throw new Error("S3 Access Key ID is required");
+               }
+               if (!s3Config.secretAccessKey) {
+                  throw new Error("S3 Secret Access Key is required");
+               }
             }
             if (Object.keys(s3Config).length > 0) {
                storageConfig.s3Connection = s3Config;
@@ -622,32 +655,68 @@ export default function EditConnectionDialog({
                                  >
                                     S3 Credentials
                                  </Typography>
-                                 {s3AttachedDatabaseFields.map((field) => (
-                                    <TextField
-                                       key={`s3_${field.name}`}
-                                       margin="dense"
-                                       id={`ducklake_s3_${field.name}`}
-                                       name={`ducklake_s3_${field.name}`}
-                                       label={field.label}
-                                       type={field.type}
-                                       fullWidth
-                                       variant="standard"
-                                       required={
-                                          field.required &&
-                                          field.name !== "secretAccessKey"
-                                       }
-                                       defaultValue={getDucklakeDefault(
-                                          `s3_${field.name}`,
-                                       )}
-                                       placeholder={
-                                          field.name === "region"
-                                             ? "us-east-1"
-                                             : field.name === "secretAccessKey"
-                                               ? "Leave empty to keep existing"
-                                               : undefined
-                                       }
-                                    />
-                                 ))}
+                                 {s3AttachedDatabaseFields
+                                    .filter((field) =>
+                                       field.visibleWhen
+                                          ? ducklakeS3Provider ===
+                                            field.visibleWhen.value
+                                          : true,
+                                    )
+                                    .map((field) => (
+                                       <TextField
+                                          key={`s3_${field.name}`}
+                                          margin="dense"
+                                          id={`ducklake_s3_${field.name}`}
+                                          name={`ducklake_s3_${field.name}`}
+                                          label={field.label}
+                                          type={
+                                             field.selectOptions
+                                                ? undefined
+                                                : field.type
+                                          }
+                                          fullWidth
+                                          variant="standard"
+                                          required={
+                                             field.required &&
+                                             field.name !== "secretAccessKey"
+                                          }
+                                          select={!!field.selectOptions}
+                                          defaultValue={
+                                             field.selectOptions
+                                                ? ducklakeS3Provider
+                                                : getDucklakeDefault(
+                                                     `s3_${field.name}`,
+                                                  )
+                                          }
+                                          onChange={
+                                             field.name === "provider"
+                                                ? (e) =>
+                                                     setDucklakeS3Provider(
+                                                        e.target.value,
+                                                     )
+                                                : undefined
+                                          }
+                                          placeholder={
+                                             field.name === "region"
+                                                ? "us-east-1"
+                                                : field.name ===
+                                                    "secretAccessKey"
+                                                  ? "Leave empty to keep existing"
+                                                  : undefined
+                                          }
+                                       >
+                                          {field.selectOptions?.map(
+                                             (option) => (
+                                                <MenuItem
+                                                   key={option.value}
+                                                   value={option.value}
+                                                >
+                                                   {option.label}
+                                                </MenuItem>
+                                             ),
+                                          )}
+                                       </TextField>
+                                    ))}
                               </>
                            )}
                            {ducklakeStorageType === "gcs" && (

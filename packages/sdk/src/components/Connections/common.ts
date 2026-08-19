@@ -353,16 +353,40 @@ export const attachedDatabaseConnectionFieldName: Record<string, string> = {
 // Fields for S3 attached database
 export const s3AttachedDatabaseFields: Array<ConnectionField> = [
    {
+      label: "Credential Provider",
+      name: "provider" as keyof S3Connection,
+      type: "text",
+      required: false,
+      selectOptions: [
+         { label: "Access key pair", value: "config" },
+         { label: "Host credential chain", value: "credential_chain" },
+      ],
+   },
+   // Neither key is `required` any more, because under `credential_chain` there is
+   // no key to give and a hidden-but-required field blocks submit with nothing on
+   // screen to fix. Presence is enforced where it can be conditional: each dialog
+   // checks the pair only on the `config` path, and the server rejects a keyless
+   // `config` connection at config load.
+   {
       label: "Access Key ID",
       name: "accessKeyId" as keyof S3Connection,
       type: "text",
-      required: true,
+      required: false,
+      visibleWhen: { field: "provider", value: "config" },
    },
    {
       label: "Secret Access Key",
       name: "secretAccessKey" as keyof S3Connection,
       type: "password",
-      required: true,
+      required: false,
+      visibleWhen: { field: "provider", value: "config" },
+   },
+   {
+      label: "Credential Chain",
+      name: "chain" as keyof S3Connection,
+      type: "text",
+      required: false,
+      visibleWhen: { field: "provider", value: "credential_chain" },
    },
    {
       label: "Region",
@@ -381,6 +405,7 @@ export const s3AttachedDatabaseFields: Array<ConnectionField> = [
       name: "sessionToken" as keyof S3Connection,
       type: "password",
       required: false,
+      visibleWhen: { field: "provider", value: "config" },
    },
 ];
 

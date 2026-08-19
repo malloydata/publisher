@@ -4,6 +4,10 @@ import path from "path";
 import { components } from "../api";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
+import {
+   resolveCloudStorageCredentials,
+   validateS3ProviderShape,
+} from "./gcs_s3_utils";
 import { parseHostKeys } from "./proxy";
 import {
    queryMetadataAdvisoryWarnings,
@@ -478,6 +482,21 @@ function validateConnectionShape(connection: ApiConnection): void {
                   `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
                );
             }
+            // Shape only, deliberately not the whole credential check. This
+            // validator's throw fails the ENTIRE environment (assembleEnvironmentConnections
+            // has no per-connection recovery), and nothing here validates an attached
+            // database's credentials today — so demanding a key pair at load would turn
+            // configs that load-and-fail-late into configs that load nothing at all.
+            // These checks reject only shapes no path ever accepted, so no config that
+            // loads today stops loading.
+            for (const attachedDb of attached) {
+               if (attachedDb.type === "s3" && attachedDb.s3Connection) {
+                  validateS3ProviderShape(
+                     attachedDb.s3Connection,
+                     attachedDb.name ?? connection.name,
+                  );
+               }
+            }
          }
          break;
       case "motherduck":
@@ -506,6 +525,23 @@ function validateConnectionShape(connection: ApiConnection): void {
             throw new Error(
                `Storage bucketUrl is required for DuckLake: ${connection.name}`,
             );
+         }
+         // The storage credential belongs in the same list as bucketUrl, for the
+         // same reason: it is a field the ATTACH demands, and a destination is only
+         // attached at its first BUILD. Checked in full here — unlike the duckdb
+         // branch above — because this branch already fails a DuckLake at load for
+         // a missing bucket or catalog, and because a storage destination's failure
+         // is caught per-destination (see resolveStorageDestinations) rather than
+         // failing the environment.
+         {
+            const storage = connection.ducklakeConnection.storage;
+            if (storage.s3Connection) {
+               resolveCloudStorageCredentials({
+                  name: connection.name,
+                  type: "s3",
+                  s3Connection: storage.s3Connection,
+               });
+            }
          }
          // metadataSchema is optional, but when present it reaches the ATTACH as a
          // quoted string literal AND the catalog-format preflight as a quoted
