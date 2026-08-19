@@ -7,9 +7,9 @@
 // artifact enforces the same row filter a live query would, over a REAL
 // compiled package with a REAL bound manifest, not a mock.
 //
-// The refusal made this composition untestable before this relaxation
-// existed: a colocated `#@ persist` source with any `#(authorize)` gate never
-// built at all. Every scenario below binds a manifest entry pointing at a
+// A colocated `#@ persist` source with an unproven or rejected `#(authorize)`
+// gate never builds at all; only the proven row_level + attributed shape
+// does. Every scenario below binds a manifest entry pointing at a
 // table that is NOT what the live query would read from (deliberately
 // distinguishable data), so a passing assertion proves BOTH that the
 // same-connection substitution took effect AND that the row filter still
@@ -325,6 +325,56 @@ source: rollup is base_orders -> { select: org_id, amount }
          // inherited (via the query-source derivation base) from `base_orders`
          // still filters it.
          expect(rows).toEqual([{ org_id: 1, amount: 9999 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "a persist source over a composite entry point, gated on one member: the bound artifact still filters",
+      async () => {
+         // `comp` is a query_source over `compose(member_a, member_b)`. Only
+         // `member_a` carries the gate; Malloy resolves the composite to ONE
+         // concrete member per query and copies that member's own gate onto
+         // `comp`'s entry point, so `classifyPersistSourceGate` reads it as
+         // row_level + attributed with no join or deep walk involved (see
+         // `build_plan_gate_classification.spec.ts`'s unit-level pin of the
+         // same classification). This proves the served side too.
+         const pkg = await loadPackageFiles({
+            "model.malloy": `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: member_a is duckdb.sql("""
+  SELECT * FROM (VALUES (7, 1), (8, 2)) AS t(org_id, amount)
+""")
+
+source: member_b is duckdb.sql("""
+  SELECT * FROM (VALUES (7, 1), (8, 2)) AS t(org_id, amount)
+""")
+
+source: combo is compose(member_a, member_b)
+
+#@ persist name="comp"
+source: comp is combo -> { select: org_id, amount }
+`,
+         });
+         // Materialized data is DISTINCT from the live SQL above, so a
+         // correct answer proves the FROM substitution took effect.
+         await buildAndBindColocated(
+            pkg,
+            "comp",
+            "comp_materialized",
+            `SELECT * FROM (VALUES (7, 1000), (8, 2000)) AS t(org_id, amount)`,
+         );
+
+         const rows = await run(
+            pkg,
+            "run: comp -> { select: org_id, amount; order_by: org_id }",
+            { GROUPS: [7] },
+         );
+         expect(rows).toEqual([{ org_id: 7, amount: 1000 }]);
       },
       { timeout: 60000 },
    );

@@ -217,16 +217,30 @@ export function assertColocatedPersistNotAuthorizeGated(
    const gated =
       origin === "preaggregate"
          ? `the source '${sourceName}' rolls up is protected by an ` +
-           `#(authorize) gate (its own or a joined source's)`
-         : `it is protected by an #(authorize) gate (its own or a joined ` +
-           `source's)`;
+           `#(authorize) gate (its own, a joined source's, or inherited ` +
+           `from a source it derives from)`
+         : `it is protected by an #(authorize) gate (its own, a joined ` +
+           `source's, or inherited from a source it derives from)`;
+   // The relaxation's common refusal is now the join/inherited case: the gate
+   // is ALREADY on a source that is not materialized (a joined-in or
+   // derivation-base source), so "move the gate to a source that is not
+   // materialized" is not just unhelpful there, it describes what is already
+   // true. The only fix for that shape is making the gate provably the entry
+   // point's OWN row filter (see `isAuthorizeAttributedToEntryPoint`) rather
+   // than relying on something reachable underneath it.
    const remedy =
       origin === "preaggregate"
-         ? `Remove the '#@ preaggregate' annotation from the gated source's ` +
-           `measure(s), or move the gate to a source that is not ` +
-           `pre-aggregated.`
-         : `Drop '#@ persist' from this source, or move the gate to a source ` +
-           `that is not materialized.`;
+         ? `If the gate is on the rolled-up source itself, remove the ` +
+           `'#@ preaggregate' annotation or move the gate to a source that ` +
+           `is not pre-aggregated. If it is reached through a join or a ` +
+           `derivation instead, that source is already unaggregated -- the ` +
+           `fix is to stop pre-aggregating this entry point, not to move ` +
+           `the gate again.`
+         : `If the gate is on this source itself, drop '#@ persist' or ` +
+           `move the gate to a source that is not materialized. If it is ` +
+           `reached through a join or a derivation instead, that source is ` +
+           `already not materialized -- express the condition as this ` +
+           `entry point's own row-level gate, or stop persisting it.`;
    const what =
       origin === "preaggregate"
          ? `Pre-aggregation rollup '${sourceName}' cannot be built`
