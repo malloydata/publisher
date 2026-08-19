@@ -194,8 +194,21 @@ export function Dashboard({
          // milliseconds and a filter value went unescaped. Set under the name
          // the MODEL declares, so the value reaches the URL and the request
          // under the one name the server knows.
-         const value = encodeDrillValue(rawValue, declaredTypes.get(declared));
-         if (value === undefined) return;
+         const declaredType = declaredTypes.get(declared);
+         const value = encodeDrillValue(rawValue, declaredType);
+         if (value === undefined) {
+            // Say so, the way the notebook does. `canSelf` only checks that the
+            // NAME resolves, so a `given=` naming a type the clicked value
+            // cannot become still paints the whole column as clickable and then
+            // drops every click. That is an authoring mistake with no other
+            // symptom, and this is the likelier surface for it, because the
+            // givens are the dashboard's own.
+            console.warn(
+               `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
+                  (declaredType ? ` of type ${declaredType}` : ""),
+            );
+            return;
+         }
          setGiven(declared, value);
       },
       [declaredTypes, resolveGiven, setGiven],

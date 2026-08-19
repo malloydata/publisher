@@ -98,9 +98,14 @@ function StackPath() {
 }
 
 /**
- * Panels of unequal size in one frame: the grid of tiles a dashboard lays out,
- * and deliberately not the browser window a data app gets, since the two sit
- * next to each other in the package list.
+ * Panels of unequal size in one frame: the grid of tiles a dashboard lays out.
+ *
+ * The neighbour to stay distinct from is the TABLE glyph, not the data app's
+ * browser window. Both this and the table are a rounded rect with the same
+ * `M3.5 9.5` divider, so with only the one vertical stroke the two differed by
+ * that stroke's position alone and read as the same icon at 18px, with the
+ * Dashboards and Databases sections on one page. The second divider is what
+ * makes this one read as a grid rather than as columns.
  */
 function DashboardGridPath() {
    return (
@@ -108,6 +113,7 @@ function DashboardGridPath() {
          <rect x="3.5" y="3.5" width="17" height="17" rx="2" />
          <path d="M3.5 9.5 H20.5" />
          <path d="M12 9.5 V20.5" />
+         <path d="M12 15 H20.5" />
       </>
    );
 }
