@@ -13,7 +13,9 @@ base into `compose(rollup, base)`. Two promises follow, and they hold independen
 names it; absent that, the rollup inherits the namespace of its base's own
 `#@ persist name=`, because a rollup of X belongs beside X. Only the container is
 author-controlled — the table name stays derived, so the resolver and the content
-address can rely on it.
+address can rely on it. Both routes are exercised here, on one source, because a grain
+is a table: two grains can be created in two places, and each must take the namespace
+named for it rather than whichever the model happened to mention first.
 
 **A query at the rollup's grain is answered from the stored table.** Not recomputed:
 both return the same numbers, which is the point of the feature and also what makes a
@@ -27,11 +29,11 @@ all; Postgres accepts either, which is what makes it able to tell the two apart.
 
 ## Operator orders_pg
 
-The schema the base names has to exist before anything is built into it — nothing in
-the tier creates one. Run against the source warehouse directly, as an operator would.
+Both schemas have to exist before anything is built into them — nothing in the tier
+creates one. Run against the source warehouse directly, as an operator would.
 
 ```sql
-CREATE SCHEMA IF NOT EXISTS analytics;
+CREATE SCHEMA IF NOT EXISTS analytics; CREATE SCHEMA IF NOT EXISTS rollups;
 ```
 
 ## Data orders_pg.pa_orders
@@ -55,6 +57,9 @@ source: orders is pa_orders -> {
   select: order_id, category, region, amount
 } extend {
   measure:
+    #@ preaggregate grain="region" namespace="rollups"
+    regional is amount.sum()
+  measure:
     #@ preaggregate grain="category"
     total is amount.sum()
 }
@@ -64,11 +69,14 @@ source: orders is pa_orders -> {
 
 ## Operator orders_pg
 
-Ask the catalog which schema received the rollup, rather than trusting the name it was
-given.
+Ask the catalog which schema received each rollup, rather than trusting the name it was
+given. Two grains are two tables, so each answers for itself: `region` was sent to
+`rollups` by its own annotation, and `category` — declared after it, and naming no
+namespace — still inherited `analytics` from the base rather than picking up its
+neighbour's.
 
 ```sql
-SELECT table_schema FROM information_schema.tables WHERE table_name LIKE '%__preagg__%'
+SELECT table_schema FROM information_schema.tables WHERE table_name LIKE '%__preagg__%' ORDER BY table_schema
 ```
 
 Expect:
@@ -76,6 +84,7 @@ Expect:
 | table_schema |
 | ------------ |
 | analytics    |
+| rollups      |
 
 ## Query by category
 
@@ -110,22 +119,40 @@ Expect:
 | books    | 150   |
 | tools    | 225   |
 
-## Query off-grain
+## Query by region
 
-A grain the rollup does not cover falls through to the base member, which is itself
-persisted — so this stays stale too, and it confirms the composite still answers
-queries the rollup cannot.
+The other rollup's grain, and the other namespace. It has to be served from `rollups`
+for this to be stale — the same staleness proof as `category`, on the table whose
+placement came from the annotation rather than from the base.
 
 ```malloy
-run: orders -> { group_by: region; aggregate: amount_total is amount.sum(); order_by: region asc }
+run: orders -> { group_by: region; aggregate: regional; order_by: region asc }
 ```
 
 Expect:
 
-| region | amount_total |
-| ------ | ------------ |
-| EU     | 50           |
-| US     | 325          |
+| region | regional |
+| ------ | -------- |
+| EU     | 50       |
+| US     | 325      |
+
+## Query off-grain
+
+A grain neither rollup covers falls through to the base member, which is itself
+persisted — so this stays stale too, and it confirms the composite still answers
+queries no rollup can.
+
+```malloy
+run: orders -> { group_by: category, region; aggregate: amount_total is amount.sum(); order_by: category asc, region asc }
+```
+
+Expect:
+
+| category | region | amount_total |
+| -------- | ------ | ------------ |
+| books    | EU     | 50           |
+| books    | US     | 100          |
+| tools    | US     | 225          |
 
 ## Note
 

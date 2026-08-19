@@ -644,6 +644,13 @@ async function main(): Promise<void> {
          return `file://${file}`;
       };
 
+      // Statements psql must be asked for as a RESULT rather than as a command.
+      // `EXPLAIN` and `VALUES` return rows without selecting; `RETURNING` turns a
+      // write into one. Anchored per statement, so a leading comment or whitespace
+      // does not hide the keyword.
+      const RETURNS_ROWS =
+         /^\s*(select|with|show|table|explain|values)\b|\breturning\b/i;
+
       // Operator DDL: provisioning a scenario does out-of-band, as an operator
       // would — never through the publisher, whose own paths are deliberately
       // narrower (the serve attach is read-only, and the connection SQL endpoint
@@ -655,20 +662,29 @@ async function main(): Promise<void> {
       // whose `name=` carries a schema needs that schema to exist first, and only
       // this path can create it.
       const operatorSqlFor =
-         (r: ScenarioResources, lakes: Set<string>) =>
+         (r: ScenarioResources, lakes: Set<string>, warehouses: Set<string>) =>
          async (
             conn: string,
             sql: string,
          ): Promise<Record<string, string>[]> => {
             if (!lakes.has(conn)) {
-               // Not a lake: treat it as the scenario's source warehouse. Named
-               // connections all resolve to the one scenario database, so the
-               // connection name is a label here rather than a lookup key.
+               // A name this scenario never declared is a typo, and running it
+               // anyway is worse than failing: the statement lands in the source
+               // warehouse, the scenario goes green, and the step guards nothing.
+               if (!warehouses.has(conn))
+                  throw new Error(
+                     `operatorSql: connection "${conn}" is not one this scenario declared ` +
+                        `(warehouses: ${[...warehouses].join(", ")}; ` +
+                        `ducklake destinations: ${[...lakes].join(", ")})`,
+                  );
+               // A source warehouse. Its named connections all resolve to the one
+               // scenario database, so the name is a label here rather than a
+               // lookup key.
                //
                // `query` for a statement that returns rows, `sql` otherwise: psql
                // errors on a no-result statement asked to produce tuples, and DDL
                // is the common case here.
-               return /^\s*(select|with|show|table)\b/i.test(sql)
+               return RETURNS_ROWS.test(sql)
                   ? await pg.query(r.sourceDb, sql)
                   : (await pg.sql(r.sourceDb, sql), []);
             }
@@ -733,6 +749,14 @@ async function main(): Promise<void> {
                .filter((c) => c.kind === "ducklake")
                .map((c) => c.name),
          ]);
+         // `orders_pg` is wired into every scenario's config; anything else has to
+         // have been declared by this scenario to be addressable.
+         const warehouses = new Set<string>([
+            "orders_pg",
+            ...(s.connections ?? [])
+               .filter((c) => c.kind !== "ducklake")
+               .map((c) => c.name),
+         ]);
          // A scenario may address a non-primary environment of its own, so every
          // Rest is bound to the environment the step meant.
          const bind = (rest: Rest): Rest =>
@@ -762,7 +786,7 @@ async function main(): Promise<void> {
                ),
             restOf: (name) => bind(mgr.restOf(name)),
             editPackageModel: editPackageModelFor(r),
-            operatorSql: operatorSqlFor(r, lakes),
+            operatorSql: operatorSqlFor(r, lakes, warehouses),
             writeManifest,
          };
          try {
