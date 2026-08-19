@@ -3092,6 +3092,337 @@ source: X is duckdb.table('parent') extend {
 });
 
 // ---------------------------------------------------------------------------
+// Constant-false short circuit — a gate whose compiled condition is the bare
+// literal `false` (the classic whole-source deny, `#(authorize) "false"`)
+// answers with a synthesized empty result rather than dispatching a `WHERE
+// false` query to the warehouse. Covers ONLY this literal case; a fail-closed
+// sentinel for an unassigned trusted identity-bound given is a separate,
+// not-yet-implemented case (docs/authorize.md calls "system givens" a
+// "planned milestone... not implemented yet") and is out of scope here.
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — constant-false short circuit", () => {
+   const CONSTANT_FALSE_MODEL = `#(authorize) "false"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`;
+
+   it("CRITICAL — never dispatches to the warehouse, and answers servedFrom short_circuited with zero rows", async () => {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-const-false-"));
+      try {
+         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+
+         const runSqlSpy = spyOn(duckdb, "runSQL");
+         runSqlSpy.mockClear();
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { group_by: org_id; aggregate: n is count() }",
+            {},
+            true,
+         );
+
+         expect(result.servedFrom).toBe("short_circuited");
+         expect(result.compactResult).toEqual([]);
+         // The proof this test exists for: the gate is provably empty, so
+         // nothing was ever sent to the connection at all — not even a
+         // `WHERE false` query that would itself have returned zero rows.
+         expect(runSqlSpy.mock.calls.length).toBe(0);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("CRITICAL — the synthesized result carries the real query's schema, not just an empty row count", async () => {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-const-false-schema-"),
+      );
+      try {
+         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+
+         const gatedResult = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { group_by: org_id; aggregate: n is count() }",
+            {},
+            true,
+         );
+         expect(gatedResult.servedFrom).toBe("short_circuited");
+
+         // An identical query against an UNGATED twin source is the ground
+         // truth for what schema this query should carry.
+         const ungatedDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "rla-const-false-ungated-"),
+         );
+         fs.writeFileSync(
+            path.join(ungatedDir, "m.malloy"),
+            `source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`,
+         );
+         const ungatedModel = await Model.create(
+            "test-pkg-ungated",
+            ungatedDir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         try {
+            const liveResult = await ungatedModel.getQueryResults(
+               undefined,
+               undefined,
+               "run: X -> { group_by: org_id; aggregate: n is count() }",
+               {},
+               true,
+            );
+            // Compare name/kind/type, not the whole `FieldInfo` — each field
+            // also carries a `#(malloy) reference_id = "<uuid>"` annotation
+            // freshly minted per compile, which differs between the two
+            // models even though the schema itself is identical.
+            const shapeOf = (fields: typeof gatedResult.result.schema.fields) =>
+               fields.map((f) => ({
+                  name: f.name,
+                  kind: f.kind,
+                  type: (f as { type?: unknown }).type,
+               }));
+            expect(shapeOf(gatedResult.result.schema.fields)).toEqual(
+               shapeOf(liveResult.result.schema.fields),
+            );
+         } finally {
+            fs.rmSync(ungatedDir, { recursive: true, force: true });
+         }
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("CRITICAL — bypassAuthorize still executes the query live (the short circuit never fires under a bypass)", async () => {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-const-false-bypass-"),
+      );
+      try {
+         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+
+         const runSqlSpy = spyOn(duckdb, "runSQL");
+         runSqlSpy.mockClear();
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            {},
+            undefined,
+            undefined,
+            "full",
+            /* bypassAuthorize */ true,
+         );
+
+         expect(result.servedFrom).not.toBe("short_circuited");
+         // The unfiltered live count — bypassing authorize skips the "false"
+         // gate entirely, so all 4 seed rows are counted.
+         const rows = result.compactResult as unknown as { n: number }[];
+         expect(rows[0].n).toBe(4);
+         expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("does NOT short-circuit a gate that is not provably constant-false (depends on real row data)", async () => {
+      const { model, duckdb } = await buildGatedModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         const runSqlSpy = spyOn(duckdb, "runSQL");
+         runSqlSpy.mockClear();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         expect(result.servedFrom).not.toBe("short_circuited");
+         const rows = result.compactResult as unknown as { n: number }[];
+         // org_id=1 rows are ids 1,2 — the live, gate-filtered count.
+         expect(rows[0].n).toBe(2);
+         expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("does NOT short-circuit a literal-atom gate that is not `false` (e.g. an admin-override $ROLE comparison)", async () => {
+      const { model, duckdb } = await buildGatedModel(`
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'admin'"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         const runSqlSpy = spyOn(duckdb, "runSQL");
+         runSqlSpy.mockClear();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { ROLE: "admin" },
+         );
+         expect(result.servedFrom).not.toBe("short_circuited");
+         const rows = result.compactResult as unknown as { n: number }[];
+         expect(rows[0].n).toBe(4);
+         expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("CRITICAL — does NOT short-circuit an ungrouped aggregate: it still runs live, because a bare `aggregate:` with no `group_by:` always emits exactly one row even over zero input rows", async () => {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-const-false-ungrouped-"),
+      );
+      try {
+         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+
+         const runSqlSpy = spyOn(duckdb, "runSQL");
+         runSqlSpy.mockClear();
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+         );
+
+         // Still denied by the gate (the row-level filter still landed and
+         // matched nothing), just not via the short circuit: the one row an
+         // ungrouped aggregate always emits still has to come from a real
+         // (cheap, `WHERE false`, zero-scan) run.
+         expect(result.servedFrom).not.toBe("short_circuited");
+         const rows = result.compactResult as unknown as { n: number }[];
+         expect(rows[0].n).toBe(0);
+         expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("records the short_circuited decision on the row-level gate metric", async () => {
+      const { startMetricsHarness } = await import(
+         "../test_helpers/metrics_harness"
+      );
+      const { resetAuthorizeGuardTelemetryForTesting } = await import(
+         "../authorize_metrics"
+      );
+      const harness = await startMetricsHarness();
+      resetAuthorizeGuardTelemetryForTesting();
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-const-false-metric-"),
+      );
+      try {
+         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+
+         // `group_by:` makes this query row-count-safe to short-circuit — a
+         // bare ungrouped `aggregate:` always emits exactly one row (see
+         // `pipelineRowCountFollowsInput`) and is covered by its own test.
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { group_by: org_id; aggregate: n is count() }",
+            {},
+            true,
+         );
+         expect(result.servedFrom).toBe("short_circuited");
+
+         expect(
+            await harness.collectCounter(
+               "publisher_authorize_row_level_total",
+               {
+                  decision: "short_circuited",
+               },
+            ),
+         ).toBe(1);
+      } finally {
+         resetAuthorizeGuardTelemetryForTesting();
+         await harness.shutdown();
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
 // Vacuous default atom — a literal atom that is TRUE at its given's own
 // declared default admits every row for a caller who supplies nothing.
 // ---------------------------------------------------------------------------

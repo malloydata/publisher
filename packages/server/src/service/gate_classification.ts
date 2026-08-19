@@ -453,6 +453,18 @@ export async function resolveGateShape(
         graftTarget: string;
         filterText: string;
         condition: FilterCondition;
+        /**
+         * Whether this gate's compiled condition reduces to the bare
+         * literal `false` and nothing else — the accepted constant-predicate
+         * idiom `classifyAuthorizeGate` already recognizes (see its `kind ===
+         * "false"` branch), read back off the classification rather than
+         * re-derived. True only when every accepted literal atom is `"false"`
+         * and no given was referenced, so an OR'd admin-override disjunct
+         * (`false or $ROLE = 'admin'`) is correctly NOT constant-false. A
+         * caller can use this to skip dispatching the graft to the warehouse
+         * at all: the row set it would return is provably empty.
+         */
+        constantFalse: boolean;
      }
    | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
 > {
@@ -525,6 +537,10 @@ export async function resolveGateShape(
       graftTarget,
       filterText,
       condition: cached.condition,
+      constantFalse:
+         cached.classification.givenNames.length === 0 &&
+         cached.classification.literalAtoms.length > 0 &&
+         cached.classification.literalAtoms.every((atom) => atom === "false"),
    };
 }
 
