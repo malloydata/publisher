@@ -114,14 +114,13 @@ describe("compile-path authorize gate (compileSource)", () => {
    });
 
    it("CRITICAL — a row-level gate still denies even with a satisfying given, when the compile path cannot graft it", async () => {
-      // `row_gated`'s condition reads `org_id`, a real column — genuinely
-      // row-level, not given-only. The same "independently recompiled model"
-      // shape that defeats `resolveGraftTarget` for the given-only gates
-      // above must NOT let this one fall back to the given-only boolean path:
-      // `Model.classifyWithoutGraft`'s own probe has no `org_id` column
-      // either, so it must fail to compile and deny — never admit a caller
-      // whose given would satisfy the row condition, since there is no scope
-      // here to graft the row filter onto at all.
+      // `row_gated`'s condition reads `org_id`, a real column. The same
+      // "independently recompiled model" shape that defeats
+      // `resolveGraftTarget` here has no fallback to fall back TO — every
+      // gate is a row filter now, and a filter with nowhere to attach
+      // rejects outright, so this must fail to compile and deny — never
+      // admit a caller whose given would satisfy the row condition, since
+      // there is no scope here to graft the row filter onto at all.
       await expect(
          compile("run: row_gated -> { aggregate: c }", { GROUPS: [1] }),
       ).rejects.toBeInstanceOf(AccessDeniedError);

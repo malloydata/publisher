@@ -90,7 +90,6 @@ import {
    validateAuthorizeProbes,
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
-   type RowLevelGateClassification,
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import {
@@ -121,12 +120,18 @@ import {
    type PreaggregateViolation,
 } from "./preaggregation_validation";
 import { derivedStructsReachable } from "./gate_registry_walk";
+// Aliased with an `Impl` suffix: `Model` declares its own private methods of
+// these same names (thin per-instance wrappers, see each one's doc) — an
+// unaliased import would only work today because a method body's unqualified
+// call resolves to this module-level import, never to the method itself
+// (that needs `this.`). Aliasing removes the name COLLISION outright, rather
+// than leaving a trap where converting one of those methods to an
+// arrow-function class property would recurse instead of delegating.
 import {
-   collectEntryPointGates,
-   computeGivenDeclaredDefaults,
-   computeGivenDeclaredTypes,
-   resolveGateShape,
-   resolveGraftTarget,
+   collectEntryPointGates as collectEntryPointGatesImpl,
+   createGateClassificationDeps,
+   resolveGateShape as resolveGateShapeImpl,
+   resolveGraftTarget as resolveGraftTargetImpl,
    type GateClassificationDeps,
    type GateEntry,
    type GraftScope,
@@ -239,27 +244,6 @@ interface RunnableNotebookCell {
    newSources?: Malloy.SourceInfo[];
    queryInfo?: Malloy.QueryInfo;
 }
-
-/**
- * {@link GraftScope} (`./gate_classification`) is built here, per graft
- * consumer:
- *  - the query path and the compile-time probe backstop use
- *    {@link Model.defaultGraftScope} — this model's own cumulative
- *    (modelDef, modelMaterializer);
- *  - a notebook cell instead passes the model as resolved by
- *    {@link Model.resolveNotebookCellGraftScope} — either an EARLIER cell's
- *    own scope ({@link Model.graftScopeForCell}) or, when no earlier scope
- *    covers the run target, this cell's OWN post-declaration scope
- *    ({@link Model.selfGraftScopeForCell}). Never the model-wide cumulative
- *    one for a notebook cell: it already carries everything every cell
- *    (including this one) has declared, so recompiling a cell that declares
- *    its own source (`source: local2 is gated extend {…}` then `run: local2
- *    -> …`) against it tries to redeclare a name the cumulative model
- *    already has, and fails with "Cannot redefine 'local2'" — the same
- *    failure a cell's OWN scope has for its OWN declarations, which is why
- *    that fallback binds by repointing a compiled queryDef instead of
- *    recompiling text (see `executeNotebookCell`).
- */
 
 /**
  * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
@@ -417,32 +401,30 @@ export class Model {
     */
    private gateRuntime: HydrationRuntime | undefined;
    /**
-    * Row-level gate shape, memoized per `(cacheScope, graftTarget,
-    * filterText)` key — see `resolveGateShape`. Correct to cache for the LIFE
-    * OF THIS MODEL INSTANCE because a `Model` instance is never mutated and
-    * reused across a package reload; a reload always constructs a fresh
-    * `Model` (and therefore a fresh, empty cache) rather than patching this
-    * one. Storing the LIFTED condition alongside the classification (not
-    * just the classification itself) is what makes a row-level gate's SECOND
-    * consumer — grafting it onto a copied `ModelDef` — free too: the
-    * expensive part is the probe compile, and this cache is what limits it to
-    * exactly one per gate per `(cacheScope, graftTarget, filterText)` on this
-    * model instance, ever. `cacheScope` (see {@link GraftScope}) keeps a
-    * notebook cell's per-cell classification from colliding with the
-    * model-wide one, or with a different cell's.
+    * This model's own {@link GateClassificationDeps} — built ONCE, via
+    * {@link createGateClassificationDeps}, and reused for the life of THIS
+    * MODEL INSTANCE. Correct to hold onto that long because a `Model`
+    * instance is never mutated and reused across a package reload; a reload
+    * always constructs a fresh `Model` (and therefore a fresh deps struct,
+    * with a fresh, empty `gateShapeCache`) rather than patching this one.
+    * `gateShapeCache`'s entries hold the LIFTED condition alongside the
+    * classification (not just the classification itself), which is what
+    * makes a row-level gate's SECOND consumer — grafting it onto a copied
+    * `ModelDef` — free too: the expensive part is the probe compile, and the
+    * cache is what limits it to exactly one per gate per `(cacheScope,
+    * graftTarget, filterText)` on this model instance, ever.
+    * `gateShapeCache` is uncapped, unlike {@link graftedMaterializerCache},
+    * and for a reason rather than by oversight: every component of its key
+    * is derived from the model's own shape, never from a caller's givens or
+    * query text, so the entry count is bounded by the model itself and no
+    * request pattern can grow it.
     *
-    * Uncapped, unlike {@link graftedMaterializerCache}, and for a reason rather
-    * than by oversight: every component of the key (`cacheScope` x `graftTarget`
-    * x `filterText`) is derived from the model's own shape, never from a
-    * caller's givens or query text, so the entry count is bounded by the model
-    * itself and no request pattern can grow it. Each entry holds a
-    * classification plus one lifted `FilterCondition` — not the retained
-    * `structuredClone(modelDef)` that made the graft cache a memory question.
+    * Built lazily (not at construction) purely so `this.givens` is settled
+    * first; see {@link createGateClassificationDeps}'s doc for why the cache
+    * and the given-declared-type/default maps must be minted together here
+    * rather than assembled from three separately-cached fields.
     */
-   private gateShapeCache: Map<
-      string,
-      { classification: RowLevelGateClassification; condition: FilterCondition }
-   > = new Map();
+   private gateClassificationDepsCache: GateClassificationDeps | undefined;
    /**
     * Grafted `ModelMaterializer`s, memoized per `cacheScope` + SORTED set of
     * `(graftTarget, filterText)` pairs — see `getOrBuildGraftedMaterializer`.
@@ -649,6 +631,24 @@ export class Model {
     * only when this `Model` has no compiled model at all (a
     * compilation-failure placeholder), matching every other row-level code
     * path's existing fail-closed posture for that case.
+    *
+    * {@link GraftScope} (`./gate_classification`) is built here, per graft
+    * consumer:
+    *  - the query path and the compile-time probe backstop use this method;
+    *  - a notebook cell instead passes the model as resolved by
+    *    {@link resolveNotebookCellGraftScope} — either an EARLIER cell's own
+    *    scope ({@link graftScopeForCell}) or, when no earlier scope covers
+    *    the run target, this cell's OWN post-declaration scope
+    *    ({@link selfGraftScopeForCell}). Never this method's model-wide
+    *    cumulative scope for a notebook cell: it already carries everything
+    *    every cell (including this one) has declared, so recompiling a cell
+    *    that declares its own source (`source: local2 is gated extend {…}`
+    *    then `run: local2 -> …`) against it tries to redeclare a name the
+    *    cumulative model already has, and fails with "Cannot redefine
+    *    'local2'" — the same failure a cell's OWN scope has for its OWN
+    *    declarations, which is why that fallback binds by repointing a
+    *    compiled queryDef instead of recompiling text (see
+    *    `executeNotebookCell`).
     */
    private defaultGraftScope(): GraftScope | undefined {
       if (!this.modelDef || !this.modelMaterializer) return undefined;
@@ -785,46 +785,6 @@ export class Model {
          return { graftScope: earlierScope, usesOwnScope: false };
       }
       return { graftScope: selfScope, usesOwnScope: true };
-   }
-
-   /**
-    * Given name → declared Malloy type, from this model's own given surface
-    * ({@link givens}). Passed to {@link classifyAuthorizeGate} so it prefers
-    * the gate author's DECLARED type over inferring one from the caller's JS
-    * value (e.g. `$LEVEL > 3` compares numerically even if the caller sends
-    * `"5"`). Only reaches a given declared within one import hop of this
-    * model — a gate on a source reached through a deeper transitive import
-    * isn't on this surface, so that case still falls back to inferring from
-    * the value.
-    *
-    * Built once and reused: {@link givens} is fixed for the life of a `Model`
-    * (a package reload constructs a fresh one), and this is on the per-gate
-    * request path — every `resolveGateShape` asks for it.
-    */
-   private givenDeclaredTypesCache: Map<string, string> | undefined;
-
-   private givenDeclaredTypes(): Map<string, string> {
-      this.givenDeclaredTypesCache ??= computeGivenDeclaredTypes(this.givens);
-      return this.givenDeclaredTypesCache;
-   }
-
-   /**
-    * Given name → declared default (rendered Malloy source text), mirroring
-    * {@link givenDeclaredTypes} — same cache-once-per-`Model` treatment, same
-    * `givens` surface. Feeds {@link classifyAuthorizeGate}'s `declaredDefaults`
-    * on the request-time graft re-classification ({@link resolveGateShape}),
-    * so a field-vs-given gate reached through a join/derivation is refused
-    * the same way `validateAuthorizeProbes` refuses it at load time — needed
-    * here too because a grafted gate can resolve against a DIFFERENT model's
-    * given surface than the one `validateAuthorizeProbes` validated.
-    */
-   private givenDeclaredDefaultsCache: Map<string, string> | undefined;
-
-   private givenDeclaredDefaults(): Map<string, string> {
-      this.givenDeclaredDefaultsCache ??= computeGivenDeclaredDefaults(
-         this.givens,
-      );
-      return this.givenDeclaredDefaultsCache;
    }
 
    /**
@@ -1148,9 +1108,9 @@ export class Model {
    /**
     * Gate a compiled query on its ENTRY POINT — the source the query runs
     * against. That means the run target's own `#(authorize)`, the gate it
-    * carries from the source it derives from
-    * (`extend` / query-source derivation, see {@link ancestorGateExprs}), and,
-    * when the run target is a composite, the one member branch Malloy resolved.
+    * carries from the source it derives from (`extend` / query-source
+    * derivation, see `./gate_registry_walk`'s `ancestorGateExprs`), and, when
+    * the run target is a composite, the one member branch Malloy resolved.
     *
     * Joined sources are NOT gated. Reaching a gated source through `join_*` —
     * at any depth, aliased, cross-file, query-local, or as a composite member —
@@ -1205,9 +1165,9 @@ export class Model {
     *
     * Gate a compiled query on its ENTRY POINT — the source the query runs
     * against. That means the run target's own `#(authorize)`, the gate it
-    * carries from the source it derives from
-    * (`extend` / query-source derivation, see {@link ancestorGateExprs}), and,
-    * when the run target is a composite, the one member branch Malloy resolved.
+    * carries from the source it derives from (`extend` / query-source
+    * derivation, see `./gate_registry_walk`'s `ancestorGateExprs`), and, when
+    * the run target is a composite, the one member branch Malloy resolved.
     *
     * Joined sources are NOT gated. Reaching a gated source through `join_*` —
     * at any depth, aliased, cross-file, query-local, or as a composite member —
@@ -1758,7 +1718,7 @@ export class Model {
       entryPointStruct: SourceDef | undefined = struct,
       excludeNotes: readonly AnnotationNote[] = [],
    ): GateEntry[] {
-      return collectEntryPointGates(
+      return collectEntryPointGatesImpl(
          struct,
          modelDef,
          seen,
@@ -1770,21 +1730,20 @@ export class Model {
 
    /**
     * The {@link GateClassificationDeps} every per-instance gate-classification
-    * wrapper below supplies to `./gate_classification`'s free functions: this
-    * `Model`'s own long-lived {@link gateShapeCache}, so a classification is
-    * memoized for the life of THIS instance (see that field's doc for why
-    * that scope, not a process-wide cache, is what's correct across a
-    * package reload) -- a one-shot build-time caller passes its own cache
-    * instead, so it neither leaks entries into nor inherits them from a
+    * wrapper below supplies to `./gate_classification`'s free functions —
+    * see {@link gateClassificationDepsCache}'s doc for why this model builds
+    * exactly one, lazily, and reuses it for its own life rather than
+    * reassembling one from separately-cached fields on each call. A one-shot
+    * build-time caller instead calls {@link createGateClassificationDeps}
+    * itself, once, so it neither leaks entries into nor inherits them from a
     * request-serving `Model`'s.
     */
    private gateClassificationDeps(): GateClassificationDeps {
-      return {
-         gateShapeCache: this.gateShapeCache,
-         givenDeclaredTypes: this.givenDeclaredTypes(),
-         givenDeclaredDefaults: this.givenDeclaredDefaults(),
-         modelPath: this.modelPath,
-      };
+      this.gateClassificationDepsCache ??= createGateClassificationDeps(
+         this.givens ?? [],
+         this.modelPath,
+      );
+      return this.gateClassificationDepsCache;
    }
 
    /** See `./gate_classification`'s {@link resolveGateShape}. */
@@ -1801,7 +1760,7 @@ export class Model {
         }
       | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
    > {
-      return resolveGateShape(
+      return resolveGateShapeImpl(
          entry,
          originModelDef,
          graftScope,
@@ -1815,7 +1774,7 @@ export class Model {
       originModelDef: ModelDef,
       graftModelDef: ModelDef,
    ): string | undefined {
-      return resolveGraftTarget(struct, originModelDef, graftModelDef);
+      return resolveGraftTargetImpl(struct, originModelDef, graftModelDef);
    }
 
    /**
@@ -4532,10 +4491,11 @@ export class Model {
     *
     * Reads the named source's OWN annotations and does not walk its derivation
     * base, so `source: a is b extend {…}` inherits nothing from `b`'s
-    * declaration. This diverges from {@link ancestorGateExprs}, which walks
-    * ancestors deliberately because a gate an extension could shed would be no
-    * gate at all. A cost label carries no such requirement, and inheriting one
-    * would attribute `a`'s traffic to `b`'s team.
+    * declaration. This diverges from `./gate_registry_walk`'s
+    * `ancestorGateExprs`, which walks ancestors deliberately because a gate
+    * an extension could shed would be no gate at all. A cost label carries no
+    * such requirement, and inheriting one would attribute `a`'s traffic to
+    * `b`'s team.
     */
    private safeSourceTag(
       sourceName: string | undefined,

@@ -1285,9 +1285,9 @@ function quoteMalloyIdentifier(name: string): string {
  * than the synthetic one-row source `buildAuthorizeProbe` uses, which has no
  * real columns at all. `__authorize_probe` is a reserved, deliberately
  * obscure select name, same convention as `buildAuthorizeProbe`'s
- * `__auth_N` and `Model.liftGateCondition`'s identical probe shape (kept in
- * lockstep with it: both need the SAME shape to read back the compiled
- * `FilterCondition` from `_query.structRef.filterList`).
+ * `__auth_N` and `./gate_classification`'s `liftGateCondition`'s identical
+ * probe shape (kept in lockstep with it: both need the SAME shape to read
+ * back the compiled `FilterCondition` from `_query.structRef.filterList`).
  */
 export function buildRowLevelProbe(
    graftTarget: string,
@@ -1317,13 +1317,13 @@ export function buildRowLevelProbe(
  *    the whole design depends on it landing.
  *
  * Genuinely shared by both lifts — load-time validation's
- * {@link liftRowLevelCondition} and request-time `Model.liftGateCondition` —
- * rather than spelled out twice. They read the same IR path and ran the same three
- * checks independently, differing only in the error label, and a check that
- * drifted out of one of them fails in the direction above. `label` is the subject
- * phrase for those errors; `T` is the caller's own condition type, so the service
- * path keeps Malloy's `FilterCondition` and the worker-bundled path keeps the duck
- * type.
+ * {@link liftRowLevelCondition} and request-time `./gate_classification`'s
+ * `liftGateCondition` — rather than spelled out twice. They read the same IR
+ * path and ran the same three checks independently, differing only in the
+ * error label, and a check that drifted out of one of them fails in the
+ * direction above. `label` is the subject phrase for those errors; `T` is the
+ * caller's own condition type, so the service path keeps Malloy's
+ * `FilterCondition` and the worker-bundled path keeps the duck type.
  */
 export function liftProbeFilterCondition<T extends CompiledGateCondition>(
    prepared: { _query?: { structRef?: { filterList?: T[] } } },
@@ -1351,10 +1351,11 @@ export function liftProbeFilterCondition<T extends CompiledGateCondition>(
 /**
  * The ONE spelling of a gate entry's whole expression list as a single Malloy
  * boolean: `exprs.map(e => "(" + e + ")").join(" or ")`. Shared with
- * `Model.resolveGateShape`'s `filterText` so the text this module probes and
- * the text the request path grafts can never drift apart — they are compared
- * against each other, by string, in {@link liftRowLevelCondition} and
- * `Model.liftGateCondition`.
+ * `./gate_classification`'s `resolveGateShape`'s `filterText` so the text this
+ * module probes and the text the request path grafts can never drift apart —
+ * they are compared against each other, by string, in
+ * {@link liftRowLevelCondition} and `./gate_classification`'s
+ * `liftGateCondition`.
  */
 export function gateFilterText(exprs: readonly string[]): string {
    return exprs.map((e) => `(${e})`).join(" or ");
@@ -1364,7 +1365,7 @@ export function gateFilterText(exprs: readonly string[]): string {
  * Compile {@link buildRowLevelProbe} and lift the condition Malloy built for the
  * `where:` this probe just added, via {@link liftProbeFilterCondition} — which is
  * where the three checks that make the lift trustworthy live, shared with
- * `Model.liftGateCondition` rather than duplicated beside it.
+ * `./gate_classification`'s `liftGateCondition` rather than duplicated beside it.
  *
  * Throws if the probe fails to compile (an unreachable given, or — the case this
  * exists to catch — a field the gate references that this entry point renamed,
