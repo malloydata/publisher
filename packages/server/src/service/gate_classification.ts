@@ -26,7 +26,6 @@ import {
 import { logger } from "../logger";
 import { ownLevelNotes, type AnnotationNote } from "./annotations";
 import {
-   buildAuthorizeProbe,
    buildRowLevelProbe,
    classifyAuthorizeGate,
    collectAuthorizeExprs,
@@ -55,8 +54,7 @@ export type GateEntry = {
     * Absent only for the synthetic "unresolvable query-source base" deny
     * entry, which names no real struct at all. Row-level gate resolution
     * needs this to find where in `modelDef.contents` to graft the gate's
-    * condition ({@link resolveGraftTarget}); a given-only gate never reads
-    * it.
+    * condition ({@link resolveGraftTarget}).
     */
    struct?: SourceDef;
 };
@@ -84,8 +82,8 @@ export interface GraftScope {
 }
 
 /**
- * Inputs {@link resolveGateShape} and {@link classifyWithoutGraft} need
- * beyond their own arguments, injected rather than module-level state because
+ * Inputs {@link resolveGateShape} needs beyond its own arguments, injected
+ * rather than module-level state because
  * the two current callers need different cache lifetimes: `Model` reuses one
  * `gateShapeCache` for the life of its (long-lived, shared-across-requests)
  * instance, while a one-shot build-time classification must pass its own
@@ -342,17 +340,15 @@ export function collectEntryPointGates(
 }
 
 /**
- * Resolve ONE {@link GateEntry} to its enforcement shape: `given_only`
- * (unchanged — evaluated by the existing probe), `row_level` (a row FILTER,
- * carrying the graft target and the lifted compiled condition), or `deny`
- * (fail closed — either the compiled shape is not an allowed one, or there is
- * nowhere to graft it).
+ * Resolve ONE {@link GateEntry} to its enforcement shape: `row_level` (a row
+ * FILTER, carrying the graft target and the lifted compiled condition), or
+ * `rejected` (fail closed — either the compiled shape is not an allowed one,
+ * or there is nowhere to graft it).
  *
  * `entry.struct` is absent only for the synthetic "unresolvable query-source
- * base" deny entry `collectEntryPointGates` manufactures, whose sole
- * expression is the literal `"false"` — that has no field reference by
- * construction, so it is correctly `given_only` (and denies via the probe,
- * exactly as it always has) without needing a graft target at all.
+ * base" entry `collectEntryPointGates` manufactures, whose sole expression is
+ * the literal `"false"` — there is no real struct here to graft anything
+ * onto, so this rejects outright rather than attempting a classification.
  *
  * `filterText` folds the entry's whole OR disjunction into ONE expression:
  * `exprs.map(e => "(" + e + ")").join(" or ")`. This is deliberate, not
@@ -397,8 +393,9 @@ export function collectEntryPointGates(
  *
  * `graftScope` is `undefined` only when the caller has nothing to graft
  * against at all (no compiled model, or — for a notebook cell — no earlier
- * cell to graft onto); that always denies a row-level gate here, same as an
- * unresolvable graft target.
+ * cell to graft onto); that always rejects here, same as an unresolvable
+ * graft target — every gate is a row filter now, and a filter with nowhere to
+ * attach cannot be enforced.
  */
 export async function resolveGateShape(
    entry: GateEntry,
@@ -406,19 +403,17 @@ export async function resolveGateShape(
    graftScope: GraftScope | undefined,
    deps: GateClassificationDeps,
 ): Promise<
-   | { kind: "given_only" }
    | {
-        kind: "row_level";
+        shape: "row_level";
         graftTarget: string;
         filterText: string;
         condition: FilterCondition;
      }
-   | { kind: "deny"; cause?: RowLevelGateRejectionCause }
+   | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
 > {
-   if (!entry.struct) return { kind: "given_only" };
+   if (!entry.struct) return { shape: "rejected" };
    if (!graftScope) {
-      // Distinguish this from an ordinary "the gate admits nothing" deny:
-      // there is no scope here to even ATTEMPT a graft against. For a
+      // There is no scope here to even ATTEMPT a graft against. For a
       // notebook cell this means NEITHER of `resolveNotebookCellGraftScope`'s
       // two scopes was available — no earlier code cell, AND this cell has no
       // compiled model of its own (see that method's doc; a self-declaring
@@ -426,13 +421,12 @@ export async function resolveGateShape(
       // reaches this branch). The caller-facing error stays the same opaque
       // 403 either way (deliberate — it must not leak whether a gate exists
       // or what it names), but an operator reading logs should be able to
-      // tell "the condition was evaluated and failed" apart from "there was
-      // nowhere at all to carry a graft".
+      // tell "there was nowhere at all to carry a graft" from the log line.
       logger.debug(
          "Row-level gate has no graft scope to attach to (no scope was available at all, not the gate's own condition); denying",
          { modelPath: deps.modelPath, label: entry.label },
       );
-      return { kind: "deny" };
+      return { shape: "rejected" };
    }
 
    const graftTarget = resolveGraftTarget(
@@ -440,14 +434,14 @@ export async function resolveGateShape(
       originModelDef,
       graftScope.modelDef,
    );
-   // A missing graft target does NOT mean the gate is row-level — an
-   // ad-hoc/ephemeral run target (an independently recompiled `/compile`
-   // model, a notebook cell's `source: mine is base_locked extend {…}`) can
-   // fail this resolution for a gate that references no row field at all.
-   // Fall back to `classifyWithoutGraft` to tell that apart from a genuine
-   // row-level gate before denying.
+   // No key to graft anything onto — an ad-hoc/ephemeral run target (an
+   // independently recompiled `/compile` model, a notebook cell's `source:
+   // mine is base_locked extend {…}`) can fail this resolution. Every gate is
+   // a row filter now, and a filter with nowhere to attach cannot be
+   // enforced, so this rejects rather than attempting a fallback
+   // classification.
    if (!graftTarget) {
-      return classifyWithoutGraft(entry, graftScope.materializer, deps);
+      return { shape: "rejected" };
    }
    const filterText = gateFilterText(entry.exprs);
    const cacheKey = `${graftScope.cacheScope}\u0000${graftTarget}\u0000${filterText}`;
@@ -462,15 +456,12 @@ export async function resolveGateShape(
             graftScope.materializer,
          );
       } catch (err) {
-         logger.debug(
-            "Row-level gate condition failed to lift; checking whether it is given-only before denying",
-            {
-               modelPath: deps.modelPath,
-               graftTarget,
-               error: err instanceof Error ? err.message : String(err),
-            },
-         );
-         return classifyWithoutGraft(entry, graftScope.materializer, deps);
+         logger.debug("Row-level gate condition failed to lift; denying", {
+            modelPath: deps.modelPath,
+            graftTarget,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         return { shape: "rejected" };
       }
       const classification = classifyAuthorizeGate(
          condition,
@@ -481,64 +472,15 @@ export async function resolveGateShape(
       deps.gateShapeCache.set(cacheKey, cached);
    }
 
-   if (cached.classification.shape === "given_only") {
-      return { kind: "given_only" };
-   }
    if (cached.classification.shape === "rejected") {
-      return { kind: "deny", cause: cached.classification.cause };
+      return { shape: "rejected", cause: cached.classification.cause };
    }
    return {
-      kind: "row_level",
+      shape: "row_level",
       graftTarget,
       filterText,
       condition: cached.condition,
    };
-}
-
-/**
- * Fallback for {@link resolveGateShape} when a row-level graft could not even
- * be ATTEMPTED — no `modelDef.contents` key resolved to graft onto, or the
- * lift itself threw. Neither failure says anything about the gate's own
- * shape: an ad-hoc/ephemeral run target (an independently recompiled
- * `/compile` model; a notebook cell's `source: mine is base_locked extend
- * {…}`) can hit either failure for a gate that references NO row field at
- * all, and denying unconditionally here would break every given-only gate
- * compiled through such a shape — given-only gates ship in production today
- * and need no graft to begin with.
- *
- * Distinguishes the two with the SAME one-row synthetic probe load-time
- * validation already uses for this question (`buildAuthorizeProbe` in
- * `./authorize`, via `validateAuthorizeProbes`'s `given_only` branch): it
- * selects over a synthetic one-row DuckDB source with no real columns, so it
- * can only ever compile for a gate that references givens alone. If it
- * compiles here, the gate is `given_only` and the boolean path (which needs
- * no graft) is correct and safe. If it does not compile, the gate references
- * a row field this graft-less path cannot attach — deny, same as before this
- * fallback existed. Reusing `buildAuthorizeProbe` itself (rather than a
- * second, differently-behaving classifier) is deliberate: two classifiers
- * drifting apart has already caused two security bugs on this project.
- */
-export async function classifyWithoutGraft(
-   entry: GateEntry,
-   materializer: ModelMaterializer,
-   deps: Pick<GateClassificationDeps, "modelPath">,
-): Promise<{ kind: "given_only" } | { kind: "deny" }> {
-   try {
-      await materializer
-         .loadQuery(buildAuthorizeProbe(entry.exprs))
-         .getPreparedQuery();
-      return { kind: "given_only" };
-   } catch (err) {
-      logger.debug(
-         "Row-level gate has no attachable graft and does not compile as given-only; denying",
-         {
-            modelPath: deps.modelPath,
-            label: entry.label,
-            error: err instanceof Error ? err.message : String(err),
-         },
-      );
-      return { kind: "deny" };
-   }
 }
 
 /**

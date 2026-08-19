@@ -86,7 +86,6 @@ import {
    assertNoCallerAuthorizeAnnotation,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
-   evaluateAuthorize,
    referencedGivenNames,
    validateAuthorizeProbes,
    type AuthorizeMap,
@@ -790,18 +789,17 @@ export class Model {
 
    /**
     * Given name → declared Malloy type, from this model's own given surface
-    * ({@link givens}). Passed to {@link evaluateAuthorize}'s self-contained
-    * probe fallback so it prefers the gate author's DECLARED type over
-    * inferring one from the caller's JS value (e.g. `$LEVEL > 3` compares
-    * numerically even if the caller sends `"5"`). Only reaches a given
-    * declared within one import hop of this model — a gate on a source
-    * reached through a deeper transitive import isn't on this surface, so
-    * that case still falls back to inferring from the value.
+    * ({@link givens}). Passed to {@link classifyAuthorizeGate} so it prefers
+    * the gate author's DECLARED type over inferring one from the caller's JS
+    * value (e.g. `$LEVEL > 3` compares numerically even if the caller sends
+    * `"5"`). Only reaches a given declared within one import hop of this
+    * model — a gate on a source reached through a deeper transitive import
+    * isn't on this surface, so that case still falls back to inferring from
+    * the value.
     *
     * Built once and reused: {@link givens} is fixed for the life of a `Model`
     * (a package reload constructs a fresh one), and this is on the per-gate
-    * request path — every `resolveGateShape` and every `assertAuthorizedExprs`
-    * asks for it.
+    * request path — every `resolveGateShape` asks for it.
     */
    private givenDeclaredTypesCache: Map<string, string> | undefined;
 
@@ -1032,19 +1030,22 @@ export class Model {
    }
 
    /**
-    * Runtime authorize gate. Throws `AccessDeniedError` (403) unless at least
-    * one in-scope authorize expression evaluates true for the supplied givens.
-    * No in-scope expressions = unrestricted.
+    * Runtime authorize gate. Throws `AccessDeniedError` (403) when a gate on
+    * `sourceName` cannot even be classified/grafted; a gate that CAN be
+    * expressed as a row filter is deferred (see the entry-point loop below)
+    * rather than evaluated here, since it has no whole-source admit/deny
+    * answer — enforcing it means recompiling against a grafted materializer,
+    * which is `authorizeAndBindRunnable`'s job, not this probe-only one's.
+    * No in-scope gate = unrestricted.
     *
-    * Fail closed: any failure to evaluate the probe — a missing given value, a
-    * transient probe error, a missing/non-true result — denies. (Expression
+    * Fail closed: any failure to classify or graft a gate denies. (Expression
     * well-formedness was already validated at model load; see authorize.ts.)
     * The 403 message names only the source, never the expression, so gate logic
     * is not leaked to the caller.
     */
    public async assertAuthorized(
       sourceName: string | undefined,
-      givens: Record<string, GivenValue>,
+      _givens: Record<string, GivenValue>,
       bypassAuthorize = false,
       /**
        * The graft scope a row-level gate found here would classify/lift
@@ -1074,45 +1075,35 @@ export class Model {
          : undefined;
       if (gates) {
          for (const entry of gates) {
-            // A row-level shaped gate has no boolean this probe-only method can
-            // decide — it is a row FILTER, only enforceable where a runnable
+            // A gate is a row FILTER now, only enforceable where a runnable
             // exists to recompile against the grafted materializer
-            // (`authorizeAndBindRunnable`). Deferring it here is safe rather
-            // than fail-open: every caller of `assertAuthorized` that reaches a
-            // named source either IS `authorizeAndBindRunnable` itself (via the
-            // shared `collectAuthorizeEntryPointGates` helper, which re-derives
-            // and enforces this exact gate a few lines further down the SAME
-            // call) or is a best-effort PRE-compile fast path
-            // (`getQueryResults`' early gate, `assertAuthorizedForText`) that an
-            // unconditional authoritative backstop always runs after. Denying
-            // here instead would be wrong in the opposite direction: every
-            // row-level-gated query would be refused before the graft ever got
-            // a chance to run.
+            // (`authorizeAndBindRunnable`). Deferring the admit case here is
+            // safe rather than fail-open: every caller of `assertAuthorized`
+            // that reaches a named source either IS `authorizeAndBindRunnable`
+            // itself (via the shared `collectAuthorizeEntryPointGates` helper,
+            // which re-derives and enforces this exact gate a few lines
+            // further down the SAME call) or is a best-effort PRE-compile fast
+            // path (`getQueryResults`' early gate, `assertAuthorizedForText`)
+            // that an unconditional authoritative backstop always runs after.
+            // Denying here instead would be wrong in the opposite direction:
+            // every gated query would be refused before the graft ever got a
+            // chance to run. A missing `modelDef` cannot even attempt a
+            // classification, so it rejects the same as an unresolvable one.
             const resolution = this.modelDef
                ? await this.resolveGateShape(entry, this.modelDef, graftScope)
-               : ({ kind: "given_only" } as const);
-            if (resolution.kind === "row_level") continue;
-            if (resolution.kind === "deny") {
-               // Same decision counter `authorizeAndBindRunnable` books for
-               // its own fail-closed refusals: a deny is a deny wherever the
-               // gate was resolved, and an operator reading
-               // `publisher_authorize_row_level_total{decision=
-               // "denied_by_gate"}` must not have a whole class of them
-               // (every gate refused at SHAPE resolution) silently missing.
-               // `cause` is the separate, finer rejection label, not a
-               // substitute for it.
-               recordRowLevelGateDecision("denied_by_gate");
-               if (resolution.cause)
-                  recordRowLevelGateRejected(resolution.cause);
-               throw new AccessDeniedError(
-                  `Access denied for source "${entry.label}".`,
-               );
-            }
-            await this.assertAuthorizedExprs(
-               entry.label,
-               entry.exprs,
-               givens,
-               entry.selfContained,
+               : ({ shape: "rejected", cause: undefined } as const);
+            if (resolution.shape === "row_level") continue;
+            // Same decision counter `authorizeAndBindRunnable` books for its
+            // own fail-closed refusals: a rejection is a rejection wherever
+            // the gate was resolved, and an operator reading
+            // `publisher_authorize_row_level_total{decision=
+            // "denied_by_gate"}` must not have a whole class of them (every
+            // gate refused at SHAPE resolution) silently missing. `cause` is
+            // the separate, finer rejection label, not a substitute for it.
+            recordRowLevelGateDecision("denied_by_gate");
+            if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
+            throw new AccessDeniedError(
+               `Access denied for source "${entry.label}".`,
             );
          }
          return;
@@ -1132,9 +1123,8 @@ export class Model {
     *
     * Every authorize bypass in the process funnels through here, because the
     * only two methods that evaluate a gate ({@link assertAuthorized} and
-    * {@link assertAuthorizedForAllSources}) both short-circuit into it — and
-    * the private {@link assertAuthorizedExprs} they share has no other caller.
-    * So this is the complete audit surface: a bypass that does not appear here
+    * {@link assertAuthorizedForAllSources}) both short-circuit into it. So
+    * this is the complete audit surface: a bypass that does not appear here
     * did not happen.
     *
     * The identifiers live on the log line rather than the counter labels; see
@@ -1153,52 +1143,6 @@ export class Model {
          modelPath: this.modelPath,
          packageName: this.packageName,
       });
-   }
-
-   /**
-    * Core runtime gate, factored out of {@link assertAuthorized} so the
-    * entry-point walk ({@link assertAuthorizedForAllSources}) can evaluate a
-    * gate it read directly off a struct's own annotations, without going
-    * through a `this.sources` name lookup (which only covers top-level
-    * `modelDef.contents` sources — see the design doc).
-    *
-    * `selfContainedFirst`, passed through to {@link evaluateAuthorize},
-    * isolates a derived source's gate from the entry model's own ambient
-    * given namespace — see {@link collectEntryPointGates}'s `selfContained`
-    * tag. Left `false` (ambient-first) only for a gate the entry point
-    * DECLARES ITSELF ({@link assertAuthorized}'s call), which is correct to
-    * evaluate against the entry model's ambient namespace.
-    */
-   private async assertAuthorizedExprs(
-      label: string,
-      exprs: string[],
-      givens: Record<string, GivenValue>,
-      selfContainedFirst = false,
-   ): Promise<void> {
-      if (exprs.length === 0) return; // unrestricted
-      const deny = () => {
-         throw new AccessDeniedError(`Access denied for source "${label}".`);
-      };
-      if (!this.modelMaterializer) deny();
-      let passed = false;
-      try {
-         passed = await evaluateAuthorize(
-            this.modelMaterializer!,
-            exprs,
-            givens,
-            this.givenDeclaredTypes(),
-            { selfContainedFirst },
-         );
-      } catch (err) {
-         // Fail closed — e.g. a referenced given had no supplied value.
-         logger.debug("Authorize probe failed; denying", {
-            sourceName: label,
-            modelPath: this.modelPath,
-            error: err instanceof Error ? err.message : String(err),
-         });
-         deny();
-      }
-      if (!passed) deny();
    }
 
    /**
@@ -1236,9 +1180,9 @@ export class Model {
       // No `recompile`: this method has no runnable to swap in, so it is the
       // right shape only for a caller that wants a check, not a rewritten
       // query to run (the compiled-source backstop used by `/compile` via
-      // `assertAuthorizedForRunnable`). A row-level gate therefore denies
-      // here rather than being silently admitted through the given-only
-      // probe — see `authorizeAndBindRunnable`, which this delegates to.
+      // `assertAuthorizedForRunnable`). A gate therefore denies here rather
+      // than admitting unfiltered — see `authorizeAndBindRunnable`, which
+      // this delegates to.
       await this.authorizeAndBindRunnable(
          runnable as QueryMaterializer,
          givens,
@@ -1379,8 +1323,8 @@ export class Model {
     * missing-model fail-open without borrowing an unrelated file-level gate.
     *
     * No `recompile`, for the same reason {@link assertAuthorizedForAllSources}
-    * passes none: this is a check, not a query rewrite, so a row-level gate
-    * denies here rather than being admitted through the given-only probe.
+    * passes none: this is a check, not a query rewrite, so a gate denies here
+    * rather than admitting unfiltered.
     */
    public async assertAuthorizedFromCompiledRunnable(
       runnable: { getPreparedQuery(): Promise<unknown> },
@@ -1409,9 +1353,8 @@ export class Model {
 
    /**
     * Collect and evaluate every entry-point gate on `runnable`, exactly like
-    * {@link authorizeAndBindRunnable} does BEFORE it attempts a graft:
-    * every `given_only` gate is evaluated immediately (denying on failure),
-    * every `deny`-classified gate throws immediately, and every `row_level`
+    * {@link authorizeAndBindRunnable} does BEFORE it attempts a graft: every
+    * `rejected`-classified gate throws immediately, and every `row_level`
     * gate is DEFERRED — collected and returned rather than evaluated or
     * denied — because there is nothing to enforce it against without a
     * `recompile` step, which is `authorizeAndBindRunnable`'s job, not this
@@ -1467,8 +1410,8 @@ export class Model {
       for (const entry of entryPointGates) {
          const resolution = modelDef
             ? await this.resolveGateShape(entry, modelDef, graftScope)
-            : ({ kind: "given_only" } as const);
-         if (resolution.kind === "row_level") {
+            : ({ shape: "rejected", cause: undefined } as const);
+         if (resolution.shape === "row_level") {
             rowLevel.push({
                label: entry.label,
                graftTarget: resolution.graftTarget,
@@ -1477,30 +1420,22 @@ export class Model {
             });
             continue;
          }
-         if (resolution.kind === "deny") {
-            // Booked here as well as in `authorizeAndBindRunnable` — see the
-            // identical call in `assertAuthorized`: a gate refused at SHAPE
-            // resolution is still a fail-closed deny, and leaving it out
-            // would make the decision counter under-report every one of them.
-            recordRowLevelGateDecision("denied_by_gate");
-            if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-            throw new AccessDeniedError(
-               `Access denied for source "${entry.label}".`,
-            );
-         }
-         await this.assertAuthorizedExprs(
-            entry.label,
-            entry.exprs,
-            givens,
-            entry.selfContained,
+         // Booked here as well as in `authorizeAndBindRunnable` — see the
+         // identical call in `assertAuthorized`: a gate refused at SHAPE
+         // resolution is still a fail-closed rejection, and leaving it out
+         // would make the decision counter under-report every one of them.
+         recordRowLevelGateDecision("denied_by_gate");
+         if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
+         throw new AccessDeniedError(
+            `Access denied for source "${entry.label}".`,
          );
       }
       return rowLevel;
    }
 
    /**
-    * Whether `runnable`'s entry point carries a row-level `#(authorize)` gate
-    * — used to decide whether to attempt storage-serve routing at all.
+    * Whether `runnable`'s entry point carries any `#(authorize)` gate — used
+    * to decide whether to attempt storage-serve routing at all.
     *
     * This IS the security-relevant check for that decision, not a mere
     * performance pre-filter: the serve-shape model a routed query compiles
@@ -1508,25 +1443,31 @@ export class Model {
     * carries no `#(authorize)` annotation bytes at all, so once `runnable` is
     * swapped for the shape's runnable, nothing downstream — including the
     * authoritative walk inside {@link authorizeAndBindRunnable} — can ever
-    * discover a row-level gate this call missed. There is no post-hoc undo
-    * that can catch a false negative here: `queryHadRowLevelFilterAttached`
-    * only sees what the authoritative walk finds, and the authoritative walk
-    * runs against whichever struct `runnable` resolves to AT THAT POINT —
-    * the annotation-free shape, if routing already happened. A miss here is
+    * discover a gate this call missed. There is no post-hoc undo that can
+    * catch a false negative here: `queryHadRowLevelFilterAttached` only sees
+    * what the authoritative walk finds, and the authoritative walk runs
+    * against whichever struct `runnable` resolves to AT THAT POINT — the
+    * annotation-free shape, if routing already happened. A miss here is
     * therefore not "storage routing attempted and then undone" — it is
     * "storage routing attempted and never undone."
     *
-    * Deliberately does NOT call `assertAuthorized` / `assertAuthorizedExprs`:
-    * this must never itself evaluate or deny a gate (a routing decision must
+    * Every gate is a row filter now (see `authorize.ts`'s module doc), so
+    * every gate found here blocks routing — there is no shape left that is
+    * safe to route around a `#(authorize)` annotation. Collecting the gate
+    * list is therefore the whole check: unlike before, nothing here needs to
+    * classify or resolve a graft for any of them.
+    *
+    * Deliberately does NOT call `assertAuthorized`: this must never itself
+    * evaluate or deny a gate (a routing decision must
     * not be able to deny a query the authoritative gate below would have
     * admitted), and must never double-count a gate's metrics.
     *
     * Walks the SAME entry-point traversal ({@link collectEntryPointGates})
     * the authoritative check uses, over the LIVE (unshaped) struct — not a
     * cheaper approximation of it — because that traversal is the only thing
-    * standing between a row-level-gated entry point and the storage tier.
-    * Any exception during the walk fails closed (see the `catch` below):
-    * "cannot tell" must block routing, not admit it.
+    * standing between a gated entry point and the storage tier. Any
+    * exception during the walk fails closed (see the `catch` below): "cannot
+    * tell" must block routing, not admit it.
     */
    private async queryEntryPointHasRowLevelGate(runnable: {
       getPreparedQuery(): Promise<unknown>;
@@ -1567,23 +1508,7 @@ export class Model {
                ),
             );
          }
-         const graftScope = this.defaultGraftScope();
-         for (const entry of gates) {
-            const resolution = await this.resolveGateShape(
-               entry,
-               modelDef,
-               graftScope,
-            );
-            // Anything other than `given_only` must block routing here, not
-            // just `row_level`: `deny` means a gate exists and could not be
-            // applied (an unexpressible shape after `rename:`/`except:`/
-            // `accept:`, an unresolvable graft target, a lift that threw),
-            // which is exactly the case a routed query must never be served
-            // from — the serve shape carries no `#(authorize)` annotation
-            // bytes for anything downstream to catch the miss.
-            if (resolution.kind !== "given_only") return true;
-         }
-         return false;
+         return gates.length > 0;
       } catch {
          // Cannot tell whether the entry point carries a row-level gate — and,
          // once this returns false, nothing downstream can catch a wrong
@@ -1614,16 +1539,15 @@ export class Model {
     * `bypassAuthorize` short-circuits exactly like the probe-only path does,
     * before any gate is even collected.
     *
-    * Every `given_only` gate and every `deny` are handled by
-    * {@link probeEntryPointGates} — unchanged from before that method was
-    * factored out of this one. Every `row_level` gate it returns is held
-    * instead of evaluated inline, because there is nothing to evaluate it
-    * AGAINST until every row-level gate on this run target is known: they
-    * all graft onto the model at once, below.
+    * Every `rejected` gate is handled by {@link probeEntryPointGates} —
+    * unchanged from before that method was factored out of this one. Every
+    * `row_level` gate it returns is held instead of evaluated inline, because
+    * there is nothing to evaluate it AGAINST until every row-level gate on
+    * this run target is known: they all graft onto the model at once, below.
     *
-    * With no row-level gate collected — every gate on this run target is
-    * `given_only` or `deny` — `runnable` is returned UNCHANGED, so this path
-    * is byte-identical to calling the probe-only gate directly.
+    * With no row-level gate collected — this run target carries no gate at
+    * all — `runnable` is returned UNCHANGED, so this path is byte-identical
+    * to calling the probe-only gate directly.
     *
     * A row-level gate with no `options.recompile` denies — there is no
     * boolean this method can fall back to reporting, and no runnable it can
@@ -1696,7 +1620,7 @@ export class Model {
       try {
          // `rowLevel` is non-empty only when `resolveGateShape` classified a
          // gate as `row_level`, which requires a defined `graftScope` (see
-         // its own `if (!graftScope) return { kind: "deny" }`) — so
+         // its own `if (!graftScope) return { shape: "rejected" }`) — so
          // `graftScope` is never actually undefined here.
          const graftedMaterializer = this.getOrBuildGraftedMaterializer(
             rowLevel,
@@ -1823,14 +1747,13 @@ export class Model {
       originModelDef: ModelDef,
       graftScope: GraftScope | undefined,
    ): Promise<
-      | { kind: "given_only" }
       | {
-           kind: "row_level";
+           shape: "row_level";
            graftTarget: string;
            filterText: string;
            condition: FilterCondition;
         }
-      | { kind: "deny"; cause?: RowLevelGateRejectionCause }
+      | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
    > {
       return resolveGateShape(
          entry,
@@ -4797,8 +4720,8 @@ export class Model {
             // UNREFINED query — for an entry-point gate BEFORE the
             // `#(filter)` refinement rebuild below, which recompiles the
             // query and can itself throw if the refined text fails to
-            // compile. Without this, a caller a `given_only` gate would have
-            // denied could instead hit a broken refinement first: resolving
+            // compile. Without this, a caller a gate would have denied could
+            // instead hit a broken refinement first: resolving
             // the broken runnable's source silently swallows the compile
             // failure and returns `undefined`, so no gate is found, and the
             // eventual failure surfaces as a Malloy-worded 400 instead of the
@@ -4818,9 +4741,8 @@ export class Model {
             // to apply: with nothing to rebuild `cell.runnable` into, the
             // post-refinement authoritative bind below runs against that SAME
             // unrefined runnable, so this call would evaluate the identical
-            // gate a second time for nothing — doubling `assertAuthorizedExprs`
-            // calls and, for a `given_only` gate, a real warehouse round
-            // trip too. This is also what keeps behavior byte-identical to
+            // gate a second time for nothing — doubling the probe/graft work
+            // for no reason. This is also what keeps behavior byte-identical to
             // the prior release for the common (no `#(filter)` refinement)
             // cell: with no filters on that path, this call never ran before
             // either.

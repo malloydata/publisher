@@ -18,6 +18,60 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
+
+This supersedes the "a gate that references only givens is unaffected" line in the section below, before
+that section has even shipped: there is no longer a separate given-only shape. A gate that reads no row
+field — `$ROLE = 'analyst'`, `$LEVEL > 3`, a bare `#(authorize) "true"`/`"false"` — used to be evaluated by a
+one-row DuckDB probe with a whole-source admit/deny answer. It now classifies and enforces exactly like a
+row-level gate: the condition becomes a constant `where:` (`true` admits every row, `false` matches none),
+and everything in between resolves the same as before this whole redesign started. Classification now has
+only two outcomes, `row_level` and `rejected` — `given_only` is gone.
+
+### The breaking change
+
+- **A gate whose verdict used to deny now returns 200 with zero rows, not 403** — for the query path. A
+  caller supplying `ROLE: 'intern'` against `#(authorize) "$ROLE = 'analyst'"` gets an empty result instead
+  of `AccessDeniedError`. Check any consumer that keys logic on the 403 status for this class of gate; the
+  correct row-level equivalent is checking for zero rows.
+- **Package-level FGA denials are unaffected — still 403.** `can_read_package` and every other
+  organization/workspace access check remain exactly as they were; only a gate's *own* verdict moved to
+  filtering. Do not conflate the two: a package a caller cannot read at all still never reaches the gate.
+- **`/compile` now denies a row-level gate unconditionally, whether or not the given satisfies it.**
+  `/compile` has no query execution step to apply a row filter to — it is a probe — so where a
+  once-given-only gate used to admit a satisfying given (a real boolean answer, no filter needed), it now
+  denies every time a gate on the target source classifies as `row_level`, matching how a genuinely
+  row-field gate already behaved at this path.
+- **A negated scalar comparison (`not ($ROLE = 'blocked')`) is now an accepted gate atom.** It was
+  previously reachable only because a field-less condition skipped the row-level grammar entirely; now that
+  every gate goes through it, negating a single `<given-or-field> <op> <given-or-literal>` comparison is
+  explicitly supported (equivalent to flipping the operator). A negated **membership test** (`not (x in
+  $GROUPS)`) is still refused — that one has a real emptying-the-set hazard a scalar negation does not.
+
+### Known, accepted narrowing: the "no schema oracle" guarantee is smaller
+
+The early, pre-compile gate could previously deny a given-only mismatch synchronously, before the caller's
+own query ever compiled — so a bad field name on a locked source came back as 403, never as a Malloy
+compile error naming the field. Every gate is now enforced via a compiled backstop (a graft onto a
+recompiled query), so a caller's own malformed query (an unknown field, a type error) can surface its
+compile error before the gate ever gets a chance to deny. This is accepted, not fixed: no query ever
+executes either way, so no row data leaks — only whether a field name is recognized, which was already the
+case for a genuinely row-level gate before this change.
+
+### Known, unresolved security gap (not fixed in this change)
+
+`/compile`'s **`file`/`append`-scope backstop** discovers a run target's own gate by walking the *caller's
+own compiled struct*, not the on-disk model's. A caller who submits edited text with the `#(authorize)`
+annotation stripped can currently evade that backstop entirely for a row-level-classified gate — the
+early, best-effort check (`assertAuthorizedForText`) that DOES read the authoritative on-disk annotation
+only *defers* a row-level classification rather than denying, so nothing downstream re-checks it against
+the on-disk source of truth. This was closed for a given-only gate before this change (the early check
+denied it synchronously, no struct needed); it is not closed for a row-level one. See the tests marked
+"security gap, not fixed here" in `compile_authorize.spec.ts` for the reproduction, and this change's PR
+description for the traced root cause and fix shape.
+
+---
+
 ## [Unreleased] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
 
 A gate whose expression reads no row field works exactly as before; a gate that reads one — its
