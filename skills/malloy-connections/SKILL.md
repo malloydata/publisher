@@ -116,9 +116,12 @@ not a path to it. Put it in an environment variable and reference it.
 ## Naming a connection so it stays portable
 
 Publisher itself accepts almost any name. Credible's `cred add connection` does not: it validates
-each name against `^[a-zA-Z_][a-zA-Z0-9_]+$` and **skips** any connection whose name fails, without
-failing the command. A connection called `my-warehouse` works perfectly locally and is then silently
-missing after you publish, while the command reports success.
+each name against `^[a-zA-Z_][a-zA-Z0-9_]+$`. On a name that fails it logs an error naming that
+connection and **carries on to the next one** rather than failing. So a connection called
+`my-warehouse` works perfectly locally, does not arrive after you publish, and the command still
+exits successfully having created the others. The error is there to be read, but it is one line in
+the output of a run that otherwise worked, which is an easy thing to miss and a hard thing to connect
+back to a name you chose weeks earlier.
 
 Stay inside the intersection and the question never comes up: letters, digits and underscores, at
 least two characters, starting with a letter or underscore, never `duckdb`. Write `my_warehouse`, not

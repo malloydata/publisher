@@ -23,10 +23,12 @@ export function isWarehouseType(value: string): value is WarehouseType {
  *
  * Publisher enforces no character rule at all — it reserves the single name
  * `duckdb` and takes anything else. Credible's CLI validates each name against
- * this pattern and, on a name that fails, SKIPS THAT CONNECTION AND CARRIES ON
- * (cli/src/commands/connection/createconnections.ts). So a perfectly working
- * local connection called `my-warehouse` is silently dropped on the way to
- * Credible, per connection, with the command reporting success for the rest.
+ * this pattern and, on a name that fails, LOGS AN ERROR NAMING THAT CONNECTION
+ * AND CARRIES ON TO THE NEXT (cli/src/commands/connection/createconnections.ts,
+ * the `continue` after the regex test). So a perfectly working local connection
+ * called `my-warehouse` does not arrive in Credible, while the command goes on
+ * to create the others and exits successfully. Not silent, but non-fatal and
+ * easy to lose in the output of a batch that otherwise worked.
  *
  * Emitting only the intersection is what makes the connection block this tool
  * writes portable. Note the `+` rather than `*`: a one-character name fails,
@@ -364,10 +366,11 @@ export function resolveConnectionName(
             `underscores, start with a letter or underscore, and use at least ` +
             `two characters.\n\n` +
             `Publisher itself would accept a wider set, but Credible's ` +
-            `\`cred add connection\` accepts only this one and SKIPS a ` +
-            `connection whose name it rejects rather than failing, so a name ` +
-            `outside it works locally and then goes missing without an error ` +
-            `when you publish. Hyphens are the usual cause: write ` +
+            `\`cred add connection\` accepts only this one: it logs an error ` +
+            `for a name it rejects and carries on to the next connection ` +
+            `rather than failing, so a name outside this set works locally and ` +
+            `then does not arrive when you publish, while the command still ` +
+            `exits successfully. Hyphens are the usual cause: write ` +
             `"my_warehouse", not "my-warehouse".`,
       );
    }

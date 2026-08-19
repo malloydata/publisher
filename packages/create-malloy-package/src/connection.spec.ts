@@ -45,10 +45,12 @@ describe("resolveConnectionName", () => {
       );
    });
 
-   test("refuses a hyphen, which cred add connection silently skips", () => {
+   test("refuses a hyphen, which cred add connection skips", () => {
       // The trap this rule exists for: Publisher accepts `my-warehouse`
       // happily, so the failure only appears later, on the way to Credible,
-      // as a connection that is simply not there.
+      // as a connection that is simply not there. `cred` does log an error
+      // when it skips one, but it carries on and exits successfully, so the
+      // line is easy to lose in a batch that otherwise worked.
       expect(() => resolveConnectionName("postgres", "my-warehouse")).toThrow(
          /my_warehouse/,
       );
