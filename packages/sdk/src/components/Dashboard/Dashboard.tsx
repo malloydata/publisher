@@ -53,9 +53,17 @@ const TILE_HEIGHT = 400;
 /**
  * Cap for the single-query form, where the one result *is* the dashboard and a
  * cap would clip the page rather than tidy it. High enough to be no cap in
- * practice, and still a guard against a pathological result; the result renders
- * at its natural height and the page scrolls, which is what a reader expects of
- * a dashboard.
+ * practice, and still a guard against a pathological result.
+ *
+ * A result that REPORTS its own height, which a `# dashboard` grid does, renders
+ * at that height and the page scrolls, which is what a reader expects. A result
+ * that sizes to its CONTAINER instead, which a bare `# bar_chart` does, has no
+ * height to report and keeps whatever first-paint height it was handed, so it
+ * stretches: measured 1992px for a two-row bar chart against 227px for the same
+ * query under a grid tag. `INITIAL_RENDER_HEIGHT` bounds that near 2000 rather
+ * than removing it, and lowering the bound is NOT the fix, because the same seed
+ * sizes a notebook's chart cells (measured 700px there). Telling the two kinds of
+ * result apart needs something the renderer does not expose here.
  */
 const WHOLE_PAGE_HEIGHT = 20000;
 
@@ -212,8 +220,15 @@ export function Dashboard({
       return <Loading text="Loading dashboard…" />;
    }
 
-   // A dashboard whose file failed to compile still lists and still resolves,
-   // so say why rather than rendering an empty frame.
+   // Reachable on the in-process load path only. Production loads a package
+   // through the worker pool, which aborts the package on the first compile
+   // error, so an uncompilable file answers 424 everywhere rather than serving a
+   // per-file error. Measured on this base with one bad file: the package
+   // endpoint, the dashboards listing, and the manifest of a dashboard that was
+   // FINE all answered 424. The earlier note here said such a dashboard "still
+   // lists and still resolves", which contradicted this repo's own docs and was
+   // the wrong half of the pair. Kept because the per-file error manifest still
+   // exists and an empty frame would be worse than saying why.
    if (manifest.error) {
       return (
          <Stack spacing={2}>

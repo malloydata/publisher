@@ -391,7 +391,9 @@ embedding host renders the same component the Console does.
   Console and an external React app differ only in what they do with `onNavigate` and
   `onGivensChange`.
 - **Control state is URL state.** Filtering replaces history so Back leaves the dashboard rather than
-  walking through every value tried; drilling pushes it so Back returns to where the drill started.
+  walking through every value tried; a `to=<slug>` drill pushes it, so Back returns to the dashboard the
+  drill started from. A `to=self` drill filters in place, so it takes the same replace as any other
+  control change and Back leaves the dashboard rather than undoing the drill.
   A `# artifact { autorun=false }` dashboard batches changes behind Apply.
 - **A Dashboards section on the package page**, listed first because it is the at-a-glance artifact a
   visitor most likely wants, and hidden when the package has none. A dashboard's own file is filtered

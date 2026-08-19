@@ -152,9 +152,14 @@ and the notebook's first cell is that view. Read it as a working example of the 
 agreeing, not of the layout recipe above, which it predates: it carries no `columns=`, no colspans,
 and it nests a `# big_value` for its KPIs, which is the one thing this page says not to do. Height
 is the one thing the surface decides rather than the tags: a single-query dashboard renders at its
-natural height, a composite caps each tile so one long table cannot set its row's height, and a
-notebook caps a chart cell and lets a table cell hug its rows so one long result cannot push the
-prose off the page.
+natural height when the result reports one, which a `# dashboard` grid does, a composite caps each
+tile so one long table cannot set its row's height, and a notebook caps a chart cell and lets a table
+cell hug its rows so one long result cannot push the prose off the page.
+
+One exception, and it argues for always tagging the grid. A single-query dashboard whose top-level
+result is a bare chart has no height of its own to report: a chart with no grid around it sizes to
+whatever container it is handed, so it stretches to the first-paint height. Measured on a two-row bar
+chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 
 ### Tag reference
 
@@ -322,7 +327,11 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   destination's given should be a `filter<…>` one. Seeding a plain `string` given across dashboards
   delivers the escaped spelling (`Ben\ &\ Jerry` for a cell reading `Ben & Jerry`), which matches
   nothing. `to=self` is exempt: there the surface knows the declared type and re-encodes for it.
-- `to=self` filters wherever the click came from, without leaving the page.
+- `to=self` filters wherever the click came from, without leaving the page. Under `autorun=false` it
+  stages the value as a draft instead: neither the page nor the URL changes until Apply is pressed.
+  Worth knowing because the same menu's `to=<slug>` entry navigates and arrives already applied, so
+  one menu offers two entries with different timing. Measured on `regions`: with two regions applied,
+  choosing "Filter this dashboard" on one of them left the URL alone and enabled Apply.
 - More than one destination pops a menu, because a choice is not a guess.
 - `given=` names the given to seed. **Write it whenever the dimension is not named after the
   given.** Without it the given is the dimension name exactly as the model spells it, so
