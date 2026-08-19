@@ -23,6 +23,7 @@ import {
    encodeFilterValue,
    formatValue,
    isPlainFilterList,
+   readFilterForPicker,
    monthLabel,
    monthOfYearLabel,
    plural,
@@ -168,6 +169,49 @@ test("a filter a picker cannot represent is preserved, not mangled", () => {
    assert.equal(isPlainFilterList("Nike, Loft"), true);
    assert.equal(isPlainFilterList(""), true);
    assert.equal(isPlainFilterList(undefined), true);
+});
+
+test("a picker reads values and representability in one call", () => {
+   // The two answers are returned together on purpose. Asking for the values
+   // and forgetting to ask whether they can be represented is what shipped the
+   // bug twice, once in each picker: `-Nike` means everything EXCEPT Nike, and
+   // re-encoding it as a literal turns it into a search for five characters.
+   assert.deepEqual(readFilterForPicker("-Nike"), {
+      values: ["-Nike"],
+      opaque: true,
+   });
+   assert.deepEqual(readFilterForPicker("Nike, Loft"), {
+      values: ["Nike", "Loft"],
+      opaque: false,
+   });
+   assert.deepEqual(readFilterForPicker(""), { values: [], opaque: false });
+   assert.deepEqual(readFilterForPicker(undefined), {
+      values: [],
+      opaque: false,
+   });
+   // A wildcard is equally unrepresentable, and equally dangerous re-encoded.
+   assert.equal(readFilterForPicker("%foo%").opaque, true);
+});
+
+test("what a picker must do with an opaque filter, as data", () => {
+   // The picker itself needs a DOM and so is not covered here. What IS covered
+   // is the decision it makes: an opaque filter contributes NOTHING to a new
+   // selection, because extending it re-encodes it. This is the assertion that
+   // fails if a caller goes back to appending.
+   const { values, opaque } = readFilterForPicker("-Nike");
+   const base = opaque ? [] : values;
+   assert.deepEqual(base, [], "an opaque filter must be replaced, not extended");
+   assert.deepEqual(
+      decodeFilterList(encodeFilterList([...base, "Levi's"])),
+      ["Levi's"],
+      "so the next pick stands alone",
+   );
+   // And the shape that shipped: extending it produces the literal search.
+   assert.deepEqual(
+      decodeFilterList(encodeFilterList([...values, "Levi's"])),
+      ["-Nike", "Levi's"],
+      "extending re-encodes the hand-written filter as a literal",
+   );
 });
 
 test("a slider's lower bound, both ways", () => {

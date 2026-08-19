@@ -23,6 +23,7 @@ no conversion step. **No credentials required.**
 | `public/vendor/chart.umd.js` | Chart.js v4.5.0 (MIT), vendored so the page renders where a CDN is blocked. |
 | `public/vendor/malloy-filter.js` | `@malloydata/malloy-filter`, bundled for the browser, so the page escapes filter values with Malloy's own printer. Regenerate with `bun run vendor:malloy-filter`. |
 | `tests/` | `node --test` coverage for the page's pure module (`bun run test:examples`). |
+| `eslint.config.mjs` | Lints `public/app/`, which nothing else reads: no bundler, no typechecker. Run by the root `bun run lint`. |
 
 The data is generated deterministically by [`scripts/generate-example-data.mjs`](../../scripts/generate-example-data.mjs)
 (`bun run generate:example-data`) — it has a growth trend and holiday seasonality, so the charts have

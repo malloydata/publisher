@@ -276,6 +276,26 @@ function isPlainEquality(clause) {
    );
 }
 
+/**
+ * What a picker needs to know about a filter, in ONE call.
+ *
+ * The values and "can this control represent it" are two answers to the same
+ * question, and asking for one without the other is how the hazard below gets
+ * shipped: a caller that decodes and forgets to check re-encodes `-Nike`, which
+ * means everything EXCEPT Nike, as a literal search for those five characters.
+ * That has now happened twice in this file's callers, once in each picker, so
+ * the two answers are returned together and there is nothing to forget.
+ *
+ * `opaque` means the control cannot show this filter faithfully. Show the
+ * filter as written, say so, and let the reader replace it deliberately.
+ */
+export function readFilterForPicker(filter) {
+   return {
+      values: decodeFilterList(filter),
+      opaque: !isPlainFilterList(filter),
+   };
+}
+
 /** A lower-bound number filter, which is what a one-handled slider means. */
 export function encodeAtLeast(value) {
    const n = Number(value);

@@ -20,11 +20,10 @@
 
 import {
    decodeAtLeast,
-   decodeFilterList,
    encodeAtLeast,
    encodeFilterList,
    encodeFilterValue,
-   isPlainFilterList,
+   readFilterForPicker,
    plural,
    readGivenDefault,
 } from "./format.js";
@@ -89,10 +88,19 @@ function optionsFailed(control, contract, error) {
    control.dataset.optionsFailed = "true";
 }
 
+const OPAQUE_HELP =
+   "This filter was written by hand and this control cannot show it. Changing the selection replaces it.";
+
 const isFilter = (contract) => String(contract.type).startsWith("filter<");
 
-/** The one value a single select shows, or "" when the filter is not one it can show. */
-const firstValue = (filter) => decodeFilterList(filter)[0] ?? "";
+/**
+ * What a single select should display for a filter, and whether it can display
+ * it faithfully. A `<select>` cannot show `-Outerwear` (everything EXCEPT
+ * Outerwear) as one of its options, and without this it silently rendered
+ * BLANK while the data behind it stayed filtered. Both `CATEGORY` and `REGION`
+ * are `control=select` in this model, so that was live rather than latent.
+ */
+const firstValue = (filter) => readFilterForPicker(filter).values[0] ?? "";
 
 /**
  * A div rather than a label around the whole thing: a label forwards clicks to
@@ -172,16 +180,47 @@ function singleSelect(
    all.value = "";
    all.textContent = `All ${plural((contract.label ?? contract.name).toLowerCase())}`;
    select.appendChild(all);
-   select.addEventListener("change", () =>
-      onChange(contract.name, encodeFilterValue(select.value)),
-   );
    host.appendChild(labelled(contract, select, description));
+
+   // A filter this control cannot represent gets its own disabled option, so it
+   // is visible rather than rendering as a blank box over filtered data.
+   // Choosing any real option replaces it, which is what the title says.
+   const opaqueOption = document.createElement("option");
+   opaqueOption.disabled = true;
+   const showOpaque = (filter) => {
+      const { values, opaque } = readFilterForPicker(filter);
+      if (opaque) {
+         opaqueOption.value = filter;
+         opaqueOption.textContent = values[0] ?? filter;
+         if (!opaqueOption.isConnected) select.appendChild(opaqueOption);
+         select.value = filter;
+         select.title = OPAQUE_HELP;
+      } else {
+         opaqueOption.remove();
+         if (!select.dataset.optionsFailed) select.title = "";
+      }
+      select.dataset.opaqueFilter = String(opaque);
+      return opaque;
+   };
 
    // `current` rather than the captured `value`: the options arrive a round trip
    // later, and Reset (or a Back) can land inside that window. Restoring the
    // value this widget was BUILT with would then show a filter that is not in
    // force. `set` keeps this in step, so whatever arrives last wins.
    let current = value;
+   showOpaque(value);
+
+   // Registered here rather than beside the element because it needs `current`
+   // and `showOpaque`. It has to clear its own opaque state: the app does not
+   // call `set` on the widget that raised the change, so nothing else will, and
+   // the control would go on showing the hand-written filter it just replaced.
+   // Updating `current` matters for the same reason, since options can arrive
+   // after this and would otherwise restore the filter that is no longer set.
+   select.addEventListener("change", () => {
+      current = encodeFilterValue(select.value);
+      showOpaque(current);
+      onChange(contract.name, current);
+   });
    loadOptions(modelPath, contract)
       .then((options) => {
          for (const option of options) {
@@ -189,14 +228,14 @@ function singleSelect(
             el.value = el.textContent = option;
             select.appendChild(el);
          }
-         select.value = firstValue(current);
+         if (!showOpaque(current)) select.value = firstValue(current);
       })
       .catch((error) => optionsFailed(select, contract, error));
    return {
       name: contract.name,
       set: (next) => {
          current = next;
-         select.value = firstValue(next);
+         if (!showOpaque(next)) select.value = firstValue(next);
       },
    };
 }
@@ -214,18 +253,15 @@ function multiSelect(
    button.id = `given-${contract.name}`;
    button.className = "select-like";
    button.dataset.given = contract.name;
-   let selected = decodeFilterList(value);
+   // Both answers in one call: the values, and whether this control can
+   // represent them. `readFilterForPicker` in format.js says why they have to
+   // travel together, and what `opaque` costs if a caller ignores it.
+   let { values: initial, opaque: initiallyOpaque } = readFilterForPicker(value);
+   let opaque = initiallyOpaque;
+
+   let selected = initial;
    let options = [];
    let panel = null;
-
-   // A filter this picker cannot represent, such as `-Nike` (everything EXCEPT
-   // Nike) arriving in the URL. `decodeFilterList` hands it back as one opaque
-   // entry so the control can show something, but ticking any box would then
-   // re-encode that entry as a literal and turn "everything except Nike" into a
-   // search for those five characters, with a different result set and nothing
-   // on screen to say so. `format.js` documents that hazard and exports
-   // `isPlainFilterList` for callers to ask first; this is the caller.
-   let opaque = !isPlainFilterList(value);
 
    const caption = () => {
       const noun = plural((contract.label ?? contract.name).toLowerCase());
@@ -236,10 +272,15 @@ function multiSelect(
    };
    const paint = () => {
       button.textContent = caption();
-      // Say so rather than silently converting on the next click.
-      button.title = opaque
-         ? "This filter was written by hand and this control cannot show it. Changing the selection replaces it."
-         : "";
+      // Say so rather than silently converting on the next click. Guarded on
+      // `optionsFailed`, because that writes an explanation to the same
+      // attribute and an unconditional write here would erase it on the next
+      // repaint, leaving an empty picker with nothing to say why.
+      if (opaque) {
+         button.title = OPAQUE_HELP;
+      } else if (!button.dataset.optionsFailed) {
+         button.title = "";
+      }
       button.dataset.opaqueFilter = String(opaque);
    };
    paint();
@@ -248,9 +289,8 @@ function multiSelect(
    // which values a filter can carry, and joining its output here would be this
    // page keeping a second opinion about that.
    const commit = () => {
-      // The reader has now chosen, so the hand-written filter is deliberately
-      // replaced rather than re-encoded as a literal.
-      opaque = false;
+      // `opaque` is already cleared by the toggle that got us here, which is
+      // also where the hand-written filter was dropped.
       paint();
       onChange(contract.name, encodeFilterList(selected));
    };
@@ -260,8 +300,13 @@ function multiSelect(
    // then ignore every later click outside it. The listener is removed when the
    // panel closes instead, which is the event it is actually paired with.
    const onOutsidePointerDown = (event) => {
-      if (panel && !panel.contains(event.target) && event.target !== button)
+      // `close` and this handler reference each other, so one has to come
+      // second. Safe because both are only ever called from an event, long
+      // after both exist.
+      if (panel && !panel.contains(event.target) && event.target !== button) {
+         // eslint-disable-next-line no-use-before-define
          close();
+      }
    };
 
    const close = () => {
@@ -282,16 +327,29 @@ function multiSelect(
          const box = document.createElement("input");
          box.type = "checkbox";
          // `String(option)`: `selected` comes back from the filter grammar as
-         // strings, while `options` holds whatever the column is. Compare a
-         // number column raw and nothing ticks, while the button and the URL
-         // both say the filter is on. Latent for `BRAND`, live for anyone
-         // copying this onto a numeric dimension.
+         // strings, while `options` holds whatever the column is, so comparing
+         // a number column raw ticks nothing while the button and the URL both
+         // say the filter is on.
+         //
+         // Not an invitation to reuse this on a `filter<number>` given, mind.
+         // This control encodes through the STRING grammar only, and the two
+         // are not interchangeable: measured, `-5` string-encodes to `\-5`,
+         // which the number parser rejects outright. Positive integers happen
+         // to survive, so a copy works until the first negative value.
          box.checked = !opaque && selected.includes(String(option));
          box.addEventListener("change", () => {
             const value = String(option);
+            // Replace, do not extend. While `opaque`, `selected` holds the
+            // hand-written filter as one entry, so appending to it would
+            // re-encode `-Nike` as a literal and OR it with the pick, which is
+            // the exact hazard this branch exists to prevent. Dropping it here
+            // is what makes the tooltip's "changing the selection replaces it"
+            // true.
+            const base = opaque ? [] : selected;
             selected = box.checked
-               ? [...selected, value]
-               : selected.filter((v) => v !== value);
+               ? [...base, value]
+               : base.filter((v) => v !== value);
+            opaque = false;
             commit();
          });
          const text = document.createElement("span");
@@ -325,8 +383,7 @@ function multiSelect(
    return {
       name: contract.name,
       set: (next) => {
-         selected = decodeFilterList(next);
-         opaque = !isPlainFilterList(next);
+         ({ values: selected, opaque } = readFilterForPicker(next));
          paint();
          // An open panel has to follow too. Back with the popover open
          // otherwise repaints the button and leaves the ticks showing the
