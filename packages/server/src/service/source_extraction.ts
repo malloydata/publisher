@@ -20,6 +20,7 @@ import {
    ModelDef,
    NamedModelObject,
    NamedQueryDef,
+   type FieldDef,
    type SourceDef,
    StructDef,
    TurtleDef,
@@ -194,18 +195,20 @@ function joinFieldNamesUnresolvableDeclaration(
  * `authorizeOwnNotes` is the companion that tells it which of those entry
  * points DECLARED the gate rather than inheriting it.
  *
- * A separate list, `misplacedAuthorize`, is not about a source's gate at all: it
- * is every `#(authorize)` annotation this walk found attached to a
- * `dimension:`/`measure:`/`view:` FIELD rather than the `source:` line itself
- * — a position nothing here, or anywhere else, ever reads for enforcement.
- * See `assertNoMisplacedAuthorizeAnnotations`'s doc for why that fails OPEN
- * and has to be refused at load rather than silently ignored. An unannotated
- * `join_one:`/`join_many:` of a gated source is deliberately EXCLUDED from
- * this list, even though it carries the identical annotation text on the
- * join field — see the note-identity check just above the main loop. A
- * `##(authorize)` on the MODEL itself (file-level, deprecated) is also folded
- * into `misplacedAuthorize`, as a `"file"`-kind finding, rather than
- * collected as a gate — see the check ahead of the per-source walk below.
+ * A separate list, `misplacedAuthorize`, is not about a source's gate at all:
+ * it is every `#(authorize)` annotation this walk found attached to a
+ * `join_one:`/`join_many:` FIELD (author-written directly on the join line,
+ * never Malloy's by-reference copy of the joined source's own gate — see the
+ * note-identity check just above the main loop) or to the MODEL itself
+ * (`##(authorize)`, file-level, deprecated — folded in as a `"file"`-kind
+ * finding, see the check ahead of the per-source walk below). Both are
+ * positions nothing here, or anywhere else, ever reads for enforcement; see
+ * `assertNoMisplacedAuthorizeAnnotations`'s doc for why that fails OPEN and
+ * has to be refused at load rather than silently ignored. A `dimension:`/
+ * `measure:`/`view:` field's OWN authorize note is no longer misplaced by
+ * construction — it is collected into `gateDimensionCandidates` instead (the
+ * dimension form of a gate), and `./gate_dimension`'s `validateGateDimension`
+ * decides whether it is actually a legal one.
  *
  * A `join_one:`/`join_many:` FIELD carrying a note this walk cannot identify
  * as that copy is routed by whether its declaration resolves INSIDE this
@@ -239,9 +242,18 @@ export function extractSourcesFromModelDef(
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
+   /**
+    * source name → its own field-position `#(authorize)`-tagged, non-join
+    * fields — candidates for the dimension form of a gate, fed to
+    * `./gate_dimension`'s `validateGateDimension` at load time. Not filtered
+    * for shape here (a measure or view annotated in error is still
+    * collected) — `validateGateDimension` is what decides legality.
+    */
+   gateDimensionCandidates: Map<string, FieldDef[]>;
 } {
    const filterMap = new Map<string, FilterDefinition[]>();
    const authorizeMap: AuthorizeMap = new Map();
+   const gateDimensionCandidates = new Map<string, FieldDef[]>();
    // `#(authorize)` written one line too low — on a `dimension:`/`measure:`/
    // `join_one:`/`view:` INSIDE a source rather than on the `source:` line
    // itself — lands on that FIELD's own annotations, which nothing walks for
@@ -494,10 +506,15 @@ export function extractSourcesFromModelDef(
             }));
 
          // Every field's OWN annotations, regardless of kind (dimension,
-         // measure, join, view) — an author who meant to gate the whole
-         // source but placed `#(authorize)` one line too low, in front of a
-         // field instead of the `source:` line, gets an annotation Malloy
-         // happily attaches and nothing ever reads.
+         // measure, join, view). A non-join field's own authorize note is now
+         // COLLECTED, not refused — it is the dimension form of `#(authorize)`
+         // (see `gate_dimension.ts`'s `validateGateDimension`, which decides
+         // whether the annotated field is actually a legal gate: a scalar
+         // boolean dimension, not a measure/view/array/record). The join
+         // carve-out below is unchanged: an unannotated join's BY-REFERENCE
+         // copy of the joined source's own gate note is still never collected
+         // here (Constraint 3 — joins never carry a gate), and an author-typed
+         // annotation on the join line itself is still refused as misplaced.
          for (const field of struct.fields) {
             const fieldAuthorizeNotes = ownLevelNotes(field.annotations).filter(
                (note) => containsAuthorizeAnnotationTag([note.text]),
@@ -580,11 +597,15 @@ export function extractSourcesFromModelDef(
                });
                continue;
             }
-            misplacedAuthorize.push({
-               kind: "field",
-               name: sourceName,
-               fieldName,
-            });
+            // A non-join field carrying its OWN authorize note — the
+            // dimension form. Collected as a candidate for
+            // `validateGateDimension` rather than refused: shape validation
+            // (is it actually a scalar boolean dimension, is there more than
+            // one, does it shadow an inherited one without re-annotating)
+            // belongs there, on the compiled `FieldDef`, not here.
+            const candidates = gateDimensionCandidates.get(sourceName) ?? [];
+            candidates.push(field);
+            gateDimensionCandidates.set(sourceName, candidates);
          }
 
          return {
@@ -603,6 +624,7 @@ export function extractSourcesFromModelDef(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      gateDimensionCandidates,
    };
 }
 

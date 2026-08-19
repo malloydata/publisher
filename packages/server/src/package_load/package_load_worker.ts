@@ -88,6 +88,7 @@ import {
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
+import { validateGateDimensionsForModel } from "../service/gate_dimension";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -766,6 +767,23 @@ async function compileMalloyModel(
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
    });
+   // Load-time validation for the DIMENSION form of `#(authorize)` — see
+   // `../service/gate_dimension`'s doc for why it is a separate check from
+   // `validateAuthorizeProbes` above. The worker has no logger (see this
+   // function's doc), so a warning rides the same wire channel as
+   // `onRowLevelGateUnexpressible` above.
+   validateGateDimensionsForModel(
+      modelDef,
+      new Set(
+         (givens ?? []).map((g) => g.name).filter((n): n is string => !!n),
+      ),
+      (sourceName, cause, detail) => {
+         recordRowLevelGateRejected(cause);
+         authorizeWarningCollection.warnings.push(
+            `Row-level #(authorize) gate dimension warning on "${sourceName}" (${cause}): ${detail}`,
+         );
+      },
+   );
 
    return {
       modelPath,
@@ -970,6 +988,21 @@ async function compileNotebookModel(
          onRowLevelGateUnexpressible:
             authorizeWarningCollection.onRowLevelGateUnexpressible,
       });
+      // See the identical check in `compileMalloyModel` above.
+      validateGateDimensionsForModel(
+         finalModelDef,
+         new Set(
+            (finalGivens ?? [])
+               .map((g) => g.name)
+               .filter((n): n is string => !!n),
+         ),
+         (sourceName, cause, detail) => {
+            recordRowLevelGateRejected(cause);
+            authorizeWarningCollection.warnings.push(
+               `Row-level #(authorize) gate dimension warning on "${sourceName}" (${cause}): ${detail}`,
+            );
+         },
+      );
    }
 
    return {

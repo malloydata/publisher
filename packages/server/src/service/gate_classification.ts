@@ -31,9 +31,15 @@ import {
    collectAuthorizeExprs,
    gateFilterText,
    liftProbeFilterCondition,
+   quoteMalloyIdentifier,
    type RowLevelGateClassification,
    type RowLevelGateRejectionCause,
 } from "./authorize";
+import {
+   expandGivenIds,
+   findGateDimensionCandidates,
+   gateFieldName,
+} from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
    ancestorGateExprs,
@@ -65,6 +71,21 @@ export type GateEntry = {
     * condition ({@link resolveGraftTarget}).
     */
    struct?: SourceDef;
+   /**
+    * Set when this gate is the DIMENSION form — see `./gate_dimension`'s
+    * doc. `resolveGateShape` must skip `classifyAuthorizeGate` for these:
+    * once grafted, the lifted filter condition's `.e` is a bare unresolved
+    * field-reference node (`{node: "field", path: ["authorized"]}`), not the
+    * dimension's own predicate tree, so the string-form walker finds no
+    * comparison/`inGiven` to classify and rejects every one of them as
+    * `unsupported_node` (Constraint 1). `givenNames` is resolved at
+    * discovery time instead (`gateExprsForOwnAnnotations`), from the SAME
+    * struct/field the gate was found on — re-deriving it from `entry.struct`
+    * in `resolveGateShape` would read the wrong struct whenever the gate was
+    * carried in from a derivation base (`entry.struct` is the ENTRY POINT,
+    * not necessarily where the annotation lives).
+    */
+   dimensionForm?: { givenNames: readonly string[] };
 };
 
 /**
@@ -195,7 +216,11 @@ function gateExprsForOwnAnnotations(
    struct: SourceDef,
    modelDef?: ModelDef,
    excludeNotes: readonly AnnotationNote[] = [],
-): { exprs: string[]; fromAncestor: boolean } {
+): {
+   exprs: string[];
+   fromAncestor: boolean;
+   dimensionForm?: GateEntry["dimensionForm"];
+} {
    // Both note keys: which one a gate lands in is decided by the author's
    // syntax, not by scope. See {@link ownLevelNoteTexts}.
    const ownNotes = ownLevelNotes(struct.annotations).filter(
@@ -205,6 +230,31 @@ function gateExprsForOwnAnnotations(
       const own = collectAuthorizeExprs(ownNotes.map((note) => note.text));
       if (own.length > 0) {
          return { exprs: own, fromAncestor: false };
+      }
+      // The dimension form (see `./gate_dimension`'s doc): a boolean
+      // dimension annotated in FIELD position, graft by NAME
+      // (`quoteMalloyIdentifier`), never by re-parsing its `code` (Constraint
+      // 9). `struct.fields` already covers "own" and "inherited unchanged
+      // from an extend base" uniformly — Malloy flattens unchanged fields
+      // into the deriving struct's own `fields`, unlike annotations, which
+      // use the separate `inherits` chain the STRING form above (and
+      // `ancestorGateExprs` below) has to walk. More than one candidate
+      // means `validateGateDimension` was bypassed (load validation refuses
+      // that); fail closed rather than pick one arbitrarily.
+      const dimensionCandidates = findGateDimensionCandidates(struct);
+      if (dimensionCandidates.length === 1) {
+         const field = dimensionCandidates[0];
+         const givenNames = Array.from(expandGivenIds(struct, field))
+            .map((id) => modelDef?.givens?.[id]?.name)
+            .filter((name): name is string => !!name);
+         return {
+            exprs: [quoteMalloyIdentifier(gateFieldName(field))],
+            fromAncestor: false,
+            dimensionForm: { givenNames },
+         };
+      }
+      if (dimensionCandidates.length > 1) {
+         return { exprs: ["false"], fromAncestor: false };
       }
       const ancestor = ancestorGateExprs(struct, modelDef);
       return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
@@ -287,11 +337,11 @@ export function collectEntryPointGates(
 
    const results: GateEntry[] = [];
    const label = (struct as { as?: string }).as ?? struct.name;
-   const { exprs: ownExprs, fromAncestor } = gateExprsForOwnAnnotations(
-      struct,
-      modelDef,
-      excludeNotes,
-   );
+   const {
+      exprs: ownExprs,
+      fromAncestor,
+      dimensionForm,
+   } = gateExprsForOwnAnnotations(struct, modelDef, excludeNotes);
    if (ownExprs.length > 0) {
       results.push({
          label,
@@ -303,6 +353,7 @@ export function collectEntryPointGates(
          // above. Carried so a row-level classification of THIS entry knows
          // where to graft — see `resolveGraftTarget`.
          struct: entryPointStruct,
+         dimensionForm,
       });
    }
 
@@ -527,11 +578,29 @@ export async function resolveGateShape(
          });
          return { shape: "rejected" };
       }
-      let classification = classifyAuthorizeGate(
-         condition,
-         deps.givenDeclaredTypes,
-         deps.givenDeclaredDefaults,
-      );
+      // The dimension form's lifted condition is a bare unresolved
+      // field-reference node once grafted, not the dimension's own
+      // predicate tree — `classifyAuthorizeGate`'s walk has no case for
+      // that shape and would reject every one of them as `unsupported_node`
+      // (Constraint 1; see `./gate_dimension`'s doc and `GateEntry
+      // .dimensionForm`'s doc). Load-time `validateGateDimension` already
+      // vetted G1–G4/private/inheritance for this gate; what remains here —
+      // exactly what the STRING form's classification would otherwise be
+      // proving too — is that the graft compiled at THIS entry point at
+      // all, which the `liftGateCondition` call above already confirmed by
+      // succeeding.
+      let classification: RowLevelGateClassification = entry.dimensionForm
+         ? {
+              shape: "row_level",
+              givenNames: [...entry.dimensionForm.givenNames],
+              literalAtoms: [],
+              literalAtomDetails: [],
+           }
+         : classifyAuthorizeGate(
+              condition,
+              deps.givenDeclaredTypes,
+              deps.givenDeclaredDefaults,
+           );
       // `Model.filterGivensToModelSurface` drops a caller-supplied given that
       // is off this model's own surface, and its safety rests on this: an
       // ACCEPTED gate never references one, because `classifyAuthorizeGate`

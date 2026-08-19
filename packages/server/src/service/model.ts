@@ -98,6 +98,7 @@ import {
    type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
+import { validateGateDimensionsForModel } from "./gate_dimension";
 import {
    buildFilterClause,
    FilterValidationError,
@@ -907,7 +908,19 @@ export class Model {
          }
       };
       for (const gates of this.entryPointGatesBySource.values()) {
-         for (const { exprs } of gates) addExprs(exprs);
+         for (const entry of gates) {
+            // The dimension form's `exprs` is a backtick-quoted identifier
+            // (`` `authorized` ``), not `$NAME` text — `referencedGivenNames`
+            // finds nothing in it. Its given names are known from discovery
+            // instead (`GateEntry.dimensionForm`); without this, a missing
+            // given behind a dimension gate falls through the "gate given
+            // unbound; deny opaquely" check below and leaks Malloy's raw
+            // compile error (naming the given) instead of an opaque 403.
+            addExprs(entry.exprs);
+            for (const name of entry.dimensionForm?.givenNames ?? []) {
+               names.add(name);
+            }
+         }
       }
       return names;
    }
@@ -2395,6 +2408,29 @@ export class Model {
                      { packageName, modelPath, sourceName, detail },
                   ),
             });
+            // Load-time validation for the DIMENSION form of `#(authorize)` —
+            // a separate check from `validateAuthorizeProbes` above (which
+            // only ever sees the string form's `authorizeMap`). See
+            // `./gate_dimension`'s doc for why the two forms cannot share one
+            // validator.
+            validateGateDimensionsForModel(
+               modelDef,
+               new Set(
+                  (givens ?? [])
+                     .map((g) => g.name)
+                     .filter((n): n is string => !!n),
+               ),
+               (sourceName, cause, detail) => {
+                  recordRowLevelGateRejected(cause);
+                  logger.warn("Row-level #(authorize) gate dimension warning", {
+                     packageName,
+                     modelPath,
+                     sourceName,
+                     cause,
+                     detail,
+                  });
+               },
+            );
 
             // Collect sourceInfos from imported models first
             // This follows the same pattern as notebook imports handling
