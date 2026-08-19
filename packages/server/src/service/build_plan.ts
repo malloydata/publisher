@@ -1008,29 +1008,40 @@ export function deriveBuildPlan(
       // would misreport a now-buildable colocated source as refused.
       const declaresStorage = !!annotationFields.storage;
       const rollup = options?.preaggregatePlans?.[sourceID];
-      try {
-         if (declaresStorage) {
-            assertMaterializationEligible(source);
-         } else {
-            assertColocatedPersistNotAuthorizeGated(
-               source,
-               source.name,
-               rollup ? "preaggregate" : "persist",
-               options?.sourceGateOutcomes?.[sourceID],
-            );
+      // A rollup's own eligibility gate refuses UNCONDITIONALLY when its base is
+      // gated (assertColocatedPersistNotAuthorizeGated's origin === "preaggregate"
+      // branch) — that refusal governs whether the rollup MATERIALIZES, enforced
+      // separately at build time (materialization_service.ts). Synthesis is
+      // unaffected by it: the plan still reports the rollup Malloy synthesized, so
+      // a gate stops materialization without also hiding the rollup from the plan.
+      // See preaggregation_seams.spec.ts's "gate stops materialization, not
+      // synthesis" test and docs/materialization.md.
+      if (!rollup) {
+         try {
+            if (declaresStorage) {
+               assertMaterializationEligible(source);
+            } else {
+               assertColocatedPersistNotAuthorizeGated(
+                  source,
+                  source.name,
+                  "persist",
+                  options?.sourceGateOutcomes?.[sourceID],
+               );
+            }
+         } catch (err) {
+            refusedSources[sourceID] = {
+               name: source.name,
+               sourceID: source.sourceID,
+               modelPath: sourceModelPaths?.[sourceID],
+               tier: declaresStorage ? "storage" : "colocated",
+               reason:
+                  (err instanceof MaterializationEligibilityError &&
+                     err.reason) ||
+                  "authorize",
+               message: errMessage(err),
+            };
+            continue;
          }
-      } catch (err) {
-         refusedSources[sourceID] = {
-            name: source.name,
-            sourceID: source.sourceID,
-            modelPath: sourceModelPaths?.[sourceID],
-            tier: declaresStorage ? "storage" : "colocated",
-            reason:
-               (err instanceof MaterializationEligibilityError && err.reason) ||
-               "authorize",
-            message: errMessage(err),
-         };
-         continue;
       }
       // EFFECTIVE per-source freshness, resolved most-specific-wins
       // (source > model-file > package) and reported verbatim (null = unset at
