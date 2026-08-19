@@ -1218,10 +1218,16 @@ function collectSourceEligibility(
  * resolving a bare name back to a source — exactly the ambiguity the package
  * permits: two different models may each declare a source of the same name,
  * and a name-keyed positive check would let ONE of them being eligible
- * authorize a binding for the OTHER, ineligible one. Iterating `sources`
- * (keyed by sourceID — model path + declared name) and computing each one's
- * OWN `sourceEntityId` never performs a name lookup, so this cannot happen:
- * two same-named sources are examined, and recorded, independently.
+ * authorize a binding for the OTHER, ineligible one.
+ *
+ * A `sourceEntityId` collision between two DIFFERENT sources is real, not
+ * merely theoretical: it is `makeBuildId(connectionDigest, getSQL())`, and
+ * `getSQL()` deliberately excludes annotation bytes, so two persist sources on
+ * the same connection with identical compiled SQL but different gates — one
+ * eligible, one refused — collide on the same id. Refusal therefore MUST
+ * dominate eligibility for a given id: a source is recorded eligible only if
+ * every source sharing its id was, and one refusal anywhere retracts the id
+ * from `eligibleEntityIds` for good, regardless of iteration order.
  */
 export type ColocatedSourceEligibility = {
    /** sourceEntityId of colocated sources examined and found eligible. */
@@ -1236,20 +1242,48 @@ function collectColocatedSourceEligibility(
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};
    for (const [sourceID, source] of Object.entries(compiled.sources)) {
-      const sourceEntityId = computeSourceEntityId(
-         source,
-         compiled.connectionDigests,
-      );
+      const origin = compiled.preaggregatePlans?.[sourceID]
+         ? "preaggregate"
+         : "persist";
       try {
          assertColocatedPersistNotAuthorizeGated(
             source,
             source.name,
-            compiled.preaggregatePlans?.[sourceID] ? "preaggregate" : "persist",
+            origin,
             compiled.sourceGateOutcomes?.[sourceID],
          );
-         eligibleEntityIds.add(sourceEntityId);
       } catch (err) {
+         // Gate BEFORE computeSourceEntityId, matching the build path's own
+         // convention: the colocated gate never calls getSQL(), so it still
+         // gives a clean refusal even when getSQL() would throw for an
+         // unrelated reason. If computing the id ALSO throws there is
+         // nothing to key this refusal under, so the source is dropped —
+         // same "unreadable, so silent" fallback as an incremental
+         // declaration that fails to resolve.
+         let sourceEntityId: string;
+         try {
+            sourceEntityId = computeSourceEntityId(
+               source,
+               compiled.connectionDigests,
+            );
+         } catch {
+            continue;
+         }
          refused[sourceEntityId] = errMessage(err);
+         // A same-id source already recorded eligible by an earlier
+         // iteration must be retracted: refusal dominates regardless of
+         // which one this loop happens to see first.
+         eligibleEntityIds.delete(sourceEntityId);
+         continue;
+      }
+      const sourceEntityId = computeSourceEntityId(
+         source,
+         compiled.connectionDigests,
+      );
+      // A refusal recorded for this id (from an earlier or a LATER
+      // iteration, see above) must win, so only add when none exists yet.
+      if (!(sourceEntityId in refused)) {
+         eligibleEntityIds.add(sourceEntityId);
       }
    }
    return { eligibleEntityIds, refused };
