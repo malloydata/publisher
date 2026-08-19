@@ -19,6 +19,7 @@ import {
 } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
+import { EXECUTE_QUERY_UI_URI, uiToolMeta } from "../ui_resources";
 import { mintCorrelationId } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
@@ -79,6 +80,16 @@ const executeQueryShape = {
       .describe(
          "Per-query given values that override model defaults. Keys are given names declared in the model's given: block.",
       ),
+   // Read by the MCP Apps widget, not by the server: the handler below ignores
+   // it. Declared here because a parameter a client cannot see is a parameter no
+   // agent will send, which would leave the widget's expand behaviour
+   // unreachable. Matches the `expanded` flag Credible's execute_query takes.
+   expanded: z
+      .boolean()
+      .optional()
+      .describe(
+         "Rendering hint for chat clients that support MCP Apps: when true, the rendered result opens in the conversation instead of sitting behind a 'Show Query Result' toggle. Set it for a result that answers the question being asked. Do NOT set it for a query containing nest:, or for a wide table that will not fit on one screen. Ignored by clients without MCP Apps support, and it does not change the returned rows.",
+      ),
 };
 
 const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
@@ -112,10 +123,22 @@ export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   mcpServer.tool(
+   // registerTool, not the older tool(name, description, shape, cb) overload:
+   // that overload has no slot for `_meta`, which is how a tool declares the
+   // MCP Apps widget that renders its result. The description and the input
+   // shape are the same values the overload received, deliberately unchanged:
+   // the description's ordering is load-bearing (a client that truncates it must
+   // not lose the rules at the top), and the shape is the tool's public
+   // contract.
+   mcpServer.registerTool(
       "malloy_executeQuery",
-      EXECUTE_QUERY_DESCRIPTION,
-      executeQueryShape,
+      {
+         description: EXECUTE_QUERY_DESCRIPTION,
+         inputSchema: executeQueryShape,
+         // Absent unless the widget bundle was built, so the tool never points
+         // at a resource this server cannot serve.
+         _meta: uiToolMeta(EXECUTE_QUERY_UI_URI),
+      },
       /** Handles requests for the malloy_executeQuery tool */
       async (params) => {
          // Destructure environmentName as well

@@ -47,6 +47,7 @@ COPY package.json bun.lock api-doc.yaml ./
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
+COPY packages/mcp-apps/package.json ./packages/mcp-apps/package.json
 
 # Install all workspace dependencies once (cached across builds)
 RUN --mount=type=cache,target=/root/.bun/install/cache \
@@ -63,6 +64,13 @@ WORKDIR /publisher/packages/app
 COPY packages/app/ ./
 RUN --mount=type=cache,target=/root/.bun \
     NODE_OPTIONS='--max-old-space-size=4096' bun run build:server
+
+# Build the MCP Apps widgets. Its output is copied into the server bundle by
+# packages/server/build.ts, so it has to run before the server build below.
+WORKDIR /publisher/packages/mcp-apps
+COPY packages/mcp-apps/ ./
+RUN --mount=type=cache,target=/root/.bun \
+    bun run build
 
 # Build server
 WORKDIR /publisher/packages/server

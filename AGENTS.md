@@ -122,7 +122,7 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 ## 3. The MCP tools
 
 - `malloy_getContext`: discovery and grounding. Call it with as much as you know and omit the rest. No arguments lists the environments, an environment lists its packages, a package lists its sources, and a plain-English query returns the most relevant sources, views, and fields. Use the names it returns verbatim.
-- `malloy_executeQuery`: run a Malloy query (a named view or query, or ad-hoc code) against a model and get JSON back.
+- `malloy_executeQuery`: run a Malloy query (a named view or query, or ad-hoc code) against a model and get JSON back. In a chat client that supports MCP Apps the result also renders inline as the chart or table your model describes; pass `expanded: true` to open that card by default when the result answers the question being asked, and leave it closed for a wide table or a query using `nest:`. The JSON is the same either way, so nothing changes for a client without that support. See [docs/ai-agents.md](docs/ai-agents.md#inline-result-rendering-mcp-apps).
 - `malloy_compile`: compile-check Malloy source and get structured diagnostics back (severity, message, model, line and column) without running a query. Use it to validate a model or a change while authoring, instead of firing a throwaway query. Pick the `scope` that matches the change: `append` (default) for a NEW definition, `file` for an EDIT (the source compiles as the file, at true coordinates), `package` for a dry-run of every file as saved — including a what-if edit importers must survive.
 - `malloy_reloadPackage`: recompile a package from its on-disk model files so a source or view you added or changed after boot becomes queryable by name, without restarting the server. Use it to close the edit-and-run loop: validate with `malloy_compile`, save, `malloy_reloadPackage`, then `malloy_executeQuery` the new view.
 - `malloy_getStatus`: the server's health. Its operational state, each environment's loaded packages, and every configured package that failed to load or is serving a stale model. This is the only MCP surface where a load failure is visible on its own, so call it before concluding a package is empty or missing, and after a model edit whose reload you did not run yourself.
@@ -136,7 +136,7 @@ Ask "what can I explore here?" A good sequence is:
 1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `examples`).
 2. `malloy_getContext` with that environment, then pick a package (the bundled packages are `storefront`, `governed-analytics`, and `html-data-app`).
 3. `malloy_getContext` with the package and your question, to get the source, view, and field names.
-4. `malloy_executeQuery` with those names, to get the answer. Charts and dashboards defined in the model render in the UI at http://localhost:4000.
+4. `malloy_executeQuery` with those names, to get the answer. Charts and dashboards defined in the model render in the UI at http://localhost:4000, and in the chat itself if your client supports MCP Apps.
 
 ## 5. Skills
 
