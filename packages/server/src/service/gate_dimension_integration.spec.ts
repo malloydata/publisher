@@ -4,7 +4,9 @@
  * separately from the string form. Every case compiles REAL Malloy against a
  * REAL DuckDB connection (never hand-typed IR — same convention
  * `row_level_authorize.integration.spec.ts`'s `buildGatedModel` documents),
- * through `Model.create` / `getQueryResults`, matching production.
+ * through `Model.create` / `getQueryResults`, matching production — with ONE
+ * deliberate exception, the G1 raw-boolean-column test below, which hand
+ * -builds a `FieldDef` because no real Malloy syntax reaches that shape.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -12,8 +14,10 @@ import {
    InMemoryURLReader,
    Runtime,
    type Connection,
+   type FieldDef,
    type GivenValue,
    type ModelDef,
+   type SourceDef,
 } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
@@ -198,6 +202,36 @@ describe("validateGateDimension — pure rules", () => {
       }
    });
 
+   it("G1 — refuses a raw boolean column (type boolean, but no expression) — hand-built, since real Malloy syntax has no way to attach #(authorize) to an auto-detected schema column with no dimension: declaration of its own", () => {
+      // Every other case in this file compiles REAL Malloy (this file's own
+      // header states that convention) because an annotation always lands on
+      // a field the AUTHOR wrote a `dimension:`/`measure:`/`view:` line for —
+      // there is no Malloy syntax to write `#(authorize)` directly on a raw,
+      // schema-auto-detected column with no declaration of its own to hang
+      // the annotation off. `asExpr.e === undefined` in `validateGateDimension`
+      // is a defensive check for exactly that shape (a `type: "boolean"`
+      // field with no compiled expression) should one ever reach it — pinned
+      // here with a hand-built `FieldDef`, the one deliberate exception to
+      // this file's real-Malloy convention.
+      const field = {
+         name: "authorized",
+         type: "boolean",
+         expressionType: "scalar",
+         e: undefined,
+         annotations: {
+            blockNotes: [{ text: "#(authorize)\n" }],
+         },
+      } as unknown as FieldDef;
+      const struct = {
+         name: "accounts",
+         fields: [field],
+      } as unknown as SourceDef;
+      const modelDef = { givens: {} } as unknown as ModelDef;
+      expect(() =>
+         validateGateDimension("accounts", struct, modelDef, new Set()),
+      ).toThrow(/scalar boolean dimension/);
+   });
+
    it("more than one annotated dimension on one source names both", async () => {
       const duckdb = await newDuckdb();
       try {
@@ -274,6 +308,23 @@ describe("validateGateDimension — pure rules", () => {
       } finally {
          await duckdb.close();
       }
+      // The pure `validateGateDimension` call above proves the RULE; this
+      // proves the claim in the title — that a real package actually LOADS
+      // (via `Model.create`, the same path `Model.create`/the package-load
+      // worker use) rather than merely that one direct function call didn't
+      // throw.
+      const {
+         model,
+         duckdb: duckdb2,
+         dir,
+      } = await createModel(
+         `source: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id = 'org1'\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+      } finally {
+         await cleanup(duckdb2, dir);
+      }
    });
 
    it("W2 — a negated membership test warns and still resolves (package loads)", async () => {
@@ -291,6 +342,19 @@ describe("validateGateDimension — pure rules", () => {
          );
       } finally {
          await duckdb.close();
+      }
+      // Same distinction as W1 above: prove a real package actually loads.
+      const {
+         model,
+         duckdb: duckdb2,
+         dir,
+      } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is not (org_id in $GROUPS)\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+      } finally {
+         await cleanup(duckdb2, dir);
       }
    });
 
@@ -362,15 +426,88 @@ describe("dimension-form gate — end to end", () => {
       }
    });
 
-   it("rewritten dimension by NAME survives a rename around it (graft-by-name, not by re-parsed code)", async () => {
-      // If the graft re-parsed `code` instead of referencing the dimension
-      // by name, this would be indistinguishable from the by-name case for
-      // this particular model — the real proof that it's by name, not code,
-      // is Constraint 9's design intent (never re-derive `filterText` from
-      // `.code`); this test at least pins that the graft still works when
-      // the gate dimension's OWN expression references another renamed
-      // field, which a naive re-parse of `code` (not re-resolved field
-      // paths) could get wrong.
+   it("what `internal` actually does for the gate dimension: blocks an ordinary query's OWN reference, but not the graft's extend-based where:", async () => {
+      // `validateGateDimension` refuses `private` because it hides the field
+      // from the graft too, which would load fine but fail every query at
+      // request time. `internal` is required instead — but empirically
+      // `internal` is NOT simply "visible everywhere but across an import
+      // boundary", which a plausible but wrong reading of this task's report
+      // draft once assumed. It is narrower and more precise than that: a
+      // caller's OWN reference to the field — a direct `select:`, or even a
+      // `where:` written INSIDE the query's own pipeline stage
+      // (`-> {where: authorized}`) — is refused with `'authorized' is
+      // internal`, exactly like `private` would be. What `internal`
+      // specifically permits is the ONE shape the graft itself compiles:
+      // a `where:` attached via `extend {}` BEFORE the pipeline
+      // (`` `accounts` extend { where: (authorized) } -> {...} ``,
+      // `buildRowLevelProbe`'s shape). `internal` is not a general
+      // visibility relaxation of the gate dimension's value; it is exactly
+      // permeable to the graft mechanism and nothing more permissive than
+      // that within this model.
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\n`,
+      );
+      const givens = { GROUPS: ["org1"] };
+      try {
+         // A direct SELECT of the gate dimension is refused, same as
+         // `private` would be.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: accounts -> { select: id, authorized }",
+               {},
+               true,
+               givens,
+            ),
+         ).rejects.toThrow(/'authorized' is internal/);
+         // A `where:` INSIDE the query's own pipeline stage is refused the
+         // same way — `internal` does not carve out `where:` in general,
+         // only the graft's specific extend-based shape (proven below).
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: accounts -> { where: authorized; select: id }",
+               {},
+               true,
+               givens,
+            ),
+         ).rejects.toThrow(/'authorized' is internal/);
+         // The graft's OWN shape — an extend-based where: attached BEFORE
+         // the pipeline — succeeds and filters correctly. This is the exact
+         // mechanism `buildRowLevelProbe`/the request-time graft compile.
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: accounts extend { where: (authorized) } -> { select: id; order_by: id }",
+            {},
+            true,
+            givens,
+         );
+         const ids = (
+            result.compactResult as unknown as ReadonlyArray<
+               Record<string, unknown>
+            >
+         ).map((r) => Number(r.id));
+         expect(ids).toEqual([1, 2]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("the gate dimension's OWN expression can reference a renamed field and still graft correctly", async () => {
+      // NOT a proof that the graft is by-name-not-by-code — the graft target
+      // itself (`quoteMalloyIdentifier(fieldName)`) is exercised identically
+      // by every other test in this file; that property is Constraint 9's
+      // design intent (never re-derive `filterText` from `.code`) and is not
+      // independently distinguishable from the outside for this or any other
+      // single model. What THIS test actually pins: the gate dimension's own
+      // expression can reference a field the author renamed (`org` for
+      // `org_id`), and the graft still resolves and filters correctly —
+      // a case a naive re-parse of `.code` (unresolved field paths) could get
+      // wrong, even though this test does not itself prove the graft avoids
+      // that path.
       const { model, duckdb, dir } = await createModel(
          `given:\n  GROUPS :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n   rename: org is org_id\n   #(authorize)\n   internal dimension: authorized is org in $GROUPS\n}\n`,
       );
@@ -529,32 +666,25 @@ describe("pins — load-bearing inferences", () => {
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         let threw: unknown;
-         let rows: unknown;
-         try {
-            rows = await model.getQueryResults(
+         // Discovery recurses to X (the derivation base) where `authorized`
+         // still exists, so Z is still recognized as gated; the graft then
+         // attempts to compile `Z extend { where: (\`authorized\`) }`, and
+         // fails — `authorized` is not in Z's own projected field space
+         // (`select: org_id, amount` dropped it) — with "'authorized' is not
+         // defined" / "Filter expression must have boolean value" (see
+         // task-2-report.md for the captured message). That lift failure
+         // denies closed via the SAME opaque-403 path a missing given uses,
+         // never a 200 with zero rows: the query never runs at all.
+         await expect(
+            model.getQueryResults(
                undefined,
                undefined,
                "run: Z -> { select: org_id }",
                {},
                true,
                { GROUPS: ["org1"] },
-            );
-         } catch (e) {
-            threw = e;
-         }
-         // Discovery recurses to X (the derivation base) where `authorized`
-         // still exists; the graft on Z (the entry point) then can't resolve
-         // the name in Z's own projected field space and fails closed. Pin
-         // whichever actually happens: a 403 (the graft never lands) or a
-         // 200 with zero rows (the graft lands but nothing satisfies it).
-         if (threw !== undefined) {
-            expect(threw).toBeInstanceOf(AccessDeniedError);
-         } else {
-            const compact = (rows as { compactResult: unknown[] })
-               .compactResult;
-            expect(compact.length).toBe(0);
-         }
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup(duckdb, dir);
       }
