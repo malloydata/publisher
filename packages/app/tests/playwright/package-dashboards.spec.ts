@@ -226,6 +226,35 @@ test.describe("package-dashboards", () => {
       );
    });
 
+   test("an unrelated query parameter survives load and a control change", async ({
+      page,
+   }) => {
+      // The page's query string is not the dashboard's alone. Replacing it
+      // wholesale dropped anything else on LOAD, as soon as a manifest carrying a
+      // declared given arrived, and did it inconsistently: on a warm cache the
+      // first report never fired and the parameter survived, so whether a shared
+      // link kept its tracking tag depended on whether the reader had opened that
+      // dashboard before.
+      await page.goto(
+         `/${env}/${PKG}/dashboards/overview?BRAND=Nike&utm_campaign=spring`,
+      );
+      await expect(
+         page.getByRole("heading", { name: "Business Overview" }),
+      ).toBeVisible({ timeout: 30_000 });
+
+      await expect(page).toHaveURL(/[?&]utm_campaign=spring/);
+      await expect(page).toHaveURL(/[?&]BRAND=Nike/);
+
+      // And it still survives once a control writes to the query string.
+      const brand = page.getByRole("combobox", { name: "Brand" });
+      await brand.click();
+      await page.getByRole("option", { name: "Levi's" }).click({
+         timeout: 30_000,
+      });
+      await expect(page).toHaveURL(/[?&]BRAND=Levi/);
+      await expect(page).toHaveURL(/[?&]utm_campaign=spring/);
+   });
+
    test("autorun=false gets an Apply button and its starting values", async ({
       page,
    }) => {

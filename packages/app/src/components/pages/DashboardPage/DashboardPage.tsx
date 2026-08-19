@@ -5,7 +5,7 @@ import {
    type DrillNavigation,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 export interface DashboardPageProps {
@@ -45,25 +45,49 @@ export default function DashboardPage({
       [searchParams],
    );
 
+   // Names this page has written into the query string, so a control cleared
+   // after the dashboard stopped declaring it still gets cleaned up. Same device
+   // NotebookPage uses, for the same reason.
+   const writtenRef = useRef<Set<string>>(new Set());
+
    const onGivensChange = useCallback(
-      (next: Record<string, string>) => {
-         // KNOWN GAP, unlike NotebookPage: the applied values REPLACE the query
-         // string rather than merging into it, so an unrelated parameter on a
-         // dashboard URL (a tracking tag, say) is dropped on the first control
-         // change. Merging needs to know which names are the dashboard's to take
-         // back out, and `Dashboard`'s `onGivensChange` hands over values only,
-         // where `Notebook`'s hands over the managed names alongside them, which
-         // is what lets NotebookPage merge. Guessing is worse than replacing:
-         // without that list, a control the reader CLEARS cannot be told from a
-         // parameter that was never ours, so its value would stay in the address
-         // bar while the page ran without it.
+      (next: Record<string, string>, managed: readonly string[]) => {
+         const ours = new Set([...managed, ...writtenRef.current]);
+         writtenRef.current = new Set([
+            ...writtenRef.current,
+            ...Object.keys(next),
+            ...managed,
+         ]);
+         // Merged into what is already there, not written over it. The query
+         // string is not this page's alone: a tracking tag or any other unrelated
+         // parameter shares it, and replacing the whole string dropped it, not on
+         // the first control change as this comment used to claim, but on LOAD,
+         // as soon as a manifest carrying a declared given arrived. It was also
+         // inconsistent: on a warm react-query cache the first report never fired
+         // and the parameter survived, so whether a link kept its tracking tag
+         // depended on whether the reader had opened that dashboard before.
+         //
+         // Merging is possible here now because `Dashboard` hands over the names
+         // it manages alongside the values, the way `Notebook` does. Without that
+         // list a host cannot tell a control the reader CLEARED from a parameter
+         // that was never its business, which is why this used to replace.
+         const merged = new URLSearchParams(location.search);
+         for (const name of ours) {
+            // `hasOwnProperty`, not `in`: `next` is a plain object literal, so
+            // `in` walks its prototype and reports `constructor`, `toString` and
+            // friends as present, which would leave a given with one of those
+            // names stuck in the address bar after its control was cleared.
+            if (!Object.prototype.hasOwnProperty.call(next, name)) {
+               merged.delete(name);
+            }
+         }
+         for (const [name, value] of Object.entries(next)) {
+            merged.set(name, value);
+         }
          routerNavigate(
             // Filtering is not a navigation step: Back should leave the
             // dashboard, not walk back through every filter the user tried.
-            {
-               search: new URLSearchParams(next).toString(),
-               hash: location.hash,
-            },
+            { search: merged.toString(), hash: location.hash },
             { replace: true },
          );
       },

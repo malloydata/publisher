@@ -26,8 +26,18 @@ export interface DashboardProps {
    /**
     * Applied control values, for a host that wants them in its URL. Fires with
     * what the results reflect, not with every keystroke.
+    *
+    * `managed` is every given this dashboard declares, whether or not it
+    * currently holds a value, and a host writing to a shared query string needs
+    * it. `givens` alone says which parameters to write but not which to REMOVE,
+    * so a host that guesses by deleting everything it did not just receive
+    * deletes the unrelated parameters it has no business touching. Same contract
+    * as `Notebook`, so a host can treat the two surfaces alike.
     */
-   onGivensChange?: (givens: Record<string, string>) => void;
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
    /**
     * Where to go when a `# drill` cell is clicked. Without it, drilling to
     * another dashboard is inert: `to=self` still filters in place, since that
@@ -121,6 +131,18 @@ export function Dashboard({
       [specs],
    );
 
+   // Hands the host the names this dashboard MANAGES alongside the values, so it
+   // can merge into a shared query string instead of replacing it. Guarded on
+   // `isSuccess` as well as at the call site, since an empty declared set before
+   // the manifest lands is the absence of an answer rather than the answer.
+   const reportGivens = useCallback(
+      (next: Record<string, string>) => {
+         if (!isSuccess) return;
+         onGivensChange?.(next, Array.from(declaredTypes.keys()));
+      },
+      [isSuccess, onGivensChange, declaredTypes],
+   );
+
    const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
       declaredTypes,
       startingValues: manifest?.startingGivens,
@@ -134,7 +156,7 @@ export function Dashboard({
       // PREVIOUS dashboard's values and does not suppress that report as a
       // repeat. The host reasonably clears its query string, which is exactly the
       // givens the drill just seeded for the dashboard now arriving.
-      onParamsChange: isSuccess ? onGivensChange : undefined,
+      onParamsChange: isSuccess ? reportGivens : undefined,
       // Which document these edits belong to. Without it the edits are keyed by
       // their starting VALUES alone, so two dashboards whose starting values
       // coincide (the common case: both empty) look like one document, and the
