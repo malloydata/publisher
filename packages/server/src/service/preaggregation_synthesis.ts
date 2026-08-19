@@ -50,6 +50,7 @@
  * Pure: takes compiled IR, returns a plan and a string, touches no I/O.
  */
 
+import { Annotations } from "@malloydata/malloy";
 import { createHash } from "node:crypto";
 import {
    readPreaggregateAnnotation,
@@ -83,6 +84,17 @@ export interface RollupPlan {
    baseSourceName: string;
    /** The synthesized `#@ persist` source's name. Deterministic. */
    rollupSourceName: string;
+   /**
+    * The namespace the rollup's table is created in: this grain's own
+    * `#@ preaggregate namespace=`, else everything before the last dot of the
+    * base's `#@ persist name=`, else undefined when neither names one.
+    *
+    * A rollup of X belongs where X lives, unless its author said otherwise. It
+    * also decides whether the rollup can be built at all on a dialect that
+    * requires qualification: BigQuery rejects an unqualified CREATE, so a bare
+    * name is not a cosmetic difference there.
+    */
+   namespace?: string;
    /** The one grain, canonically sorted. */
    grainDimensions: string[];
    /** The measures served here, sorted by name. */
@@ -120,9 +132,70 @@ export function rollupSourceName(
    return `${baseSourceName}__preagg__${slug}__${grainDigest(grainDimensions)}`;
 }
 
+/**
+ * One segment of a namespace: a plain identifier, plus the hyphen.
+ *
+ * The house rule for a bare-spliced identifier is {@link assertSafeSqlIdentifier}'s
+ * `[A-Za-z_][A-Za-z0-9_$]*`, and this is that with one addition. Its own reasoning
+ * is why: hyphens were left out because Snowflake, Trino and Unity Catalog all need
+ * a hyphenated name quoted, "and BigQuery, the one dialect whose names really do
+ * carry hyphens, never reaches this function". A rollup namespace DOES reach
+ * BigQuery, where a hyphenated project id is ordinary, so excluding it would refuse
+ * `my-project.analytics` — a name the dialect this feature broke on requires.
+ *
+ * Everything else is out: a space or a quote cannot be spliced bare, and a name
+ * needing quotes cannot be joined to a generated table name (see
+ * {@link persistNamespace}).
+ */
+const NAMESPACE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
+
+/**
+ * Whether every dot-separated segment can be spliced into a generated name.
+ *
+ * Dots are the one separator that survives: BigQuery addresses a dataset as
+ * `project.dataset`, so a namespace is a path, not a single identifier.
+ *
+ * An empty string is refused by the per-segment test, which `""` fails.
+ */
+export function isSpliceableNamespace(namespace: string): boolean {
+   return namespace.split(".").every((s) => NAMESPACE_SEGMENT.test(s));
+}
+
 /** The alias the author's base source is imported under. */
 export function baseAlias(baseSourceName: string): string {
    return `${baseSourceName}${BASE_ALIAS_SUFFIX}`;
+}
+
+/**
+ * The namespace half of a `#@ persist name=` — everything before the LAST dot.
+ *
+ * `analytics.orders` yields `analytics`; `proj.analytics.orders` yields
+ * `proj.analytics`; a bare `orders` yields undefined. Split on the last dot
+ * rather than the first because BigQuery names can carry a project as well as a
+ * dataset, and the rollup belongs beside the base in whichever of those it names.
+ *
+ * **A quoted name yields nothing, deliberately.** Splitting one on a dot is not
+ * sound — `"My.Schema"` is a single identifier containing a dot, and the last-dot
+ * rule tears it into `"My`. Even a well-formed `"A"."B"` would give a quoted
+ * prefix that this then joins to an unquoted derived segment, and the two sides of
+ * the bind disagree about a mixed path: `quoteManifestTablePath` passes anything
+ * already carrying a quote through untouched, while the CREATE side quotes every
+ * segment. That disagreement is a known defect for authored names
+ * (`quoted-persist-name-colocated`); a derived name must not extend it. Such an
+ * author names the rollup's namespace explicitly instead.
+ *
+ * A trailing dot yields nothing either: the base's own table segment is empty, so
+ * the name is malformed and inventing a namespace from it would hide that.
+ */
+export function persistNamespace(
+   persistName: string | undefined,
+): string | undefined {
+   if (!persistName) return undefined;
+   const lastDot = persistName.lastIndexOf(".");
+   if (lastDot <= 0) return undefined;
+   if (persistName.slice(lastDot + 1).trim() === "") return undefined;
+   const candidate = persistName.slice(0, lastDot);
+   return isSpliceableNamespace(candidate) ? candidate : undefined;
 }
 
 /**
@@ -134,15 +207,58 @@ export function baseAlias(baseSourceName: string): string {
  * declaration that would be refused at publish is skipped here rather than
  * re-reported, so the two never disagree about what is buildable.
  */
+/**
+ * The namespace a rollup inherits from its base's `#@ persist name=`, or undefined
+ * when there is none to inherit.
+ *
+ * Read from the source's annotations rather than from a build plan: synthesis runs
+ * before one exists, and the rollup's text has to carry the name it will be built
+ * under. Unreadable annotations are treated as absent for the same reason
+ * {@link readPreaggregateAnnotation} does — a malformed line must not take the
+ * package down.
+ *
+ * **A `storage=` base lends nothing.** Its `name=` is a name in the DESTINATION's
+ * catalog, while a rollup is always colocated — synthesis emits a bare
+ * `#@ persist`, and rollups following a base into a storage destination is
+ * separate work. Inheriting across that boundary would aim `CREATE TABLE` at a
+ * schema of the destination's that need not exist in the source warehouse, so
+ * adding `storage=` to a working base would break its rollup. "A rollup of X
+ * belongs beside X" is exactly the inference that stops holding once X moved
+ * engines; such an author names the namespace explicitly.
+ */
+function basePersistNamespace(source: ValidatableSource): string | undefined {
+   if (!source.annotations) return undefined;
+   try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tag = new Annotations(source.annotations as any).parseAsTag(
+         "@",
+      ).tag;
+      if (!tag.has("persist")) return undefined;
+      // `#@ persist name="x"` parses as two SIBLING keys, not a nested one — the
+      // same shape `readPreaggregateAnnotation` handles for `grain`. Nested form
+      // first so a future nested spelling wins, sibling as the documented fallback.
+      const storage = tag.text("persist", "storage") ?? tag.text("storage");
+      if (storage !== undefined && storage.trim() !== "") return undefined;
+      return persistNamespace(tag.text("persist", "name") ?? tag.text("name"));
+   } catch {
+      return undefined;
+   }
+}
+
 export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
+   const inheritedNamespace = basePersistNamespace(source);
    // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
    // two authors writing the same dimensions in either order land in one entry.
    const byGrain = new Map<
       string,
-      { grainDimensions: string[]; measures: RollupMeasure[] }
+      {
+         grainDimensions: string[];
+         measures: RollupMeasure[];
+         namespace?: string;
+      }
    >();
 
    for (const field of source.fields ?? []) {
@@ -170,14 +286,23 @@ export function planSourcePreaggregation(
             partialName: `${name}${PARTIAL_SUFFIX}`,
             reaggregate: additivity.reaggregate,
          });
+         // First one named wins, in the field order the IR reports. Safe to be
+         // arbitrary only because two measures at ONE grain naming different
+         // namespaces is refused at publish (`conflicting_namespace`): the grain is
+         // a single table, so it cannot honour both. Across grains there is no
+         // conflict to resolve — each entry carries its own.
+         entry.namespace ??= grain.namespace;
          byGrain.set(key, entry);
       }
    }
 
    return [...byGrain.values()]
-      .map(({ grainDimensions, measures }) => ({
+      .map(({ grainDimensions, measures, namespace }) => ({
          baseSourceName,
          rollupSourceName: rollupSourceName(baseSourceName, grainDimensions),
+         // Author's choice first, the base's namespace as the fallback: a rollup of
+         // X belongs where X lives unless its author said otherwise.
+         namespace: namespace ?? inheritedNamespace,
          grainDimensions,
          // Sorted so the emitted text does not depend on field order in the IR.
          measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),
@@ -213,7 +338,13 @@ function emitRollup(plan: RollupPlan): string {
    const merged = plan.measures
       .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
       .join("\n");
-   return `#@ persist
+   // Named only when the base named a namespace. Without one the build self-assigns
+   // from the source name, which is what every dialect but BigQuery accepts — and
+   // there is nothing to inherit, so inventing a namespace here would be a guess.
+   const persist = plan.namespace
+      ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
+      : "#@ persist";
+   return `${persist}
 source: ${plan.rollupSourceName} is ${alias} -> {
   group_by:
 ${plan.grainDimensions.map((d) => `    ${d}`).join("\n")}
