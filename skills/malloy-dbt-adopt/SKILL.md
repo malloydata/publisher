@@ -87,6 +87,29 @@ guessing. A `foreign` entity names its target by entity name, not by table name.
   table's schema). Never re-implement templating.
 - **The staging layer.** Renames and casts whose output is already in the marts.
 
+## A converted model is not yet a usable model
+
+Converting dbt's metrics faithfully produces something that reconciles and that nobody can use.
+dbt's semantic layer carries no display formatting and, typically, only a handful of saved
+queries, so a pure transcription lands as N co-equal sources with no entry point, no charts, and
+lookup tables that are dead ends when opened. Budget for an authoring pass and treat it as part
+of the job:
+
+- **Pick the entry point and make it obvious.** Usually the finest-grain fact source, because it
+  reaches the rest through joins. Give it a `# dashboard` view whose `#(doc)` says to start there.
+- **Add the render tags dbt cannot give you.** `# currency`, `# percent`, and a chart type per
+  view. Money rendering as a bare float is the most visible sign of an unfinished conversion.
+- **Write the views the metrics imply.** dbt's saved queries are a floor, not the set of
+  questions people ask.
+- **Give every listed source something to say.** dbt often declares no metrics on dimension
+  tables, so a `product_count` and a view or two keeps them from being empty dead ends.
+- **Curate the surface.** In `publisher.json`, `explores` limits which files are listed and
+  `queryableSources` decides whether that is also a query boundary. Use it to keep helper and
+  staging sources out of the picker.
+
+Say which parts came from dbt and which you authored. The metrics are dbt's and reconcile against
+it; the tags, views, and dashboards are yours and do not.
+
 ## Governance: name the gap
 
 dbt's test framework is the clearest place dbt leads, and a conversion must say so out loud.

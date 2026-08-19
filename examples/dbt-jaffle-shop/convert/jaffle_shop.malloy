@@ -4,7 +4,7 @@
 // layer. The only difference is what each source extends: `adopt` reads the marts dbt built
 // from Parquet, this reads the marts marts.malloy rebuilt and persisted from the raw data.
 //
-// That is the pair's whole argument. `run: orders -> order_metrics` is the same query, with
+// That is the pair's whole argument. `run: order_items -> overview` is the same query, with
 // the same numbers, against either package. Where the tables come from is a plumbing
 // decision that the people and agents querying the model never see.
 
@@ -19,6 +19,7 @@ source: customers is customers_mart extend {
   measure:
     #(doc) LTV pre-tax / number of orders
     # label="Average Order Value"
+    # currency
     average_order_value is lifetime_spend_pretax / nullif(count_lifetime_orders, 0)
 
     #(doc) Total count of orders per customer.
@@ -31,10 +32,12 @@ source: customers is customers_mart extend {
 
     #(doc) Gross customer lifetime spend inclusive of taxes.
     # label="Lifetime Spend"
+    # currency
     lifetime_spend is lifetime_spend_raw.sum()
 
     #(doc) Customer's lifetime spend before tax
     # label="LTV Pre-tax"
+    # currency
     lifetime_spend_pretax is lifetime_spend_pretax_raw.sum()
 
   #(doc) Key customer order metrics grouped by customer.
@@ -46,6 +49,21 @@ source: customers is customers_mart extend {
       lifetime_spend_pretax
       average_order_value
   }
+
+  #(doc) Customer count and lifetime spend by new against returning
+  # bar_chart
+  view: customers_by_type is {
+    group_by: customer_type
+    aggregate: customers, lifetime_spend
+    order_by: lifetime_spend desc
+  }
+
+  #(doc) Highest spending customers
+  view: top_customers is {
+    top: 10
+    group_by: customer_name, customer_id
+    aggregate: lifetime_spend, count_lifetime_orders, average_order_value
+  }
 }
 
 #(doc) Location dimension table. The grain of the table is one row per location.
@@ -55,7 +73,16 @@ source: locations is locations_mart extend {
   measure:
     #(doc) Average tax rate.
     # label="Average Tax Rate"
+    # percent
     average_tax_rate is tax_rate.avg()
+
+  #(doc) Tax rate by location
+  # bar_chart
+  view: tax_rate_by_location is {
+    group_by: location_name
+    aggregate: average_tax_rate
+    order_by: average_tax_rate desc
+  }
 }
 
 #(doc) Order overview data mart, offering key details for each order inlcluding if it's a customer's first order and a food vs. drink item breakdown. One row per order.
@@ -86,10 +113,12 @@ source: orders is orders_mart extend {
 
     #(doc) The cost for each order item. Cost is calculated as a sum of the supply cost for each order item.
     # label="Order Cost"
+    # currency
     order_cost is order_cost_raw.sum()
 
     #(doc) Sum of total order amount. Includes tax + revenue.
     # label="Order Total"
+    # currency
     order_total is order_total_raw.sum()
 
     #(doc) Count of orders.
@@ -98,6 +127,7 @@ source: orders is orders_mart extend {
 
     #(doc) The total tax paid on each order.
     # label="Tax Paid"
+    # currency
     tax_paid is tax_paid_raw.sum()
 
   #(doc) Key order metrics grouped by day.
@@ -111,11 +141,42 @@ source: orders is orders_mart extend {
       food_orders
       drink_orders
   }
+
+  #(doc) Orders and order value by month
+  # line_chart
+  view: orders_by_month is {
+    group_by: order_month is ordered_at.month
+    aggregate: orders, order_total
+    order_by: order_month
+  }
+
+  #(doc) How the order mix breaks down: food, drink, large, and first orders
+  view: order_mix is {
+    aggregate: orders, food_orders, drink_orders, large_orders, new_customer_orders
+  }
+
+  #(doc) Orders and order value by store location
+  # bar_chart
+  view: orders_by_location is {
+    group_by: locations.location_name
+    aggregate: orders, order_total
+    order_by: order_total desc
+  }
 }
 
 #(doc) Product dimension table. The grain of the table is one row per product.
 source: products is products_mart extend {
   primary_key: product_id
+
+  measure:
+    product_count is count()
+
+  #(doc) Products by category
+  # bar_chart
+  view: by_type is {
+    group_by: product_type
+    aggregate: product_count
+  }
 }
 
 #(doc) Items contained in each order. The grain of the table is one row per order item.
@@ -127,28 +188,37 @@ source: order_items is order_items_mart extend {
     products with product_id
 
   measure:
+    #(doc) Number of order lines
+    order_item_count is count()
+
     #(doc) The revenue from drinks in each order
     # label="Drink Revenue"
+    # currency
     drink_revenue is product_price.sum() { where: is_drink_item }
 
     #(doc) The % of order revenue from drinks.
     # label="Drink Revenue %"
+    # percent
     drink_revenue_pct is drink_revenue / nullif(revenue, 0)
 
     #(doc) The revenue from food in each order
     # label="Food Revenue"
+    # currency
     food_revenue is product_price.sum() { where: is_food_item }
 
     #(doc) The % of order revenue from food.
     # label="Food Revenue %"
+    # percent
     food_revenue_pct is food_revenue / nullif(revenue, 0)
 
     #(doc) Gross profit from each order.
     # label="Order Gross Profit"
+    # currency
     order_gross_profit is revenue - orders.order_cost
 
     #(doc) The revenue generated for each order item. Revenue is calculated as a sum of revenue associated with each product in an order.
     # label="Revenue"
+    # currency
     revenue is product_price.sum()
 
   #(doc) Key revenue metrics grouped by day.
@@ -161,16 +231,16 @@ source: order_items is order_items_mart extend {
       drink_revenue
   }
 
-   // dbt: metric `revenue_growth_mom`, type `derived`, expr
-   //   (current_revenue - revenue_prev_month)*100/revenue_prev_month
-   // with its second input offset by `offset_window: {count: 1, granularity: month}`.
-   //
-   // The offset is what makes this a window rather than an aggregate: the row for March
-   // has to see February's value. dbt's OSI export drops the offset and emits
-   // `(SUM(x) - SUM(x))*100/SUM(x)`, which is always zero -- see ../COVERAGE.md.
-   #(doc) Revenue by month with month-over-month growth as a percentage
-   # line_chart
-   view: revenue_growth_mom is {
+  // dbt: metric `revenue_growth_mom`, type `derived`, expr
+  //   (current_revenue - revenue_prev_month)*100/revenue_prev_month
+  // with its second input offset by `offset_window: {count: 1, granularity: month}`.
+  //
+  // The offset is what makes this a window rather than an aggregate: the row for March
+  // has to see February's value. dbt's OSI export drops the offset and emits
+  // `(SUM(x) - SUM(x))*100/SUM(x)`, which is always zero -- see ../COVERAGE.md.
+  #(doc) Revenue by month with month-over-month growth as a percentage
+  # line_chart
+  view: revenue_growth_mom is {
       group_by: revenue_month is ordered_at.month
       aggregate: revenue
       calculate: revenue_prev_month is lag(revenue)
@@ -178,24 +248,24 @@ source: order_items is order_items_mart extend {
          # percent
          revenue_growth_mom is (revenue - lag(revenue)) / nullif(lag(revenue), 0)
       order_by: revenue_month
-   }
+  }
 
-   // dbt: metric `cumulative_revenue`, type `cumulative`, over metric `revenue` with an
-   // all-time window. dbt itself warns this one cannot be represented in OSI.
-   #(doc) Running total of revenue over time, all-time cumulative
-   # line_chart
-   view: cumulative_revenue is {
+  // dbt: metric `cumulative_revenue`, type `cumulative`, over metric `revenue` with an
+  // all-time window. dbt itself warns this one cannot be represented in OSI.
+  #(doc) Running total of revenue over time, all-time cumulative
+  # line_chart
+  view: cumulative_revenue is {
       group_by: revenue_month is ordered_at.month
       aggregate: revenue
       calculate:
          # currency
          cumulative_revenue is sum_cumulative(revenue)
       order_by: revenue_month
-   }
+  }
 
-   #(doc) Revenue trend, growth, and running total in one view
-   # dashboard
-   view: revenue_over_time is {
+  #(doc) Revenue trend, growth, and running total in one view
+  # dashboard
+  view: revenue_over_time is {
       nest:
          # big_value
          totals is {
@@ -212,10 +282,82 @@ source: order_items is order_items_mart extend {
          }
       nest: revenue_growth_mom
       nest: cumulative_revenue
-   }
+  }
+
+  // ── Analysis layer ─────────────────────────────────────────────────────
+  // dbt's semantic layer stops at metrics; these are the views that make the
+  // metrics usable, plus the chart tags dbt does not record.
+
+  #(doc) Revenue by month
+  # line_chart
+  view: revenue_by_month is {
+    group_by: revenue_month is ordered_at.month
+    aggregate: revenue
+    order_by: revenue_month
+  }
+
+  #(doc) Revenue split by product category, food against drink
+  # bar_chart
+  view: revenue_by_product_type is {
+    group_by: products.product_type
+    aggregate: revenue
+    order_by: revenue desc
+  }
+
+  #(doc) Best selling products by revenue
+  view: top_products is {
+    top: 10
+    group_by: product_name
+    aggregate: revenue, order_item_count, order_gross_profit
+  }
+
+  #(doc) Revenue by store location
+  # bar_chart
+  view: revenue_by_location is {
+    group_by: orders.locations.location_name
+    aggregate: revenue
+    order_by: revenue desc
+  }
+
+  #(doc) Revenue from new against returning customers
+  # bar_chart
+  view: revenue_by_customer_type is {
+    group_by: orders.customers.customer_type
+    aggregate: revenue
+    order_by: revenue desc
+  }
+
+  #(doc) Start here: revenue KPIs, the monthly trend, product mix, and top sellers
+  # dashboard
+  view: overview is {
+    nest:
+      # big_value
+      kpis is {
+        aggregate: revenue, order_gross_profit, order_item_count
+      }
+    nest: revenue_by_month
+    nest: revenue_by_product_type
+    nest: top_products
+    nest: revenue_by_location
+    nest: revenue_by_customer_type
+  }
 }
 
 #(doc) Supplies dimension table. The grain of the table is one row per supply and product combination.
 source: supplies is supplies_mart extend {
   primary_key: supply_uuid
+
+  measure:
+    #(doc) Number of supply and product combinations
+    supply_count is count()
+    #(doc) Total cost of supplies
+    # currency
+    total_supply_cost is supply_cost.sum()
+
+  #(doc) Most expensive supplies
+  view: top_supplies is {
+    top: 10
+    group_by: supply_name
+    aggregate: total_supply_cost, supply_count
+  }
 }

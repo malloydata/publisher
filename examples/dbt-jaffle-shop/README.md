@@ -36,6 +36,31 @@ bun run start
 Start with [`adopt/jaffle_shop.malloynb`](adopt/jaffle_shop.malloynb). It states the number dbt's
 own engine returns beside each Malloy query.
 
+## Where to start: `order_items -> overview`
+
+`order_items` is the entry point. It is the finest grain and it reaches everything: `products`
+directly, and `customers` and `locations` through `orders`. Its `overview` view is a
+`# dashboard` — revenue KPIs, the monthly trend, product mix, top sellers, and revenue by
+location and customer type in one query.
+
+```malloy
+run: order_items -> overview
+```
+
+The other five sources are entry points too, each with its own measures and views: `orders` for
+order-level questions, `customers` for lifetime value, and `products` / `locations` / `supplies`
+as catalogs.
+
+**dbt's metrics alone do not make a usable model.** dbt's semantic layer gives you 23 metrics and
+3 saved queries, and no indication of where to start, how anything should render, or which
+questions matter. The measures here are dbt's; the chart tags (`# currency`, `# percent`,
+`# bar_chart`, `# line_chart`), the analysis views, and the dashboard are additions, because dbt
+records no display formatting and its saved queries cover three questions. That authoring step is
+part of the conversion, not an optional polish pass.
+
+Both packages declare `explores: ["jaffle_shop.malloy"]`, so the staging and mart plumbing in
+`convert/` stays out of listings. Each package shows the same six sources and nothing else.
+
 ## The short version
 
 **23 dbt metrics: 20 became Malloy measures and all 20 match dbt's output exactly.** Two became

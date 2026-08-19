@@ -140,3 +140,30 @@ differ for those 77 orders.
 > `order_items.count()` and summed to **14,327** — 77 too many, one per itemless order, because
 > `count()` counts the outer-join row. Comparing against dbt's marts is what caught it. That is
 > the entire argument for reconciling against the incumbent rather than eyeballing the output.
+
+## Added beyond dbt
+
+Three things in these models did not come from dbt, and should not be read as converted:
+
+- **Render tags.** `# currency`, `# percent`, `# bar_chart`, `# line_chart`, `# dashboard`,
+  `# big_value`. dbt's semantic layer records no display formatting, so every one of these is a
+  judgment call made here.
+- **The analysis views and the `overview` dashboard.** dbt ships three `saved_queries`, which
+  became `order_metrics`, `revenue_metrics`, and `customer_order_metrics`. Everything else
+  (`revenue_by_month`, `revenue_by_product_type`, `top_products`, `revenue_by_location`,
+  `revenue_by_customer_type`, `orders_by_month`, `order_mix`, `orders_by_location`,
+  `customers_by_type`, `top_customers`, `by_type`, `tax_rate_by_location`, `top_supplies`,
+  `overview`) was authored here.
+- **Four measures.** `order_item_count`, `product_count`, `supply_count`, and
+  `total_supply_cost`, so every source has something to say when someone opens it. dbt declares
+  no metrics at all on `products` or `supplies`.
+
+The 20 measures that reconcile against MetricFlow are dbt's, unchanged. These additions sit
+alongside them and do not affect those numbers.
+
+## Known Malloy issue
+
+`run: order_items -> overview + { limit: 2 }` fails with `Parser Error: syntax error at or near
+")"`: the limit refinement reaches a nested dashboard and emits
+`ROW_NUMBER() OVER (PARTITION BY group_set ORDER BY )`. The dashboard itself runs fine; only a
+limit refinement on it breaks. Worth reporting upstream.

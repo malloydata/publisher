@@ -1,5 +1,9 @@
 {
   "name": "jaffle-shop-convert",
   "version": "1.0.0",
-  "description": "Convert: the same semantic layer, over marts Malloy rebuilt from the raw data and materialized with #@ persist. Same interface, different plumbing."
+  "description": "Convert: the same semantic layer, over marts Malloy rebuilt from the raw data and materialized with #@ persist. Same interface, different plumbing.",
+  "explores": [
+    "jaffle_shop.malloy"
+  ],
+  "queryableSources": "declared"
 }

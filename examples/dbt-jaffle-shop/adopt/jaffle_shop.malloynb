@@ -24,6 +24,17 @@ jaffle_shop 3.0.0.
 >>>malloy
 import "jaffle_shop.malloy"
 >>>markdown
+## Start here
+
+`order_items -> overview` is the entry point: a `# dashboard` view with revenue KPIs, the monthly
+trend, product mix, top sellers, and revenue by location and customer type.
+
+The measures in it are dbt's, and they reconcile against dbt's own engine below. The chart tags,
+the views, and this dashboard are authored here, because dbt's semantic layer records no display
+formatting and ships only three saved queries.
+>>>malloy
+run: order_items -> overview
+>>>markdown
 ## Order metrics
 
 dbt's `orders` semantic model, with eight metrics. Two of them (`large_orders`,
