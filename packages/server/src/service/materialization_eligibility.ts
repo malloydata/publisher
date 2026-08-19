@@ -79,6 +79,7 @@ export function assertMaterializationEligible(
    } catch (err) {
       recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
+         reason: "free_parameter",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: its parameter surface could not be determined ` +
@@ -91,6 +92,7 @@ export function assertMaterializationEligible(
    if (unbound.length > 0) {
       recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
+         reason: "free_parameter",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it has unbound parameter(s) ` +
@@ -104,6 +106,7 @@ export function assertMaterializationEligible(
    if (referencesGiven(persistSource)) {
       recordEligibilityRefused("given");
       throw new MaterializationEligibilityError({
+         reason: "given",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it references a given. Givens bind per query and are ` +
@@ -116,6 +119,7 @@ export function assertMaterializationEligible(
    if (referencesAuthorize(persistSource)) {
       recordEligibilityRefused("authorize");
       throw new MaterializationEligibilityError({
+         reason: "authorize",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it is protected by an #(authorize) gate (its own or a ` +
@@ -241,6 +245,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    // rejected, or a join-only gate outside its identity chain), so the
    // message stays generic rather than guessing.
    throw new MaterializationEligibilityError({
+      reason: "authorize",
       message:
          `${what}: ${gated}. An authorize expression is evaluated per ` +
          `request; without a proven row-level, fully-attributed ` +

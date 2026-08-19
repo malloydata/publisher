@@ -916,3 +916,157 @@ source: s is base_b -> { select: org_id }
       );
    });
 });
+
+// `BuildPlan.refusedSources`: a SEPARATE collection from `PersistSourcePlan`,
+// computed from the tier-appropriate assert post-relaxation (see
+// `deriveBuildPlan`'s doc). Real-compiler coverage, like the describe blocks
+// above, because the whole point is the exact IR shape (getSQL() actually
+// throwing for a given with no default) rather than a stubbed approximation.
+describe("BuildPlan.refusedSources", () => {
+   let rootDir: string;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(
+         path.join(os.tmpdir(), "publisher-buildplan-refused-"),
+      );
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   async function realPackage(
+      modelText: string,
+      modelFile = "m.malloy",
+   ): Promise<BuildPlanPackage> {
+      await fs.writeFile(path.join(rootDir, modelFile), modelText);
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+      return {
+         getModelPaths: () => [modelFile],
+         getPackagePath: () => rootDir,
+         getMalloyConfig: () => malloyConfig,
+         getMalloyConnection: async () => duckdb,
+      };
+   }
+
+   it(
+      "reports a package where EVERY persist source is refused as a completed plan carrying refusedSources, not a thrown error",
+      async () => {
+         // Both sources are storage-tier (declare `storage=`) and both are
+         // ineligible: `mz_given` references a given, `mz_free` declares an
+         // unbound parameter. Classified from the compiled source's IR alone
+         // (Parameter.value/refSummary.givenUsage), independent of whether
+         // `getSQL()` itself would succeed for this particular shape — see
+         // the next test for the shape where it demonstrably does not.
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.parameters
+##! experimental.givens
+
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+
+#@ persist name="mz_given" storage="dest"
+source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
+
+#@ persist name="mz_free" storage="dest"
+source: mz_free(threshold::number) is base -> { aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         expect(Object.keys(plan?.sources ?? {})).toHaveLength(0);
+         const refused = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toHaveLength(2);
+         const byName = Object.fromEntries(refused.map((r) => [r.name, r]));
+         expect(byName.mz_given).toMatchObject({
+            tier: "storage",
+            reason: "given",
+         });
+         expect(byName.mz_given.message).toMatch(/given/i);
+         expect(byName.mz_free).toMatchObject({
+            tier: "storage",
+            reason: "free_parameter",
+         });
+         expect(byName.mz_free.message).toMatch(/unbound parameter/i);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "represents a given-referencing refusal without SQL or a content address (the reason a separate collection exists)",
+      async () => {
+         // Refused on the compiled source's IR alone (a non-empty given-usage
+         // summary), BEFORE `getSQL()`/`computeSourceEntityId` are ever
+         // called — the codepath that constructs `PersistSourcePlan` (which
+         // requires both) is never reached for this source at all, which is
+         // the property a free-parameter or given-referencing source needs:
+         // neither is guaranteed to survive those calls in general.
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.givens
+
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+
+#@ persist name="mz_given" storage="dest"
+source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         expect(Object.keys(plan?.sources ?? {})).toHaveLength(0);
+         const [refused] = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toMatchObject({
+            name: "mz_given",
+            tier: "storage",
+            reason: "given",
+         });
+         // No SQL/content-address fields leak onto the refused entry — it is
+         // a genuinely different wire shape, not `PersistSourcePlan` with two
+         // fields blanked out.
+         expect(refused).not.toHaveProperty("sql");
+         expect(refused).not.toHaveProperty("sourceEntityId");
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "does NOT report a colocated gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
+      async () => {
+         // Plain `#@ persist` (no `storage=`): the entry point's own
+         // `#(authorize)` gate classifies row_level + attributed, so the
+         // colocated relaxation admits it. The OLD `SourceEligibility.refused`
+         // (computed with the unconditional storage-tier assert) would report
+         // this same source as `refused: authorize` — refusedSources must not
+         // repeat that mistake now that it can actually build.
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.givens
+
+given: ORG :: number
+
+source: base is duckdb.sql("select 1 as org_id")
+
+#@ persist name="gated"
+#(authorize) "org_id = $ORG"
+source: gated is base -> { select: org_id }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         expect(Object.keys(plan?.refusedSources ?? {})).toHaveLength(0);
+         const [entry] = Object.values(plan?.sources ?? {});
+         expect(entry).toMatchObject({ name: "gated" });
+         expect(entry.sourceEntityId).toBeTruthy();
+         expect(entry.sql).toBeTruthy();
+      },
+      { timeout: 20000 },
+   );
+});

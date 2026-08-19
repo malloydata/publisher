@@ -1617,13 +1617,44 @@ export class MaterializationService {
 
                // Prefer sourceID matching (so the caller's sourceEntityId scheme
                // stays opaque to the build); the sourceEntityId lookup below is the
-               // fallback for instructions without a sourceID (auto-run). Resolved
-               // before computeSourceEntityId so the eligibility gate wins: that
-               // call invokes getSQL(), which throws opaquely for a free-parameter
-               // or given source, losing the clean 422.
+               // fallback for instructions without a sourceID (auto-run, or an
+               // orchestrated instruction that omits the optional `sourceID`).
                const orchestratedInstruction = bySourceID.get(
                   persistSource.sourceID,
                );
+
+               // Resolve which instruction (if any) applies to this source
+               // BEFORE any eligibility assert runs. A source with NO
+               // instruction — a refused sibling the caller never asked to
+               // build, alongside others this run does build — must be
+               // skipped here rather than examined: the asserts below throw a
+               // 422, and unconditionally running them on every persist
+               // source in the graph (regardless of whether it had a build to
+               // do at all) meant one refused, uninstructed sibling aborted
+               // the whole run instead of just the sources actually
+               // instructed.
+               let sourceEntityId: string | undefined;
+               let instruction = orchestratedInstruction;
+               if (!instruction) {
+                  // computeSourceEntityId calls getSQL(), which throws
+                  // opaquely for a free-parameter or given source —
+                  // precisely the sources a caller can never legitimately
+                  // hold a sourceEntityId for in the first place (the wire
+                  // build plan omits such a source's entry entirely), so
+                  // they can never match here regardless. Treat that throw
+                  // the same as "no match" rather than letting it escape and
+                  // abort every other instructed source.
+                  try {
+                     sourceEntityId = computeSourceEntityId(
+                        persistSource,
+                        connectionDigests,
+                     );
+                     instruction = bySourceEntityId.get(sourceEntityId);
+                  } catch {
+                     instruction = undefined;
+                  }
+               }
+               if (!instruction) continue;
 
                // Enforce the eligibility gate for any storage-targeted build,
                // including orchestrated (host-supplied) instructions — the publisher
@@ -1649,10 +1680,7 @@ export class MaterializationService {
                   // `referencesAuthorize` IR walk, so calling both on the
                   // storage path would walk every persist source's whole
                   // `SourceDef` twice per build for an answer the first call
-                  // has already acted on. Before computeSourceEntityId for the
-                  // reason the comment above gives: it calls getSQL(), which
-                  // throws opaquely for a gate that references a given, losing
-                  // the clean 422.
+                  // has already acted on.
                   assertColocatedPersistNotAuthorizeGated(
                      persistSource,
                      persistSource.name,
@@ -1666,14 +1694,13 @@ export class MaterializationService {
                // The manifest is keyed by the content sourceEntityId — what Malloy
                // recomputes to resolve upstream persist references during SQL
                // generation — independent of the instruction's identity sourceEntityId.
-               const sourceEntityId = computeSourceEntityId(
+               // Already computed above when this source matched via the
+               // sourceEntityId fallback; a sourceID match skips that path, so
+               // compute it now that eligibility has cleared.
+               sourceEntityId ??= computeSourceEntityId(
                   persistSource,
                   connectionDigests,
                );
-               const instruction =
-                  orchestratedInstruction ??
-                  bySourceEntityId.get(sourceEntityId);
-               if (!instruction) continue;
 
                // A caller-instructed destination that cannot be honored REFUSES; it
                // never falls through to a colocated build. Auto-run already applies
@@ -1763,6 +1790,16 @@ export class MaterializationService {
                      materializedTableId: instruction.materializedTableId,
                      physicalTableName: instruction.physicalTableName,
                      reason,
+                     // The destination discriminator: without it, a consumer
+                     // holding only this failure cannot tell a colocated
+                     // failure from a `storage=` one and, computing
+                     // `storageDestinationName ?? connectionName` the same
+                     // way a successful build's ManifestEntry does, would
+                     // resolve the wrong key.
+                     connectionName: persistSource.connectionName,
+                     ...(instruction.destination
+                        ? { storageDestinationName: instruction.destination }
+                        : {}),
                   };
                   // Mirrored into `entries` for the deprecation window, because
                   // consumers built against 0.0.245-0.0.246 read the failure from

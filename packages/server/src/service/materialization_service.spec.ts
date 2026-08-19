@@ -2638,6 +2638,95 @@ describe("executeInstructedBuild", () => {
          ),
       ).rejects.toThrow(BadRequestError);
    });
+
+   describe("a refused sibling with no compile-time gate outcome", () => {
+      // Colocated (no `storage=`) authorize-gated, and `compiledWith`'s default
+      // `sourceGateOutcomes` is undefined — the fail-closed default the
+      // colocated relaxation never admits, so this refuses unconditionally
+      // (see the "colocated #(authorize) gate" describe above).
+      function refusedColocated(sourceEntityId: string) {
+         return fakeSource({
+            name: "refused",
+            sourceEntityId,
+            sourceDef: { blockNotes: ['#(authorize) "true"'] },
+         });
+      }
+
+      it("is skipped, and the run completes, when the caller never instructed it", async () => {
+         // Before the reorder, the eligibility assert ran unconditionally on
+         // EVERY persist source in the graph — including one with no
+         // instruction at all — so this refused, uninstructed sibling threw
+         // and aborted the whole run, taking `ok`'s build down with it.
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const refused = refusedColocated("bref1bref1bref1b");
+         const compiled = compiledWith(
+            { ok, refused },
+            [["ok"], ["refused"]],
+            new Map([["duckdb", connection]]),
+         );
+
+         const { entries, failures } = await callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+               // No instruction for "refused" at all.
+            ],
+            {},
+         );
+
+         expect(entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe("ok_v1");
+         // Skipped, not failed: the caller never asked for it, so it is
+         // absent from both collections rather than reported as a failure.
+         expect(entries["bref1bref1bref1b"]).toBeUndefined();
+         expect(failures["bref1bref1bref1b"]).toBeUndefined();
+      });
+
+      it("still 422s when the caller DOES instruct the refused source", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const refused = refusedColocated("bref1bref1bref1b");
+         const compiled = compiledWith(
+            { ok, refused },
+            [["ok"], ["refused"]],
+            new Map([["duckdb", connection]]),
+         );
+
+         await expect(
+            callExecute(
+               compiled,
+               [
+                  {
+                     sourceEntityId: "b0k0k0k0k0k0k0k0",
+                     materializedTableId: "mt-ok",
+                     physicalTableName: "ok_v1",
+                     realization: "COPY",
+                  },
+                  {
+                     sourceEntityId: "bref1bref1bref1b",
+                     materializedTableId: "mt-ref",
+                     physicalTableName: "refused_v1",
+                     realization: "COPY",
+                  },
+               ],
+               {},
+            ),
+         ).rejects.toThrow(MaterializationEligibilityError);
+      });
+   });
 });
 
 describe("buildOneSource", () => {

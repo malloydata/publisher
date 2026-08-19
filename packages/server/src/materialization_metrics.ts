@@ -154,7 +154,8 @@ const scheduledFireCounter = lazyCounter(
 );
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
-   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|'runtime_live_fallback').",
+   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
+      "'runtime_live_fallback'|'blocked_by_row_level_gate').",
 );
 const storageBuildFailureCounter = lazyCounter(
    "publisher_storage_build_failures_total",
@@ -386,11 +387,19 @@ export function recordServeShapeTypeFallback(
  * failed underneath it, and every binding's `freshnessFallback=live` allowed it
  * to degrade. That last one is the operationally interesting label: it means the
  * tier is broken while queries still succeed, which is invisible in the hit rate
- * alone. This hit rate is the headline KPI of the storage tier — otherwise the
+ * alone. `blocked_by_row_level_gate` = a row-level-gated entry point vetoed
+ * BOTH the storage and pre-aggregation tiers before either was attempted — the
+ * one outcome with no compile attempt behind it, so without this label a
+ * blocked query recorded nothing at all rather than reading as a fallback.
+ * This hit rate is the headline KPI of the storage tier — otherwise the
  * fallback side is only a DEBUG log.
  */
 export function recordStorageServeRouting(
-   outcome: "storage" | "live_fallback" | "runtime_live_fallback",
+   outcome:
+      | "storage"
+      | "live_fallback"
+      | "runtime_live_fallback"
+      | "blocked_by_row_level_gate",
 ): void {
    storageServeRoutingCounter().add(1, { outcome });
 }

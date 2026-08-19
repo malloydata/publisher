@@ -3724,6 +3724,15 @@ export class Model {
             // predicates differ and why only this one is safe to skip on.
             this.hasAnyAuthorizeNote() &&
             (await this.queryEntryPointHasRowLevelGate(runnable));
+         // Recorded HERE, once, rather than in each tier's block below: the
+         // pre-aggregation guard runs no compile attempt of its own and calls
+         // no routing metric today, so an emit inside each tier would leave
+         // this outcome inconsistent between the two (present for storage,
+         // absent for pre-aggregation) rather than firing once for the
+         // decision that actually blocked both.
+         if (routingBlockedByRowLevelGate) {
+            recordStorageServeRouting("blocked_by_row_level_gate");
+         }
 
          // storage= serve routing: when enabled and this package has sources
          // materialized into a storage destination, try compiling the query
