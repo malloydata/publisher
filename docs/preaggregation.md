@@ -167,11 +167,38 @@ dataset, the same one you would give an authored `#@ persist name=`. Other engin
 accept an unqualified name and create the table in the connection's default schema, so
 `namespace` is optional there.
 
+**The namespace has to exist already.** Nothing in the tier creates a dataset or a
+schema, so a name that is merely plausible fails the build. Create it once, and let the
+connection's credential create tables in it.
+
+**It belongs to the grain, not to the measure.** A namespace is written on the same
+line as the `grain=` it applies to, and applies to nothing else — two grains are two
+tables and can be created in two places:
+
+```malloy
+measure:
+  #@ preaggregate grain="category" namespace="analytics"
+  #@ preaggregate grain="order_date" namespace="archive"
+  total is amount.sum()
+```
+
+Measures that share a grain share its one table, so they must agree on where it goes.
+Two naming different namespaces is refused at publish rather than resolved silently.
+
 **A persisted base lends its own.** If the base carries `#@ persist
 name="analytics.orders_tbl"`, its rollups are created in `analytics` without being told
 — a rollup of a table belongs beside it. An explicit `namespace` overrides that, and is
 the only option when the base is not persisted at all, which is common: the annotation
 goes on a measure, and the source it belongs to need not be materialized.
+
+A base that also carries `storage=` lends nothing. Its name belongs to the storage
+destination's catalog, while a rollup is written to the source warehouse, so "beside it"
+has no shared meaning — name the namespace explicitly there.
+
+**Changing it does not move a table that already exists.** A namespace is not part of
+what identifies a rollup's contents, so a package whose rollups have already built keeps
+them where they are: the annotation changes and the table does not. Drop the rollup's
+table to have the next build recreate it in the new namespace.
 
 **It is a namespace, not a name.** Write it as plain identifiers — letters, digits,
 underscore, dollar or hyphen — dot-separated where the warehouse needs more than one
