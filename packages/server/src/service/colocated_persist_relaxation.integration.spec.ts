@@ -29,6 +29,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
+import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 
@@ -273,11 +274,18 @@ source: orders is base -> { select: org_id, amount }
          );
          expect(supplied).toEqual([{ org_id: 1, amount: 111 }]);
 
-         // No given declared with no default: an unsupplied required given
-         // must not fall through to serving every row unfiltered.
-         await expect(
-            run(pkg, "run: orders -> { select: org_id, amount }"),
-         ).rejects.toThrow(/no value and no default/i);
+         // A given declared with no default: an unsupplied required given must
+         // not fall through to serving every row unfiltered. It refuses
+         // OPAQUELY — Malloy's own binding failure names the gate's given
+         // ("Given 'ORG' has no value and no default"), which a denied caller
+         // must never learn (`docs/authorize.md`), so `getQueryResults` maps
+         // it back to the same 403 a whole-source gate always returned.
+         const denial = await run(
+            pkg,
+            "run: orders -> { select: org_id, amount }",
+         ).catch((e) => e);
+         expect(denial).toBeInstanceOf(AccessDeniedError);
+         expect(String(denial.message)).not.toContain("ORG");
       },
       { timeout: 60000 },
    );

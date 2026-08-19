@@ -1795,7 +1795,7 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — /compile with includeSql=true 403s a row-field gate rather than returning SQL", async () => {
+   it("CRITICAL — /compile 403s a row-field gate whose givens the caller did NOT supply", async () => {
       const { model, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
@@ -1807,17 +1807,124 @@ source: X is duckdb.table('parent') extend {
 `);
       try {
          // /compile's backstop (Environment.compileSource) calls
-         // assertAuthorizedForRunnable with NO recompile hook — the same shape
-         // authorize_integration.spec.ts uses for its own compile-path tests.
-         // A row-level gate with no recompile MUST deny outright: there is no
-         // boolean to fall back to and nothing to filter, so /compile can never
-         // extract SQL from a row-gated source, even for a caller whose givens
-         // would otherwise admit rows.
+         // assertAuthorizedForRunnable with NO recompile hook, so there is
+         // nothing to attach the filter to. A caller who supplied no value for
+         // the gate's given has presented nothing to be judged on, so the
+         // authoring escape below does not apply and this denies.
+         const stubRunnable = {
+            getPreparedQuery: async () => ({ _query: { structRef: "X" } }),
+         };
+         await expect(
+            model.assertAuthorizedForRunnable(stubRunnable, {}),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("/compile ADMITS when the caller supplied every given the gate reads — the authoring loop", async () => {
+      // Refusing here was strictly harsher than the query path, which answers
+      // a gated source with FILTERED rows rather than a 403, so it protected
+      // nothing while making a gated source un-authorable. `/compile` never
+      // runs the query; it returns a schema (and, with includeSql, the
+      // UNGRAFTED SQL — see `docs/authorize.md`).
+      const { model, duckdb } = await buildGatedModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
          const stubRunnable = {
             getPreparedQuery: async () => ({ _query: { structRef: "X" } }),
          };
          await expect(
             model.assertAuthorizedForRunnable(stubRunnable, { GROUPS: [1] }),
+         ).resolves.toBeUndefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("/compile ADMITS a constant-true gate with no givens at all", async () => {
+      const { model, duckdb } = await buildGatedModel(`
+#(authorize) "true"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         const stubRunnable = {
+            getPreparedQuery: async () => ({ _query: { structRef: "X" } }),
+         };
+         await expect(
+            model.assertAuthorizedForRunnable(stubRunnable, {}),
+         ).resolves.toBeUndefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("CRITICAL — an unsupplied GATE given denies opaquely; the gate's given name never reaches the caller", async () => {
+      // The gate is grafted into the query, so its given is bound by the same
+      // `run()` and Malloy's failure names it. That name is exactly what
+      // `docs/authorize.md` promises a denied caller never learns.
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-given-leak-"));
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: X is duckdb.table('parent') extend { measure: n is count() }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = await model
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: X -> { group_by: org_id; aggregate: n is count() }",
+               {},
+               true,
+               {},
+            )
+            .catch((e) => e);
+         expect(err).toBeInstanceOf(AccessDeniedError);
+         const message = String((err as Error).message);
+         expect(message).not.toContain("ROLE");
+         expect(message).not.toContain("givens");
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("/compile still 403s a constant-FALSE gate — nothing is readable, so nothing is authorable", async () => {
+      const { model, duckdb } = await buildGatedModel(`
+#(authorize) "false"
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+`);
+      try {
+         const stubRunnable = {
+            getPreparedQuery: async () => ({ _query: { structRef: "X" } }),
+         };
+         await expect(
+            model.assertAuthorizedForRunnable(stubRunnable, {}),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
