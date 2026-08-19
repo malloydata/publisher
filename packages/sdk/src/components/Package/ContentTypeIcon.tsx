@@ -1,6 +1,12 @@
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
 
-type ContentType = "report" | "model" | "data" | "materialization" | "dataApp";
+type ContentType =
+   | "report"
+   | "model"
+   | "data"
+   | "materialization"
+   | "dataApp"
+   | "dashboard";
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
    type: ContentType;
@@ -40,6 +46,7 @@ export default function ContentTypeIcon({
          {type === "data" && <TablePath />}
          {type === "materialization" && <StackPath />}
          {type === "dataApp" && <BrowserWindowPath />}
+         {type === "dashboard" && <DashboardGridPath />}
       </SvgIcon>
    );
 }
@@ -86,6 +93,27 @@ function StackPath() {
          <path d="M12 3 L21 7.5 L12 12 L3 7.5 Z" />
          <path d="M3 12 L12 16.5 L21 12" />
          <path d="M3 16.5 L12 21 L21 16.5" />
+      </>
+   );
+}
+
+/**
+ * Panels of unequal size in one frame: the grid of tiles a dashboard lays out.
+ *
+ * The neighbour to stay distinct from is the TABLE glyph, not the data app's
+ * browser window. Both this and the table are a rounded rect with the same
+ * `M3.5 9.5` divider, so with only the one vertical stroke the two differed by
+ * that stroke's position alone and read as the same icon at 18px, with the
+ * Dashboards and Databases sections on one page. The second divider is what
+ * makes this one read as a grid rather than as columns.
+ */
+function DashboardGridPath() {
+   return (
+      <>
+         <rect x="3.5" y="3.5" width="17" height="17" rx="2" />
+         <path d="M3.5 9.5 H20.5" />
+         <path d="M12 9.5 V20.5" />
+         <path d="M12 15 H20.5" />
       </>
    );
 }

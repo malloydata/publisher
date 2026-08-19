@@ -124,11 +124,65 @@ export default function Package({
    });
    const dataApps = dataAppsQuery.data?.data ?? [];
 
+   // No versionId, for the same reason as data apps: the dashboards endpoint
+   // takes only env + package.
+   const dashboardsQuery = useQueryWithApiError({
+      queryKey: ["dashboards", environmentName, packageName],
+      queryFn: async () => {
+         try {
+            return await apiClients.dashboards.listDashboards(
+               environmentName,
+               packageName,
+            );
+         } catch (e) {
+            // Non-fatal for the same reasons as the data-apps list above: an
+            // older Publisher without the route should render a package page
+            // without a Dashboards section, not an error.
+            const status = (e as { response?: { status?: number } })?.response
+               ?.status;
+            if (status === 404 || status === undefined) {
+               return { data: [] } as Awaited<
+                  ReturnType<typeof apiClients.dashboards.listDashboards>
+               >;
+            }
+            throw e;
+         }
+      },
+   });
+   // Sorted by the string the row actually SHOWS, not by the slug or the path
+   // underneath it. A list labelled by title and ordered by filename reads as
+   // unsorted: `overview` titled "Business Overview" sorts ahead of `regions`
+   // titled "Regional Sales". Notebooks acquired that mismatch here too, when
+   // they started being listed by title while still being ordered by path.
+   const dashboardLabel = (dashboard: { name?: string; title?: string }) =>
+      dashboard.title && dashboard.title !== dashboard.name
+         ? dashboard.title
+         : (dashboard.name ?? "");
+   const notebookLabel = (notebook: { path?: string; title?: string }) =>
+      notebook.title && notebook.title !== notebook.path
+         ? notebook.title
+         : (notebook.path ?? "");
+
+   const dashboards = (dashboardsQuery.data?.data ?? [])
+      .slice()
+      .sort((a, b) => dashboardLabel(a).localeCompare(dashboardLabel(b)));
+
    const notebooks = (notebooksQuery.data?.data ?? [])
       .slice()
-      .sort((a, b) => a.path.localeCompare(b.path));
+      .sort((a, b) => notebookLabel(a).localeCompare(notebookLabel(b)));
+   // A dashboard is listed once, under Dashboards. Its file is a model like any
+   // other, so it would otherwise appear a second time under Semantic Models
+   // where clicking it opens the Explorer rather than the dashboard. Untagged
+   // shared includes in `dashboards/` are not dashboards and stay in the model
+   // list, which is where they belong.
+   const dashboardPaths = new Set(
+      dashboards
+         .map((dashboard) => dashboard.path)
+         .filter((path): path is string => path !== undefined),
+   );
    const models = (modelsQuery.data?.data ?? [])
       .slice()
+      .filter((model) => !dashboardPaths.has(model.path))
       .sort((a, b) => a.path.localeCompare(b.path));
    const databases = (databasesQuery.data?.data ?? [])
       .slice()
@@ -143,7 +197,16 @@ export default function Package({
       modelPath: README_NOTEBOOK,
    });
 
-   const isLoading = !notebooksQuery.isSuccess && !notebooksQuery.isError;
+   // The dashboards list is part of the gate, not just the notebooks one,
+   // because the models list is FILTERED by it. Gated on notebooks alone, a
+   // dashboards call that resolves after the models call rendered the sections
+   // with an empty `dashboardPaths`, so `dashboards/overview.malloy` appeared
+   // under Semantic Models and then vanished: the double listing the filter
+   // exists to prevent, briefly on screen. It cannot hang the page: the query
+   // above turns a 404 or a transport failure into an empty list.
+   const isLoading =
+      (!notebooksQuery.isSuccess && !notebooksQuery.isError) ||
+      (!dashboardsQuery.isSuccess && !dashboardsQuery.isError);
 
    if (pkgQuery.isError) {
       return (
@@ -201,21 +264,68 @@ export default function Package({
 
          {!isLoading && (
             <>
+               {/* First: the at-a-glance artifact a visitor most likely wants,
+                   ahead of the notebooks and models it is built on. Hidden when
+                   empty, like Data Apps. */}
+               {dashboards.length > 0 && (
+                  <PackageSection title="Dashboards" count={dashboards.length}>
+                     {dashboards.map((dashboard) => {
+                        // A title equal to the slug is what the server falls
+                        // back to when the file names itself neither way, so
+                        // showing both would print the same word twice.
+                        const hasTitle =
+                           !!dashboard.title &&
+                           dashboard.title !== dashboard.name;
+                        return (
+                           <PackageItemRow
+                              key={dashboard.name}
+                              icon={<ContentTypeIcon type="dashboard" />}
+                              tint={MALLOY_BRAND.teal}
+                              label={
+                                 hasTitle ? dashboard.title! : dashboard.name!
+                              }
+                              rightLabel={hasTitle ? dashboard.name : undefined}
+                              onClick={(event) =>
+                                 onClick(
+                                    `/${environmentName}/${packageName}/dashboards/` +
+                                       // The slug comes from a filename, which
+                                       // can hold characters that would read as
+                                       // structure in a path. The server encodes
+                                       // it in `resource` for the same reason.
+                                       encodeURIComponent(dashboard.name ?? ""),
+                                    event,
+                                 )
+                              }
+                           />
+                        );
+                     })}
+                  </PackageSection>
+               )}
+
                <PackageSection title="Notebooks" count={notebooks.length}>
-                  {notebooks.map((notebook) => (
-                     <PackageItemRow
-                        key={notebook.path}
-                        icon={<ContentTypeIcon type="report" />}
-                        tint={MALLOY_BRAND.teal}
-                        label={notebook.path}
-                        onClick={(event) =>
-                           onClick(
-                              `/${environmentName}/${packageName}/${notebook.path}`,
-                              event,
-                           )
-                        }
-                     />
-                  ))}
+                  {notebooks.map((notebook) => {
+                     // Named the way dashboards and data apps are: a notebook
+                     // that titles itself is listed by that title, with the
+                     // filename kept as the secondary label so the path a
+                     // reader needs to find the file is never lost.
+                     const hasTitle =
+                        !!notebook.title && notebook.title !== notebook.path;
+                     return (
+                        <PackageItemRow
+                           key={notebook.path}
+                           icon={<ContentTypeIcon type="report" />}
+                           tint={MALLOY_BRAND.teal}
+                           label={hasTitle ? notebook.title! : notebook.path}
+                           rightLabel={hasTitle ? notebook.path : undefined}
+                           onClick={(event) =>
+                              onClick(
+                                 `/${environmentName}/${packageName}/${notebook.path}`,
+                                 event,
+                              )
+                           }
+                        />
+                     );
+                  })}
                   {notebooks.length === 0 && <EmptyRow label="No notebooks" />}
                </PackageSection>
 
@@ -251,7 +361,7 @@ export default function Package({
                                        event,
                                     );
                                  } else {
-                                    // No host app — navigate to standalone HTML.
+                                    // No host app: navigate to standalone HTML.
                                     if (
                                        event &&
                                        (event.metaKey || event.ctrlKey)
