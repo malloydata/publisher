@@ -18,6 +18,28 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a provably-`false` row-level `#(authorize)` gate no longer dispatches to the warehouse
+
+When a source's `#(authorize)` gate compiles to the bare literal `false` — the classic whole-source deny,
+`#(authorize) "false"` — a query against it now answers with a synthesized empty result carrying the
+query's real schema, instead of grafting a `WHERE false` filter and running it. `servedFrom` reports the
+new value `"short_circuited"`, distinct from `"storage"`/`"live_fallback"`, and the existing
+`publisher_authorize_row_level_total` metric gains a matching `short_circuited` decision label alongside
+`denied_by_gate`/`empty_after_filter`. This applies regardless of whether a colocated or storage-tier
+artifact would otherwise have served the query — the short circuit is checked first — and never fires
+under `bypassAuthorize`, which already skips gate classification entirely.
+
+The short circuit is vetoed for a query shape where zero input rows would NOT mean zero output rows — a
+bare `aggregate:` with no `group_by:` always emits exactly one row (`count() = 0`, `sum() = null`, …) even
+over empty input, so that shape still runs the (cheap, zero-scan) query live to produce it correctly.
+
+**Scope note:** this covers only the literal-`false` case above. A fail-closed sentinel for an unassigned
+_identity-bound_ trusted given (a second "provably constant-false" shape once considered for this same
+optimization) does not exist yet — `docs/authorize.md` calls system givens a "planned milestone... not
+implemented yet" — so today an unassigned given with no default still throws and is caught into the
+ordinary `rejected` (403) path, unchanged by this release. Extending the short circuit to that case is
+blocked on identity-bound trusted givens shipping.
+
 ## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
 
 This supersedes the "A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED" bullet

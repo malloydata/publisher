@@ -72,6 +72,7 @@ describe("authorize_metrics", () => {
       recordRowLevelGateDecision("denied_by_gate");
       recordRowLevelGateDecision("denied_by_gate");
       recordRowLevelGateDecision("empty_after_filter");
+      recordRowLevelGateDecision("short_circuited");
 
       expect(
          await harness.collectCounter("publisher_authorize_row_level_total", {
@@ -81,6 +82,14 @@ describe("authorize_metrics", () => {
       expect(
          await harness.collectCounter("publisher_authorize_row_level_total", {
             decision: "empty_after_filter",
+         }),
+      ).toBe(1);
+      // `short_circuited`: a provably constant-false gate answered without
+      // ever dispatching to the warehouse — a distinct decision from
+      // `empty_after_filter`, which still executes the (filtered) query.
+      expect(
+         await harness.collectCounter("publisher_authorize_row_level_total", {
+            decision: "short_circuited",
          }),
       ).toBe(1);
    });

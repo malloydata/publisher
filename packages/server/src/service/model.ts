@@ -1,9 +1,11 @@
 import {
    API,
    Connection,
+   expressionIsScalar,
    FixedConnectionMap,
    GivenValue,
    InMemoryURLReader,
+   isJoined,
    isSourceDef,
    MalloyConfig,
    MalloyError,
@@ -12,10 +14,14 @@ import {
    modelDefToModelInfo,
    ModelMaterializer,
    NamedQueryDef,
+   type PreparedResult,
    QueryData,
    QueryMaterializer,
+   Result,
    Runtime,
+   type ExpressionType,
    type FilterCondition,
+   type QueryResult,
    type SourceDef,
    type VirtualMap,
 } from "@malloydata/malloy";
@@ -209,9 +215,13 @@ export type ModelType = "model" | "notebook";
  * the virtual-source transform. `live_fallback` = it routed, then a run-time
  * store failure degraded it to the live warehouse — a success the caller cannot
  * distinguish from a storage hit, which is exactly why it is reported
- * separately. Absent means the query never had a storage binding to consider.
+ * separately. `short_circuited` = the entry point's row-level gate compiled to
+ * the bare literal `false` (see `classifyAuthorizeGate`), so the answer is a
+ * synthesized empty result carrying the query's real schema — no compile-only
+ * probe, no graft recompile output, and no warehouse round trip produced it.
+ * Absent means the query never had a storage binding to consider.
  */
-export type ServedFrom = "storage" | "live_fallback";
+export type ServedFrom = "storage" | "live_fallback" | "short_circuited";
 export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
 
 interface RunnableNotebookCell {
@@ -465,6 +475,20 @@ export class Model {
     * whether a filter actually attached.
     */
    private rowLevelFilteredRunnables: WeakSet<QueryMaterializer> =
+      new WeakSet();
+   /**
+    * Identifies a `QueryMaterializer` `authorizeAndBindRunnable` returned
+    * whose row-level filter is the bare literal `false` (see
+    * `gate_classification.ts`'s `resolveGateShape`'s `constantFalse`) — a
+    * SUBSET of {@link rowLevelFilteredRunnables}, every entry of which is
+    * also in that set. Consulted by the query path to skip `run()` against
+    * the warehouse entirely: the row set is provably empty, so nothing is
+    * lost by synthesizing it from the prepared schema instead of dispatching
+    * a `WHERE false` query. Same object-identity-`WeakSet` reasoning as
+    * `rowLevelFilteredRunnables` — `Model` is shared across concurrently
+    * in-flight requests.
+    */
+   private rowLevelConstantFalseRunnables: WeakSet<QueryMaterializer> =
       new WeakSet();
    private meter = publisherMeter();
    private queryExecutionHistogram = this.meter.createHistogram(
@@ -1358,6 +1382,120 @@ export class Model {
    }
 
    /**
+    * Whether `runnable` (a value {@link authorizeAndBindRunnable} returned)
+    * carries a row-level gate that is provably constant `false` — see
+    * {@link rowLevelConstantFalseRunnables}. The query path consults this to
+    * skip `run()` entirely and synthesize an empty result from the prepared
+    * schema instead.
+    */
+   public queryHadConstantFalseGate(runnable: QueryMaterializer): boolean {
+      return this.rowLevelConstantFalseRunnables.has(runnable);
+   }
+
+   /**
+    * Synthesize the empty `Result` a constant-false-gated query would have
+    * produced, from its already-compiled `preparedResult` — carrying the SAME
+    * schema (`resultExplore`, connection name, SQL) the real query would
+    * have, with zero rows. `preparedResult._rawQuery` is a `CompiledQuery`
+    * (everything `QueryResult` needs except the run outcome), so this adds
+    * only what running the query would have contributed: an empty row set
+    * and a zero total. No SQL is issued — `Result`'s constructor does no I/O
+    * of its own, so this never touches `preparedResult.connectionName`'s
+    * warehouse.
+    */
+   private buildShortCircuitedResult(preparedResult: PreparedResult): Result {
+      const emptyQueryResult: QueryResult = {
+         ...preparedResult._rawQuery,
+         result: [],
+         totalRows: 0,
+      };
+      return new Result(emptyQueryResult, preparedResult._modelDef);
+   }
+
+   /**
+    * Whether EVERY stage of a compiled query's `pipeline` provably maps a
+    * zero-row input to a zero-row output — the precondition
+    * {@link buildShortCircuitedResult} actually needs, since a `WHERE false`
+    * graft only guarantees the row(s) the FIRST stage reads are zero, not
+    * that every later stage's output is empty too.
+    *
+    * A `project` stage always follows its input (a projection emits exactly
+    * as many rows as it is given). A `reduce`/`partial` (GROUP BY) stage
+    * does too, PROVIDED it groups by at least one real field — one that is
+    * not aggregate/analytic (`expressionIsScalar`, the same classifier
+    * Malloy's own compiler uses), not a joined source, and not a nested
+    * view (`type === "turtle"`, which contributes no OUTER row of its own).
+    * Zero input rows then means zero distinct groups. A stage with NO such
+    * field is Malloy's implicit single-group aggregate table: it emits
+    * exactly one row (`count() = 0`, `sum() = null`, …) even over zero
+    * input rows, so short-circuiting to an empty result would be WRONG —
+    * that one row still has to come from evaluating the aggregate
+    * expressions, which this walk has no way to do without running the
+    * query. Any other stage type (`index`, `raw`, …) is unmodeled here and
+    * treated the same conservative way: an uncertain shape falls back to a
+    * live run rather than risking the wrong row count.
+    *
+    * A stage's OWN `queryFields` are bare `{type: "fieldref", path}` name
+    * references — Malloy resolves each one's `expressionType` only on the
+    * struct it names FROM, and a resolved `outputStruct` reports every one
+    * of its OWN fields as `"scalar"` regardless of how it was computed
+    * (once aggregated, a value is just a value) — so a fieldref can only be
+    * classified by resolving `path[0]` against the struct the STAGE READS
+    * FROM: `entryStruct` for the first stage, else the PRECEDING stage's own
+    * `outputStruct` (already-collapsed, so its fields are correctly scalar
+    * for this purpose). `entryStruct` is the query's own resolved run
+    * target (see `resolveRunTargetStruct`), not `this.modelDef` — a
+    * notebook cell or ad-hoc declared source can compile against a
+    * different model than `this.modelDef`.
+    */
+   private pipelineRowCountFollowsInput(
+      pipeline: ReadonlyArray<unknown>,
+      entryStruct: SourceDef | undefined,
+   ): boolean {
+      type FieldLike = {
+         type?: string;
+         name?: string;
+         path?: string[];
+         expressionType?: ExpressionType;
+      };
+      let inputFields: readonly FieldLike[] = entryStruct?.fields ?? [];
+      for (const segment of pipeline) {
+         const stage = segment as {
+            type?: string;
+            queryFields?: FieldLike[];
+            outputStruct?: { fields?: FieldLike[] };
+         };
+         if (stage.type === "project") {
+            inputFields = stage.outputStruct?.fields ?? [];
+            continue;
+         }
+         if (stage.type !== "reduce" && stage.type !== "partial") return false;
+         const hasRealDimension = (stage.queryFields ?? []).some((qf) => {
+            if (qf.type === "turtle") return false;
+            if (isJoined(qf as Parameters<typeof isJoined>[0])) return false;
+            // An inline computed field (`group_by: y is x + 1`,
+            // `aggregate: total is sum(amt)`) carries its own
+            // `expressionType` directly — no resolution needed.
+            if (qf.type !== "fieldref") {
+               return expressionIsScalar(qf.expressionType);
+            }
+            const name = qf.path?.[0];
+            const resolved = inputFields.find((f) => f.name === name);
+            // Unresolvable (a multi-segment join path, or a name this walk
+            // can't find) is NOT evidence of a real dimension — conservative
+            // in the direction that vetoes the short circuit, not the one
+            // that wrongly grants it.
+            return resolved
+               ? expressionIsScalar(resolved.expressionType)
+               : false;
+         });
+         if (!hasRealDimension) return false;
+         inputFields = stage.outputStruct?.fields ?? [];
+      }
+      return true;
+   }
+
+   /**
     * Collect and evaluate every entry-point gate on `runnable`, exactly like
     * {@link authorizeAndBindRunnable} does BEFORE it attempts a graft: every
     * `rejected`-classified gate throws immediately, and every `row_level`
@@ -1390,6 +1528,7 @@ export class Model {
          graftTarget: string;
          filterText: string;
          condition: FilterCondition;
+         constantFalse: boolean;
       }>
    > {
       const { entryPointGates, modelDef } =
@@ -1412,6 +1551,7 @@ export class Model {
          graftTarget: string;
          filterText: string;
          condition: FilterCondition;
+         constantFalse: boolean;
       }> = [];
       for (const entry of entryPointGates) {
          const resolution = modelDef
@@ -1423,6 +1563,7 @@ export class Model {
                graftTarget: resolution.graftTarget,
                filterText: resolution.filterText,
                condition: resolution.condition,
+               constantFalse: resolution.constantFalse,
             });
             continue;
          }
@@ -1635,6 +1776,13 @@ export class Model {
          const recompiled = options.recompile(graftedMaterializer);
          await this.assertGateLanded(recompiled, rowLevel);
          this.rowLevelFilteredRunnables.add(recompiled);
+         // Constant-false is a per-ENTRY property, but the AND across every
+         // grafted condition on this run target means any one of them being
+         // `false` makes the whole row set provably empty — `assertGateLanded`
+         // just proved each one actually landed, so this is not a guess.
+         if (rowLevel.some((g) => g.constantFalse)) {
+            this.rowLevelConstantFalseRunnables.add(recompiled);
+         }
          return recompiled;
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate");
@@ -1757,6 +1905,7 @@ export class Model {
            graftTarget: string;
            filterText: string;
            condition: FilterCondition;
+           constantFalse: boolean;
         }
       | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
    > {
@@ -3487,6 +3636,14 @@ export class Model {
       // to live — which must NOT count as a storage hit, since the hit rate is
       // the tier's headline KPI and would otherwise rise while the tier is down.
       let servedFrom: ServedFrom | undefined;
+      // Whether THIS request actually took the constant-false short circuit
+      // (skipped `run()` entirely) — distinct from
+      // `queryHadConstantFalseGate(runnable)`, which stays true even when
+      // `pipelineRowCountFollowsInput` vetoes the short circuit and the real
+      // run below still executes. Drives both `servedFrom` and which decision
+      // the later `empty_after_filter` bookkeeping records, so a vetoed
+      // constant-false query is still tallied as a normal executed deny.
+      let shortCircuited = false;
       // Set when the query compiled against the pre-aggregation companion model
       // and will run there. Decides which build manifest the run gets: only the
       // companion may see pre-aggregation's own rollup entries (see
@@ -4024,14 +4181,59 @@ export class Model {
             compiledSource ?? earlySource,
          );
 
-         queryResults = await runnable.run({
-            rowLimit,
-            givens: effectiveGivens,
-            abortSignal,
-            buildManifest: effectiveBuildManifest,
-            virtualMap: serveVirtualMap,
-            queryMetadata: appliedQueryMetadata,
-         });
+         // A constant-false row-level gate (`WHERE false`, already proven to
+         // have landed on this exact `runnable` by `assertGateLanded`) makes
+         // the FIRST stage's row set provably empty — but only a query whose
+         // EVERY stage then carries that emptiness through to its own output
+         // (`pipelineRowCountFollowsInput`) is safe to answer from
+         // compile-only `preparedResult` directly. An ungrouped `aggregate:`
+         // stage is the one shape that is NOT: it emits exactly one row
+         // (`count() = 0`, …) even over zero input rows, so it still needs
+         // the real (cheap, zero-scan) run to produce it. Never reachable
+         // under `bypassAuthorize`: that short-circuits
+         // `authorizeAndBindRunnable` before any gate is classified, so
+         // `runnable` here was never added to `rowLevelConstantFalseRunnables`
+         // in the first place.
+         let compiledPipeline: unknown[] | undefined;
+         let pipelineEntryStruct: SourceDef | undefined;
+         if (this.queryHadConstantFalseGate(runnable)) {
+            const prepared = (await runnable.getPreparedQuery()) as {
+               _query?: { structRef?: unknown; pipeline?: unknown[] };
+               _modelDef?: ModelDef;
+            };
+            compiledPipeline = prepared._query?.pipeline;
+            const pipelineModelDef = prepared._modelDef ?? this.modelDef;
+            const structRef = prepared._query?.structRef;
+            const resolvedStruct =
+               typeof structRef === "string"
+                  ? pipelineModelDef?.contents[structRef]
+                  : structRef;
+            pipelineEntryStruct =
+               resolvedStruct && typeof resolvedStruct === "object"
+                  ? (resolvedStruct as SourceDef)
+                  : undefined;
+         }
+         if (
+            compiledPipeline &&
+            this.pipelineRowCountFollowsInput(
+               compiledPipeline,
+               pipelineEntryStruct,
+            )
+         ) {
+            recordRowLevelGateDecision("short_circuited");
+            queryResults = this.buildShortCircuitedResult(preparedResult);
+            servedFrom = "short_circuited";
+            shortCircuited = true;
+         } else {
+            queryResults = await runnable.run({
+               rowLimit,
+               givens: effectiveGivens,
+               abortSignal,
+               buildManifest: effectiveBuildManifest,
+               virtualMap: serveVirtualMap,
+               queryMetadata: appliedQueryMetadata,
+            });
+         }
          // AFTER run(), not before it. Taken above, this stopped at
          // getPreparedResult and so measured compile + authorize + routing +
          // prepare while excluding the warehouse round trip entirely — the one
@@ -4209,9 +4411,13 @@ export class Model {
       // with a row-level gate attached, because `canDegradeToLive` requires
       // `serveVirtualMap`, which is only ever set when storage routing
       // succeeded — and `routingBlockedByRowLevelGate` keeps a row-level-gated
-      // query out of that block in the first place.
+      // query out of that block in the first place. Excludes a constant-false
+      // gate, already booked as `short_circuited` above — it is a DIFFERENT
+      // decision (never dispatched at all), not a second `empty_after_filter`
+      // for the same request.
       if (
          this.queryHadRowLevelFilterAttached(runnable) &&
+         !shortCircuited &&
          queryResults.totalRows === 0
       ) {
          recordRowLevelGateDecision("empty_after_filter");
