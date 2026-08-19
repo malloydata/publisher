@@ -1279,7 +1279,7 @@ export class Model {
       // (`treatAsOwnGate: true`), matching `assertAuthorized` above. Do NOT
       // dedup this against that call: AND-across-sources evaluates every
       // reachable source's gate independently (see the comment below).
-      const entryPointGates = this.collectEntryPointGates(
+      let entryPointGates = this.collectEntryPointGates(
          struct,
          modelDef,
          seen,
@@ -1355,22 +1355,34 @@ export class Model {
       // `contents` entry even when it describes the identical gate — a
       // struct-identity dedup let a still-intact gate double-apply here
       // (`org_id in $GROUPS` grafted twice, once per copy).
+      // A content-equal on-disk entry REPLACES its walk twin here rather
+      // than being skipped by it: the on-disk entry's `struct` is a
+      // `this.modelDef.contents` value, so `resolveGraftTarget` resolves it
+      // by object identity against the "model" graft scope. The walk's
+      // entry, for an append-scope `/compile`, comes from that request's
+      // own fresh, ephemeral `ModelDef` (see `resolveRunTargetStruct`'s
+      // `prepared._modelDef`) — it matches neither by object identity, nor
+      // by `sourceID` (minted against the synthetic `__compile_check.malloy`
+      // URL, not the on-disk file), nor by annotation-note identity (a
+      // separate parse), so `resolveGraftTarget` finds nothing and
+      // `resolveGateShapeImpl` returns a causeless `rejected` — denying a
+      // caller who supplied every given the gate names. Swapping in the
+      // on-disk twin is behavior-preserving on the ordinary query path:
+      // there both twins already resolve to the same `graftTarget` (the
+      // walk's entry matches by same-URL `sourceID`), so which twin is
+      // kept is unobservable.
       if (!skipOwnSourceGate && ownSourceName) {
          const onDiskGates = this.entryPointGatesBySource.get(ownSourceName);
          if (onDiskGates) {
-            const alreadyCollected = new Set(
-               entryPointGates.map(
-                  (entry) =>
-                     `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`,
-               ),
+            const keyOf = (entry: GateEntry): string =>
+               `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`;
+            const byKey = new Map(
+               entryPointGates.map((entry) => [keyOf(entry), entry]),
             );
             for (const entry of onDiskGates) {
-               const key = `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`;
-               if (!alreadyCollected.has(key)) {
-                  alreadyCollected.add(key);
-                  entryPointGates.push(entry);
-               }
+               byKey.set(keyOf(entry), entry);
             }
+            entryPointGates = Array.from(byKey.values());
          }
       }
       return { entryPointGates, modelDef };
@@ -1824,7 +1836,7 @@ export class Model {
          const decidable = (g: (typeof rowLevel)[number]) =>
             g.constantTrue ||
             (g.givenNames.length > 0 &&
-               g.givenNames.every((name) => name in givens));
+               g.givenNames.every((name) => Object.hasOwn(givens, name)));
          if (!options?.checkOnly || !rowLevel.every(decidable)) {
             recordRowLevelGateDecision("denied_by_gate");
             throw new AccessDeniedError(
