@@ -538,23 +538,59 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
    });
 
    it("a FILTERED measure routes and returns the filtered numbers", async () => {
-      // The rows are the trap: category 'A' has one row inside the filter (10 on
-      // 2024-01-01) and one outside it (30 on 2024-01-02). A rollup that dropped
-      // the filter while building the partial would store 40 for 'A' — a
-      // plausible wrong number at exactly the grain the rollup serves. The
-      // partial is computed from the measure by NAME, so the filter rides into
-      // the build; this is the value proof of that, and of the classifier's
-      // claim that a row-level filter commutes with merging per-grain partials.
+      // The rows set two traps at once. Category 'A' has one row inside the
+      // filter (30 on 2024-01-02) and one outside it (10 on 2024-01-01), so a
+      // rollup that dropped the filter while building the partial would store
+      // 40 where 30 is correct — a plausible wrong number at exactly the grain
+      // the rollup serves. Category 'B' has ZERO matching rows, which is the
+      // edge the classifier header describes: sum and count store 0 there (the
+      // compiled SQL coalesces), min stores NULL. The partial is computed from
+      // the measure by NAME, so the filter rides into the build; this is the
+      // value proof of that, and of the classifier's claim that a row-level
+      // filter commutes with merging per-grain partials.
       const { load, manifest, tables } = await synthesizeAndBuild(
          `  #@ preaggregate grain="category"
-  measure: paid is amount.sum() { where: order_date = @2024-01-01 }
+  measure: paid is amount.sum() { where: order_date = @2024-01-02 }
+  #@ preaggregate grain="category"
+  measure: paid_count is count() { where: order_date = @2024-01-02 }
+  #@ preaggregate grain="category"
+  measure: paid_min is amount.min() { where: order_date = @2024-01-02 }
   #@ preaggregate grain="category"
   measure: total is amount.sum()`,
       );
       expect(tables).toHaveLength(1);
 
+      // What the zero-match group actually STORES, read straight off the built
+      // table rather than through any merge: 0 for the sum and count partials,
+      // NULL for min. This is the fact the classifier header leans on — 0 is
+      // safe because it is the identity for SUM (both partials merge with sum)
+      // and because direct computation coalesces the same way, NOT because
+      // "every merge ignores NULL".
+      const stored = await duckdb.runSQL(
+         `SELECT category, paid__partial, paid_count__partial, paid_min__partial
+          FROM ${tables[0]} ORDER BY category`,
+      );
+      // The sum and count partials come back as strings because DuckDB's SUM
+      // and COUNT over integers widen to HUGEINT/BIGINT, which the driver
+      // stringifies on a raw read; min keeps the column's own type. The values
+      // are the point: 0 and 0, not NULL, for the zero-match group.
+      expect(stored.rows).toEqual([
+         {
+            category: "A",
+            paid__partial: "30",
+            paid_count__partial: "1",
+            paid_min__partial: 30,
+         },
+         {
+            category: "B",
+            paid__partial: "0",
+            paid_count__partial: "0",
+            paid_min__partial: null,
+         },
+      ]);
+
       const query =
-         "run: orders -> { group_by: category; aggregate: paid, total; order_by: category asc }";
+         "run: orders -> { group_by: category; aggregate: paid, paid_count, paid_min, total; order_by: category asc }";
       const sql = await load("synth.malloy")
          .loadQuery(query)
          .getSQL({ buildManifest: manifest });
@@ -566,18 +602,29 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       const live = await load("author.malloy").loadQuery(query).run();
       expect(served.data.toObject()).toEqual(live.data.toObject());
       // Spelled out so the failure is unmissable: filtered and unfiltered
-      // values from ONE stored rollup, and 'A' reads 10, not 40.
+      // values from ONE stored rollup, 'A' reads 30 (not 40), and the
+      // zero-match group serves what live computes.
       expect(served.data.toObject()).toEqual([
-         { category: "A", paid: 10, total: 40 },
-         { category: "B", paid: 20, total: 20 },
+         { category: "A", paid: 30, paid_count: 1, paid_min: 30, total: 40 },
+         { category: "B", paid: 0, paid_count: 0, paid_min: null, total: 20 },
       ]);
 
-      // Coarser than the grain, the case the merge function exists for: the
-      // stored per-category partials 10 and 20 must SUM to 30, filter intact.
+      // Coarser than the grain, the case the merge function exists for — and
+      // the zero-match group's stored 0 must vanish into the merge exactly as
+      // it does live: paid is 30 (0 is sum's identity), paid_min is 30 (min
+      // ignores the NULL partial).
+      const coarseQuery =
+         "run: orders -> { aggregate: paid, paid_count, paid_min }";
       const coarse = await load("synth.malloy")
-         .loadQuery("run: orders -> { aggregate: paid }")
+         .loadQuery(coarseQuery)
          .run({ buildManifest: manifest });
-      expect(coarse.data.toObject()).toEqual([{ paid: 30 }]);
+      const coarseLive = await load("author.malloy")
+         .loadQuery(coarseQuery)
+         .run();
+      expect(coarse.data.toObject()).toEqual(coarseLive.data.toObject());
+      expect(coarse.data.toObject()).toEqual([
+         { paid: 30, paid_count: 1, paid_min: 30 },
+      ]);
    });
 
    it("one measure at TWO grains builds two rollups, and both route", async () => {

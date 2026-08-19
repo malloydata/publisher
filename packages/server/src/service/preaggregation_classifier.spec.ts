@@ -44,6 +44,7 @@ source: s is duckdb.sql("""
   measure: m_filtered is amount.sum() { where: category = 'A' }
   measure: m_filtered_count is count() { where: category = 'A' }
   measure: m_filtered_joined is items.price.sum() { where: category = 'A' }
+  measure: m_two_conds is amount.sum() { where: category = 'A', amount > 5 }
 
   // --- must all be non-additive ---
   measure: m_avg is amount.avg()
@@ -51,6 +52,7 @@ source: s is duckdb.sql("""
   measure: m_filtered_avg is amount.avg() { where: category = 'A' }
   measure: m_arith is amount.sum() * 2
   measure: m_filtered_arith is m_arith { where: category = 'A' }
+  measure: m_chained_filter is amount.sum() { where: category = 'A' } { where: amount > 5 }
   measure: m_ratio is amount.sum() / count()
   measure: m_all is all(amount.sum())
   measure: m_stddev is stddev(amount)
@@ -96,6 +98,11 @@ describe("additivity classifier: the additive cases", () => {
       // merges with sum.
       ["m_filtered", "sum", "sum"],
       ["m_filtered_count", "count", "sum"],
+      // SEVERAL conditions are fine when they share one `where:` — the comma
+      // form compiles to a single filterList on one filteredExpr, all scalar,
+      // so it conforms. Contrast m_chained_filter in the refusal corpus: the
+      // chained spelling of the same logic NESTS and is refused.
+      ["m_two_conds", "sum", "sum"],
    ];
 
    for (const [name, aggregate, reaggregate] of cases) {
@@ -117,7 +124,10 @@ describe("additivity classifier: the additive cases", () => {
    it("a filtered aggregate through a join is still additive", () => {
       // The two accepted wrinkles compose: the filter sits at the root and the
       // aggregate inside it carries a structPath. Neither disqualifies alone,
-      // so together they must not either.
+      // so together they must not either. Additive here does NOT mean a rollup
+      // gets built for it: this model's join is a join_many, and
+      // `base_source_has_fanout_join` refuses the whole source one gate up —
+      // filter × fan-out never reaches a rollup, whatever this module says.
       expect(classifyMeasureAdditivity(lookup("m_filtered_joined"))).toEqual({
          additive: true,
          aggregate: "sum",
@@ -151,6 +161,16 @@ describe("additivity classifier: the surprising-expression corpus", () => {
       // argument covers a filter applied directly to the one aggregate, and
       // nothing else.
       ["m_filtered_arith", "filtered_aggregate"],
+      // A CHAINED refinement compiles from source and NESTS — filteredExpr
+      // wrapping filteredExpr wrapping the aggregate — so the root-child guard
+      // refuses it. Pinned on real IR because this file's whole purpose is
+      // shapes the compiler actually emits: the comma form (m_two_conds,
+      // additive above) is the accepted spelling of the same logic, and the
+      // error message points there. A false negative, deliberately: two ANDed
+      // row-level conditions are still a row-level filter, so accepting an
+      // unbroken root chain would be sound — conscious narrowness until asked
+      // for, since widening is the safe direction.
+      ["m_chained_filter", "filtered_aggregate"],
       ["m_ratio", "multiple_aggregates"],
       ["m_all", "ungrouped_aggregate"],
       ["m_stddev", "no_aggregate_found"],
@@ -271,10 +291,12 @@ describe("additivity classifier: fails closed on IR it cannot read", () => {
       // where the root checks cannot see it: the root IS a filteredExpr, its
       // child IS an aggregate, its conditions ARE scalar. Only the exactly-one
       // count refuses it — remove that guard and this shape sails through as
-      // conforming. IR we have not seen from source (the compiler merges
-      // refinements into one filterList), which is exactly why it is pinned on
-      // a built node: a pin bump that starts emitting it must land here, be
-      // proven additive, and only then be accepted.
+      // conforming. Not the chained-refinement shape, which DOES compile from
+      // source and nests along the root path (m_chained_filter, caught by the
+      // root-child guard) — this one hides where only the count guard looks,
+      // and no source spelling reaches it today, so it is pinned on a built
+      // node: a pin bump that starts emitting it must land here, be proven
+      // additive, and only then be accepted.
       expect(
          classifyMeasureAdditivity({
             name: "m",
