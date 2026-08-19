@@ -53,6 +53,7 @@ export type PreaggregateViolationCode =
    | "missing_grain"
    | "empty_grain"
    | "invalid_namespace"
+   | "conflicting_namespace"
    | "non_additive_measure"
    // The grain does not resolve against the base source.
    | "unknown_grain_dimension"
@@ -263,6 +264,11 @@ export function validateSourcePreaggregation(
    }
 
    const declaredFields: FieldLike[] = [];
+   // Canonical grain -> each namespace named at it, and the first measure that
+   // named it. Keyed the same way synthesis groups rollups, so "one grain" means
+   // the same thing in both.
+   const namespacesByGrain = new Map<string, Map<string, string>>();
+   const grainTextByKey = new Map<string, string>();
    for (const field of fields) {
       const name = fieldName(field);
       const declaration = readPreaggregateAnnotation(
@@ -340,7 +346,33 @@ export function validateSourcePreaggregation(
             );
             if (violation) violations.push(violation);
          }
+         // Only an additive measure reaches a rollup, so only one can put a
+         // namespace on it — mirroring the same skip in `planSourcePreaggregation`
+         // so the two never disagree about which grains exist.
+         if (grain.namespace !== undefined && additivity.additive) {
+            const key = grain.dimensions.join(" ");
+            const named = namespacesByGrain.get(key) ?? new Map();
+            if (!named.has(grain.namespace)) named.set(grain.namespace, name);
+            namespacesByGrain.set(key, named);
+            grainTextByKey.set(key, grain.text);
+         }
       }
+   }
+
+   // One grain is one table, so it can be created in exactly one place. Measures
+   // sharing a grain but naming different namespaces is therefore unsatisfiable —
+   // refused rather than resolved by field order, which would put a rollup
+   // somewhere an author never chose and give no sign it happened.
+   for (const [key, named] of namespacesByGrain) {
+      if (named.size < 2) continue;
+      const choices = [...named.entries()]
+         .map(([ns, measure]) => `\`${ns}\` (on \`${measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_namespace",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grainTextByKey.get(key)}\` with different namespaces: ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`namespace=\`, or move one to a different grain.`,
+      });
    }
 
    // A v1 scope restriction rather than a mistake, so it is reported once for the

@@ -227,6 +227,44 @@ describe("a rollup is created where its base lives", () => {
       expect(plans[0].namespace).toBe("rollups");
    });
 
+   it("gives each grain the namespace named at it", async () => {
+      // Two grains are two tables and can be created in two places. A namespace
+      // resolved across the source would apply one grain's choice to the other's
+      // table, silently, decided by whichever the IR reported first.
+      const plans = await planFor(
+         `  measure:\n    #@ preaggregate grain="category" namespace="ns_a"\n    total is sum(amount)\n  measure:\n    #@ preaggregate grain="order_date" namespace="ns_b"\n    daily is sum(amount)`,
+      );
+      expect(plans.map((p) => [p.grainDimensions, p.namespace])).toEqual([
+         [["category"], "ns_a"],
+         [["order_date"], "ns_b"],
+      ]);
+   });
+
+   it("does not lend a storage= base's namespace to a colocated rollup", async () => {
+      // A `storage=` base's `name=` is a name in the DESTINATION's catalog, while
+      // the rollup is colocated — synthesis emits a bare `#@ persist`. Inheriting
+      // across that boundary would aim CREATE TABLE at a schema of the
+      // destination's that need not exist in the source warehouse, so adding
+      // `storage=` to a working base would break its rollup.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist storage="lake" name="lakeschema.orders_tbl"',
+            `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+         ),
+      );
+      expect(plans[0].namespace).toBeUndefined();
+      // An author who wants one still says so, and that is honoured.
+      const declared = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist storage="lake" name="lakeschema.orders_tbl"',
+            `  measure:\n    #@ preaggregate grain="category" namespace="rollups"\n    total is sum(amount)`,
+         ),
+      );
+      expect(declared[0].namespace).toBe("rollups");
+   });
+
    it("derives nothing from a quoted or malformed base name", async () => {
       // A quoted name is canonical SQL, not a dotted identifier path: `"My.Schema"`
       // is ONE identifier containing a dot, and a last-dot split tears it in half.
@@ -263,7 +301,9 @@ describe("a rollup is created where its base lives", () => {
       expect(declaration.errors.map((e) => e.kind)).toContain(
          "invalid_namespace",
       );
-      expect(declaration.namespace).toBeUndefined();
+      // The line is refused whole, so its grain goes with it: a rollup must never
+      // be built in a namespace the author did not get to choose.
+      expect(declaration.grains).toHaveLength(0);
    });
 
    it("accepts the namespaces a real deployment needs, and rejects the rest", () => {

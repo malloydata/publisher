@@ -85,13 +85,14 @@ export interface RollupPlan {
    /** The synthesized `#@ persist` source's name. Deterministic. */
    rollupSourceName: string;
    /**
-    * The namespace the rollup's table is created in — everything before the last
-    * dot of the base's own `#@ persist name=`, or undefined when the base names
-    * no namespace (or is not persisted at all).
+    * The namespace the rollup's table is created in: this grain's own
+    * `#@ preaggregate namespace=`, else everything before the last dot of the
+    * base's `#@ persist name=`, else undefined when neither names one.
     *
-    * A rollup of X belongs where X lives. It also decides whether the rollup can
-    * be built at all on a dialect that requires qualification: BigQuery rejects
-    * an unqualified CREATE, so a bare name is not a cosmetic difference there.
+    * A rollup of X belongs where X lives, unless its author said otherwise. It
+    * also decides whether the rollup can be built at all on a dialect that
+    * requires qualification: BigQuery rejects an unqualified CREATE, so a bare
+    * name is not a cosmetic difference there.
     */
    namespace?: string;
    /** The one grain, canonically sorted. */
@@ -153,12 +154,11 @@ const NAMESPACE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
  *
  * Dots are the one separator that survives: BigQuery addresses a dataset as
  * `project.dataset`, so a namespace is a path, not a single identifier.
+ *
+ * An empty string is refused by the per-segment test, which `""` fails.
  */
 export function isSpliceableNamespace(namespace: string): boolean {
-   const segments = namespace.split(".");
-   return (
-      segments.length > 0 && segments.every((s) => NAMESPACE_SEGMENT.test(s))
-   );
+   return namespace.split(".").every((s) => NAMESPACE_SEGMENT.test(s));
 }
 
 /** The alias the author's base source is imported under. */
@@ -208,15 +208,25 @@ export function persistNamespace(
  * re-reported, so the two never disagree about what is buildable.
  */
 /**
- * The base's own `#@ persist name=`, or undefined when it declares none.
+ * The namespace a rollup inherits from its base's `#@ persist name=`, or undefined
+ * when there is none to inherit.
  *
  * Read from the source's annotations rather than from a build plan: synthesis runs
  * before one exists, and the rollup's text has to carry the name it will be built
  * under. Unreadable annotations are treated as absent for the same reason
  * {@link readPreaggregateAnnotation} does — a malformed line must not take the
  * package down.
+ *
+ * **A `storage=` base lends nothing.** Its `name=` is a name in the DESTINATION's
+ * catalog, while a rollup is always colocated — synthesis emits a bare
+ * `#@ persist`, and rollups following a base into a storage destination is
+ * separate work. Inheriting across that boundary would aim `CREATE TABLE` at a
+ * schema of the destination's that need not exist in the source warehouse, so
+ * adding `storage=` to a working base would break its rollup. "A rollup of X
+ * belongs beside X" is exactly the inference that stops holding once X moved
+ * engines; such an author names the namespace explicitly.
  */
-function basePersistName(source: ValidatableSource): string | undefined {
+function basePersistNamespace(source: ValidatableSource): string | undefined {
    if (!source.annotations) return undefined;
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -227,7 +237,9 @@ function basePersistName(source: ValidatableSource): string | undefined {
       // `#@ persist name="x"` parses as two SIBLING keys, not a nested one — the
       // same shape `readPreaggregateAnnotation` handles for `grain`. Nested form
       // first so a future nested spelling wins, sibling as the documented fallback.
-      return tag.text("persist", "name") ?? tag.text("name");
+      const storage = tag.text("persist", "storage") ?? tag.text("storage");
+      if (storage !== undefined && storage.trim() !== "") return undefined;
+      return persistNamespace(tag.text("persist", "name") ?? tag.text("name"));
    } catch {
       return undefined;
    }
@@ -237,13 +249,16 @@ export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
-   const basePersistNamespace = persistNamespace(basePersistName(source));
-   let declaredNamespace: string | undefined;
+   const inheritedNamespace = basePersistNamespace(source);
    // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
    // two authors writing the same dimensions in either order land in one entry.
    const byGrain = new Map<
       string,
-      { grainDimensions: string[]; measures: RollupMeasure[] }
+      {
+         grainDimensions: string[];
+         measures: RollupMeasure[];
+         namespace?: string;
+      }
    >();
 
    for (const field of source.fields ?? []) {
@@ -251,12 +266,6 @@ export function planSourcePreaggregation(
          field as AnnotatableMeasure,
       );
       if (!declaration.declared || declaration.errors.length > 0) continue;
-      // An author-named namespace wins over the base's. Read across measures
-      // rather than per grain: the rollup is a table, and two measures rolled up
-      // together cannot land in two places. First one named wins, in the field
-      // order the IR reports.
-      if (declaredNamespace === undefined)
-         declaredNamespace = declaration.namespace;
 
       const additivity = classifyMeasureAdditivity(field as never);
       if (!additivity.additive) continue;
@@ -277,17 +286,23 @@ export function planSourcePreaggregation(
             partialName: `${name}${PARTIAL_SUFFIX}`,
             reaggregate: additivity.reaggregate,
          });
+         // First one named wins, in the field order the IR reports. Safe to be
+         // arbitrary only because two measures at ONE grain naming different
+         // namespaces is refused at publish (`conflicting_namespace`): the grain is
+         // a single table, so it cannot honour both. Across grains there is no
+         // conflict to resolve — each entry carries its own.
+         entry.namespace ??= grain.namespace;
          byGrain.set(key, entry);
       }
    }
 
    return [...byGrain.values()]
-      .map(({ grainDimensions, measures }) => ({
+      .map(({ grainDimensions, measures, namespace }) => ({
          baseSourceName,
          rollupSourceName: rollupSourceName(baseSourceName, grainDimensions),
          // Author's choice first, the base's namespace as the fallback: a rollup of
          // X belongs where X lives unless its author said otherwise.
-         namespace: declaredNamespace ?? basePersistNamespace,
+         namespace: namespace ?? inheritedNamespace,
          grainDimensions,
          // Sorted so the emitted text does not depend on field order in the IR.
          measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),
