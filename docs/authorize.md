@@ -92,7 +92,7 @@ above — a materialized entry point is not served frozen with respect to who ma
 stale between rebuilds is the row DATA the gate filters on: a row whose access decision changed (say,
 it changed owner) keeps serving to its former owner until the source rebuilds. See
 [materialization.md](materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source)
-for the full contract and the recommended refresh cadence. `storage=` and `#@ preaggregate` remain
+for the full contract and how to bound that staleness. `storage=` and `#@ preaggregate` remain
 unconditionally refused for any `#(authorize)`-gated source — the relaxation applies to colocated
 persistence only.
 

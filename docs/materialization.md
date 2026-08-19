@@ -81,11 +81,19 @@ everyone.
 
 ### The freshness contract for a gated colocated persist source
 
-Admitting a proven row-level gate is a behavior change: a package with a colocated `#@ persist` on an
-`#(authorize)`-gated source used to 422 at load, unconditionally, for every classification. It now
-builds when the gate proves row-level and attributed to the entry point. **Nothing auto-enables on
-upgrade** — no such package could exist before this shipped (the combination always 422'd), so
-publishing one afterward is the author's own opt-in; no existing package starts behaving differently.
+Admitting a proven row-level gate is a behavior change, and it is **not** opt-in. The refusal it
+relaxes never fired at *load*: it fires inside the build path (`deriveSelfInstructions` /
+`executeInstructedBuild`), so a package with a colocated `#@ persist` on an `#(authorize)`-gated
+source loads today, appears in `plan.sources`, and serves live — what 422'd was its *materialization
+run*, not the package.
+
+**So such packages already exist, and this release changes what they do.** A run that used to fail now
+succeeds when the gate proves row-level and attributed to the entry point, and the next auto-run or
+scheduled build materializes the source and binds it for serving with no author action. A source that
+served live yesterday serves from a possibly-stale artifact today, subject to the staleness below.
+`PERSIST_COLOCATED_RELAXATION_ENABLED=false` restores the unconditional refusal — set it before
+rolling out if that migration needs to be deliberate rather than automatic. It is read at package
+load, so an artifact already built keeps serving until its package next loads.
 
 What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the
 querying principal's attributes (givens, roles) are still evaluated live, on every query, against the
@@ -95,11 +103,36 @@ principal who no longer should see it, until the next rebuild recomputes that co
 narrower staleness than an ordinary persisted source's (which goes stale on every column), but for a
 gated source it is a staleness that maps directly onto who can read what — treat it accordingly.
 
-Because row-data-dependent revocation is only as fresh as the artifact, give a gated colocated persist
-source a real refresh cadence: `refresh=incremental` where the source supports it, or a scheduled
-rebuild (`materialization.schedule`) tight enough that a changed access decision does not sit stale
-for longer than your access-control SLA allows. A gated source with no freshness declaration at all is
-a source whose revocations have no guaranteed bound.
+Because row-data-dependent revocation is only as fresh as the artifact, a gated colocated persist
+source needs a declaration that says how long a stale access decision may be served. Two controls are
+on offer, and only one of them **bounds** that.
+
+**`materialization.freshness` — `{ "window": …, "fallback": "live" }` — is the bound.** The serve path
+re-evaluates freshness per query, so once an artifact's data ages past the window it drops out of the
+serving set and the query recomputes live, correctly filtered — whether or not any rebuild ever lands.
+That is a ceiling no refresh cadence can offer: a build that fails, or a scheduler that is off, leaves
+a schedule-only source serving its old decisions indefinitely. The cost is that `freshness` is
+[mutually exclusive with `schedule`](#the-persistence-policy-the-publish-gate), which is why advice
+framed around a cron steers away from it — for a gated source, take the ceiling. (The window is
+enforced from the freshness fields a control plane stamps on the manifest it distributes; a standalone
+Publisher's own post-build load binds its entries un-gated.)
+
+**A full rebuild is the refresh that actually re-reads the gate column.** A source with no incremental
+declaration rebuilds its whole table on every run, so every run recomputes the values the gate filters
+on. An incremental source needs `reseed` to do the same.
+
+**`refresh="incremental"` does not bound revocation.** The [delta](#incremental-refresh) wraps the
+seed's own SQL in a predicate over `[covered_through, frontier)`, so a row whose access decision
+changes *without its watermark advancing* falls outside every future delta and is never re-read.
+Take `orders`, gated `#(authorize) "org_id = $ORG"` and declared
+`refresh="incremental" watermark="order_date"`: order 7 (`order_date` 2026-01-02) moves from org 1 to
+org 2, every later run advances past that date, and principal `ORG: 1` keeps reading it
+indefinitely — while the entry
+reports `refresh: delta` and an advancing `coveredThrough`, so the cadence reads as healthy.
+`merge_key=` does not close it: it changes how a delta is applied, not which rows the delta reads.
+
+A gated source with neither a freshness window nor a full-rebuild cadence is a source whose
+revocations have no bound at all.
 
 ## The persistence policy (the publish gate)
 
