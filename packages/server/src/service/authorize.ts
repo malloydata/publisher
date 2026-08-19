@@ -490,7 +490,14 @@ export type RowLevelGateRejectionCause =
    | "no_given_reference"
    | "unreachable_given"
    | "vacuous_default_atom"
-   | "entry_point_unexpressible";
+   | "entry_point_unexpressible"
+   // Non-fatal — `./gate_dimension`'s `validateGateDimension` W1/W2, warned
+   // rather than refused; the model still loads. See that module's doc.
+   | "gate_dimension_no_given_reference"
+   | "gate_dimension_negated_membership"
+   // Task 3 (the mechanical migration off the string form) produces this —
+   // reserved here now so the cause union and this list never drift apart.
+   | "legacy_string_gate";
 
 /**
  * Builds a tuple that must cover EVERY member of `U`. The intersection with
@@ -524,6 +531,9 @@ export const ROW_LEVEL_GATE_REJECTION_CAUSES =
       "unreachable_given",
       "vacuous_default_atom",
       "entry_point_unexpressible",
+      "gate_dimension_no_given_reference",
+      "gate_dimension_negated_membership",
+      "legacy_string_gate",
    );
 
 export type RowLevelGateClassification =
@@ -1051,13 +1061,15 @@ interface AuthorizeProbeCompiler {
  * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
  * query string. Escapes backslashes and backticks (in that order) so a name
  * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
- * contains an embedded backtick cannot break out of the quotes. Mirrors
- * `Model`'s private `quoteMalloyIdentifier` in `service/model.ts` — same
- * escaping rules, duplicated here (rather than shared) so this module keeps
- * its light import surface (see the module doc comment: it must stay
- * importable by the package-load worker).
+ * contains an embedded backtick cannot break out of the quotes. `Model`
+ * (`service/model.ts`) has its own independently-justified copy for its own
+ * callers (mirroring Malloy's internal `identifierCode`/`escapeIdentifier`,
+ * which is not exported); this one is exported for `./gate_classification`'s
+ * dimension-form graft (Constraint 9 — a gate dimension is grafted by NAME,
+ * never by re-parsing its `code`), which needs the identical escaping this
+ * module already uses to build a row-level probe.
  */
-function quoteMalloyIdentifier(name: string): string {
+export function quoteMalloyIdentifier(name: string): string {
    return "`" + name.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
 }
 
