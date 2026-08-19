@@ -988,6 +988,51 @@ source: s is duckdb.sql("select 1 as x") extend {
          },
          { timeout: 20000 },
       );
+
+      it(
+         "one unreadable source costs the package that source's binding, not its whole colocated tier",
+         async () => {
+            // The colocated gate deliberately admits a given-referencing source
+            // (materialization_eligibility.spec.ts's mz_colocated_given), and
+            // `bad`'s given has no default, so getSQL() — and every content
+            // address derived from it — throws. An escaping throw would leave
+            // colocatedSourceEligibility undefined, and colocated is the default
+            // tier: bindColocatedServeManifest would then drop EVERY binding for
+            // the package, reverting `good` to live recompute too.
+            const pkg = await realPackageMulti({
+               "m.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given: ORG :: number
+
+source: base is duckdb.sql("select 1 as org_id, 2 as amount")
+
+#@ persist name="good"
+source: good is base -> { select: org_id, amount }
+
+#@ persist name="bad"
+source: bad is base -> { where: org_id = $ORG; select: org_id, amount }
+`,
+            });
+
+            const { plan, colocatedSourceEligibility } =
+               await computePackageBuildPlan(pkg);
+
+            expect(
+               Object.values(plan?.sources ?? {}).map((s) => s.name),
+            ).toEqual(["good"]);
+            // `good` keeps a usable binding; `bad` contributes neither an
+            // eligibility nor a refusal, since it has no id to key either under.
+            expect(colocatedSourceEligibility.eligibleEntityIds.size).toBe(1);
+            const [good] = Object.values(plan?.sources ?? {});
+            expect(
+               colocatedSourceEligibility.eligibleEntityIds.has(
+                  good.sourceEntityId,
+               ),
+            ).toBe(true);
+         },
+         { timeout: 20000 },
+      );
    });
 });
 

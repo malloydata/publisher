@@ -119,6 +119,14 @@ const buildPlanComputeDuration = lazyHistogram(
    "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
    "ms",
 );
+const buildPlanComputeFailedCounter = lazyCounter(
+   "publisher_materialization_build_plan_compute_failed_total",
+   "Package loads whose build plan failed to compute. The ROOT-CAUSE signal for " +
+      "colocated_bind_dropped{reason='build_plan_unavailable'}, which fires only " +
+      "per dropped entry per load -- a package that loads once and is never " +
+      "reloaded ticks that counter once and then sits with its colocated tier " +
+      "off and a flat total, indistinguishable from healthy.",
+);
 const autoLoadCounter = lazyCounter(
    "publisher_materialization_auto_load_total",
    "Auto-run manifest auto-load attempts. Label: outcome ('success'|'failure').",
@@ -267,6 +275,15 @@ export function recordIncrementalStep(
  */
 export function recordBuildPlanComputeDuration(durationMs: number): void {
    buildPlanComputeDuration().record(durationMs);
+}
+
+/**
+ * Record that a package's build plan failed to compute at load. The package
+ * name stays in the accompanying warn log rather than becoming a label, as
+ * everywhere else in this file.
+ */
+export function recordBuildPlanComputeFailed(): void {
+   buildPlanComputeFailedCounter().add(1);
 }
 
 /**
