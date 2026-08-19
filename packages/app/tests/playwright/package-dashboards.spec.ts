@@ -283,6 +283,23 @@ test.describe("package-dashboards", () => {
       await expect(page).toHaveURL(/[?&]utm_campaign=spring/);
    });
 
+   test("a select control looks like one", async ({ page }) => {
+      // MUI hides the dropdown arrow whenever `freeSolo` is set, which every
+      // given control needs so a reader can type a value the suggest query did
+      // not offer. Without `forcePopupIcon` the control renders as a bare text
+      // box, so nothing says it has options: a reader-reported complaint, and it
+      // had no test until a mutation sweep pointed out that both select tests
+      // click the control directly and would pass with the arrow gone.
+      await openDashboard(page, "overview");
+      const brand = page.locator(".MuiAutocomplete-root", {
+         has: page.getByRole("combobox", { name: "Brand" }),
+      });
+      await expect(brand).toBeVisible({ timeout: 30_000 });
+      await expect(
+         brand.locator(".MuiAutocomplete-popupIndicator"),
+      ).toHaveCount(1);
+   });
+
    test("autorun=false gets an Apply button and its starting values", async ({
       page,
    }) => {
