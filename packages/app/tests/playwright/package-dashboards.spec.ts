@@ -323,7 +323,7 @@ test.describe("package-dashboards", () => {
 
    /**
     * A clicked cell in the rendered result. The renderer owns this DOM, so
-    * there is no test id to hang onto — the cell's own text is the handle, and
+    * there is no test id to hang onto: the cell's own text is the handle, and
     * it is scoped to the tile so a value appearing in two tiles is unambiguous.
     * The tile is named by its run expression, which the panel keeps as its
     * heading's tooltip once the heading itself is humanized.
@@ -336,7 +336,7 @@ test.describe("package-dashboards", () => {
          .first();
 
    /**
-    * The table cell containing `text` — the element the affordance is marked on,
+    * The table cell containing `text`, the element the affordance is marked on,
     * one level up from the text node `cell()` returns.
     */
    const valueCell = (page: Page, text: string) =>
@@ -365,7 +365,7 @@ test.describe("package-dashboards", () => {
    // The affordance, which is what tells a reader a cell does anything at all.
    // Asserted on both surfaces because a drill's whole premise is that the tag
    // is declared once on a dimension and behaves the same wherever it is
-   // grouped — a notebook cell that navigates but doesn't say so is the same
+   // grouped: a notebook cell that navigates but doesn't say so is the same
    // feature only in principle.
    for (const surface of [
       {
@@ -399,8 +399,8 @@ test.describe("package-dashboards", () => {
          await expect(drillable).toHaveClass(/publisher-drill/);
 
          const drill = await readsAs(drillable);
-         // Ordinary text at rest — a column painted like a link competes with
-         // the data — and a link on hover.
+         // Ordinary text at rest (a column painted like a link competes with
+         // the data), and a link on hover.
          expect(drill.resting.cursor).toBe("pointer");
          expect(drill.resting.underlined).toBe(false);
          expect(drill.hovered.underlined).toBe(true);
@@ -427,7 +427,7 @@ test.describe("package-dashboards", () => {
       );
 
       // `# drill { to=overview given=BRAND }` on the brand_name dimension, which
-      // no dashboard declares — the tile is clickable because it groups by it.
+      // no dashboard declares: the tile is clickable because it groups by it.
       await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
 
       // One destination acts immediately: the slug becomes the route and the
@@ -501,6 +501,49 @@ test.describe("package-dashboards", () => {
       await expect(page.getByRole("button", { name: "Apply" })).toBeDisabled();
    });
 
+   // Distinct from the test above, which drills with nothing applied. That case
+   // cannot show this bug: the hook suppresses a report that repeats what it last
+   // reported, and with no given applied both are empty. With one applied, the
+   // destination's manifest is briefly undefined, so the hook reports "no values"
+   // while still holding the PREVIOUS dashboard's record, and a host that trusts
+   // that report clears the given the drill just seeded.
+   test("a drill keeps its seeded given when one was already applied", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+
+      const brand = page.getByRole("combobox", { name: "Brand" });
+      await expect(brand).toBeVisible({ timeout: 30_000 });
+      await brand.click();
+      await page
+         .getByRole("option", { name: "Nike" })
+         .click({ timeout: 30_000 });
+      await expect(page).toHaveURL(/[?&]BRAND=Nike/);
+
+      await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
+      await page.getByRole("menuitem", { name: "Regions" }).click();
+
+      const seeded = new RegExp(
+         `/${env}/${PKG}/dashboards/regions\\?REGION=EU$`,
+      );
+      await expect(page).toHaveURL(seeded);
+      // Asserted again AFTER the destination has rendered, because the first
+      // assertion can pass on the pushed URL and `toHaveURL` stops looking once
+      // it matches. The wipe lands a commit later, so only a check past the
+      // destination's own paint can see it.
+      await expect(
+         page.getByRole("heading", { name: "Orders by region" }),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(page).toHaveURL(seeded);
+      // The value has to reach the control too, not just survive in the URL.
+      const region = page.locator(".MuiAutocomplete-root", {
+         has: page.getByRole("combobox", { name: "Region" }),
+      });
+      await expect(region.getByText("EU", { exact: true })).toBeVisible({
+         timeout: 30_000,
+      });
+   });
+
    test("a notebook cell drills into a dashboard", async ({ page }) => {
       // The payoff of declaring drill on the dimension: `brands.malloynb` says
       // nothing about drill, but its cell groups by `brand_name`, so the same
@@ -542,7 +585,7 @@ test.describe("package-dashboards", () => {
       await expect(applyButton).toBeDisabled();
 
       // The notebook's one cell counts orders on or after SINCE, which defaults
-      // to 2024-01-01 — all six of them. Deliberately not `.first()`: the count
+      // to 2024-01-01, all six of them. Deliberately not `.first()`: the count
       // is the only bare number on the page, so a second match means this is
       // matching something other than the result, and should fail.
       const count = (n: string) => page.getByText(n, { exact: true });
@@ -686,8 +729,8 @@ test.describe("package-dashboards", () => {
    });
 
    // A dashboard renders from its tags, in the page. Publisher runs no
-   // author-written dashboard component, so nothing here should ever be framed
-   // — see docs/malloyyo-dashboards-design.md §"Custom JSX components".
+   // author-written dashboard component, so nothing here should ever be framed.
+   // See docs/malloyyo-dashboards-design.md §"Custom JSX components".
    test("renders in the page, with no iframe", async ({ page }) => {
       await openDashboard(page, "overview");
       await expect(

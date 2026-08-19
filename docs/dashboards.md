@@ -1,7 +1,7 @@
 # Dashboards
 
-> **What this is:** how to write a `dashboards/*.malloy` file — a filterable, clickable, grid-laid-out
-> dashboard declared entirely in Malloy tags, with no code and no build step.
+> **What this is:** how to write a `dashboards/*.malloy` file (a filterable, clickable, grid-laid-out
+> dashboard declared entirely in Malloy tags, with no code and no build step).
 
 A dashboard is a self-contained `.malloy` file in a package's `dashboards/` directory. The file _is_
 the dashboard: it imports the model parts it needs, declares its query, applies its filtering, and
@@ -25,7 +25,7 @@ a model repo with a `dashboards/` directory works unchanged in either.
 storefront/
   publisher.json           # package manifest
   storefront.malloy        # sources, measures, reusable views, # drill tags
-  givens.malloy            # given: declarations — the filter controls
+  givens.malloy            # given: declarations, the filter controls
   dashboards/
     overview.malloy        # a dashboard: imports the model, declares its query
     category.malloy
@@ -38,7 +38,7 @@ Two conventions carry most of the weight:
 
 - **The filename is the dashboard's name.** `overview.malloy` is the slug in its URL, the name in
   the package listing, and what a `# drill { to=overview }` elsewhere in the model points at. The
-  query inside it can be called anything — `regions.malloy` names its query `regional_sales`,
+  query inside it can be called anything. `regions.malloy` names its query `regional_sales`,
   because the `regions` source it imports already owns that name in the file.
 - **A file in `dashboards/` with no `# artifact` tag is a shared include.** Discovery skips it. It
   is where to put anything more than one dashboard needs.
@@ -95,7 +95,7 @@ query: overview is order_items -> {
 
 - `# artifact { … }` is what makes the file a dashboard. `title=` names it; without one the title
   falls back to the `#"` doc comment above, then to the slug.
-- `# dashboard { columns=N }` is the renderer's grid — a standard `@malloydata/render` tag, not a
+- `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.
 - In a `# dashboard` view, fields render **by role**: a top-level `aggregate:` measure becomes a KPI
@@ -111,19 +111,19 @@ across a package's dashboards is what makes them read as one product rather than
 - **A colspan on every card and every tile, summing to `columns` per row.** Four cards at 3, three at
   4, two tiles at 6, a full-width table at 12. Leave them off and each item takes its natural width,
   which is how a page ends up looking accidental. A `# colspan` without `columns=` on the
-  `# dashboard` tag is ignored with a warning — the usual reason a grid comes out as one column.
+  `# dashboard` tag is ignored with a warning, the usual reason a grid comes out as one column.
 - **`# break` on the first tile after the cards.** Without it the first tile flows into whatever
   columns are left beside the cards and the next one wraps. A break is for interrupting a row that
   would otherwise be shared, not for every new row: once a row's colspans sum to `columns`, the next
   item wraps on its own with the same gap.
-- **`# label="…"` on every nest.** The tile's heading is otherwise the view's name —
+- **`# label="…"` on every nest.** The tile's heading is otherwise the view's name:
   `sales_by_month` over a chart, which reads like a database column. Labelling on the nest rather
   than the view lets the same view carry different words on different pages.
 
 Two things about cards specifically. A top-level `aggregate:` measure _is_ the card, so do not nest a
 `# big_value` view to get one: nested in a dashboard it renders embedded, and each measure becomes a
 full-width bar inside a single tile instead of a row of cards. And a card's label is one line that
-ellipses rather than wrapping, so a narrow card truncates it silently — "Orders / customer" reads as
+ellipses rather than wrapping, so a narrow card truncates it silently: "Orders / customer" reads as
 "ORDERS / CUSTOMEI" at 1 column of 6.
 
 Tiles size themselves to the width their colspan gives them, so leave `# size=fill` off. Inside a
@@ -136,7 +136,7 @@ Two places read a field's **name** rather than its `# label`, so a labelled mode
 `total_sales` on the page:
 
 - **A `# shape_map`'s color legend** is titled with the measure's field name. Rename the measure in
-  the view — `aggregate: revenue is total_sales` — rather than only labelling it.
+  the view (`aggregate: revenue is total_sales`) rather than only labelling it.
 - **A chart's series legend** reserves its width from the longer of the series label and its widest
   value, then truncates both to fit. A 4-character label over 4-digit years clips to `20…`; naming
   the series `# label="Order year"` instead of `"Year"` buys the column enough room. A legend showing
@@ -145,10 +145,10 @@ Two places read a field's **name** rather than its `# label`, so a labelled mode
 Both are upstream renderer behavior, not Publisher's, and both are cheap to work around in the
 model.
 
-All of this applies equally to a `# dashboard` **view** run in a notebook cell — the two surfaces
+All of this applies equally to a `# dashboard` **view** run in a notebook cell: the two surfaces
 render through the same code, so a view laid out with these tags looks the same in a cell as on a
 dashboard page. The storefront model's `business_overview` view is the shipped `# dashboard` view,
-and the notebook's first cell is that view — read it as a working example of the two surfaces
+and the notebook's first cell is that view. Read it as a working example of the two surfaces
 agreeing, not of the layout recipe above, which it predates: it carries no `columns=`, no colspans,
 and it nests a `# big_value` for its KPIs, which is the one thing this page says not to do. Height
 is the one thing the surface decides rather than the tags: a single-query dashboard renders at its
@@ -158,14 +158,14 @@ prose off the page.
 
 ### Tag reference
 
-| Construct                                                        | What it does                                                                                                                   |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `# artifact { title= givens{…} autorun= }` on a `query:`                | Declares the dashboard. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
-| `## artifact { title= tiles=[…] dashboard_columns=N }`           | Declares a **composite** — model-level, because there is no query of its own to hang a `#` tag on                              |
-| `# dashboard { columns=N }`, `# colspan=K`, `# break`            | The renderer grid — see [Laying out the grid](#laying-out-the-grid). `# colspan` does nothing without `columns=`               |
-| `# label="…"` on an aggregate                                    | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for     |
-| `# drill { to=[…] given=… }` on a source `dimension:`            | Makes cells that group by it clickable — see [Drill](#drill)                                                                   |
-| A `dashboards/*.malloy` with **no** artifact tag                 | A shared include, skipped by discovery                                                                                         |
+| Construct                                                | What it does                                                                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `# artifact { title= givens{…} autorun= }` on a `query:` | Declares the dashboard. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
+| `## artifact { title= tiles=[…] dashboard_columns=N }`   | Declares a **composite**, model-level because there is no query of its own to hang a `#` tag on                                |
+| `# dashboard { columns=N }`, `# colspan=K`, `# break`    | The renderer grid, see [Laying out the grid](#laying-out-the-grid). `# colspan` does nothing without `columns=`                |
+| `# label="…"` on an aggregate                            | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for     |
+| `# drill { to=[…] given=… }` on a source `dimension:`    | Makes cells that group by it clickable, see [Drill](#drill)                                                                    |
+| A `dashboards/*.malloy` with **no** artifact tag         | A shared include, skipped by discovery                                                                                         |
 
 Two spellings that bite:
 
@@ -206,7 +206,7 @@ given: SINCE :: date is @2023-01-01
 
 A `suggest` reads either a `source=` and `dimension=` pair, or a named `query=` when the option list
 needs its own ordering or filtering. **The source or query has to resolve in the dashboard file**,
-so import it there — a dashboard that surfaces a given whose suggest names something it cannot see
+so import it there: a dashboard that surfaces a given whose suggest names something it cannot see
 is a package warning at load, not a surprise when someone opens the dropdown.
 
 In a package that [curates its surface](discovery-and-access.md) (`explores` plus
@@ -230,8 +230,8 @@ dashboard and margin on another without either redeclaring it.
 **Importing a given is what makes it bindable.** Malloy's given namespace is per-file, so a
 dashboard can only be _run_ with the givens its own file imports, even when the `where:` that
 references one lives up an import chain. A given the file does not import gets no control, and
-sending it at run time fails with "unknown given". Everything about givens themselves —
-declaration, types, defaults, access control — is in [givens.md](givens.md).
+sending it at run time fails with "unknown given". Everything about givens themselves
+(declaration, types, defaults, access control) is in [givens.md](givens.md).
 
 <a id="apply"></a>
 
@@ -252,8 +252,8 @@ query: regional_sales is order_items -> { … }
 - **Control state lives in the URL**, so a filtered dashboard is a shareable link. A URL parameter
   beats the dashboard's own starting values.
 
-All three behave identically in a notebook, which spells them at the file level — `## autorun=false`
-and `## givens { REGION=f'West' }` — and gets the same controls, the same URL state, and the same
+All three behave identically in a notebook, which spells them at the file level (`## autorun=false`
+and `## givens { REGION=f'West' }`) and gets the same controls, the same URL state, and the same
 Apply button from the same code.
 
 ## Composite dashboards
@@ -274,17 +274,17 @@ Each tile runs as its own query, which means a broken tile shows its error in pl
 blanking the page, and a control change re-runs only the tiles that reference it. The control row is
 the union across the tiles.
 
-A composite's tiles are equal-width — `dashboard_columns` is the whole layout, and there is no
+A composite's tiles are equal-width: `dashboard_columns` is the whole layout, and there is no
 per-tile colspan, since each tile is a separate result rather than a field in one. So choose a column
 count the tile list divides evenly (three tiles at 3, four at 2 or 4), and expect each chart to have
 `1/N` of the page: a monthly trend at a third of the width gets crowded x labels, which is a reason
 to prefer the single-query form when one tile deserves more room than the others.
 
 A composite has no query of its own, so the filtering it applies has to live in what it composes.
-That is the job the shared include does here — `_shared.malloy` scopes the source once:
+That is the job the shared include does here. `_shared.malloy` scopes the source once:
 
 ```malloy
-// dashboards/_shared.malloy — no artifact tag, so an include rather than a dashboard.
+// dashboards/_shared.malloy: no artifact tag, so an include rather than a dashboard.
 ##! experimental.givens
 import { order_items } from '../storefront.malloy'
 import { CATEGORY, SINCE } from '../givens.malloy'
@@ -294,8 +294,8 @@ source: scoped_sales is order_items extend {
 }
 ```
 
-Note the imports in the composite itself. Nothing in that file mentions `CATEGORY` or `SINCE` — the
-`where:` that does is one file over — but the given namespace is per-file, so without importing them
+Note the imports in the composite itself. Nothing in that file mentions `CATEGORY` or `SINCE` (the
+`where:` that does is one file over), but the given namespace is per-file, so without importing them
 the control row would be empty and the tiles would silently run at their defaults.
 
 <a id="drill"></a>
@@ -354,7 +354,7 @@ wiring. A notebook cell grouping by a tagged dimension is clickable for exactly 
 says nothing about drill itself: it imports the given for its own Parameters panel, which is all
 `to=self` needs. Both surfaces run the same
 implementation, down to the hover styling and the menu, so a reader cannot tell from the
-interaction which kind of document they are in — only the menu's `to=self` entry names it ("Filter
+interaction which kind of document they are in. Only the menu's `to=self` entry names it ("Filter
 this notebook" against "Filter this dashboard").
 
 A drill only lands somewhere useful if the destination declares a control for the given being
@@ -374,7 +374,7 @@ field names and identical numbers.
 ## What Publisher checks at load
 
 Every package load lints the dashboards and reports findings as package warnings, visible on the
-package page and in the server log. They catch the failures that are otherwise silent — a control
+package page and in the server log. They catch the failures that are otherwise silent: a control
 that never appears, a click that goes nowhere. Broadly, they cover:
 
 - **Drill targets.** A `# drill { to=… }` naming a dashboard that does not exist in the package, or
@@ -410,12 +410,12 @@ the file, reload again.
 | Path                                                       | What it is                                                  |
 | ---------------------------------------------------------- | ----------------------------------------------------------- |
 | `/<env>/<pkg>/dashboards/<name>`                           | The Console page                                            |
-| `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered — control state is URL state        |
+| `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered: control state is URL state         |
 | `GET /api/v0/environments/<env>/packages/<pkg>/dashboards` | List them                                                   |
 | `GET …/dashboards/<name>`                                  | The manifest: title, autorun, columns, control specs, tiles |
 
 A dashboard's query runs through the ordinary query endpoint against
-`dashboards/<name>.malloy`, with givens in the request body — there is no dashboard-specific
+`dashboards/<name>.malloy`, with givens in the request body. There is no dashboard-specific
 execution path, so authorization, row limits, and query caps behave exactly as they do everywhere
 else. [ai-agents.md](ai-agents.md) has the REST playbook.
 
@@ -448,7 +448,7 @@ import { Dashboard, encodeResourceUri } from "@malloy-publisher/sdk";
 />;
 ```
 
-Without `onNavigate`, drilling to another dashboard is inert — and, by the rule above, those cells do
+Without `onNavigate`, drilling to another dashboard is inert, and by the rule above those cells do
 not read as clickable either, so a host that has not wired navigation shows no affordance rather than
 a dead one. `to=self` still works, since it never leaves the component. The Console's own
 `DashboardPage` (`packages/app/src/components/pages/DashboardPage/DashboardPage.tsx`) is the worked
@@ -463,8 +463,8 @@ complete embedding story.
 
 ## Where dashboards stop
 
-Whatever renderer tags can express is the ceiling. There is deliberately no code escape hatch — no
-custom component, no authored JavaScript — because a page that needs to go past the tags is an
+Whatever renderer tags can express is the ceiling. There is deliberately no code escape hatch (no
+custom component, no authored JavaScript) because a page that needs to go past the tags is an
 [HTML data app](html-data-apps.md), which already does that job at whole-page scope with a real
 runtime and a real embedding story. The reasoning, including why the sandboxed-component approach
 was built and then cut, is in
@@ -472,7 +472,7 @@ was built and then cut, is in
 
 ## See also
 
-- [givens.md](givens.md) — the parameter mechanism the controls are built on
-- [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) — the design, and the grammar's provenance
-- [console.md](console.md) — the rest of the Publisher Console
+- [givens.md](givens.md): the parameter mechanism the controls are built on
+- [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md): the design, and the grammar's provenance
+- [console.md](console.md): the rest of the Publisher Console
 - [`examples/storefront`](../examples/storefront), the ecommerce model this page's examples build on

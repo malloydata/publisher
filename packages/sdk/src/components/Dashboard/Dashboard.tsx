@@ -13,7 +13,7 @@ import { useServer } from "../ServerProvider";
 import { DashboardTile } from "./DashboardTile";
 
 export interface DashboardProps {
-   /** `publisher://environments/{env}/packages/{pkg}` — env and package only. */
+   /** `publisher://environments/{env}/packages/{pkg}`, env and package only. */
    resourceUri: string;
    /** The dashboard's slug, as listed by the dashboards endpoint. */
    dashboard: string;
@@ -30,13 +30,13 @@ export interface DashboardProps {
    onGivensChange?: (givens: Record<string, string>) => void;
    /**
     * Where to go when a `# drill` cell is clicked. Without it, drilling to
-    * another dashboard is inert — `to=self` still filters in place, since that
+    * another dashboard is inert: `to=self` still filters in place, since that
     * never leaves the component.
     */
    onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
    /**
     * Height cap for a result panel. Left unset, each form gets the cap that
-    * suits its shape — see {@link TILE_HEIGHT} and {@link WHOLE_PAGE_HEIGHT}.
+    * suits its shape, see {@link TILE_HEIGHT} and {@link WHOLE_PAGE_HEIGHT}.
     * Set it to hold a dashboard to a fixed box, as an embedding host might.
     */
    height?: number;
@@ -117,7 +117,16 @@ export function Dashboard({
       declaredTypes,
       startingValues: manifest?.startingGivens,
       params: givens,
-      onParamsChange: onGivensChange,
+      // Withheld until the manifest has loaded, for the same reason the notebook
+      // withholds it. Changing `dashboard` changes the query key, so `data` is
+      // undefined for one commit and `declaredTypes` is empty; `applied` prunes
+      // to nothing and the hook reports "no values, and I manage nothing". This
+      // component is reconciled rather than remounted on a dashboard-to-dashboard
+      // drill, so the hook's record of what it last reported still holds the
+      // PREVIOUS dashboard's values and does not suppress that report as a
+      // repeat. The host reasonably clears its query string, which is exactly the
+      // givens the drill just seeded for the dashboard now arriving.
+      onParamsChange: isSuccess ? onGivensChange : undefined,
       // Which document these edits belong to. Without it the edits are keyed by
       // their starting VALUES alone, so two dashboards whose starting values
       // coincide (the common case: both empty) look like one document, and the
@@ -244,7 +253,7 @@ export function Dashboard({
          ) : manifest.query !== undefined ? (
             // Single-query form: one query whose result IS the dashboard. Its
             // `# dashboard {columns=N}` tag is the renderer's business, so no
-            // grid is imposed here — doing so would nest a grid in a grid.
+            // grid is imposed here: doing so would nest a grid in a grid.
             <DashboardTile
                environmentName={environmentName}
                packageName={packageName}

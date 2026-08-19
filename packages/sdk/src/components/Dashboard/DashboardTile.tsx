@@ -24,7 +24,7 @@ export interface DashboardTileProps {
    /**
     * Given names this tile references, or undefined when discovery could not
     * resolve the tile. Undefined means "send the whole control row", which the
-    * server accepts — a surfaced given a query does not reference is ignored.
+    * server accepts: a surfaced given a query does not reference is ignored.
     */
    givenNames?: string[];
    height: number;
@@ -38,7 +38,7 @@ export interface DashboardTileProps {
  * as a sentence, so `scoped_sales -> sales_by_month` is titled "Sales by month".
  *
  * A tile in the single-query form gets its heading from a `# label` on the nest,
- * and a composite tile has no nest to label — the entry is a string in
+ * and a composite tile has no nest to label: the entry is a string in
  * `tiles=[…]`. Deriving it keeps the two forms reading alike instead of one
  * showing titles and the other showing code.
  */
@@ -53,7 +53,7 @@ export function tileTitle(tile: string): string {
  * One result panel: run it, render it, and keep its failure to itself.
  *
  * A tile owning its own query is what lets a composite dashboard survive a bad
- * tile — the broken one shows its error in place and the rest of the grid still
+ * tile: the broken one shows its error in place and the rest of the grid still
  * renders, rather than one failure blanking the page.
  */
 export function DashboardTile({
@@ -115,7 +115,7 @@ export function DashboardTile({
                   variant="subtitle2"
                   sx={{ fontWeight: 500, color: "text.secondary" }}
                   // The expression is what actually ran, so it stays reachable
-                  // — as a tooltip rather than as the heading.
+                  // as a tooltip rather than as the heading.
                   title={tile}
                >
                   {tileTitle(tile)}

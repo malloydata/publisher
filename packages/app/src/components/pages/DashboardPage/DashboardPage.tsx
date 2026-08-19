@@ -11,7 +11,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 export interface DashboardPageProps {
    environmentName: string;
    packageName: string;
-   /** The dashboard's slug — `overview`, not `dashboards/overview.malloy`. */
+   /** The dashboard's slug: `overview`, not `dashboards/overview.malloy`. */
    dashboardName: string;
 }
 

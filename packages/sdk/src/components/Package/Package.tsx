@@ -187,7 +187,7 @@ export default function Package({
    // because the models list is FILTERED by it. Gated on notebooks alone, a
    // dashboards call that resolves after the models call rendered the sections
    // with an empty `dashboardPaths`, so `dashboards/overview.malloy` appeared
-   // under Semantic Models and then vanished — the double listing the filter
+   // under Semantic Models and then vanished: the double listing the filter
    // exists to prevent, briefly on screen. It cannot hang the page: the query
    // above turns a 404 or a transport failure into an empty list.
    const isLoading =
@@ -347,7 +347,7 @@ export default function Package({
                                        event,
                                     );
                                  } else {
-                                    // No host app — navigate to standalone HTML.
+                                    // No host app: navigate to standalone HTML.
                                     if (
                                        event &&
                                        (event.metaKey || event.ctrlKey)
