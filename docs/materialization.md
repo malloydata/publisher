@@ -46,43 +46,60 @@ source: summary_fresh is order_summary extend {
 
 Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
 
-### `#(authorize)`-gated sources cannot be materialized
+### `#(authorize)`-gated sources and materialization
 
 A source protected by an `#(authorize)` gate — its own, or one carried from a joined or derived
-source — cannot be persisted, in either mode:
+source — is refused for `storage=` and for pre-aggregation, unconditionally. A **colocated**
+`#@ persist` (no `storage=`) is different: it is admitted when the gate is *proven* to be the entry
+point's own row filter, and refused otherwise.
 
 - **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
   reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
   a materialized-once table is served frozen to every caller, and the served shape carries no gate
-  to re-evaluate.
-- **A colocated `#@ persist`** (no `storage=`) refuses too, though not for the same reason. Here the
-  gate is not lost: the substitution swaps only the source's relation SQL, the gate applies as the
-  reading query's own `WHERE`, and rows come back filtered. What is frozen is the data the gate
-  DECIDES AGAINST, so a row that changes hands keeps being served to its former owner — and because
-  the content address does not include the annotation, an artifact built before the gate was added
-  stays addressable while every rebuild is refused. Drop `#@ persist` from the source, or move the
-  gate to a source that is not materialized.
+  to re-evaluate. This refusal is unaffected by anything below.
+- **A colocated `#@ persist`** is not served frozen with respect to the gate at all: persistence
+  changes only where the rows are read FROM, never whether the entry point's own `#(authorize)` is
+  re-evaluated — the substitution swaps only the source's relation SQL, and the gate applies as the
+  reading query's own `WHERE` on top of it, so filtered rows come back filtered. When the compiler can
+  *prove* the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
+  the source is eligible and serves correctly filtered from the materialized table. It is still
+  refused when that cannot be proven — a gate reachable only through a join (join-only gate
+  attribution is not traced), an inherited gate the compiler cannot attribute cleanly, or a gate that
+  does not classify as a row filter at all. Drop `#@ persist` from the source, or restructure it so the
+  condition is the entry point's own proven row-level gate.
+- **`#@ preaggregate`** refuses unconditionally, regardless of the gate's classification. A rollup
+  synthesizes a colocated `#@ persist` over an import of the annotated base, and none of the
+  pre-aggregation modules has any `#(authorize)` awareness of its own — so this refusal is the only
+  thing standing between a gated source and the pre-aggregation tier. It also groups *across* the
+  gated column, so the column is not even present in the rolled-up result to filter afterwards, even
+  in principle. A refused rollup names `#@ preaggregate` and the gated source rather than the
+  synthesized rollup's own name, which the author never wrote.
 
-The check is deliberately broader than that hazard: it also refuses a source that merely *joins* a
-gated source, whose gate entry-point semantics never enforced in the first place.
-
-**The colocated refusal also carries a second job, and narrowing it on the frozen-data reasoning
-alone would open a hole.** `#@ preaggregate` synthesizes each rollup as a colocated `#@ persist` over
-an import of the annotated base, and none of the pre-aggregation modules has any `#(authorize)`
-awareness of its own — so this refusal is the only thing standing between a gated source and the
-pre-aggregation tier. It holds because the eligibility walk follows the import → rename →
-`query_source` chain and finds the base's gate. A gated source therefore gets no rollups built, and
-the serve path never has a frozen rollup to route to. (The query path additionally declines to route
-a row-level-gated entry point through the pre-aggregation companion, so that containment does not
-rest on this refusal alone — but this refusal is what makes it true at build time.) A rollup is a
-sharper case than an ordinary persist, too: it groups *across* the gated column, so the column the
-gate filters on is not even present in the result to filter on afterwards. A refused rollup names
-`#@ preaggregate` and the gated source rather than the synthesized rollup's own name, which the
-author never wrote.
-
-Both refusals name the source and the remedy; a package carrying one fails to build (or, for
+Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
 everyone.
+
+### The freshness contract for a gated colocated persist source
+
+Admitting a proven row-level gate is a behavior change: a package with a colocated `#@ persist` on an
+`#(authorize)`-gated source used to 422 at load, unconditionally, for every classification. It now
+builds when the gate proves row-level and attributed to the entry point. **Nothing auto-enables on
+upgrade** — no such package could exist before this shipped (the combination always 422'd), so
+publishing one afterward is the author's own opt-in; no existing package starts behaving differently.
+
+What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the
+querying principal's attributes (givens, roles) are still evaluated live, on every query, against the
+frozen table — only the column values the gate filters ON are frozen at build time. So a row whose
+access decision changes (say, it changes owner) keeps being served under the OLD decision to the
+principal who no longer should see it, until the next rebuild recomputes that column. This is a
+narrower staleness than an ordinary persisted source's (which goes stale on every column), but for a
+gated source it is a staleness that maps directly onto who can read what — treat it accordingly.
+
+Because row-data-dependent revocation is only as fresh as the artifact, give a gated colocated persist
+source a real refresh cadence: `refresh=incremental` where the source supports it, or a scheduled
+rebuild (`materialization.schedule`) tight enough that a changed access decision does not sit stale
+for longer than your access-control SLA allows. A gated source with no freshness declaration at all is
+a source whose revocations have no guaranteed bound.
 
 ## The persistence policy (the publish gate)
 

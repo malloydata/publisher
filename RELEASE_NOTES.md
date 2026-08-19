@@ -18,6 +18,31 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
+
+This supersedes the "A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED" bullet
+further down this file, before that section has even shipped: unconditional refusal is no longer the
+whole story. A colocated `#@ persist` (no `storage=`) is now ELIGIBLE when the compiler can prove the
+gate is the entry point's own row-level filter and nothing else is reachable beneath it
+(`classification: "row_level", attributed: true`) — every other shape (unattributed/join-only,
+`rejected`, or no outcome at all) still refuses exactly as before. `storage=` and `#@ preaggregate`
+are unaffected; they remain unconditionally refused for any `#(authorize)`-gated source regardless of
+classification. See [docs/materialization.md](docs/materialization.md#authorize-gated-sources-and-materialization).
+
+**Nothing auto-enables on upgrade.** No package with a colocated `#@ persist` on an
+`#(authorize)`-gated source could exist before this shipped — the combination always 422'd — so a
+package that builds under this relaxation is one its author is publishing for the first time. No
+existing package's behavior changes.
+
+**What this does NOT make fresh: the row data the gate filters on, not the gate itself.** The gate
+expression and the querying principal's attributes are still evaluated live, every query, against the
+persisted table. Only the values in the gating column are frozen at build time, so a row whose access
+decision changes (say, it changes owner) keeps serving to its former owner until the next rebuild. Give
+a gated colocated persist source a real freshness declaration — `refresh=incremental` where the source
+supports it, or a `materialization.schedule` tight enough for your access-control SLA — rather than
+leaving its revocations to go stale indefinitely. See
+[docs/materialization.md § freshness contract](docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source).
+
 ## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
 
 **`BuildPlan` gains a `refusedSources` collection**, alongside the existing `sources` map, so a host can tell
@@ -124,7 +149,9 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   columns for it to read), so no existing caller can be relying on the 403. It matters for gates
   authors write from now on — check any consumer that keys logic on the 403 status. See
   [docs/security-posture.md](docs/security-posture.md).
-- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED.** This DOES break
+- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED** — superseded by the
+  relaxation in the section above this one, which admits exactly the proven `row_level` + attributed
+  shape; every other shape still refuses as described below. This DOES break
   existing packages — one that has this will fail to build where it previously succeeded — so it is
   worth being precise about what it does and does not close. It is **not** closing an unfiltered
   leak: measured, a colocated substitution replaces only the source's relation SQL, while the gate

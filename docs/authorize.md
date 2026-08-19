@@ -82,6 +82,20 @@ All of the above is refused **at package load**, naming the cause — a broken g
 
 **A row-level gate never produces a 403 from the whole-source check.** That check runs before there is a compiled query to filter, so a gate it finds to be row-level is neither granted nor denied there — the decision waits until the filter can actually be applied. Denying earlier would refuse every row-level-gated query outright.
 
+### Row-level gates and colocated persistence
+
+A row-level gate proven attributed to its entry point (see
+[materialization.md](materialization.md#authorize-gated-sources-and-materialization)) is the ONE
+`#(authorize)` shape eligible for a colocated `#@ persist`. Persisting the source changes only where
+its rows are read FROM; the gate itself keeps running live, on every query, exactly as described
+above — a materialized entry point is not served frozen with respect to who may see what. What can go
+stale between rebuilds is the row DATA the gate filters on: a row whose access decision changed (say,
+it changed owner) keeps serving to its former owner until the source rebuilds. See
+[materialization.md](materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source)
+for the full contract and the recommended refresh cadence. `storage=` and `#@ preaggregate` remain
+unconditionally refused for any `#(authorize)`-gated source — the relaxation applies to colocated
+persistence only.
+
 ## Semantics
 
 ### OR semantics
