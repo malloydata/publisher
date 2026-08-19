@@ -18,6 +18,64 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a gate the row-level grammar refuses now costs one source, not the whole model file
+
+Supersedes two claims in the "every `#(authorize)` gate is a row filter now" section below, neither of
+which has shipped.
+
+**Package load.** That section says a field-less gate "resolves the same as before this whole redesign
+started". It does not: the row-level grammar is a positive allowlist, and it now governs gates that
+never went through it. `#(authorize) "1 = 1"`, `"'a' = 'a'"`, `"$ROLE like 'ana%'"`, `"$ROLE is not
+null"`, `"$ROLE = 'a' and 1 = 1"`, `"not false"` and `"$ROLE = $ROLE_D"` all load today and are all
+outside the allowlist. Refusing them at load would make `Model.create` raise a `compilationError`,
+which turns the entire model **file** into a compilation-failure placeholder — every source in it,
+gated or not, stops serving.
+
+So a refused gate that reads no row field is now reported as a load **warning** and that one source
+denies every request, the same escape an inherited gate already takes when one derived entry point
+cannot express it. It is fail-closed because the request path re-runs the identical classification and
+refuses independently. A gate that DOES read a row field is one the grammar always governed, and still
+fails the load.
+
+The one refusal not excused this way is a **vacuous default atom** — `#(authorize) "$ROLE_D !=
+'blocked'"` where `ROLE_D` defaults to something the atom is true against, which admits every row to a
+caller who supplies nothing. That check is a load-time probe with no request-time counterpart, so
+warning would leave the source serving unfiltered. It fails the load, and now records a matching
+`vacuous_default_atom` label on `publisher_authorize_row_level_rejected_total`.
+
+**`/compile`.** That section says `/compile` "now denies a row-level gate unconditionally, whether or
+not the given satisfies it". That made a gated source un-authorable — the same class of breakage as
+gating `/compile` on the query boundary, which took out a whole QA session — while protecting nothing,
+since the query path answers a gated source with *filtered rows* rather than a 403. `/compile` never
+runs the query, so it now admits a gate it can decide without running: one that is constant-`true`, or
+one whose every given the caller supplied. A constant-`false` gate, a gate with unsupplied givens, and
+any gate that fails to classify all still deny. Note that `includeSql` then returns the **ungrafted**
+SQL, without the gate's `where:`.
+
+`/compile` at scope `append` still denies a gated source: the run target's `SourceDef` belongs to the
+virtual model, so the gate has no graft target there and refuses as a shape it cannot apply.
+
+### Also fixed
+
+- **An unsupplied gate given no longer leaks its name.** A gate's givens bind with the query's, so
+  Malloy's own failure named the one that could not bind — "Given 'ROLE' has no value and no default.
+  To fix: supply it via `.run({givens: {ROLE: ...}})`" — reaching the caller as a 400. That is exactly
+  what `docs/authorize.md` promises never happens. It now maps back to the opaque `Access denied for
+  source "…"` 403.
+- **`$X in $Y` checks reachability on both operands.** The membership *candidate* skipped the check
+  every other operand position makes, so a gate naming a given two import hops away classified as a
+  valid row filter and bound that given's declaration **default** at request time instead of the
+  caller's value. It is now refused (`unreachable_given`) like every other unreachable reference.
+- **A documented gate example was never valid Malloy.** `#(authorize) "$ROLE in ['analyst',
+  'admin']"` in `docs/authorize.md` fails to compile — a list literal is not valid in that position.
+  Write two stacked annotations (they OR), or compare a row field to an array given with `in`.
+
+`docs/authorize.md` is reconciled with all of the above: the denial-shape rule, the two-part
+enforcement path, the narrowed "no schema oracle" guarantee, the current metric labels, and the
+removal of the probe-era text describing a mechanism that no longer exists.
+
+---
+
 ## [Unreleased] — a provably-`false` row-level `#(authorize)` gate no longer dispatches to the warehouse
 
 When a source's `#(authorize)` gate compiles to the bare literal `false` — the classic whole-source deny,
