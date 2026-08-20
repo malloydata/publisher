@@ -559,7 +559,6 @@ describe("pre-aggregation and a row-level gate", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),
@@ -569,6 +568,8 @@ source: orders is duckdb.sql("""
 """) extend {
   #@ preaggregate grain="category"
   measure: total is amount.sum()
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS
 }
 `;
 
@@ -706,28 +707,26 @@ describe("a gate reached only through a derivation hop", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),
     (20, 'A', 2),
     (30, 'B', 1)
   ) AS t(amount, category, org_id)
-""")
+""") extend {
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS
+}
 `,
       "mid.malloy": `##! experimental { persistence composite_sources givens }
 import { gated } from "base.malloy"
-
-given:
-  GROUPS :: number[]
+import { GROUPS } from "base.malloy"
 
 source: qs is gated -> { select: * }
 `,
       "model.malloy": `##! experimental { persistence composite_sources givens }
 import { qs } from "mid.malloy"
-
-given:
-  GROUPS :: number[]
+import { GROUPS } from "base.malloy"
 
 source: ungated is duckdb.sql("""
   SELECT * FROM (VALUES (1, 'A')) AS t(amount, category)
