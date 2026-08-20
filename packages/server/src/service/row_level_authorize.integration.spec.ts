@@ -1807,6 +1807,81 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
+   it("CRITICAL — a lifted condition missing its `.e` still REJECTS rather than throwing an uncaught TypeError", async () => {
+      // `FilterCondition` is TYPED as always carrying `.e` (`extends ExprE`),
+      // but that is a compile-time promise about the shape
+      // `liftProbeFilterCondition` (`./authorize`) BUILDS from — it verifies
+      // `code`/`isSourceFilter` only, never that `.e` itself is present. A
+      // malformed or unexpected prepared-query response (a Malloy version
+      // skew, a future IR shape this code hasn't seen) could satisfy both of
+      // those checks while carrying no `.e` at all. Before this was guarded,
+      // `resolveGateShape` dereferenced `condition.e.node` unconditionally to
+      // check for the bare-`false` fail-closed sentinel — an uncaught
+      // TypeError on a missing `.e`, surfacing as a 500 instead of the 403
+      // every other unclassifiable gate shape gets here. This is the one
+      // guarantee `authorize.spec.ts`'s deleted "rejects an absent condition,
+      // fail closed" test pinned with no replacement when that file's
+      // `classifyAuthorizeGate` unit tests were deleted (Task 4) — restored
+      // here against the real function instead.
+      const { internals, duckdb } = await buildGatedModel(`
+given:
+  GROUPS :: number[]
+
+source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+   measure: n is count()
+}
+`);
+      try {
+         const modelDef = internals.modelDef as ModelDef;
+         const materializer = (
+            internals as unknown as { modelMaterializer: ModelMaterializer }
+         ).modelMaterializer;
+         const filterText = "(org_id in $GROUPS)";
+         // Intercept the probe compile and hand back a `FilterCondition` that
+         // passes `liftProbeFilterCondition`'s own checks (`code` matches,
+         // `isSourceFilter: true`) but carries no `.e` — the shape this test
+         // exists to prove doesn't crash the classifier.
+         const loadQuerySpy = spyOn(materializer, "loadQuery").mockReturnValue({
+            getPreparedQuery: () =>
+               Promise.resolve({
+                  _query: {
+                     structRef: {
+                        filterList: [
+                           {
+                              node: "filterCondition",
+                              code: filterText,
+                              isSourceFilter: true,
+                              expressionType: "scalar",
+                              // Deliberately no `.e`.
+                           },
+                        ],
+                     },
+                  },
+               }),
+         } as unknown as ReturnType<ModelMaterializer["loadQuery"]>);
+         try {
+            const graftScope = { modelDef, materializer, cacheScope: "model" };
+            const resolution = await internals.resolveGateShape(
+               {
+                  label: "X",
+                  exprs: ["org_id in $GROUPS"],
+                  selfContained: false,
+                  struct: modelDef.contents["X"] as unknown as SourceDef,
+               },
+               modelDef,
+               graftScope,
+            );
+            expect(resolution.shape).toBe("rejected");
+         } finally {
+            loadQuerySpy.mockRestore();
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("CRITICAL — a differing given surface does not collide on a cached entry", async () => {
       // `resolveGateShape`'s cache key is `(cacheScope, graftTarget,
       // filterText)` — no fingerprint of the given surface a classification

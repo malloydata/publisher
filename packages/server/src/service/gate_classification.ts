@@ -248,9 +248,23 @@ function gateExprsForOwnAnnotations(
          if (!expansion.ok) {
             return { exprs: ["false"], fromAncestor: false };
          }
-         const givenNames = Array.from(expansion.givenIds)
+         const givenIds = Array.from(expansion.givenIds);
+         const givenNames = givenIds
             .map((id) => modelDef?.givens?.[id]?.name)
             .filter((name): name is string => !!name);
+         // G3 (load-time `validateGateDimensionsForModel`) already refuses a
+         // gate dimension whose given id doesn't resolve to a NAME on this
+         // model, so this should be unreachable in practice — defense in
+         // depth, not a live path. Silently dropping an unresolvable id here
+         // instead would UNDER-count `givenNames`, and an empty result is
+         // `decidable` at `/compile` (`Model.authorizeAndBindRunnable`'s
+         // `givenNames.length === 0` branch) — the one shape this gate must
+         // never present as if it read no given at all. Fail closed with the
+         // same synthetic sentinel used elsewhere in this function rather
+         // than risk that.
+         if (givenNames.length !== givenIds.length) {
+            return { exprs: ["false"], fromAncestor: false };
+         }
          return {
             exprs: [quoteMalloyIdentifier(gateFieldName(field))],
             fromAncestor: false,
@@ -577,22 +591,29 @@ export async function resolveGateShape(
       //  - the bare `"false"` FAIL-CLOSED SENTINEL those same functions (and
       //    `collectEntryPointGates`'s own unresolvable-query-source-base
       //    case) synthesize when ancestry can't be confirmed one way or the
-      //    other — a real, still-live shape (`W_rename`/`W_except`/`W_accept`
-      //    in the entry-point matrix exercise it): the gate dimension was
-      //    inherited unchanged onto THIS struct's fields for most
-      //    derivations, but a `rename:`/`except:`/`accept:` that touches
-      //    ANY field recompiles the whole field list, which does not
-      //    preserve the gate dimension's own annotation the way a bare
-      //    `extend {}` does — so `findGateDimensionCandidates` finds
-      //    nothing, and the walk falls back to its "cannot confirm inherited,
-      //    so deny" sentinel instead of guessing. That sentinel must still
-      //    GRAFT (as `where: false`, a live deny-everyone filter) rather than
-      //    reject outright — rejecting here throws `AccessDeniedError`
-      //    before the graft is even attempted, which is a harsher failure
-      //    mode than the empty-but-successful result a `WHERE false` graft
-      //    produces elsewhere. Told apart by the LIFTED condition's shape,
-      //    not the entry's raw `exprs` text: `liftGateCondition` above
-      //    already confirmed this exact filter text compiled, so reading
+      //    other — a real, still-live shape (`W_rename`/`W_except` in the
+      //    entry-point matrix exercise it, at `gateExprsForOwnAnnotations`
+      //    above). The real mechanism is NOT a missing gate-dimension
+      //    candidate — `findGateDimensionCandidates` still finds `authorized`
+      //    fine on `W_rename`/`W_except`'s own struct, since it is the SAME
+      //    field object carried through unchanged by Malloy's flattening
+      //    (confirmed by `malloy_annotation_invariants.spec.ts`'s field-level
+      //    rename/extend-flattening invariants). It is `expandGivenIds`
+      //    (`./gate_dimension`) that fails: the gate dimension's OWN
+      //    `refSummary.fieldUsage` still names the ORIGINAL column it reads
+      //    (`org_id`) by PATH, and `resolveFieldUsagePath` resolves that path
+      //    against THIS struct's current field list — which no longer has
+      //    `org_id` under that name (`W_rename` renamed it to `tenant`;
+      //    `W_except` dropped it) — so the path lookup fails
+      //    (`{ok: false, unresolvedPath: "org_id"}`), not the candidate scan.
+      //    That failure must still GRAFT (as `where: false`, a live
+      //    deny-everyone filter) rather than reject outright — rejecting
+      //    here throws `AccessDeniedError` before the graft is even
+      //    attempted, which is a harsher failure mode than the
+      //    empty-but-successful result a `WHERE false` graft produces
+      //    elsewhere. Told apart by the LIFTED condition's shape, not the
+      //    entry's raw `exprs` text: `liftGateCondition` above already
+      //    confirmed this exact filter text compiled, so reading
       //    `condition.e` off that trusted result is what `classifyAuthorizeGate`
       //    used to do for the identical bare-literal case.
       let classification: RowLevelGateClassification;
@@ -601,7 +622,20 @@ export async function resolveGateShape(
             shape: "row_level",
             givenNames: [...entry.dimensionForm.givenNames],
          };
-      } else if (isBareBooleanLiteral(condition.e)) {
+      } else if (
+         // `condition.e` is typed as always-present (`FilterCondition extends
+         // ExprE`), but that is a compile-time promise about a shape
+         // `liftProbeFilterCondition` builds, not a runtime guarantee about
+         // whatever `_query.structRef.filterList` actually contained — a
+         // malformed or unexpected prepared-query response reaching this far
+         // must still fail CLOSED (reject), not throw an uncaught TypeError
+         // that surfaces as a 500 instead of the 403 every other unclassifiable
+         // shape gets here.
+         condition.e &&
+         typeof condition.e === "object" &&
+         typeof (condition.e as { node?: unknown }).node === "string" &&
+         isBareFalseLiteral(condition.e as { node: string; e?: unknown })
+      ) {
          classification = { shape: "row_level", givenNames: [] };
       } else {
          classification = {
@@ -820,7 +854,7 @@ function findSourceByOwnAnnotationIdentity(
  * and reusing the result across a different one.
  *
  * `__authorize_probe` is a reserved, deliberately obscure select name — same
- * convention as `buildAuthorizeProbe` in `./authorize` — so it is unlikely to
+ * convention as `buildRowLevelProbe` in `./authorize` — so it is unlikely to
  * collide with a real field on `graftTarget`.
  *
  * Takes the LAST entry of `filterList` on faith that it is the `where:` this
@@ -856,23 +890,32 @@ async function liftGateCondition(
 }
 
 /**
- * Whether a compiled gate condition is nothing but a bare boolean literal —
- * `where: true` / `where: false` — which Malloy's compiler discriminates as
- * the node kinds `"true"` / `"false"` themselves rather than a `literal`
- * value on a shared `booleanLiteral` kind (confirmed against
- * `@malloydata/malloy`'s `BooleanLiteralNode`). Unwraps `()` parenthesization
- * (the only wrapper the fail-closed sentinel or a hand-written `authorized is
- * (false)` could be compiled with) but does not walk into `and`/`or` — a
- * literal buried inside a boolean tree is a dimension-form authoring mistake
- * that stays on the dimension-form path (`entry.dimensionForm` is set for
- * any real gate dimension), not this sentinel-only fallback.
+ * Whether a compiled gate condition is nothing but a bare `false` literal —
+ * `where: false` — which Malloy's compiler discriminates as the node kind
+ * `"false"` itself rather than a `literal` value on a shared `booleanLiteral`
+ * kind (confirmed against `@malloydata/malloy`'s `BooleanLiteralNode`).
+ * Unwraps `()` parenthesization (the only wrapper the fail-closed sentinel
+ * could be compiled with) but does not walk into `and`/`or` — a literal
+ * buried inside a boolean tree is a dimension-form authoring mistake that
+ * stays on the dimension-form path (`entry.dimensionForm` is set for any real
+ * gate dimension), not this sentinel-only fallback.
+ *
+ * Deliberately `false`-only, not `true`-or-`false`: the only condition this
+ * function's caller ever synthesizes without a `dimensionForm` is the
+ * fail-closed `["false"]` sentinel (`gateExprsForOwnAnnotations`/
+ * `ancestorGateExprs` in `./gate_registry_walk`, and the dimension-form
+ * candidate-count/expansion checks above). Nothing in a successfully-loaded
+ * model legitimately reaches this fallback with a bare `true` — accepting one
+ * here would silently admit whatever residual, non-dimension-form shape
+ * produced it, rather than deny it. A fallback that can only ever DENY is the
+ * one that costs nothing to widen later and nothing to get wrong now.
  */
-function isBareBooleanLiteral(expr: { node: string; e?: unknown }): boolean {
+function isBareFalseLiteral(expr: { node: string; e?: unknown }): boolean {
    let node: { node: string; e?: unknown } = expr;
    while (node.node === "()" && node.e && typeof node.e === "object") {
       node = node.e as { node: string; e?: unknown };
    }
-   return node.node === "true" || node.node === "false";
+   return node.node === "false";
 }
 
 /**
