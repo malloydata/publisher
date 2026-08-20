@@ -6068,8 +6068,12 @@ components:
             reach its own job records also reports null; that case is counted by
             `publisher_storage_build_attribution_skipped_total`.
 
-            An incremental delta reports null because its statements do not run
-            through a single call whose result reaches here. A chained `storage=`
+            A COLOCATED incremental delta reports null because its statements do
+            not run through a single call whose result reaches here. A delta into a
+            `storage=` destination reports whatever its own read reported, on the
+            same terms as that destination's full build: its bounded read is issued
+            through the same call, so a tagged one is costed and an untagged one is
+            not. A chained `storage=`
             build reports null because it read its parent's already-materialized
             table and touched no warehouse at all. A POSTGRES source reports null
             on every path: the label that makes a read reportable is BigQuery's,
@@ -6124,7 +6128,7 @@ components:
             Present exactly when the source is refreshed incrementally, so
             absent means only that it is not: a source declaring
             `refresh="full"`, or one whose declaration the delta path cannot act
-            on at all (an unsupported dialect, `storage=`), which the publish
+            on at all (an unsupported source dialect), which the publish
             gate rejects anyway.
 
   parameters:

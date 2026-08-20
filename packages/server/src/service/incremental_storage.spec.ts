@@ -7,6 +7,7 @@ import {
    type IncrementalLineage,
    type RecordedBoundary,
 } from "./incremental_apply";
+import { pinSessionToUTC } from "./materialization_build_session";
 import { storageDeltaTarget } from "./incremental_storage";
 import { fakeSource } from "./materialization_test_fixtures";
 
@@ -316,5 +317,45 @@ describe("planIncrementalStep against a storage destination", () => {
       expect(step.mode).toBe("seed");
       if (step.mode !== "seed") return;
       expect(step.reasonCode).toBe("table_unreadable");
+   });
+});
+
+describe("the timezone a stored delta's range is resolved in", () => {
+   it("pins the build session to UTC", async () => {
+      const { session, seen } = fakeSession();
+      await pinSessionToUTC(session);
+      expect(seen).toEqual(["SET TimeZone='UTC'"]);
+   });
+
+   it("renders a timestamp bound as a naive literal, which is why the pin matters", async () => {
+      const timestamped: IncrementalLineage = {
+         ...LINEAGE,
+         watermarkName: "order_ts",
+         watermarkType: "timestamp",
+      };
+      const { target } = targetFor({ lineage: timestamped });
+      const step = await planIncrementalStep({
+         target,
+         lineage: timestamped,
+         ledgerEntry: {
+            ...BOUNDARY,
+            coveredThroughValue: "2024-06-01T00:00:00",
+            coveredThroughType: "timestamp",
+            watermarkDimension: "order_ts",
+         },
+         forceRefresh: false,
+         now: NOW,
+         columns: ["order_date", "region", "revenue"],
+      });
+      expect(step.mode).toBe("delta");
+      if (step.mode !== "delta") return;
+      // The DELETE's range is a naive `TIMESTAMP '…'` compared against whatever the
+      // stored column's type is. DuckDB resolves that comparison in the SESSION's
+      // timezone, and every bound rendered here is UTC text — so on a session in
+      // the host's local zone the delta would replace a window offset by that
+      // host's offset. It would commit, and the rows would simply be the wrong
+      // ones. The pin above is what makes this literal mean what it says.
+      expect(step.statements[1]).toContain(`TIMESTAMP '2024-06-01 00:00:00'`);
+      expect(step.statements[1]).not.toContain("+00");
    });
 });
