@@ -697,7 +697,33 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("a #(authorize) annotation on a top-level query: statement fails the load (fails OPEN otherwise — see docs)", async () => {
+   it("a bare #(authorize) annotation on a top-level query: statement fails the load (fails OPEN otherwise — see docs)", async () => {
+      // The only spelling an author can still actually write in this branch
+      // — the string form below is retired but kept as a separate case to
+      // confirm it is still rejected at load, not silently accepted.
+      const { model, duckdb, dir } = await createModel(
+         `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+source: X is duckdb.table('parent') extend { measure: n is count() }
+
+#(authorize)
+query: q is X -> { aggregate: n is count() }
+`,
+      );
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/query "q"/);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("the retired string-form #(authorize) annotation on a top-level query: statement is still rejected at load", async () => {
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
@@ -1617,8 +1643,8 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
    it("gate's given unresolved (not on this model's own given surface) denies with a 403", async () => {
       // FAR is declared 2 import hops from entry.malloy: entry -> mid -> deep.
       // Malloy merges only ONE hop into a model's own given namespace, so
-      // entry's `compiledModel.givens` never surfaces FAR — classifyAuthorizeGate's
-      // `declaredTypeOf` cannot find it and rejects as "unreachable_given".
+      // entry's `compiledModel.givens` never surfaces FAR — `resolveGateShape`'s
+      // `givenDeclaredTypes` surface check can't find it and rejects as "unreachable_given".
       const duckdb = await newDuckdb();
       const connMap = new Map<string, Connection>([["duckdb", duckdb]]);
       const files = new Map<string, string>([
@@ -1684,41 +1710,11 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
             { FAR: [1] },
          ).catch((e) => e);
          expect(err).toBeInstanceOf(AccessDeniedError);
-         // The remedy text classifyAuthorizeGate builds ("import { FAR } from
-         // ...") must NOT reach the caller — the thrown error names nothing
-         // about the gate. It only ever reaches the debug log.
+         // The rejection detail ("$FAR is not on this model's given
+         // surface") must NOT reach the caller — the thrown error names
+         // nothing about the gate. It only ever reaches the debug log.
          expect(String((err as Error).message)).not.toContain("FAR");
          expect(String((err as Error).message)).not.toContain("import");
-      } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("gate compile throws (e.g. an inherited gate whose field was renamed away) denies with a 403", async () => {
-      // Same reasoning as the test above: a query-source projection that
-      // drops `authorized` is what reproduces a thrown `AccessDeniedError`
-      // under the dimension form (an `extend { rename: ... }` resolves to a
-      // live, empty `WHERE (false)` result instead — see the "entry-point
-      // matrix" block's W_rename/W_except test).
-      const { internals, mm, duckdb } = await buildGatedModel(`
-given:
-  GROUPS :: number[]
-
-source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
-   measure: n is count()
-}
-source: W is X -> { group_by: id, val; aggregate: n is count() }
-`);
-      try {
-         const err = await boundRows(
-            internals,
-            mm,
-            "run: W -> { aggregate: n is count() }",
-            { GROUPS: [1] },
-         ).catch((e) => e);
-         expect(err).toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }
@@ -2197,7 +2193,7 @@ source: X is duckdb.table('parent') extend {
       // "solo" exists only in the ephemeral compile, not in this model's own
       // `entryPointGatesBySource`, so the fold-in never runs for it and
       // `resolveGraftTarget` never gets a target to classify against —
-      // rejected before `classifyAuthorizeGate` ever sees the literal "true".
+      // rejected before `resolveGateShape` ever sees the literal "true".
       const { model, duckdb } = await buildGatedModel(`
 source: X is duckdb.table('parent') extend {
    #(authorize)
@@ -2466,12 +2462,11 @@ source: X is duckdb.table('parent') extend {
 });
 
 // ---------------------------------------------------------------------------
-// Grammar (end-to-end: each spelling exercised as a real request denial/admit,
-// not just via classifyAuthorizeGate's own unit tests in authorize.spec.ts)
+// Grammar (end-to-end: each spelling exercised as a real request denial/admit
+// — there is no unit-level equivalent for the dimension form)
 // ---------------------------------------------------------------------------
 
-// The dimension form's `resolveGateShape` never calls `classifyAuthorizeGate`
-// for a dimension-form entry — `gate_classification.ts` takes the
+// `resolveGateShape` (`gate_classification.ts`) takes the
 // `entry.dimensionForm` branch unconditionally, which hardcodes
 // `literalAtoms: []` and skips every one of the STRING form's own grammar
 // restrictions (`array_given_needs_in`, `?`'s "same node as `=`" rejection,
@@ -3950,9 +3945,10 @@ source: X is duckdb.table('parent') extend {
 // the documented default convention ('' / 0) and were previously accepted —
 // `assertNoVacuousDefaultAtom` only evaluates a `<given> <op> <literal>` atom,
 // never a `<field> <op> <given>` comparison, so it structurally cannot catch
-// these. `classifyAuthorizeGate` now refuses a field comparison outright when
-// its given carries ANY declared default, regardless of operator — see its
-// doc comment for why this is about the DEFAULT, not the operator, and the
+// these. `validateGateDimension` (`gate_dimension.ts`) now refuses a field
+// comparison outright at load time when its given carries ANY declared
+// default, regardless of operator — see its doc comment for why this is
+// about the DEFAULT, not the operator, and the
 // anti-narrowing test below for why narrowing to `=`/`in` instead would be
 // wrong (a `<=`/`>=` no-read-up gate against a given with NO default is
 // legitimate and stays accepted).
@@ -4536,6 +4532,10 @@ source: Gated is duckdb.table('parent') extend {
             .catch((e) => e);
          expect(err).not.toBeInstanceOf(AccessDeniedError);
          expect(err).toBeInstanceOf(Error);
+         // Tightened for the same reason as the "grammar" describe block's
+         // `=`/`?` cases: pin the actual message so a warehouse that
+         // silently coerced instead of erroring would fail this test.
+         expect((err as Error).message).toMatch(/Conversion Error/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
