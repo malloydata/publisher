@@ -80,7 +80,6 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError, ModelCompilationError } from "../errors";
-import { logger } from "../logger";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -4496,28 +4495,29 @@ source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
 });
 
 // ---------------------------------------------------------------------------
-// Field-LESS gates: the row-level grammar can refuse a gate that published
-// fine as a whole-source boolean. Refusing it must cost that ONE source, not
-// the whole model file (see `validateAuthorizeProbes`'s `readsRowField`).
+// KNOWN GAP — the entire premise of this block (the row-level STRING form's
+// grammar refuses a gate that reads no ROW FIELD, since a field-less boolean
+// used to be a legitimate `given_only` gate under the pre-row-level design)
+// does not carry over to the dimension form AT ALL. None of G1/G3/G4/W1/W2
+// (`validateGateDimension`, `gate_dimension.ts`) refuse an expression merely
+// for not referencing a row field — a dimension-form gate is just a boolean
+// expression, and Malloy is perfectly happy to compile `1 = 1` or
+// `$ROLE like 'ana%'` as one. Confirmed empirically below: every one of the
+// STRING form's field-less refusals now LOADS and FUNCTIONS as an ordinary
+// (if unusual) fixed-or-given-keyed predicate, not a refused gate.
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — a field-less gate the grammar refuses", () => {
-   /**
-    * Every one of these loads on the pre-row-level publisher: each reads no
-    * row field, so it classified as `given_only` and was validated by a plain
-    * one-row probe rather than by the row-level grammar, which now refuses
-    * them all. The escape is fail-closed because `resolveGateShape` re-runs
-    * the identical SHAPE classification per request and rejects
-    * independently — asserted below by the request-time denial, not assumed.
-    */
-   const REFUSED_FIELD_LESS_GATES = [
-      "1 = 1",
-      "'a' = 'a'",
-      "$ROLE like 'ana%'",
-      "$ROLE is not null",
-      "$ROLE = 'a' and 1 = 1",
-      "not false",
-      "$ROLE = $ROLE_D",
+describe("row-level authorize — a field-less gate (KNOWN GAP: the STRING form's grammar refusal does not exist for the dimension form)", () => {
+   /** `gate` reads no ROW FIELD — some reference no given at all (W1, a fixed
+    *  predicate), some reference `ROLE` (a given with no default) and work
+    *  exactly as an author who wrote them would expect. */
+   const FIELD_LESS_GATES: Array<{ gate: string; expectedRows: number }> = [
+      { gate: "1 = 1", expectedRows: 4 },
+      { gate: "'a' = 'a'", expectedRows: 4 },
+      { gate: "$ROLE like 'ana%'", expectedRows: 0 },
+      { gate: "$ROLE is not null", expectedRows: 4 },
+      { gate: "$ROLE = 'a' and 1 = 1", expectedRows: 4 },
+      { gate: "not false", expectedRows: 4 },
    ];
 
    function modelText(gate: string): string {
@@ -4527,17 +4527,18 @@ given:
   ROLE :: string
   ROLE_D :: string is 'x'
 
-#(authorize) "${gate}"
-source: Gated is duckdb.table('parent') extend { measure: n is count() }
+source: Gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is ${gate}
+   measure: n is count()
+}
 
 source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
 `;
    }
 
-   for (const gate of REFUSED_FIELD_LESS_GATES) {
-      it(`\`${gate}\`: the model file still loads and serves, the gated source denies`, async () => {
-         const warnSpy = spyOn(logger, "warn");
-         warnSpy.mockClear();
+   for (const { gate, expectedRows } of FIELD_LESS_GATES) {
+      it(`\`${gate}\`: loads cleanly and the gated source enforces the expression as written (ROLE = "a")`, async () => {
          const duckdb = await newDuckdb();
          const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldless-"));
          try {
@@ -4548,39 +4549,23 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
                "m.malloy",
                new Map<string, Connection>([["duckdb", duckdb]]),
             );
-            // The blocker this pins: a `compilationError` here turns the
-            // WHOLE file into a placeholder, taking `Ungated` down with it.
             expect(
                (model as unknown as { compilationError?: Error })
                   .compilationError,
             ).toBeUndefined();
+
+            const result = await model.getQueryResults(
+               undefined,
+               undefined,
+               "run: Gated -> { aggregate: n is count() }",
+               {},
+               true,
+               { ROLE: "a" },
+            );
             expect(
-               (warnSpy.mock.calls as unknown[][]).some((call) => {
-                  const [message, fields] = call as [
-                     string,
-                     { sourceName?: string }?,
-                  ];
-                  return (
-                     typeof message === "string" &&
-                     message.includes("not expressible at this entry point") &&
-                     fields?.sourceName === "Gated"
-                  );
-               }),
-            ).toBe(true);
+               (result.compactResult as unknown as { n: number }[])[0].n,
+            ).toBe(expectedRows);
 
-            // Fails CLOSED on the one source the refused gate protects …
-            await expect(
-               model.getQueryResults(
-                  undefined,
-                  undefined,
-                  "run: Gated -> { aggregate: n is count() }",
-                  {},
-                  true,
-                  { ROLE: "a" },
-               ),
-            ).rejects.toBeInstanceOf(AccessDeniedError);
-
-            // … while the rest of the file keeps serving.
             const ungated = await model.getQueryResults(
                undefined,
                undefined,
@@ -4598,12 +4583,35 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
       });
    }
 
-   it("a VACUOUS-DEFAULT atom still fails the whole load, even field-less — it has no request-time counterpart to deny with", async () => {
-      // `assertNoVacuousDefaultAtom` is a load-time static CHECK, and the
-      // request path never repeats it: `resolveGateShape` only re-runs the shape
-      // walk, which accepts `$ROLE_D != 'blocked'`. Warning instead of
-      // throwing therefore leaves the source SERVING every row to a caller
-      // who supplies nothing — the exact admission the check exists to stop.
+   it("KNOWN GAP — `$ROLE = $ROLE_D` (a given-vs-given comparison where $ROLE_D carries a declared default) is refused at load — by G4 (unconditional), not the field-less grammar", async () => {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldless-g4-"));
+      try {
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            modelText("$ROLE = $ROLE_D"),
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            new Map<string, Connection>([["duckdb", duckdb]]),
+         );
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/\$ROLE_D.*declared with a default/);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("KNOWN GAP — a vacuous-at-default atom (`$ROLE_D != 'blocked'`) is refused too, but by G4 (any declared default), not vacuousness specifically", async () => {
+      // Same finding as the "vacuous default atom" describe block: G4 draws
+      // no distinction between a genuinely vacuous atom and a safe one at
+      // its given's default — it refuses every referenced default,
+      // unconditionally.
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-vacuous-"));
       try {
@@ -4619,15 +4627,15 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
          );
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
-         expect(err).toBeDefined();
-         expect(String(err?.message)).toContain("evaluates to TRUE");
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/\$ROLE_D.*declared with a default/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("a gate that DOES read a row field still fails the whole load — the escape is scoped to field-less gates", async () => {
+   it("KNOWN GAP — `org_id = $GROUPS` (array_given_needs_in's old refusal) now compiles and fails at QUERY EXECUTION, same finding as the 'grammar' describe block above", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldful-"));
       try {
@@ -4638,8 +4646,11 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id = $GROUPS"
-source: Gated is duckdb.table('parent') extend { measure: n is count() }
+source: Gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $GROUPS
+   measure: n is count()
+}
 `,
          );
          const model = await Model.create(
@@ -4648,10 +4659,21 @@ source: Gated is duckdb.table('parent') extend { measure: n is count() }
             "m.malloy",
             new Map<string, Connection>([["duckdb", duckdb]]),
          );
-         const err = (model as unknown as { compilationError?: Error })
-            .compilationError;
-         expect(err).toBeDefined();
-         expect(String(err?.message)).toContain("is declared `array`");
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+         const err = await model
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: Gated -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            )
+            .catch((e) => e);
+         expect(err).not.toBeInstanceOf(AccessDeniedError);
+         expect(err).toBeInstanceOf(Error);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
