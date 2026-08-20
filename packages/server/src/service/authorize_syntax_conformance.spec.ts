@@ -757,19 +757,24 @@ source: X is duckdb.table('accounts') extend {
 
 describe("authorize syntax conformance — Group B (refused spellings)", () => {
    /** Load `text`; if it aborts at load time, record that. Otherwise attempt
-    *  a request with `givens` and record request-time denial or admission. */
+    *  a request with `givens` and record request-time denial or admission.
+    *  Returns the served rows when the request is admitted (load succeeded
+    *  and no error was thrown), so a caller can assert the actual row set
+    *  rather than only the failure-mode label — a regression that returned
+    *  ALL rows instead of filtering would still be "admitted" but must not
+    *  pass a case titled "and it actually filters". */
    async function observe(
       caseNum: number,
       spelling: string,
       text: string,
       givens: Record<string, GivenValue>,
-   ): Promise<void> {
+   ): Promise<ReadonlyArray<Record<string, unknown>> | undefined> {
       const { model, duckdb, dir } = await createModel(text);
       try {
          const loadErr = compilationErrorOf(model);
          if (loadErr) {
             recordB(caseNum, spelling, "load-time", loadErr.message);
-            return;
+            return undefined;
          }
          try {
             const rows = await rowsFor(model, "X", givens);
@@ -779,6 +784,7 @@ describe("authorize syntax conformance — Group B (refused spellings)", () => {
                "unexpectedly-admitted",
                `loaded and served ${rows.length} row(s) for givens ${JSON.stringify(givens)} — no refusal observed`,
             );
+            return rows;
          } catch (err) {
             if (err instanceof AccessDeniedError) {
                recordB(caseNum, spelling, "request-time-denied", err.message);
@@ -809,7 +815,7 @@ describe("authorize syntax conformance — Group B (refused spellings)", () => {
       // then matches every row instead of none — see
       // `gate_dimension_integration.spec.ts` — but a non-empty given, as
       // exercised here, filters correctly).
-      await observe(
+      const rows = await observe(
          1,
          "not (org_id in $GROUPS)",
          `
@@ -825,6 +831,11 @@ source: X is duckdb.table('accounts') extend {
       );
       const result = RESULTS[RESULTS.length - 1] as GroupBResult;
       expect(result.failureMode).toBe("unexpectedly-admitted");
+      // Assert the actual row set, not just the failure-mode label — a
+      // regression that returned ALL rows (a bare admit, not a filter)
+      // would still be "unexpectedly-admitted" but must not pass a case
+      // titled "and it actually filters". GROUPS=[org1] excludes org1 rows.
+      expect(ids(rows ?? [])).toEqual([4, 5, 6]);
    });
 
    it("2. `org_id = $GROUPS` — array given, scalar operator — no longer refused at load under the DIMENSION form (guarantee changed — see task-3b-report.md)", async () => {
@@ -871,8 +882,15 @@ source: X is duckdb.table('accounts') extend {
       expect(result.failureMode).toBe("load-time");
    });
 
-   it("4. `upper(region) = $REGION` — function call", async () => {
-      await observe(
+   it("4. `upper(region) = $REGION` — function call — accepted and filters correctly (C2 fix; previously wrongly refused the WHOLE model load)", async () => {
+      // Before the C2 fix, Malloy's synthetic empty-`path` `fieldUsage` entry
+      // for the `upper(...)` call resolved to `undefined` in
+      // `expandGivenIds`, which G3 then treated as an unresolvable
+      // reference — aborting the entire model load, not just this case. This
+      // case previously carried NO assertion at all (see task-3-fix-brief.md
+      // I5), which is why that over-refusal slipped past a docs commit
+      // claiming this exact spelling was verified legal.
+      const rows = await observe(
          4,
          "upper(region) = $REGION",
          `
@@ -886,6 +904,9 @@ source: X is duckdb.table('accounts') extend {
 `,
          { REGION: "EAST" },
       );
+      const result = RESULTS[RESULTS.length - 1] as GroupBResult;
+      expect(result.failureMode).toBe("unexpectedly-admitted");
+      expect(ids(rows ?? [])).toEqual([1, 2, 4]);
    });
 
    it("5. `1 = 1` — two constants, no given", async () => {
