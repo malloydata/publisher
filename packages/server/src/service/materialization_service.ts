@@ -452,6 +452,43 @@ function tableKeyOf(
 }
 
 /**
+ * Name the stored tables a failed run wrote and did not reclaim.
+ *
+ * Without this there is no record at all: the run committed no manifest, the
+ * reclaim was never handed these entries, and the only trace a table was written
+ * is its absence from everything. That matters more here than it would elsewhere,
+ * because the host's orphan sweep does not cover a storage destination (see
+ * {@link isReclaimableStorageTable}), so nothing downstream will notice either.
+ *
+ * Deliberately does NOT claim these are orphans. Two different outcomes report
+ * `refresh: "full"` and the entry cannot separate them: a host-initiated rebuild
+ * at a FRESH generational name, which nothing references and nothing will build
+ * again, and a publisher-side seed fallback on the stable name a previous manifest
+ * still binds, which is live and correct. So it reports what is certain — this run
+ * wrote here and left it — and leaves the classification to whoever reads it.
+ */
+function reportRetainedStorageTables(
+   retained: ManifestEntry[],
+   packageName: string,
+): void {
+   for (const entry of retained) {
+      logger.warn(
+         "A failed run left a table in a storage destination and did not reclaim " +
+            "it: the source is refreshed incrementally, so this name may be the " +
+            "one it serves from. Unreferenced if the run was building a fresh " +
+            "generation, in which case reclaiming it needs the destination sweep.",
+         {
+            packageName,
+            sourceName: entry.sourceName,
+            destinationName: entry.storageDestinationName,
+            physicalTableName: entry.physicalTableName,
+            refresh: entry.refresh,
+         },
+      );
+   }
+}
+
+/**
  * Whether a manifest entry names a stored table a failed run may reclaim.
  *
  * An INCREMENTALLY REFRESHED source is never reclaimed, whatever this run did to
@@ -1713,6 +1750,10 @@ export class MaterializationService {
       // names a table an earlier successful run built and a live manifest may still
       // serve, so dropping one would be data loss rather than cleanup.
       const builtThisRun: ManifestEntry[] = [];
+      // Stored tables this run wrote and deliberately will NOT reclaim, so a
+      // failure can name them. See reportRetainedStorageTables for why the list
+      // cannot say which of them is actually unreferenced.
+      const retainedThisRun: ManifestEntry[] = [];
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
       const builtSources: string[] = [];
@@ -1897,7 +1938,15 @@ export class MaterializationService {
                }
                builtSources.push(persistSource.name);
                entries[sourceEntityId] = entry;
-               if (isReclaimableStorageTable(entry)) builtThisRun.push(entry);
+               if (isReclaimableStorageTable(entry)) {
+                  builtThisRun.push(entry);
+               } else if (entry.storageDestinationName) {
+                  // Kept so a failed run can SAY what it left behind. Recorded
+                  // here rather than logged here because a run that goes on to
+                  // succeed leaves nothing behind at all — its manifest names
+                  // every one of these.
+                  retainedThisRun.push(entry);
+               }
             }
          }
 
@@ -1920,6 +1969,7 @@ export class MaterializationService {
          // Best-effort and non-fatal: the build's own failure is what the caller
          // needs to see.
          if (owner) {
+            reportRetainedStorageTables(retainedThisRun, owner.packageName);
             await this.reclaimStorageTablesFromFailedRun(
                builtThisRun,
                environment,

@@ -644,7 +644,7 @@ async function dropPackageKeyedIncrementalLedger(
  * Drop an `incremental_ledger` whose primary key predates the storage destination.
  *
  * Same shape, same reasoning and the same cost as
- * {@link dropPackageKeyedIncrementalLedger} below: the key is read rather than a
+ * {@link dropPackageKeyedIncrementalLedger} above: the key is read rather than a
  * schema version, so this is self-limiting — once no database carries the old key
  * it never fires again — and the boundaries go with the table, which costs one
  * full rebuild per incremental source and then resumes advancing.
