@@ -166,23 +166,26 @@ export function recordRowLevelGateDecision(
  * nonzero value from THAT call site, specifically, is worth its own look —
  * see the paired `cause` label and the source in the request's own logs.
  *
- * Two cases are exceptions to "blocks the whole load", both of which warn
- * and leave the ONE affected entry point denying every request while the rest
- * of the model serves. `cause: 'entry_point_unexpressible'` fires at load for
- * a gate that is valid but unexpressible at one derived entry point (an
- * `extend` that renamed/excluded/projected away the gated field, or a
- * `query_source` projection) — never from `Model.resolveGateShape`, since
- * that path has no `cause` for a compile failure. Any cause at all fires that
- * way when the gate reads no row field, which is how a gate published before
- * every gate became a row filter avoids taking its whole model file down (see
- * `validateAuthorizeProbes`'s `readsRowField`). `vacuous_default_atom` is NOT
- * one of them — it is found by probing, which the request path never repeats,
- * so it always blocks the load. A nonzero value here is a per-entry-point
- * authoring mistake to fix, not an outage.
- * "ONE derived entry point" is confirmed by `validateAuthorizeProbes` via the
+ * Three causes are exceptions to "blocks the whole load", each of which
+ * leaves the model servable while flagging one specific thing.
+ * `cause: 'entry_point_unexpressible'` fires at load for a gate that is
+ * valid but unexpressible at one derived entry point (an `extend` that
+ * renamed/excluded/projected away the gated field, or a `query_source`
+ * projection) — never from `Model.resolveGateShape`, since that path has no
+ * `cause` for a compile failure; it warns and leaves that ONE affected entry
+ * point denying every request while the rest of the model serves. "ONE
+ * derived entry point" is confirmed by `validateAuthorizeProbes` via the
  * gate's own annotation NOTE OBJECT (shared, by reference, with a base that
  * validated, or absent entirely) — not by gate text, which two unrelated
  * sources can share without one deriving from the other.
+ * `gate_dimension_no_given_reference` and `gate_dimension_negated_membership`
+ * (`./service/gate_dimension`'s `validateGateDimension` W1/W2) are the other
+ * two — both WARN rather than refuse, and the model still loads with the
+ * flagged gate dimension intact (they name a shape that is almost certainly
+ * an authoring mistake, not one that is provably wrong the way an
+ * unreachable given or a legacy string-form gate is). A nonzero value from
+ * any of these three is a per-gate authoring mistake worth a look, not an
+ * outage.
  */
 export function recordRowLevelGateRejected(
    cause: RowLevelGateRejectionCause,
@@ -195,7 +198,7 @@ export function recordRowLevelGateRejected(
             // Derived from the union, not retyped beside it — the retyped
             // version had already drifted a cause behind.
             ROW_LEVEL_GATE_REJECTION_CAUSES.map((c) => `'${c}'`).join("|") +
-            "). All but 'entry_point_unexpressible' fail the whole model load; that one fires at load without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
+            "). All but 'entry_point_unexpressible', 'gate_dimension_no_given_reference', and 'gate_dimension_negated_membership' fail the whole model load; those three warn without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
       },
    );
    rowLevelRejectionCounter.add(1, { cause });
