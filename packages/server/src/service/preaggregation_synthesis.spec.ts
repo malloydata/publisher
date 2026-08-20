@@ -580,10 +580,14 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       // VALUES are the claim: 0 and 0, not NULL, for the zero-match group.
       const num = (v: unknown) => (v === null ? null : Number(v));
       expect(
+         // Built explicitly rather than spread: spreading QueryDataRow's index
+         // signature loses `category` from the inferred type, and tsc then
+         // refuses the expected literal below.
          stored.rows.map((r) => ({
-            ...r,
+            category: r.category,
             paid__partial: num(r.paid__partial),
             paid_count__partial: num(r.paid_count__partial),
+            paid_min__partial: r.paid_min__partial,
          })),
       ).toEqual([
          {
