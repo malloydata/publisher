@@ -24,13 +24,19 @@ given:
   ROLE :: string
   GROUPS :: number[]
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+source: gated is duckdb.sql("SELECT 1 as x") extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 
 source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 
-#(authorize) "org_id in $GROUPS"
-source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend { measure: c is count() }
+source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS
+}
 `;
 
 /**
@@ -376,8 +382,11 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: hidden_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}`,
          );
          // Listed file with a gated source that IS exported (visible). It also
          // imports the hidden file, so the evasion probes below can resolve
@@ -388,8 +397,11 @@ source: hidden_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count
             `##! experimental.givens
 import "secret.malloy"
 
-#(authorize) "$ROLE = 'analyst'"
-source: visible_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+source: visible_gated is duckdb.sql("SELECT 1 as x") extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 
 source: customers is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 export { customers, visible_gated }`,
