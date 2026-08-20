@@ -159,6 +159,13 @@ export function expandGivenIds(
       | undefined;
    for (const g of refSummary?.givenUsage ?? []) ids.add(g.id);
    for (const usage of refSummary?.fieldUsage ?? []) {
+      // Malloy emits a synthetic `fieldUsage` entry with an empty `path` for
+      // a function call (e.g. `upper(region)`) — it carries no field
+      // reference to resolve. The real field the call reads (`region`)
+      // arrives as its own separate, non-empty-path entry, so skipping this
+      // one loses nothing; treating it as unresolvable would wrongly refuse
+      // every gate containing a function call (see task-3-fix-brief.md C2).
+      if (usage.path.length === 0) continue;
       const resolved = resolveFieldUsagePath(struct, usage.path);
       if (!resolved) {
          return { ok: false, unresolvedPath: usage.path.join(".") };
