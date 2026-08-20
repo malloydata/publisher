@@ -1094,13 +1094,15 @@ describe("caller-submitted derivations cannot launder the gate away", () => {
       ).map((r) => Number(r.id));
    }
 
-   /** Caller-text shapes that DROP the gate dimension. Each one compiles
-    *  cleanly and, before the check in `assertCallerTextDidNotDropGate`, read
-    *  every row of both orgs with no givens at all. The first three are the
-    *  originally-reported shapes; the rest are spellings of the same laundering
-    *  that a surface-text reading of the request missed (a decoy `run:` in a
-    *  comment, a second real `run:` statement, a comment splitting
-    *  `source: A is B`, and a `query:` hop between the alias and the `run:`). */
+   /** Request-declared shapes that DROP the gate dimension. Each one compiles
+    *  cleanly and, before the check in
+    *  `assertRequestDeclaredEntryPointIsNotLaundered`, read every row of both
+    *  orgs with no givens at all. The first three are the originally-reported
+    *  shapes; the rest are spellings of the same laundering that reading the
+    *  request's surface text missed — a decoy `run:` in a line or block
+    *  comment, a second real `run:` statement (Malloy executes the LAST one), a
+    *  comment splitting `source: A is B`, a `query:` hop between the derivation
+    *  and the `run:`, and a forged declaration inside a string literal. */
    const LAUNDERING_SHAPES: ReadonlyArray<[string, string]> = [
       [
          "accept: drops the gate dimension by omission",
