@@ -251,23 +251,27 @@ afterAll(() => {
       );
    }
    lines.push(
-      "- Case B3 (`owner in $ROLE`, a scalar given used with `in`) surfaces a MISLEADING message: " +
-         "`'owner' is not defined`, even though `owner` is a real, valid field on the source. " +
-         "The row-level probe fails to compile the `in` node against a scalar given, so " +
-         "`validateAuthorizeProbes` falls back to `runOneRowProbeOrThrow`'s single-row synthetic " +
-         "probe (see `authorize.ts`'s doc above that function) — a probe with NO real columns — " +
-         'as a "friendlier diagnostic". Here it backfires: the message blames a field that is ' +
-         "completely valid, instead of saying the given is scalar and `in` needs an array.",
+      "- Case B3 (`owner in $ROLE`, a scalar given used with `in`) fails the load with a CLEAR " +
+         "message under the dimension form: Malloy's own compiler rejects `in $ROLE` outright " +
+         "(`` `in $ROLE` requires `ROLE` to be an array, but it is `string` ``) before any " +
+         "row-level probe runs — the dimension form's gate is a real compiled dimension, so a " +
+         "type mismatch in its own expression is an ordinary compile error, not something a " +
+         "probe has to diagnose after the fact. (Under the now-deleted string form this same " +
+         "shape surfaced a misleading `'owner' is not defined` instead, from a fallback " +
+         "single-row synthetic probe with no real columns — see task-4-report.md for the trail; " +
+         "that fallback no longer exists.)",
    );
    lines.push(
-      "- Case B5 (`1 = 1`) does NOT fail the load at all — it is silently accepted as a valid " +
-         "gate that reads no row field, logs an operator-only warning " +
-         '("Row-level #(authorize) gate not expressible at this entry point"), and then denies ' +
-         "every single request forever. An author who writes this gets no load-time signal and " +
-         "no per-request explanation beyond the generic access-denied message — this is the " +
-         "sharpest arbitrary-boundary case in the matrix: a field-referencing mistake (B1, B2, " +
-         "B4, B6-B9) fails the load with a real message, but a field-LESS mistake with the same " +
-         "underlying error (no given reference) fails silently at runtime instead.",
+      "- Case B5 (`1 = 1`, a gate dimension that reads no row field and no given) is now " +
+         "OBSERVED-ADMITTED, not a silent runtime deny: it loads cleanly with an operator-only " +
+         "warning (`gate_dimension_no_given_reference` — a fixed predicate, not an access rule " +
+         "keyed on the caller), and then serves every row to every caller, since `authorized is " +
+         "1 = 1` is `decidable` with no given to withhold on (Task 4's routed finding (a) fix to " +
+         "`Model.authorizeAndBindRunnable`'s `decidable` check, pinned in " +
+         "`compile_authorize.spec.ts`). This reverses the shape this case used to name: a bare " +
+         "`1 = 1` no longer denies every request forever — it is the KILL-SWITCH's admit-everyone " +
+         "counterpart (`authorized is false` is the deny-everyone one) working as designed, not " +
+         "an arbitrary-boundary trap.",
    );
    lines.push(
       "- Cases B1 (`not (org_id in $GROUPS)`) and B6/B7 (`like` / `is not null`) name the " +
