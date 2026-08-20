@@ -681,14 +681,15 @@ describe("join-qualified given references (C1 regression — see task-2-report.m
             text,
             duckdb,
          );
-         expect(() =>
-            validateGateDimension(
-               "entry",
-               sourceOf(modelDef, "entry"),
-               modelDef,
-               declaredGivenNames,
-            ),
-         ).not.toThrow();
+         // Named positively, not merely `.not.toThrow()`: that alone also
+         // passes if discovery found no gate at all.
+         const resolved = validateGateDimension(
+            "entry",
+            sourceOf(modelDef, "entry"),
+            modelDef,
+            declaredGivenNames,
+         );
+         expect(resolved?.name).toBe("authorized");
       } finally {
          await duckdb.close();
       }
