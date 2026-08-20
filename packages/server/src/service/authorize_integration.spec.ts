@@ -113,12 +113,20 @@ given:
   ROLE :: string
 
 // Locked base.
-#(authorize) "false"
-source: customers_raw is duckdb.table('customers')
+source: customers_raw is duckdb.table('customers') extend {
+  #(authorize)
+  internal dimension: authorized is false
+}
 
-// Extension with its own gate — must NOT pick up the base's "false".
-#(authorize) "$ROLE = 'analyst'"
+// Extension with its own gate — must NOT pick up the base's "false". Same
+// field name as the base, \`except:\`-ed first (Malloy refuses a bare
+// redefinition): re-declaring it is the legal override (own replaces
+// inherited); a differently-named second candidate would trip G1's
+// at-most-one rule instead.
 source: customers_marketing is customers_raw extend {
+  except: authorized
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
   measure: customer_count is count()
 }
 `,
@@ -284,8 +292,10 @@ describe("authorize annotation compile-time validation", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.table('customers')
+source: gated is duckdb.table('customers') extend {
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 `,
       );
       const model = await Model.create(
@@ -307,8 +317,10 @@ source: gated is duckdb.table('customers')
 given:
   ROLE :: string
 
-#(authorize) "$NOPE = 'x'"
-source: gated is duckdb.table('customers')
+source: gated is duckdb.table('customers') extend {
+  #(authorize)
+  internal dimension: authorized is $NOPE = 'x'
+}
 `,
       );
       const model = await Model.create(
@@ -320,21 +332,19 @@ source: gated is duckdb.table('customers')
 
       const err = model.getNotebookError();
       expect(err).toBeDefined();
-      // Names the source and surfaces the underlying Malloy reason.
-      expect(err?.message).toContain("gated");
-      expect(err?.message).toMatch(/NOPE|not declared/i);
-      // Redaction policy (pinned): the model-load 424 is author-facing, so it
-      // KEEPS the full expression text (needed to fix a malformed annotation).
-      // Only the runtime 403 redacts to the source name. If this assertion ever
-      // flips, the redaction split was changed — make it a conscious decision.
-      expect(err?.message).toContain("$NOPE = 'x'");
+      // Surfaces Malloy's own compile error for the unresolvable given — the
+      // dimension form's gate is an ordinary expression, so an unknown
+      // reference fails to compile before any gate-specific validation runs.
+      expect(err?.message).toMatch(/NOPE.*not declared/i);
    });
 
    it("fails model load when an expression references a source field", async () => {
       await writeModel(
          "field_ref.malloy",
-         `#(authorize) "some_field = 1"
-source: gated is duckdb.table('customers')
+         `source: gated is duckdb.table('customers') extend {
+  #(authorize)
+  internal dimension: authorized is some_field = 1
+}
 `,
       );
       const model = await Model.create(
@@ -346,7 +356,7 @@ source: gated is duckdb.table('customers')
 
       const err = model.getNotebookError();
       expect(err).toBeDefined();
-      expect(err?.message).toContain("gated");
+      expect(err?.message).toContain("some_field");
    });
 
    it("does not reject a type-mismatched comparison (not a Malloy compile error)", async () => {
@@ -359,8 +369,10 @@ source: gated is duckdb.table('customers')
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 5"
-source: gated is duckdb.table('customers')
+source: gated is duckdb.table('customers') extend {
+  #(authorize)
+  internal dimension: authorized is $ROLE = 5
+}
 `,
       );
       const model = await Model.create(
@@ -383,9 +395,12 @@ given:
   TENANT :: string
   ALLOWED :: string[]
 
-#(authorize) "$AGE > 18"
-#(authorize) "$TENANT in $ALLOWED"
-source: gated is duckdb.table('customers')
+// A source may declare at most one gate dimension (G1), so both givens are
+// exercised in one expression rather than the string form's two OR'd notes.
+source: gated is duckdb.table('customers') extend {
+  #(authorize)
+  internal dimension: authorized is ($AGE > 18) and ($TENANT in $ALLOWED)
+}
 `,
       );
       const model = await Model.create(
@@ -397,8 +412,7 @@ source: gated is duckdb.table('customers')
 
       expect(model.getNotebookError()).toBeUndefined();
       expect(model.getAuthorize("gated")).toEqual([
-         "$AGE > 18",
-         "$TENANT in $ALLOWED",
+         "($AGE > 18) and ($TENANT in $ALLOWED)",
       ]);
    });
 });
@@ -468,8 +482,11 @@ describe("authorize runtime gate", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.table('customers') extend { measure: c is count() }
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 `;
 
    it("allows the query when a given satisfies the gate", async () => {
@@ -516,50 +533,49 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
       );
    });
 
-   // Two OWN #(authorize) annotations on the same source — OR'd, same as a
-   // source-level gate plus what used to be a file-level one before that was
-   // deprecated.
+   // Two disjuncts fold into ONE dimension now (G1: at most one gate
+   // dimension per source) — the string form's "two OWN #(authorize) notes,
+   // OR'd" idiom is expressed as a single `or` expression instead.
    //
-   // Every gate is a row filter now, and the two disjuncts fold into ONE
-   // compiled condition (`resolveGateShape`'s `filterText`) — so, unlike the
-   // OLD per-expression boolean probe (which could evaluate one disjunct
-   // while tolerating a missing given on another), the WHOLE condition must
-   // compile as a single filter, and Malloy needs a value (supplied or
-   // defaulted) for every given the filter references, even one on a
-   // disjunct the caller isn't relying on. Both givens declare an empty
-   // default here — satisfying neither gate on its own — precisely so a
-   // caller who supplies only ONE of them still compiles: the unsupplied
-   // given resolves to its default, which does not satisfy ITS disjunct, and
-   // the OR is decided by whichever given the caller DID supply.
+   // The string form's OWN OR idiom additionally relied on BOTH givens
+   // declaring a default (`is ''`), so a caller supplying only one still
+   // compiled — the unsupplied given fell back to its default, which failed
+   // its own disjunct, and the OR was decided by whichever given the caller
+   // DID supply. G4 refuses that unconditionally now (a referenced given
+   // with a declared default can silently admit rows the gate meant to
+   // exclude) — see the dedicated G4 test below. So this OR-semantics
+   // coverage supplies BOTH givens on every call; "one given omitted,
+   // defaults to something that doesn't satisfy it" is not a reproducible
+   // shape anymore, not merely untested here.
    const DISJUNCTION = `##! experimental.givens
 
 given:
-  ROLE :: string is ''
-  REGION :: string is ''
+  ROLE :: string
+  REGION :: string
 
-#(authorize) "$ROLE = 'admin'"
-#(authorize) "$REGION = 'us-west'"
-source: regional is duckdb.table('customers') extend { measure: c is count() }
+source: regional is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is ($ROLE = 'admin') or ($REGION = 'us-west')
+}
 `;
 
-   it("grants on the first disjunct even when the OTHER disjunct's given is not supplied (defaults to something that doesn't satisfy it)", async () => {
-      // The key OR-semantics case: admin supplies only ROLE; REGION defaults
-      // to '' — the satisfied $ROLE='admin' branch still grants.
+   it("grants on the first disjunct", async () => {
       await writeModel("rt_disj.malloy", DISJUNCTION);
       const { result } = await runGated(
          "rt_disj.malloy",
          "run: regional -> { aggregate: c }",
-         { ROLE: "admin" },
+         { ROLE: "admin", REGION: "nowhere" },
       );
       expect(result.data).toBeDefined();
    });
 
-   it("grants on the second disjunct even when the FIRST disjunct's given is not supplied (defaults to something that doesn't satisfy it)", async () => {
+   it("grants on the second disjunct", async () => {
       await writeModel("rt_disj.malloy", DISJUNCTION);
       const { result } = await runGated(
          "rt_disj.malloy",
          "run: regional -> { aggregate: c }",
-         { REGION: "us-west" },
+         { ROLE: "nobody", REGION: "us-west" },
       );
       expect(result.data).toBeDefined();
    });
@@ -573,6 +589,38 @@ source: regional is duckdb.table('customers') extend { measure: c is count() }
       );
    });
 
+   it("G4 refuses the retired idiom: a disjunct's given declared with a default", async () => {
+      // Pins the guarantee that does NOT survive from the string form: a
+      // referenced given with a default is refused unconditionally, even
+      // one whose default value fails its own disjunct — an unsupplied
+      // given resolving to a default is exactly the shape G4 exists to
+      // close, regardless of which disjunct the caller relies on instead.
+      await writeModel(
+         "rt_disj_default.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+  REGION :: string is ''
+
+source: regional is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is ($ROLE = 'admin') or ($REGION = 'us-west')
+}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "rt_disj_default.malloy",
+         getConnections(),
+      );
+      expect(model.getNotebookError()?.message).toMatch(
+         /declared with a default/,
+      );
+   });
+
    it("gates a named query that targets a gated source (no sourceName supplied)", async () => {
       await writeModel(
          "rt_namedq.malloy",
@@ -581,8 +629,11 @@ source: regional is duckdb.table('customers') extend { measure: c is count() }
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.table('customers') extend { measure: c is count() }
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 
 query: secret is gated -> { aggregate: c }
 `,
@@ -654,8 +705,11 @@ given:
 
 source: ungated is duckdb.table('customers') extend { measure: c is count() }
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.table('customers') extend { measure: c is count() }
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 `,
       );
       await expectDeniedByFilter(
@@ -699,8 +753,11 @@ source: gated is duckdb.table('customers') extend { measure: c is count() }
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.table('customers') extend { measure: c is count() }
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 
 source: open_src is duckdb.table('customers') extend { measure: c is count() }
 `;
@@ -743,9 +800,10 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
 source: \`gated-source\` is duckdb.table('customers') extend {
   measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
 }
 `,
       );
@@ -769,8 +827,11 @@ source: \`gated-source\` is duckdb.table('customers') extend {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.table('customers') extend { measure: c is count() }
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 query: secret is gated -> { aggregate: c }
 
 >>>malloy
@@ -803,11 +864,20 @@ run: secret
 given:
   ROLE :: string
 
-#(authorize) "false"
-source: base_locked is duckdb.table('customers') extend { measure: c is count() }
+source: base_locked is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
-#(authorize) "$ROLE = 'analyst'"
-source: ext_gated is base_locked extend {}
+// Same field name as the base, \`except:\`-ed first (Malloy refuses a bare
+// redefinition): re-declaring it is the legal override that makes the
+// locked-base idiom work.
+source: ext_gated is base_locked extend {
+  except: authorized
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 
 source: ext_nogate is base_locked extend {}
 
@@ -1110,8 +1180,11 @@ source: top_join is duckdb.table('customers') extend {
 given:
   ROLE :: string
 
-#(authorize) "false"
-source: base_locked is duckdb.table('customers') extend { measure: c is count() }
+source: base_locked is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 # bar_chart
 source: ext_tagged is base_locked extend {}
@@ -1168,8 +1241,12 @@ source: ext_tagged is base_locked extend {}
          `>>>malloy
 ${LOCKED_BASE}
 >>>malloy
-#(authorize) "$ROLE = 'analyst'"
-source: mine is base_locked extend { measure: cc is count() }
+source: mine is base_locked extend {
+  except: authorized
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+  measure: cc is count()
+}
 run: mine -> { aggregate: cc }
 `,
       );
