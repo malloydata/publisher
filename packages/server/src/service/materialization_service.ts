@@ -454,7 +454,7 @@ const VALID_TRANSITIONS: Record<
  * SQL computes it: a stored table is read from its warehouse and written to a
  * destination, and those are separate namespaces that may share a name. The parts
  * are NUL-delimited rather than concatenated for that reason — a connection named
- * `credible` and a destination named `credible` must not produce one key.
+ * `lake` and a destination named `lake` must not produce one key.
  */
 function tableKeyOf(
    connectionName: string,

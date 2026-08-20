@@ -99,8 +99,8 @@ export interface IncrementalRunContext {
  *
  * The destination is part of it, and NUL-delimited alongside the connection
  * rather than folded in with it, because the two are separate namespaces that may
- * legitimately share a name — a connection called `credible` and a destination
- * called `credible` are two different warehouses. Concatenating them into one
+ * legitimately share a name — a connection called `lake` and a destination
+ * called `lake` are two different warehouses. Concatenating them into one
  * field would make a boundary measured in one findable from the other.
  */
 function ledgerTableKey(table: LedgerTableIdentity): string {

@@ -80,7 +80,7 @@ Expect:
 
 ## Model ivx.malloy
 
-The same source, now pointed at Credible-managed storage. One key added;
+The same source, now pointed at a storage destination. One key added;
 everything else — including the table's name — is untouched.
 
 ```malloy
