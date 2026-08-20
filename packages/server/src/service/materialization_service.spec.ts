@@ -847,6 +847,35 @@ describe("MaterializationService", () => {
             expect(ctx.repository.createMaterialization.called).toBe(false);
          });
 
+         it("seeds, rather than refusing, when an older caller omits the destination", async () => {
+            // A caller predating `storageDestinationName` echoes the entry
+            // without one. The table it names IS built by this run, just into a
+            // destination the entry cannot describe, so the entry is stale rather
+            // than wrong: the run proceeds and the source seeds, because the
+            // index the build reads keys on the destination too and finds no
+            // boundary there.
+            const created = await creating({
+               ledger: [entry({ storageDestinationName: undefined })],
+               instruction: makeInstruction({ destination: "lake" }),
+            });
+            expect(created.status).toBe("PENDING");
+         });
+
+         it("rejects an entry naming a destination this run does not write", async () => {
+            // Not the stale case above: the entry names a destination, and it is
+            // not the one instructed. Couriering that boundary would measure one
+            // table's coverage onto another, so it is a caller error.
+            await expect(
+               creating({
+                  ledger: [
+                     entry({ storageDestinationName: "some_other_lake" }),
+                  ],
+                  instruction: makeInstruction({ destination: "lake" }),
+               }),
+            ).rejects.toThrow(/do not build/);
+            expect(ctx.repository.createMaterialization.called).toBe(false);
+         });
+
          it("rejects an entry measured under a different source definition", async () => {
             // The publish/rollback case: the caller echoed faithfully, but the
             // instructing version's address moved. The message says what to do.
