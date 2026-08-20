@@ -37,6 +37,7 @@ SPDX-License-Identifier: MIT
 | "Aggregate not allowed in where" | Use `having:` instead |
 | 20+ random errors | Backtick reserved word (`` `Date` ``, `` `Hour` ``, `` `number` ``) |
 | `Can't find field 'X' to set access modifier` | An `include {}` sits before the `extend { rename: }`. Rename first, then `include {}` naming the field by its new name (see `skill:malloy-gotchas-modeling` § Field Management) |
+| `IO Error: No files found that match the pattern "data/x.csv"` | Data-file path, not the model. Relative `duckdb.table()` paths resolve against the DuckDB `workingDirectory`; Publisher sets it to the package root, but a relative `workingDirectory` in `malloy-config.json` resolves against the process cwd. Make it absolute (see `skill:malloy-gotchas-modeling` § Relative Data-File Paths). The "not defined" errors under it are cascade, not real |
 | Import path errors | Check paths: `import "orders.malloy"`. All files should be in the same directory (flat layout) |
 | `unexpected 'from'` | `from()` was removed from the language. Use the query directly: `source: x is q extend {...}`, or `source: x is (q -> {...}) extend {...}` |
 | Query-based source errors | Verify the source query returns the expected columns, check that imported sources are defined |
