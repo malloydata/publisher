@@ -258,14 +258,17 @@ them and vanish from the next release's page — the exact failure `--titles` wa
 added to prevent. And you cannot just pass `--titles`: that file lives in
 `$RUNNER_TEMP` and died with the run.
 
-Re-establish the scope by comparing the shipped release page against the file:
+Re-establish the scope by comparing the shipped release page against the file.
+The page carries two `## ` headings of its own — `## Release v<version>` from the
+job's header and `## What's Changed` from `--generate-notes` — so filter those or
+you are comparing 8 lines against 6 and never get a match:
 
 ```bash
-gh release view "v<version>" --repo malloydata/publisher --json body -q .body | grep '^## '
-node scripts/release-notes.mjs extract | grep '^## '
+gh release view "v<version>" --repo malloydata/publisher --json body -q .body   | grep '^## ' | grep -vE '^## (Release v|What'"'"'s Changed)' | sort
+node scripts/release-notes.mjs extract | grep '^## ' | sort
 ```
 
-Both print stripped titles, so the sets are directly comparable. If they are
+Both then print stripped titles, so the sets are directly comparable. If they are
 **identical**, every remaining section belongs to that release and the unscoped
 stamp is safe. If the file has extras, write just the shipped headings — verbatim
 from `RELEASE_NOTES.md`, `[Unreleased]` marker included — into a file and pass
@@ -274,7 +277,8 @@ from `RELEASE_NOTES.md`, `[Unreleased]` marker included — into a file and pass
 0.0.249 is the worked example, and it is why this section exists: it put all six
 of its sections on its release page and stamped none of them, because the step
 still pushed straight to a protected `main`. The unscoped stamp was safe there
-only because the two sets happened to match — six on the page, six in the file.
+only because the two sets matched once filtered — six sections on the page, the
+same six in the file.
 
 ### 4. Dispatch
 
@@ -326,9 +330,13 @@ gh release view "v<version>" --repo malloydata/publisher --json body -q .body | 
 git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
 ```
 
-Merging it moves `main` while `publish-packages` may still be polling npm. That
-is safe, but only because `RELEASE_NOTES.md` is in none of the paths its
-"main moved" guard watches — not because the window is closed.
+**Wait for `publish-packages` to finish before you merge it.** Merging moves
+`main`, and while that job is still polling npm any movement pushes it off its
+fast path onto the compare API — which aborts the dispatch outright if the API
+does not answer or the diff hits its 300-file cap. `RELEASE_NOTES.md` being
+outside the paths it watches saves the *verdict*, not the request. You are
+already past step 5, so waiting for that job to go green costs nothing and
+closes the window instead of documenting it.
 
 The stamp step is `continue-on-error`, deliberately: the release is already
 public and correct by then, and reddening a finished release over a docs commit

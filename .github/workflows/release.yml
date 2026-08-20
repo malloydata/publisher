@@ -882,7 +882,13 @@ jobs:
             # A fresh main, not this checkout: this job is on the release branch,
             # and main may have moved since the release started.
             git fetch origin main || { FAILURE="could not fetch main"; continue; }
-            git checkout -B "$BRANCH" origin/main || { FAILURE="could not check out ${BRANCH}"; continue; }
+            # `-f` is what makes the retry correct, not just tidy. If pass 1 died
+            # after `stamp` rewrote RELEASE_NOTES.md but before the commit landed,
+            # $BRANCH already points at origin/main, so a plain `checkout -B` is a
+            # no-op that PRESERVES that edit — and pass 2's stamp then finds no
+            # `## [Unreleased]` headings left, returns 0, and reports "nothing to
+            # stamp" over a release that had narrative. Forcing restores the file.
+            git checkout -f -B "$BRANCH" origin/main || { FAILURE="could not check out ${BRANCH}"; continue; }
 
             if ! STAMPED="$(node scripts/release-notes.mjs stamp "$VERSION" --titles "$TITLES_FILE" 2>"$STAMP_LOG")"; then
               sed 's/^/[release-notes] /' "$STAMP_LOG"
@@ -898,15 +904,26 @@ jobs:
               echo "::warning title=Release notes::a section on the release page is no longer in RELEASE_NOTES.md on main (logged above) and was not stamped"
             fi
             if [ "$STAMPED" = "0" ]; then
-              OUTCOME="nothing"
+              # Two different states, and conflating them is how a summary line
+              # ends up contradicting a warning the same run already wrote. A
+              # non-empty titles file means narrative DID reach the release page
+              # and none of it could be stamped here; empty means there was none
+              # to begin with — or that `extract` failed, since that path
+              # deliberately truncates the file.
+              if [ -s "$TITLES_FILE" ]; then
+                OUTCOME="unstamped"
+              else
+                OUTCOME="nothing"
+              fi
               break
             fi
 
             git add RELEASE_NOTES.md || { FAILURE="could not stage RELEASE_NOTES.md"; continue; }
-            if git diff --cached --quiet; then
-              OUTCOME="already"
-              break
-            fi
+            # No "already stamped" short-circuit here. `stamp` reports a non-zero
+            # count only when it rewrote a heading, so at this point the tree
+            # always differs from origin/main and such a check could never fire.
+            # If that ever stops holding, `git commit` fails on an empty diff and
+            # is reported as a failure, which is the honest outcome.
             git commit -s -m "docs: stamp the release notes shipped in ${VERSION}" \
               || { FAILURE="could not commit the stamp"; continue; }
 
@@ -968,12 +985,25 @@ jobs:
                 echo "This last step is a human's on purpose. A PR opened by a person triggers \`pull_request\`, so its checks run and any maintainer can merge it; one opened by this workflow would never trigger them, leaving required checks at \`expected\` and an admin as the only person who could merge. Left unopened, the headings on \`main\` still read \`[Unreleased]\` — which is exactly what the next release's \`extract\` matches, so ${VERSION}'s narrative lands on the next release's page too, and on every one after that."
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
+            unstamped)
+              # Narrative reached the release page, and not one of its headings
+              # is still `[Unreleased]` on main — they were edited or removed
+              # during the release window. The `missing` warning above named
+              # them. Nothing to undo, but this is not a no-op and must not read
+              # like one.
+              echo "::warning title=Release notes::this release's narrative is on its page but none of it could be stamped on main; the headings it recorded are no longer there"
+              {
+                echo "⚠️ **Narrative shipped, nothing stamped.** This release's page carries hand-written sections, but none of the headings it recorded are still \`[Unreleased]\` on \`main\` — they were edited or removed while the release ran. See the warning above for which."
+                echo
+                echo "No branch was pushed. Check that those sections on \`main\` say what they should, and carry the version that actually shipped them."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
             nothing)
               echo "::notice title=Release notes::nothing to stamp on main"
-              echo "No \`[Unreleased]\` sections to stamp — this release's page carries its generated PR list only. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            already)
-              echo "::notice title=Release notes::already stamped on main"
-              echo "Already stamped as \`${VERSION}\` on \`main\` — someone got there first. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
+              {
+                echo "Nothing to stamp — no \`[Unreleased]\` headings were recorded as shipping in this release, so its page carries the generated PR list only."
+                echo
+                echo "If the step above warned that it could not read \`RELEASE_NOTES.md\`, that is the reason, and the narrative did not reach the release page either — this line does not rule that out."
+              } >> "$GITHUB_STEP_SUMMARY"
               ;;
           esac
