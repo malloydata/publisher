@@ -1890,3 +1890,80 @@ function unwrapQuotedExpression(body: string): string {
    }
    return expr;
 }
+
+/** A source found carrying the legacy STRING form of `#(authorize)` — a
+ *  Malloy-quoted expression annotated on the `source:` line itself, now
+ *  refused in favor of the dimension form. `exprs` is the parsed body of
+ *  each such annotation the source declares OWN (not inherited), in
+ *  declaration order — the exact text {@link assertNoLegacyStringGate}
+ *  writes back into its rewrite. */
+export interface LegacyStringGateFinding {
+   sourceName: string;
+   exprs: string[];
+}
+
+/**
+ * Every top-level source that still carries the string form — a
+ * Malloy-quoted expression annotated on the `source:` line — among its OWN
+ * `#(authorize)` notes. Reads only `authorizeOwnNotes`
+ * ({@link ../service/source_extraction.ts}'s companion to `authorizeMap`,
+ * already own-level-only), so this cannot flag a source that merely
+ * INHERITS a string-form gate from a base — the base itself carries its own
+ * annotation and is flagged there instead, keeping the refusal atomic per
+ * declaring source rather than firing once per entry point that inherits
+ * it.
+ */
+export function findLegacyStringGates(
+   authorizeOwnNotes: ReadonlyMap<string, AnnotationNote[]>,
+): LegacyStringGateFinding[] {
+   const found: LegacyStringGateFinding[] = [];
+   for (const [sourceName, notes] of authorizeOwnNotes) {
+      const exprs = collectAuthorizeExprs(notes.map((note) => note.text));
+      if (exprs.length > 0) {
+         found.push({ sourceName, exprs });
+      }
+   }
+   return found;
+}
+
+/**
+ * Refuse a model load carrying any {@link findLegacyStringGates} finding.
+ *
+ * The string form (`#(authorize) "<expr>"` on the `source:` line) is no
+ * longer accepted — every gate must be the DIMENSION form, a boolean
+ * dimension annotated in field position. The message writes the rewrite
+ * back to the author rather than pointing at docs: this function already
+ * holds the exact expression text, so it emits the exact replacement
+ * annotation the author can paste in, one per finding, and the `run:`
+ * statement that tests it — the same shape the dimension form's own graft
+ * expects (a source-level `where:` naming the gate dimension by name).
+ *
+ * Named `legacy_string_gate` on {@link RowLevelGateRejectionCause} / the
+ * `recordRowLevelGateRejected` metric channel — callers record that cause
+ * once per finding before calling this, so an operator can count affected
+ * packages across the deployed (uninventoried) corpus during rollout.
+ */
+export function assertNoLegacyStringGate(
+   found: readonly LegacyStringGateFinding[],
+): void {
+   if (found.length === 0) return;
+   const rewrites = found
+      .flatMap(({ sourceName, exprs }) =>
+         exprs.map(
+            (expr) =>
+               `  - source "${sourceName}": #(authorize) internal dimension: authorized is ${expr}`,
+         ),
+      )
+      .join("\n");
+   throw new ModelCompilationError({
+      message:
+         `The string form of \`#(authorize)\` (a Malloy-quoted expression on ` +
+         `the \`source:\` line) is no longer accepted. Replace it with the ` +
+         `DIMENSION form — a boolean dimension annotated in field position, ` +
+         `declared inside the source's own body:\n${rewrites}\n` +
+         `Test that the rewrite gates the same rows with ` +
+         "`run: costs -> { where: authorized; ... }`" +
+         ` (substituting your own source and field names) and check the row ` +
+         `count matches what the string form served.`,
+   });
+}

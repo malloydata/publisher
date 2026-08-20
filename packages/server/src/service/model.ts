@@ -90,8 +90,10 @@ import {
 import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
    assertNoCallerAuthorizeAnnotation,
+   assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
+   findLegacyStringGates,
    referencedGivenNames,
    validateAuthorizeProbes,
    type AuthorizeMap,
@@ -2370,6 +2372,16 @@ export class Model {
                ...sourceResult.misplacedAuthorize,
                ...queryResult.misplacedAuthorize,
             ]);
+            // The string form is refused outright — see `findLegacyStringGates`'s
+            // doc. Checked before `validateAuthorizeProbes` so an author gets the
+            // rewrite instead of the string-form machinery's own error surface.
+            const legacyStringGates = findLegacyStringGates(
+               sourceResult.authorizeOwnNotes,
+            );
+            legacyStringGates.forEach(() =>
+               recordRowLevelGateRejected("legacy_string_gate"),
+            );
+            assertNoLegacyStringGate(legacyStringGates);
             // Translation-time validation of #(authorize) annotations (shared
             // with the package-load worker so both compile paths validate
             // identically). Compiling the probe surfaces unknown givens and
