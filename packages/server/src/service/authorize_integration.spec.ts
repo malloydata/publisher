@@ -3501,8 +3501,11 @@ describe("authorize bypass (private data-management path)", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: dm_gated is duckdb.table('customers') extend { measure: c is count() }
+source: dm_gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 `;
 
    // The canonical hard case from the design doc: an access GATE and an ordinary
@@ -3513,10 +3516,11 @@ source: dm_gated is duckdb.table('customers') extend { measure: c is count() }
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
 source: dm_mixed is duckdb.table('customers') extend {
   where: region = 'us-west'
   measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
 }
 `;
 
