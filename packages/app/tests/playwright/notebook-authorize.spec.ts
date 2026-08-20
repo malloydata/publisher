@@ -33,7 +33,6 @@ const MODEL_SOURCE = `##! experimental.givens
 
 given: role :: string
 
-#(authorize) "$role = 'analyst'"
 source: gated_products is duckdb.table('data/products.parquet') extend {
   primary_key: product_id
   view: spotlight is {
@@ -42,6 +41,9 @@ source: gated_products is duckdb.table('data/products.parquet') extend {
     order_by: product_id
     limit: 1
   }
+
+  #(authorize)
+  internal dimension: authorized is $role = 'analyst'
 }
 `;
 
