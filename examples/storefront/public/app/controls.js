@@ -81,18 +81,19 @@ async function loadOptions(modelPath, contract) {
    // than one.
    const pick = (row) =>
       suggest.dimension ? row[suggest.dimension] : Object.values(row)[0];
-   // Deduped by string identity, keeping the first occurrence and its original
-   // type. A `group_by` cannot repeat a value, but `suggest { query=… }` is a
-   // query the model author writes, and two rows for one value put a tick on
-   // screen that the caption and the URL both disagree with: measured, with the
-   // list `[Nike, Nike]`, unticking one row cleared the filter while the other
-   // stayed ticked.
+   // Deduped by string identity. A `group_by` cannot repeat a value, but
+   // `suggest { query=… }` is a query the model author writes, and two rows for
+   // one value put a tick on screen that the caption and the URL both disagree
+   // with: measured, with the list `[Nike, Nike]`, unticking one row cleared the
+   // filter while the other stayed ticked.
    //
-   // First-wins explicitly. `new Map(entries)` fixes the POSITION at the first
-   // key but the VALUE at the last, so the mixed-type case this comment is
-   // about, `[1, "1"]`, survived as the string and lost the type the sentence
-   // above promises. Measured, and not exposed by the `[Nike, Nike]` case,
-   // because there both entries are identical.
+   // First-wins is convention here, not a guarantee anyone can observe. The
+   // retained value reaches the page only through `text.textContent = option`,
+   // which stringifies, and through `encodeFilterValue`, which stringifies too,
+   // so for `[1, "1"]` nothing downstream can tell which of the two survived.
+   // An earlier version of this comment promised "its original type", which was
+   // both unfalsifiable and, as written, wrong: `new Map(entries)` fixes the
+   // POSITION at the first key and the VALUE at the last.
    const values = rows.map(pick).filter((v) => v != null);
    const first = new Map();
    for (const v of values) {

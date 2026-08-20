@@ -368,12 +368,13 @@ test("a single select tracks the value it was last given, not the one it was bui
    assert.equal(shown(el), "All categories", "the late options must not restore it");
 });
 
-test("deduping a mixed-type option list keeps the original type", async () => {
-   // The comment on that dedup promises the FIRST occurrence and its original
-   // type. `new Map(entries)` keeps the last value at each key, so `[1, "1"]`
-   // came back as the string. Not exposed by an all-duplicates list, where both
-   // entries are identical, which is why the comment was false about the line
-   // directly beneath it while looking measured.
+test("two spellings of one value become one row", async () => {
+   // Named for what it checks. It does NOT pin which of `1` and `"1"` survives
+   // the dedup: both render the label "1" and both encode identically, so the
+   // retained value's type is unobservable from here, and this passes against
+   // the un-fixed last-wins version too (measured, 33 pass). The type promise
+   // has been dropped from the code comment rather than asserted, because there
+   // is nowhere a reader could see it.
    const { el } = await mount(MULTI, "1", { choices: [1, "1", 2] });
    el.click();
    await new Promise((r) => setTimeout(r, 0));
