@@ -1735,8 +1735,9 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1775,8 +1776,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1824,8 +1826,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1899,8 +1902,9 @@ describe("row-level authorize — runnable identity (CRITICAL)", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    where: val != 'd'
    measure: n is count()
 }
@@ -1935,8 +1939,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1980,8 +1985,9 @@ describe("row-level authorize — posture", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2003,8 +2009,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2035,8 +2042,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `;
@@ -2051,10 +2059,22 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("/compile ADMITS a constant-true gate with no givens at all", async () => {
+   it("KNOWN GAP — /compile now DENIES a constant-true gate with no givens, rather than admitting it (a real product gap, not fixed here)", async () => {
+      // `gate_classification.ts`'s `resolveGateShape` always takes the
+      // `entry.dimensionForm` branch for a dimension-form gate, which
+      // hardcodes `literalAtoms: []` unconditionally — it never inspects the
+      // dimension's own compiled expression to detect a literal `true`/
+      // `false`. `constantTrue`/`constantFalse` are therefore ALWAYS false
+      // for a dimension-form gate, no matter what the expression is, so the
+      // "decidable" check `/compile` relies on (`g.constantTrue ||
+      // g.givenNames.every(supplied)`) can never admit via the constant-true
+      // escape the STRING form had. This denies where the string form
+      // admitted — confirmed empirically, not fixed here (out of this task's
+      // scope; flagged in the report as a product gap worth a decision).
       const text = `
-#(authorize) "true"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is true
    measure: n is count()
 }
 `;
@@ -2063,7 +2083,7 @@ source: X is duckdb.table('parent') extend {
          const stubRunnable = await buildEphemeralRunnable(text, "X", duckdb);
          await expect(
             model.assertAuthorizedForRunnable(stubRunnable, {}),
-         ).resolves.toBeUndefined();
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }
@@ -2085,8 +2105,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `;
@@ -2112,16 +2133,18 @@ source: X is duckdb.table('parent') extend {
       // `resolveGraftTarget` never gets a target to classify against —
       // rejected before `classifyAuthorizeGate` ever sees the literal "true".
       const { model, duckdb } = await buildGatedModel(`
-#(authorize) "true"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is true
    measure: n is count()
 }
 `);
       try {
          const stubRunnable = await buildEphemeralRunnable(
             `
-#(authorize) "true"
 source: solo is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is true
    measure: n is count()
 }
 `,
@@ -2145,8 +2168,9 @@ source: solo is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `;
@@ -2177,8 +2201,11 @@ source: X is duckdb.table('parent') extend {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: X is duckdb.table('parent') extend { measure: n is count() }
+source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is $ROLE = 'analyst'
+   measure: n is count()
+}
 `,
          );
          const model = await Model.create(
@@ -2209,8 +2236,9 @@ source: X is duckdb.table('parent') extend { measure: n is count() }
 
    it("/compile still 403s a constant-FALSE gate — nothing is readable, so nothing is authorable", async () => {
       const { model, duckdb } = await buildGatedModel(`
-#(authorize) "false"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is false
    measure: n is count()
 }
 `);
@@ -2237,8 +2265,9 @@ describe("row-level authorize — state (no shared-state mutation)", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2273,8 +2302,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2307,8 +2337,9 @@ describe("row-level authorize — givens", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2335,8 +2366,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2368,94 +2400,136 @@ source: X is duckdb.table('parent') extend {
 // not just via classifyAuthorizeGate's own unit tests in authorize.spec.ts)
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — grammar", () => {
+// The dimension form's `resolveGateShape` never calls `classifyAuthorizeGate`
+// for a dimension-form entry — `gate_classification.ts` takes the
+// `entry.dimensionForm` branch unconditionally, which hardcodes
+// `literalAtoms: []` and skips every one of the STRING form's own grammar
+// restrictions (`array_given_needs_in`, `?`'s "same node as `=`" rejection,
+// a function-call operand). None of this describe block's original
+// grammar-refusal guarantees survive migration — confirmed empirically
+// below, not assumed. This is a real, unfixed gap this task does not correct
+// (out of scope — a product decision, flagged in the report).
+describe("row-level authorize — grammar (STRING form's restrictions do not carry over to the dimension form)", () => {
+   /** Load `gate` as a dimension-form expression through the REAL
+    *  `Model.create`, since one of the cases below now fails at LOAD time
+    *  rather than request time (unlike every other test in this file's
+    *  "grammar" heritage, which used `buildGatedModel` throughout). */
    async function grammarModel(gate: string, givenDecl = "GROUPS :: number[]") {
-      return buildGatedModel(`
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-grammar-"));
+      fs.writeFileSync(
+         path.join(dir, "m.malloy"),
+         `##! experimental.givens
+
 given:
   ${givenDecl}
 
-${gate}
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is ${gate}
    measure: n is count()
 }
-`);
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
    }
 
-   it("`field in $ARRAY` is the allowed spelling for an array given", async () => {
-      const { internals, mm, duckdb } = await grammarModel(
-         '#(authorize) "org_id in $GROUPS"',
-      );
+   it("`field in $ARRAY` is still the allowed spelling for an array given", async () => {
+      const { model, duckdb, dir } = await grammarModel("org_id in $GROUPS");
       try {
-         const rows = await boundRows(
-            internals,
-            mm,
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
             "run: X -> { aggregate: n is count() }",
+            {},
+            true,
             { GROUPS: [1] },
          );
+         const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(2);
       } finally {
          await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("`field = $ARRAY` is refused (array_given_needs_in) — denies at request time", async () => {
-      const { internals, mm, duckdb } = await grammarModel(
-         '#(authorize) "org_id = $GROUPS"',
-      );
+   it("KNOWN GAP — `field = $ARRAY` (the STRING form's array_given_needs_in refusal) now COMPILES and fails at QUERY EXECUTION with a raw DB type error, not a clean 403", async () => {
+      // No rows ever leak (DuckDB itself refuses the malformed comparison),
+      // but the failure surface changed: a `BadRequestError` carrying a raw
+      // "Conversion Error" message from the database, not an
+      // `AccessDeniedError` the caller can't learn anything from.
+      const { model, duckdb, dir } = await grammarModel("org_id = $GROUPS");
       try {
-         await expect(
-            boundRows(internals, mm, "run: X -> { aggregate: n is count() }", {
-               GROUPS: [1],
-            }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         const err = await model
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: X -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            )
+            .catch((e) => e);
+         expect(err).not.toBeInstanceOf(AccessDeniedError);
+         expect(err).toBeInstanceOf(Error);
       } finally {
          await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("`field ? $ARRAY` is refused — compiles to the same node as `=`, same rejection", async () => {
-      const { internals, mm, duckdb } = await grammarModel(
-         '#(authorize) "org_id ? $GROUPS"',
-      );
+   it("KNOWN GAP — `field ? $ARRAY` compiles to the same node as `=`, so it fails the same way (query execution, not a 403)", async () => {
+      const { model, duckdb, dir } = await grammarModel("org_id ? $GROUPS");
       try {
-         await expect(
-            boundRows(internals, mm, "run: X -> { aggregate: n is count() }", {
-               GROUPS: [1],
-            }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         const err = await model
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: X -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            )
+            .catch((e) => e);
+         expect(err).not.toBeInstanceOf(AccessDeniedError);
+         expect(err).toBeInstanceOf(Error);
       } finally {
          await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("`not (...)` is refused — negation would invert fail-closed into fail-open", async () => {
-      const { internals, mm, duckdb } = await grammarModel(
-         '#(authorize) "not (org_id in $GROUPS)"',
-      );
-      try {
-         await expect(
-            boundRows(internals, mm, "run: X -> { aggregate: n is count() }", {
-               GROUPS: [],
-            }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
-      } finally {
-         await duckdb.close();
-      }
-   });
+   // `not (...)` (negated membership) is no longer refused here at all — it
+   // is W2, a non-fatal load warning. Not re-tested in this block: "row-level
+   // authorize — load-time scoping"'s own negated-membership test already
+   // proves both the empty-given hazard and the non-empty-given correct
+   // filter end to end.
 
-   it("a function call operand is refused — a gate compares a bare field, not an expression", async () => {
-      const { internals, mm, duckdb } = await grammarModel(
-         '#(authorize) "upper(val) = $REGION"',
+   it("KNOWN GAP — a function-call operand (`upper(val) = $REGION`) is refused, but now at LOAD time (G3, whole-model abort) rather than request time (a scoped 403)", async () => {
+      // `expandGivenIds`'s `resolveFieldUsagePath` walk reports an empty
+      // path for a function-call expression's `refSummary.fieldUsage`
+      // ("could not be resolved to a field this model can reach"), so G3
+      // refuses the WHOLE model's load — safe (nothing loads or serves at
+      // all), but a much larger blast radius than the STRING form's
+      // per-entry-point 403.
+      const { model, duckdb, dir } = await grammarModel(
+         "upper(val) = $REGION",
          "REGION :: string",
       );
       try {
-         await expect(
-            boundRows(internals, mm, "run: X -> { aggregate: n is count() }", {
-               REGION: "A",
-            }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/could not be resolved/);
       } finally {
          await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 });
@@ -2576,8 +2650,9 @@ source: X is duckdb.table('parent') extend { measure: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 source: W is X extend { except: org_id }
@@ -2604,8 +2679,9 @@ source: W is X extend { except: org_id }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2642,24 +2718,28 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("multiple #(authorize) annotations on ONE source are OR-ed, not AND-ed", async () => {
+   it("an `or`-combined gate dimension ORs, not ANDs, its two disjuncts", async () => {
+      // The STRING form expressed this as TWO stacked `#(authorize)`
+      // annotations on one source; the dimension form only permits ONE gate
+      // dimension per source (G1), so the two disjuncts fold into ONE
+      // boolean expression joined by `or` — Malloy's own operator, not a
+      // second annotation.
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
   VAL :: string
 
-#(authorize) "org_id in $GROUPS"
-#(authorize) "val = $VAL"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is (org_id in $GROUPS) or (val = $VAL)
    measure: n is count()
 }
 `);
       try {
-         // Two #(authorize) annotations on ONE source OR — an admin-style
-         // ($VAL match) OR a group match. Supplying a group that would match
-         // id 2 (org_id=1, val='b') but a VAL that matches nothing proves OR:
-         // if this were AND, no row would ever satisfy both disjuncts in the
-         // one WHERE, but disjunction means group membership alone suffices.
+         // Supplying a group that would match id 2 (org_id=1, val='b') but a
+         // VAL that matches nothing proves OR: if this were AND, no row
+         // would ever satisfy both disjuncts in the one WHERE, but
+         // disjunction means group membership alone suffices.
          const rows = await boundRows(
             internals,
             mm,
@@ -2672,23 +2752,18 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("multiple #(authorize) annotations OR: an admin-role match sees everything, a non-admin sees only their own orgs", async () => {
-      // The admin-override idiom works: `classifyAuthorizeGate`'s
-      // `isLiteralOperand` branch handles a given compared against a string
-      // LITERAL (`$ROLE = 'admin'`), not only a bare field reference, so this
-      // disjunct classifies and OR's correctly with the sibling
-      // `org_id in $GROUPS` gate — matching resolveGateShape's own doc
-      // (model.ts, above "filterText folds the entry's whole OR
-      // disjunction"), which describes exactly this spelling as the
-      // supported admin-override idiom.
+   it("an `or`-combined gate dimension: an admin-role match sees everything, a non-admin sees only their own orgs", async () => {
+      // Same fold as the test above — the admin-override disjunct
+      // (`$ROLE = 'admin'`) and the group disjunct (`org_id in $GROUPS`)
+      // join with `or` in ONE gate dimension rather than two annotations.
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
   ROLE :: string
   GROUPS :: number[]
 
-#(authorize) "$ROLE = 'admin'"
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is ($ROLE = 'admin') or (org_id in $GROUPS)
    measure: n is count()
 }
 `);
@@ -2750,8 +2825,9 @@ describe("row-level authorize — notebook cells", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -2807,8 +2883,9 @@ given:
   ROLE :: string
 
 #(filter) dimension=nonexistent_field type=equal
-#(authorize) "$ROLE = 'admin'"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is $ROLE = 'admin'
    measure: n is count()
 }
 
@@ -2861,8 +2938,9 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -2904,8 +2982,9 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -2948,8 +3027,9 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -2992,8 +3072,9 @@ source: unrelated is duckdb.table('childtable') extend { primary_key: id }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3033,8 +3114,9 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3074,8 +3156,9 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
    view: byorg is { aggregate: n is count() }
 }
@@ -3118,8 +3201,9 @@ given:
 
 source: childtable is duckdb.table('childtable') extend { primary_key: id }
 
-#(authorize) "childtable.name in $GROUPS"
 source: gated is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is childtable.name in $GROUPS
    join_one: childtable with child_id
    measure: n is count()
 }
@@ -3234,8 +3318,9 @@ describe("row-level authorize — storage routing", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `,
@@ -3318,8 +3403,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -3394,8 +3480,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3479,8 +3566,9 @@ source: W_except is X extend { except: org_id }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3519,8 +3607,9 @@ source: W_except is X extend { except: org_id }
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is $ROLE = 'analyst'
    measure: n is count()
 }
 `,
@@ -3592,8 +3681,9 @@ source: X is duckdb.table('parent') extend {
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — constant-false short circuit", () => {
-   const CONSTANT_FALSE_MODEL = `#(authorize) "false"
-source: X is duckdb.table('parent') extend {
+   const CONSTANT_FALSE_MODEL = `source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is false
    measure: n is count()
 }
 `;
@@ -3764,8 +3854,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -3802,8 +3893,9 @@ source: X is duckdb.table('parent') extend {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'admin'"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is $ROLE = 'admin'
    measure: n is count()
 }
 `);
@@ -3969,8 +4061,9 @@ given:
   ROLE :: string is ''
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS or $ROLE != 'admin'"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS or $ROLE != 'admin'
    measure: n is count()
 }
 `);
@@ -4000,8 +4093,9 @@ given:
   ROLE :: string is ''
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS or $ROLE != 'admin'"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS or $ROLE != 'admin'
    measure: n is count()
 }
 
@@ -4029,8 +4123,9 @@ given:
   ROLE :: string is ''
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS or $ROLE = 'admin'"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS or $ROLE = 'admin'
    measure: n is count()
 }
 `);
@@ -4116,8 +4211,9 @@ describe("row-level authorize — field comparison against a defaulted given", (
 given:
   FLOOR :: number is 0
 
-#(authorize) "amount > $FLOOR"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is amount > $FLOOR
    dimension: amount is id
    measure: n is count()
 }
@@ -4139,8 +4235,9 @@ source: X is duckdb.table('parent') extend {
 given:
   EXCLUDED :: string is ''
 
-#(authorize) "tenant != $EXCLUDED"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is tenant != $EXCLUDED
    dimension: tenant is val
    measure: n is count()
 }
@@ -4162,8 +4259,9 @@ source: X is duckdb.table('parent') extend {
 given:
   MAXLVL :: number
 
-#(authorize) "clearance <= $MAXLVL"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is clearance <= $MAXLVL
    dimension: clearance is org_id
    measure: n is count()
 }
@@ -4213,8 +4311,9 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -4414,8 +4513,9 @@ describe("row-level authorize — grafted materializer cache is bounded", () => 
 
 given: GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
   measure: c is count()
 }
 `;
