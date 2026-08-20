@@ -279,7 +279,7 @@ Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip f
 
 ## Access Control: Source Gating with `#(authorize)`
 
-Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). Publisher evaluates a source's in-scope `#(authorize)` expressions against the request's supplied givens before running the query; if **any** expression returns `true` the request proceeds, otherwise it is denied with **403**. A source with no in-scope `#(authorize)` annotations is unrestricted.
+Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). A gate is a boolean **dimension**, declared in field position inside the source's own body and tagged `#(authorize)`; Publisher grafts it onto the source as a row filter before running the query, so a caller it admits nowhere gets 200 with zero rows rather than a 403. A source with no in-scope `#(authorize)` gate dimension is unrestricted.
 
 ```malloy
 ##! experimental.givens
@@ -287,15 +287,19 @@ Gate query access to a source with `#(authorize)` over declared `given:` values 
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
 source: orders is duckdb.table('orders.parquet') extend {
   measure: order_count is count()
+
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
 }
 ```
 
-- **Source-level** `#(authorize) "<expr>"` gates that one source. **File-level** `##(authorize) "<expr>"` applies to every source in the file. Multiple gates combine as an OR, access is granted if any one is true, so a permissive file-level gate is a **model-wide override**, not an added restriction.
-- **Entry point only: not joined, but inherited through `extend`.** The gate applies to the source a query enters through. A gate on a source reached only via `join_*` **never fires**, at any depth, so anything ungated that joins a locked base hands the base's rows to every caller. A source that `extend`s a locked base and declares no gate of its own **does** carry the base's gate; declaring its own replaces it. Pair a locked base (`#(authorize) "false"`) with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface, and keep sensitive sources out of ungated joins.
-- The expression may reference only givens and literals, never a column of the gated source; the check runs against a synthetic probe row, not your data.
+- **A source may declare at most one gate dimension.** The annotation identifies the *field*, not a fixed name — `authorized` above is only a convention. Declaring a second `#(authorize)`-tagged dimension on the same source fails the load naming both.
+- **Use `internal`, never `private`.** The graft references the dimension by name from outside the source; `private` would compile but never be reachable by its own enforcement, and Publisher refuses it at load.
+- **Entry point only: not joined, but inherited through `extend`.** The gate applies to the source a query enters through. A gate on a source reached only via `join_*` **never fires**, at any depth, so anything ungated that joins a locked base hands the base's rows to every caller. A source that `extend`s a locked base and declares no gate dimension of its own **does** carry the base's gate; re-declaring the annotation replaces it. Pair a locked base (`internal dimension: authorized is false`) with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface, and keep sensitive sources out of ungated joins.
+- The expression may reference givens, row fields (including through a join), or both — see your deployment's `#(authorize)` reference documentation for what that means for load-time versus request-time failures.
+- **The one-line and quoted-string forms are both refused at load and no longer exist.** `#(authorize) "<expr>"` on the `source:` line, and a file-level `##(authorize) "<expr>"` applying to every source in the file, are retired; a source may declare at most one gate dimension (no stacking two annotations as OR). Always write the annotation and the `internal dimension:` line separately, on their own lines — Malloy consumes everything after `#(authorize)` on the same line as annotation text, so a one-line rewrite compiles with no gate at all and no error.
 
 > **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(authorize)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
 >
