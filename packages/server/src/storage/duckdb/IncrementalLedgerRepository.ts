@@ -4,6 +4,7 @@
 import {
    IncrementalLedgerEntry,
    IncrementalStrategy,
+   LedgerTableIdentity,
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
@@ -17,6 +18,11 @@ import { DuckDBConnection } from "./DuckDBConnection";
  * Keyed on the table because that is what the boundary is a fact about. The source
  * address and the package name are recorded but NOT keys — see the schema comment
  * for why keying on them broke a table shared across package versions.
+ *
+ * A read additionally MATCHES on the storage destination, which the key does not
+ * carry (schema comment says why). So a colocated lineage and a stored one at one
+ * (connection, table) share the row: the last refresh owns it and the other finds
+ * nothing and seeds, rather than reading a boundary measured somewhere else.
  *
  * Deliberately has NO locking of its own. The single writer is already
  * guaranteed one level up, by the `active_key` unique index on
@@ -33,14 +39,22 @@ export class IncrementalLedgerRepository {
 
    async get(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<IncrementalLedgerEntry | null> {
+      // `IS NOT DISTINCT FROM`, not `=`: the destination is NULL for a colocated
+      // table, and `= NULL` matches nothing, so a plain equality would make every
+      // colocated read miss its own row and seed forever.
       const row = await this.db.get<Record<string, unknown>>(
          `SELECT * FROM incremental_ledger
            WHERE environment_id = ? AND connection_name = ?
-             AND physical_table_name = ?`,
-         [environmentId, connectionName, physicalTableName],
+             AND physical_table_name = ?
+             AND storage_destination_name IS NOT DISTINCT FROM ?`,
+         [
+            environmentId,
+            table.connectionName,
+            table.physicalTableName,
+            table.storageDestinationName ?? null,
+         ],
       );
       return row ? mapRow(row) : null;
    }
@@ -63,9 +77,9 @@ export class IncrementalLedgerRepository {
              environment_id, package_name, source_entity_id,
              covered_through_value, covered_through_type,
              watermark_dimension, merge_key_dimensions, derived_strategy,
-             physical_table_name, connection_name,
+             physical_table_name, connection_name, storage_destination_name,
              advanced_by_materialization_id, advanced_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (environment_id, connection_name, physical_table_name)
           DO UPDATE SET
              package_name = EXCLUDED.package_name,
@@ -75,6 +89,7 @@ export class IncrementalLedgerRepository {
              watermark_dimension = EXCLUDED.watermark_dimension,
              merge_key_dimensions = EXCLUDED.merge_key_dimensions,
              derived_strategy = EXCLUDED.derived_strategy,
+             storage_destination_name = EXCLUDED.storage_destination_name,
              advanced_by_materialization_id = EXCLUDED.advanced_by_materialization_id,
              advanced_at = EXCLUDED.advanced_at
           RETURNING *`,
@@ -89,6 +104,7 @@ export class IncrementalLedgerRepository {
             entry.derivedStrategy,
             entry.physicalTableName,
             entry.connectionName,
+            entry.storageDestinationName ?? null,
             entry.advancedByMaterializationId,
             now,
             now,
@@ -104,14 +120,19 @@ export class IncrementalLedgerRepository {
     */
    async deleteEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<void> {
+      // Not matched on the destination, unlike {@link get}. This clears a
+      // boundary because the table it describes is being replaced wholesale, and
+      // the row is shared across destinations — so a destination-scoped delete
+      // could leave behind a boundary measured on a table this rebuild is about
+      // to overwrite. Deleting one row too many costs a seed; leaving one costs
+      // correctness.
       await this.db.run(
          `DELETE FROM incremental_ledger
            WHERE environment_id = ? AND connection_name = ?
              AND physical_table_name = ?`,
-         [environmentId, connectionName, physicalTableName],
+         [environmentId, table.connectionName, table.physicalTableName],
       );
    }
 
@@ -152,6 +173,11 @@ function mapRow(row: Record<string, unknown>): IncrementalLedgerEntry {
       derivedStrategy: row.derived_strategy as IncrementalStrategy,
       physicalTableName: row.physical_table_name as string,
       connectionName: row.connection_name as string,
+      storageDestinationName:
+         typeof row.storage_destination_name === "string" &&
+         row.storage_destination_name.length > 0
+            ? row.storage_destination_name
+            : undefined,
       advancedByMaterializationId:
          row.advanced_by_materialization_id != null
             ? (row.advanced_by_materialization_id as string)

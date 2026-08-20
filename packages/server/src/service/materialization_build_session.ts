@@ -71,6 +71,15 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
 
 /**
+ * The Malloy `dialectName` every storage destination speaks, since both types it
+ * may be are DuckDB-family. Named because it is the dialect a stored table's DDL,
+ * DML and identifier quoting are all written in, which is NOT the source's — and
+ * a bare "duckdb" at each of those sites reads like a default rather than the one
+ * fact it is.
+ */
+export const STORAGE_TARGET_DIALECT = "duckdb";
+
+/**
  * Wrap a source-dialect SELECT as a native per-engine query-passthrough call so
  * a build-scoped DuckDB session can execute it against the source warehouse and
  * stream back only result-sized rows. The compiled SELECT is embedded verbatim

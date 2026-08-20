@@ -31,6 +31,7 @@ import {
    snapshotBound,
    snowflakeScriptingBlock,
    type SqlRunner,
+   warehouseDeltaTarget,
 } from "./incremental_apply";
 
 let connections: FixedConnectionMap;
@@ -274,7 +275,22 @@ describe("decodeTablePathSegments", () => {
       expect(
          decodeTablePathSegments("postgres", "proj-x.ds.tbl"),
       ).toBeUndefined();
-      expect(decodeTablePathSegments("duckdb", "t")).toBeUndefined();
+      // A dialect with no options at all, as opposed to one whose options reject
+      // this particular path.
+      expect(decodeTablePathSegments("mysql", "t")).toBeUndefined();
+   });
+
+   it("decodes a storage destination's own path, preserving case", () => {
+      // DuckDB resolves identifiers case-insensitively but stores them as
+      // written, and the metadata read compares against the stored text — so
+      // unlike Snowflake, a bare segment must NOT be folded.
+      expect(decodeTablePathSegments("duckdb", "lake.Orders_G000")).toEqual([
+         "lake",
+         "Orders_G000",
+      ]);
+      expect(
+         decodeTablePathSegments("duckdb", 'lake."my schema"."My Table"'),
+      ).toEqual(["lake", "my schema", "My Table"]);
    });
 });
 
@@ -783,14 +799,17 @@ describe("planIncrementalStep", () => {
    ) => {
       const { runner } = fakeRunner(answers);
       return planIncrementalStep({
-         runner,
-         dialect: "postgres",
-         quotedTablePath: `"analytics"."daily"`,
+         target: warehouseDeltaTarget({
+            dialect: "postgres",
+            runner,
+            quotedTablePath: `"analytics"."daily"`,
+            lineage: LINEAGE,
+            sourceSQL: "SELECT * FROM base",
+         }),
          lineage: LINEAGE,
          ledgerEntry: LEDGER,
          forceRefresh: false,
          now: NOW,
-         sourceSQL: "SELECT * FROM base",
          columns: ["order_date", "region", "revenue"],
          ...overrides,
       });
@@ -817,14 +836,17 @@ describe("planIncrementalStep", () => {
    it("seeds on forceRefresh, before touching the warehouse", async () => {
       const { runner, seen } = fakeRunner();
       const step = await planIncrementalStep({
-         runner,
-         dialect: "postgres",
-         quotedTablePath: `"analytics"."daily"`,
+         target: warehouseDeltaTarget({
+            dialect: "postgres",
+            runner,
+            quotedTablePath: `"analytics"."daily"`,
+            lineage: LINEAGE,
+            sourceSQL: "SELECT * FROM base",
+         }),
          lineage: LINEAGE,
          ledgerEntry: LEDGER,
          forceRefresh: true,
          now: NOW,
-         sourceSQL: "SELECT * FROM base",
          columns: ["order_date", "region", "revenue"],
       });
       expect(step.mode).toBe("seed");
@@ -912,9 +934,13 @@ describe("planIncrementalStep", () => {
          maxWatermark: 500,
       });
       const step = await planIncrementalStep({
-         runner,
-         dialect: "postgres",
-         quotedTablePath: `"analytics"."daily"`,
+         target: warehouseDeltaTarget({
+            dialect: "postgres",
+            runner,
+            quotedTablePath: `"analytics"."daily"`,
+            lineage: numeric,
+            sourceSQL: "SELECT * FROM base",
+         }),
          lineage: numeric,
          ledgerEntry: {
             ...LEDGER,
@@ -924,7 +950,6 @@ describe("planIncrementalStep", () => {
          },
          forceRefresh: false,
          now: NOW,
-         sourceSQL: "SELECT * FROM base",
          columns: ["seq", "region"],
       });
       expect(step.mode).toBe("delta");

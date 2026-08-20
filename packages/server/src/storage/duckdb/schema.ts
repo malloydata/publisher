@@ -213,6 +213,23 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       derived_strategy VARCHAR NOT NULL,
       physical_table_name VARCHAR NOT NULL,
       connection_name VARCHAR NOT NULL,
+      -- The storage destination the table lives in, or NULL when it lives in
+      -- connection_name's own warehouse (the colocated default). Part of the
+      -- table's IDENTITY, not a description of it: a destination and a connection
+      -- are separate namespaces that may share a name, and a source's physical
+      -- name does not change when it moves between them, so without this a
+      -- boundary measured on a stored table is indistinguishable from one
+      -- measured on a colocated table of the same name.
+      --
+      -- Deliberately NOT part of the primary key, and deliberately NULLable. A
+      -- nullable column is the only kind the boot-time column reconcile can add
+      -- to a store that predates it (a constrained or NOT NULL column reports as
+      -- needing a hand migration), and the key does not need it: two lineages at
+      -- one (connection, table) share the row, so whichever refreshed last owns
+      -- it and the other reads no matching row and SEEDS. That is the safe
+      -- direction, and it costs one full rebuild in a case that only arises when
+      -- a source moves between destinations.
+      storage_destination_name VARCHAR,
       advanced_by_materialization_id VARCHAR,
       advanced_at TIMESTAMP NOT NULL,
       created_at TIMESTAMP NOT NULL,

@@ -5801,10 +5801,35 @@ components:
       properties:
         connectionName:
           type: string
-          description: With `physicalTableName`, the table the boundary belongs to.
+          description: >-
+            The connection whose SQL computes the table's rows. With
+            `physicalTableName` — and `storageDestinationName`, when the table is
+            in a storage destination — the table the boundary belongs to.
         physicalTableName:
           type: string
           description: The table's logical (unquoted) name, as the manifest reports it.
+        storageDestinationName:
+          type: string
+          description: >-
+            The storage destination the table lives in, when the source was
+            materialized into one — an entry in `storageDestinations`, NOT a
+            connection, exactly as on `ManifestEntry`. Absent means the table
+            lives in `connectionName`'s own warehouse.
+
+            Part of the table's IDENTITY, not a description of it, so it must be
+            returned verbatim like every other field here. A source keeps both its
+            physical name and its content address when `storage=` is added or
+            removed (an annotation enters neither), so without this field a
+            boundary measured on the stored table is indistinguishable from one
+            measured on a colocated table of the same name — and a delta computed
+            from the wrong one can skip rows.
+
+            A caller that has never recorded this field may omit it. An entry that
+            omits it for a source this run materializes into a destination
+            describes a different table, so that source SEEDS rather than being
+            rejected: the entry is stale, not wrong, and a seed is always correct.
+            An entry that names a DIFFERENT destination than the run instructs is
+            a caller error and is rejected like any other mismatched entry.
         coveredThrough:
           type: string
           description: >-

@@ -323,7 +323,7 @@ describe("incrementalPolicyRejections", () => {
          }),
       });
       expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain("transactional DML");
+      expect(messages[0]).toContain("applies it transactionally");
    });
 
    it("every dialect on the allowlist accepts a coherent declaration", () => {
@@ -335,13 +335,14 @@ describe("incrementalPolicyRejections", () => {
       }
    });
 
-   it("rule 13: refuses incremental into a storage= destination", () => {
-      const [message] = rejections({
-         declaration: COHERENT,
-         storageDestination: "lake",
-      });
-      expect(message).toContain('storage="lake"');
-      expect(message).toContain("source warehouse");
+   it("accepts incremental into a storage= destination", () => {
+      // A stored table's rows are computed by the source warehouse and its DML is
+      // issued in the destination engine, so the source dialect (checked by rule
+      // 6) is the only dialect an author can get wrong here: a destination can
+      // only be a DuckDB-family one, whose transactional apply is proven.
+      expect(
+         rejections({ declaration: COHERENT, storageDestination: "lake" }),
+      ).toEqual([]);
    });
 
    // ── Rules 8 to 11: what the names resolved to ─────────────────────────
@@ -489,6 +490,31 @@ describe("incrementalPolicyAdvisories", () => {
       expect(warnings[0].model).toBe("revenue.malloy");
       expect(warnings[0].message).toContain('"mergekey"');
       expect(warnings[0].message).toContain("merge_key=");
+   });
+
+   it("states the keyless delta's cost for the engine the table lives in", () => {
+      const keyless = {
+         refresh: "incremental",
+         incremental: true,
+         declaredWatermark: true,
+         watermark: DATE_WATERMARK,
+         watermarkOrderable: true,
+      };
+      const [stored] = incrementalPolicyAdvisories([
+         source({
+            declaration: declaration(keyless),
+            storageDestination: "lake",
+         }),
+      ]);
+      // A stored table has no partitioning knob to point the author at, so the
+      // advisory names what the DELETE actually does there instead.
+      expect(stored.message).toContain("stored file");
+      expect(stored.message).not.toContain("partitioned or clustered");
+
+      const [colocated] = incrementalPolicyAdvisories([
+         source({ declaration: declaration(keyless) }),
+      ]);
+      expect(colocated.message).toContain("partitioned or clustered");
    });
 
    it("warns about a keyless delta with both consequences", () => {

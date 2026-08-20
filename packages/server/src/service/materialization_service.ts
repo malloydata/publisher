@@ -54,18 +54,17 @@ import {
    resolveQueryMetadata,
 } from "./build_plan";
 import {
-   applyDeltaScript,
+   warehouseDeltaTarget,
+   type DeltaTarget,
    type IncrementalLineage,
-   type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
 import {
-   advanceLedger,
    advanceLedgerAfterSeed,
+   applyIncrementalStep,
    incrementalLineage,
    indexCallerLedger,
    planSourceRefresh,
-   reportDeltaApplied,
    reportIncrementalStep,
    resetLedger,
    type IncrementalRunContext,
@@ -89,6 +88,7 @@ import {
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    dropStorageTable,
+   STORAGE_TARGET_DIALECT,
    type StorageBuildResult,
 } from "./materialization_build_session";
 import { escapeSQL } from "./connection";
@@ -1045,10 +1045,13 @@ export class MaterializationService {
                incrementalLineage({
                   declaration: incremental.declarations[persistSource.sourceID],
                   dialect: persistSource.dialectName,
+                  targetDialect: destination !== undefined
+                     ? STORAGE_TARGET_DIALECT
+                     : persistSource.dialectName,
                   physicalTableName: logicalName,
                   connectionName: persistSource.connectionName,
+                  storageDestinationName: destination,
                   sourceEntityId,
-                  isStorageBuild: destination !== undefined,
                }) !== undefined;
 
             const prior = priorEntries[sourceEntityId];
@@ -2153,15 +2156,18 @@ export class MaterializationService {
       // here and falls straight through to the CTAS, unchanged.
       const dialect = persistSource.dialectName;
       const quotedPhysicalPath = quoteTablePath(physicalTableName, dialect);
+      // Colocated by construction: the storage branch above has already returned,
+      // so the table lives in the source's own warehouse and one dialect answers
+      // both halves.
       const lineage =
          incremental && contentSourceEntityId
             ? incrementalLineage({
                  declaration: incremental.declarations[persistSource.sourceID],
                  dialect,
+                 targetDialect: dialect,
                  physicalTableName,
                  connectionName: persistSource.connectionName,
                  sourceEntityId: contentSourceEntityId,
-                 isStorageBuild,
               })
             : undefined;
       // One narrowing for the three incremental touchpoints below, so they can
@@ -2178,10 +2184,16 @@ export class MaterializationService {
             ...incrementalRefresh,
             persistSource,
             instruction,
-            connection,
-            buildSQL,
-            quotedTablePath: quotedPhysicalPath,
-            runOptions,
+            target: warehouseDeltaTarget({
+               dialect,
+               runner: (sql) => connection.runSQL(sql, runOptions),
+               quotedTablePath: quotedPhysicalPath,
+               lineage: incrementalRefresh.lineage,
+               // The CTAS's own SQL, manifest-resolved. The delta filters this
+               // exact string, so it computes what a rebuild would — see
+               // deltaSelect.
+               sourceSQL: buildSQL,
+            }),
             manifest,
          });
          if (applied) return applied;
@@ -2320,67 +2332,29 @@ export class MaterializationService {
       lineage: IncrementalLineage;
       persistSource: PersistSource;
       instruction: BuildInstruction;
-      connection: MalloyConnection;
-      buildSQL: string;
-      quotedTablePath: string;
-      runOptions: { queryMetadata?: QueryMetadata };
+      target: DeltaTarget;
       manifest: Manifest;
    }): Promise<ManifestEntry | undefined> {
-      const { context, lineage, persistSource, instruction } = params;
+      const { context, lineage, persistSource, instruction, target } = params;
       const sourceEntityId = instruction.sourceEntityId;
-      const dialect = persistSource.dialectName;
-      const runner: SqlRunner = (sql) =>
-         params.connection.runSQL(sql, params.runOptions);
 
       const step = await planSourceRefresh({
          context,
          lineage,
-         persistSource,
-         quotedTablePath: params.quotedTablePath,
-         // The CTAS's own SQL, manifest-resolved. The delta filters this exact
-         // string, so it computes what a rebuild would — see deltaSelect.
-         sourceSQL: params.buildSQL,
+         target,
          columns: deriveColumns(persistSource).map((c) => String(c.name)),
          reseed: instruction.reseed,
-         runner,
       });
-      if (step.mode !== "delta") {
-         reportIncrementalStep({
-            step,
-            sourceName: persistSource.name,
-            packageName: context.packageName,
-            physicalTableName: lineage.physicalTableName,
-         });
-      }
-      if (step.mode === "seed") return undefined;
-
-      const startTime = performance.now();
-      // Stays undefined on the SKIP branch, and the manifest entry reports null
-      // rather than 0: a skip did no work, and a zero would average into the
-      // build-duration series as an implausibly fast build.
-      let appliedDurationMs: number | undefined;
-      if (step.mode === "delta") {
-         // One call, because the range replace's DELETE and INSERT have to commit
-         // or roll back together — see deltaScript. A failure here leaves the
-         // table as it was and does NOT advance the boundary, so the next run
-         // recomputes the same range.
-         await applyDeltaScript(runner, dialect, step.statements);
-         await advanceLedger({
-            context,
-            lineage,
-            coveredThrough: step.coveredThrough,
-         });
-         const durationMs = Math.round(performance.now() - startTime);
-         appliedDurationMs = durationMs;
-         recordSourceBuildDuration(durationMs, "delta");
-         reportDeltaApplied({
-            packageName: context.packageName,
-            sourceName: persistSource.name,
-            physicalTableName: lineage.physicalTableName,
-            rangeStart: step.start.value,
-            rangeEnd: step.end.value,
-            durationMs,
-         });
+      const outcome = await applyIncrementalStep({
+         context,
+         lineage,
+         step,
+         target,
+         sourceName: persistSource.name,
+      });
+      if (!outcome.applied) return undefined;
+      if (outcome.durationMs !== undefined) {
+         recordSourceBuildDuration(outcome.durationMs, "delta");
       }
 
       // Both a delta and a skip leave the existing table serving, so it still has
@@ -2388,7 +2362,7 @@ export class MaterializationService {
       // run resolves its upstream through here, and an absent entry would make it
       // recompute the upstream from raw instead.
       params.manifest.update(sourceEntityId, {
-         tableName: params.quotedTablePath,
+         tableName: target.quotedTablePath,
       });
       return {
          sourceEntityId,
@@ -2398,7 +2372,7 @@ export class MaterializationService {
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
          rowCount: null,
-         buildDurationMs: appliedDurationMs ?? null,
+         buildDurationMs: outcome.durationMs ?? null,
          // The delta script runs through applyDeltaScript rather than a single
          // connection.runSQL whose result reaches here, so there is no cost figure
          // to report even on a backend that would supply one.
@@ -2406,11 +2380,11 @@ export class MaterializationService {
          // A delta reports where it advanced to; a skip reports the boundary
          // that stays in force. Either way the caller reads coverage from the
          // entry rather than inferring it from the run's outcome.
-         ...ledgerFields(lineage, step.coveredThrough),
+         ...ledgerFields(lineage, outcome.coveredThrough),
          // A skip applied nothing and says so, rather than leaving a reader to
          // infer it from an absent field: its unchanged `ledger` boundary
          // already says the table stands where it did.
-         ...refreshFields(step.mode === "delta" ? "delta" : "none"),
+         ...refreshFields(outcome.refresh),
       };
    }
 
