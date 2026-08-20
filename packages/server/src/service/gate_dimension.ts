@@ -2,14 +2,17 @@
  * Discovery and load-time validation for the DIMENSION form of `#(authorize)`
  * — a boolean dimension annotated in FIELD position (rather than a string
  * expression annotated on the `source:` line), referenced by NAME at graft
- * time instead of re-parsed. Kept deliberately separate from `./authorize`'s
- * string-form walker (`classifyAuthorizeGate`): a grafted dimension gate's
- * lifted filter condition is an UNRESOLVED field-reference node (`{node:
- * "field", path: ["authorized"]}`), not the dimension's own predicate tree —
- * see the spike doc cited by the task brief this module implements. Routing
- * this form through `classifyAuthorizeGate` would find no comparison/`inGiven`
- * node to classify and fail closed on every gate, which is why validation here
- * reads the dimension's own compiled `FieldDef` instead.
+ * time instead of re-parsed. Originally kept deliberately separate from
+ * `./authorize`'s string-form walker, `classifyAuthorizeGate` (deleted in
+ * Task 4 along with the rest of the string-form classification machinery —
+ * see `authorize.ts`'s module doc): a grafted dimension gate's lifted filter
+ * condition is an UNRESOLVED field-reference node (`{node: "field", path:
+ * ["authorized"]}`), not a comparison/`inGiven` predicate tree — see the
+ * spike doc cited by the task brief this module implements. Routing this
+ * form through that walker would have found nothing to classify and failed
+ * closed on every gate, which is why validation here reads the dimension's
+ * own compiled `FieldDef` instead — a design choice that stayed correct even
+ * after that walker's later deletion.
  *
  * `./gate_classification`'s `gateExprsForOwnAnnotations` is the request-time
  * counterpart: once a struct's gate dimension is found here (or, for an
@@ -183,8 +186,9 @@ export function expandGivenIds(
  * contains a negated membership test (`not (x in $Y)`) — W2's shape, where an
  * EMPTY given then matches every row rather than none. A narrow structural
  * scan over exactly the node kinds a boolean dimension can compose from
- * (`and`/`or`/`not`/`()`/`inGiven`), not `classifyAuthorizeGate`'s full walk
- * — see this module's header for why the two must not share one walker.
+ * (`and`/`or`/`not`/`()`/`inGiven`), not the general-purpose walk the
+ * (deleted) string-form classifier once used — see this module's header for
+ * why the two never shared one walker even while both existed.
  */
 function containsNegatedMembership(node: unknown, depth = 0): boolean {
    if (depth > 64 || node === null || typeof node !== "object") return false;
@@ -238,9 +242,9 @@ export interface GateDimensionResolution {
  * fires for W1/W2, which do not fail the load.
  *
  * `declaredGivenNames` is this model's OWN given surface — the SAME one
- * `classifyAuthorizeGate`'s `unreachable_given` check reads for the string
- * form (`ApiGiven[]`/`compiled.givens`, curated to one import hop), NOT
- * `modelDef.givens`: that raw IR registry contains every given the compiled
+ * `./gate_classification`'s `resolveGateShape` re-checks its `unreachable_given`
+ * finding against at request time (`ApiGiven[]`/`compiled.givens`, curated to
+ * one import hop), NOT `modelDef.givens`: that raw IR registry contains every given the compiled
  * expression tree references AT ANY DEPTH (Malloy needs it there to
  * type-check), so it is NOT the "unreachable" signal — confirmed empirically
  * against a 2-import-hop fixture, where `modelDef.givens` still carried the
