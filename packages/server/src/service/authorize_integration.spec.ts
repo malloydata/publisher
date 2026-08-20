@@ -1839,8 +1839,11 @@ describe("a joined given-based gate is not evaluated (Q16)", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: base_gated is duckdb.table('customers') extend { measure: c is count() }
+source: base_gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 `;
    const G_MID = `import "g_base.malloy"
 
@@ -1919,10 +1922,11 @@ source: g_top is duckdb.table('customers') extend {
 // walk now gates that base too, recursing for a chained derivation and for a
 // query-source reached only via a join.
 describe("authorize query-source derivation enforcement (BLOCKING-5)", () => {
-   const QS_MODEL = `#(authorize) "false"
-source: locked_src is duckdb.table('customers') extend {
+   const QS_MODEL = `source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
+  #(authorize)
+  internal dimension: authorized is false
 }
 
 source: laundered is locked_src -> { select: id, secret }
@@ -1939,14 +1943,20 @@ source: qs_joiner is duckdb.table('customers') extend {
 source: double_laundered is laundered -> { select: id, secret }
 `;
 
-   it("denies (zero rows) a query against a query-source derived from a locked base", async () => {
+   it("denies (AccessDeniedError) a query against a query-source derived from a locked base — guarantee changed from the string form", async () => {
+      // Under the string form this was a zero-rows filter denial: the
+      // walk discovers the gate fine (`query.structRef` reaches
+      // `locked_src` directly), but `laundered`'s own projection
+      // (`-> { select: id, secret }`) does not carry `locked_src`'s
+      // "authorized" field forward, so the by-NAME graft has nothing to
+      // attach `where: authorized` to on `laundered`'s own compiled
+      // struct. Fails CLOSED (denied outright), not open — same root
+      // cause the brief's `except:`/`accept:` KNOWN GAP names, reached via
+      // a projecting pipeline instead of a field-dropping extend.
       await writeModel("qs.malloy", QS_MODEL);
-      const { compactResult } = await runGated(
-         "qs.malloy",
-         "run: laundered -> { select: id, secret }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated("qs.malloy", "run: laundered -> { select: id, secret }", {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("allows a query-source derived from an ungated base", async () => {
@@ -1971,14 +1981,15 @@ source: double_laundered is laundered -> { select: id, secret }
       expect(result.data).toBeDefined();
    });
 
-   it("denies (zero rows) a CHAINED query-source (derived from a derivation of a locked base)", async () => {
+   it("denies (AccessDeniedError) a CHAINED query-source (derived from a derivation of a locked base) — same guarantee change", async () => {
       await writeModel("qs.malloy", QS_MODEL);
-      const { compactResult } = await runGated(
-         "qs.malloy",
-         "run: double_laundered -> { select: id, secret }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated(
+            "qs.malloy",
+            "run: double_laundered -> { select: id, secret }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });
 
