@@ -567,23 +567,50 @@ export async function resolveGateShape(
       // here is that the graft compiled at THIS entry point at all, which the
       // `liftGateCondition` call above already confirmed by succeeding.
       //
-      // `entry.dimensionForm` is unset only for the residual string-form
-      // discovery paths in `gateExprsForOwnAnnotations`/`ancestorGateExprs`
-      // (`./gate_registry_walk`) — unreachable for any model that loaded
-      // successfully, since `assertNoLegacyStringGate` refuses the string
-      // form at load. Reject rather than guess: an unclassifiable gate must
-      // fail closed, not admit.
-      let classification: RowLevelGateClassification = entry.dimensionForm
-         ? {
-              shape: "row_level",
-              givenNames: [...entry.dimensionForm.givenNames],
-           }
-         : {
-              shape: "rejected",
-              cause: "legacy_string_gate",
-              detail:
-                 "this entry's gate is not the dimension form and cannot be classified",
-           };
+      // `entry.dimensionForm` is unset in two cases, and they are NOT the
+      // same:
+      //  - the residual string-form discovery paths in
+      //    `gateExprsForOwnAnnotations`/`ancestorGateExprs`
+      //    (`./gate_registry_walk`) — unreachable for any model that loaded
+      //    successfully, since `assertNoLegacyStringGate` refuses the string
+      //    form at load;
+      //  - the bare `"false"` FAIL-CLOSED SENTINEL those same functions (and
+      //    `collectEntryPointGates`'s own unresolvable-query-source-base
+      //    case) synthesize when ancestry can't be confirmed one way or the
+      //    other — a real, still-live shape (`W_rename`/`W_except`/`W_accept`
+      //    in the entry-point matrix exercise it): the gate dimension was
+      //    inherited unchanged onto THIS struct's fields for most
+      //    derivations, but a `rename:`/`except:`/`accept:` that touches
+      //    ANY field recompiles the whole field list, which does not
+      //    preserve the gate dimension's own annotation the way a bare
+      //    `extend {}` does — so `findGateDimensionCandidates` finds
+      //    nothing, and the walk falls back to its "cannot confirm inherited,
+      //    so deny" sentinel instead of guessing. That sentinel must still
+      //    GRAFT (as `where: false`, a live deny-everyone filter) rather than
+      //    reject outright — rejecting here throws `AccessDeniedError`
+      //    before the graft is even attempted, which is a harsher failure
+      //    mode than the empty-but-successful result a `WHERE false` graft
+      //    produces elsewhere. Told apart by the LIFTED condition's shape,
+      //    not the entry's raw `exprs` text: `liftGateCondition` above
+      //    already confirmed this exact filter text compiled, so reading
+      //    `condition.e` off that trusted result is what `classifyAuthorizeGate`
+      //    used to do for the identical bare-literal case.
+      let classification: RowLevelGateClassification;
+      if (entry.dimensionForm) {
+         classification = {
+            shape: "row_level",
+            givenNames: [...entry.dimensionForm.givenNames],
+         };
+      } else if (isBareBooleanLiteral(condition.e)) {
+         classification = { shape: "row_level", givenNames: [] };
+      } else {
+         classification = {
+            shape: "rejected",
+            cause: "legacy_string_gate",
+            detail:
+               "this entry's gate is not the dimension form and cannot be classified",
+         };
+      }
       // `Model.filterGivensToModelSurface` drops a caller-supplied given that
       // is off this model's own surface, and its safety rests on this: an
       // ACCEPTED gate never references one off `givenDeclaredTypes` (that
@@ -826,6 +853,26 @@ async function liftGateCondition(
       `lifted probe for "${graftTarget}"`,
       filterText,
    );
+}
+
+/**
+ * Whether a compiled gate condition is nothing but a bare boolean literal —
+ * `where: true` / `where: false` — which Malloy's compiler discriminates as
+ * the node kinds `"true"` / `"false"` themselves rather than a `literal`
+ * value on a shared `booleanLiteral` kind (confirmed against
+ * `@malloydata/malloy`'s `BooleanLiteralNode`). Unwraps `()` parenthesization
+ * (the only wrapper the fail-closed sentinel or a hand-written `authorized is
+ * (false)` could be compiled with) but does not walk into `and`/`or` — a
+ * literal buried inside a boolean tree is a dimension-form authoring mistake
+ * that stays on the dimension-form path (`entry.dimensionForm` is set for
+ * any real gate dimension), not this sentinel-only fallback.
+ */
+function isBareBooleanLiteral(expr: { node: string; e?: unknown }): boolean {
+   let node: { node: string; e?: unknown } = expr;
+   while (node.node === "()" && node.e && typeof node.e === "object") {
+      node = node.e as { node: string; e?: unknown };
+   }
+   return node.node === "true" || node.node === "false";
 }
 
 /**
