@@ -378,6 +378,82 @@ describe("IncrementalLedgerRepository", () => {
          ).toBe(1);
       });
 
+      /**
+       * The shape that shipped between the package re-key and the store re-key:
+       * keyed on the table but blind to WHICH STORE that table is in. Seeded
+       * verbatim, so it keeps describing the store that shipped.
+       */
+      const STORE_BLIND_DDL = `
+         CREATE TABLE incremental_ledger (
+           environment_id VARCHAR NOT NULL,
+           package_name VARCHAR NOT NULL,
+           source_entity_id VARCHAR NOT NULL,
+           covered_through_value VARCHAR NOT NULL,
+           covered_through_type VARCHAR NOT NULL,
+           watermark_dimension VARCHAR NOT NULL,
+           merge_key_dimensions JSON NOT NULL,
+           derived_strategy VARCHAR NOT NULL,
+           physical_table_name VARCHAR NOT NULL,
+           connection_name VARCHAR NOT NULL,
+           advanced_by_materialization_id VARCHAR,
+           advanced_at TIMESTAMP NOT NULL,
+           created_at TIMESTAMP NOT NULL,
+           PRIMARY KEY (environment_id, connection_name, physical_table_name)
+         )`;
+
+      it("replaces a store-blind ledger, and two stores then coexist", async () => {
+         const { repo, db } = await freshRepo();
+         await db.run("DROP TABLE incremental_ledger");
+         await db.run(STORE_BLIND_DDL);
+         const now = new Date().toISOString();
+         await db.run(
+            `INSERT INTO incremental_ledger VALUES
+              (?, 'orders', ?, '2024-06-01', 'date', 'order_date', '[]',
+               'range_replace', ?, ?, 'run-1', ?, ?)`,
+            [ENV, SOURCE, TABLE, CONN, now, now],
+         );
+
+         await initializeSchema(db);
+
+         // Dropped rather than migrated, on the same reasoning as the package
+         // re-key above: the boundary is a cache whose miss path is a seed.
+         expect(
+            await repo.get(ENV, {
+               connectionName: CONN,
+               physicalTableName: TABLE,
+            }),
+         ).toBeNull();
+
+         // And the point of the new key: one source persisted colocated and
+         // another persisted into a destination under the same name are two
+         // different tables. Under the old key these shared a row and both seeded
+         // forever, each overwriting the other on the way out.
+         await repo.upsert(entry({ coveredThroughValue: "2024-07-01" }));
+         await repo.upsert(
+            entry({
+               storageDestinationName: "lake",
+               coveredThroughValue: "2024-08-01",
+            }),
+         );
+         expect(
+            (
+               await repo.get(ENV, {
+                  connectionName: CONN,
+                  physicalTableName: TABLE,
+               })
+            )?.coveredThroughValue,
+         ).toBe("2024-07-01");
+         expect(
+            (
+               await repo.get(ENV, {
+                  connectionName: CONN,
+                  storageDestinationName: "lake",
+                  physicalTableName: TABLE,
+               })
+            )?.coveredThroughValue,
+         ).toBe("2024-08-01");
+      });
+
       it("leaves a table-keyed ledger and its boundaries alone", async () => {
          const { repo, db } = await freshRepo();
          await repo.upsert(entry({ coveredThroughValue: "2024-07-01" }));

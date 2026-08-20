@@ -19,10 +19,10 @@ import { DuckDBConnection } from "./DuckDBConnection";
  * address and the package name are recorded but NOT keys — see the schema comment
  * for why keying on them broke a table shared across package versions.
  *
- * A read additionally MATCHES on the storage destination, which the key does not
- * carry (schema comment says why). So a colocated lineage and a stored one at one
- * (connection, table) share the row: the last refresh owns it and the other finds
- * nothing and seeds, rather than reading a boundary measured somewhere else.
+ * The key includes the STORE, because a table persisted colocated and one
+ * persisted into a destination under the same name are two different tables that
+ * coexist legitimately. Keyed without it they would share one row and both would
+ * seed forever, each overwriting the other on the way out.
  *
  * Deliberately has NO locking of its own. The single writer is already
  * guaranteed one level up, by the `active_key` unique index on
@@ -41,19 +41,17 @@ export class IncrementalLedgerRepository {
       environmentId: string,
       table: LedgerTableIdentity,
    ): Promise<IncrementalLedgerEntry | null> {
-      // `IS NOT DISTINCT FROM`, not `=`: the destination is NULL for a colocated
-      // table, and `= NULL` matches nothing, so a plain equality would make every
-      // colocated read miss its own row and seed forever.
       const row = await this.db.get<Record<string, unknown>>(
          `SELECT * FROM incremental_ledger
            WHERE environment_id = ? AND connection_name = ?
-             AND physical_table_name = ?
-             AND storage_destination_name IS NOT DISTINCT FROM ?`,
+             AND storage_destination_name = ? AND physical_table_name = ?`,
          [
             environmentId,
             table.connectionName,
+            // '' is the colocated sentinel the key stores; see the schema comment
+            // for why the key cannot carry a NULL.
+            table.storageDestinationName ?? "",
             table.physicalTableName,
-            table.storageDestinationName ?? null,
          ],
       );
       return row ? mapRow(row) : null;
@@ -80,7 +78,8 @@ export class IncrementalLedgerRepository {
              physical_table_name, connection_name, storage_destination_name,
              advanced_by_materialization_id, advanced_at, created_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (environment_id, connection_name, physical_table_name)
+          ON CONFLICT (environment_id, connection_name,
+                       storage_destination_name, physical_table_name)
           DO UPDATE SET
              package_name = EXCLUDED.package_name,
              source_entity_id = EXCLUDED.source_entity_id,
@@ -104,7 +103,7 @@ export class IncrementalLedgerRepository {
             entry.derivedStrategy,
             entry.physicalTableName,
             entry.connectionName,
-            entry.storageDestinationName ?? null,
+            entry.storageDestinationName ?? "",
             entry.advancedByMaterializationId,
             now,
             now,
@@ -122,17 +121,19 @@ export class IncrementalLedgerRepository {
       environmentId: string,
       table: LedgerTableIdentity,
    ): Promise<void> {
-      // Not matched on the destination, unlike {@link get}. This clears a
-      // boundary because the table it describes is being replaced wholesale, and
-      // the row is shared across destinations — so a destination-scoped delete
-      // could leave behind a boundary measured on a table this rebuild is about
-      // to overwrite. Deleting one row too many costs a seed; leaving one costs
-      // correctness.
+      // Exactly the row this table owns. The key carries the store, so a rebuild
+      // of one table cannot clear a boundary measured on another that happens to
+      // share its connection and name.
       await this.db.run(
          `DELETE FROM incremental_ledger
            WHERE environment_id = ? AND connection_name = ?
-             AND physical_table_name = ?`,
-         [environmentId, table.connectionName, table.physicalTableName],
+             AND storage_destination_name = ? AND physical_table_name = ?`,
+         [
+            environmentId,
+            table.connectionName,
+            table.storageDestinationName ?? "",
+            table.physicalTableName,
+         ],
       );
    }
 

@@ -31,6 +31,7 @@ export async function initializeSchema(
    // database — that is the only case where the old key is on disk — so it runs
    // outside the branch above rather than beside the legacy-projects drop.
    await dropPackageKeyedIncrementalLedger(db);
+   await dropStoreBlindIncrementalLedger(db);
 
    // Always fall through to the CREATE TABLE IF NOT EXISTS pass below.
    // The statements are idempotent and let an already-initialized DB pick
@@ -213,7 +214,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       derived_strategy VARCHAR NOT NULL,
       physical_table_name VARCHAR NOT NULL,
       connection_name VARCHAR NOT NULL,
-      -- The storage destination the table lives in, or NULL when it lives in
+      -- The storage destination the table lives in, or '' when it lives in
       -- connection_name's own warehouse (the colocated default). Part of the
       -- table's IDENTITY, not a description of it: a destination and a connection
       -- are separate namespaces that may share a name, and a source's physical
@@ -221,19 +222,26 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       -- boundary measured on a stored table is indistinguishable from one
       -- measured on a colocated table of the same name.
       --
-      -- Deliberately NOT part of the primary key, and deliberately NULLable. A
-      -- nullable column is the only kind the boot-time column reconcile can add
-      -- to a store that predates it (a constrained or NOT NULL column reports as
-      -- needing a hand migration), and the key does not need it: two lineages at
-      -- one (connection, table) share the row, so whichever refreshed last owns
-      -- it and the other reads no matching row and SEEDS. That is the safe
-      -- direction, and it costs one full rebuild in a case that only arises when
-      -- a source moves between destinations.
-      storage_destination_name VARCHAR,
+      -- In the KEY, because two such tables coexist legitimately. A source
+      -- persisted colocated and another persisted into a destination under the
+      -- same name are two different tables and neither is a misconfiguration —
+      -- the within-package collision check keys on the destination too, so it
+      -- correctly says nothing about the pair. Sharing one row between them makes
+      -- both seed forever: each read matches on the store, finds nothing, and
+      -- overwrites the other's row on the way out. Nothing reports that; it just
+      -- never advances.
+      --
+      -- '' rather than NULL, and that is what makes it keyable. A NULL in the key
+      -- defeats ON CONFLICT (NULL never equals NULL, so two colocated rows both
+      -- insert) and forces every read to compare with IS NOT DISTINCT FROM. The
+      -- sentinel keeps the key a plain equality on every path.
+      storage_destination_name VARCHAR NOT NULL DEFAULT '',
       advanced_by_materialization_id VARCHAR,
       advanced_at TIMESTAMP NOT NULL,
       created_at TIMESTAMP NOT NULL,
-      PRIMARY KEY (environment_id, connection_name, physical_table_name)
+      PRIMARY KEY (
+        environment_id, connection_name, storage_destination_name,
+        physical_table_name)
     )
   `);
 
@@ -602,6 +610,52 @@ export function planColumnReconcile(
  * costs one full rebuild per incremental source, which is exactly what the old key
  * was already costing on every publish.
  */
+/**
+ * Drop an `incremental_ledger` whose primary key predates the storage destination.
+ *
+ * Same shape, same reasoning and the same cost as
+ * {@link dropPackageKeyedIncrementalLedger} below: the key is read rather than a
+ * schema version, so this is self-limiting — once no database carries the old key
+ * it never fires again — and the boundaries go with the table, which costs one
+ * full rebuild per incremental source and then resumes advancing.
+ *
+ * A migration that preserved the rows is possible (rename, recreate, copy with ''
+ * for the new column) and was deliberately not taken: it buys one avoided rebuild
+ * of a feature that is not yet widely released, and pays for it with a
+ * partial-failure state in schema initialization — a half-copied ledger and a
+ * stranded `_old` table — which is a worse thing to own than a rebuild.
+ */
+async function dropStoreBlindIncrementalLedger(
+   db: DuckDBConnection,
+): Promise<void> {
+   const present = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='incremental_ledger'",
+   );
+   if (!present || present.length === 0) {
+      return;
+   }
+   const columns = await db.all<{ name: string; pk: boolean }>(
+      "PRAGMA table_info('incremental_ledger')",
+   );
+   // Nothing to do for a table this build created; the old key is identifiable by
+   // the destination being absent from it — either the column does not exist at
+   // all, or it exists as the nullable non-key form that shipped before this.
+   const destinationInKey = columns.some(
+      (column) =>
+         column.name === "storage_destination_name" && Boolean(column.pk),
+   );
+   if (destinationInKey) {
+      return;
+   }
+   logger.info(
+      "Re-keying the incremental ledger onto (environment, connection, store, " +
+         "table); recorded covered_through boundaries are discarded, so each " +
+         "incremental source rebuilds in full once and then resumes advancing by " +
+         "delta",
+   );
+   await db.run("DROP TABLE IF EXISTS incremental_ledger");
+}
+
 async function dropPackageKeyedIncrementalLedger(
    db: DuckDBConnection,
 ): Promise<void> {

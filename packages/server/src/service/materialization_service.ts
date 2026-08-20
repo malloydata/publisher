@@ -469,26 +469,31 @@ function tableKeyOf(
 }
 
 /**
- * Whether a manifest entry names a stored table THIS run's write produced, and so
- * one a failed run may reclaim.
+ * Whether a manifest entry names a stored table a failed run may reclaim.
  *
- * Only a write is reclaimable. A refresh that ADVANCED a table in place did not
- * produce it — and for an incremental source that name is the LIVE serving table,
- * so reclaiming it because a LATER source in the run failed would take the source
- * off its stored table until some rebuild put it back. A rebuild stays
- * reclaimable: it replaced whatever was there, so the prior generation is already
- * gone and dropping a half-built replacement loses nothing.
+ * An INCREMENTALLY REFRESHED source is never reclaimed, whatever this run did to
+ * its table. Its physical name has to be stable across runs or its boundary never
+ * matches, so that name is not a fresh generation nobody else knows about — a
+ * prior manifest may bind it, and a refresh writes it in place either way: a delta
+ * as DML, a re-seed as `CREATE OR REPLACE`. Dropping it because a LATER source in
+ * the run failed takes the source off its stored table until some rebuild puts it
+ * back, and it is the same harm whether the run advanced the table or rebuilt it
+ * correctly. `entry.refresh` is present exactly for such a source, so its presence
+ * is the test.
  *
- * The reclaim's own `stillReferenced` check does not cover this. It spares a table
- * that some READY manifest of the SAME package name serves, and a host that
- * version-qualifies its package names sees none of its own earlier manifests.
+ * The cost of that is a first build whose run then failed: no manifest records the
+ * table, so this reclaim is the only thing that could have dropped it. That is
+ * deliberately left to the orchestrator, which has the durable sweep for it — the
+ * control plane already leaves a dead build's table to its own orphan sweeper
+ * rather than dropping it, for the same reason. A leak the host reclaims later is
+ * a better trade than a live serving table dropped now.
+ *
+ * The reclaim's own `stillReferenced` check does not cover any of this. It spares
+ * a table that some READY manifest of the SAME package name serves, and a host
+ * that version-qualifies its package names sees none of its own earlier manifests.
  */
 export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
-   return (
-      !!entry.storageDestinationName &&
-      entry.refresh !== "delta" &&
-      entry.refresh !== "none"
-   );
+   return !!entry.storageDestinationName && entry.refresh === undefined;
 }
 
 export class MaterializationService {

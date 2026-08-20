@@ -284,8 +284,6 @@ export async function planSourceRefresh(params: {
          };
       }
    }
-   // Only asked when it can change the answer: the version gates MERGE alone,
-   // and a source with no recorded boundary is seeding regardless.
    // Asked of the TARGET, because the floor is about where the MERGE runs: a
    // `storage=` source reads from Postgres and writes to DuckDB, so keying this
    // on the source's dialect would send `server_version_num` to an engine that

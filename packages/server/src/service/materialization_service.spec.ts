@@ -3595,24 +3595,21 @@ describe("isReclaimableStorageTable", () => {
          ...over,
       }) as Entry;
 
-   it("reclaims a stored table this run wrote", () => {
+   it("reclaims a stored table from a source that is not refreshed incrementally", () => {
+      // A fresh generational name nothing else knows about: exactly what the
+      // reclaim exists for.
       expect(
          isReclaimableStorageTable(entry({ storageDestinationName: "lake" })),
       ).toBe(true);
-      // A rebuild of an incremental source replaced whatever was at the name, so
-      // the prior generation is already gone and the half-built result is the only
-      // thing a drop can take.
-      expect(
-         isReclaimableStorageTable(
-            entry({ storageDestinationName: "lake", refresh: "full" }),
-         ),
-      ).toBe(true);
    });
 
-   it("never reclaims a table a refresh only advanced", () => {
-      // The live serving table. A later source failing the run must not take this
-      // source off its stored table.
-      for (const refresh of ["delta", "none"] as const) {
+   it("never reclaims a table an incremental source owns, whatever this run did", () => {
+      // Its name is stable across runs by contract, so it is not a fresh
+      // generation — a prior manifest may bind it, and a refresh writes it in
+      // place either way: a delta as DML, a re-seed as CREATE OR REPLACE. A later
+      // source failing the run must not take the source off its stored table, and
+      // `full` is as exposed as `delta` here.
+      for (const refresh of ["delta", "none", "full"] as const) {
          expect(
             isReclaimableStorageTable(
                entry({ storageDestinationName: "lake", refresh }),

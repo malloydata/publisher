@@ -202,6 +202,22 @@ describe("probeTargetColumns on a storage destination", () => {
       expect(seen[0]).toContain("table_name = 'orders__g000__abc'");
    });
 
+   it("decodes a hyphenated destination or table name", async () => {
+      // Neither a destination name nor a `#@ persist name=` is charset-validated,
+      // and both the ATTACH and the CTAS quote them — so rejecting a hyphen here
+      // would leave the build and the serve working while only this probe failed,
+      // which reads as `table_unreadable` and seeds every run forever.
+      const { session, seen } = fakeSession();
+      const probe = await probeTargetColumns(
+         (sql) => session.runSQL(sql) as Promise<{ rows: unknown[] }>,
+         "duckdb",
+         "my-lake.orders-v1",
+      );
+      expect(probe.columns).not.toEqual([]);
+      expect(seen[0]).toContain("database_name = 'my-lake'");
+      expect(seen[0]).toContain("table_name = 'orders-v1'");
+   });
+
    it("scopes to a schema-qualified persist name when the path carries one", async () => {
       const { session, seen } = fakeSession();
       await probeTargetColumns(

@@ -163,9 +163,10 @@ export function storageDeltaTarget(params: {
                const result = await session.runSQL(
                   wrapPassthrough(sourceType, handle, inner),
                );
-               const rows = (
-                  Array.isArray(result) ? result : (result?.rows ?? [])
-               ) as Record<string, unknown>[];
+               // `result.rows`, matching the probes that run on this same
+               // session: db-duckdb types runSQL as MalloyQueryData, so an array
+               // branch here would only suggest the shape were in doubt.
+               const rows = (result?.rows ?? []) as Record<string, unknown>[];
                const raw = rows[0]?.["watermark_max"];
                if (raw === null || raw === undefined) return {};
                return {

@@ -183,7 +183,11 @@ function datePrecision(value: string): string {
  * text (see canonicalBoundValue). Postgres and BigQuery read it as UTC outright;
  * Snowflake reads it as session time and its Malloy driver pins every session to
  * `TIMEZONE = 'UTC'`, so a comparison against a TIMESTAMP_LTZ column lands on
- * the same instant.
+ * the same instant. DuckDB — the target dialect for a `storage=` table — also
+ * resolves a naive literal against a TIMESTAMPTZ column in the session's zone,
+ * and the build session is pinned to UTC for exactly this reason (see
+ * `pinSessionToUTC`); on the host's own zone the range would silently land on the
+ * wrong rows.
  */
 export function renderSqlBound(
    bound: WatermarkBound,
@@ -363,10 +367,17 @@ const TABLE_PATH_OPTIONS: Record<
    // written, and the metadata read below compares against the stored text, so
    // folding a bare segment would miss a table the build created from a
    // mixed-case name.
+   //
+   // `-` is admitted, as it is for `standardsql` above. What is decoded here is a
+   // LOGICAL path the caller assembled from a destination name and a persist name,
+   // not SQL an author wrote, and neither of those is charset-validated — so
+   // rejecting a hyphen would leave `my-lake` (or `name="orders-v1"`) building and
+   // serving perfectly while only this probe failed, which reads as `table_
+   // unreadable` and seeds every run forever.
    duckdb: {
       quoteChar: '"',
       escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$]*/,
+      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$-]*/,
    },
 };
 

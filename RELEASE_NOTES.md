@@ -262,9 +262,20 @@ a bounded `[covered_through, frontier)` delta instead of being rebuilt.
 
 ### Upgrading
 
-Nothing to do. `publisher.db` picks up the ledger's new column on boot, and recorded boundaries
-survive — pinned by an upgrade test, since a store that predated the column would otherwise fail
-every incremental refresh rather than only the stored ones. A source that was rejected for declaring both keys now publishes and refreshes incrementally
+**Every incremental source rebuilds once.** A boundary is now keyed by the store its table lives in
+as well as by the connection and the name, because a source persisted colocated and one persisted
+into a destination under the same name are two different tables that coexist legitimately — sharing
+one row made both seed forever, each overwriting the other. `publisher.db` re-keys the ledger on
+boot and discards the recorded boundaries with it, so each incremental source takes one full rebuild
+and then resumes advancing by delta. Same mechanism, and the same one-time cost, as the re-key in
+0.0.240.
+
+**If you hold the ledger yourself, store the new field before you upgrade.** An entry returned
+without `storageDestinationName` for a source materialized into a destination describes a different
+table, so that source seeds — every run, not once, until the caller round-trips it. That is
+deliberate (an entry from a caller that predates the field is stale, not wrong, so it is not
+rejected) but the only signal is a repeating `no_boundary`. Update the caller's ledger storage first,
+or accept full rebuilds until you do. A source that was rejected for declaring both keys now publishes and refreshes incrementally
 on its next build, which seeds once and advances after that.
 
 ## [Unreleased]: a given's control contract is read off its own tags
