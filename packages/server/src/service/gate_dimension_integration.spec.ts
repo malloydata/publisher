@@ -1061,3 +1061,189 @@ describe("pins — load-bearing inferences", () => {
       }
    });
 });
+
+describe("caller-submitted derivations cannot launder the gate away", () => {
+   /** The one gated model every case below queries: `authorized` is the gate
+    *  dimension, keyed on `$GROUPS`, so org1's two rows are the whole of a
+    *  `GROUPS: ["org1"]` caller's legitimate result. */
+   const GATED_MODEL = `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\n`;
+
+   /** `ids`, but for arbitrary caller-submitted query TEXT rather than a
+    *  model-declared source name — the surface a caller who can post a query
+    *  actually controls. */
+   async function idsForText(
+      model: Model,
+      text: string,
+      givens: Record<string, GivenValue>,
+   ): Promise<number[]> {
+      const result = await model.getQueryResults(
+         undefined,
+         undefined,
+         text,
+         {},
+         true,
+         givens,
+      );
+      return (
+         result.compactResult as unknown as ReadonlyArray<
+            Record<string, unknown>
+         >
+      ).map((r) => Number(r.id));
+   }
+
+   /** The three caller-text shapes that DROP the gate dimension. Each one
+    *  compiles cleanly and, before the graft-target check in
+    *  `assertCallerDerivationRetainsGate`, read every row of both orgs with
+    *  no givens at all. */
+   const LAUNDERING_SHAPES: ReadonlyArray<[string, string]> = [
+      [
+         "accept: drops the gate dimension by omission",
+         "source: mine is X extend { accept: id, org_id, amount }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "except: drops the gate dimension by name",
+         "source: mine is X extend { except: authorized }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "two-hop: a second alias over the first launders it one link further",
+         "source: mine is X extend { except: authorized }\nsource: mine2 is mine extend {}\nrun: mine2 -> { select: id; order_by: id }",
+      ],
+      [
+         "a backtick-quoted alias name is not a different spelling",
+         "source: `my-src` is X extend { except: authorized }\nrun: `my-src` -> { select: id; order_by: id }",
+      ],
+      [
+         "an inline extend on the laundered alias at the run site does not re-hide it",
+         "source: mine is X extend { except: authorized }\nrun: mine extend {} -> { select: id; order_by: id }",
+      ],
+   ];
+
+   for (const [label, text] of LAUNDERING_SHAPES) {
+      it(`denies caller text that drops the gate dimension — ${label}`, async () => {
+         const { model, duckdb, dir } = await createModel(GATED_MODEL);
+         try {
+            expect(compilationErrorOf(model)).toBeUndefined();
+            // No givens at all: an anonymous caller. Denial is the same
+            // cannot-attach backstop the trivial `extend {}` case already
+            // returns — there is no gate left on the run target to evaluate,
+            // so this is a 403, not a 200 with zero rows.
+            await expect(idsForText(model, text, {})).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      });
+
+      it(`denies the same laundering even when the caller supplies correct givens — ${label}`, async () => {
+         const { model, duckdb, dir } = await createModel(GATED_MODEL);
+         try {
+            // Supplying `GROUPS` does not make a dropped gate enforceable:
+            // there is no gate field left to graft onto, so the answer is the
+            // same refusal rather than a silently-unfiltered read.
+            await expect(
+               idsForText(model, text, { GROUPS: ["org1"] }),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      });
+   }
+
+   it("legitimate access is untouched — the gated source itself, with correct givens, still reads exactly the caller's own rows", async () => {
+      const { model, duckdb, dir } = await createModel(GATED_MODEL);
+      try {
+         expect(await ids(model, "X", { GROUPS: ["org1"] })).toEqual([1, 2]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a caller derivation that KEEPS the gate dimension denies too — the graft target is ephemeral, so this is the behavior the laundering shapes now match", async () => {
+      const { model, duckdb, dir } = await createModel(GATED_MODEL);
+      try {
+         // Pinned as CONTEXT for the fix, not as a fix of its own: naming
+         // `authorized` in the `accept:` list keeps the annotated field, so
+         // discovery finds the gate — but `resolveGraftTarget` has no
+         // `modelDef.contents` key for a caller-declared alias, so the gate
+         // rejects and the query denies. This already held before the fix,
+         // with correct givens supplied, which is exactly why failing the
+         // gate-DROPPING shapes closed restores consistency rather than
+         // adding a new restriction class.
+         await expect(
+            idsForText(
+               model,
+               "source: mine is X extend { accept: id, org_id, amount, authorized }\nrun: mine -> { select: id; order_by: id }",
+               { GROUPS: ["org1"] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("regression pin — the trivial `extend {}` caller derivation denies with no givens and filters with them", async () => {
+      const { model, duckdb, dir } = await createModel(GATED_MODEL);
+      try {
+         const text =
+            "source: mine is X extend {}\nrun: mine -> { select: id; order_by: id }";
+         // Behavior that predates the fix, pinned so the fix cannot change
+         // it: the gate survives a trivial extend (Malloy flattens the
+         // unchanged field into the deriving struct), and it denies with or
+         // without givens because a caller-declared alias is not a
+         // `modelDef.contents` key the gate's condition can be grafted onto.
+         await expect(idsForText(model, text, {})).rejects.toBeInstanceOf(
+            AccessDeniedError,
+         );
+         await expect(
+            idsForText(model, text, { GROUPS: ["org1"] }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a caller derivation over an UNGATED source is untouched", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `source: Open is duckdb.table('accounts') extend {\n   dimension: doubled is amount * 2\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The check keys on the derivation base actually carrying a gate, so
+         // ordinary ad-hoc composition over an ungated source must not deny.
+         expect(
+            await idsForText(
+               model,
+               "source: mine is Open extend { accept: id, amount }\nrun: mine -> { select: id; order_by: id }",
+               {},
+            ),
+         ).toEqual([1, 2, 3, 4]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("KNOWN GAP preserved — a MODEL-authored derivation that drops the gate still fails open when a caller composes over it", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\nsource: Y is X extend {\n   except: authorized\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The line this fix draws is caller-submitted query text vs.
+         // model-declared sources. `Y` is the author's own (documented,
+         // accepted) drop — Malloy keeps no IR link from `Y` back to `X`, so
+         // there is nothing to detect it against — and composing over `Y` in
+         // caller text inherits that acceptance rather than becoming a new
+         // deny.
+         expect(
+            await idsForText(
+               model,
+               "source: mine is Y extend {}\nrun: mine -> { select: id; order_by: id }",
+               {},
+            ),
+         ).toEqual([1, 2, 3, 4]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
