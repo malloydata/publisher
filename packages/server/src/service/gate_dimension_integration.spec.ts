@@ -38,12 +38,18 @@ const ROOT = "file:///gate-dimension-tests/";
  *  observable effect and an empty array is distinguishable from "no gate".
  *  `region` (added for the C2 function-call cases below) is pre-uppercased
  *  so `upper(region)`, `region` alone, and `upper($REGION)` all compare
- *  case-consistently across the different spellings those cases exercise. */
+ *  case-consistently across the different spellings those cases exercise.
+ *  `nested` carries a record column and an array column so a gate can read
+ *  THROUGH one (the R2 cases below); its `org` values mirror `accounts`. */
 const SEED_SQL = `
 CREATE OR REPLACE TABLE accounts (id INTEGER, org_id VARCHAR, amount INTEGER, region VARCHAR);
 INSERT INTO accounts VALUES
    (1, 'org1', 100, 'EAST'), (2, 'org1', 200, 'WEST'),
    (3, 'org2', 300, 'EAST'), (4, 'org2', 400, 'WEST');
+CREATE OR REPLACE TABLE nested AS
+   SELECT 1 AS id, {'org': 'org1'} AS rec, ['org1'] AS tags
+   UNION ALL SELECT 2, {'org': 'org1'}, ['org1']
+   UNION ALL SELECT 3, {'org': 'org2'}, ['org2'];
 `;
 
 async function newDuckdb(): Promise<DuckDBConnection> {
@@ -690,6 +696,72 @@ describe("join-qualified given references (C1 regression — see task-2-report.m
             declaredGivenNames,
          );
          expect(resolved?.name).toBe("authorized");
+      } finally {
+         await duckdb.close();
+      }
+   });
+});
+
+describe("gates reading THROUGH a record or array field (R2)", () => {
+   /** A record/array-typed dimension carries Malloy's `join` marker but is
+    *  not a `SourceDef`, so requiring `isSourceDef` on every intermediate
+    *  path segment wrongly refused these legal gates at load. Each case also
+    *  asserts the UNBOUND request denies opaquely, which is what proves the
+    *  given was actually tracked through the segment rather than the gate
+    *  merely loading. */
+   it("a record-field reference (`rec.org`) loads, filters, and still tracks the given", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  ROLE :: string\n\nsource: nested is duckdb.table('nested') extend {\n   #(authorize)\n   internal dimension: authorized is rec.org = $ROLE\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "nested", { ROLE: "org1" })).toEqual([1, 2]);
+         await expect(ids(model, "nested", {})).rejects.toBeInstanceOf(
+            AccessDeniedError,
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("an array-field reference (`tags.each`) loads, filters, and still tracks the given", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  ROLE :: string\n\nsource: nested is duckdb.table('nested') extend {\n   #(authorize)\n   internal dimension: authorized is tags.each = $ROLE\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "nested", { ROLE: "org1" })).toEqual([1, 2]);
+         await expect(ids(model, "nested", {})).rejects.toBeInstanceOf(
+            AccessDeniedError,
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("negative control — a genuinely unresolvable non-empty path is still refused, not expanded to no givens", async () => {
+      const duckdb = await newDuckdb();
+      try {
+         const { modelDef, declaredGivenNames } = await compileModelDef(
+            `given:\n  ROLE :: string\n\nsource: nested is duckdb.table('nested') extend {\n   #(authorize)\n   internal dimension: authorized is rec.org = $ROLE\n}\n`,
+            duckdb,
+         );
+         const struct = sourceOf(modelDef, "nested");
+         // The same gate validated against a struct with `rec` removed: the
+         // path stays non-empty and is now unresolvable, which must remain a
+         // hard refusal — the `{ok: false}` guarantee G4 rests on.
+         const trimmed = {
+            ...struct,
+            fields: struct.fields.filter((f: FieldDef) => f.name !== "rec"),
+         } as unknown as SourceDef;
+         expect(() =>
+            validateGateDimension(
+               "nested",
+               trimmed,
+               modelDef,
+               declaredGivenNames,
+            ),
+         ).toThrow(/could not be resolved/);
       } finally {
          await duckdb.close();
       }
