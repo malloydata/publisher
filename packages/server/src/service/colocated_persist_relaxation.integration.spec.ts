@@ -473,7 +473,7 @@ source: base is duckdb.sql("""
 #@ persist name="orders"
 source: orders is base -> { select: id, org_id, amount } extend {
    #(authorize)
-   dimension: authorized is org_id = 'org1'
+   internal dimension: authorized is org_id = 'org1'
 }
 `,
          });
@@ -518,7 +518,7 @@ source: base is duckdb.sql("""
 #@ persist name="orders"
 source: orders is base -> { select: id, org_id, amount } extend {
    #(authorize)
-   dimension: authorized is org_id in $GROUPS
+   internal dimension: authorized is org_id in $GROUPS
 }
 `,
          });
