@@ -468,6 +468,29 @@ function tableKeyOf(
    ].join("\u0000");
 }
 
+/**
+ * Whether a manifest entry names a stored table THIS run's write produced, and so
+ * one a failed run may reclaim.
+ *
+ * Only a write is reclaimable. A refresh that ADVANCED a table in place did not
+ * produce it — and for an incremental source that name is the LIVE serving table,
+ * so reclaiming it because a LATER source in the run failed would take the source
+ * off its stored table until some rebuild put it back. A rebuild stays
+ * reclaimable: it replaced whatever was there, so the prior generation is already
+ * gone and dropping a half-built replacement loses nothing.
+ *
+ * The reclaim's own `stillReferenced` check does not cover this. It spares a table
+ * that some READY manifest of the SAME package name serves, and a host that
+ * version-qualifies its package names sees none of its own earlier manifests.
+ */
+export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
+   return (
+      !!entry.storageDestinationName &&
+      entry.refresh !== "delta" &&
+      entry.refresh !== "none"
+   );
+}
+
 export class MaterializationService {
    /** In-flight runs, so they can be cancelled. In-process only. */
    private runningAbortControllers = new Map<string, AbortController>();
@@ -1862,7 +1885,7 @@ export class MaterializationService {
                }
                builtSources.push(persistSource.name);
                entries[sourceEntityId] = entry;
-               if (entry.storageDestinationName) builtThisRun.push(entry);
+               if (isReclaimableStorageTable(entry)) builtThisRun.push(entry);
             }
          }
 
@@ -2814,13 +2837,14 @@ export class MaterializationService {
          schema: result.schema,
          realization: instruction.realization,
          rowCount: null,
-         // A SKIP applied nothing, so it reports null rather than the wall-clock
-         // of deciding that: a zero-ish duration would average into the series as
-         // an implausibly fast build.
-         buildDurationMs:
-            result.refresh && result.refresh.durationMs === undefined
-               ? null
-               : durationMs,
+         // A refresh reports what the APPLY took, matching the colocated path and
+         // the field's own definition ("around the build itself"), rather than the
+         // session setup around it. A SKIP applied nothing and so reports null:
+         // the wall-clock of deciding that would average into the series as an
+         // implausibly fast build.
+         buildDurationMs: result.refresh
+            ? (result.refresh.durationMs ?? null)
+            : durationMs,
          // Where the table's coverage now reaches, and what this run DID to it —
          // reported for a stored table exactly as for a colocated one, so a caller
          // reads incremental progress rather than inferring it. Absent for a

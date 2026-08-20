@@ -41,7 +41,10 @@ import {
 } from "./materialization_service";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
-import { tallySources } from "./materialization_service";
+import {
+   isReclaimableStorageTable,
+   tallySources,
+} from "./materialization_service";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -3583,6 +3586,49 @@ describe("transition (state machine)", () => {
 // guards get assertions rather than a trace. Scenario 64 covers it end to end,
 // but hammer does not run in CI — and the failure mode is silent data loss, not
 // a broken build.
+describe("isReclaimableStorageTable", () => {
+   type Entry = Parameters<typeof isReclaimableStorageTable>[0];
+   const entry = (over: Partial<Entry>) =>
+      ({
+         sourceEntityId: "eid",
+         physicalTableName: "daily_v1",
+         ...over,
+      }) as Entry;
+
+   it("reclaims a stored table this run wrote", () => {
+      expect(
+         isReclaimableStorageTable(entry({ storageDestinationName: "lake" })),
+      ).toBe(true);
+      // A rebuild of an incremental source replaced whatever was at the name, so
+      // the prior generation is already gone and the half-built result is the only
+      // thing a drop can take.
+      expect(
+         isReclaimableStorageTable(
+            entry({ storageDestinationName: "lake", refresh: "full" }),
+         ),
+      ).toBe(true);
+   });
+
+   it("never reclaims a table a refresh only advanced", () => {
+      // The live serving table. A later source failing the run must not take this
+      // source off its stored table.
+      for (const refresh of ["delta", "none"] as const) {
+         expect(
+            isReclaimableStorageTable(
+               entry({ storageDestinationName: "lake", refresh }),
+            ),
+         ).toBe(false);
+      }
+   });
+
+   it("ignores a colocated entry, which this sweep does not own", () => {
+      expect(isReclaimableStorageTable(entry({}))).toBe(false);
+      expect(isReclaimableStorageTable(entry({ refresh: "delta" }))).toBe(
+         false,
+      );
+   });
+});
+
 describe("reclaimStorageTablesFromFailedRun", () => {
    let ctx: ReturnType<typeof createMocks>;
    let infoLog: sinon.SinonStub;

@@ -8,6 +8,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
+import { IncrementalLedgerRepository } from "../../../src/storage/duckdb/IncrementalLedgerRepository";
 import { MaterializationRepository } from "../../../src/storage/duckdb/MaterializationRepository";
 import {
    type ColumnShape,
@@ -60,6 +61,54 @@ async function seedPreManifestSchema(db: DuckDBConnection): Promise<void> {
    `);
    await db.run(
       `INSERT INTO environments VALUES ('env-1', 'env-one', '/e', NULL, NULL,
+         TIMESTAMP '2026-06-01 00:00:00', TIMESTAMP '2026-06-01 00:00:00')`,
+   );
+}
+
+/**
+ * The `incremental_ledger` shape from before the storage destination joined a
+ * boundary's table identity: keyed the same way, with no
+ * `storage_destination_name`. Seeded verbatim for the same reason as above — it
+ * has to keep describing the store that shipped.
+ *
+ * `environments` comes first because `isInitialized()` keys on it: without it the
+ * store reads as brand new, the reconcile is skipped, and the test would pass or
+ * fail on the CREATE pass instead of on the upgrade it is written to cover.
+ */
+async function seedPreDestinationLedger(db: DuckDBConnection): Promise<void> {
+   await db.run(`
+      CREATE TABLE environments (
+         id VARCHAR PRIMARY KEY,
+         name VARCHAR NOT NULL UNIQUE,
+         path VARCHAR NOT NULL,
+         description VARCHAR,
+         metadata JSON,
+         created_at TIMESTAMP NOT NULL,
+         updated_at TIMESTAMP NOT NULL
+      )
+   `);
+   await db.run(`
+      CREATE TABLE incremental_ledger (
+         environment_id VARCHAR NOT NULL,
+         package_name VARCHAR NOT NULL,
+         source_entity_id VARCHAR NOT NULL,
+         covered_through_value VARCHAR NOT NULL,
+         covered_through_type VARCHAR NOT NULL,
+         watermark_dimension VARCHAR NOT NULL,
+         merge_key_dimensions JSON NOT NULL,
+         derived_strategy VARCHAR NOT NULL,
+         physical_table_name VARCHAR NOT NULL,
+         connection_name VARCHAR NOT NULL,
+         advanced_by_materialization_id VARCHAR,
+         advanced_at TIMESTAMP NOT NULL,
+         created_at TIMESTAMP NOT NULL,
+         PRIMARY KEY (environment_id, connection_name, physical_table_name)
+      )
+   `);
+   await db.run(
+      `INSERT INTO incremental_ledger VALUES ('env-1', 'pkg-a', 'addr-1',
+         '2026-06-01', 'date', 'order_date', '[]', 'range_replace',
+         'orders_v1', 'wh', 'mat-1',
          TIMESTAMP '2026-06-01 00:00:00', TIMESTAMP '2026-06-01 00:00:00')`,
    );
 }
@@ -159,6 +208,64 @@ describe("DuckDB declared-column reconcile", () => {
       );
       expect(await tableConstraints(db, "materializations")).toEqual(
          await tableConstraints(mirror, "materializations"),
+      );
+
+      await mirror.close();
+      await db.close();
+   });
+
+   it("adds `storage_destination_name` to a ledger that predates it, so a stored boundary can be recorded", async () => {
+      const db = new DuckDBConnection(
+         path.join(TEST_DB_DIR, "predestination.duckdb"),
+      );
+      await db.initialize();
+      await seedPreDestinationLedger(db);
+
+      await initializeSchema(db);
+
+      expect(await columnNames(db, "incremental_ledger")).toContain(
+         "storage_destination_name",
+      );
+
+      // The write that names the column, which is every ledger advance: before
+      // the reconcile this threw a binder error, so a store that predated the
+      // column would fail every refresh of every incremental source rather than
+      // only the stored ones.
+      const ledger = new IncrementalLedgerRepository(db);
+      const stored = await ledger.upsert({
+         environmentId: "env-1",
+         packageName: "pkg-a",
+         sourceEntityId: "addr-2",
+         coveredThroughValue: "2026-07-01",
+         coveredThroughType: "date",
+         watermarkDimension: "order_date",
+         mergeKeyDimensions: [],
+         derivedStrategy: "range_replace",
+         physicalTableName: "orders_v2",
+         connectionName: "wh",
+         storageDestinationName: "lake",
+         advancedByMaterializationId: "mat-2",
+      });
+      expect(stored.storageDestinationName).toBe("lake");
+
+      // The pre-existing row survives with no destination, which is what absence
+      // MEANS — a boundary measured on a colocated table — so it still reads back
+      // for the colocated lineage rather than being stranded by the upgrade.
+      const colocated = await ledger.get("env-1", {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+      });
+      expect(colocated?.coveredThroughValue).toBe("2026-06-01");
+      expect(colocated?.storageDestinationName).toBeUndefined();
+
+      const mirror = new DuckDBConnection(":memory:");
+      await mirror.initialize();
+      await initializeSchema(mirror);
+      expect(await fullShape(db, "incremental_ledger")).toEqual(
+         await fullShape(mirror, "incremental_ledger"),
+      );
+      expect(await tableConstraints(db, "incremental_ledger")).toEqual(
+         await tableConstraints(mirror, "incremental_ledger"),
       );
 
       await mirror.close();

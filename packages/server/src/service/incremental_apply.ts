@@ -470,10 +470,11 @@ export async function probeTargetColumns(
       // wrote.
       const schema =
          segments.length >= 3 ? segments[segments.length - 2] : "main";
-      const database =
-         segments.length >= 3
-            ? segments[segments.length - 3]
-            : segments[segments.length - 2];
+      // The destination catalog is the FIRST segment, because the caller builds
+      // this path as `<destination>.<name>` — counting back from the end instead
+      // would read a longer name's own container as the catalog and probe a
+      // database that is not this destination.
+      const database = segments[0];
       sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
               FROM duckdb_columns()
               WHERE database_name = '${escapeSqlString(database, dialect)}'
@@ -839,6 +840,18 @@ export function deltaScript(statements: string[]): string {
  * rollback that fails (a session already reset, a dialect with nothing to roll
  * back) changes nothing.
  */
+/**
+ * Dialects that abandon a failed script's transaction themselves, so the rollback
+ * below is not merely unnecessary but noisy: DuckDB answers a `ROLLBACK` with no
+ * active transaction by RAISING, which would log the "a pooled connection may
+ * stay in an aborted transaction" warning on every failed delta — sending an
+ * operator after a poisoned connection that this engine cannot have, since a
+ * build session is private and single-use. Measured: after a failed
+ * BEGIN/…/COMMIT script the session is immediately usable and nothing was
+ * applied.
+ */
+const SELF_ROLLING_BACK_DIALECTS: ReadonlySet<string> = new Set(["duckdb"]);
+
 export async function applyDeltaScript(
    runner: SqlRunner,
    dialect: string,
@@ -847,7 +860,7 @@ export async function applyDeltaScript(
    try {
       await runner(deltaScript(statements));
    } catch (err) {
-      if (statements.length > 1) {
+      if (statements.length > 1 && !SELF_ROLLING_BACK_DIALECTS.has(dialect)) {
          try {
             await runner(transactionKeywords(dialect).rollback);
          } catch (rollbackErr) {

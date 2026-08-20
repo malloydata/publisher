@@ -263,7 +263,8 @@ a bounded `[covered_through, frontier)` delta instead of being rebuilt.
 ### Upgrading
 
 Nothing to do. `publisher.db` picks up the ledger's new column on boot, and recorded boundaries
-survive. A source that was rejected for declaring both keys now publishes and refreshes incrementally
+survive — pinned by an upgrade test, since a store that predated the column would otherwise fail
+every incremental refresh rather than only the stored ones. A source that was rejected for declaring both keys now publishes and refreshes incrementally
 on its next build, which seeds once and advances after that.
 
 ## [Unreleased]: a given's control contract is read off its own tags
