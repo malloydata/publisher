@@ -1,10 +1,10 @@
 # Design: Malloyyo dashboards in Publisher
 
-**Status: a design being landed incrementally. Check before you trust it.** The implementation this
+**Status: a design landed incrementally. Check before you trust it.** The implementation this
 describes was built and reviewed on the dashboards branch
-([#935](https://github.com/malloydata/publisher/pull/935)), which is a handoff rather than a merge
-candidate. It is being landed as a sequence of smaller pull requests, and this document went first
-so the later ones have a single reference to build against.
+([#935](https://github.com/malloydata/publisher/pull/935)), which was a handoff rather than a merge
+candidate. It was landed as a sequence of smaller pull requests, and this document went first so the
+later ones had a single reference to build against.
 
 Read every "shipped", "is in", and "Have" below as **true of that branch, not necessarily of
 `main`**. This page deliberately does not say which parts have merged. Such a list is wrong within
@@ -27,7 +27,7 @@ a shortcut for those, not an inventory of the design:
 | Given control contract, derived from tags | `readGivenControlSpec` in `packages/server/src/service/given.ts` |
 | `dashboards/` discovery and the manifest | `packages/server/src/service/dashboard.ts`                      |
 | The artifact / MOTLY tag primitives      | `packages/server/src/service/motly.ts`                          |
-| The dashboard REST surface               | `dashboard.controller.ts`, plus its `dashboards` paths in `api-doc.yaml` |
+| The dashboard REST surface               | `packages/server/src/controller/dashboard.controller.ts`, plus its `dashboards` paths in `api-doc.yaml` |
 | The viewer                               | `packages/sdk/src/components/Dashboard/`                        |
 
 Phases 1 to 3 (discovery and REST, the tag-only viewer, `# drill`) and phase 5 (the `storefront`
@@ -192,7 +192,9 @@ notebook side of 2; 9 is documentation, not code):
    parameters beat the document's own starting values, which beat the declaration's defaults.
    Starting values are a tag on both surfaces, read through the same `readStartingGivens` —
    `# artifact { givens {…} }` on a dashboard, file-level `## givens {…}` on a notebook — and
-   arrive as one field with one name (`givens` on `DashboardManifest` and on `RawNotebook`).
+   arrive as one field with one name (`startingGivens` on `DashboardManifest` and on
+   `RawNotebook`). `DashboardManifest.givens` is a different field: the control-row declarations
+   described below.
    Encoding is shared too, which matters more than it sounds:
    a `date` given has to go over the wire as a bare `YYYY-MM-DD` while a `timestamptz` needs a
    full ISO string, and getting that wrong is a 400 rather than a wrong answer — so
@@ -488,7 +490,7 @@ per-route ones. So:
 
 - **Apply** sits in the control row when `autorun=false` (otherwise controls re-run live),
   which is also where it sits on a notebook.
-- **Copy link** and **View Malloy** are dashboard-header actions, still to add.
+- **Copy link** and **View Malloy** are dashboard-header actions.
 
 **Controls presentation.** Notebooks render givens as the vertical **Parameters** panel; a
 dashboard wants Malloyyo's horizontal filter bar above the grid. `GivensPanel` therefore takes a
