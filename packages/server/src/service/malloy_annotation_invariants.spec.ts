@@ -426,6 +426,123 @@ source: emp is duckdb.sql("SELECT 1 as id") extend {
       // own note, not a re-parsed equal one.
       expect(joinFieldOwnNotes[0]).toBe(salariesOwnNotes[0]);
    });
+
+   // -------------------------------------------------------------------
+   // Invariants 5a-5c: the same by-reference note-copy mechanism invariants
+   // 1-5 pin for the STRING form's source-level annotation, re-verified for
+   // the DIMENSION form's field-level one — `findGateDimensionCandidates`
+   // (`gate_dimension.ts`) discovers a gate by walking `struct.fields` for an
+   // annotated `internal dimension:`, so what matters here is whether the
+   // FIELD carrying `#(authorize)` (not the struct) survives a rename or an
+   // unchanged `extend {}` by reference, and whether the near-miss spelling
+   // from invariant 6 below also fails to route when it sits on a field
+   // rather than a source. `gate_dimension_integration.spec.ts`'s "renaming
+   // the gate dimension via extend { rename: ... }" and "KNOWN GAP" tests
+   // already pin the END-TO-END enforcement behavior of these shapes; these
+   // three assert the raw IR mechanism underneath, same as invariants 1-5.
+   // -------------------------------------------------------------------
+   it("rename: on a gate-annotated field carries the field's own annotation object onto the renamed field, by reference", async () => {
+      const modelDef = await compileModel(`
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+source: base5a is duckdb.sql("SELECT 7 as org_id") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+}
+
+source: renamed5a is base5a extend {
+   rename: gate5a is authorized
+}
+`);
+      const base = modelDef.contents["base5a"] as StructDef;
+      const renamed = modelDef.contents["renamed5a"] as StructDef;
+      const baseGateField = base.fields.find(
+         (f) => (f as unknown as { name?: string }).name === "authorized",
+      ) as unknown as { annotations?: RawAnnotations } | undefined;
+      const renamedGateField = renamed.fields.find(
+         (f) => (f as unknown as { as?: string }).as === "gate5a",
+      ) as unknown as { annotations?: RawAnnotations } | undefined;
+      expect(baseGateField).toBeDefined();
+      expect(renamedGateField).toBeDefined();
+      const baseNotes = ownLevelNotes(baseGateField?.annotations);
+      const renamedNotes = ownLevelNotes(renamedGateField?.annotations);
+      expect(baseNotes.length).toBe(1);
+      expect(renamedNotes.length).toBe(1);
+      // THE canary: rename carries the SAME annotation object, not a
+      // re-parsed equal one.
+      expect(renamedNotes[0]).toBe(baseNotes[0]);
+   });
+
+   it("extend {} (unchanged): the gate-annotated field's own annotation is the SAME object on the deriving struct's copy of the field, by reference", async () => {
+      const modelDef = await compileModel(`
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+source: base5b is duckdb.sql("SELECT 7 as org_id") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+}
+
+source: derived5b is base5b extend {}
+`);
+      const base = modelDef.contents["base5b"] as StructDef;
+      const derived = modelDef.contents["derived5b"] as StructDef;
+      const baseGateField = base.fields.find(
+         (f) => (f as unknown as { name?: string }).name === "authorized",
+      ) as unknown as { annotations?: RawAnnotations } | undefined;
+      const derivedGateField = derived.fields.find(
+         (f) => (f as unknown as { name?: string }).name === "authorized",
+      ) as unknown as { annotations?: RawAnnotations } | undefined;
+      expect(baseGateField).toBeDefined();
+      expect(derivedGateField).toBeDefined();
+      // Unlike invariant 2's STRUCT-level flattening, Malloy rebuilds a new
+      // field object per struct here — `derivedGateField` is not `===
+      // baseGateField` — so the canary is at the ANNOTATION level, same as
+      // every other invariant in this file: the note object itself is
+      // carried by reference onto the rebuilt field, which is exactly why
+      // `findGateDimensionCandidates` finds an inherited gate dimension for
+      // this shape at all (by walking `struct.fields` for the annotation,
+      // never by identity-comparing the field object itself).
+      const baseNotes = ownLevelNotes(baseGateField?.annotations);
+      const derivedNotes = ownLevelNotes(derivedGateField?.annotations);
+      expect(baseNotes.length).toBe(1);
+      expect(derivedNotes.length).toBe(1);
+      expect(derivedNotes[0]).toBe(baseNotes[0]);
+   });
+
+   it("`#(authorized)` (extra `d`) on a FIELD's annotation does not route to `authorize` either — the near miss is not source-position-specific", async () => {
+      const modelDef = await compileModel(`
+source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
+   #(authorized)
+   internal dimension: notagate is org_id
+}
+`);
+      const base = modelDef.contents["base5c"] as StructDef;
+      const field = base.fields.find(
+         (f) => (f as unknown as { name?: string }).name === "notagate",
+      ) as unknown as { annotations?: RawAnnotations } | undefined;
+      expect(field).toBeDefined();
+      const notes = ownLevelNotes(field?.annotations);
+      expect(notes.length).toBe(1);
+      const at = {
+         url: `${ROOT}m.malloy`,
+         range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 },
+         },
+      };
+      expect(
+         new Annotations({ notes: [{ text: notes[0].text, at }] }).forRoute(
+            "authorize",
+         ).length,
+      ).toBe(0);
+   });
+
    // -------------------------------------------------------------------
    // Invariant 6: which annotation SPELLINGS Malloy routes to `authorize`.
    //
