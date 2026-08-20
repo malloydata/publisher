@@ -621,7 +621,8 @@ describe("row-level authorize — load-time scoping", () => {
       // WHOLE file — but it fails SAFE (nothing loads or serves at all)
       // rather than open, so this is real, new coverage, not a weakened test.
       for (const extend of ["rename: tenant is org_id", "except: org_id"]) {
-         const { model, duckdb, dir } = await createModel(`##! experimental.givens
+         const { model, duckdb, dir } =
+            await createModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
@@ -680,9 +681,9 @@ source: X is duckdb.table('parent') extend {
          );
          // The W2 hazard: an EMPTY given makes `not (org_id in [])` true for
          // every row, admitting all 4 rather than denying every row.
-         expect(
-            (empty.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(4);
+         expect((empty.compactResult as unknown as { n: number }[])[0].n).toBe(
+            4,
+         );
          const nonEmpty = await model.getQueryResults(
             undefined,
             undefined,
@@ -1215,8 +1216,10 @@ source: headcount is duckdb.table('childtable') extend {
 describe("row-level authorize — P0 join scoping", () => {
    it("CRITICAL — P0: a child's OWN gate does not fire when the ungated parent joins it", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
-#(authorize) "false"
-source: childtable is duckdb.table('childtable') extend {}
+source: childtable is duckdb.table('childtable') extend {
+   #(authorize)
+   internal dimension: authorized is false
+}
 source: parent is duckdb.table('parent') extend {
    join_one: childtable on child_id = childtable.id
    measure: n is count()
@@ -1243,9 +1246,10 @@ given:
   BOB :: string
 
 source: childtable is duckdb.table('childtable') extend {}
-#(authorize) "childtable.name = $BOB"
 source: parent is duckdb.table('parent') extend {
    join_one: childtable on child_id = childtable.id
+   #(authorize)
+   internal dimension: authorized is childtable.name = $BOB
    measure: n is count()
 }
 `);
@@ -1272,15 +1276,19 @@ given:
   GROUPS :: number[]
   VAL :: string
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
 source: Y is X extend {}
 
-#(authorize) "val = $VAL"
-source: Z is X extend {}
+source: Z is X extend {
+   except: authorized
+   #(authorize)
+   internal dimension: authorized is val = $VAL
+}
 `;
 
    it("Y is X extend {} inherits X's gate and filters", async () => {
