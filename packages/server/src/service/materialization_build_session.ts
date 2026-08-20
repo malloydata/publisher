@@ -574,7 +574,17 @@ export function createIsolatedBuildSession(sessionName: string): {
    // nothing left holding a reference to it.
    let session: DuckDBConnection;
    try {
-      session = new DuckDBConnection(sessionName, ":memory:", workDir);
+      // Row limit lifted off db-duckdb's `DEFAULT_QUERY_OPTIONS.rowLimit` of 10,
+      // which `runSQL` enforces by slicing the result. Every read this session
+      // makes is metadata about the table it just wrote — `duckdb_columns()` and
+      // `DESCRIBE` both return one row per COLUMN — so the default silently
+      // truncates an 11-column table's shape. Downstream that reads as columns
+      // missing from the table: the delta path calls it a shape mismatch and
+      // rebuilds in full forever, and the manifest declares a short schema for
+      // the serve transform to bind.
+      session = new DuckDBConnection(sessionName, ":memory:", workDir, {
+         rowLimit: Number.MAX_SAFE_INTEGER,
+      });
    } catch (err) {
       rmSync(workDir, { recursive: true, force: true });
       throw err;

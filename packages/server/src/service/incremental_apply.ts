@@ -837,15 +837,17 @@ export function deltaScript(statements: string[]): string {
 
 /**
  * Dialects that abandon a failed script's transaction themselves, so the rollback
- * below is not merely unnecessary but noisy: DuckDB answers a `ROLLBACK` with no
- * active transaction by RAISING, which would log the "a pooled connection may
- * stay in an aborted transaction" warning on every failed delta — sending an
- * operator after a poisoned connection that this engine cannot have, since a
- * build session is private and single-use. Measured: after a failed
- * BEGIN/…/COMMIT script the session is immediately usable and nothing was
- * applied.
+ * below would be issued against a session that has nothing open.
+ *
+ * Empty on purpose. DuckDB is not one of them: a statement that fails after
+ * `BEGIN` has opened the transaction leaves the session refusing every
+ * subsequent statement with "Current transaction is aborted (please ROLLBACK)",
+ * so the rollback is what makes the session usable again. A statement that fails
+ * at BIND time never opens a transaction, which is the case that can look like
+ * self-recovery. The rollback is harmless there — DuckDB does not raise on it —
+ * so the unconditional path is correct for both.
  */
-const SELF_ROLLING_BACK_DIALECTS: ReadonlySet<string> = new Set(["duckdb"]);
+const SELF_ROLLING_BACK_DIALECTS: ReadonlySet<string> = new Set<string>();
 
 /**
  * Run a delta's statements, rolling back the session if they fail.
