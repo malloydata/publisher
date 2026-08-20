@@ -14,10 +14,39 @@
  * ## Fail closed
  *
  * Anything not positively classified is non-additive. The classifier is
- * deliberately narrow: the measure must be ONE bare aggregate, at the root of
- * its expression, drawn from `sum`, `count`, `min`, `max`. `avg` is excluded in
- * v1 — decomposing it into sum/count is a later phase, not something to sneak in
- * here.
+ * deliberately narrow: the measure must be ONE aggregate, at the root of its
+ * expression, drawn from `sum`, `count`, `min`, `max` — either bare or with a
+ * filter written directly on it (`amount.sum() { where: … }`). `avg` is excluded
+ * in v1 — decomposing it into sum/count is a later phase, not something to sneak
+ * in here.
+ *
+ * ## Why a filtered aggregate is additive
+ *
+ * The rollup computes each partial by the measure's NAME against the base
+ * (`total__partial is total` — see preaggregation_synthesis.ts), so the filter
+ * rides into the rollup build as part of what the measure means. And a row-level
+ * filter commutes with partitioned re-aggregation: filtering then merging
+ * per-grain partials equals filtering the whole, for every merge this module
+ * hands out (`sum`, `min`, `max` — including `count`, whose filtered partial is
+ * a count of matching rows and merges with `sum` like any other). The
+ * groups-with-no-matching-rows edge agrees too, but not for one reason: `min`
+ * and `max` store a NULL partial there, which their merges ignore; `sum`
+ * stores 0 because the compiled SQL wraps it in COALESCE, and `count` stores 0
+ * because SQL COUNT never returns NULL in the first place — verified against
+ * the stored table and the generated SQL, and pinned by the zero-match group
+ * in the end-to-end value test. That 0 is safe because it is the identity for
+ * `SUM`, the merge both use, AND because direct computation produces the same
+ * 0 by the same two mechanisms. Neither half is spare: a future merge for
+ * which 0 is not the identity cannot lean on this paragraph.
+ *
+ * That argument holds only for the one accepted shape. A filter buried under a
+ * wrapper (`coalesce(x.sum() { where: … }, 0)`), a chained refinement
+ * (`x.sum() { where: a } { where: b }`, which the compiler NESTS — the comma
+ * form `{ where: a, b }` is one filterList and is accepted), or a non-scalar
+ * condition is refused: the chain is a false negative this argument already
+ * covers (two ANDed row-level conditions are still a row-level filter), kept
+ * refused as conscious narrowness — widening is the safe direction, and it has
+ * not been needed yet.
  *
  * ## This is a publish gate, so a false negative is an outage
  *
@@ -116,7 +145,8 @@ export interface ClassifiableMeasure {
 /** What one pass over the expression tree found. */
 interface Findings {
    aggregates: { function: string }[];
-   filtered: boolean;
+   /** How many `filteredExpr` nodes the tree holds, wherever they sit. */
+   filtered: number;
    ungrouped: boolean;
    analytic: boolean;
 }
@@ -137,7 +167,10 @@ function walk(node: Expr, found: Findings): void {
          found.aggregates.push({ function: node.function });
          break;
       case "filteredExpr":
-         found.filtered = true;
+         // Counted rather than flagged: acceptance below requires exactly one,
+         // at the root. The walk still descends into the filter's own
+         // conditions, so a hazard hiding inside one is found like any other.
+         found.filtered += 1;
          break;
       case "all":
       case "exclude":
@@ -241,7 +274,7 @@ export function classifyMeasureAdditivity(
 
    const found: Findings = {
       aggregates: [],
-      filtered: false,
+      filtered: 0,
       ungrouped: false,
       analytic: false,
    };
@@ -259,15 +292,37 @@ export function classifyMeasureAdditivity(
          `Measure \`${name}\` contains a window function, which is computed across result rows rather than within a group, so it cannot be pre-aggregated. Remove \`#@ preaggregate\` from it.`,
       );
    }
-   // A filtered aggregate is excluded even though its partial would often merge
-   // correctly: the rollup would silently store the FILTERED value under the
-   // measure's name, and a query that expects the unfiltered one gets a
-   // plausible wrong number. Correct support means storing both, which is not v1.
-   if (found.filtered) {
-      return nonAdditive(
-         "filtered_aggregate",
-         `Measure \`${name}\` applies a filter to its aggregate, which this version cannot pre-aggregate. Define the aggregate as its own measure and apply the filter in a view, or remove \`#@ preaggregate\` from it.`,
-      );
+   // A filter is accepted in exactly one shape: ONE `filteredExpr`, at the
+   // root, applied directly to the aggregate, with every condition scalar.
+   // That shape is provably additive (see the header: the partial is computed
+   // from the measure by name, and a row-level filter commutes with partitioned
+   // re-aggregation). Anything else carrying a filter — buried under a wrapper,
+   // a refinement of a derived measure, a chain, a non-scalar condition — is
+   // refused rather than reasoned about. Checked before the aggregate counts so
+   // a nonconforming filter is reported AS a filter problem: `m_arith { where:
+   // … }` compiles its measure reference to a field node, and "no aggregate
+   // found" would send its author looking at the wrong thing.
+   //
+   // INVARIANT for every check below this block: read `aggregateRoot`, never
+   // `measure.e`. On the conforming filtered shape the two differ — `measure.e`
+   // is the filteredExpr — and a later check reaching for `measure.e` would
+   // silently inspect the wrapper instead of the aggregate, on exactly the
+   // shape where nothing fails to say so.
+   let aggregateRoot = measure.e;
+   if (found.filtered > 0) {
+      const root = measure.e;
+      if (
+         found.filtered !== 1 ||
+         root.node !== "filteredExpr" ||
+         root.kids.e.node !== "aggregate" ||
+         !root.kids.filterList.every((c) => c.expressionType === "scalar")
+      ) {
+         return nonAdditive(
+            "filtered_aggregate",
+            `Measure \`${name}\` applies a filter this version cannot pre-aggregate: a filter is supported only when written directly on the measure's single aggregate, as \`amount.sum() { where: … }\` (several conditions go in ONE \`where:\`, comma-separated, not chained). If the filter sits under a wrapper or refines a derived measure, pre-aggregate the bare filtered aggregate as its own measure and do the rest in a view, or remove \`#@ preaggregate\` from it.`,
+         );
+      }
+      aggregateRoot = root.kids.e;
    }
 
    // Two quite different shapes land here, and the message has to serve both: an
@@ -291,18 +346,18 @@ export function classifyMeasureAdditivity(
       );
    }
 
-   // The one aggregate must BE the expression. If anything wraps it — `* 2`,
-   // `coalesce(…)`, a cast — then merging stored partials with a single
-   // aggregate is not equivalent to the measure, and rewriting the wrapper
-   // around the merge is not v1.
-   if (measure.e.node !== "aggregate") {
+   // The one aggregate must BE the expression (once a conforming root filter is
+   // set aside). If anything wraps it — `* 2`, `coalesce(…)`, a cast — then
+   // merging stored partials with a single aggregate is not equivalent to the
+   // measure, and rewriting the wrapper around the merge is not v1.
+   if (aggregateRoot.node !== "aggregate") {
       return nonAdditive(
          "aggregate_not_at_root",
          `Measure \`${name}\` wraps its aggregate in a further expression, so re-aggregating a stored partial would not reproduce it. Pre-aggregate the bare aggregate as its own measure and do the rest in a view.`,
       );
    }
 
-   const fn = measure.e.function;
+   const fn = aggregateRoot.function;
    if (!isAdditiveAggregate(fn)) {
       const hint =
          fn === "avg"

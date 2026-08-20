@@ -24,6 +24,16 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a filtered aggregate can be pre-aggregated
+
+Since 0.0.246, a measure filtering its aggregate — `paid is amount.sum() { where: is_paying }` — was refused at publish by `#@ preaggregate`, with the workaround of rewriting it as `amount.sum(pick amount when is_paying else null)`-style expressions or filtering in a view. The refusal was the fail-closed gate doing its job, not a soundness limit: the rollup computes each stored partial from the measure by name, so the filter rides into the build, and a row-level filter commutes with merging per-grain partials — filtering then merging equals filtering the whole, for every merge the feature hands out, including `count`'s (a filtered count stores a count of matching rows and still merges with `sum`).
+
+So the gate now accepts a filter **written directly on the measure's single aggregate** (several conditions comma-separated in one `where:`), and nothing else changed shape: a filter refining a derived measure, an aggregate wrapped in a further expression (`coalesce(amount.sum() { where: … }, 0)`), a chained refinement (`{ where: a } { where: b }` — use the comma form instead), or a non-scalar condition is refused exactly as before. A filtered `avg` is still refused as `avg`. No action needed on existing packages — this only admits annotations that previously failed publish — but measures rewritten around the old refusal can return to the plain filtered form, which now also pre-aggregates.
+
+One caution in the rollback direction: the publish gate is also a load gate, and it is package-level. A package that adopts `#@ preaggregate` on a filtered aggregate loads only on servers carrying this change — roll a server back past it and that package does not merely lose its rollup, it fails to load entirely and drops into `loadErrors`. Inherent to any gate widening, but worth knowing before adopting the new shape in a fleet that pins older images.
+
+---
+
 ## [0.0.248] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
 
 A gate whose expression reads no row field works exactly as before; a gate that reads one — its

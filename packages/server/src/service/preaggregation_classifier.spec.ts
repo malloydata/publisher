@@ -41,12 +41,18 @@ source: s is duckdb.sql("""
   measure: m_min is amount.min()
   measure: m_max is amount.max()
   measure: m_sum_joined is items.price.sum()
+  measure: m_filtered is amount.sum() { where: category = 'A' }
+  measure: m_filtered_count is count() { where: category = 'A' }
+  measure: m_filtered_joined is items.price.sum() { where: category = 'A' }
+  measure: m_two_conds is amount.sum() { where: category = 'A', amount > 5 }
 
   // --- must all be non-additive ---
   measure: m_avg is amount.avg()
   measure: m_distinct is count(amount)
-  measure: m_filtered is amount.sum() { where: category = 'A' }
+  measure: m_filtered_avg is amount.avg() { where: category = 'A' }
   measure: m_arith is amount.sum() * 2
+  measure: m_filtered_arith is m_arith { where: category = 'A' }
+  measure: m_chained_filter is amount.sum() { where: category = 'A' } { where: amount > 5 }
   measure: m_ratio is amount.sum() / count()
   measure: m_all is all(amount.sum())
   measure: m_stddev is stddev(amount)
@@ -85,6 +91,18 @@ describe("additivity classifier: the additive cases", () => {
       ["m_count", "count", "sum"],
       ["m_min", "min", "min"],
       ["m_max", "max", "max"],
+      // Filtered on the aggregate directly: the measure MEANS the filtered
+      // value, its partial is computed from the measure by name, and a
+      // row-level filter commutes with partitioned re-aggregation. The filtered
+      // count is the one to watch: its partial counts MATCHING rows and still
+      // merges with sum.
+      ["m_filtered", "sum", "sum"],
+      ["m_filtered_count", "count", "sum"],
+      // SEVERAL conditions are fine when they share one `where:` — the comma
+      // form compiles to a single filterList on one filteredExpr, all scalar,
+      // so it conforms. Contrast m_chained_filter in the refusal corpus: the
+      // chained spelling of the same logic NESTS and is refused.
+      ["m_two_conds", "sum", "sum"],
    ];
 
    for (const [name, aggregate, reaggregate] of cases) {
@@ -101,6 +119,20 @@ describe("additivity classifier: the additive cases", () => {
       const result = classifyMeasureAdditivity(lookup("m_count"));
       expect(result).toMatchObject({ additive: true, reaggregate: "sum" });
       expect(result).not.toMatchObject({ reaggregate: "count" });
+   });
+
+   it("a filtered aggregate through a join is still additive", () => {
+      // The two accepted wrinkles compose: the filter sits at the root and the
+      // aggregate inside it carries a structPath. Neither disqualifies alone,
+      // so together they must not either. Additive here does NOT mean a rollup
+      // gets built for it: this model's join is a join_many, and
+      // `base_source_has_fanout_join` refuses the whole source one gate up —
+      // filter × fan-out never reaches a rollup, whatever this module says.
+      expect(classifyMeasureAdditivity(lookup("m_filtered_joined"))).toEqual({
+         additive: true,
+         aggregate: "sum",
+         reaggregate: "sum",
+      });
    });
 
    it("an aggregate through a join is still additive", () => {
@@ -121,8 +153,24 @@ describe("additivity classifier: the surprising-expression corpus", () => {
    const cases: [string, NonAdditiveReason][] = [
       ["m_avg", "unsupported_aggregate"],
       ["m_distinct", "unsupported_aggregate"],
-      ["m_filtered", "filtered_aggregate"],
+      // A filter does not launder an unmergeable aggregate: the shape is
+      // accepted, then the function inside it is judged on its own.
+      ["m_filtered_avg", "unsupported_aggregate"],
       ["m_arith", "aggregate_not_at_root"],
+      // A filter on a WRAPPED aggregate is still refused: the additivity
+      // argument covers a filter applied directly to the one aggregate, and
+      // nothing else.
+      ["m_filtered_arith", "filtered_aggregate"],
+      // A CHAINED refinement compiles from source and NESTS — filteredExpr
+      // wrapping filteredExpr wrapping the aggregate — so the root-child guard
+      // refuses it. Pinned on real IR because this file's whole purpose is
+      // shapes the compiler actually emits: the comma form (m_two_conds,
+      // additive above) is the accepted spelling of the same logic, and the
+      // error message points there. A false negative, deliberately: two ANDed
+      // row-level conditions are still a row-level filter, so accepting an
+      // unbroken root chain would be sound — conscious narrowness until asked
+      // for, since widening is the safe direction.
+      ["m_chained_filter", "filtered_aggregate"],
       ["m_ratio", "multiple_aggregates"],
       ["m_all", "ungrouped_aggregate"],
       ["m_stddev", "no_aggregate_found"],
@@ -236,6 +284,87 @@ describe("additivity classifier: fails closed on IR it cannot read", () => {
             },
          }),
       ).toMatchObject({ additive: false, reason: "unsupported_aggregate" });
+   });
+
+   it("a SECOND filter anywhere in the tree is refused", () => {
+      // The second filteredExpr here hides inside the aggregate's own argument,
+      // where the root checks cannot see it: the root IS a filteredExpr, its
+      // child IS an aggregate, its conditions ARE scalar. Only the exactly-one
+      // count refuses it — remove that guard and this shape sails through as
+      // conforming. Not the chained-refinement shape, which DOES compile from
+      // source and nests along the root path (m_chained_filter, caught by the
+      // root-child guard) — this one hides where only the count guard looks,
+      // and no source spelling reaches it today, so it is pinned on a built
+      // node: a pin bump that starts emitting it must land here, be proven
+      // additive, and only then be accepted.
+      expect(
+         classifyMeasureAdditivity({
+            name: "m",
+            expressionType: "aggregate",
+            e: {
+               node: "filteredExpr",
+               kids: {
+                  e: {
+                     node: "aggregate",
+                     function: "sum",
+                     e: {
+                        node: "filteredExpr",
+                        kids: { e: { node: "" }, filterList: [] },
+                     },
+                  },
+                  filterList: [],
+               },
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any,
+         }),
+      ).toMatchObject({ additive: false, reason: "filtered_aggregate" });
+   });
+
+   it("a NON-SCALAR filter condition is refused", () => {
+      // A condition the compiler types as anything but scalar is not a
+      // row-level filter, and row-level is the whole additivity argument: an
+      // aggregate or analytic condition selects rows by a value that depends
+      // on grouping, so its partial is not a partial of the query's answer.
+      // Unreachable from source today (the language rejects them), so pinned
+      // on a built node.
+      expect(
+         classifyMeasureAdditivity({
+            name: "m",
+            expressionType: "aggregate",
+            e: {
+               node: "filteredExpr",
+               kids: {
+                  e: { node: "aggregate", function: "sum", e: { node: "" } },
+                  filterList: [
+                     { node: "filterCondition", expressionType: "aggregate" },
+                  ],
+               },
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any,
+         }),
+      ).toMatchObject({ additive: false, reason: "filtered_aggregate" });
+   });
+
+   it("a hand-built CONFORMING filtered aggregate is additive", () => {
+      // The acceptance itself, on a minimal node, so the four conditions above
+      // are each provably load-bearing: flip any one and exactly one of these
+      // three tests changes its answer.
+      expect(
+         classifyMeasureAdditivity({
+            name: "m",
+            expressionType: "aggregate",
+            e: {
+               node: "filteredExpr",
+               kids: {
+                  e: { node: "aggregate", function: "sum", e: { node: "" } },
+                  filterList: [
+                     { node: "filterCondition", expressionType: "scalar" },
+                  ],
+               },
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any,
+         }),
+      ).toMatchObject({ additive: true, aggregate: "sum", reaggregate: "sum" });
    });
 
    it("an empty ungroupings array does not disqualify a measure", () => {
