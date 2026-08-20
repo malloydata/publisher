@@ -24,17 +24,26 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError, ModelCompilationError } from "../errors";
-import { validateGateDimension } from "./gate_dimension";
+import { assertNoLegacyStringGate } from "./authorize";
+import {
+   findGateDimensionCandidates,
+   gateFieldName,
+   validateGateDimension,
+} from "./gate_dimension";
 import { Model } from "./model";
 
 const ROOT = "file:///gate-dimension-tests/";
 
 /** `accounts`: two orgs, two rows each, so a `$GROUPS`-keyed gate has an
- *  observable effect and an empty array is distinguishable from "no gate". */
+ *  observable effect and an empty array is distinguishable from "no gate".
+ *  `region` (added for the C2 function-call cases below) is pre-uppercased
+ *  so `upper(region)`, `region` alone, and `upper($REGION)` all compare
+ *  case-consistently across the different spellings those cases exercise. */
 const SEED_SQL = `
-CREATE OR REPLACE TABLE accounts (id INTEGER, org_id VARCHAR, amount INTEGER);
+CREATE OR REPLACE TABLE accounts (id INTEGER, org_id VARCHAR, amount INTEGER, region VARCHAR);
 INSERT INTO accounts VALUES
-   (1, 'org1', 100), (2, 'org1', 200), (3, 'org2', 300), (4, 'org2', 400);
+   (1, 'org1', 100, 'EAST'), (2, 'org1', 200, 'WEST'),
+   (3, 'org2', 300, 'EAST'), (4, 'org2', 400, 'WEST');
 `;
 
 async function newDuckdb(): Promise<DuckDBConnection> {
@@ -431,6 +440,158 @@ describe("validateGateDimension — pure rules", () => {
    });
 });
 
+describe("C2 — a function call in the gate expression must not abort the whole model load", () => {
+   // Malloy emits a synthetic `refSummary.fieldUsage` entry with an EMPTY
+   // `path` for a function call. Before the fix, `expandGivenIds` resolved
+   // that empty path to `undefined` and returned `{ok: false}`, which G3
+   // then treated as an unresolvable reference — refusing the ENTIRE model
+   // load for a gate that is actually perfectly legal. See
+   // task-3-fix-brief.md C2 for the five spellings pinned here.
+
+   it("`upper(region) = $REGION` — function wraps the field — loads and filters", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  REGION :: string\n\nsource: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is upper(region) = $REGION\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "accounts", { REGION: "EAST" })).toEqual([
+            1, 3,
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("`region = upper($REGION)` — function wraps the given — loads and filters", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  REGION :: string\n\nsource: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is region = upper($REGION)\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "accounts", { REGION: "east" })).toEqual([
+            1, 3,
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("`concat(region,'') = $REGION` — a different function, same empty-path shape — loads and filters", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  REGION :: string\n\nsource: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is concat(region,'') = $REGION\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "accounts", { REGION: "EAST" })).toEqual([
+            1, 3,
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("`upper(region) = 'EAST'` — no given at all — loads with a W1 warning, not a refusal", async () => {
+      const duckdb = await newDuckdb();
+      try {
+         const warnings: [string, string][] = [];
+         const resolved = await validateAccounts(
+            `source: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is upper(region) = 'EAST'\n}\n`,
+            duckdb,
+            (cause, detail) => warnings.push([cause, detail]),
+         );
+         expect(resolved?.name).toBe("authorized");
+         expect(warnings.map((w) => w[0])).toContain(
+            "gate_dimension_no_given_reference",
+         );
+      } finally {
+         await duckdb.close();
+      }
+      // Prove the real package-load path (not just the pure rule) accepts
+      // it too.
+      const {
+         model,
+         duckdb: duckdb2,
+         dir,
+      } = await createModel(
+         `source: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is upper(region) = 'EAST'\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "accounts", {})).toEqual([1, 3]);
+      } finally {
+         await cleanup(duckdb2, dir);
+      }
+   });
+
+   it("`org_id in $G or upper(region) = 'EAST'` — a function call ORed with a real given reference — loads and filters on both", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  G :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $G or upper(region) = 'EAST'\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "accounts", { G: ["org2"] })).toEqual([
+            1, 3, 4,
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
+
+describe("C1 — the legacy-string-gate refusal message must itself load-and-gate (round trip)", () => {
+   it("the exact remediation text emitted by assertNoLegacyStringGate compiles into a working gate — regression guard for the one-line message bug", async () => {
+      let message: string | undefined;
+      try {
+         assertNoLegacyStringGate([
+            { sourceName: "accounts", exprs: ["org_id in $GROUPS"] },
+         ]);
+      } catch (err) {
+         message = (err as Error).message;
+      }
+      if (!message)
+         throw new Error("expected assertNoLegacyStringGate to throw");
+
+      // Extract the remediation block VERBATIM from the thrown message —
+      // this is what makes the test a regression guard: it feeds back
+      // whatever text authorize.ts actually emits, not a hand-typed guess
+      // of it. A one-line remediation (the bug this test exists to catch)
+      // would make this regex fail to match at all, since the dimension
+      // declaration would be on the SAME line as `#(authorize)`.
+      const match = message.match(/- source "accounts":\n(( {6}.+\n?)+)/);
+      if (!match) {
+         throw new Error(
+            `could not extract a two-line remediation block from: ${message}`,
+         );
+      }
+      const remediation = match[1];
+      expect(remediation).toMatch(
+         /^ {6}#\(authorize\)\n {6}internal dimension:/,
+      );
+
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n${remediation}}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // A gate candidate exists...
+         const candidates = findGateDimensionCandidates(
+            (model as unknown as { modelDef: ModelDef }).modelDef.contents[
+               "accounts"
+            ] as unknown as SourceDef,
+         );
+         expect(candidates.map((f) => gateFieldName(f))).toEqual([
+            "authorized",
+         ]);
+         // ...and it actually filters.
+         expect(await ids(model, "accounts", { GROUPS: ["org1"] })).toEqual([
+            1, 2,
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
+
 describe("join-qualified given references (C1 regression — see task-2-report.md)", () => {
    it("a join-qualified reference (`h.ok`) to a DEFAULTED given is followed, not silently dropped: G4 refuses", async () => {
       const duckdb = await newDuckdb();
@@ -768,6 +929,46 @@ describe("inheritance matrix", () => {
          expect(await ids(model, "Y", { GROUPS: ["org2"] })).toEqual([
             1, 2, 3, 4,
          ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("KNOWN GAP — the canonical fail-open shape: `extend { except: authorized }` alone, with nothing re-added, drops the gate entirely and admits every row", async () => {
+      // The fail-open/fail-closed rule (task-3-fix-brief.md): DROPPING the
+      // annotated dimension fails OPEN, because `findGateDimensionCandidates`
+      // simply finds nothing on Y to gate on — this is the same root cause
+      // as the "KNOWN GAP" test above (no IR link from Y back to X for
+      // `validateGateDimension`'s redefinition check to use), but pinned
+      // here in its most minimal, most dangerous form: no redeclaration at
+      // all, just a bare `except:`. This is a genuine, documented gap in
+      // this repo, NOT correct behavior — Malloy keeps no IR link from a
+      // derived source back to its base, so there is nothing to detect the
+      // drop against.
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\nsource: Y is X extend {\n   except: authorized\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "Y", { GROUPS: ["org1"] })).toEqual([
+            1, 2, 3, 4,
+         ]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("renaming the gate dimension via `extend { rename: ... }` is a legal, correctly-enforced shape — the annotation survives the rename", async () => {
+      // Contrast with the `except:` cases above: a rename does not drop the
+      // field, it relabels it, so the annotation (attached to the field
+      // object, not the name) travels with it and the gate keeps filtering
+      // exactly as it did on X.
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\nsource: Y is X extend {\n   rename: gate2 is authorized\n}\n`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "Y", { GROUPS: ["org1"] })).toEqual([1, 2]);
       } finally {
          await cleanup(duckdb, dir);
       }
