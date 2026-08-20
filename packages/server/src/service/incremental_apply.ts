@@ -836,6 +836,18 @@ export function deltaScript(statements: string[]): string {
 }
 
 /**
+ * Dialects that abandon a failed script's transaction themselves, so the rollback
+ * below is not merely unnecessary but noisy: DuckDB answers a `ROLLBACK` with no
+ * active transaction by RAISING, which would log the "a pooled connection may
+ * stay in an aborted transaction" warning on every failed delta — sending an
+ * operator after a poisoned connection that this engine cannot have, since a
+ * build session is private and single-use. Measured: after a failed
+ * BEGIN/…/COMMIT script the session is immediately usable and nothing was
+ * applied.
+ */
+const SELF_ROLLING_BACK_DIALECTS: ReadonlySet<string> = new Set(["duckdb"]);
+
+/**
  * Run a delta's statements, rolling back the session if they fail.
  *
  * The rollback is not belt-and-braces. A failed multi-statement script leaves the
@@ -851,18 +863,6 @@ export function deltaScript(statements: string[]): string {
  * rollback that fails (a session already reset, a dialect with nothing to roll
  * back) changes nothing.
  */
-/**
- * Dialects that abandon a failed script's transaction themselves, so the rollback
- * below is not merely unnecessary but noisy: DuckDB answers a `ROLLBACK` with no
- * active transaction by RAISING, which would log the "a pooled connection may
- * stay in an aborted transaction" warning on every failed delta — sending an
- * operator after a poisoned connection that this engine cannot have, since a
- * build session is private and single-use. Measured: after a failed
- * BEGIN/…/COMMIT script the session is immediately usable and nothing was
- * applied.
- */
-const SELF_ROLLING_BACK_DIALECTS: ReadonlySet<string> = new Set(["duckdb"]);
-
 export async function applyDeltaScript(
    runner: SqlRunner,
    dialect: string,

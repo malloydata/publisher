@@ -431,23 +431,6 @@ const VALID_TRANSITIONS: Record<
 };
 
 /**
- * Orchestrates single-call materialization builds.
- *
- * The build plan is a deterministic property of the compiled package
- * (`Package.buildPlan`), so there is no separate plan round-trip. On create
- * the publisher either auto-runs (self-assigns physical names from the
- * `#@ persist name=` annotation and builds + auto-loads every persist source)
- * or, when the caller supplies `buildInstructions` derived from
- * `Package.buildPlan`, builds directly into the caller-assigned names without
- * auto-loading the manifest. Both paths build in the background and return the
- * PENDING record immediately.
- *
- * At most one active materialization per (environment, package) is enforced
- * by the DB-level unique index on `materializations.active_key` (see
- * {@link MaterializationRepository}). Cancellation is cooperative via
- * AbortController.
- */
-/**
  * The key a ledger entry and the instruction that builds its table must agree on.
  *
  * Three parts, because where a table LIVES is not implied by the connection whose
@@ -481,12 +464,19 @@ function tableKeyOf(
  * correctly. `entry.refresh` is present exactly for such a source, so its presence
  * is the test.
  *
- * The cost of that is a first build whose run then failed: no manifest records the
- * table, so this reclaim is the only thing that could have dropped it. That is
- * deliberately left to the orchestrator, which has the durable sweep for it — the
- * control plane already leaves a dead build's table to its own orphan sweeper
- * rather than dropping it, for the same reason. A leak the host reclaims later is
- * a better trade than a live serving table dropped now.
+ * The cost is a leaked table, and it is worth being exact about who does NOT clean
+ * it up. A build at a FRESH name whose run then failed is recorded by no manifest,
+ * so this reclaim was the only thing that could have dropped it — and the host's
+ * orphan sweep does not cover the gap: it enumerates a CONNECTION's catalog and
+ * skips any row that names a storage destination, because a physical name carries
+ * no destination and generation counting is per destination, so one string can name
+ * a table in either place. Reclaiming a destination is tracked separately.
+ *
+ * Accepted anyway, because a stored destination already accumulates superseded
+ * generations for that same reason, so this adds a case to a known leak rather
+ * than a new class of one — and the alternative is dropping a table that is
+ * serving. Not reclaiming costs storage; reclaiming costs a source its data until
+ * something rebuilds it.
  *
  * The reclaim's own `stillReferenced` check does not cover any of this. It spares
  * a table that some READY manifest of the SAME package name serves, and a host
@@ -496,6 +486,23 @@ export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
    return !!entry.storageDestinationName && entry.refresh === undefined;
 }
 
+/**
+ * Orchestrates single-call materialization builds.
+ *
+ * The build plan is a deterministic property of the compiled package
+ * (`Package.buildPlan`), so there is no separate plan round-trip. On create
+ * the publisher either auto-runs (self-assigns physical names from the
+ * `#@ persist name=` annotation and builds + auto-loads every persist source)
+ * or, when the caller supplies `buildInstructions` derived from
+ * `Package.buildPlan`, builds directly into the caller-assigned names without
+ * auto-loading the manifest. Both paths build in the background and return the
+ * PENDING record immediately.
+ *
+ * At most one active materialization per (environment, package) is enforced
+ * by the DB-level unique index on `materializations.active_key` (see
+ * {@link MaterializationRepository}). Cancellation is cooperative via
+ * AbortController.
+ */
 export class MaterializationService {
    /** In-flight runs, so they can be cancelled. In-process only. */
    private runningAbortControllers = new Map<string, AbortController>();

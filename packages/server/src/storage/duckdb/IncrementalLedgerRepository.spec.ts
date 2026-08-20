@@ -296,9 +296,9 @@ describe("IncrementalLedgerRepository", () => {
 
    describe("re-keying an existing database", () => {
       // The schema pass runs on every boot, so both halves matter: it has to
-      // replace a table still keyed on the package, and it must not touch one
-      // already keyed on the table — otherwise every restart would silently
-      // discard every boundary and re-seed every incremental source.
+      // replace a table keyed on anything older, and it must not touch one already
+      // keyed on the store — otherwise every restart would silently discard every
+      // boundary and re-seed every incremental source.
       const LEGACY_DDL = `
          CREATE TABLE incremental_ledger (
            environment_id VARCHAR NOT NULL,
@@ -454,7 +454,7 @@ describe("IncrementalLedgerRepository", () => {
          ).toBe("2024-08-01");
       });
 
-      it("leaves a table-keyed ledger and its boundaries alone", async () => {
+      it("leaves a store-keyed ledger and its boundaries alone", async () => {
          const { repo, db } = await freshRepo();
          await repo.upsert(entry({ coveredThroughValue: "2024-07-01" }));
 

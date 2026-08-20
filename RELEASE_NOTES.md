@@ -275,8 +275,10 @@ without `storageDestinationName` for a source materialized into a destination de
 table, so that source seeds — every run, not once, until the caller round-trips it. That is
 deliberate (an entry from a caller that predates the field is stale, not wrong, so it is not
 rejected) but the only signal is a repeating `no_boundary`. Update the caller's ledger storage first,
-or accept full rebuilds until you do. A source that was rejected for declaring both keys now publishes and refreshes incrementally
-on its next build, which seeds once and advances after that.
+or accept full rebuilds until you do.
+
+**A source that was rejected for declaring both keys now publishes**, and takes the same one rebuild
+as any other incremental source before it starts advancing.
 
 ## [Unreleased]: a given's control contract is read off its own tags
 

@@ -610,6 +610,36 @@ export function planColumnReconcile(
  * costs one full rebuild per incremental source, which is exactly what the old key
  * was already costing on every publish.
  */
+async function dropPackageKeyedIncrementalLedger(
+   db: DuckDBConnection,
+): Promise<void> {
+   const present = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='incremental_ledger'",
+   );
+   if (!present || present.length === 0) {
+      return;
+   }
+   // `pk` is true for every column of a composite primary key, so the old key is
+   // identifiable by package_name being part of it. Reading the key rather than a
+   // schema version means this is self-limiting: once no database has the old key,
+   // it never fires again.
+   const columns = await db.all<{ name: string; pk: boolean }>(
+      "PRAGMA table_info('incremental_ledger')",
+   );
+   const keyedOnPackage = columns.some(
+      (column) => column.name === "package_name" && Boolean(column.pk),
+   );
+   if (!keyedOnPackage) {
+      return;
+   }
+   logger.info(
+      "Re-keying the incremental ledger onto (environment, connection, table); " +
+         "recorded covered_through boundaries are discarded, so each incremental " +
+         "source rebuilds in full once and then resumes advancing by delta",
+   );
+   await db.run("DROP TABLE IF EXISTS incremental_ledger");
+}
+
 /**
  * Drop an `incremental_ledger` whose primary key predates the storage destination.
  *
@@ -652,36 +682,6 @@ async function dropStoreBlindIncrementalLedger(
          "table); recorded covered_through boundaries are discarded, so each " +
          "incremental source rebuilds in full once and then resumes advancing by " +
          "delta",
-   );
-   await db.run("DROP TABLE IF EXISTS incremental_ledger");
-}
-
-async function dropPackageKeyedIncrementalLedger(
-   db: DuckDBConnection,
-): Promise<void> {
-   const present = await db.all<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='incremental_ledger'",
-   );
-   if (!present || present.length === 0) {
-      return;
-   }
-   // `pk` is true for every column of a composite primary key, so the old key is
-   // identifiable by package_name being part of it. Reading the key rather than a
-   // schema version means this is self-limiting: once no database has the old key,
-   // it never fires again.
-   const columns = await db.all<{ name: string; pk: boolean }>(
-      "PRAGMA table_info('incremental_ledger')",
-   );
-   const keyedOnPackage = columns.some(
-      (column) => column.name === "package_name" && Boolean(column.pk),
-   );
-   if (!keyedOnPackage) {
-      return;
-   }
-   logger.info(
-      "Re-keying the incremental ledger onto (environment, connection, table); " +
-         "recorded covered_through boundaries are discarded, so each incremental " +
-         "source rebuilds in full once and then resumes advancing by delta",
    );
    await db.run("DROP TABLE IF EXISTS incremental_ledger");
 }
