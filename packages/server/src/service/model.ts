@@ -823,11 +823,10 @@ export class Model {
    }
 
    /**
-    * Effective authorize expressions gating a source: its own `#(authorize)`,
-    * evaluated as one OR disjunction at request time. Empty array means
-    * unrestricted. Reads the per-source list surfaced on `sources` (which
-    * rides the worker serialization boundary), so it works for both
-    * freshly-created and deserialized models.
+    * Effective authorize expressions gating a source: its own `#(authorize)`.
+    * Empty array means unrestricted. Reads the per-source list surfaced on
+    * `sources` (which rides the worker serialization boundary), so it works
+    * for both freshly-created and deserialized models.
     *
     * For a dimension-form gate this is the annotated dimension's own `code`
     * (the expression as authored) — introspection only. Enforcement never
