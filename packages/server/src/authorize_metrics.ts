@@ -121,20 +121,8 @@ export function recordAuthorizeBypass(
  * outcomes of the same decision point (apply the gate, then look at what it
  * did), and a dashboard reading "how did row-level gates resolve" wants them
  * side by side as one `decision` label, not two metric names to remember.
- *
- * `short_circuited` is a third, distinct outcome: the gate's compiled
- * condition is the bare literal `false` and nothing else (accepted by
- * `classifyAuthorizeGate`'s `kind === "true" || kind === "false"` branch and
- * read back off `resolveGateShape`'s `constantFalse`), so the row set is
- * provably empty without grafting, recompiling, or running anything against
- * the warehouse. It is
- * NOT a rename of `empty_after_filter` — that decision still executes the
- * (possibly empty) filtered query; this one never dispatches at all.
  */
-export type RowLevelGateDecision =
-   | "denied_by_gate"
-   | "empty_after_filter"
-   | "short_circuited";
+export type RowLevelGateDecision = "denied_by_gate" | "empty_after_filter";
 
 /**
  * Record how one row-level `#(authorize)` gate resolved a request.
@@ -146,7 +134,7 @@ export function recordRowLevelGateDecision(
       "publisher_authorize_row_level_total",
       {
          description:
-            "How a row-level `#(authorize)` gate resolved a request. Label: decision ('denied_by_gate'|'empty_after_filter'|'short_circuited'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error; 'short_circuited' is a provably constant-false gate answered with zero rows without ever querying the warehouse.",
+            "How a row-level `#(authorize)` gate resolved a request. Label: decision ('denied_by_gate'|'empty_after_filter'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error.",
       },
    );
    rowLevelDecisionCounter.add(1, { decision });

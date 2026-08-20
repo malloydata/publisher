@@ -645,33 +645,6 @@ function authorizeWarningCollector(): {
    };
 }
 
-/** Given name → declared Malloy type, from this model's own given surface.
- *  Mirrors `Model.givenDeclaredTypes()` — see its doc comment. */
-function givenDeclaredTypes(
-   givens: ApiGivenWire[] | undefined,
-): Map<string, string> {
-   return new Map(
-      (givens ?? [])
-         .filter((g) => g.name != null && g.type != null)
-         .map((g) => [g.name, g.type] as [string, string]),
-   );
-}
-
-/** Given name → declared default (rendered Malloy source text), from this
- *  model's own given surface. Feeds `validateAuthorizeProbes`'s
- *  `declaredDefaults`, which `classifyAuthorizeGate` uses to refuse a
- *  field-vs-given row-level comparison whose given carries one — see that
- *  function's doc in `authorize.ts`. */
-function givenDeclaredDefaults(
-   givens: ApiGivenWire[] | undefined,
-): Map<string, string> {
-   return new Map(
-      (givens ?? [])
-         .filter((g) => g.name != null && g.default != null)
-         .map((g) => [g.name, g.default as string] as [string, string]),
-   );
-}
-
 function extractQueries(modelDef: ModelDef): {
    queries: ApiQueryWire[];
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
@@ -769,8 +742,6 @@ async function compileMalloyModel(
    const authorizeWarningCollection = authorizeWarningCollector();
    await validateAuthorizeProbes(mm, {
       authorizeMap,
-      declaredTypes: givenDeclaredTypes(givens),
-      declaredDefaults: givenDeclaredDefaults(givens),
       authorizeOwnNotes,
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
@@ -998,8 +969,6 @@ async function compileNotebookModel(
       // `validateAuthorizeProbes`'s doc comment for what it validates.
       await validateAuthorizeProbes(mm, {
          authorizeMap: extracted.authorizeMap,
-         declaredTypes: givenDeclaredTypes(finalGivens),
-         declaredDefaults: givenDeclaredDefaults(finalGivens),
          authorizeOwnNotes: extracted.authorizeOwnNotes,
          onRowLevelGateRejected: recordRowLevelGateRejected,
          onRowLevelGateUnexpressible:
