@@ -46,9 +46,16 @@ and `docker-image.yml` are then called with that ref. `publish-packages` trigger
 trains (see below). `gh-release` cuts the tag, and only after npm and Docker have both succeeded.
 
 `gh-release` also owns the release notes. It appends every `## [Unreleased]` section of
-`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then commits the heading
-back to `main` stamped with the shipped version. Both used to be manual post-release steps and were
-reliably skipped — 0.0.243 through 0.0.247 shipped with none of their narrative.
+`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then opens a PR stamping
+those headings with the shipped version. Both used to be manual post-release steps and were reliably
+skipped — 0.0.243 through 0.0.247 shipped with none of their narrative.
+
+Only the first half is fully automatic. **The stamp is a PR because it has to be**: `main` is a
+protected branch requiring a pull request, so the direct `git push origin main` this step did until
+0.0.250 was rejected with `GH006` on every attempt, retry included. 0.0.249 is the worked example —
+all six of its sections reached the release page and not one was stamped. The token cannot be granted
+a bypass from inside the workflow: `main` is on **classic** branch protection, which has no
+Actions-bypass lever, so that is a repo-admin change to the protection itself.
 
 Two things about that pair are easy to get wrong.
 
@@ -58,18 +65,34 @@ releases take 4–10 minutes. So `extract --titles` writes the exact heading lin
 file under `$RUNNER_TEMP`, and `stamp --titles` rewrites only those. Unscoped, a section merged
 inside that window was stamped with a version it never shipped in — off that release's page, and off
 every later one, because its heading no longer said `[Unreleased]`. The titles file lives in
-`$RUNNER_TEMP` and not the repo because the stamp step runs `git checkout -B main origin/main`, which
-would discard an in-tree file first.
+`$RUNNER_TEMP` and not the repo because the stamp step checks out a fresh branch from `origin/main`,
+which would discard an in-tree file first.
 
-**A failed stamp is not cheap.** The stamp is `continue-on-error` — by then the release is public and
-correct, and a failed docs commit must not redden it — but the cost is *not* merely a heading that
-still reads `[Unreleased]` for the next release to pick up. That heading is exactly what the next
-release's `extract` matches, so the next release re-appends **this** release's narrative to its own
-page, and so does the one after that, until a human notices and stamps it. That is why every failure
-path in the step emits a `::warning` and a job-summary line naming the fix, rather than relying on
-`continue-on-error` alone. Note also that the stamp is the only `git push origin main` in this repo,
-and whether the workflow token may do it is unconfirmed — every recent commit on `main` arrived by
-squash-merge — so a rejected push is the failure most likely to actually happen.
+**A stamp that does not land is not cheap, and "opened a PR" is not "landed."** The stamp step is
+`continue-on-error` — by then the release is public and correct, and a failed docs commit must not
+redden it — but the cost is *not* merely a heading that still reads `[Unreleased]` for the next
+release to pick up. That heading is exactly what the next release's `extract` matches, so the next
+release re-appends **this** release's narrative to its own page, and so does the one after that,
+until a human notices. That is why every failure path in the step emits a `::warning` and a
+job-summary line naming the fix, rather than relying on `continue-on-error` alone.
+
+Moving to a PR shrinks that failure window without closing it: the consequence is identical whether
+the PR was never opened or was opened and left sitting. So the stamp PR is part of releasing, not
+paperwork after it — merge it before the next dispatch, and check for a stale one before dispatching.
+Two properties of that PR are worth knowing before someone files a bug about it:
+
+- **Its required checks never run.** GitHub does not trigger workflows for events authored by
+  `GITHUB_TOKEN`, so the required checks stay `expected` forever and only an admin can merge it. The
+  PR body says so, because blank checks on a green repo look like breakage.
+- **A re-run of `gh-release` is safe.** The branch is named for the version and force-pushed, and a
+  `gh pr create` that fails because the PR already exists falls back to reporting that PR's URL
+  rather than failing the step.
+
+The durable fix is an admin one: migrate `main` to a ruleset and give the Actions token a bypass on
+the pull-request requirement, or hand the step a GitHub App token so its PR can run checks and
+auto-merge. Both trade away something real — the first widens the surface flagged under *Hardening
+that is not in place yet*, since `release.yml` has no ref guard, and the second adds a stored
+credential to a repo that deliberately has none for npm.
 
 `scripts/release-notes.mjs` has unit coverage in `scripts/release-notes.spec.ts`, run by `build.yml`'s
 `lint_format` job on every PR (`bun run test:scripts`), which also smoke-runs `extract` against the
@@ -77,8 +100,10 @@ real `RELEASE_NOTES.md` so a heading it cannot read a title from fails the PR th
 than the release that would silently drop the narrative. The release path itself is dispatch-only and
 cannot be exercised in CI.
 
-Note the stamp pushes to `main` while `publish-packages` may still be polling; that guard ignores it
-only because `RELEASE_NOTES.md` is not among the paths it watches.
+The stamp used to push to `main` while `publish-packages` may still have been polling, and that
+guard ignored it only because `RELEASE_NOTES.md` is not among the paths it watches. As a PR it cannot
+collide at all: the branch it pushes is not `main`, and `main` moves only when someone merges, long
+after the run. The path list is no longer what keeps those two apart.
 
 npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token. There is no
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets

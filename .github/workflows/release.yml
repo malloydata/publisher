@@ -626,6 +626,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # For the stamp PR at the end of this job. main requires a pull request,
+      # so the stamp cannot be a push and this cannot be dropped back to
+      # `contents: write` alone without silently disabling it.
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -791,14 +795,14 @@ jobs:
       # a skipped stamp has to be visible without opening the logs.
       #
       # A note on timing that is invisible from this job: `publish-packages` is
-      # NOT in this job's `needs`, so it may still be polling npm while this
-      # pushes. Its "main moved during this release" guard compares against the
-      # paths each package's published content is built from — `skills/`,
-      # `packages/skills/`, `bun.lock`, root `package.json` — and RELEASE_NOTES.md
-      # is in none of them, so this push is seen and correctly judged
-      # irrelevant. Adding a watched path to that guard without re-reading this
-      # comment would turn every narrative release into an aborted dispatch.
-      - name: Stamp the shipped sections on main
+      # NOT in this job's `needs`, so it may still be polling npm while the step
+      # below runs. It no longer matters. The stamp lands on its own branch and
+      # main moves only when a human merges that PR, long after this run is over,
+      # so the "main moved during this release" guard cannot see it at all. It
+      # was already safe when this pushed to main directly — RELEASE_NOTES.md is
+      # in none of the paths that guard watches — but it is now safe for a
+      # structural reason rather than a path list someone could extend.
+      - name: Open a PR stamping the shipped sections
         if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
         # A backstop, not the error handling: every failure below is reported
         # explicitly, as a ::warning and a job-summary line, because a stamp that
@@ -806,6 +810,7 @@ jobs:
         # This only keeps an unanticipated one from reddening a finished release.
         continue-on-error: true
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.new_version }}
           # Written by the step above: the exact heading lines that reached the
           # release page. See that step for why it lives under $RUNNER_TEMP.
@@ -816,42 +821,44 @@ jobs:
           git config --local user.email "${{ github.actor }}@users.noreply.github.com"
           git config --local user.name "${{ github.actor }}"
 
+          BRANCH="release-notes-stamp-${VERSION}"
           STAMP_LOG="$(mktemp)"
+          PR_BODY="$(mktemp)"
           FAILURE=""
           STAMPED=0
+          PR_URL=""
 
-          # One attempt and one retry, recomputing the stamp against whatever main
-          # became rather than rebasing a commit onto it: the stamp is a pure
-          # function of the file and the titles list, so recomputing is simpler
-          # and cannot conflict with a section edited in the meantime.
+          # Why a PR and not `git push origin main`: main is a protected branch
+          # requiring a pull request, so the direct push this step used to do was
+          # rejected with GH006 on every attempt, including its retry. 0.0.249 is
+          # the proof — it put all six of its sections on the release page and
+          # stamped none of them. The token cannot be granted the bypass from
+          # here either: main is on classic branch protection, which has no
+          # Actions-bypass lever at all, so that is a repo-admin change to the
+          # protection itself. Until someone makes it, the stamp arrives as a PR
+          # a human merges.
           #
-          # `--titles` is what makes the retry safe. Unscoped, the recompute ran
-          # against an even newer main and claimed every section it found there,
-          # including ones that were never on this release's page. Scoped, both
-          # attempts rewrite exactly the headings the page carries.
+          # There is no retry loop any more. The one that used to be here existed
+          # to survive a push rejected because main moved mid-release, and a
+          # branch cut from a freshly-fetched main cannot be rejected that way. A
+          # PR that later conflicts says so on the PR, where someone will see it,
+          # rather than in this log where nobody will.
           #
-          # Each git command is checked rather than left to `set -e`. A bare
+          # Each git command is still checked individually rather than left to
+          # `set -e`, which is why this is a function with early returns: a bare
           # failure would exit the step, and `continue-on-error` would then report
           # it as a success with nothing in the summary — the silent skip this
           # whole step exists to end.
-          for pass in 1 2; do
-            # Names the actual reason, before it is cleared. The retry is usually
-            # a rejected push (main moved), but a fetch or a stamp can fail into
-            # it too, and "main moved" would be the wrong thing to read then.
-            if [ "$pass" = 2 ]; then
-              echo "::notice title=Release notes::${FAILURE}; retrying against a fresh main"
-            fi
-            FAILURE=""
-
+          open_stamp_pr() {
             # A fresh main, not this checkout: this job is on the release branch,
             # and main may have moved since the release started.
-            git fetch origin main || { FAILURE="could not fetch main"; continue; }
-            git checkout -B main origin/main || { FAILURE="could not check out main"; continue; }
+            git fetch origin main || { FAILURE="could not fetch main"; return; }
+            git checkout -B "$BRANCH" origin/main || { FAILURE="could not check out ${BRANCH}"; return; }
 
             if ! STAMPED="$(node scripts/release-notes.mjs stamp "$VERSION" --titles "$TITLES_FILE" 2>"$STAMP_LOG")"; then
               sed 's/^/[release-notes] /' "$STAMP_LOG"
               FAILURE="release-notes.mjs stamp failed (logged above)"
-              continue
+              return
             fi
             # Non-empty on success means a section that reached the release page
             # was edited or removed on main during the release window, so there is
@@ -863,24 +870,55 @@ jobs:
             fi
             if [ "$STAMPED" = "0" ]; then
               echo "::notice title=Release notes::nothing to stamp on main"
-              break
+              return
             fi
 
-            git add RELEASE_NOTES.md || { FAILURE="could not stage RELEASE_NOTES.md"; continue; }
+            git add RELEASE_NOTES.md || { FAILURE="could not stage RELEASE_NOTES.md"; return; }
             if git diff --cached --quiet; then
               echo "::notice title=Release notes::already stamped on main"
-              break
+              STAMPED=0
+              return
             fi
             git commit -s -m "docs: stamp the release notes shipped in ${VERSION}" \
-              || { FAILURE="could not commit the stamp"; continue; }
-            # The only `git push origin main` in this repo, and whether this
-            # token is allowed to do it is genuinely unconfirmed: every recent
-            # commit on main arrived by squash-merge, and `maintain` permission
-            # reads branch protection as an ambiguous 404. So a rejection is
-            # reported rather than swallowed — see the summary line below.
-            git push origin main || { FAILURE="the push to main was rejected"; continue; }
-            break
-          done
+              || { FAILURE="could not commit the stamp"; return; }
+
+            # Forced, so re-running this job after a later failure reuses the
+            # branch instead of dying on it. Nothing else ever writes this
+            # branch: it is named for one version and only this step creates it.
+            git push --force origin "$BRANCH" || { FAILURE="could not push ${BRANCH}"; return; }
+
+            {
+              echo "\`gh-release\` put the narrative for **${VERSION}** on its release page. This stamps those same sections in \`RELEASE_NOTES.md\` so the next release does not re-append them to its own page."
+              echo
+              echo "Sections stamped as \`[${VERSION}]\`:"
+              echo
+              # The titles file holds the headings as they were BEFORE the
+              # stamp, so strip the `[Unreleased]` marker rather than list a
+              # section as unreleased directly under "stamped as [VERSION]".
+              sed 's/^#* *//; s/^\[Unreleased\]: *//; s/^\[Unreleased\] — *//; s/^/- /' "$TITLES_FILE"
+              echo
+              echo "### Merging this"
+              echo
+              echo "**The required checks on this PR will never run.** GitHub does not trigger workflows for events authored by \`GITHUB_TOKEN\`, so the required checks stay \`expected\` indefinitely and the merge needs a repo admin. Blank checks here are expected, not broken."
+              echo
+              echo "Merge it before the next release. Left open, the headings on \`main\` still read \`[Unreleased]\`, which is exactly what the next release's \`extract\` matches — so ${VERSION}'s narrative lands on the next release's page too, and on every release after that, until someone notices."
+            } > "$PR_BODY"
+
+            PR_URL="$(gh pr create --base main --head "$BRANCH" \
+              --title "docs: stamp the release notes shipped in ${VERSION}" \
+              --body-file "$PR_BODY" 2>"$STAMP_LOG")" || {
+              # A re-run of this job finds its own PR already open, which is a
+              # success with a different URL to report rather than a failure.
+              sed 's/^/[gh pr create] /' "$STAMP_LOG"
+              PR_URL="$(gh pr list --head "$BRANCH" --state open --json url -q '.[0].url' 2>/dev/null || true)"
+              if [ -z "$PR_URL" ]; then
+                FAILURE="could not open the stamp PR (logged above)"
+              fi
+              return
+            }
+          }
+
+          open_stamp_pr
 
           if [ -n "$FAILURE" ]; then
             echo "::warning title=Release notes::${FAILURE}, so RELEASE_NOTES.md on main is NOT stamped. Its heading still reads [Unreleased], which means the NEXT release re-appends this release's narrative to its own page, and so does every release after it. Fix it on main with: node scripts/release-notes.mjs stamp ${VERSION}"
@@ -888,11 +926,17 @@ jobs:
               echo "## 📝 Release notes"
               echo "⚠️ **Not stamped on \`main\`** — ${FAILURE}."
               echo
-              echo "\`RELEASE_NOTES.md\` still reads \`[Unreleased]\`, so the next release will re-append this release's narrative to its page. Fix it on \`main\` with \`node scripts/release-notes.mjs stamp ${VERSION}\` and commit."
+              echo "\`RELEASE_NOTES.md\` still reads \`[Unreleased]\`, so the next release will re-append this release's narrative to its page. Fix it on \`main\` with \`node scripts/release-notes.mjs stamp ${VERSION}\` and open a PR."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          if [ "$STAMPED" != "0" ]; then
-            echo "Stamped ${STAMPED} section(s) as \`${VERSION}\` on main" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_URL" ]; then
+            echo "::notice title=Release notes::opened ${PR_URL} to stamp ${STAMPED} section(s) as ${VERSION}"
+            {
+              echo "## 📝 Release notes"
+              echo "Opened ${PR_URL} to stamp ${STAMPED} section(s) as \`${VERSION}\` on \`main\`."
+              echo
+              echo "**Merge it before the next release.** Its required checks will not run — GitHub does not trigger workflows for \`GITHUB_TOKEN\`-authored events — so the merge needs an admin. Left open, the next release re-appends this release's narrative to its own page."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi

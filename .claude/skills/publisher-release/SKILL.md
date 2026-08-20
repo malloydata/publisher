@@ -19,8 +19,9 @@ YAML, and it is the authority when this file and it disagree.
 behaviour writes the note**, in the same PR, as a `## [Unreleased]` section —
 which is the only way it gets written by someone who knows what changed. The
 release then carries it to users on its own: `gh-release` appends every
-`[Unreleased]` section to the release page and stamps the heading back on
-`main`. Writing the section is the whole job.
+`[Unreleased]` section to the release page, then opens a PR stamping those
+headings with the version that shipped them. Writing the section is the whole
+job; merging that PR is the one thing the release cannot do for itself.
 
 ### Does this change need one?
 
@@ -62,18 +63,21 @@ Three states, in order:
    #1024 (pre-aggregation off by default) and #1030 (on by default) are one
    section for exactly this reason.
 3. **`## [<version>] — <what changed>`** once a release has shipped it. **CI
-   does this** — `gh-release` commits the stamp to `main` after the release is
-   cut. You do not stamp by hand, and you do not guess the number in advance.
+   writes this** — `gh-release` opens a `docs: stamp the release notes shipped in
+   <version>` PR after the release is cut, and a human merges it. You do not
+   stamp by hand, and you do not guess the number in advance.
 
 Once a section is stamped, it is history and does not get rewritten. A follow-up
 that changes that behaviour opens a **new** `[Unreleased]` section referencing
 the shipped version by number, the way the build-failures section names 0.0.245
 and 0.0.246 when describing what 0.0.247 changed.
 
-Never write a version number into a note yourself. Release numbers are assigned
-at dispatch time and a release can fail, so a section stamped in advance can name
-a version that does not exist — which is exactly why the stamp runs after
-`gh release create` succeeds and not before.
+Never write a version number into a note yourself *in advance*. Release numbers
+are assigned at dispatch time and a release can fail, so a section stamped early
+can name a version that does not exist — which is exactly why the stamp runs
+after `gh release create` succeeds and not before. Stamping a version that has
+**already** shipped is a different act and sometimes necessary, because the
+stamp PR needs a human to merge and can be missed; step 3 covers it.
 
 ## Which number to bump
 
@@ -201,13 +205,13 @@ and "any output means bump" then walks the version a second time for nothing.
 ### 3. Sanity-check the notes
 
 `gh-release` reads `RELEASE_NOTES.md` itself: it appends every `## [Unreleased]`
-section to the release page and commits the heading back to `main` stamped with
-the version that shipped it. There is nothing to paste and nothing to stamp by
-hand, so this step is a read, not a task.
+section to the release page, then opens a PR stamping those headings. There is
+nothing to paste, so this step is a read and one check.
 
 ```bash
 grep -n '^## \[Unreleased\]' RELEASE_NOTES.md
 node scripts/release-notes.mjs extract | head -40
+gh pr list --repo malloydata/publisher --search 'docs: stamp the release notes' --state open
 ```
 
 What you are checking is that the sections listed are the ones this release
@@ -218,6 +222,23 @@ listed is fine and common — the generated PR list carries a routine patch.
 If a section is present that should **not** ship yet, the work behind it is
 already on `main` and the note is telling the truth; the fix is a release, not
 an edit.
+
+**A previous release's stamp PR left open is the one that will bite you**, which
+is what the third command is for. The stamp cannot merge itself: `main` requires
+a pull request and that PR's checks never run, so it waits for a human. Until it
+merges, its sections still read `[Unreleased]` and this release re-appends the
+*previous* release's narrative to its own page. Merge it first. If it is gone or
+was never opened, stamp by hand instead — the one case where you write a version
+number into a note yourself, because the release that shipped it is already
+public and its number is no longer a guess:
+
+```bash
+node scripts/release-notes.mjs stamp <the version that shipped it>
+```
+
+then open a PR with that. 0.0.249 is the worked example: it put all six of its
+sections on its release page and stamped none of them, because the step still
+pushed straight to a protected `main`.
 
 ### 4. Dispatch
 
@@ -245,26 +266,33 @@ npm view @malloy-publisher/skills version
 gh release view "v<version>" --repo malloydata/publisher
 ```
 
-### 6. Confirm the notes landed
+### 6. Merge the stamp PR
 
-`gh-release` does this now, so the step is verification rather than work. Two
-things it did, both visible without leaving the run:
+Half verification, half the one task the release genuinely cannot finish itself.
+Two things `gh-release` did, both visible without leaving the run:
 
 - The release page carries the narrative under the generated header. The job
   logs `attached N narrative section(s)`, or `no [Unreleased] sections` when
   there were none.
-- `main` carries a `docs: stamp the release notes shipped in <version>` commit.
+- A `docs: stamp the release notes shipped in <version>` PR is open, named in
+  the job summary with its URL.
 
 ```bash
 gh release view "v<version>" --repo malloydata/publisher --json body -q .body | head -40
-git fetch -q origin && git log --oneline -1 origin/main
+gh pr list --repo malloydata/publisher --search 'docs: stamp the release notes' --state open
 ```
 
+**Merge that PR before you walk away.** Its required checks will never run —
+GitHub does not trigger workflows for events authored by `GITHUB_TOKEN` — so
+blank checks are expected, not breakage, and the merge needs a repo admin. Left
+open it costs exactly what a failed stamp used to: the next release re-appends
+this release's narrative to its own page, and so does the one after.
+
 The stamp step is `continue-on-error`, deliberately: the release is already
-public and correct by then, and reddening a finished release over a docs commit
-would send someone hunting a publishing problem that does not exist. So a
-missing stamp is a real possibility and costs one commit — check rather than
-assume. The next release stamps it anyway.
+public and correct by then, and reddening a finished release over a docs PR would
+send someone hunting a publishing problem that does not exist. So a missing PR is
+a real possibility — read the job summary rather than assuming. When it is
+missing, stamp by hand as in step 3.
 
 A **prerelease** skips the stamp, matching the rest of the job.
 
