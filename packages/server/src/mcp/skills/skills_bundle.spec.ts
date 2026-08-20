@@ -26,12 +26,15 @@ const sourceDir = path.join(
 );
 
 /**
- * Codepoint order. The committed bundle is sorted with localeCompare, which
- * depends on the runtime's locale, and this suite runs on three platforms.
- * Membership and content are what matter here; file order is cosmetic.
+ * Codepoint order, matching the builder's own sort. Both sides are sorted before
+ * comparing so this test stays about membership and content, and the separate
+ * order test below is what holds the builder to a locale-independent order.
  */
 const byName = (a: SkillEntry, b: SkillEntry) =>
    a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+
+/** The same codepoint comparator, on bare names. */
+const byName2 = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 describe("skills_bundle.json (generated dual-channel asset)", () => {
    it("is in sync with skills/", () => {
@@ -71,6 +74,22 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       expect(nameLines.length).toBe(skills.length);
 
       expect(raw.endsWith("\n")).toBe(true);
+   });
+
+   /**
+    * Entry order has to be reproducible on every contributor's machine, because
+    * it decides line positions in a committed file. The builder sorts by
+    * codepoint for that reason: localeCompare follows the runtime's locale, and
+    * under cs-CZ the `ch` digraph sorts after `h`, which moves malloy-charts and
+    * makes a regeneration emit a reordering diff unrelated to the skill that
+    * actually changed.
+    *
+    * The sync test above cannot catch this, since it sorts both sides before
+    * comparing.
+    */
+   it("is committed in codepoint order, so any locale regenerates it the same", () => {
+      const names = skills.map((s) => s.name);
+      expect(names).toEqual([...names].sort(byName2));
    });
 
    it("every skill has a nonempty name, description, and body", () => {

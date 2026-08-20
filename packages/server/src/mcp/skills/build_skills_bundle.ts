@@ -157,7 +157,14 @@ export function buildSkills(skillsDir: string): SkillEntry[] {
          );
       }
    }
-   return skills.sort((a, b) => a.name.localeCompare(b.name));
+   // Codepoint order, not localeCompare: entry order decides line positions in a
+   // committed artifact, so it has to be identical on every contributor's machine.
+   // localeCompare follows the runtime's locale (under cs-CZ the `ch` digraph sorts
+   // after `h`, moving malloy-charts), which made a regeneration produce a spurious
+   // reordering diff unrelated to the skill the contributor actually edited.
+   return skills.sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+   );
 }
 
 function main(): void {
