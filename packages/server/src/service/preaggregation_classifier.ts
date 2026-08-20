@@ -30,13 +30,14 @@
  * hands out (`sum`, `min`, `max` — including `count`, whose filtered partial is
  * a count of matching rows and merges with `sum` like any other). The
  * groups-with-no-matching-rows edge agrees too, but not for one reason: `min`
- * and `max` store a NULL partial there, which their merges ignore; `sum` and
- * `count` store 0, because the compiled SQL coalesces — verified against the
- * stored table, and pinned by the zero-match group in the end-to-end value
- * test. That 0 is safe because it is the identity for `SUM`, the merge both
- * use, AND because direct computation coalesces the same way. Neither half is
- * spare: a future merge for which 0 is not the identity cannot lean on this
- * paragraph.
+ * and `max` store a NULL partial there, which their merges ignore; `sum`
+ * stores 0 because the compiled SQL wraps it in COALESCE, and `count` stores 0
+ * because SQL COUNT never returns NULL in the first place — verified against
+ * the stored table and the generated SQL, and pinned by the zero-match group
+ * in the end-to-end value test. That 0 is safe because it is the identity for
+ * `SUM`, the merge both use, AND because direct computation produces the same
+ * 0 by the same two mechanisms. Neither half is spare: a future merge for
+ * which 0 is not the identity cannot lean on this paragraph.
  *
  * That argument holds only for the one accepted shape. A filter buried under a
  * wrapper (`coalesce(x.sum() { where: … }, 0)`), a chained refinement

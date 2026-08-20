@@ -543,11 +543,12 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       // rollup that dropped the filter while building the partial would store
       // 40 where 30 is correct — a plausible wrong number at exactly the grain
       // the rollup serves. Category 'B' has ZERO matching rows, which is the
-      // edge the classifier header describes: sum and count store 0 there (the
-      // compiled SQL coalesces), min stores NULL. The partial is computed from
-      // the measure by NAME, so the filter rides into the build; this is the
-      // value proof of that, and of the classifier's claim that a row-level
-      // filter commutes with merging per-grain partials.
+      // edge the classifier header describes: sum stores 0 there (the compiled
+      // SQL wraps it in COALESCE), count stores 0 (SQL COUNT never returns
+      // NULL), min stores NULL. The partial is computed from the measure by
+      // NAME, so the filter rides into the build; this is the value proof of
+      // that, and of the classifier's claim that a row-level filter commutes
+      // with merging per-grain partials.
       const { load, manifest, tables } = await synthesizeAndBuild(
          `  #@ preaggregate grain="category"
   measure: paid is amount.sum() { where: order_date = @2024-01-02 }
@@ -564,27 +565,37 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       // table rather than through any merge: 0 for the sum and count partials,
       // NULL for min. This is the fact the classifier header leans on — 0 is
       // safe because it is the identity for SUM (both partials merge with sum)
-      // and because direct computation coalesces the same way, NOT because
-      // "every merge ignores NULL".
+      // and because direct computation produces the same 0 the same way, NOT
+      // because "every merge ignores NULL".
       const stored = await duckdb.runSQL(
          `SELECT category, paid__partial, paid_count__partial, paid_min__partial
           FROM ${tables[0]} ORDER BY category`,
       );
-      // The sum and count partials come back as strings because DuckDB's SUM
-      // and COUNT over integers widen to HUGEINT/BIGINT, which the driver
-      // stringifies on a raw read; min keeps the column's own type. The values
-      // are the point: 0 and 0, not NULL, for the zero-match group.
-      expect(stored.rows).toEqual([
+      // The sum and count partials are numerically normalized because DuckDB's
+      // SUM and COUNT over integers widen to HUGEINT/BIGINT, which the driver
+      // stringifies on a raw read — a representation detail this test does not
+      // pin, so a duckdb bump that changes the widening cannot redden it. NULL
+      // passes through untouched (a bare Number(null) would be 0, quietly
+      // erasing exactly the NULL-versus-0 distinction being pinned). The
+      // VALUES are the claim: 0 and 0, not NULL, for the zero-match group.
+      const num = (v: unknown) => (v === null ? null : Number(v));
+      expect(
+         stored.rows.map((r) => ({
+            ...r,
+            paid__partial: num(r.paid__partial),
+            paid_count__partial: num(r.paid_count__partial),
+         })),
+      ).toEqual([
          {
             category: "A",
-            paid__partial: "30",
-            paid_count__partial: "1",
+            paid__partial: 30,
+            paid_count__partial: 1,
             paid_min__partial: 30,
          },
          {
             category: "B",
-            paid__partial: "0",
-            paid_count__partial: "0",
+            paid__partial: 0,
+            paid_count__partial: 0,
             paid_min__partial: null,
          },
       ]);
