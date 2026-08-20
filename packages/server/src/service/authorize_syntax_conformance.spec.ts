@@ -133,7 +133,19 @@ type GroupBResult = {
    group: "B";
    caseNum: number;
    spelling: string;
-   failureMode: "load-time" | "request-time-denied" | "unexpectedly-admitted";
+   failureMode:
+      | "load-time"
+      | "request-time-denied"
+      | "unexpectedly-admitted"
+      // The DIMENSION form does not classify a gate's expression shape at
+      // load time the way the string form's `classifyAuthorizeGate` did —
+      // see `./gate_dimension`'s doc. A shape the string form refused
+      // outright at load can now compile and graft, only to crash Malloy's
+      // own SQL generation at REQUEST time (a genuine Malloy limitation for
+      // that shape, orthogonal to authorize). Neither a clean admit nor a
+      // graceful `AccessDeniedError` — recorded distinctly so this gap is
+      // visible in the report rather than silently swallowed as either.
+      | "request-time-execution-error";
    message: string;
    namesConstruct: boolean;
    suggestsFix: boolean;
@@ -289,8 +301,10 @@ describe("authorize syntax conformance — Group A (accepted spellings)", () => 
 given:
   GROUPS :: string[]
 
-#(authorize) "org_id in $GROUPS"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -314,8 +328,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) "\`cost center\` in $GROUPS"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is \`cost center\` in $GROUPS
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -339,8 +355,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string
 
-#(authorize) "region = $REGION"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is region = $REGION
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -364,8 +382,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string
 
-#(authorize) "region != $REGION"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is region != $REGION
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -396,8 +416,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   AMOUNTMIN :: number
 
-#(authorize) "amount ${op} $AMOUNTMIN"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is amount ${op} $AMOUNTMIN
+}
 `);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
@@ -420,8 +442,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'admin'"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'admin'
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -449,8 +473,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   UNUSED :: string
 
-#(authorize) "${lit}"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is ${lit}
+}
 `);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
@@ -469,8 +495,10 @@ given:
   TENANT :: number
   ALLOWED :: number[]
 
-#(authorize) "$TENANT in $ALLOWED"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is $TENANT in $ALLOWED
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -500,8 +528,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   ROLE :: string
 
-#(authorize) "not ($ROLE = 'blocked')"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is not ($ROLE = 'blocked')
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -526,8 +556,10 @@ given:
   GROUPS :: string[]
   REGION :: string
 
-#(authorize) "org_id in $GROUPS or region = $REGION"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS or region = $REGION
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -558,8 +590,10 @@ given:
   GROUPS :: string[]
   AMOUNTMIN :: number
 
-#(authorize) "org_id in $GROUPS and amount > $AMOUNTMIN"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS and amount > $AMOUNTMIN
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -591,8 +625,10 @@ given:
   REGION :: string
   AMOUNTMIN :: number
 
-#(authorize) "(org_id in $GROUPS or region = $REGION) and amount > $AMOUNTMIN"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is (org_id in $GROUPS or region = $REGION) and amount > $AMOUNTMIN
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -624,9 +660,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) "child.name in $GROUPS"
 source: X is duckdb.table('accounts') extend {
    join_one: child is duckdb.table('child') on child_id = child.id
+   #(authorize)
+   internal dimension: authorized is child.name in $GROUPS
 }
 `);
       try {
@@ -661,8 +698,10 @@ source: X is duckdb.table('accounts') extend {
 given:
   GROUPS :: string[]
 
-#(authorize) "org_id in $GROUPS"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS
+}
 
 source: Y is X extend {}
 `);
@@ -688,8 +727,10 @@ source: Y is X extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) "org_id in $GROUPS"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is org_id in $GROUPS
+}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -741,6 +782,13 @@ describe("authorize syntax conformance — Group B (refused spellings)", () => {
          } catch (err) {
             if (err instanceof AccessDeniedError) {
                recordB(caseNum, spelling, "request-time-denied", err.message);
+            } else if (err instanceof Error) {
+               recordB(
+                  caseNum,
+                  spelling,
+                  "request-time-execution-error",
+                  err.message,
+               );
             } else {
                throw err;
             }
@@ -750,7 +798,17 @@ describe("authorize syntax conformance — Group B (refused spellings)", () => {
       }
    }
 
-   it("1. `not (org_id in $GROUPS)` — negated membership", async () => {
+   it("1. `not (org_id in $GROUPS)` — negated membership — no longer refused at load under the DIMENSION form, and it actually filters (guarantee changed — see task-3b-report.md)", async () => {
+      // The STRING form's `classifyAuthorizeGate` refused this shape outright
+      // at load. The DIMENSION form does not classify the expression's shape
+      // at all (`./gate_dimension`'s doc: validation reads the compiled
+      // `FieldDef`, not a parsed comparison/`inGiven` node) — G1 only checks
+      // "scalar boolean dimension", which `not (a in b)` satisfies, so this
+      // loads and correctly filters (W2-warned: negated membership is a
+      // KNOWN GAP for the EMPTY-given case specifically — an empty array
+      // then matches every row instead of none — see
+      // `gate_dimension_integration.spec.ts` — but a non-empty given, as
+      // exercised here, filters correctly).
       await observe(
          1,
          "not (org_id in $GROUPS)",
@@ -758,16 +816,24 @@ describe("authorize syntax conformance — Group B (refused spellings)", () => {
 given:
   GROUPS :: string[]
 
-#(authorize) "not (org_id in $GROUPS)"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is not (org_id in $GROUPS)
+}
 `,
          { GROUPS: ["org1"] },
       );
       const result = RESULTS[RESULTS.length - 1] as GroupBResult;
-      expect(result.failureMode).toBe("load-time");
+      expect(result.failureMode).toBe("unexpectedly-admitted");
    });
 
-   it("2. `org_id = $GROUPS` — array given, scalar operator", async () => {
+   it("2. `org_id = $GROUPS` — array given, scalar operator — no longer refused at load under the DIMENSION form (guarantee changed — see task-3b-report.md)", async () => {
+      // Same root cause as case 1: the DIMENSION form does not statically
+      // check that a scalar comparison's given operand is scalar-typed (the
+      // string form's classification refused this on the given's DECLARED
+      // type). G1 only asks "is this a scalar boolean dimension" — Malloy
+      // itself accepts `org_id = $GROUPS` at compile time, and only crashes
+      // generating SQL for it at REQUEST time.
       await observe(
          2,
          "org_id = $GROUPS",
@@ -775,13 +841,15 @@ source: X is duckdb.table('accounts') extend {}
 given:
   GROUPS :: string[]
 
-#(authorize) "org_id = $GROUPS"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is org_id = $GROUPS
+}
 `,
          { GROUPS: ["org1"] },
       );
       const result = RESULTS[RESULTS.length - 1] as GroupBResult;
-      expect(result.failureMode).toBe("load-time");
+      expect(result.failureMode).toBe("request-time-execution-error");
    });
 
    it("3. `owner in $ROLE` — scalar given, `in` operator (task's `role in $ROLE` shape; `owner` stands in for the field since the fixture has no `role` column)", async () => {
@@ -792,8 +860,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   ROLE :: string
 
-#(authorize) "owner in $ROLE"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is owner in $ROLE
+}
 `,
          { ROLE: "alice" },
       );
@@ -809,8 +879,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string
 
-#(authorize) "upper(region) = $REGION"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is upper(region) = $REGION
+}
 `,
          { REGION: "EAST" },
       );
@@ -824,8 +896,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   UNUSED :: string
 
-#(authorize) "1 = 1"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is 1 = 1
+}
 `,
          {},
       );
@@ -839,8 +913,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   PAT :: string
 
-#(authorize) "region like $PAT"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is region like $PAT
+}
 `,
          { PAT: "east" },
       );
@@ -854,8 +930,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   UNUSED :: string
 
-#(authorize) "region is not null"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is region is not null
+}
 `,
          {},
       );
@@ -869,8 +947,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   AMOUNTMIN :: number
 
-#(authorize) "amount + 1 > $AMOUNTMIN"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is amount + 1 > $AMOUNTMIN
+}
 `,
          { AMOUNTMIN: 100 },
       );
@@ -884,8 +964,10 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string is 'east'
 
-#(authorize) "region = $REGION"
-source: X is duckdb.table('accounts') extend {}
+source: X is duckdb.table('accounts') extend {
+  #(authorize)
+  internal dimension: authorized is region = $REGION
+}
 `,
          { REGION: "east" },
       );
