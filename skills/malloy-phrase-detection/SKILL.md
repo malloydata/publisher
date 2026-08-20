@@ -10,7 +10,7 @@ The `get_context` tool description defines each field and the two-phase workflow
 
 **Scope of this skill:** the patterns below mostly apply to **phase 2 (entity drill-down)**, building `dimension` / `measure` / `view` targets for a call scoped to a single source. Phase 1 (source discovery) is simpler: one or a few `source` targets describing the data domain, or a single `source` target with null `search_text` for listing. See the tool description for phase-1 guidance.
 
-**A note on matching:** `get_context` searches over the model (sources, fields, views, and their descriptions), not the distinct categorical *values* stored in the data. To find which literal values a categorical dimension holds, target the dimension, then query its distinct values with `execute_query` (see the patterns below).
+**A note on matching:** `get_context` always searches the model (sources, fields, views, and their descriptions). When the server indexes dimensional values (`dimensional_value` targets), you can also match a literal like `"premium"` or `"New York"` directly. If that target returns nothing (the index is off, the dimension was not tagged for indexing, or the value is not stored), fall back to targeting the parent dimension and confirming the exact string with `execute_query`.
 
 ## Authoring `search_text` for `source` targets (phase 1)
 
@@ -44,13 +44,13 @@ One target per concept is enough: the tool handles phrasing variants internally.
   - "sales summary" becomes `"a summary of sales metrics"`
 - **`source`**: data domain. Used during source discovery, not drill-down (see tool description).
 
-**Resolving categorical values (no value-search target in v1).** When the user names a literal value like "premium" or "New York City", target the *dimension* it lives on (`"the subscription tier"`, `"the city where the subscriber lives"`). Then confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it. The data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
+**Resolving categorical values.** When the user names a literal value like "premium" or "New York City", include a `dimensional_value` target with that string **and** a `dimension` target for the parent field (`"the subscription tier"`, `"the city where the subscriber lives"`). If the value target is empty, confirm the exact stored string by querying that dimension's distinct values with `execute_query` before you filter on it. The data may store `"Premium"`, `"PREMIUM"`, `"NYC"`, or `"New York"`, and only the data tells you which.
 
 ## Non-obvious decomposition patterns
 
 These are the rules you won't apply correctly by default:
 
-1. **Adjective + noun, split.** "active users" becomes two dimension targets: one for the attribute (`"the status of the user account"`) and one for the noun (`"the user or account holder"`). Resolve the modifier ("active") to the exact stored value by querying the status dimension's distinct values with `execute_query`.
+1. **Adjective + noun, split.** "active users" becomes a dimension target for the attribute (`"the status of the user account"`), a dimension target for the noun (`"the user or account holder"`), and a `dimensional_value` target for the modifier (`"active"`). If the value is not returned, confirm it with `execute_query` on the status dimension.
 2. **Ambiguous concept, cover both types.** "rating", "duration", and the like could be either a dimension or a measure: create one target of each type.
 3. **Time references are dimensions.** "last year" becomes a dimension target for the relevant date field (`"the date the event occurred"`).
 4. **Numeric ranges are dimensions.** "aged 50", "revenue over $1M" become dimension targets; the comparison is applied in the query, not matched as text.
@@ -70,6 +70,8 @@ After source discovery surfaces a `subscriptions` source, the drill-down targets
 | `dimension` | `"the city where the subscriber lives"` |
 | `dimension` | `"the date the subscription was canceled"` |
 | `dimension` | `"the tier of the subscription"` |
+| `dimensional_value` | `"NYC"` |
+| `dimensional_value` | `"premium"` |
 | `view` | `"subscriber churn or retention analysis"` |
 
-Key moves: time ("last year") becomes a dimension on the cancellation date; "NYC" and "premium/basic subscribers" do not get their own value targets, they resolve to the city and tier dimensions. Once `get_context` returns those dimensions, run `execute_query` to read their distinct values and confirm the exact strings to filter on ("New York City" vs "NYC", "premium" vs "Premium"). One `view` target is included to surface any canned churn analysis.
+Key moves: time ("last year") becomes a dimension on the cancellation date; "NYC" and "premium/basic" get `dimensional_value` targets plus the city and tier dimensions. If a value target is empty, run `execute_query` to read that dimension's distinct values and confirm the exact strings to filter on ("New York City" vs "NYC", "premium" vs "Premium"). One `view` target is included to surface any canned churn analysis.

@@ -48,6 +48,10 @@ import {
    getMemoryGovernorConfig,
    getPersistCollisionEnforce,
    getPersistStorageMode,
+   getDimensionValueIndexCap,
+   getDimensionValueIndexMode,
+   getEvalStoreEnabled,
+   getMcpTraceMode,
    getQueryMetadataMode,
 } from "./config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
@@ -56,6 +60,7 @@ import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
+import { EvalController } from "./controller/eval.controller";
 import { initializeMcpServer } from "./mcp/server";
 import {
    addCommand,
@@ -217,6 +222,10 @@ getPersistCollisionEnforce();
 // ("false", "0", "disabled") would boot clean and then fail every query and
 // every build — the one thing the metadata path promises never to do.
 getQueryMetadataMode();
+getMcpTraceMode();
+getEvalStoreEnabled();
+getDimensionValueIndexMode();
+getDimensionValueIndexCap();
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
@@ -318,6 +327,14 @@ export function startMaterializationSchedulerFromEnv(
 startMaterializationSchedulerFromEnv(environmentStore, materializationService);
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore, SERVER_ROOT);
+const evalController = new EvalController(
+   () => environmentStore.storageManager.getDuckDbConnection(),
+   {
+      serverRoot: SERVER_ROOT,
+      reloadPackage: (environmentName, packageName) =>
+         packageController.reloadPackage(environmentName, packageName),
+   },
+);
 
 export const mcpApp = express();
 
@@ -934,6 +951,110 @@ app.delete(`${API_PREFIX}/theme`, async (_req, res) => {
       res.status(status).json(json);
    }
 });
+
+const handleEval = async (
+   res: express.Response,
+   work: () => Promise<unknown>,
+) => {
+   try {
+      res.status(200).json(await work());
+   } catch (error) {
+      const { json, status } = internalErrorToHttpError(error as Error);
+      res.status(status).json(json);
+   }
+};
+
+app.get(`${API_PREFIX}/evals/sets`, (req, res) =>
+   handleEval(res, () =>
+      evalController.listSets(
+         typeof req.query.status === "string" ? req.query.status : undefined,
+         typeof req.query.name === "string" ? req.query.name : undefined,
+      ),
+   ),
+);
+app.post(`${API_PREFIX}/evals/sets`, (req, res) =>
+   handleEval(res, () => evalController.createSet(req.body)),
+);
+app.get(`${API_PREFIX}/evals/sets/:setId`, (req, res) =>
+   handleEval(res, () => evalController.getSet(req.params.setId)),
+);
+app.patch(`${API_PREFIX}/evals/sets/:setId`, (req, res) =>
+   handleEval(res, () => evalController.updateSet(req.params.setId, req.body)),
+);
+app.get(`${API_PREFIX}/evals/sets/:setId/cases`, (req, res) =>
+   handleEval(res, () => evalController.listCases(req.params.setId)),
+);
+app.post(`${API_PREFIX}/evals/sets/:setId/cases`, (req, res) =>
+   handleEval(res, () => evalController.createCase(req.params.setId, req.body)),
+);
+app.get(`${API_PREFIX}/evals/cases/:caseId`, (req, res) =>
+   handleEval(res, () => evalController.getCase(req.params.caseId)),
+);
+app.patch(`${API_PREFIX}/evals/cases/:caseId`, (req, res) =>
+   handleEval(res, () => evalController.updateCase(req.params.caseId, req.body)),
+);
+app.get(`${API_PREFIX}/evals/sets/:setId/evidence`, (req, res) =>
+   handleEval(res, () => evalController.listEvidence(req.params.setId)),
+);
+app.post(`${API_PREFIX}/evals/sets/:setId/evidence`, (req, res) =>
+   handleEval(res, () =>
+      evalController.createEvidence(req.params.setId, req.body),
+   ),
+);
+app.get(`${API_PREFIX}/evals/runs`, (req, res) =>
+   handleEval(res, () =>
+      evalController.listRuns(
+         typeof req.query.setId === "string" ? req.query.setId : undefined,
+         typeof req.query.status === "string" ? req.query.status : undefined,
+      ),
+   ),
+);
+app.post(`${API_PREFIX}/evals/runs`, (req, res) =>
+   handleEval(res, () => evalController.createRun(req.body)),
+);
+app.get(`${API_PREFIX}/evals/runs/:runId`, (req, res) =>
+   handleEval(res, () => evalController.getRun(req.params.runId)),
+);
+app.patch(`${API_PREFIX}/evals/runs/:runId`, (req, res) =>
+   handleEval(res, () => evalController.updateRun(req.params.runId, req.body)),
+);
+app.get(`${API_PREFIX}/evals/runs/:runId/events`, (req, res) =>
+   handleEval(res, () => evalController.listEvents(req.params.runId)),
+);
+app.post(`${API_PREFIX}/evals/runs/:runId/events`, (req, res) =>
+   handleEval(res, () =>
+      evalController.appendEvent(req.params.runId, req.body),
+   ),
+);
+app.post(`${API_PREFIX}/evals/sets/:setId/export`, (req, res) =>
+   handleEval(res, () => evalController.exportSet(req.params.setId, req.body)),
+);
+app.post(`${API_PREFIX}/evals/import`, (req, res) =>
+   handleEval(res, () => evalController.importSet(req.body)),
+);
+app.get(`${API_PREFIX}/evals/checkpoints`, (req, res) =>
+   handleEval(res, () =>
+      evalController.listCheckpoints(
+         typeof req.query.runId === "string" ? req.query.runId : undefined,
+      ),
+   ),
+);
+app.post(`${API_PREFIX}/evals/checkpoints`, (req, res) =>
+   handleEval(res, () => evalController.createCheckpoint(req.body)),
+);
+app.get(`${API_PREFIX}/evals/checkpoints/:checkpointId`, (req, res) =>
+   handleEval(res, () => evalController.getCheckpoint(req.params.checkpointId)),
+);
+app.post(
+   `${API_PREFIX}/evals/checkpoints/:checkpointId/restore`,
+   (req, res) =>
+      handleEval(res, () =>
+         evalController.restoreCheckpoint(req.params.checkpointId),
+      ),
+);
+app.post(`${API_PREFIX}/evals/reset`, (req, res) =>
+   handleEval(res, () => evalController.reset()),
+);
 
 app.get(`${API_PREFIX}/watch-mode/status`, watchModeController.getWatchStatus);
 app.post(`${API_PREFIX}/watch-mode/start`, watchModeController.startWatching);

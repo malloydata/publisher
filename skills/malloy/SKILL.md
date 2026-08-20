@@ -49,10 +49,10 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 
 | Skill | Use when... |
 |-------|-------------|
-| `skill:eval-loop` | Measuring, triaging, or improving a semantic model against a question set |
-| `skill:eval-answer` | Determining whether one answer correctly answered its question |
-| `skill:eval-diagnose` | Attributing an answer failure to the model, agent, or retrieval |
-| `skill:eval-improve` | Making the smallest evidence-backed model edit for a diagnosed gap |
+| `skill:eval-loop` | You conduct scrape/run, eval, diagnose, improve, and checkpoint. Publisher stores events at `/api/v0/evals`. There is no batch orchestrator. |
+| `skill:eval-answer` | Contamination check, then mechanical score of one answer. No diagnosis. |
+| `skill:eval-diagnose` | Attribute a failure to dataset, agent-call, get_context, construction, or model-definition |
+| `skill:eval-improve` | Smallest evidence-backed model edit for a model-owned gap. Never accepts its own edit. |
 
 **Writing correct Malloy** (read before writing, not after failing)
 

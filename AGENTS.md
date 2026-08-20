@@ -9,6 +9,7 @@ Publisher is the open-source semantic model server for [Malloy](https://malloyda
 - Build and change Malloy models: validate an edit with `malloy_compile`, save it, then `malloy_reloadPackage` to run it by name. The `malloy-modeling` skill covers the workflow.
 - Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `malloy-html-data-apps` skill covers it.
 - Review Malloy for correctness with the `malloy-review` skill.
+- Evaluate a model with the `eval-loop` skill: you conduct scrape/run, eval, diagnose, improve, and checkpoint. Publisher stores cases, events, and restore points at `/api/v0/evals`. There is no eval orchestrator to start.
 
 All of it runs against a local server you start in step 1 and reach over MCP in step 2, or over REST when you work unattended (section 7).
 
@@ -140,7 +141,7 @@ Ask "what can I explore here?" A good sequence is:
 
 ## 5. Skills
 
-The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `malloy-getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness. Most of these are shared, open-source Malloy skills kept in sync with an upstream repo; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills map to this server's `malloy_*` tools.
+The [`skills/`](skills/) directory holds task-specific guides. They are symlinked into `.claude/skills/`, so Claude Code auto-discovers them, and other hosts can pull the same content as MCP prompts from the endpoint above. Start with `malloy-getting-started`. Use `malloy-modeling` to build or change a model, `malloy-analysis` to explore and answer questions, and `malloy-review` to check Malloy for correctness. Use `eval-loop` to score or improve a model; you are the conductor of scrape/run, eval, diagnose, improve, and checkpoint, and Python is only `match_rows.py`, `score_retrieval.py`, and `check_contamination.py`. Most of these are shared, open-source Malloy skills kept in sync with an upstream repo; [`skills/README.md`](skills/README.md) explains what is shared, why `credible-*` skills never appear here, and how the bare tool names in shared skills map to this server's `malloy_*` tools.
 
 ## 6. Iterating on a model (watch mode)
 

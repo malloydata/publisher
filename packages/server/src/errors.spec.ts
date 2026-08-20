@@ -2,10 +2,12 @@ import { describe, expect, it } from "bun:test";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConflictError,
    ConnectionAuthError,
    ConnectionError,
    internalErrorToHttpError,
    ModelCompilationError,
+   NotFoundError,
    NotImplementedError,
    NotQueryableError,
    PayloadTooLargeError,
@@ -43,6 +45,14 @@ describe("internalErrorToHttpError", () => {
          code: 403,
          message: 'Access denied for source "gated".',
       });
+   });
+
+   it("maps NotFoundError to 404", () => {
+      const { status, json } = internalErrorToHttpError(
+         new NotFoundError("Eval set not found: x"),
+      );
+      expect(status).toBe(404);
+      expect(json).toEqual({ code: 404, message: "Eval set not found: x" });
    });
 
    it("maps NotQueryableError to 404 (explore boundary)", () => {
@@ -136,6 +146,17 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({
          code: 501,
          message: "Version IDs not implemented.",
+      });
+   });
+
+   it("maps ConflictError to 409", () => {
+      const { status, json } = internalErrorToHttpError(
+         new ConflictError("An active eval set named 'synthetic' already exists"),
+      );
+      expect(status).toBe(409);
+      expect(json).toEqual({
+         code: 409,
+         message: "An active eval set named 'synthetic' already exists",
       });
    });
 

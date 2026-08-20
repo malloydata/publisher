@@ -8,6 +8,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(403, error.message);
    } else if (error instanceof AccessDeniedError) {
       return httpError(403, error.message);
+   } else if (error instanceof NotFoundError) {
+      return httpError(404, error.message);
    } else if (error instanceof EnvironmentNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof PackageNotFoundError) {
@@ -37,6 +39,8 @@ export function internalErrorToHttpError(error: Error) {
    } else if (error instanceof MaterializationConflictError) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
+      return httpError(409, error.message);
+   } else if (error instanceof ConflictError) {
       return httpError(409, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);
@@ -92,6 +96,12 @@ export class BadRequestError extends Error {
  * Still a BadRequestError, so it still maps to HTTP 400.
  */
 export class InvalidArgumentError extends BadRequestError {}
+
+export class NotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
 
 export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
@@ -230,6 +240,13 @@ export class MaterializationConflictError extends Error {
 export class InvalidStateTransitionError extends Error {
    constructor(message: string) {
       super(message);
+   }
+}
+
+export class ConflictError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "ConflictError";
    }
 }
 
