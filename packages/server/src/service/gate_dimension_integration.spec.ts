@@ -656,6 +656,21 @@ describe("dimension-form gate — end to end", () => {
          await cleanup(duckdb, dir);
       }
    });
+
+   it("getAuthorize() surfaces the gate dimension's own `code`, same shape the string form returned", async () => {
+      // Task 3a-bis: `getAuthorize` used to return `[]` for every
+      // dimension-form gate (only the retired string form populated it).
+      // This is introspection ONLY — `code` here is the author's expression
+      // text, never re-parsed or re-derived from for enforcement.
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\n`,
+      );
+      try {
+         expect(model.getAuthorize("accounts")).toEqual(["org_id in $GROUPS"]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
 });
 
 describe("inheritance matrix", () => {

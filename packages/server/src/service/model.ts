@@ -613,11 +613,24 @@ export class Model {
       // dangerous of the two possible errors. Mutating in place (rather than at
       // the API boundary) keeps getSources()/getAuthorize()/the early gate on one
       // answer instead of three.
+      //
+      // A dimension-form gate declared on the source's OWN struct
+      // (`dimensionForm` set, `selfContained: false`) is excluded from this
+      // override: `extractSourcesFromModelDef` already set `source.authorize`
+      // to the gate dimension's own `code` — the expression as authored — and
+      // this walk's `exprs` for that same gate is the GRAFT text
+      // (`quoteMalloyIdentifier`, e.g. `` `authorized` ``), which is correct
+      // for enforcement but would regress introspection to an opaque field
+      // reference. A dimension-form gate carried in from elsewhere
+      // (`selfContained: true` — a query-source base, a composite member) has
+      // no `code` extraction can see from this source's own struct, so the
+      // override still applies there, same as before this distinction existed.
       for (const source of this.sources ?? []) {
          if (!source.name) continue;
          const exprs = this.entryPointGatesBySource
             .get(source.name)
-            ?.flatMap((g) => g.exprs);
+            ?.filter((g) => !g.dimensionForm || g.selfContained)
+            .flatMap((g) => g.exprs);
          if (exprs && exprs.length > 0) source.authorize = exprs;
       }
       // Guarded defensively: a malformed gate reachable only through a
@@ -839,6 +852,11 @@ export class Model {
     * unrestricted. Reads the per-source list surfaced on `sources` (which
     * rides the worker serialization boundary), so it works for both
     * freshly-created and deserialized models.
+    *
+    * For a dimension-form gate this is the annotated dimension's own `code`
+    * (the expression as authored) — introspection only. Enforcement never
+    * re-derives from this text; it grafts by the dimension's NAME (see
+    * `./gate_classification`).
     */
    public getAuthorize(sourceName: string): string[] {
       return (
