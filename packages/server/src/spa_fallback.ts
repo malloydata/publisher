@@ -75,7 +75,24 @@ const ASSET_EXTENSIONS = new Set([
  * Third segments that belong to the app rather than to a package's `public/`
  * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
  * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
- * embedded data app viewer and `workbook/...` is the workbook route.
+ * embedded data app viewer, `workbook/...` is the workbook route, and
+ * `dashboards/<slug>` is the dashboard viewer.
+ *
+ * `dashboards` is here because a slug is a FILENAME with its `.malloy` suffix
+ * removed, so `dashboards/report.csv.malloy` publishes the slug `report.csv`,
+ * which ends in an asset extension through no choice of the reader's. Without
+ * this entry that dashboard is listed on the package page, served by the API,
+ * and reachable by in-app navigation, but a deep link or a refresh 302s to the
+ * static route and answers 404. Measured before adding it.
+ *
+ * The cost, which `pages` pays too and is worth stating for this one: a package
+ * that ships a `public/dashboards/` directory can no longer address those files
+ * as `/<env>/<pkg>/dashboards/<file>`, since that shape now opens the dashboard
+ * viewer, which reports that the package has no dashboard by that name.
+ * `data-apps` has a viewer one
+ * segment down that catches its own collision; this route has no equivalent, so
+ * those files are reachable only on the static URL
+ * `/environments/<env>/packages/<pkg>/dashboards/<file>`.
  *
  * `pages` is the OLD spelling of `data-apps`, kept only so an existing bookmark
  * reaches the app and the app can redirect it to the new URL. Without it here the
@@ -87,7 +104,12 @@ const ASSET_EXTENSIONS = new Set([
  * together with the redirect in ModelPage.tsx that depends on it. The newest tag
  * when this was written was v0.0.240.
  */
-const SPA_OWNED_SEGMENTS = new Set(["data-apps", "pages", "workbook"]);
+const SPA_OWNED_SEGMENTS = new Set([
+   "dashboards",
+   "data-apps",
+   "pages",
+   "workbook",
+]);
 
 export type SpaFallbackAction =
    /** Serve the app shell, as before. */

@@ -11,7 +11,9 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 
 > **PREREQUISITE:** Make sure the Malloy MCP tools (`get_context`, `execute_query`, `search_malloy_docs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
 
-**This step is silent.** The agent does not present findings to the user yet. That happens in the next step (PROPOSE SCOPE).
+**This step is silent.** The agent does not present findings to the user yet. That happens in the next step (PROPOSE SCOPE). Silent does not mean unrecorded: append findings to your modeling workflow's `modeling-notes.md` as you go (grain proofs, key collisions, coverage cliffs, metadata drift, problems) so the scope proposal argues from a durable record rather than a reconstruction.
+
+**Profiling goes through Malloy.** Even when the underlying engine is available directly (a `duckdb` CLI, `psql`, `bq`), run discovery queries through `execute_query`. The semantic layer under construction is the product, and grounded discovery through it is the point; profiling around it is a category error, not a shortcut: every finding would have to be re-verified through Malloy anyway.
 
 ## Tools
 
@@ -22,8 +24,10 @@ description: Silent data discovery for Malloy modeling. Used at Step 1 of the mo
 ## Workflow
 
 ```
-1. Check for prior art signals                 → If found, ask user: "I found [LookML/dbt] files, use as prior art?"
-2. If user confirms: read adapter reference        → Follow skill:malloy-lookml-review, keep prior-art notes in-conversation
+1. Check for prior art signals                 → BI configs, metadata files, KPI docs, catalog
+                                                 exports, READMEs, screenshots. Ask before using.
+2. If BI config: read adapter reference        → Follow skill:malloy-lookml-review; read anything
+                                                 else directly. Notes into modeling-notes.md
 3. get_context                           → Ground yourself: sources, views, fields
 4. Inspect source definitions                  → See ALL fields and join paths for key sources
 5. Derive candidate joins/dimensions/measures  → Read them off the model and the data, not a suggestion tool
@@ -61,6 +65,7 @@ When reviewing tables and columns, capture:
 - Connection name and schema (CRITICAL, never guess)
 - Table roles: fact, dimension, bridge, lookup, staging, operational
 - Join relationships (FK → PK mappings)
+- **Sibling tables at the same grain**: where two tables share a role AND a grain, diff their columns and state why you chose one, or model both. Verifying keys, grain, and fan-out on the table you picked does not catch the richer sibling you never compared it to; a leaner twin can silently cost a whole class of question (e.g. picking a final-enrolment table over its sibling that also carried first-week and fifth-week counts made the enrolment funnel unaskable).
 
 ### Column-Level
 - Primary key and foreign key columns
@@ -120,7 +125,7 @@ run: orders -> {
   aggregate:
     total is count()
     same_date is count() { where: created_at::date = submitted_at::date }
-    max_gap_days is max(days(submitted_at - created_at))
+    max_gap_days is max(days(created_at to submitted_at))
 }
 ```
 
@@ -153,8 +158,11 @@ Check for prior art signals at the start of discovery. If a signal is found and 
 |--------|------------|-------------------|
 | `.lkml` files in project or subdirectories | lookml | `skill:malloy-lookml-review` |
 | `dbt_project.yml` in project or parent dirs | dbt | dbt review (future) |
+| Dataset metadata (`metadata.json` and friends), metrics/KPI docs, catalog exports, data READMEs, existing SQL or report files, dashboard screenshots | direct | none: read it yourself (see below) |
 
-The reference handles inventory, classification, and produces prior-art notes. Keep those notes in-conversation, then continue with normal discovery below.
+**Prior art is broader than BI tool configs**, and the third row is where most of it lands. A `metadata.json` often carries column-level ground truth worth reconciling against; a metrics doc or a dashboard screenshot tells you which definitions the business already uses. None of it needs a reference skill: read it, treat its claims as hypotheses to verify by query (metadata drifts: trust the data, use the docs for descriptions), cite it in later proposals, and record which sources were used.
+
+The reference handles inventory, classification, and produces prior-art notes. Record those notes in `modeling-notes.md`, then continue with normal discovery below.
 
 **If DB connection available (LookML + DB mode):**
 - Read the model and run `execute_query` as normal

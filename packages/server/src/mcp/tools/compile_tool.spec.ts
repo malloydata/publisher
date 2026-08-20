@@ -156,6 +156,54 @@ describe("malloy_compile tool", () => {
       expect(parsed.diagnostics[0].severity).toBe("warn");
    });
 
+   it("passes scope through to compileSource, defaulting to append", async () => {
+      const scopes: unknown[] = [];
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               compileSource: async (
+                  ..._args: unknown[]
+               ): Promise<{ problems: unknown[] }> => {
+                  // Positional: packageName, modelName, source, includeSql,
+                  // givens, scope.
+                  scopes.push(_args[5]);
+                  return { problems: [] };
+               },
+            }) as never,
+      });
+      await handler(args);
+      await handler({ ...args, scope: "package", source: undefined });
+      expect(scopes).toEqual(["append", "package"]);
+   });
+
+   it("carries the model tag through diagnostics and the text block", async () => {
+      // `model` is what keeps a package-scope result legible: one array holds
+      // every file's problems, and without the tag two files' identical
+      // messages are indistinguishable.
+      const handler = captureHandler(
+         storeReturning([
+            {
+               severity: "error",
+               message: "Reference to undefined value nope",
+               model: "tracks.malloy",
+               at: {
+                  url: "file:///pkg/tracks.malloy",
+                  range: {
+                     start: { line: 2, character: 20 },
+                     end: { line: 2, character: 24 },
+                  },
+               },
+            },
+         ]),
+      );
+      const result = await handler({ ...args, scope: "package" });
+      const parsed = parse(result);
+      expect(parsed.diagnostics[0].model).toBe("tracks.malloy");
+      expect(textBlock(result)).toContain(
+         "tracks.malloy: Reference to undefined value nope",
+      );
+   });
+
    it("includes sql when the controller returns it", async () => {
       const handler = captureHandler(storeReturning([], "SELECT 1"));
       const parsed = parse(await handler({ ...args, includeSql: true }));

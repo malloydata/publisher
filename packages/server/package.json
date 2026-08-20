@@ -7,7 +7,9 @@
       "malloy-publisher": "dist/server.mjs"
    },
    "files": [
-      "dist"
+      "dist",
+      "publisher.config.example.duckdb.json",
+      "publisher.config.example.bigquery.json"
    ],
    "engines": {
       "node": ">=20"
@@ -53,6 +55,7 @@
       "@malloydata/db-trino": "^0.0.427",
       "@malloydata/malloy": "^0.0.427",
       "@malloydata/malloy-sql": "^0.0.427",
+      "@malloydata/malloy-tag": "^0.0.427",
       "@malloydata/render-validator": "^0.0.427",
       "@modelcontextprotocol/sdk": "^1.13.2",
       "@opentelemetry/api": "^1.9.0",

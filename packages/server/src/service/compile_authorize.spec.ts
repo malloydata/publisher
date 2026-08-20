@@ -1,8 +1,9 @@
+import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { AccessDeniedError } from "../errors";
+import { AccessDeniedError, NotQueryableError } from "../errors";
 import { Environment } from "./environment";
 
 // End-to-end gate on the /compile path. Exercises environment.compileSource
@@ -15,17 +16,37 @@ const PUBLISHER_JSON = JSON.stringify({
    description: "compile-gate",
 });
 
-// `gated` is locked to $ROLE='analyst'; `open_src` is unrestricted.
+// `gated` is locked to $ROLE='analyst'; `open_src` is unrestricted; `row_gated`
+// is locked by a ROW-FIELD condition (`org_id`), not just a given.
 const MODEL = `##! experimental.givens
 
 given:
   ROLE :: string
+  GROUPS :: number[]
 
 #(authorize) "$ROLE = 'analyst'"
 source: gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 
 source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+
+#(authorize) "org_id in $GROUPS"
+source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend { measure: c is count() }
 `;
+
+/**
+ * MODEL with every `#(authorize)` line removed.
+ *
+ * The tests below submit a caller edit that has dropped the author's gate, and
+ * assert the on-disk gate denies anyway. They must drop ALL of them: a leftover
+ * gate byte in caller-submitted text is refused up front by
+ * `assertNoCallerAuthorizeAnnotation` (a BadRequestError), which is a different
+ * refusal than the one under test and would pass for the wrong reason.
+ */
+const withoutGates = (model: string): string =>
+   model
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#(authorize)"))
+      .join("\n");
 
 describe("compile-path authorize gate (compileSource)", () => {
    let rootDir: string;
@@ -50,7 +71,7 @@ describe("compile-path authorize gate (compileSource)", () => {
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
-   const compile = (source: string, givens?: Record<string, string>) =>
+   const compile = (source: string, givens?: Record<string, GivenValue>) =>
       env.compileSource("pkg", "model.malloy", source, false, givens);
 
    it("denies a direct gated source without the satisfying given (early gate)", async () => {
@@ -76,6 +97,35 @@ describe("compile-path authorize gate (compileSource)", () => {
          ROLE: "analyst",
       });
       expect(problems).toBeDefined();
+   });
+
+   it("denies the gated source when the given does NOT satisfy the gate", async () => {
+      // Paired with the admit test above: /compile's backstop
+      // (`assertAuthorizedForRunnable`) resolves this given-only gate through
+      // an independently recompiled model, where `resolveGraftTarget` cannot
+      // link the freshly-compiled `gated` struct back to the package's own
+      // cached one (no shared identity/sourceID across separate compiles —
+      // see `Model.resolveGateShape`'s fallback doc). Both directions have to
+      // keep working through that fallback: an admit that only ever fires
+      // because the fallback stopped discriminating would pass this suite
+      // just as easily as a correct one.
+      await expect(
+         compile("run: gated -> { aggregate: c }", { ROLE: "nobody" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("CRITICAL — a row-level gate still denies even with a satisfying given, when the compile path cannot graft it", async () => {
+      // `row_gated`'s condition reads `org_id`, a real column — genuinely
+      // row-level, not given-only. The same "independently recompiled model"
+      // shape that defeats `resolveGraftTarget` for the given-only gates
+      // above must NOT let this one fall back to the given-only boolean path:
+      // `Model.classifyWithoutGraft`'s own probe has no `org_id` column
+      // either, so it must fail to compile and deny — never admit a caller
+      // whose given would satisfy the row condition, since there is no scope
+      // here to graft the row filter onto at all.
+      await expect(
+         compile("run: row_gated -> { aggregate: c }", { GROUPS: [1] }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("leaves an ungated source compilable without any given", async () => {
@@ -112,5 +162,313 @@ describe("compile-path authorize gate (compileSource)", () => {
             true,
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("file scope still denies when the submitted edit deletes the gate", async () => {
+      const withoutGate = withoutGates(MODEL);
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGate}\nrun: gated -> { aggregate: c }`,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("file scope catches a gated final run after an open decoy", async () => {
+      const withoutGate = withoutGates(MODEL);
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGate}
+run: open_src -> { aggregate: c }
+run: gated -> { aggregate: c }`,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("a brand-new model path cannot bypass an imported source gate", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "scratch.malloy",
+            `import "model.malloy"
+run: gated -> { aggregate: c }`,
+            true,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("uses an on-disk gate for a file added since the last load", async () => {
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "stale.malloy"),
+         MODEL,
+      );
+      const submitted = `${withoutGates(MODEL)}\nrun: gated -> { aggregate: c }`;
+
+      await expect(
+         env.compileSource(
+            "pkg",
+            "stale.malloy",
+            submitted,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+
+      await expect(
+         env.compileSource(
+            "pkg",
+            "stale.malloy",
+            submitted,
+            false,
+            { ROLE: "analyst" },
+            "file",
+         ),
+      ).resolves.toMatchObject({ problems: [] });
+   });
+});
+
+describe("compile-path is exempt from the query boundary (compileSource)", () => {
+   // /compile is the authoring loop, and the boundary is discovery curation,
+   // not access control. Gating compile made a curated package un-authorable:
+   // the QA session that set explores + queryableSources: "declared" (HANDOFF
+   // CR-5) watched every per-file compile 404 with "Query target is not
+   // queryable". The query path keeps the boundary in full (query_boundary
+   // .spec.ts); authorize keeps gating compile (the suite above).
+   let rootDir: string;
+   let env: Environment;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-compileb-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage("pkg", async (stagingPath) => {
+         await fs.mkdir(stagingPath, { recursive: true });
+         await fs.writeFile(
+            path.join(stagingPath, "publisher.json"),
+            JSON.stringify({
+               name: "pkg",
+               explores: ["index.malloy"],
+               queryableSources: "declared",
+            }),
+         );
+         await fs.writeFile(
+            path.join(stagingPath, "base.malloy"),
+            `source: base_source is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}`,
+         );
+         await fs.writeFile(
+            path.join(stagingPath, "index.malloy"),
+            `import "base.malloy"
+source: helper is duckdb.sql("select 1 as id") extend { measure: hc is count() }
+source: customers is duckdb.sql("select 1 as id") extend { measure: c is count() }
+export { customers }`,
+         );
+      });
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("compiles against a non-explores model file (the per-file authoring loop)", async () => {
+      const { problems } = await env.compileSource(
+         "pkg",
+         "base.malloy",
+         "run: base_source -> { aggregate: c }",
+         false,
+      );
+      expect(problems).toBeDefined();
+   });
+
+   it("compiles text targeting a non-exported source inside the explores file", async () => {
+      const { problems } = await env.compileSource(
+         "pkg",
+         "index.malloy",
+         "run: helper -> { aggregate: hc }",
+         false,
+      );
+      expect(problems).toBeDefined();
+   });
+
+   it("the QUERY path still denies the same hidden targets (exemption is compile-only)", async () => {
+      const pkg = await env.getPackage("pkg");
+      await expect(
+         pkg
+            .getModel("index.malloy")!
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: helper -> { aggregate: hc }",
+            ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+});
+
+describe("compile exemption is not an existence oracle (compileSource)", () => {
+   // The exemption must not let /compile distinguish "this gated source exists"
+   // from "no such name". A source that is BOTH boundary-hidden and
+   // #(authorize)-gated has to answer with the boundary's generic 404, the same
+   // as the query surface — otherwise an unauthorized caller enumerates the
+   // hidden namespace one 403 at a time. A gated source the boundary does NOT
+   // hide keeps its informative 403.
+   let rootDir: string;
+   let env: Environment;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-oracle-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage("pkg", async (stagingPath) => {
+         await fs.mkdir(stagingPath, { recursive: true });
+         await fs.writeFile(
+            path.join(stagingPath, "publisher.json"),
+            JSON.stringify({
+               name: "pkg",
+               explores: ["index.malloy"],
+               queryableSources: "declared",
+            }),
+         );
+         // Hidden file (not in explores) holding a gated source.
+         await fs.writeFile(
+            path.join(stagingPath, "secret.malloy"),
+            `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "$ROLE = 'analyst'"
+source: hidden_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+         );
+         // Listed file with a gated source that IS exported (visible). It also
+         // imports the hidden file, so the evasion probes below can resolve
+         // hidden_gated in a LISTED model's namespace; the import does not
+         // export it, so it stays boundary-hidden.
+         await fs.writeFile(
+            path.join(stagingPath, "index.malloy"),
+            `##! experimental.givens
+import "secret.malloy"
+
+#(authorize) "$ROLE = 'analyst'"
+source: visible_gated is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+
+source: customers is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+export { customers, visible_gated }`,
+         );
+      });
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("answers 404, not 403, for a source that is hidden AND gated", async () => {
+      // Pre-exemption this was a NotQueryableError because the boundary ran
+      // first; the exemption must preserve the OUTCOME for a hidden target even
+      // though the boundary no longer blocks compilation itself.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "secret.malloy",
+            "run: hidden_gated -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("masks it with includeSql too (the door worth the most to an attacker)", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "secret.malloy",
+            "run: hidden_gated -> { aggregate: c }",
+            true,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("keeps the informative 403 for a gated source the boundary does NOT hide", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "run: visible_gated -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("a multi-statement decoy cannot keep the 403 that names the hidden source", async () => {
+      // The early text gate resolves only the FIRST run: statement (the
+      // curated decoy), so converting the denial on surface syntax alone let
+      // this probe through with `Access denied for source "hidden_gated"` —
+      // the verbatim existence proof the mask exists to withhold. The
+      // conversion settles the COMPILED run target instead.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "run: customers -> { aggregate: c }\nrun: hidden_gated -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("a derivation alias over the hidden source is masked too", async () => {
+      // `probe` is the caller's own alias, so the denial names it rather than
+      // hidden_gated — but a 403 here still separates exists-and-gated from
+      // nonexistent (which fails as a compile error), so it enumerates the
+      // hidden namespace all the same. The compiled-target conversion walks
+      // the same derivation rule as the query surface: probe derives from a
+      // non-curated source, so the query surface answers 404, and so must this.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "source: probe is hidden_gated extend {}\nrun: probe -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
+   });
+
+   it("a derivation alias over the VISIBLE gated source keeps its 403", async () => {
+      // The guard against over-tightening: deriving from a curated gated
+      // source is admitted by the query surface (derivesFromCurated), so the
+      // informative denial must survive the conversion.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "index.malloy",
+            "source: mine is visible_gated extend {}\nrun: mine -> { aggregate: c }",
+            false,
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("still compiles the hidden source once the given satisfies its gate", async () => {
+      // The mask is only on the denial path — authoring against a hidden file
+      // stays possible for a caller who passes the gate.
+      const { problems } = await env.compileSource(
+         "pkg",
+         "secret.malloy",
+         "run: hidden_gated -> { aggregate: c }",
+         false,
+         { ROLE: "analyst" },
+      );
+      expect(problems).toBeDefined();
    });
 });

@@ -4,7 +4,11 @@ import * as fs from "fs/promises";
 import { fileURLToPath } from "url";
 import { components } from "../api";
 import { logger } from "../logger";
-import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
+import {
+   FreshnessManifest,
+   isLegacyFailedEntry,
+   ManifestEntry,
+} from "../storage/DatabaseInterface";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 
@@ -129,6 +133,17 @@ export function splitManifestEntries(
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
+      // Legacy tolerance, removable with `ManifestEntry.error`: a manifest written
+      // by 0.0.245-0.0.246 records a failed source here, carrying the name of a
+      // table that was never created. Binding it serves the prior generation as
+      // though it were fresh, so it is dropped before either half of the split.
+      if (isLegacyFailedEntry(entry)) {
+         logger.warn("Manifest entry records a failed source; skipping", {
+            source,
+            sourceEntityId,
+         });
+         continue;
+      }
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
          logger.warn("Manifest entry has no physicalTableName; skipping", {

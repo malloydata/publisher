@@ -1,0 +1,23 @@
+>>>markdown
+# Orders since
+
+A notebook whose parameters are the point. `## autorun=false` asks for an Apply
+button, which matters more here than on a dashboard: one parameter change
+re-runs every cell in the document.
+>>>malloy
+##! experimental.givens
+## autorun=false
+
+// An explicit title, which beats both the doc comment below it and the "Orders
+// since" heading above — the same precedence a dashboard's `title=` has.
+## title="Orders in a window"
+##" Order counts from a date the reader picks.
+
+// A notebook surfaces the givens it imports, exactly as a dashboard file does,
+// so the Parameters panel shows these and nothing else.
+import { orders } from "orders.malloy"
+import { BRAND, MIN_AMOUNT, SINCE } from "givens.malloy"
+>>>markdown
+## Orders in the window
+>>>malloy
+run: orders -> since_totals

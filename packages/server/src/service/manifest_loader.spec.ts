@@ -5,7 +5,8 @@ import * as fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import { fetchManifestEntries } from "./manifest_loader";
+import { ManifestEntry } from "../storage/DatabaseInterface";
+import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 
 describe("fetchManifestEntries", () => {
    let dir: string;
@@ -185,5 +186,70 @@ describe("fetchManifestEntries", () => {
       await expect(fetchManifestEntries("gs://bucket-only")).rejects.toThrow(
          /Malformed manifest URI/,
       );
+   });
+});
+
+describe("splitManifestEntries", () => {
+   it("keeps a legacy failed entry out of both the serve manifest and the storage set", () => {
+      // A manifest written by 0.0.245-0.0.246 records a failed source among its
+      // entries, with the required `physicalTableName` naming a table the build
+      // never created. Those manifests are at rest in the store and in bound
+      // manifest files, so this read boundary sees them after an upgrade.
+      //
+      // The name is the danger: auto-run names are stable, so it resolves to the
+      // PRIOR generation's real table and a binding would serve it as fresh --
+      // worse than a miss, because nothing reports it. Delete this test with the
+      // field it tolerates.
+      const split = splitManifestEntries(
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "healthy_v1",
+               connectionName: "wh",
+            },
+            legacyFailed: {
+               sourceEntityId: "legacyFailed",
+               sourceName: "broken",
+               physicalTableName: "broken_v1_prior_generation",
+               connectionName: "wh",
+               error: "Permission denied while writing to dataset analytics",
+            } as unknown as ManifestEntry,
+         },
+         "test",
+      );
+
+      expect(Object.keys(split.tableNameManifest)).toEqual(["ok"]);
+      expect(
+         split.storageEntries.legacyFailed,
+         "a legacy failed entry must not reach a serve binding either",
+      ).toBeUndefined();
+   });
+
+   it("skips an entry with no table name rather than serving it", () => {
+      // The split reads `physicalTableName` to decide an entry is servable, so a
+      // malformed entry that carries no name must be dropped rather than bound to
+      // an empty one.
+      const split = splitManifestEntries(
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "healthy_v1",
+               connectionName: "wh",
+            },
+            nameless: {
+               sourceEntityId: "nameless",
+               sourceName: "malformed",
+            } as unknown as ManifestEntry,
+         },
+         "test",
+      );
+
+      expect(Object.keys(split.tableNameManifest)).toEqual(["ok"]);
+      expect(
+         split.storageEntries.nameless,
+         "an entry with no table name must not reach a serve binding either",
+      ).toBeUndefined();
    });
 });

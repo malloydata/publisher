@@ -1050,15 +1050,73 @@ describe("service/model", () => {
        * compiles a transient model — the logic under test is the catch, and the
        * SHAPE'S bindings (not the package's) are what it must consult.
        */
+      /**
+       * A malloy `Note`. The `at` location is required, not decoration: without
+       * it `Annotations.parseAsTag` throws on `line.at.url`, and every reader of
+       * these annotations catches and degrades to "no layer" — so a note without
+       * it produces a green test that proves nothing.
+       */
+      const specNote = (text: string) => ({
+         text,
+         at: {
+            url: "file://mockModel.malloy",
+            range: {
+               start: { line: 0, character: 0 },
+               end: { line: 0, character: 1 },
+            },
+         },
+      });
+
       function routedModel(opts: {
          shapeBindings: unknown[];
          packageBindings?: unknown[];
          storageFailsAt: "prepare" | "run";
          liveRunFails?: boolean;
          livePreparedLimit?: number;
+         /**
+          * Raw `##` note texts for the model file, and `#@` note texts per
+          * source — the same annotation bundle the build path reads through
+          * `PersistSource.annotations`. Without these the modelDef has empty
+          * `contents` and the declared model/source layers resolve to nothing,
+          * which is a test that proves only the package layer.
+          */
+         modelNotes?: string[];
+         sourceNotes?: Record<string, string[]>;
+         /**
+          * `#@` notes on a NAMED QUERY of the same name, which `modelDef.contents`
+          * holds beside sources. Overwrites the source entry, so a test can prove
+          * which of the two a reader picked.
+          */
+         namedQueryNotes?: Record<string, string[]>;
+         /**
+          * `##` notes on a DIFFERENT compilation node that this model inherits
+          * from — i.e. an import. `modelAnnotations` folds these in and
+          * `ownModelNotes` does not, which is the whole difference under test.
+          */
+         importedModelNotes?: string[];
+         /**
+          * The source the COMPILED query reads, as `resolveAuthorizeSourceFromRunnable`
+          * would resolve it off the prepared query. Distinct from whatever the
+          * query TEXT names first.
+          */
+         compiledRunTarget?: string;
+         /** Named queries, for the `queryName` request shape. */
+         queries?: { name: string; sourceName: string }[];
       }) {
          const storageErr = new Error("store table missing");
+         // Both runnables stub `getPreparedQuery` even though nothing in these
+         // tests reads the compiled query: the authorize entry-point walk and
+         // the storage-routing row-level pre-check both call it, and a mock
+         // that omits it is not "a runnable with an irrelevant method
+         // missing" — it is a runnable whose compile THROWS, which the
+         // pre-check (correctly) treats as "cannot tell whether this entry
+         // point is row-level gated" and refuses to route. `{_query: {}}` is
+         // the no-run-target shape: `structRef` is undefined, so the walk
+         // resolves no struct, finds no gate, and routing proceeds — which is
+         // what these tests are actually about.
+         const preparedQueryStub = () => sinon.stub().resolves({ _query: {} });
          const storageRunnable = {
+            getPreparedQuery: preparedQueryStub(),
             getPreparedResult:
                opts.storageFailsAt === "prepare"
                   ? sinon.stub().rejects(storageErr)
@@ -1080,12 +1138,22 @@ describe("service/model", () => {
          const liveRun = opts.liveRunFails
             ? sinon.stub().rejects(new Error("warehouse down"))
             : sinon.stub().resolves(fakeResult);
+         const preparedQuery = opts.compiledRunTarget
+            ? {
+                 getPreparedQuery: sinon.stub().resolves({
+                    _query: { structRef: opts.compiledRunTarget },
+                 }),
+              }
+            : {};
+         Object.assign(storageRunnable, preparedQuery);
          const liveRunnable = {
+            getPreparedQuery: preparedQueryStub(),
             getPreparedResult: sinon.stub().resolves({
                resultExplore: { limit: opts.livePreparedLimit ?? 0 },
                connectionName: "live_pg",
             }),
             run: liveRun,
+            ...preparedQuery,
          };
          sinon
             .stub(API.util, "wrapResult")
@@ -1103,10 +1171,91 @@ describe("service/model", () => {
             "model",
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             modelMaterializer as any,
+            {
+               contents: Object.fromEntries(
+                  Object.entries(opts.sourceNotes ?? {}).map(
+                     ([name, texts]) => [
+                        name,
+                        {
+                           // `type` is not decoration: `safeSourceTag` admits
+                           // only a real SourceDef, so a fixture without one is
+                           // a named query as far as malloy's `isSourceDef` is
+                           // concerned and contributes no source layer.
+                           type: "table",
+                           annotations: { notes: texts.map(specNote) },
+                        },
+                     ],
+                  ),
+               ),
+               ...(opts.namedQueryNotes
+                  ? {
+                       contents: {
+                          ...Object.fromEntries(
+                             Object.entries(opts.sourceNotes ?? {}).map(
+                                ([name, texts]) => [
+                                   name,
+                                   {
+                                      type: "table",
+                                      annotations: {
+                                         notes: texts.map(specNote),
+                                      },
+                                   },
+                                ],
+                             ),
+                          ),
+                          ...Object.fromEntries(
+                             Object.entries(opts.namedQueryNotes).map(
+                                ([name, texts]) => [
+                                   `${name}_query`,
+                                   {
+                                      type: "query",
+                                      annotations: {
+                                         notes: texts.map(specNote),
+                                      },
+                                   },
+                                ],
+                             ),
+                          ),
+                       },
+                    }
+                  : {}),
+               exports: [],
+               queryList: [],
+               // The file-level `##` tags come from the modelAnnotations
+               // REGISTRY keyed by modelID, not from a bare `annotation` field —
+               // that indirection exists so an import's tags can be folded in.
+               modelID: "m",
+               modelAnnotations:
+                  opts.modelNotes || opts.importedModelNotes
+                     ? {
+                          m: {
+                             inheritsFrom: opts.importedModelNotes
+                                ? ["file://imported.malloy"]
+                                : [],
+                             ownNotes: {
+                                notes: (opts.modelNotes ?? []).map(specNote),
+                             },
+                          },
+                          ...(opts.importedModelNotes
+                             ? {
+                                  "file://imported.malloy": {
+                                     inheritsFrom: [],
+                                     ownNotes: {
+                                        notes: opts.importedModelNotes.map(
+                                           specNote,
+                                        ),
+                                     },
+                                  },
+                               }
+                             : {}),
+                       }
+                     : undefined,
+               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any,
+            undefined,
+            // queries: how a `queryName` request resolves to its source.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { contents: {}, exports: [], queryList: [] } as any,
-            undefined,
-            undefined,
+            opts.queries as any,
             undefined,
             undefined,
             undefined,
@@ -1188,6 +1337,346 @@ describe("service/model", () => {
          expect(attached.tenant).toBe("acme");
          expect(attached.query_id).toBe("corr-1");
          expect(result.queryCorrelationId).toBe("corr-1");
+      });
+
+      it("tags the source the query RUNS, not the first one its text names", async () => {
+         // Malloy executes the LAST `run:`; `extractRunTargetSourceName` reads
+         // the FIRST. Tagging off the surface syntax therefore attributed an
+         // expensive statement to the cheap source's team and tier — worse than
+         // missing attribution, because the bill lands on a source that never
+         // ran. The authorize gate already resolves the compiled target for
+         // exactly this reason; metadata now reads the same answer.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            compiledRunTarget: "expensive",
+            sourceNotes: {
+               cheap: ['#@ queryMetadata.tier="bronze"'],
+               expensive: ['#@ queryMetadata.tier="platinum"'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: cheap -> x\nrun: expensive -> x",
+         );
+
+         expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("platinum");
+      });
+
+      it("does not fold an IMPORT's model-file tags into the importer", async () => {
+         // `modelAnnotations` folds the import lineage because a file-level
+         // `##(authorize)` gate an import could shed would be no gate at all. A
+         // tag is not a gate: folding one lets a shared include attribute every
+         // importing file's traffic to the include's team, and reports the
+         // resulting publish warning against a file that does not contain the
+         // line.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            importedModelNotes: ['## queryMetadata.team="platform"'],
+            modelNotes: ['## queryMetadata.surface="marts"'],
+         });
+
+         await model.getQueryResults(undefined, undefined, "run: daily -> x");
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.surface).toBe("marts");
+         expect(attached.team).toBeUndefined();
+      });
+
+      it("assembles no metadata layers at all when the feature is off", async () => {
+         // `mergeQueryMetadata` early-returns on `off`, so everything assembled
+         // for it is discarded. The mode is off unless an operator turns it on,
+         // so assembling anyway made the DEFAULT deployment pay an annotation
+         // walk and a connection lookup on every query for a bag nobody reads.
+         // The connection lookup is the observable half.
+         process.env.PUBLISHER_QUERY_METADATA = "off";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            modelNotes: ['## queryMetadata.surface="marts"'],
+         });
+         const connectionMetadata = sinon.stub().returns({
+            default: { team: "finance" },
+            enforced: null,
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { connectionMetadata },
+         );
+
+         expect(connectionMetadata.called).toBe(false);
+         expect(liveRun.firstCall.args[0].queryMetadata).toBeUndefined();
+      });
+
+      it("carries the package's declared properties onto a SERVED query", async () => {
+         // The gap this closes: declared properties reached materialization
+         // statements and nothing else, so a deployment could attribute its
+         // builds and not the interactive traffic that is most of its warehouse
+         // bill. A served query arrived carrying the platform's context and none
+         // of the author's own vocabulary.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-2",
+               packageDeclaration: { team: "finance", tier: "bronze" },
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.team).toBe("finance");
+         expect(attached.tier).toBe("bronze");
+         // Context still applies on top, and is what distinguishes a served
+         // statement from a build of the same source.
+         expect(attached.class).toBe("interactive");
+      });
+
+      it("lets the request override a declared property, and keeps the rest", async () => {
+         // Precedence across the two layers that were never composed together
+         // before: a caller's per-request bag is more specific than anything the
+         // author declared, but must not evict what it does not mention.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-3",
+               request: { tier: "platinum" },
+               packageDeclaration: { team: "finance", tier: "bronze" },
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.tier).toBe("platinum");
+         expect(attached.team).toBe("finance");
+      });
+
+      it("composes all three declared layers, most specific winning", async () => {
+         // The package layer alone is not the claim — a model file's `##` tag and
+         // a source's `#@` tag have to reach a served statement too, with the
+         // same precedence the build path applies. Both are read through casts
+         // into `modelDef`, the shape where a field rename degrades to a silent
+         // no-layer, so an empty-`contents` fixture would pass while proving
+         // neither.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            modelNotes: [
+               '## materialization.queryMetadata.tier="silver"\n',
+               '## materialization.queryMetadata.from_model="yes"\n',
+            ],
+            sourceNotes: {
+               daily: ['#@ persist queryMetadata.tier="gold"\n'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-4",
+               packageDeclaration: { tier: "bronze", team: "finance" },
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         // source > model file > package, per property.
+         expect(attached.tier).toBe("gold");
+         // Nothing more specific mentions these, so both survive.
+         expect(attached.from_model).toBe("yes");
+         expect(attached.team).toBe("finance");
+      });
+
+      it("resolves the source layer from a named query, which supplies no sourceName", async () => {
+         // The dominant REST and MCP shape: `queryName` alone. `sourceName` is
+         // optional on that branch despite what the request-shape error string
+         // says, so passing the raw param would drop the declared layer for the
+         // call shape most callers use. Resolves through
+         // `queries.find(q => q.name === queryName)?.sourceName`.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            queries: [{ name: "daily_view", sourceName: "daily" }],
+            sourceNotes: {
+               daily: ['#@ persist queryMetadata.tier="gold"\n'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            "daily_view",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-7",
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("gold");
+      });
+
+      it("resolves the source layer from ad-hoc query text", async () => {
+         // The other branch of the same resolution: surface syntax on the run
+         // target, for a request that names nothing at all.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            sourceNotes: {
+               daily: ['#@ persist queryMetadata.tier="gold"\n'],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            // Ad-hoc text whose run target is resolvable from surface syntax.
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-5",
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         expect(liveRun.firstCall.args[0].queryMetadata.tier).toBe("gold");
+      });
+
+      it("refuses a declared property that would forge build identity", async () => {
+         // Context only overwrites names it has a VALUE for, and a served query
+         // has no `source`, `trigger` or `run_id`. Without the reserved-name rule
+         // a model file could stamp `source=orders_daily` on interactive traffic,
+         // which in the warehouse's own history reads exactly like a build of
+         // that source — the confusion the declared layer was originally withheld
+         // to prevent.
+         process.env.PUBLISHER_QUERY_METADATA = "on";
+         const { model, liveRun } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            sourceNotes: {
+               daily: [
+                  '#@ persist queryMetadata.source="orders_daily" queryMetadata.run_id="forged" queryMetadata.tier="gold"\n',
+               ],
+            },
+         });
+
+         await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: daily -> x",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+               correlationId: "corr-6",
+               connectionMetadata: () => ({ default: null, enforced: null }),
+            },
+         );
+
+         const attached = liveRun.firstCall.args[0].queryMetadata;
+         expect(attached.source).toBeUndefined();
+         expect(attached.run_id).toBeUndefined();
+         // The author's own property, which is not a context name, still lands.
+         expect(attached.tier).toBe("gold");
+         expect(attached.class).toBe("interactive");
+      });
+
+      it("reports the model file's own declaration, and parses it once", async () => {
+         // The publish gate reads this per model, and `getPackageMetadata()` runs
+         // once per package inside listPackages — so recomputing would walk the
+         // import closure and re-parse every `##` note on a listing. A compiled
+         // model's annotations never change, so the memo needs no invalidation;
+         // identity is the cheapest proof it is a memo and not a fresh parse.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            modelNotes: ['## materialization.queryMetadata.tier="silver"\n'],
+         });
+
+         const first = model.getDeclaredQueryMetadata();
+         expect(first).toEqual({ tier: "silver" });
+         expect(model.getDeclaredQueryMetadata()).toBe(first);
+      });
+
+      it("lists tagged SOURCES only, never a named query that carries a `#@`", async () => {
+         // `modelDef.contents` holds named queries beside sources. Iterating it
+         // blind read a query's `#@` as though a source had declared it, so the
+         // query's name turned up among the package's tagged sources — and any
+         // publish warning about that bag pointed an author at a `source:` that
+         // does not exist in the file.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+            sourceNotes: { daily: ['#@ queryMetadata.tier="gold"'] },
+            namedQueryNotes: { daily: ['#@ queryMetadata.tier="forged"'] },
+         });
+
+         expect(model.getDeclaredSourceQueryMetadata()).toEqual([
+            { sourceName: "daily", queryMetadata: { tier: "gold" } },
+         ]);
+      });
+
+      it("reports no declaration as null, and does not re-derive it", async () => {
+         // `null` is a computed answer, not "unknown" — so the memo has to
+         // distinguish it from "not yet computed" or every call re-parses.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+
+         expect(model.getDeclaredQueryMetadata()).toBeNull();
+         expect(model.getDeclaredQueryMetadata()).toBeNull();
       });
 
       it("returns servedFrom and an execution time to the caller", async () => {

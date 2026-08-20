@@ -30,6 +30,8 @@ every doc below points back to one of them, and each example's README points bac
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
 | [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.   |
 | [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                   |
+| [choosing-a-surface.md](choosing-a-surface.md) | Pick between a notebook, a dashboard, and an HTML data app.                            |
+| [dashboards.md](dashboards.md)                 | Write a `dashboards/*.malloy` file: a filterable, clickable dashboard declared in tags. |
 | [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models. |
 | [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.              |
 | [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                          |
@@ -54,6 +56,7 @@ there for the primitive, then follow the application you need.
 | [deployment.md](deployment.md)                             | Run a built server via npx, Docker, or Docker Compose.                                                                                              |
 | [connections.md](connections.md)                           | Connect BigQuery, Snowflake, Postgres, DuckDB, and more.                                                                                            |
 | [materialization.md](materialization.md)                   | Persist Malloy sources into tables — the publish-gate rules, on-demand + scheduled builds, the `malloy-pub` CLI, and standalone-vs-hosted behavior. |
+| [preaggregation.md](preaggregation.md)                     | Roll a measure up to a coarse grain with `#@ preaggregate` so covered queries read a small table — what can be pre-aggregated, what routes, and what it costs. |
 | [query-metadata.md](query-metadata.md)                     | Tag the statements Publisher sends so the backend's own reporting can attribute them — layers, the contract, and correlating an API call with a backend query. Off unless `PUBLISHER_QUERY_METADATA=on`. |
 | [ducklake.md](ducklake.md)                                 | Attach a DuckLake catalog (read-only), understand catalog-format compatibility, and run offline / air-gapped.                                       |
 | [persist-storage-tutorial.md](persist-storage-tutorial.md) | Materialize a `#@ persist` source into a DuckLake storage destination and serve queries from it (the `storage=` tier + the `PERSIST_STORAGE_MODE` switch). |

@@ -50,7 +50,7 @@ extend {
   primary_key: customer_id
 
   dimension:
-    // Use dimension (not rename:) for cleaner column names
+    // A dimension is the lighter way to give a column a cleaner name
     order_type is `Type`
     full_name is concat(first_name, ' ', last_name)
     segment is lifetime_value ?
@@ -123,7 +123,7 @@ source: user_order_facts is from(
   primary_key: customer_id
 
   dimension:
-    days_since_last_order is days(now - last_order_date)
+    days_since_last_order is days(last_order_date to now)
     is_repeat_buyer is total_orders > 1
 
   measure:
@@ -176,11 +176,12 @@ source: customer_health is customers extend {
 - **Verify join paths** exist before referencing `a.b.field` (each hop needs explicit join)
 - **Pick syntax**: value BEFORE condition, `pick 'Small' when size < 10`
 - **`where:` vs `having:`**: Use `where:` for row filters, `having:` for aggregate filters
-- **Never use `rename:`**, it's incompatible with `include {}`. Always use `internal:` + `dimension:` for cleaner column names (e.g., mark `` `Type` `` as `internal`, add `dimension: order_type is \`Type\``)
+- **`rename:` composes with `include {}`, but only in one order**: the `extend { rename: }` must come before the `include {}`, which then names the field by its new name. Reversed, it fails with `Can't find field 'X' to set access modifier`. For a cleaner column name without a rename, `internal:` + `dimension:` is still the lighter move (mark `` `Type` `` as `internal`, add `dimension: order_type is `Type``). See `skill:malloy-gotchas-modeling` § Field Management
 - **Mark raw columns `internal` when a derived dimension replaces them**
 - **Check for duplicate rows** before building measures
 - When both a combined table (all types) and filtered/split tables exist, prefer the split tables
 - **DRY: define measures/dimensions in base source files, not inline in views**
+- **Never write a threshold, tier boundary, or bucket cutoff you chose yourself.** Every boundary in a `pick` expression or filtered measure is user-supplied, distribution-derived (query `min`/`p25`/`p50`/`p75`/`p95` first and show the evidence; see `skill:malloy-define` § Data-driven proposals), or explicitly flagged as an assumption in its `#(doc)`. A hardcoded cutoff nobody confirmed is a business decision shipped as fact.
 
 ## Parameterizing sources with `given:` (preferred)
 

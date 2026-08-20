@@ -12,6 +12,7 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
+import { filterPublisherOwnedRenderLogs } from "../service/dashboard";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
@@ -108,6 +109,10 @@ export class QueryController {
                      // Minted here because this is the boundary that returns
                      // it; a path with nowhere to put it does not mint one.
                      correlationId: mintCorrelationId(),
+                     // The package owns its manifest, so the least-specific
+                     // author-declared layer is read here; the model knows only
+                     // its own file and its package's NAME.
+                     packageDeclaration: p.getDeclaredQueryMetadata(),
                      // The environment owns the connection configs, so the
                      // default and enforced layers are read here rather than
                      // from the model.
@@ -141,7 +146,9 @@ export class QueryController {
                ),
             getQueryTimeoutMs(),
          );
-         const renderLogs = validateRenderTags(result);
+         const renderLogs = filterPublisherOwnedRenderLogs(
+            validateRenderTags(result),
+         );
          return {
             // Already serialized by the model, which was told which shape this
             // request sends. Stringifying here instead would build a second copy

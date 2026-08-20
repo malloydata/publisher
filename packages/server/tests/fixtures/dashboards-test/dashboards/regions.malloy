@@ -1,0 +1,17 @@
+##! experimental.givens
+// `region_suggest` is imported because REGION's declaration suggests its
+// options from that query: a suggest runs against this dashboard's own model,
+// so the query has to resolve here.
+import { orders, region_suggest } from '../orders.malloy'
+import { REGION } from '../givens.malloy'
+
+// No `title=`: the title falls back to this doc comment. `autorun=false` batches
+// control changes behind an Apply button, and the starting value is written the
+// way Malloyyo documents it — as a bare filter literal.
+#" Orders by region
+# artifact { autorun=false givens { REGION=f'US' } }
+query: regions is orders -> {
+   where: region_name ~ $REGION
+   group_by: region_name
+   aggregate: order_count
+}

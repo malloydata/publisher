@@ -79,22 +79,30 @@ import {
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
+import { recordRowLevelGateRejected } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
-import { validateAuthorizeProbes } from "../service/authorize";
+import {
+   assertNoMisplacedAuthorizeAnnotations,
+   validateAuthorizeProbes,
+   type AuthorizeMap,
+   type MisplacedAuthorizeAnnotation,
+} from "../service/authorize";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
    PackageScope,
-   packageMaterializationWarnings,
+   materializationWithQueryMetadata,
    parsePackageMaterialization,
+   queryMetadataParseWarnings,
+   resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
-   type OwnAuthorizeSource,
 } from "../service/source_extraction";
+import { type AnnotationNote } from "../service/annotations";
 import {
    malloyGivenToApi,
    type MalloyGiven,
@@ -316,20 +324,27 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 // URLReader: file:// → fs; everything else proxies to main thread
 // ──────────────────────────────────────────────────────────────────────
 
-function makeWorkerUrlReader(jobId: string): {
+function makeWorkerUrlReader(job: LoadPackageRequest): {
    readURL: (url: URL) => Promise<string>;
 } {
    return {
       readURL: async (url: URL): Promise<string> => {
          if (url.protocol === "file:") {
             const filePath = fileURLToPath(url);
+            if (
+               job.replacement &&
+               path.resolve(filePath) ===
+                  path.resolve(job.packagePath, job.replacement.modelPath)
+            ) {
+               return job.replacement.source;
+            }
             return fs.promises.readFile(filePath, "utf8");
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
             const req: ReadUrlRequest = {
                type: "read-url",
                requestId,
-               jobId,
+               jobId: job.requestId,
                url: url.toString(),
             };
             port.postMessage(req);
@@ -425,14 +440,29 @@ async function readPackageMetadata(packagePath: string): Promise<{
       manifestLocation?: unknown;
       materialization?: unknown;
       scope?: unknown;
+      queryMetadata?: unknown;
    };
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
+   // Query metadata has two homes as well, migrating the other way (canonical
+   // root, deprecated `materialization.queryMetadata`). A conflict warns rather
+   // than throws — see resolvePackageQueryMetadata.
+   const queryMetadata = resolvePackageQueryMetadata(
+      parsed.queryMetadata,
+      parsed.materialization,
+   );
    const manifestWarnings = [
       ...scope.warnings,
-      ...packageMaterializationWarnings(parsed.materialization),
+      ...queryMetadata.warnings,
+      // Report what the WINNING home could not keep. Reading the envelope alone
+      // would say nothing about a malformed property declared at the root, which
+      // is the home authors are being moved to.
+      ...queryMetadataParseWarnings(
+         queryMetadata.queryMetadata,
+         queryMetadata.home,
+      ),
    ];
    return {
       name: parsed.name,
@@ -452,7 +482,10 @@ async function readPackageMetadata(packagePath: string): Promise<{
       // Package-level Malloy Persistence policy; surfaced to the control plane,
       // which owns scheduling. `schedule`/`freshness` are for the control plane;
       // `queryMetadata` is the publisher's own package-level layer.
-      materialization: parsePackageMaterialization(parsed.materialization),
+      materialization: materializationWithQueryMetadata(
+         parsePackageMaterialization(parsed.materialization),
+         queryMetadata.queryMetadata,
+      ),
       // Package-level persist scope mode; defaults to "package".
       scope: scope.scope,
       manifestWarnings:
@@ -567,27 +600,91 @@ function extractSources(
 ): {
    sources: ApiSourceWire[];
    filterMap: Map<string, FilterDefinition[]>;
-   ownAuthorizeSources: OwnAuthorizeSource[];
+   authorizeMap: AuthorizeMap;
+   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
+   authorizeOwnNotes: Map<string, AnnotationNote[]>;
 } {
-   const { sources, filterMap, ownAuthorizeSources } =
-      extractSourcesFromModelDef(modelDef, givens);
+   const {
+      sources,
+      filterMap,
+      authorizeMap,
+      misplacedAuthorize,
+      authorizeOwnNotes,
+   } = extractSourcesFromModelDef(modelDef, givens);
    return {
       sources: sources as unknown as ApiSourceWire[],
       filterMap,
-      ownAuthorizeSources,
+      authorizeMap,
+      misplacedAuthorize,
+      authorizeOwnNotes,
    };
 }
 
-function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
-   return extractQueriesFromModelDef(modelDef) as ApiQueryWire[];
+/**
+ * Collects `validateAuthorizeProbes`'s non-fatal `onRowLevelGateUnexpressible`
+ * findings as plain strings for the wire
+ * (`SerializedModel.authorizeWarnings`) — the worker has no logger (see
+ * `extractSources`'s doc above), so these ride to the main thread, which does,
+ * to be logged once per compiled model.
+ */
+function authorizeWarningCollector(): {
+   onRowLevelGateUnexpressible: (sourceName: string, detail: string) => void;
+   warnings: string[];
+} {
+   const warnings: string[] = [];
+   return {
+      warnings,
+      onRowLevelGateUnexpressible: (sourceName, detail) => {
+         warnings.push(
+            `Row-level #(authorize) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
+         );
+      },
+   };
+}
+
+/** Given name → declared Malloy type, from this model's own given surface.
+ *  Mirrors `Model.givenDeclaredTypes()` — see its doc comment. */
+function givenDeclaredTypes(
+   givens: ApiGivenWire[] | undefined,
+): Map<string, string> {
+   return new Map(
+      (givens ?? [])
+         .filter((g) => g.name != null && g.type != null)
+         .map((g) => [g.name, g.type] as [string, string]),
+   );
+}
+
+/** Given name → declared default (rendered Malloy source text), from this
+ *  model's own given surface. Feeds `validateAuthorizeProbes`'s
+ *  `declaredDefaults`, which `classifyAuthorizeGate` uses to refuse a
+ *  field-vs-given row-level comparison whose given carries one — see that
+ *  function's doc in `authorize.ts`. */
+function givenDeclaredDefaults(
+   givens: ApiGivenWire[] | undefined,
+): Map<string, string> {
+   return new Map(
+      (givens ?? [])
+         .filter((g) => g.name != null && g.default != null)
+         .map((g) => [g.name, g.default as string] as [string, string]),
+   );
+}
+
+function extractQueries(modelDef: ModelDef): {
+   queries: ApiQueryWire[];
+   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
+} {
+   const { queries, misplacedAuthorize } = extractQueriesFromModelDef(modelDef);
+   return {
+      queries: queries as unknown as ApiQueryWire[],
+      misplacedAuthorize,
+   };
 }
 
 function buildRuntimeForModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-   jobId: string,
 ): { runtime: Runtime; urlReader: HackyDataStylesAccumulator } {
-   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(jobId));
+   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(job));
    const runtime = new Runtime({
       urlReader,
       config: malloyConfig,
@@ -617,11 +714,7 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
@@ -639,16 +732,40 @@ async function compileMalloyModel(
    );
    appendLocalSourceInfos(modelDef, sourceInfos, importedNames);
 
-   const { sources, filterMap, ownAuthorizeSources } = extractSources(
-      modelDef,
-      givens,
-   );
-   const queries = extractQueries(modelDef);
+   const {
+      sources,
+      filterMap,
+      authorizeMap,
+      misplacedAuthorize,
+      authorizeOwnNotes,
+   } = extractSources(modelDef, givens);
+   const queryResult = extractQueries(modelDef);
+   const queries = queryResult.queries;
+   // A `#(authorize)` annotation in a position nothing enforces (a top-level
+   // `query:` statement, or a field inside a `source:` rather than the
+   // `source:` line itself) fails OPEN — see
+   // `assertNoMisplacedAuthorizeAnnotations`'s doc. Checked before
+   // `validateAuthorizeProbes` below, same order as `Model.create`.
+   assertNoMisplacedAuthorizeAnnotations([
+      ...misplacedAuthorize,
+      ...queryResult.misplacedAuthorize,
+   ]);
    // Validate #(authorize) at compile time (shared with Model.create). Throws
-   // on an unknown given / source-field reference; compileOneModel's catch
-   // turns it into this model's compilationError. Declared gates only — an
-   // inherited one belongs to the base's namespace (see extractSources).
-   await validateAuthorizeProbes(mm, ownAuthorizeSources);
+   // on an unknown given / source-field reference or a rejected row-level
+   // shape; compileOneModel's catch turns it into this model's
+   // compilationError. A gate INHERITED at an entry point that can't express
+   // it does not throw — see `validateAuthorizeProbes`'s doc comment for what
+   // it validates.
+   const authorizeWarningCollection = authorizeWarningCollector();
+   await validateAuthorizeProbes(mm, {
+      authorizeMap,
+      declaredTypes: givenDeclaredTypes(givens),
+      declaredDefaults: givenDeclaredDefaults(givens),
+      authorizeOwnNotes,
+      onRowLevelGateRejected: recordRowLevelGateRejected,
+      onRowLevelGateUnexpressible:
+         authorizeWarningCollection.onRowLevelGateUnexpressible,
+   });
 
    return {
       modelPath,
@@ -666,6 +783,11 @@ async function compileMalloyModel(
       givens,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? compiled.problems : undefined,
+      authorizeWarnings:
+         authorizeWarningCollection.warnings.length > 0
+            ? authorizeWarningCollection.warnings
+            : undefined,
    };
 }
 
@@ -681,11 +803,8 @@ async function compileNotebookModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
+   const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
    const parse = MalloySQLParser.parse(fileContents, modelPath);
@@ -809,8 +928,10 @@ async function compileNotebookModel(
    let finalSourceInfos: Malloy.SourceInfo[] | undefined;
    let finalFilterMap: Map<string, FilterDefinition[]> | undefined;
    let finalGivens: ApiGivenWire[] | undefined;
+   let finalProblems: unknown[] | undefined;
    if (mm) {
       const compiled = await mm.getModel();
+      finalProblems = compiled.problems;
       finalModelDef = compiled._modelDef;
       const malloyGivens = Array.from(compiled.givens.values());
       finalGivens =
@@ -831,10 +952,24 @@ async function compileNotebookModel(
       const extracted = extractSources(finalModelDef, finalGivens);
       finalSources = extracted.sources;
       finalFilterMap = extracted.filterMap;
-      finalQueries = extractQueries(finalModelDef);
-      // Validate #(authorize) at compile time (shared with Model.create).
-      // Declared gates only — see extractSources.
-      await validateAuthorizeProbes(mm, extracted.ownAuthorizeSources);
+      const finalQueryResult = extractQueries(finalModelDef);
+      finalQueries = finalQueryResult.queries;
+      // See the identical check in `compileMalloyModel` above.
+      assertNoMisplacedAuthorizeAnnotations([
+         ...extracted.misplacedAuthorize,
+         ...finalQueryResult.misplacedAuthorize,
+      ]);
+      // Validate #(authorize) at compile time (shared with Model.create). See
+      // `validateAuthorizeProbes`'s doc comment for what it validates.
+      await validateAuthorizeProbes(mm, {
+         authorizeMap: extracted.authorizeMap,
+         declaredTypes: givenDeclaredTypes(finalGivens),
+         declaredDefaults: givenDeclaredDefaults(finalGivens),
+         authorizeOwnNotes: extracted.authorizeOwnNotes,
+         onRowLevelGateRejected: recordRowLevelGateRejected,
+         onRowLevelGateUnexpressible:
+            authorizeWarningCollection.onRowLevelGateUnexpressible,
+      });
    }
 
    return {
@@ -852,6 +987,11 @@ async function compileNotebookModel(
       notebookCells,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? finalProblems : undefined,
+      authorizeWarnings:
+         authorizeWarningCollection.warnings.length > 0
+            ? authorizeWarningCollection.warnings
+            : undefined,
    };
 }
 
@@ -903,6 +1043,12 @@ async function loadPackage(
 
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+   const replacementMatchedExisting = job.replacement
+      ? modelPaths.includes(job.replacement.modelPath)
+      : undefined;
+   if (job.replacement && !replacementMatchedExisting) {
+      modelPaths.push(job.replacement.modelPath);
+   }
 
    // Bracket the compile region: only work from here on is compilation +
    // proxied schema fetches. The setup above (manifest read + file listing)
@@ -927,6 +1073,7 @@ async function loadPackage(
       requestId: job.requestId,
       packageMetadata,
       models,
+      replacementMatchedExisting,
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Compile-region wall minus the schema-fetch wait it contains — a

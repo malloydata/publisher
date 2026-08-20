@@ -16,7 +16,7 @@ Givens are deliberately simple; the leverage is in what they enable. Jump to the
 | --- | --- | --- |
 | **Interactive filters** | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI; changing one re-runs the cells. | [Notebook UI](#notebook-ui), below |
 | **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out. | [Row-level access](row-level-access.md) |
-| **Source authorization** | `#(authorize)` boolean expressions over givens allow or deny access to a whole source (HTTP 403). | [Authorize](authorize.md) |
+| **Source authorization** | `#(authorize)` boolean expressions over givens allow or deny access to a whole source (HTTP 403) — or, when the expression reads a row field, filter the rows returned instead. | [Authorize](authorize.md) |
 
 > **Here for access control?** Givens are just the values your gates read. Skim [Declaring Givens](#declaring-givens) for the syntax, then go to [Authorize](authorize.md) to allow/deny a whole source, or [Row-level access](row-level-access.md) to scope which rows a caller sees. Both enforce policy only behind a trusted tier that sets givens from verified identity — givens are caller-asserted.
 
@@ -98,7 +98,15 @@ against the compiler:
 | `#(description) Earliest report date to include` | clean | renders as `description) Earliest report date to include` |
 | `# description="Earliest report date to include"` (a tag, note the space) | clean | nothing renders: plain `#` tags are Malloy's reserved namespace and are filtered out before the annotation list reaches a client |
 
-So keep `#(description="…")`.
+So for helper text in the notebook UI today, keep `#(description="…")`.
+
+The last row is about *rendering*, and it is narrowing. The server now reads a `# description="…"`
+tag off the declaration and returns it as `Given.description`, alongside the other control fields
+(`label`, `control`, `rangeMin`, `rangeMax`, `suggest`) it derives from the same plain `#` tags. That
+field is not what the notebook UI renders yet, so the row's "nothing renders" still holds for helper
+text, but the tag form is no longer invisible to a client and it is the form that compiles without
+the warning above. A model that wants both can carry both; they are read independently and neither
+overwrites the other.
 
 ## How It Works
 
@@ -133,6 +141,12 @@ Malloy validates supplied givens when it prepares the query: an unknown given na
 There is one exception. On a source guarded by `#(authorize)`, the authorize check runs first and binds the full supplied givens map, and it fails closed: a bad given (unknown name *or* wrong-typed value) makes that check throw and the gate denies, so the request returns **403** rather than 400. That looks like access denied, not validation. If a gated query returns 403 unexpectedly, check the given names and values against the model before assuming it's a permission problem.
 
 The `/compile` endpoint (with `includeSql: true`) follows the same handling: a bad given is surfaced rather than silently omitting `sql`.
+
+### Row-level gate givens reach differently than inherited ones
+
+A whole-source (given-only) `#(authorize)` gate inherited from a base in another file still evaluates at request time using whatever values the caller supplied — Malloy merges a `given:` declaration only one `import` hop into a model's namespace, but the probe falls back to caller-supplied values regardless (see [authorize.md's Known limitations](authorize.md#known-limitations)).
+
+A [row-level gate](authorize.md#row-level-gates) is stricter, because its filter is compiled into the query at **package load** rather than evaluated by a separately-probed condition at request time: a given it references that is not on the gating model's own surface is refused at load, not silently guessed at or deferred to request time. Declare the given on that model, importing it if it lives elsewhere (`import { NAME } from "…"`).
 
 ## API
 
@@ -215,22 +229,176 @@ This is the **interactive-filters** application of givens: each given is a typed
 
 ![A notebook Parameters panel with REGION and MIN_AMOUNT controls generated from the model's givens](screenshots/givens-parameters-panel.png)
 
-Change a control and every cell re-runs with the new value — no reload, no rewiring:
+Change a control and every cell re-runs with the new value, no reload and no rewiring:
 
 ![Typing into the Parameters panel re-runs the notebook's dashboard live](screenshots/givens-live.gif)
 
 The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics/orders.malloynb`](../examples/governed-analytics/) to try it.
 
-| Malloy type                        | Widget                                     |
-| ---------------------------------- | ------------------------------------------ |
-| `number`                           | Numeric input with × clear                 |
-| `boolean`                          | Checkbox                                   |
-| `date`, `timestamp`, `timestamptz` | Date picker with native clear              |
-| `string`, `filter<…>`, anything else | Text input with × clear                  |
+| Malloy type                          | Widget                        |
+| ------------------------------------ | ----------------------------- |
+| `number`                             | Numeric input with × clear    |
+| `boolean`                            | Checkbox                      |
+| `date`, `timestamp`, `timestamptz`   | Date picker with native clear |
+| `string`, `filter<…>`, anything else | Text input with × clear       |
 
-`#(description="...")` annotations render as MUI helper text beneath the input. A **Reset** button appears next to the "Parameters" heading whenever any input has a non-default value.
+The UI can also render a slider for a `filter<number>` lower bound and a
+single- or multi-pick dropdown for a `filter<string>`, driven by the `label`,
+`control`, `rangeMin`, `rangeMax` and `suggest` fields on a given. Those fields
+are specified, and whether a model can ask for either control depends on the
+server it is talking to: as of this release no endpoint populates them, so every
+given falls to the table above, and the dashboard work that fills them in is
+landing separately. Where they are absent the control degrades to its row in the
+table rather than failing. When they do
+arrive, a slider or dropdown appears only where it can represent the filter
+faithfully: a `filter<number>` holding a range or a negation, or a
+`filter<string>` holding anything but a plain list of values, keeps the text box
+rather than showing a control that would rewrite the author's filter on first
+use.
 
-Setting a value re-executes all notebook cells with the new givens applied.
+`#(description="...")` annotations render as MUI helper text beneath the input. A
+**Reset** button appears next to the "Parameters" heading whenever any given has a
+value set, whether it was typed, picked, or carried in by the URL. A given left
+unset does not count. Whether an empty parameter (`?REGION=`) counts depends on
+the type: for a `string` or a `filter<…>` the empty string is a real value (the
+empty filter, i.e. "All"), so it counts; for a `number`, `boolean` or date type
+there is no empty value to mean, so it reads as unset and does not.
+
+Reset clears every control, and a cleared given is left out of the request
+entirely rather than sent as an empty value. A given declared with a default
+then runs on that default. For one declared **without** a default, what an
+omitted given does is a property of the model, not of Reset: see
+[Row-level access](row-level-access.md) for the case where that matters most.
+
+Reset restores a notebook's own starting values where a notebook has them, but
+nothing populates those yet, so today clearing is all it does. Either way it is
+not "back to how I found it": a notebook opened from a shared link starts on the
+link's values, and Reset discards those too.
+
+## Coming from `#(filter)`
+
+The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
+`##(filters)` annotations is no longer filterable from a notebook, and one with
+a `required` filter cannot be satisfied there at all. The annotations still work
+everywhere else: the REST `filterParams` parameter and the server-side
+enforcement are unchanged. This is the UI half of the migration.
+
+There is no automatic conversion, because the two mechanisms are different
+shapes. A `#(filter)` annotation marks an existing dimension as filterable and
+the server builds the `where:` clause. A given is a declared parameter that the
+model itself uses, so you write the `where:` yourself and gain control over what
+it means.
+
+A source annotated like this:
+
+```malloy
+#(filter) dimension=region type=in
+#(filter) dimension=amount type=greater_than required
+source: sales is orders_base extend { }
+```
+
+becomes two givens and one `where:`:
+
+```malloy
+##! experimental.givens
+
+#(description="Region to focus on — leave empty for all regions")
+given: REGION :: filter<string> is f''
+
+#(description="Only include orders above this amount (USD)")
+given: MIN_AMOUNT :: number is 0
+
+source: sales is orders_base extend {
+  where: region ~ $REGION and amount > $MIN_AMOUNT
+}
+```
+
+**Mind the boundary when you convert a comparison.** `type=greater_than` builds
+`dimension > value`, exclusive, so writing `>=` here would quietly admit the rows
+sitting exactly on the threshold that the annotation excluded. `type=less_than`
+is exclusive in the same way. There is no inclusive comparator, so a `>=` filter
+was already being expressed some other way and should keep whatever spelling it
+had.
+
+Three things worth knowing while converting:
+
+- **`type=in` and `type=equal` become `filter<string>`**, whose value is filter
+  syntax rather than a bare value, so one control can carry several values. The
+  empty filter `f''` is the natural "no constraint" starting point.
+- **A `required` filter has no direct equivalent.** A given always has a value,
+  its default, so "the reader must choose" is expressed by picking a default
+  that is safe to run, or by using `#(authorize)` where the requirement is
+  really about access rather than about filtering. See
+  [Row-level access](row-level-access.md).
+- **The name is the reader-facing label**, so it appears in the Parameters panel
+  and in the URL. `#(description=…)` supplies the helper text underneath.
+
+### Parameters live in the URL
+
+A notebook's parameters are part of its address. Change a control and the URL
+gains `?REGION=West`; open that URL and the notebook runs with that value on its
+first pass, so a filtered notebook can be linked, bookmarked, and shared.
+
+Changing a control replaces the address rather than adding a history entry, so
+Back leaves the notebook instead of walking through every value you tried.
+
+Only the names the model declares are read from the URL, and only those are
+written back, so an unrelated query parameter on the page (a tracking tag, say)
+is left alone and cannot break the notebook.
+
+A `filter<…>` given is held in the URL in Malloy's own filter syntax, escaped by
+the filter parser itself, so a picked value containing a comma, a leading `-`, or
+a `%` matches only itself rather than being read as syntax. A plain `string`,
+`number`, `boolean` or date given is held as its own literal value.
+
+Two things to know if you hand-edit the query string rather than letting the
+controls write it.
+
+**An empty value means "unset" for the types that have no empty value.**
+`?MIN_AMOUNT=` on a `number`, `boolean` or date given leaves that given out of
+the request entirely, so it behaves exactly as if you had never named it: a
+given with a default runs on its default, and one without a default is simply
+unset (see [Row-level access](row-level-access.md) for where that matters).
+For a `string` or `filter<…>` given the empty string is a value you can mean, so
+`?REGION=` keeps it and sends it.
+
+**A `+` in a query string means a space, not a plus.** An offset pasted by hand
+into a timestamp, `?SINCE=2024-01-05T10:30:00+05:00`, arrives with the `+`
+already eaten. Publisher puts it back when a full date and time precede it, so
+that spelling works, but a link you generate elsewhere should percent-encode it
+as `%2B` rather than rely on the repair. It cannot be repaired on a bare date:
+`?SINCE=2024-01-05+05:00` arrives as `2024-01-05 05:00`, which is a valid time
+of day, and is read as one.
+
+**A `date` given refuses a zone that would move the day.** A date is a calendar
+day, so `?ORDER_DATE=2024-01-05T00:30:00%2B05:30` resolves to the 4th and is
+refused rather than silently filtering on a day you did not write. Where the
+value also carries a time and the zone leaves the day alone, as in
+`?ORDER_DATE=2024-01-05T00:00:00Z`, it is read normally.
+
+A zone on a **bare** date is refused whatever it is, and for every temporal
+type, not just `date`: an offset qualifies a time of day, and a bare date has
+none, so there is nothing for it to qualify. `?SINCE=2024-01-05Z` does not
+resolve, and neither does the percent-encoded `?SINCE=2024-01-05%2B00:00`.
+
+Watch the `+` here, because it changes the answer rather than just the spelling.
+`?SINCE=2024-01-05+00:00` arrives as `2024-01-05 00:00`, which is a bare date
+followed by a valid time of day, so it resolves to midnight on the 5th rather
+than being refused.
+
+Do **not** percent-encode it to be explicit. That is the right move for a value
+that carries a time, which is what the `%2B` advice above is about, and the wrong
+one here: `?SINCE=2024-01-05%2B00:00` delivers a real `+`, which makes it a bare
+date carrying an offset, and that is refused. No spelling makes an offset work on
+a bare date. Add the time you mean, as in `?SINCE=2024-01-05T00:00:00%2B00:00`,
+or leave the date bare.
+
+### When a cell cannot run
+
+A cell the server refuses to run now shows "This cell could not be run" and the
+reason, in place of its result. Before, the failure went to the browser console
+and the reader was left with an empty space. A required given with no value, and
+an `#(authorize)` denial, both surface this way.
 
 ## Worked Example
 
