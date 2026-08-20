@@ -52,3 +52,104 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
    }
    return aliasOf;
 }
+
+/**
+ * `text` with every comment and every STRING-LITERAL BODY blanked out, so a
+ * pattern scan over caller-authored Malloy sees only real syntax.
+ *
+ * Both halves are security-relevant, in opposite directions:
+ *  - **Comments** can HIDE a declaration from a scan that a compiler still
+ *    reads around (`source: mine is -- c\n X extend { … }`), or plant a decoy
+ *    one that never compiles at all (`-- run: bogus`).
+ *  - **String literals** can FORGE a declaration. A scan that reads inside
+ *    them lets `where: note = 'source: mine is open_src'` inject an alias
+ *    edge, which — if a later edge for a name could overwrite an earlier one —
+ *    would let a caller relabel its own derivation's base. (The alias map
+ *    below keeps EVERY base per name rather than the last, so forging is
+ *    additive and cannot erase a real edge; blanking literals closes it at
+ *    the source as well.)
+ *
+ * Comments are recognized outside literals only, and literals outside
+ * comments only, in ONE left-to-right pass — a `--` inside a string is not a
+ * comment, and a `'` inside a comment does not open a string. Line comments
+ * (`--`, `//`) run to the newline; block comments (slash-star) to their close,
+ * or to end of input when unterminated.
+ *
+ * Backtick-quoted identifiers are deliberately PRESERVED: unlike `'…'`/`"…"`
+ * they carry real names (`` source: `my-src` is X ``) that the scan must see.
+ * Replacement is space-for-character, so every offset, line, and token
+ * boundary in the result matches the input.
+ */
+export function stripMalloyCommentsAndLiterals(text: string): string {
+   const out = text.split("");
+   const blank = (from: number, to: number): void => {
+      for (let i = from; i < to && i < out.length; i++) {
+         if (out[i] !== "\n") out[i] = " ";
+      }
+   };
+   for (let i = 0; i < text.length; i++) {
+      const two = text.slice(i, i + 2);
+      if (two === "--" || two === "//") {
+         const nl = text.indexOf("\n", i);
+         const end = nl === -1 ? text.length : nl;
+         blank(i, end);
+         i = end;
+         continue;
+      }
+      if (two === "/*") {
+         const close = text.indexOf("*/", i + 2);
+         const end = close === -1 ? text.length : close + 2;
+         blank(i, end);
+         i = end - 1;
+         continue;
+      }
+      const ch = text[i];
+      if (ch === "'" || ch === '"') {
+         // Blank the BODY, keep both delimiters, so the result still parses as
+         // a string where one was and no adjacent tokens are glued together.
+         let j = i + 1;
+         while (j < text.length && text[j] !== ch) {
+            // Malloy escapes a quote inside a literal with a backslash; skip
+            // the escaped character so it cannot close the literal early.
+            if (text[j] === "\\") j++;
+            j++;
+         }
+         blank(i + 1, j);
+         i = j;
+         continue;
+      }
+   }
+   return out.join("");
+}
+
+/**
+ * Every base each ad-hoc alias in `text` may derive from — `source: NAME is
+ * BASE` and `query: NAME is BASE` — as NAME → set of BASEs.
+ *
+ * Deliberately NOT {@link buildSourceAliasMap}, which this does not replace:
+ * that one feeds the query BOUNDARY, where an extra edge widens ADMISSION, so
+ * it stays exactly as narrow as it has always been. This one feeds the
+ * authorize gate, where an extra edge widens DENIAL, so it is built to
+ * over-collect on purpose:
+ *  - `query:` declarations are included, so a `query:` hop between a
+ *    derivation and the `run:` cannot break the chain;
+ *  - a name maps to a SET, keeping every base declared for it rather than the
+ *    last, so a second (forged or shadowing) declaration can only add a base
+ *    to check, never replace the real one.
+ *
+ * Expects text already passed through {@link stripMalloyCommentsAndLiterals}.
+ */
+export function buildDerivationBaseMap(text: string): Map<string, Set<string>> {
+   const basesOf = new Map<string, Set<string>>();
+   const declRe =
+      /(?:source|query)\s*:\s*(?:`([^`]+)`|(\w+))\s+is\s+(?:`([^`]+)`|(\w+))/g;
+   let match: RegExpExecArray | null;
+   while ((match = declRe.exec(text)) !== null) {
+      const name = match[1] ?? match[2];
+      const base = match[3] ?? match[4];
+      const bases = basesOf.get(name) ?? new Set<string>();
+      bases.add(base);
+      basesOf.set(name, bases);
+   }
+   return basesOf;
+}
