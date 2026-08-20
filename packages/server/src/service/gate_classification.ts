@@ -27,7 +27,6 @@ import { logger } from "../logger";
 import { ownLevelNotes, type AnnotationNote } from "./annotations";
 import {
    buildRowLevelProbe,
-   classifyAuthorizeGate,
    collectAuthorizeExprs,
    gateFilterText,
    liftProbeFilterCondition,
@@ -72,13 +71,13 @@ export type GateEntry = {
     */
    struct?: SourceDef;
    /**
-    * Set when this gate is the DIMENSION form — see `./gate_dimension`'s
-    * doc. `resolveGateShape` must skip `classifyAuthorizeGate` for these:
-    * once grafted, the lifted filter condition's `.e` is a bare unresolved
-    * field-reference node (`{node: "field", path: ["authorized"]}`), not the
-    * dimension's own predicate tree, so the string-form walker finds no
-    * comparison/`inGiven` to classify and rejects every one of them as
-    * `unsupported_node` (Constraint 1). `givenNames` is resolved at
+    * Set for the DIMENSION form — see `./gate_dimension`'s doc. Absent only
+    * for the synthetic "unresolvable query-source base" deny entry (whose
+    * sole expression is the literal `"false"`, nothing to graft a dimension
+    * onto). Once grafted, the lifted filter condition's `.e` is a bare
+    * unresolved field-reference node (`{node: "field", path:
+    * ["authorized"]}`), not a comparison/`inGiven` tree — there is nothing
+    * left to classify once the probe compiles. `givenNames` is resolved at
     * discovery time instead (`gateExprsForOwnAnnotations`), from the SAME
     * struct/field the gate was found on — re-deriving it from `entry.struct`
     * in `resolveGateShape` would read the wrong struct whenever the gate was
@@ -120,21 +119,20 @@ export interface GraftScope {
  * polluting a request-serving `Model`'s.
  *
  * Construct this ONLY through {@link createGateClassificationDeps} — never
- * assemble the three fields by hand, and never reassign one on an existing
- * instance. `gateShapeCache`'s entries are computed FROM
- * `givenDeclaredTypes`/`givenDeclaredDefaults` (a classification reads them
- * inside {@link resolveGateShape}'s cache-miss branch), but the cache key
- * carries no fingerprint of the given surface — before this type had a
- * single constructor, that was safe only because its one caller (`Model`)
- * kept the cache and the given maps as three fields of the SAME `this`,
- * which could not disagree. Once a caller can build this struct directly (a
- * one-shot build-time classification, or any future second caller), a cache
- * computed under one given surface but paired with a DIFFERENT one would
- * return a stale classification with no error — `row_level` where the
- * correct answer is `rejected` is fail-OPEN. The factory closes this
- * structurally: a `gateShapeCache` and the given maps it was computed
- * against are always minted together, in the same call, so one can never
- * outlive or cross the given surface it belongs to.
+ * assemble the two fields by hand, and never reassign one on an existing
+ * instance. `gateShapeCache`'s entries are computed FROM `givenDeclaredTypes`
+ * (a classification reads it inside {@link resolveGateShape}'s cache-miss
+ * branch), but the cache key carries no fingerprint of the given surface —
+ * before this type had a single constructor, that was safe only because its
+ * one caller (`Model`) kept the cache and the given map as two fields of the
+ * SAME `this`, which could not disagree. Once a caller can build this struct
+ * directly (a one-shot build-time classification, or any future second
+ * caller), a cache computed under one given surface but paired with a
+ * DIFFERENT one would return a stale classification with no error —
+ * `row_level` where the correct answer is `rejected` is fail-OPEN. The
+ * factory closes this structurally: a `gateShapeCache` and the given map it
+ * was computed against are always minted together, in the same call, so one
+ * can never outlive or cross the given surface it belongs to.
  */
 export interface GateClassificationDeps {
    /**
@@ -149,8 +147,6 @@ export interface GateClassificationDeps {
    >;
    /** See `Model.givenDeclaredTypes`. */
    givenDeclaredTypes: Map<string, string>;
-   /** See `Model.givenDeclaredDefaults`. */
-   givenDeclaredDefaults: Map<string, string>;
    /** Debug-log context only; never read for a decision. */
    modelPath?: string;
 }
@@ -159,10 +155,9 @@ export interface GateClassificationDeps {
  * The one sanctioned way to build a {@link GateClassificationDeps} — see its
  * doc for the drift hazard this closes. `givens` is read ONCE, here, into a
  * brand-new `gateShapeCache` (never a `Map` the caller already had lying
- * around) and the given-declared-type/default maps derived from that SAME
- * `givens` array, so the cache and the given surface it classifies against
- * can never be assembled from two different calls and therefore never
- * disagree.
+ * around) and the given-declared-type map derived from that SAME `givens`
+ * array, so the cache and the given surface it classifies against can never
+ * be assembled from two different calls and therefore never disagree.
  *
  * A caller that needs one long-lived deps struct per given surface (`Model`)
  * calls this ONCE and holds onto the result for as long as that surface is
@@ -178,7 +173,6 @@ export function createGateClassificationDeps(
    return {
       gateShapeCache: new Map(),
       givenDeclaredTypes: computeGivenDeclaredTypes(givens),
-      givenDeclaredDefaults: computeGivenDeclaredDefaults(givens),
       modelPath,
    };
 }
@@ -469,12 +463,10 @@ export function collectEntryPointGates(
  * the cache is an explicit input, and `Model.gateShapeCache`'s doc for why
  * caching on the MODEL INSTANCE is what makes this correct across a package
  * reload, and why `cacheScope` is part of the key. A cache miss lifts the
- * condition through `graftScope`'s OWN materializer ({@link liftGateCondition})
- * and classifies it (`classifyAuthorizeGate`); a `rejected` classification is
- * cached too; a THROW from the lift itself is NOT cached (it denies for this
- * call, but is retried on the next one) and is treated as a straight deny,
- * never a fallback to the probe — the probe cannot correctly evaluate a gate
- * that references a row field at all.
+ * condition through `graftScope`'s OWN materializer ({@link liftGateCondition});
+ * a `rejected` classification is cached too; a THROW from the lift itself is
+ * NOT cached (it denies for this call, but is retried on the next one) and is
+ * treated as a straight deny.
  *
  * The FINAL graft target key is always resolved against `graftScope.modelDef`
  * — the STABLE model this SCOPE grafts onto and lifts through ({@link
@@ -510,28 +502,8 @@ export async function resolveGateShape(
         graftTarget: string;
         filterText: string;
         condition: FilterCondition;
-        /**
-         * Whether this gate's compiled condition reduces to the bare
-         * literal `false` and nothing else — the accepted constant-predicate
-         * idiom `classifyAuthorizeGate` already recognizes (its `kind ===
-         * "true" || kind === "false"` branch, which accepts both literals),
-         * read back off the classification rather than re-derived. True only when every accepted literal atom is `"false"`
-         * and no given was referenced, so an OR'd admin-override disjunct
-         * (`false or $ROLE = 'admin'`) is correctly NOT constant-false. A
-         * caller can use this to skip dispatching the graft to the warehouse
-         * at all: the row set it would return is provably empty.
-         */
-        constantFalse: boolean;
-        /**
-         * The mirror of `constantFalse`: every accepted literal atom is
-         * `true` and no given was referenced, so the filter excludes no row —
-         * the old whole-source ADMIT expressed as a row predicate. A
-         * check-only caller (`/compile`) uses it to tell "this gate lets
-         * everything through" apart from "this gate needs caller values it
-         * has no way to apply".
-         */
-        constantTrue: boolean;
-        /** The givens the gate compares — `classifyAuthorizeGate`'s own record. */
+        /** The givens the gate compares — resolved at discovery time for the
+         *  dimension form ({@link GateEntry.dimensionForm}). */
         givenNames: readonly string[];
      }
    | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
@@ -589,36 +561,33 @@ export async function resolveGateShape(
          return { shape: "rejected" };
       }
       // The dimension form's lifted condition is a bare unresolved
-      // field-reference node once grafted, not the dimension's own
-      // predicate tree — `classifyAuthorizeGate`'s walk has no case for
-      // that shape and would reject every one of them as `unsupported_node`
-      // (Constraint 1; see `./gate_dimension`'s doc and `GateEntry
-      // .dimensionForm`'s doc). Load-time `validateGateDimension` already
-      // vetted G1–G4/private/inheritance for this gate; what remains here —
-      // exactly what the STRING form's classification would otherwise be
-      // proving too — is that the graft compiled at THIS entry point at
-      // all, which the `liftGateCondition` call above already confirmed by
-      // succeeding.
+      // field-reference node once grafted, not a comparison/`inGiven` tree —
+      // there is nothing left to classify. Load-time `validateGateDimension`
+      // already vetted G1–G4/private/inheritance for this gate; what remains
+      // here is that the graft compiled at THIS entry point at all, which the
+      // `liftGateCondition` call above already confirmed by succeeding.
+      //
+      // `entry.dimensionForm` is unset only for the residual string-form
+      // discovery paths in `gateExprsForOwnAnnotations`/`ancestorGateExprs`
+      // (`./gate_registry_walk`) — unreachable for any model that loaded
+      // successfully, since `assertNoLegacyStringGate` refuses the string
+      // form at load. Reject rather than guess: an unclassifiable gate must
+      // fail closed, not admit.
       let classification: RowLevelGateClassification = entry.dimensionForm
          ? {
               shape: "row_level",
               givenNames: [...entry.dimensionForm.givenNames],
-              literalAtoms: [],
-              literalAtomDetails: [],
            }
-         : classifyAuthorizeGate(
-              condition,
-              deps.givenDeclaredTypes,
-              deps.givenDeclaredDefaults,
-           );
+         : {
+              shape: "rejected",
+              cause: "legacy_string_gate",
+              detail:
+                 "this entry's gate is not the dimension form and cannot be classified",
+           };
       // `Model.filterGivensToModelSurface` drops a caller-supplied given that
       // is off this model's own surface, and its safety rests on this: an
-      // ACCEPTED gate never references one, because `classifyAuthorizeGate`
-      // rejects a given absent from `declaredTypes` (which is that same
-      // surface). Re-checked here rather than assumed — a walk branch that
-      // records a given without routing it through `declaredTypeOf` would
-      // otherwise let the filter drop a value the grafted gate still reads,
-      // silently falling back to the declaration default.
+      // ACCEPTED gate never references one off `givenDeclaredTypes` (that
+      // same surface). Re-checked here rather than assumed.
       if (classification.shape === "row_level") {
          const unreachable = classification.givenNames.find(
             (name) => !deps.givenDeclaredTypes.has(name),
@@ -651,14 +620,6 @@ export async function resolveGateShape(
       graftTarget,
       filterText,
       condition: cached.condition,
-      constantFalse:
-         cached.classification.givenNames.length === 0 &&
-         cached.classification.literalAtoms.length > 0 &&
-         cached.classification.literalAtoms.every((atom) => atom === "false"),
-      constantTrue:
-         cached.classification.givenNames.length === 0 &&
-         cached.classification.literalAtoms.length > 0 &&
-         cached.classification.literalAtoms.every((atom) => atom === "true"),
       givenNames: cached.classification.givenNames,
    };
 }
@@ -869,13 +830,11 @@ async function liftGateCondition(
 
 /**
  * Given name → declared Malloy type, from a model's given surface (its
- * `ApiGiven[]` list). Passed to `classifyAuthorizeGate`'s self-contained
- * probe fallback so it prefers the gate author's DECLARED type over inferring
- * one from the caller's JS value (e.g. `$LEVEL > 3` compares numerically even
- * if the caller sends `"5"`). Only reaches a given declared within one import
- * hop of the model — a gate on a source reached through a deeper transitive
- * import isn't on this surface, so that case still falls back to inferring
- * from the value.
+ * `ApiGiven[]` list). Used by `resolveGateShape`'s unreachable-given re-check
+ * — an accepted gate must never reference a given absent from this surface
+ * (see `Model.filterGivensToModelSurface`'s doc). Only reaches a given
+ * declared within one import hop of the model — a gate on a source reached
+ * through a deeper transitive import isn't on this surface.
  *
  * Not memoized here — the input `givens` list is fixed for the life of a
  * `Model` (a package reload constructs a fresh one) so `Model` caches the
@@ -892,28 +851,5 @@ export function computeGivenDeclaredTypes(
                g.name != null && g.type != null,
          )
          .map((g) => [g.name, g.type] as [string, string]),
-   );
-}
-
-/**
- * Given name → declared default (rendered Malloy source text), mirroring
- * {@link computeGivenDeclaredTypes} — same `givens` surface, same "not
- * memoized here" reasoning. Feeds `classifyAuthorizeGate`'s `declaredDefaults`
- * on the request-time graft re-classification ({@link resolveGateShape}), so
- * a field-vs-given gate reached through a join/derivation is refused the same
- * way `validateAuthorizeProbes` refuses it at load time — needed here too
- * because a grafted gate can resolve against a DIFFERENT model's given
- * surface than the one `validateAuthorizeProbes` validated.
- */
-export function computeGivenDeclaredDefaults(
-   givens: ReadonlyArray<{ name?: string; default?: unknown }> | undefined,
-): Map<string, string> {
-   return new Map(
-      (givens ?? [])
-         .filter(
-            (g): g is { name: string; default: string } =>
-               g.name != null && g.default != null,
-         )
-         .map((g) => [g.name, g.default as string] as [string, string]),
    );
 }

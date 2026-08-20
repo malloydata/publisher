@@ -32,17 +32,13 @@
  * ({@link collectAuthorizeNearMisses}) rather than either honoured or ignored.
  *
  * This module parses, collects, and (at load time) validates authorize
- * annotations, and classifies a compiled gate against the row-level grammar
- * ({@link classifyAuthorizeGate}). It does not ENFORCE one: a gate is a row
- * filter grafted onto the entry point by `Model.authorizeAndBindRunnable`,
- * and every probe this module builds is COMPILED, never RUN — the
- * package-load worker's `ProxyConnection.runSQL` deliberately throws
- * (`package_load_worker.ts`), so a vacuous-default check against a literal
- * atom's given default is decided statically ({@link classifyAuthorizeGate}'s
- * `literalAtomDetails`), not by executing SQL. Kept light so
- * it bundles cleanly into the
- * package-load worker: its only non-type imports are `../errors` and
- * `./annotations` (which the worker already bundles via `source_extraction.ts`).
+ * annotations. It does not ENFORCE one: a gate is a row filter grafted onto
+ * the entry point by `Model.authorizeAndBindRunnable`, and every probe this
+ * module builds is COMPILED, never RUN — the package-load worker's
+ * `ProxyConnection.runSQL` deliberately throws (`package_load_worker.ts`).
+ * Kept light so it bundles cleanly into the package-load worker: its only
+ * non-type imports are `../errors` and `./annotations` (which the worker
+ * already bundles via `source_extraction.ts`).
  */
 
 import { payloadOf, routeOf } from "@malloydata/malloy";
@@ -404,47 +400,19 @@ export function assertNoMisplacedAuthorizeAnnotations(
  */
 export type AuthorizeMap = Map<string, string[][]>;
 
-/**
- * Build the synthetic probe query that evaluates a source's authorize
- * expressions. Each expression becomes a boolean `select` column over a
- * one-row, warehouse-independent DuckDB source (the `"duckdb"` sandbox is
- * registered for every package, so this never touches the model's real
- * warehouse). Compiling this probe validates the expressions against the
- * model's `given:` block (unknown givens and source-field references surface as
- * compile errors); running it evaluates the gate. The reserved dummy column
- * name is deliberately obscure so a real authorize expression is unlikely to
- * collide with it — a bare field reference in an expression is meant to fail.
- *
- * Always compiles against the AMBIENT given namespace of the model it runs
- * in. It used to accept its own `given:` declarations, for a self-contained
- * per-branch probe of a joined source's gate; a gate is enforced as a row
- * filter on the entry point now, so nothing probes a branch that way and the
- * two remaining callers (`runOneRowProbeOrThrow`,
- * `assertNoVacuousDefaultAtom`) both want the ambient namespace.
- */
-export function buildAuthorizeProbe(exprs: string[]): string {
-   const selects = exprs
-      .map((expr, i) => `__auth_${i} is (${expr})`)
-      .join("\n      ");
-   return `run: duckdb.sql("SELECT 1 AS __authorize_probe_row") -> {
-    select:
-      ${selects}
-    limit: 1
-  }`;
-}
-
 const GIVEN_REF_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
 // Malloy string literals are single-quoted; a `$NAME` inside one is literal
 // text, not a given reference. Strip literals (honoring `\'` escapes) before
-// scanning, so e.g. `$ROLE = 'the $BOSS role'` references only ROLE — otherwise
-// a joined gate's referenced-count is inflated and the full-coverage check
-// wrongly denies a correctly-authorized request.
+// scanning, so e.g. `$ROLE = 'the $BOSS role'` references only ROLE.
 const STRING_LITERAL_PATTERN = /'(?:\\.|[^'\\])*'/g;
 
 /**
  * Given names an authorize expression references (`$NAME` tokens), deduped,
- * in first-seen order. Used to figure out which givens a self-contained
- * probe needs to declare for a given expression.
+ * in first-seen order. Used by `Model.computeAuthorizeReferencedGivenNames`
+ * to find which givens an entry's `exprs` reference — a no-op for the
+ * dimension form, whose `exprs` is a backtick-quoted field name rather than
+ * `$NAME` text (that form's given names come from discovery instead, see
+ * `GateEntry.dimensionForm`).
  */
 export function referencedGivenNames(expr: string): string[] {
    const scanned = expr.replace(STRING_LITERAL_PATTERN, "''");
@@ -467,29 +435,19 @@ export function referencedGivenNames(expr: string): string[] {
 /**
  * Why a row-level gate was refused at publish. Also the metric label.
  *
- * The first six come from {@link classifyAuthorizeGate}: the gate's compiled
- * condition IS readable and is not an allowed shape — invalid IN ITSELF,
- * wherever it is probed from. `vacuous_default_atom` is also a property of the
- * gate itself, found by probing rather than by shape — see
- * `assertNoVacuousDefaultAtom`. `entry_point_unexpressible` is different in
- * kind: the gate is a valid, allowed shape, but at one entry point that did
- * not itself declare it — a derived source (an `extend` that
- * renamed/excluded/projected away the field, or a `query_source` projection)
- * inheriting a source's gate — the field it reads did not resolve at
- * all, so there was no condition to classify. That case does not fail the
- * load — see `validateAuthorizeProbes`'s doc, in particular for how it
- * confirms the gate is genuinely inherited rather than an
- * independently-authored one that merely shares text with something else: by
- * the gate's own annotation NOTE OBJECT, not its string.
+ * `unreachable_given` is a request-time re-check
+ * ({@link ../service/gate_classification}'s `resolveGateShape`): the gate
+ * accepted a given absent from the model's own given surface.
+ * `entry_point_unexpressible` is different in kind: the gate is a valid,
+ * declared gate, but at one entry point that did not itself declare it — a
+ * derived source (an `extend` that renamed/excluded/projected away the
+ * field, or a `query_source` projection) inheriting a source's gate — the
+ * field it reads did not resolve at all, so there was nothing to probe
+ * successfully. That case does not fail the load — see
+ * `validateAuthorizeProbes`'s doc for how "own vs inherited" is decided.
  */
 export type RowLevelGateRejectionCause =
-   | "array_given_needs_in"
-   | "scalar_given_rejects_in"
-   | "field_given_has_default"
-   | "unsupported_node"
-   | "no_given_reference"
    | "unreachable_given"
-   | "vacuous_default_atom"
    | "entry_point_unexpressible"
    // Non-fatal — `./gate_dimension`'s `validateGateDimension` W1/W2, warned
    // rather than refused; the model still loads. See that module's doc.
@@ -515,101 +473,29 @@ const everyMemberOf =
  * Every {@link RowLevelGateRejectionCause}, as the one list the metric
  * description and the docs both read.
  *
- * Retyping the list into prose is what let it drift: the metric help listed six
- * of these (`field_given_has_default` missing, though it is emitted) and
- * `docs/authorize.md` five (also missing `entry_point_unexpressible`) — so an
- * operator alerting on a cause they had never been told about had nowhere to look
- * it up. Adding a member to the union without adding it here now fails the build.
+ * Retyping the list into prose is what let it drift — an operator alerting on
+ * a cause they had never been told about had nowhere to look it up. Adding a
+ * member to the union without adding it here now fails the build.
  */
 export const ROW_LEVEL_GATE_REJECTION_CAUSES =
    everyMemberOf<RowLevelGateRejectionCause>()(
-      "array_given_needs_in",
-      "scalar_given_rejects_in",
-      "field_given_has_default",
-      "unsupported_node",
-      "no_given_reference",
       "unreachable_given",
-      "vacuous_default_atom",
       "entry_point_unexpressible",
       "gate_dimension_no_given_reference",
       "gate_dimension_negated_membership",
       "legacy_string_gate",
    );
 
+/**
+ * The result of resolving one row-level gate against the model's given
+ * surface: either it is a valid row filter (`givenNames` — the givens the
+ * gate compares, used to check every one is on the model's given surface and,
+ * at `/compile`, that the caller engaged with each one), or there was nowhere
+ * to graft it / it referenced a given off the surface (`rejected`).
+ */
 export type RowLevelGateClassification =
-   // `givenNames` is the walker's own record of which givens the gate compared,
-   // and it earns its place by driving the `no_given_reference` rejection below.
-   // A companion list of the FIELD paths the walk visited is deliberately NOT
-   // returned: nothing enforces on field identity — a gate is applied by
-   // grafting its whole compiled condition and proving that landed — and both
-   // uses such a list invites are foreclosed. Naming a field to the caller is
-   // what the error-scrubbing posture forbids, and deciding at load time which
-   // entry points a gate's fields must resolve at is already answered by
-   // compiling the probe there, which is the authority; a second, weaker
-   // classifier beside it is what must not exist.
-   //
-   // `literalAtoms` is the reconstructed source text of every `<given> <op>
-   // <literal>` atom the walk accepted (e.g. `$ROLE != 'admin'` from the
-   // admin-override idiom) — self-contained Malloy boolean expressions, kept
-   // purely for human-readable error messages. A gate is a per-request
-   // filter, so any one of these being TRUE under the given's own
-   // DECLARATION DEFAULT (the value a caller who supplies nothing gets)
-   // makes the whole disjunction it sits in admit every row for that caller
-   // — see `assertNoVacuousDefaultAtom`, which is what actually evaluates
-   // these, off `literalAtomDetails` rather than by re-parsing this text.
-   | {
-        shape: "row_level";
-        givenNames: string[];
-        literalAtoms: string[];
-        literalAtomDetails: LiteralAtomDetail[];
-     }
+   | { shape: "row_level"; givenNames: string[] }
    | { shape: "rejected"; cause: RowLevelGateRejectionCause; detail: string };
-
-/**
- * The structured form of one `literalAtoms` entry — the given, operator, and
- * literal `classifyAuthorizeGate`'s walk already has in hand at the point it
- * builds the text, captured instead of re-parsed back out of it, so
- * `assertNoVacuousDefaultAtom` never has to reverse-engineer operands from a
- * rendered string. `text` is the same string `literalAtoms` carries (for an
- * error message that names the atom); the rest is what a static evaluator
- * needs to decide the atom's truth against a given's declared default.
- */
-export type LiteralAtomDetail =
-   | {
-        kind: "comparison";
-        text: string;
-        given: string;
-        op: string;
-        literalText: string;
-        givenOnLeft: boolean;
-        negate: boolean;
-     }
-   | {
-        kind: "membership";
-        text: string;
-        element: string;
-        container: string;
-     };
-
-/**
- * The compiled-condition node kinds a row-level gate may be built from, and
- * how to descend each one.
- *
- * A gate is an access-control rule, so the set of shapes it may take should be
- * small enough to read in one screen. Everything absent from this table is
- * refused at publish — a function call, arithmetic, a literal comparison, a
- * `like`. Widening it is a decision someone makes on purpose. A bare boolean
- * literal (`true`/`false`) IS accepted, handled separately below — it is the
- * old whole-source admit/deny, expressed as a constant row filter.
- */
-const BOOLEAN_NODES = new Set(["and", "or"]);
-/** Wrappers that contribute no semantics of their own; descend through `.e`. */
-const TRANSPARENT_NODES = new Set(["()"]);
-/** Comparisons legal against a SCALAR given. */
-const SCALAR_COMPARISON_NODES = new Set(["=", "!=", ">", ">=", "<", "<="]);
-
-/** Bound on the compiled-condition walk; a real gate is a handful of nodes. */
-const MAX_GATE_WALK_DEPTH = 64;
 
 /**
  * A compiled `FilterCondition` as this module reads it. Duck-typed rather than
@@ -622,434 +508,7 @@ export interface CompiledGateCondition {
    /** The gate as the author wrote it, carried through by the compiler. */
    code?: string;
    e?: unknown;
-   refSummary?: { fieldUsage?: unknown[]; givenUsage?: unknown[] };
    isSourceFilter?: boolean;
-}
-
-/**
- * Classify a gate from its COMPILED condition — the `FilterCondition` Malloy
- * produces for `source: … extend { where: <gate> }`.
- *
- * Reading the compiled IR rather than the annotation text is what keeps this
- * exact. Malloy has already resolved which names are fields and which are
- * givens, so the walk below tells a field reference from a given reference
- * with no guessing. A text scan cannot answer it: `$ROLE` and `region` are
- * both bare words. Every gate is enforced as a row filter now, whether or not
- * its condition happens to read a field — a field-less condition (`$ROLE =
- * 'admin'`) is simply constant across every row.
- *
- * It also collapses a distinction the plan expected to police by hand. `org_id
- * ? $GROUPS` and `org_id = $GROUPS` compile to the SAME `=` node, so there is
- * nothing to tell apart: both are a scalar comparison against an array-typed
- * given, which is rejected below on the given's declared TYPE. Type, not
- * spelling, is what decides the operator.
- *
- * `declaredTypes` is this model's own given surface. A gate referencing a given
- * that is not on it is refused rather than guessed: the type is what picks the
- * legal operator, so an unknown type cannot be checked at all. That refusal
- * doubles as the given-reachability check — Malloy does not flatten a `given:`
- * declaration past one import hop, so a gate whose given lives two hops away
- * would otherwise silently bind that given's declaration DEFAULT at request
- * time.
- *
- * `declaredDefaults` is this model's given surface again, but the DECLARED
- * DEFAULT text rather than the type — the value a caller who supplies nothing
- * gets. A `<field> <op> $GIVEN` comparison (a real row-level gate, as opposed
- * to the `<given> <op> <literal>` admin-override atom handled separately) is
- * refused outright when `$GIVEN` carries one: `tenant != $EXCLUDED` with
- * `EXCLUDED` defaulting to `''` compiles to `WHERE tenant != ''`, which admits
- * nearly every row for a caller who supplies nothing, and the same failure
- * mode hits `>`/`>=` against a numeric zero default. This is not about the
- * OPERATOR — `<=`/`>=` against a given with NO default (e.g. a no-read-up
- * `clearance <= $MAXLVL`) is a legitimate gate and stays accepted; a given
- * with no default has no hazard at all, since an unsupplied one fails the
- * request outright ("has no value and no default") rather than silently
- * resolving to anything. See `assertNoVacuousDefaultAtom` for the sibling
- * check on the literal-atom side, which this doesn't overlap with: that one
- * PROBES an atom's truth against its default; this one refuses at the shape
- * level because a field comparison can't be probed the same way (the
- * "default" side is a fixed value, but the FIELD side ranges over every row).
- *
- * Fails CLOSED: an unreadable condition is a rejection, never a pass.
- */
-export function classifyAuthorizeGate(
-   condition: CompiledGateCondition,
-   declaredTypes: Map<string, string>,
-   declaredDefaults: Map<string, string>,
-): RowLevelGateClassification {
-   const givenNames: string[] = [];
-   const literalAtoms: string[] = [];
-   const literalAtomDetails: LiteralAtomDetail[] = [];
-   let rejection: RowLevelGateClassification | undefined;
-
-   const reject = (
-      cause: RowLevelGateRejectionCause,
-      detail: string,
-   ): false => {
-      rejection ??= { shape: "rejected", cause, detail };
-      return false;
-   };
-
-   /** The given a comparison operand names, or null if it is not a given. */
-   const givenOperand = (node: unknown): string | null => {
-      const n = asNode(node);
-      return n && n.node === "given" && typeof n.refName === "string"
-         ? n.refName
-         : null;
-   };
-
-   /**
-    * Whether a comparison operand is a bare literal — `numberLiteral`,
-    * `stringLiteral`, or the boolean literal nodes, which Malloy's compiler
-    * discriminates as the node kinds `"true"` / `"false"` themselves rather
-    * than a `literal` value on a shared `booleanLiteral` kind (confirmed
-    * against `@malloydata/malloy`'s `BooleanLiteralNode`). A given-vs-literal
-    * comparison is the admin-override atom (`$ROLE = 'admin'`); anything else
-    * on this side of a given comparison — a field, a function call, a
-    * `like` — stays refused.
-    */
-   const isLiteralOperand = (node: unknown): boolean => {
-      const n = asNode(node);
-      return (
-         !!n &&
-         (n.node === "numberLiteral" ||
-            n.node === "stringLiteral" ||
-            n.node === "true" ||
-            n.node === "false")
-      );
-   };
-
-   /**
-    * Render an {@link isLiteralOperand} node back to Malloy source text, so
-    * an accepted atom can be re-probed on its own (see `literalAtoms` on
-    * {@link RowLevelGateClassification}). `stringLiteral`'s `.literal` is the
-    * raw string VALUE (confirmed against `@malloydata/malloy`'s
-    * `expr-string.js`, which sets it from the author's unescaped source), not
-    * already-quoted Malloy syntax, so it is re-quoted here; `numberLiteral`'s
-    * `.literal` is already valid Malloy numeric source text and is emitted
-    * verbatim. Returns `null` for anything `isLiteralOperand` did not accept
-    * — callers only reach this after that check passes, so `null` here would
-    * mean the two functions disagree.
-    */
-   const literalOperandText = (node: unknown): string | null => {
-      const n = asNode(node);
-      if (!n) return null;
-      if (n.node === "true" || n.node === "false") return n.node;
-      if (n.node === "numberLiteral" && typeof n.literal === "string") {
-         return n.literal;
-      }
-      if (n.node === "stringLiteral" && typeof n.literal === "string") {
-         return `'${n.literal.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-      }
-      return null;
-   };
-
-   /** The declared type of a given, or a rejection if it is not reachable. */
-   const declaredTypeOf = (name: string): string | null => {
-      const declared = declaredTypes.get(name);
-      if (declared === undefined) {
-         reject(
-            "unreachable_given",
-            `\`$${name}\` is not on this model's given surface, so the gate ` +
-               `would bind its declaration default rather than the caller's ` +
-               `value. Declare it here, importing it if it lives elsewhere ` +
-               `(\`import { ${name} } from "…"\`)`,
-         );
-         return null;
-      }
-      return declared;
-   };
-
-   const walk = (node: unknown, depth: number): boolean => {
-      if (depth > MAX_GATE_WALK_DEPTH) {
-         return reject("unsupported_node", "the gate nests too deeply to read");
-      }
-      const n = asNode(node);
-      if (!n || typeof n.node !== "string") {
-         return reject("unsupported_node", "the gate has an unreadable shape");
-      }
-      const kind = n.node;
-      if (BOOLEAN_NODES.has(kind)) {
-         const kids = asNode(n.kids);
-         if (!kids) {
-            return reject("unsupported_node", `\`${kind}\` has no operands`);
-         }
-         return walk(kids.left, depth + 1) && walk(kids.right, depth + 1);
-      }
-      if (TRANSPARENT_NODES.has(kind)) {
-         return walk(n.e, depth + 1);
-      }
-      if (kind === "true" || kind === "false") {
-         // A bare boolean literal — the old whole-source admit/deny, now
-         // expressed as a constant row filter (`where: true` / `where:
-         // false`) rather than a separate enforcement mechanism. Recorded as
-         // a literal atom purely so `assertNoVacuousDefaultAtom` can skip it
-         // by name without a runtime probe — its truth is already static,
-         // and neither value is the vacuous-default hazard that check exists
-         // to catch.
-         literalAtoms.push(kind);
-         return true;
-      }
-      if (kind === "inGiven") {
-         // `field in $ARRAY` — the only correct spelling for an array given,
-         // and the only one that fails CLOSED on an empty array (`WHERE FALSE`).
-         if (n.not === true) {
-            return reject(
-               "unsupported_node",
-               "a negated membership test (`not in`) is not an access rule; " +
-                  "write the gate as the set of rows a caller MAY read",
-            );
-         }
-         const given = givenOperand(n.givenRef);
-         if (given === null) {
-            return reject(
-               "unsupported_node",
-               "`in` must test membership of a declared given",
-            );
-         }
-         const declared = declaredTypeOf(given);
-         if (declared === null) return false;
-         if (!isArrayType(declared)) {
-            return reject(
-               "scalar_given_rejects_in",
-               `\`$${given}\` is declared \`${declared}\` (a scalar), so ` +
-                  `\`in $${given}\` is not a membership test. Compare it with ` +
-                  `\`=\` instead`,
-            );
-         }
-         givenNames.push(given);
-         // The membership side is usually a FIELD (`org_id in $GROUPS`, the
-         // row-level idiom), but it can also be another GIVEN (`$TENANT in
-         // $ALLOWED` — is the caller's tenant one of the values it also
-         // supplied). That reads no row field at all, so — same as a `<given>
-         // <op> <literal>` atom — it is self-contained and constant for the
-         // life of one request; probed the same way by
-         // `assertNoVacuousDefaultAtom`.
-         const otherGiven = givenOperand(n.e);
-         if (otherGiven !== null) {
-            // Reachability is checked on THIS operand too, not just the
-            // membership side: an unreachable given binds its declaration
-            // default at request time instead of the caller's value.
-            if (declaredTypeOf(otherGiven) === null) return false;
-            givenNames.push(otherGiven);
-            const text = `$${otherGiven} in $${given}`;
-            literalAtoms.push(text);
-            literalAtomDetails.push({
-               kind: "membership",
-               text,
-               element: otherGiven,
-               container: given,
-            });
-            return true;
-         }
-         return walkFieldOperand(n.e);
-      }
-      if (SCALAR_COMPARISON_NODES.has(kind)) {
-         return walkScalarComparison(kind, n.kids, false);
-      }
-      if (kind === "not") {
-         // Negating a membership test (`not in`) is refused above — an empty
-         // given then matches every row. Negating a plain scalar comparison
-         // carries no such hazard (`not ($ROLE = 'blocked')` is exactly
-         // `$ROLE != 'blocked'`), so it is accepted for that one shape only;
-         // anything else under a `not` (a compound `and`/`or`, a membership
-         // test) is refused rather than reasoned about generically.
-         let inner = asNode(n.e);
-         while (inner && TRANSPARENT_NODES.has(inner.node as string)) {
-            inner = asNode(inner.e);
-         }
-         if (!inner || !SCALAR_COMPARISON_NODES.has(inner.node as string)) {
-            return reject(
-               "unsupported_node",
-               "`not` may only wrap a single `<field-or-given> <operator> " +
-                  "<given-or-literal>` comparison; a negated membership test " +
-                  "or compound condition is not an access rule",
-            );
-         }
-         return walkScalarComparison(inner.node as string, inner.kids, true);
-      }
-      return reject(
-         "unsupported_node",
-         `\`${kind}\` is not permitted in a gate; a row-level gate is a ` +
-            `boolean combination of \`<field> <operator> $GIVEN\` comparisons`,
-      );
-   };
-
-   /** `<given> <op> <literal-or-field>`, optionally wrapped in `not (...)`. */
-   const walkScalarComparison = (
-      kind: string,
-      kidsNode: unknown,
-      negate: boolean,
-   ): boolean => {
-      const kids = asNode(kidsNode);
-      if (!kids) {
-         return reject("unsupported_node", `\`${kind}\` has no operands`);
-      }
-      const left = givenOperand(kids.left);
-      const right = givenOperand(kids.right);
-      const given = left ?? right;
-      if (given === null) {
-         return reject(
-            "no_given_reference",
-            `\`${kind}\` must compare a field against a given; a comparison ` +
-               `against a constant is a fixed filter and belongs in the ` +
-               `source's own \`where:\``,
-         );
-      }
-      const declared = declaredTypeOf(given);
-      if (declared === null) return false;
-      if (isArrayType(declared)) {
-         // Both `org_id = $GROUPS` and `org_id ? $GROUPS` arrive here: they
-         // compile to the same node. Each one compiles clean and then fails
-         // in the warehouse (`WHERE "org_id"=ARRAY[7,8]` is a cast error),
-         // so it is a broken gate rather than a strict one.
-         return reject(
-            "array_given_needs_in",
-            `\`$${given}\` is declared \`${declared}\` (an array), so ` +
-               `comparing it with \`${kind}\` compiles and then fails in the ` +
-               `warehouse. Write \`in $${given}\` — it is also the spelling ` +
-               `that matches no rows when the array is empty`,
-         );
-      }
-      const otherSide = left === null ? kids.left : kids.right;
-      if (isLiteralOperand(otherSide)) {
-         // `<given> <op> <literal>` — e.g. the admin-override disjunct
-         // `$ROLE = 'admin'`. Constant for the life of one request, so
-         // it is an all-rows-or-no-rows term inside the `where:`, exactly
-         // like the whole-source boolean this gate would have been before
-         // row-level gates existed. Legal as an ATOM inside a row-level
-         // gate.
-         givenNames.push(given);
-         const literalText = literalOperandText(otherSide);
-         if (literalText !== null) {
-            // Side order matters for a non-commutative operator (`>`,
-            // `<`, `>=`, `<=`): reconstruct `$given op literal` when the
-            // given was on the left, `literal op $given` when it was on
-            // the right, rather than always writing the given first.
-            const givenOnLeft = left !== null;
-            const atom = givenOnLeft
-               ? `$${given} ${kind} ${literalText}`
-               : `${literalText} ${kind} $${given}`;
-            // `assertNoVacuousDefaultAtom` evaluates this exact atom (via
-            // `literalAtomDetails`, not by re-parsing this text), so a
-            // negation must be reflected here — evaluating the un-negated
-            // atom would check the wrong condition.
-            const text = negate ? `not (${atom})` : atom;
-            literalAtoms.push(text);
-            literalAtomDetails.push({
-               kind: "comparison",
-               text,
-               given,
-               op: kind,
-               literalText,
-               givenOnLeft,
-               negate,
-            });
-         }
-         return true;
-      }
-      // A real row-level comparison — the given's other side is a FIELD,
-      // which ranges over every row. Refuse it outright if `$given` carries
-      // a declared default: a caller who supplies nothing gets whatever
-      // rows that default admits (`> 0`, `!= ''`, … each admit nearly every
-      // row), and there is no way to probe a field-vs-given comparison the
-      // way `assertNoVacuousDefaultAtom` probes a literal atom, because the
-      // FIELD side isn't a fixed value to evaluate against. A given with NO
-      // default carries no such hazard — see the function doc — so only a
-      // DECLARED default is refused here, not the comparison operator.
-      if (declaredDefaults.has(given)) {
-         return reject(
-            "field_given_has_default",
-            `\`${kind}\` compares row field data against \`$${given}\`, ` +
-               `which is declared with a default (\`${declaredDefaults.get(given)}\`). ` +
-               `A caller who supplies no value for \`$${given}\` gets that ` +
-               `default, and the comparison then applies to every row — ` +
-               `admitting rows it was meant to exclude. Declare \`$${given}\` ` +
-               `with no default so a caller must supply one explicitly`,
-         );
-      }
-      givenNames.push(given);
-      return walkFieldOperand(otherSide);
-   };
-
-   /** The non-given side of a comparison: a plain field reference, nothing else. */
-   const walkFieldOperand = (node: unknown): boolean => {
-      const n = asNode(node);
-      if (!n || n.node !== "field" || !Array.isArray(n.path)) {
-         return reject(
-            "unsupported_node",
-            `a gate compares a FIELD against a given; \`${
-               asNode(node)?.node ?? "that operand"
-            }\` is not a field reference`,
-         );
-      }
-      return true;
-   };
-
-   let ok: boolean;
-   try {
-      ok = walk(condition.e, 0);
-   } catch {
-      // Fail closed: a condition we cannot read is not a gate we can enforce.
-      return {
-         shape: "rejected",
-         cause: "unsupported_node",
-         detail: "the gate's compiled shape could not be read",
-      };
-   }
-   if (!ok) {
-      return (
-         rejection ?? {
-            shape: "rejected",
-            cause: "unsupported_node",
-            detail: "the gate is not an allowed shape",
-         }
-      );
-   }
-   // A bare boolean literal (`true`/`false`) reaches here with no given
-   // reference at all — that is the accepted constant-predicate idiom (see
-   // the `walk` branch above), not the case this guards against. Anything
-   // else that walked successfully with no given pushed to `literalAtoms`
-   // either — every accepted node either names a given or is a bare literal
-   // — so `literalAtoms.length === 0` here means the walk found neither.
-   if (givenNames.length === 0 && literalAtoms.length === 0) {
-      return {
-         shape: "rejected",
-         cause: "no_given_reference",
-         detail:
-            "a row-level gate must compare a field against a given; a gate " +
-            "that references none is a fixed filter and belongs in the " +
-            "source's own `where:`",
-      };
-   }
-   return { shape: "row_level", givenNames, literalAtoms, literalAtomDetails };
-}
-
-/**
- * Whether a given's declared type is an array.
- *
- * The string comes from `ApiGiven.type`, which `malloyGivenToApi` renders from
- * Malloy's type DISCRIMINATOR — so an array given arrives as the bare word
- * `"array"`, not as `"string[]"`. (See the note above `malloyGivenToApi` in
- * `given.ts`: the element type is dropped on the way to the wire.) Matching only
- * a `[]` suffix silently classified every array given as a scalar, which turned
- * `field in $ARRAY` — the one spelling that is correct AND fail-closed on an
- * empty array — into a per-request denial that told the author to use `=`, which
- * is itself rejected.
- *
- * The `[]` suffix is still accepted so a caller holding a source-authored
- * spelling is not misread, but `"array"` is the one production emits.
- */
-function isArrayType(declaredType: string): boolean {
-   const normalized = declaredType.trim().toLowerCase();
-   return normalized === "array" || normalized.endsWith("[]");
-}
-
-/** Narrow an unknown IR node to an indexable object, or null. */
-function asNode(node: unknown): Record<string, unknown> | null {
-   return node !== null && typeof node === "object"
-      ? (node as Record<string, unknown>)
-      : null;
 }
 
 /** Minimal materializer surface needed to compile (not run) the probe. */
@@ -1077,13 +536,11 @@ export function quoteMalloyIdentifier(name: string): string {
  * Build the ROW-LEVEL probe query text: apply a source's effective authorize
  * expressions as a source-level `where:` directly on `sourceName`, so the
  * gate's field references resolve against THAT entry point's own field space
- * — renames, `except:`/`accept:` drops, and projections included — rather
- * than the synthetic one-row source `buildAuthorizeProbe` uses, which has no
- * real columns at all. `__authorize_probe` is a reserved, deliberately
- * obscure select name, same convention as `buildAuthorizeProbe`'s
- * `__auth_N` and `./gate_classification`'s `liftGateCondition`'s identical
- * probe shape (kept in lockstep with it: both need the SAME shape to read
- * back the compiled `FilterCondition` from `_query.structRef.filterList`).
+ * — renames, `except:`/`accept:` drops, and projections included. `__authorize_probe`
+ * is a reserved, deliberately obscure select name, matching `./gate_classification`'s
+ * `liftGateCondition`'s identical probe shape (kept in lockstep with it: both
+ * need the SAME shape to read back the compiled `FilterCondition` from
+ * `_query.structRef.filterList`).
  */
 export function buildRowLevelProbe(
    graftTarget: string,
@@ -1101,13 +558,11 @@ export function buildRowLevelProbe(
  *
  *  - `code` must equal `filterText`. Without it, a source carrying its OWN
  *    `where:` — or a Malloy ordering change — hands back the AUTHOR's condition
- *    instead of the gate's. At load time `classifyAuthorizeGate` would then decide
- *    the gate's enforcement shape from a filter that is not the gate (a real
- *    gate reads `row_level`; a plain author filter reads `rejected`,
- *    failing the load of a package whose gate is fine). At request time it is
- *    worse: `assertGateLanded` "proves" the graft landed by matching this same
- *    entry's `code`, so the proof would pass against the author's filter and the
- *    query would run UNGATED.
+ *    instead of the gate's, which `validateAuthorizeProbes` would then treat
+ *    as a successful probe of a filter that is not the gate at all. At
+ *    request time it is worse: `assertGateLanded` "proves" the graft landed
+ *    by matching this same entry's `code`, so the proof would pass against
+ *    the author's filter and the query would run UNGATED.
  *  - `isSourceFilter` must be true, ruling out a condition that is not a
  *    source-level filter at all — i.e. this probe shape no longer landing where
  *    the whole design depends on it landing.
@@ -1186,400 +641,35 @@ async function liftRowLevelCondition(
 }
 
 /**
- * Run the one-row `buildAuthorizeProbe`, wrapping a failure into the
- * `ModelCompilationError` shape `validateAuthorizeProbes` has always thrown.
+ * Translation-time validation: compile {@link buildRowLevelProbe} for every
+ * entry point in `options.authorizeMap` — the gate applied as a source-level
+ * `where:` on that entry point itself — surfacing an unknown given or a
+ * source-field reference this entry point cannot resolve at model-load
+ * instead of first request.
  *
- * The message interpolates the gate's own expression text, which is deliberate
- * and discloses nothing new IN THIS THREAT MODEL: `sources[].authorize` already
- * publishes a source's effective expressions (see `api-doc.yaml`), and the API
- * carries no authentication of its own (`docs/security-posture.md`), so the text
- * is already readable by anyone who can reach this server. Two precisions,
- * because the argument is narrower than "same surface": the interpolated text
- * can name a gate declared on a struct `sources[]` does NOT publish — a
- * derivation base, or a composite member — and these are
- * `ModelCompilationError`s raised on the operator's own package load, not
- * answers to a caller's query. The author-only assumption is NOT what makes it
- * safe; what makes it safe is that the effective expressions are published
- * already.
- * Called by the "no ancestor to blame this on" fallback below, when a
- * row-level probe failed to compile and no other entry point already proved
- * this exact gate object sound — surfacing the plain one-row probe's error
- * is a friendlier diagnostic than the row-level probe's own compile failure.
- */
-async function runOneRowProbeOrThrow(
-   compiler: AuthorizeProbeCompiler,
-   sourceName: string,
-   exprs: string[],
-): Promise<void> {
-   try {
-      await compiler.loadQuery(buildAuthorizeProbe(exprs)).getPreparedQuery();
-   } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new ModelCompilationError({
-         message: `Invalid #(authorize) annotation on source "${sourceName}" [${exprs.join(" | ")}]: ${detail}`,
-      });
-   }
-}
-
-/**
- * A literal-atom operand or given-default, reduced to a JS value comparable
- * under its given's own DECLARED type — never guessed from the literal's own
- * syntax, so `$NUM = 'x'` (a type the walk never should have accepted) is
- * caught as undecidable rather than compared some way SQL wouldn't.
- */
-type StaticLiteral =
-   | { kind: "string"; value: string }
-   | { kind: "number"; value: number }
-   | { kind: "boolean"; value: boolean };
-
-/**
- * Parse rendered Malloy literal source text — {@link literalOperandText}'s
- * output, or a given's declared-default text (`ApiGiven.default cf.
- * `given.ts`'s `malloyGivenToApi`) — into a {@link StaticLiteral}, per
- * `declaredType`. Returns `null` when the type is not one this function
- * reduces (`date`, `timestamp`, `filter expression`, an array, or text that
- * doesn't match its type's own grammar) — the caller treats that as
- * undecidable rather than guessing.
- */
-function parseStaticLiteral(
-   text: string,
-   declaredType: string,
-): StaticLiteral | null {
-   switch (declaredType.trim().toLowerCase()) {
-      case "boolean":
-         if (text === "true") return { kind: "boolean", value: true };
-         if (text === "false") return { kind: "boolean", value: false };
-         return null;
-      case "number": {
-         if (!/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(text)) return null;
-         const value = Number(text);
-         return Number.isFinite(value) ? { kind: "number", value } : null;
-      }
-      case "string": {
-         const match = /^'((?:\\.|[^'\\])*)'$/.exec(text);
-         return match
-            ? { kind: "string", value: match[1].replace(/\\(.)/g, "$1") }
-            : null;
-      }
-      default:
-         return null;
-   }
-}
-
-/**
- * Split a rendered Malloy array-literal default (`['a', 'b']`, `[1, 2]`) into
- * its element source texts, respecting single-quoted strings so a comma or
- * bracket inside one is not mistaken for a delimiter. Returns `null` for
- * anything that isn't bracket-delimited — the caller treats that as
- * undecidable.
- */
-function parseArrayLiteralElements(text: string): string[] | null {
-   const trimmed = text.trim();
-   if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
-   const inner = trimmed.slice(1, -1).trim();
-   if (inner === "") return [];
-   const elements: string[] = [];
-   let current = "";
-   let inString = false;
-   for (let i = 0; i < inner.length; i++) {
-      const ch = inner[i];
-      if (inString) {
-         current += ch;
-         if (ch === "\\" && i + 1 < inner.length) current += inner[++i];
-         else if (ch === "'") inString = false;
-         continue;
-      }
-      if (ch === "'") {
-         inString = true;
-         current += ch;
-      } else if (ch === ",") {
-         elements.push(current.trim());
-         current = "";
-      } else {
-         current += ch;
-      }
-   }
-   elements.push(current.trim());
-   return elements;
-}
-
-/**
- * Evaluate one {@link LiteralAtomDetail} of kind `"comparison"` against its
- * given's declared default, with SQL comparison semantics: `null` means
- * "cannot be decided statically" (an unparseable literal, or an operator this
- * function doesn't reduce), never a JS-truthy/falsy guess.
- */
-function evaluateComparisonAtom(
-   atom: Extract<LiteralAtomDetail, { kind: "comparison" }>,
-   declaredTypes: Map<string, string>,
-   declaredDefaults: Map<string, string>,
-): boolean | null {
-   const givenDefault = declaredDefaults.get(atom.given);
-   // No declared default is DECIDED, not undecidable: a caller must supply a
-   // value or the request fails, so the atom cannot be vacuously true.
-   if (givenDefault === undefined) return false;
-   const declaredType = declaredTypes.get(atom.given);
-   if (declaredType === undefined) return null;
-   const givenValue = parseStaticLiteral(givenDefault, declaredType);
-   const literalValue = parseStaticLiteral(atom.literalText, declaredType);
-   if (givenValue === null || literalValue === null) return null;
-   const left = atom.givenOnLeft ? givenValue : literalValue;
-   const right = atom.givenOnLeft ? literalValue : givenValue;
-   let result: boolean;
-   switch (atom.op) {
-      case "=":
-         result = left.value === right.value;
-         break;
-      case "!=":
-         result = left.value !== right.value;
-         break;
-      case ">":
-         result = left.value > right.value;
-         break;
-      case ">=":
-         result = left.value >= right.value;
-         break;
-      case "<":
-         result = left.value < right.value;
-         break;
-      case "<=":
-         result = left.value <= right.value;
-         break;
-      default:
-         return null;
-   }
-   return atom.negate ? !result : result;
-}
-
-/**
- * Evaluate one {@link LiteralAtomDetail} of kind `"membership"` (`$element in
- * $container`) against both givens' declared defaults. `null` means "cannot
- * be decided statically" — an unparseable element or array literal, same as
- * {@link evaluateComparisonAtom}.
- */
-function evaluateMembershipAtom(
-   atom: Extract<LiteralAtomDetail, { kind: "membership" }>,
-   declaredTypes: Map<string, string>,
-   declaredDefaults: Map<string, string>,
-): boolean | null {
-   const elementDefault = declaredDefaults.get(atom.element);
-   const containerDefault = declaredDefaults.get(atom.container);
-   // Either side lacking a default makes the membership test decidable as
-   // not-vacuous — see `evaluateComparisonAtom`.
-   if (elementDefault === undefined || containerDefault === undefined) {
-      return false;
-   }
-   const elementType = declaredTypes.get(atom.element);
-   if (elementType === undefined) return null;
-   const elementValue = parseStaticLiteral(elementDefault, elementType);
-   if (elementValue === null) return null;
-   const items = parseArrayLiteralElements(containerDefault);
-   if (items === null) return null;
-   for (const item of items) {
-      const itemValue = parseStaticLiteral(item, elementType);
-      if (itemValue === null) return null;
-      if (itemValue.value === elementValue.value) return true;
-   }
-   return false;
-}
-
-/**
- * Refuse a row-level gate whose accepted literal atom(s)
- * ({@link classifyAuthorizeGate}'s `literalAtomDetails` — a `<given> <op>
- * <literal>` comparison like the admin-override `$ROLE != 'admin'`, or a
- * `$element in $container` membership test) evaluate TRUE against the
- * given's own DECLARATION DEFAULT — the value a caller who supplies nothing
- * gets. The admin-override idiom is an OR disjunct specifically so a caller
- * need not name every non-admin role; the flip side is that the atom's truth
- * is then decided by whichever value the given resolves to when the caller
- * supplies nothing, and the documented convention is an EMPTY default. A
- * `!=` (or any comparison the empty/zero default doesn't happen to satisfy)
- * atom is vacuously true there, and an OR'd atom that is always true makes
- * the whole disjunction — the whole row filter — admit every row for that
- * caller. This is the same failure mode a negated membership test (`not in`)
- * was refused for in {@link classifyAuthorizeGate}: an authoring mistake to
- * catch at load time, not a runtime condition to document as a trap.
+ * A successful compile needs no further classification: the dimension form's
+ * lifted condition is just a field reference, already vetted at declaration
+ * time by `./gate_dimension`'s `validateGateDimensionsForModel` (G1–G4,
+ * private, redefinition); this only has to confirm the graft resolves at
+ * THIS entry point.
  *
- * Evaluated STATICALLY rather than by probing the warehouse — this function
- * runs inside the package-load worker too, whose `ProxyConnection.runSQL`
- * deliberately throws (`package_load_worker.ts`), so a SQL round trip here
- * would fail every load of a package carrying this idiom. Every atom's
- * operand is a given resolved to its declared default (or a literal),
- * exactly as `evaluateComparisonAtom`/`evaluateMembershipAtom` above reduce
- * it — no warehouse involved. A given with NO declared default at all cannot
- * be vacuous this way — a caller must supply a value or the request itself
- * fails ("has no value and no default") — so that is `continue`, not a
- * refusal, matching the prior probe-based behaviour. An atom this function
- * cannot reduce (an unparseable literal, an array default, a type it doesn't
- * know) is reported via `onRowLevelGateUnexpressible` instead of failing the
- * whole load — the same escape `validateAuthorizeProbes` already takes for a
- * gate shape it cannot express at one entry point.
- *
- * Exported for direct unit testing against hand-built `LiteralAtomDetail`s
- * (`authorize.spec.ts`), the same idiom {@link classifyAuthorizeGate}'s own
- * tests use — real callers still only reach it through
- * `validateAuthorizeProbes`.
- */
-export function assertNoVacuousDefaultAtom(
-   sourceName: string,
-   atoms: readonly LiteralAtomDetail[],
-   declaredTypes: Map<string, string>,
-   declaredDefaults: Map<string, string>,
-   onRowLevelGateUnexpressible?: (sourceName: string, detail: string) => void,
-): void {
-   for (const atom of atoms) {
-      const vacuous =
-         atom.kind === "comparison"
-            ? evaluateComparisonAtom(atom, declaredTypes, declaredDefaults)
-            : evaluateMembershipAtom(atom, declaredTypes, declaredDefaults);
-      if (vacuous === null) {
-         onRowLevelGateUnexpressible?.(
-            sourceName,
-            `the atom \`${atom.text}\` could not be evaluated statically ` +
-               `against its given's declared default`,
-         );
-         continue;
-      }
-      if (vacuous) {
-         throw new ModelCompilationError({
-            message:
-               `Invalid #(authorize) annotation on source "${sourceName}": ` +
-               `the atom \`${atom.text}\` evaluates to TRUE when a caller supplies ` +
-               `no givens (its given's own declared default). An OR'd atom ` +
-               `that is true by default makes the whole row filter admit ` +
-               `every row for that caller. Give the given a default this ` +
-               `atom evaluates false against, or declare it with no default ` +
-               `so a caller must supply one explicitly.`,
-         });
-      }
-   }
-}
-
-/**
- * Translation-time validation. Type mismatches such as `$ROLE = 5` are NOT
- * Malloy compile errors, so they are not caught here — they fail closed at
- * the runtime gate.
- *
- * Validation is shape-aware: it works from `options.authorizeMap` (source
- * name → EFFECTIVE gate GROUPS, inheritance included, from
- * `extractSourcesFromModelDef` — see {@link AuthorizeMap}'s doc for why a
- * source name maps to more than one group) — the full entry-point list, not
- * just the declaring source. Each group is classified and validated on its
- * own, never merged with a sibling group from the same entry point. A gate's
- * field reference can resolve at the source that
- * declares it and still fail at an entry point that renamed, excluded, or
- * projected the field away (`rename:`, `except:`, `accept:`, a `->`
- * projection) — and loading the model successfully is NOT evidence this
- * can't happen; the break
- * otherwise surfaces only when a real query touches it. This covers only
- * entry points in THIS model: `compileMalloyModel` compiles each file
- * independently, so an importing model's own entry points get validated when
- * THAT model loads; anything this pass misses fails closed at request time
- * (`Model.resolveGateShape` denies rather than leaks) instead of leaking.
- *
- * For each entry point in `authorizeMap`:
- *  - First compile {@link buildRowLevelProbe} — the gate applied as a
- *    source-level `where:` on the entry point itself — via
- *    `getPreparedQuery()` (compile-only; unlike `getSQL()` it does not
- *    require a given to have a bound value, so an unbound given is not
- *    confused with a field-resolution failure).
- *  - If it compiles, lift the condition and classify it with
- *    {@link classifyAuthorizeGate}:
- *     - `row_level` — the gate's compiled shape is a valid row filter (whether
- *       or not it happens to read a field), and its field(s), if any, resolved
- *       at this entry point; still checked for a vacuous default atom below,
- *       nothing further beyond that.
- *     - `rejected` — record {@link recordRowLevelGateRejected} (via
- *       `options.onRowLevelGateRejected`, so this module itself never
- *       imports the telemetry stack) and throw, naming the source, the gate
- *       text, and the rejection detail.
- *  - If it does NOT compile, the entry is set aside as PENDING rather than
- *    decided immediately — see the two-pass note below for why: a compile
- *    failure alone cannot tell "genuinely broken gate" apart from "this ONE
- *    derived entry point renamed/excluded/projected away the field(s), and
- *    every other entry point that shares the identical gate text is fine".
- *
- * `sourceName` is deliberately NOT used to make that call: whether
- * `sourceName` is among the sources that DECLARE a gate cannot tell apart a
- * source that wrote its own annotation from one Malloy merely copied it onto.
- * Malloy shares a base's annotation NOTE objects, by reference, onto a
- * derived struct's OWN `annotations` whenever the deriving statement adds no
- * annotation of its own — `extend {}`, `extend { rename: … }`, `extend {
- * except: … }`, `extend { accept: … }` all do this. `W_rename`, `W_except`,
- * and `W_accept` — the exact class of "unexpressible at this one entry
- * point" case this scoping exists FOR — therefore look exactly as
- * "declaring" as the source that actually wrote the annotation, by every
- * signal short of comparing note object identity.
- *
- * Gate TEXT is equally unsafe for the same question ("did this exact gate
- * validate somewhere else"): two sources can independently type the
- * identical gate string (same givens, same convention, no relation to each
- * other) and get TWO SEPARATE note objects — one parsed occurrence each. Text
- * matching cannot tell that apart from `W_rename` genuinely sharing `X`'s
- * note object by reference, so a source whose OWN declaration was broken
- * would escape to a warning purely because an unrelated neighbor happened to
- * type the same string and validated fine. Object identity is exactly the
- * discriminator fix1's join-field scan (`source_extraction.ts`) also relies
- * on for the identical reason: it is shared ONLY when Malloy itself copied
- * the reference, never when two authors independently wrote the same text.
- *
- * So the question this function asks is: **is this failing entry's gate
- * genuinely INHERITED** — either it carries no annotation of its own at all
- * (a `query_source` struct has no `annotations` whatsoever, so it can only
- * ever be inheriting), or its own annotation note object is the SAME
- * object, by reference, as one that validated successfully somewhere else
- * in this model? If yes, some OTHER entry point already proved the gate
- * sound and this one just can't express it — denies at request time instead
- * (`Model.resolveGateShape`). If the failing entry's own note is a DISTINCT
- * object (independently authored, even if textually identical to something
- * else), there is no ancestor to blame it on: the load fails exactly as it
- * always has.
- *
- * `options.authorizeOwnNotes` (from `extractSourcesFromModelDef`) carries
- * only a struct's OWN-level authorize-tagged notes. There is no file-level
- * entry folded in: a `##(authorize)` never reaches this function at all, as
- * `assertNoMisplacedAuthorizeAnnotations` refuses the load for one before
- * this runs.
- *
- * TWO PASSES over `authorizeMap`, because that answer isn't known until every
- * entry has been tried, and entry order is `Object.values(modelDef.contents)`
- * insertion order — not guaranteed to put a clean entry point before a
- * renamed/excepted/accepted one:
- *  1. Compile+classify every entry. A `rejected` classification throws
- *     immediately UNLESS this entry carries no `#(authorize)` note of its
- *     own (`options.authorizeOwnNotes` empty for `sourceName` — a
- *     `query_source` struct, which has no `annotations` whatsoever, is
- *     always this case): the probed text there was synthesized by
- *     concatenating ancestor and composite-resolved base gates
- *     (`effectiveAncestorGateExprs`), so a grammar violation in it is not an
- *     authoring mistake AT THIS entry point, and it is warned via
- *     `onRowLevelGateUnexpressible` instead of failing the load — the same
- *     escape pass 2 uses for a note-less PENDING failure, since
- *     `Model.resolveGateShape` denies every request against this shape
- *     regardless. An entry that DOES carry its own note still throws:
- *     the compiled condition's SHAPE (an `and`/`or`/`inGiven` tree) does not
- *     depend on which entry point it was probed from, only on whether it
- *     compiles there at all, so a grammar violation in an author's OWN gate
- *     is invalid wherever it is found, full stop. A `row_level` classification
- *     counts as this entry SUCCEEDING — its own
- *     `#(authorize)`-tagged note objects (`options.authorizeOwnNotes`, from
- *     `extractSourcesFromModelDef`) are added to a set of "proven" note
- *     objects. A compile failure is recorded as PENDING (source name, exprs,
- *     the underlying error) instead of decided yet.
- *  2. For each pending failure: it escapes — reported via
- *     {@link recordRowLevelGateRejected} (`onRowLevelGateRejected`) and
- *     `onRowLevelGateUnexpressible` for a human-readable warning (this
- *     module stays free of both the telemetry stack and a logger, see the
- *     module doc) — WITHOUT failing the load, if its own note objects are
- *     empty (no annotation of its own to have gotten wrong) or intersect the
- *     "proven" set from pass 1. Otherwise it falls back to the one-row
- *     probe — either the gate is genuinely broken (reports today's familiar
- *     error), or the given is not visible from this entry point's model at
- *     all: a gate INHERITED from a base is authored in the base's own given
- *     namespace, and Malloy merges only one level of import, so a base two
- *     or more hops away can reference a given this model cannot see. The
- *     probe reports that as an unresolved given rather than misreporting it
- *     as a broken gate.
+ * A compile failure is either a genuinely broken gate, or an entry point that
+ * INHERITED a gate it cannot express — a derived source (an `extend` that
+ * renamed/excluded/projected away the field, or a `query_source` projection)
+ * whose own field space no longer carries what the gate reads. "Own vs
+ * inherited" is answered directly, per entry, by `options.authorizeOwnNotes`
+ * (from `extractSourcesFromModelDef`): empty means this struct carries no
+ * `#(authorize)`-tagged note of its own at all (a `query_source` struct has
+ * no `annotations` by construction, so it can only ever be inheriting) —
+ * there is no authoring mistake to blame on THIS entry point, so it escapes
+ * via {@link recordRowLevelGateRejected} (`onRowLevelGateRejected`,
+ * `entry_point_unexpressible`) and a human-readable warning
+ * (`onRowLevelGateUnexpressible`; this module stays free of both the
+ * telemetry stack and a logger, see the module doc) WITHOUT failing the
+ * load: `Model.resolveGateShape` denies every request against this one entry
+ * point regardless (see its doc), so leaving the load to continue does not
+ * leak anything. A non-empty own-notes entry has nowhere else to point the
+ * blame, so it throws.
  *
  * Throws `ModelCompilationError` naming the source on the first invalid
  * annotation. Shared by `Model.create` and the package-load worker so both
@@ -1589,33 +679,21 @@ export async function validateAuthorizeProbes(
    compiler: AuthorizeProbeCompiler,
    options: {
       authorizeMap?: AuthorizeMap;
-      declaredTypes?: Map<string, string>;
-      /**
-       * Given name → declared default (rendered Malloy source text, from
-       * `ApiGiven.default` / `malloyGivenToApi`). Passed to
-       * {@link classifyAuthorizeGate} so a field-vs-given row-level
-       * comparison can be refused when its given carries one — see that
-       * function's doc for why a declared default is a vacuous-admission
-       * hazard there in a way a probe can't catch structurally.
-       */
-      declaredDefaults?: Map<string, string>;
       /**
        * source name → the source's OWN-level `#(authorize)`-tagged note
        * objects (from `extractSourcesFromModelDef`) — empty when the struct
        * carries no annotation of its own at all (e.g. a `query_source`,
-       * which has no `annotations` by construction). This is the
-       * note-object identity the two-pass escape decision below keys on —
-       * see the function doc for why gate TEXT is not safe for this and
-       * object identity is what's left.
+       * which has no `annotations` by construction). This is what "own vs
+       * inherited" is decided on below.
        */
       authorizeOwnNotes?: Map<string, AnnotationNote[]>;
       onRowLevelGateRejected?: (cause: RowLevelGateRejectionCause) => void;
       /**
-       * Called instead of throwing when a gate that validated successfully at
-       * some OTHER entry point fails to resolve at `sourceName` specifically
-       * — see the doc above. `detail` is the underlying compile failure
-       * (Malloy already names the unresolved field/join in it, e.g. `'org_id'
-       * is not defined`), for a caller with a logger to report against.
+       * Called instead of throwing when a gate this entry point INHERITS
+       * fails to resolve here — see the doc above. `detail` is the
+       * underlying compile failure (Malloy already names the unresolved
+       * field/join in it, e.g. `'org_id' is not defined`), for a caller
+       * with a logger to report against.
        */
       onRowLevelGateUnexpressible?: (
          sourceName: string,
@@ -1623,179 +701,34 @@ export async function validateAuthorizeProbes(
       ) => void;
    },
 ): Promise<void> {
-   const declaredTypes = options.declaredTypes ?? new Map<string, string>();
-   const declaredDefaults =
-      options.declaredDefaults ?? new Map<string, string>();
-   // Note objects that validated successfully somewhere in this model — see
-   // the function doc for why this, not gate TEXT, is the safe discriminator
-   // for "is a pending failure elsewhere's genuinely inherited copy".
-   const provenNoteObjects = new Set<AnnotationNote>();
    const ownNotesOf =
       options.authorizeOwnNotes ?? new Map<string, AnnotationNote[]>();
-   const pending: Array<{ sourceName: string; exprs: string[]; err: unknown }> =
-      [];
 
    // One `sourceName` may carry MORE THAN ONE group — see `AuthorizeMap`'s
-   // doc. Each group is classified and validated INDEPENDENTLY, exactly as a
-   // single-group source always was: that independence is what keeps two
-   // groups' AND semantics intact instead of silently flattening them into
-   // one OR'd disjunction (the bug this grouping exists to fix).
+   // doc. Each group is validated INDEPENDENTLY, exactly as a single-group
+   // source always was: that independence is what keeps two groups' AND
+   // semantics intact instead of silently flattening them into one OR'd
+   // disjunction (the bug this grouping exists to fix).
    for (const [sourceName, groups] of options.authorizeMap ?? []) {
       for (const exprs of groups) {
          if (exprs.length === 0) continue;
-
-         let condition: CompiledGateCondition;
          try {
-            condition = await liftRowLevelCondition(
-               compiler,
-               sourceName,
-               exprs,
-            );
+            await liftRowLevelCondition(compiler, sourceName, exprs);
          } catch (err) {
-            pending.push({ sourceName, exprs, err });
-            continue;
-         }
-
-         const classification = classifyAuthorizeGate(
-            condition,
-            declaredTypes,
-            declaredDefaults,
-         );
-         // Whether the compiled gate reads any row field, per Malloy's own
-         // reference-tracking walker. A field-LESS gate (`$ROLE like 'ana%'`,
-         // `1 = 1`, `$ROLE_D != 'blocked'`) was a whole-source boolean before
-         // every gate became a row filter, and it published under the looser
-         // rules that governed one; the row-level grammar can refuse it now.
-         // Failing the load for that turns the whole model FILE into a
-         // compilation-failure placeholder, taking every ungated source in it
-         // out of service too, so it takes the `onRowLevelGateUnexpressible`
-         // escape instead: warn, and let this ONE entry point deny every
-         // request (`resolveGateShape`). A field-READING gate is one the
-         // row-level grammar already governed, so it still fails the load.
-         const fieldUsage = condition.refSummary?.fieldUsage;
-         const readsRowField =
-            Array.isArray(fieldUsage) && fieldUsage.length > 0;
-         if (classification.shape === "rejected") {
-            options.onRowLevelGateRejected?.(classification.cause);
-            // A source-level gate concatenates its own ancestor gates with
-            // its composite-resolved base gates into one probed expression
-            // list (`effectiveAncestorGateExprs`) before it ever reaches
-            // this function, so the text rejected here was not necessarily
-            // authored by `sourceName` itself. When this entry carries no
-            // annotation of its own at all — a `query_source` struct has no
-            // `annotations` by construction — the rejection cannot be
-            // blamed on an author sitting at this entry point; it is
-            // exactly the synthesized-predicate case, not a hand-written
-            // bad gate. Route it the same way pass 2 already routes a
-            // note-less compile failure: warn and deny at runtime
-            // (`Model.resolveGateShape` still refuses every request against
-            // this shape) instead of failing the whole load.
+            const detail = err instanceof Error ? err.message : String(err);
             const ownNotes = ownNotesOf.get(sourceName) ?? [];
-            if (ownNotes.length === 0 || !readsRowField) {
-               options.onRowLevelGateUnexpressible?.(
-                  sourceName,
-                  classification.detail,
-               );
+            if (ownNotes.length === 0) {
+               options.onRowLevelGateRejected?.("entry_point_unexpressible");
+               options.onRowLevelGateUnexpressible?.(sourceName, detail);
                continue;
             }
             throw new ModelCompilationError({
                message:
                   `Invalid #(authorize) annotation on source "${sourceName}" ` +
-                  `[${exprs.join(" | ")}]: ${classification.detail}`,
+                  `[${exprs.join(" | ")}]: ${detail}`,
             });
          }
-         // shape === "row_level": the probe compiled at this entry point, so
-         // the gate's field(s) resolved here. Still verify any literal atom
-         // it carries isn't vacuously true at its given's declared default
-         // before calling it valid — see `assertNoVacuousDefaultAtom`'s doc.
-         //
-         // Deliberately WITHOUT the `ownNotes.length === 0` escape the
-         // `rejected` branch above has. That escape exists because a rejected
-         // SHAPE at a note-less entry point is not an authoring mistake anyone
-         // made here — the text was synthesized by concatenating ancestors'
-         // gates. A vacuous default atom is the opposite: it is a property of
-         // the DECLARED gate and its given's declared default, both authored
-         // somewhere, and it is equally wrong at every entry point the gate
-         // reaches. Escaping here would let a gate that admits every row for a
-         // defaulting caller load as long as the first entry point that probes
-         // it happens to carry no note of its own.
-         //
-         // What that costs, and it is the whole cost: the error names
-         // `sourceName` — this entry point — which for a note-less entry is not
-         // the source that authored the gate. Neither reviewer could construct a
-         // spurious load FAILURE from it, so the effect is a correct refusal with
-         // a misleading name in it. Pinned by the entry-point-naming test in
-         // `row_level_authorize.integration.spec.ts`.
-         //
-         // The FIELD-LESS escape the `rejected` branch above takes does NOT
-         // apply here either, and for a sharper reason than the note-less
-         // one: that escape is only fail-closed because `resolveGateShape`
-         // re-runs the SAME shape classification per request and rejects
-         // independently. A vacuous default atom has no request-time
-         // counterpart — it is found by PROBING, which the request path does
-         // not do — so warning instead of throwing would leave the source
-         // serving and admitting every row to a caller who supplies nothing.
-         // A gate that admits everyone by default is broken rather than
-         // merely unexpressible, so it fails the load.
-         try {
-            assertNoVacuousDefaultAtom(
-               sourceName,
-               classification.literalAtomDetails,
-               declaredTypes,
-               declaredDefaults,
-               options.onRowLevelGateUnexpressible,
-            );
-         } catch (err) {
-            options.onRowLevelGateRejected?.("vacuous_default_atom");
-            throw err;
-         }
-         for (const note of ownNotesOf.get(sourceName) ?? []) {
-            provenNoteObjects.add(note);
-         }
       }
-   }
-
-   for (const failure of pending) {
-      const ownNotes = ownNotesOf.get(failure.sourceName) ?? [];
-      // Genuinely inherited: either this entry carries no annotation of its
-      // own at all (nothing here could be the authoring mistake — e.g. a
-      // `query_source` struct, which has no `annotations` whatsoever), or
-      // EVERY one of its own notes is, BY REFERENCE, a note that validated
-      // successfully elsewhere. Gate TEXT is deliberately not consulted: two
-      // sources can independently type the identical string and get two
-      // SEPARATE note objects, and text matching cannot tell that apart from
-      // a genuine by-reference inheritance — see the function doc.
-      //
-      // `every`, not `some`: a source can carry MORE THAN ONE of its own
-      // notes (e.g. two `#(authorize)` annotations, OR'd) — one proven sound
-      // elsewhere, the other its own genuinely broken gate. `some` reports
-      // "inherited" as soon as ANY one note matches, so a source carrying
-      // both would escape to a warning ("not expressible at this entry
-      // point") that misdescribes its own broken annotation as merely
-      // unexpressible here. `every` requires EVERY own note to trace back to
-      // something already proven before it calls the whole entry inherited.
-      const inherited =
-         ownNotes.length === 0 ||
-         ownNotes.every((note) => provenNoteObjects.has(note));
-      if (inherited) {
-         // Some OTHER entry point already proved this exact gate object
-         // sound — this one specifically renamed, excluded, or projected
-         // away the field(s) it needs. Not a reason to fail the whole
-         // model: `Model.resolveGateShape` denies every request against
-         // THIS entry point (see its doc), so leaving the load to continue
-         // does not leak anything.
-         const detail =
-            failure.err instanceof Error
-               ? failure.err.message
-               : String(failure.err);
-         options.onRowLevelGateRejected?.("entry_point_unexpressible");
-         options.onRowLevelGateUnexpressible?.(failure.sourceName, detail);
-         continue;
-      }
-      // No ancestor to blame this on — either genuinely broken, or an
-      // independently-authored gate that merely shares text with something
-      // else that validated. Fall back to the one-row probe.
-      await runOneRowProbeOrThrow(compiler, failure.sourceName, failure.exprs);
    }
 }
 
