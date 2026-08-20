@@ -255,6 +255,16 @@ describe("MaterializationController.createMaterialization validation", () => {
       });
       expect(parsed.ledger).toEqual([entry]);
 
+      // A boundary on a table in a storage destination names that destination,
+      // which is part of the table's identity. Carried with the same weight as
+      // the table name: an entry indexed without it is never found by the source
+      // that owns it, so the source rebuilds in full on every refresh.
+      const stored = { ...entry, storageDestinationName: "lake" };
+      expect(
+         (await parse({ buildInstructions: { sources, ledger: [stored] } }))
+            .ledger,
+      ).toEqual([stored]);
+
       // Empty and absent mean OPPOSITE things — "I own the ledger and nothing
       // is recorded" vs "use your local store" — so both must survive as sent.
       expect(
@@ -305,6 +315,8 @@ describe("MaterializationController.createMaterialization validation", () => {
          [{ ...valid, connectionName: "" }],
          [{ ...valid, strategy: "upsert" }],
          [{ ...valid, mergeKeys: "order_id" }],
+         [{ ...valid, storageDestinationName: "" }],
+         [{ ...valid, storageDestinationName: 7 }],
       ]) {
          await expect(
             controller.createMaterialization("env", "pkg", withLedger(bad)),
