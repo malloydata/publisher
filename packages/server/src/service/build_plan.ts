@@ -706,12 +706,12 @@ function detectDroppedPersistSources(
  * `resolveGateShape`'s lift (`liftGateCondition`) compiles a one-row PROBE
  * query through the SAME already-loaded `materializer` — a pure in-memory
  * semantic recompile that only generates SQL text, never opens the warehouse
- * connection or executes anything against it. Load time DOES classify every
- * gate (`validateAuthorizeProbes` calls `classifyAuthorizeGate` per entry
- * point/gate group), but that call returns `Promise<void>` and keeps nothing:
- * the only survivor is `SerializedModel.authorizeWarnings: string[]`, so no
- * classification result is reachable from here — this compile-time call is
- * the only place that outcome is actually computed.
+ * connection or executes anything against it. Load time DOES compile a probe
+ * per entry point/gate group (`validateAuthorizeProbes`, `./authorize`), but
+ * that call returns `Promise<void>` and keeps no classification result: the
+ * only survivor is `SerializedModel.authorizeWarnings: string[]` — so no
+ * `row_level`/`rejected` outcome is reachable from that call. This
+ * compile-time call is the only place that outcome is actually computed.
  */
 export async function classifyPersistSourceGate(
    persistSource: PersistSource,
