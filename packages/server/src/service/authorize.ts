@@ -1942,6 +1942,14 @@ export function findLegacyStringGates(
  * `recordRowLevelGateRejected` metric channel — callers record that cause
  * once per finding before calling this, so an operator can count affected
  * packages across the deployed (uninventoried) corpus during rollout.
+ *
+ * The rewrite is emitted with `#(authorize)` and the dimension on SEPARATE
+ * lines. A one-line `#(authorize) internal dimension: authorized is ...`
+ * looks equivalent but is not: Malloy consumes everything after
+ * `#(authorize)` on that same line as annotation text, so the dimension
+ * never compiles and the source silently loads with NO gate at all — an
+ * operator pasting a one-line remediation would delete their own access
+ * control with no error or warning. See task-3-fix-brief.md C1.
  */
 export function assertNoLegacyStringGate(
    found: readonly LegacyStringGateFinding[],
@@ -1951,7 +1959,7 @@ export function assertNoLegacyStringGate(
       .flatMap(({ sourceName, exprs }) =>
          exprs.map(
             (expr) =>
-               `  - source "${sourceName}": #(authorize) internal dimension: authorized is ${expr}`,
+               `  - source "${sourceName}":\n      #(authorize)\n      internal dimension: authorized is ${expr}`,
          ),
       )
       .join("\n");
