@@ -2004,8 +2004,11 @@ source: double_laundered is laundered -> { select: id, secret }
 // already correctly denied via assertAuthorizedForAllSources's own
 // `extendSources` handling.
 describe("a query-source's own inner-pipeline join is not gated (Q16)", () => {
-   const QS_INNER_JOIN_MODEL = `#(authorize) "false"
-source: locked9 is duckdb.table('customers') extend { dimension: secret is name }
+   const QS_INNER_JOIN_MODEL = `source: locked9 is duckdb.table('customers') extend {
+  dimension: secret is name
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 source: open9 is duckdb.table('customers') extend { measure: c is count() }
 
@@ -2149,10 +2152,11 @@ source: open_src is duckdb.table('customers') extend {
   measure: c is count()
 }
 
-#(authorize) "false"
 source: locked is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_region is region
+  #(authorize)
+  internal dimension: authorized is false
 }
 
 source: laundered is locked -> { group_by: id, locked_region }
@@ -2226,10 +2230,11 @@ source: open_src is duckdb.table('customers') extend {
   dimension: region_d is region
 }
 
-#(authorize) "false"
 source: locked is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_region is region
+  #(authorize)
+  internal dimension: authorized is false
 }
 
 source: laundered is locked -> { group_by: id, locked_region }
@@ -2243,14 +2248,19 @@ source: open_qs_over_combo is inner_combo -> { group_by: id, region_d }
 source: outer_qs is qs_over_combo -> { group_by: locked_region }
 `;
 
-   it("denies (zero rows) a query-source whose base composite resolves to a locked member", async () => {
+   it("denies (AccessDeniedError) a query-source whose base composite resolves to a locked member — guarantee changed from the string form", async () => {
+      // Same root cause as BLOCKING-5's derivation tests: `qs_over_combo`'s
+      // own projection (`-> { group_by: id, locked_region }`) does not carry
+      // `locked`'s "authorized" field forward, so the by-name graft fails
+      // to attach and denies outright rather than filtering to zero rows.
       await writeModel("qsc_unified.malloy", QS_OVER_COMPOSITE_MODEL);
-      const { compactResult } = await runGated(
-         "qsc_unified.malloy",
-         "run: qs_over_combo -> { group_by: locked_region }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated(
+            "qsc_unified.malloy",
+            "run: qs_over_combo -> { group_by: locked_region }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("allows its open-branch twin: query-source whose base composite resolves to the ungated member", async () => {
@@ -2263,14 +2273,15 @@ source: outer_qs is qs_over_combo -> { group_by: locked_region }
       expect(result.data).toBeDefined();
    });
 
-   it("denies (zero rows) at nesting depth 2: a query-source over a query-source over a composite whose resolved branch hits a locked base", async () => {
+   it("denies (AccessDeniedError) at nesting depth 2: a query-source over a query-source over a composite whose resolved branch hits a locked base — same guarantee change", async () => {
       await writeModel("qsc_unified.malloy", QS_OVER_COMPOSITE_MODEL);
-      const { compactResult } = await runGated(
-         "qsc_unified.malloy",
-         "run: outer_qs -> { group_by: locked_region }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated(
+            "qsc_unified.malloy",
+            "run: outer_qs -> { group_by: locked_region }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });
 
