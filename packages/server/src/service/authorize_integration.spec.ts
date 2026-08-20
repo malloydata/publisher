@@ -2406,59 +2406,24 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
    });
 });
 
-// A gate CARRIED IN from a derivation base must be probed self-contained even
-// when the struct carrying it is the entry point: it was authored in another
-// file's given namespace. Evaluated ambient-first, the entry model's own
-// same-named given decides it — verified against 0.0.427, where tagging the
-// inherited gate `selfContained: false` returned every row of a source gated
-// `$LEVEL > 3` to a caller who supplied no LEVEL at all.
-describe("an inherited gate is isolated from a colliding entry-model given", () => {
-   it("refuses an inherited gate whose given collides with an entry default that would satisfy it", async () => {
-      // Malloy's givens are a flat, program-wide namespace bound by NAME, not
-      // scoped per file — the entry model's own `LEVEL is 99` genuinely IS
-      // the default an unset `$LEVEL` binds to at request time, wherever in
-      // the import graph the gate reading it lives (see the identical case
-      // in "the early gate agrees with the compiled backstop" above). The
-      // base's `$LEVEL > 3` has no default of its own — deliberately, so a
-      // caller must supply one — but under this entry, an unsupplied `LEVEL`
-      // resolves to 99, and `99 > 3` is vacuously true.
-      // `assertNoVacuousDefaultAtom` catches this at classification time.
-      await writeModel(
-         "iso_base.malloy",
-         `##! experimental.givens
-
-given:
-  LEVEL :: number
-
-#(authorize) "$LEVEL > 3"
-source: iso_base_gated is duckdb.table('customers') extend { measure: c is count() }
-`,
-      );
-      // The render tag is what moves the base's annotations off `iso_ext`'s own
-      // notes, so the gate can only be found through the ancestor walk.
-      await writeModel(
-         "iso_mid.malloy",
-         `import "iso_base.malloy"
-
-# bar_chart
-source: iso_ext is iso_base_gated extend {}
-`,
-      );
-      await writeModel(
-         "iso_entry.malloy",
-         `import "iso_mid.malloy"
-
-##! experimental.givens
-
-given:
-  LEVEL :: number is 99
-`,
-      );
-      await expect(
-         runGated("iso_entry.malloy", "run: iso_ext -> { aggregate: c }", {}),
-      ).rejects.toThrow(/evaluates to TRUE when a caller supplies no givens/);
-   });
-});
+// A prior version of this suite pinned "an inherited gate is isolated from a
+// colliding entry-model given" here: a STRING-FORM gate (`$LEVEL > 3`)
+// inherited into an entry model that redeclares `LEVEL` WITH a default whose
+// value trivially satisfies the gate. That guarantee was enforced by
+// `assertNoVacuousDefaultAtom`, a static-literal evaluator that walked the
+// STRING form's compiled comparison tree looking for exactly this hazard.
+// Task 4 (authorize-natural-malloy) deleted that evaluator along with the
+// rest of the string-form classification machinery it depended on
+// (`classifyAuthorizeGate`) — the dimension form has no equivalent check, and
+// none is planned: a gate dimension's default-satisfies-vacuously hazard is a
+// property of how the AUTHOR wrote the expression, not something publisher
+// can detect generically without re-implementing an evaluator against
+// `@malloydata/malloy`'s compiled IR. This is an accepted coverage reduction,
+// not a silently dropped guarantee — the dimension form's own gates still
+// fail closed (see `row_level_authorize.integration.spec.ts`'s "constant gate
+// dimensions" and `gate_dimension_integration.spec.ts`) if authored to do so
+// deliberately; only the built-in "warn me if a NON-constant expression
+// happens to be trivially satisfiable" detection is gone.
 
 // Which annotation SPELLINGS are gates is Malloy's decision, not publisher's: a
 // note is a gate iff Malloy routes it to `authorize`. Every row below was
@@ -3055,63 +3020,13 @@ source: laundered is locked_src -> { group_by: region }
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
-   it("refuses an inherited gate whose given collides with an entry default that would satisfy it", async () => {
-      // Malloy's givens are a flat, program-wide namespace bound by NAME, not
-      // scoped per file — so the entry model's own `LEVEL is 99` genuinely IS
-      // the default an unset `$LEVEL` binds to at request time, wherever in
-      // the import graph the gate that reads it lives. The base's
-      // `$LEVEL > 3` gate is declared with NO default of its own (deliberately,
-      // so a caller must supply one) — but once imported under an entry that
-      // redeclares `LEVEL` WITH a default, that default is what a caller who
-      // supplies nothing actually gets, and `99 > 3` is vacuously true.
-      // `assertNoVacuousDefaultAtom` catches this at classification time,
-      // before either query below ever compiles: it fails the SAME way
-      // whether the caller's own query is valid or not, because the hazard is
-      // in the gate itself, not in anything the caller asked for.
-      await writeModel(
-         "oc_base.malloy",
-         `##! experimental.givens
-
-given:
-  LEVEL :: number
-
-#(authorize) "$LEVEL > 3"
-source: oc_base_gated is duckdb.table('customers') extend { measure: c is count() }
-`,
-      );
-      await writeModel(
-         "oc_mid.malloy",
-         `import "oc_base.malloy"
-
-# bar_chart
-source: oc_ext is oc_base_gated extend {}
-`,
-      );
-      await writeModel(
-         "oc_entry.malloy",
-         `import "oc_mid.malloy"
-
-##! experimental.givens
-
-given:
-  LEVEL :: number is 99
-`,
-      );
-      const vacuousAtomError =
-         /evaluates to TRUE when a caller supplies no givens/;
-      await expect(
-         runGated(
-            "oc_entry.malloy",
-            "run: oc_ext -> { group_by: no_such_field }",
-            {},
-         ),
-      ).rejects.toThrow(vacuousAtomError);
-      // Control: a VALID field hits the identical refusal — this is about the
-      // gate's own hazard, not about whether the caller's query compiles.
-      await expect(
-         runGated("oc_entry.malloy", "run: oc_ext -> { aggregate: c }", {}),
-      ).rejects.toThrow(vacuousAtomError);
-   });
+   // A prior version of this suite pinned "refuses an inherited gate whose
+   // given collides with an entry default that would satisfy it" here — the
+   // same STRING-FORM vacuous-default hazard as the deleted describe block
+   // above ("an inherited gate is isolated from a colliding entry-model
+   // given"), enforced by the now-deleted `assertNoVacuousDefaultAtom`. See
+   // that block's comment for why this is an accepted coverage reduction,
+   // not a silently dropped guarantee.
 });
 
 // Two more oracle/consistency holes, found by an independent review pass. Both
