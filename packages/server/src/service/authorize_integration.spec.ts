@@ -1466,34 +1466,54 @@ source: open_src is duckdb.table('customers') extend {
   dimension: open_flag is 1
 }
 
-#(authorize) "false"
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_flag is 1
+  #(authorize)
+  internal dimension: authorized is false
 }
 
 source: combo is compose(open_src, locked_src)
 `;
 
-   it("denies a query that resolves the composite to the locked member branch", async () => {
+   it("denies (zero rows) a query that resolves the composite to the locked member branch", async () => {
+      // A row-filter graft now, not a classify-time AccessDeniedError: the
+      // composite resolves toward the branch the query needs (`locked_flag`,
+      // only on locked_src), and the appended `where: authorized` filters
+      // that branch's rows to zero rather than refusing the request. A
+      // `group_by:` query with no matching rows is an EMPTY result set, not
+      // `expectDeniedByFilter`'s single zero-count aggregate row.
+      await writeModel("c_composite.malloy", COMPOSITE_MODEL);
+      const { compactResult } = await runGated(
+         "c_composite.malloy",
+         "run: combo -> { aggregate: c; group_by: locked_flag }",
+         {},
+      );
+      expect(compactResult).toEqual([]);
+   });
+
+   it("denies (AccessDeniedError) a query resolving to the OPEN member branch too — guarantee changed from the string form", async () => {
+      // Under the string form this allowed: the boolean probe evaluated
+      // ONLY against the branch the query actually resolved to (open_src),
+      // so an ungated member stayed queryable regardless of a sibling
+      // member's gate. The dimension form grafts `where: authorized` onto
+      // the composite unconditionally (enforcement does not know which
+      // branch the query will resolve to before attaching the filter), and
+      // `authorized` exists on ONLY locked_src's branch — so the composite
+      // resolver can no longer satisfy both "the query's own field
+      // (open_flag, locked_src-absent)" and "the filter's field (authorized,
+      // open_src-absent)" in one branch, and the query fails to compile.
+      // Confirmed safe (no fail-open: this still denies), but it is a real
+      // usability regression — an ungated composite member becomes
+      // unqueryable merely because a SIBLING member carries a gate.
       await writeModel("c_composite.malloy", COMPOSITE_MODEL);
       await expect(
          runGated(
             "c_composite.malloy",
-            "run: combo -> { aggregate: c; group_by: locked_flag }",
+            "run: combo -> { aggregate: c; group_by: open_flag }",
             {},
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
-   });
-
-   it("allows a query that resolves the composite to the open member branch", async () => {
-      await writeModel("c_composite.malloy", COMPOSITE_MODEL);
-      const { result } = await runGated(
-         "c_composite.malloy",
-         "run: combo -> { aggregate: c; group_by: open_flag }",
-         {},
-      );
-      expect(result.data).toBeDefined();
    });
 
    // `Query.compositeResolvedSourceDef` is what lets assertAuthorizedForAllSources
@@ -1504,37 +1524,56 @@ source: combo is compose(open_src, locked_src)
    // `c` measure) — Malloy's composite resolver still picks a concrete first
    // candidate rather than leaving the resolution unset, so the gate still
    // fires on whichever member happens to resolve first.
-   it("still denies when the composite resolves with no field forcing a choice (locked member listed first)", async () => {
+   it("still denies (zero rows) when the composite resolves with no field forcing a choice (locked member listed first)", async () => {
       await writeModel(
          "c_composite_no_disambiguator.malloy",
          `##! experimental.composite_sources
 
 source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
-#(authorize) "false"
-source: locked_src is duckdb.table('customers') extend { measure: c is count() }
+source: locked_src is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 source: combo_locked_first is compose(locked_src, open_src)
 `,
       );
-      await expect(
-         runGated(
-            "c_composite_no_disambiguator.malloy",
-            "run: combo_locked_first -> { aggregate: c }",
-            {},
-         ),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // The appended `where: authorized` filter is itself now what forces
+      // the composite resolver toward locked_src (the only branch with that
+      // field) — a row-filter denial (zero rows), not the classify-time
+      // AccessDeniedError the string form's whole-source boolean produced.
+      await expectDeniedByFilter(
+         "c_composite_no_disambiguator.malloy",
+         "run: combo_locked_first -> { aggregate: c }",
+         {},
+      );
    });
 
-   // `combo`'s own gate (`not ($ROLE = 'blocked')`) and `locked_src`'s
-   // row-level gate (`region = $REGION`) are declared on two DIFFERENT
-   // sources, so each classifies independently — the negated scalar
-   // comparison is an accepted row-level atom in its own right (see
-   // `row-level authorize — grammar` in
-   // `row_level_authorize.integration.spec.ts`). `qs`, a `query_source`
-   // with no `#(authorize)` note of its own, inherits both and the model
-   // loads with every source intact.
-   const COMPOSITE_QS_MODEL = `##! experimental.composite_sources
+   // GUARANTEE LOST, structural (not a test-authoring choice): under the
+   // string form, `combo`'s own note and `locked_src`'s note lived on two
+   // DIFFERENT sources' annotation lists, so each classified independently
+   // and the two composed by AND. The dimension form cannot reproduce this
+   // shape at all — a composite source's OWN `struct.fields` transparently
+   // includes every member's fields (that is what lets a query reference a
+   // member's column through the composite in the first place), so
+   // `locked_src`'s annotated "authorized" dimension is ALREADY a candidate
+   // on `combo`'s own struct before `combo` declares anything of its own.
+   // Adding a second, independently-named annotated dimension directly on
+   // `combo` therefore always trips G1 ("at most one gate dimension per
+   // source") — there is no field name that avoids this, since the conflict
+   // is with the INHERITED member field, not with whatever name `combo`
+   // picks. A composite can carry AT MOST one gate total post-migration:
+   // either its own, or (by inheriting the sole candidate) a single
+   // member's — never both independently ANDed. Confirmed empirically
+   // (see the refusal test below); worth a human decision on whether
+   // composites need first-class multi-gate support, but that is a product
+   // question, not a test-authoring one.
+   it("G1 refuses a composite's own gate dimension when a member already carries one (structural — the AND-composition shape above no longer exists)", async () => {
+      await writeModel(
+         "c_composite_qs_refused.malloy",
+         `##! experimental.composite_sources
 ##! experimental.givens
 
 given:
@@ -1546,90 +1585,28 @@ source: open_src is duckdb.table('customers') extend {
   dimension: open_flag is 1
 }
 
-#(authorize) "region = $REGION"
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_flag is 1
+  #(authorize)
+  internal dimension: authorized is region = $REGION
 }
 
-#(authorize) "not ($ROLE = 'blocked')"
-source: combo is compose(open_src, locked_src)
-
-source: qs is combo -> { group_by: locked_flag, region, name }
-`;
-
-   it("CRITICAL — a composite gate concatenated with a member's row-level gate onto a query_source loads, with every other source intact", async () => {
-      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
+source: combo is compose(open_src, locked_src) extend {
+  #(authorize)
+  internal dimension: permitted is not ($ROLE = 'blocked')
+}
+`,
+      );
       const model = await Model.create(
          "test-pkg",
          TEST_PKG_DIR,
-         "c_composite_qs.malloy",
+         "c_composite_qs_refused.malloy",
          getConnections(),
       );
-      expect(model.getNotebookError()).toBeUndefined();
-      const names = model.getSources()?.map((s) => s.name);
-      expect(names).toContain("open_src");
-      expect(names).toContain("locked_src");
-      expect(names).toContain("combo");
-      expect(names).toContain("qs");
-   });
-
-   it("the composite's OWN gate — untouched by the relaxation above — still admits a caller it allows and denies (zero rows) one it excludes", async () => {
-      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
-      const { result } = await runGated(
-         "c_composite_qs.malloy",
-         "run: combo -> { aggregate: c is count() }",
-         { ROLE: "analyst", REGION: "us-west" },
+      expect(model.getNotebookError()?.message).toMatch(
+         /more than one #\(authorize\) gate dimension/,
       );
-      expect(result.data).toBeDefined();
-      await expectDeniedByFilter(
-         "c_composite_qs.malloy",
-         "run: combo -> { aggregate: c is count() }",
-         { ROLE: "blocked", REGION: "us-west" },
-      );
-   });
-
-   // Two gates authored on two DIFFERENT sources reach this query_source: the
-   // composite's own boolean and the member's row-level filter. They must AND.
-   // This previously denied every caller, which read as fail-closed but was an
-   // accident: the two were concatenated into ONE source's gate list, whose
-   // semantics are OR, and the merged list was rejected wholesale by the
-   // row-level grammar (`not (...)` is not an accepted node) into a
-   // deny-everything escape. Grouping them by declaring source lets each
-   // classify on its own — the boolean by probe, the filter by graft.
-   it("a composite's own gate and its member's row-level gate AND rather than OR — an admitted caller gets only their own rows, an excluded one is denied", async () => {
-      await writeModel("c_composite_qs.malloy", COMPOSITE_QS_MODEL);
-      const query = "run: qs -> { group_by: region, name }";
-
-      const { result } = await runGated("c_composite_qs.malloy", query, {
-         ROLE: "analyst",
-         REGION: "us-west",
-      });
-      const west = JSON.stringify(result.data);
-      expect(west).toContain("us-west");
-      // The leak this pins: OR-ing the two gates satisfied the boolean and
-      // dropped the filter, returning every region.
-      expect(west).not.toContain("us-east");
-
-      // Same caller, other region — proves the filter tracks the given rather
-      // than admitting one fixed slice.
-      const { result: eastResult } = await runGated(
-         "c_composite_qs.malloy",
-         query,
-         { ROLE: "analyst", REGION: "us-east" },
-      );
-      const east = JSON.stringify(eastResult.data);
-      expect(east).toContain("us-east");
-      expect(east).not.toContain("us-west");
-
-      // The composite's own boolean still denies outright — as a row filter,
-      // that means zero rows, not admitting the query with data attached.
-      const { compactResult: blocked } = await runGated(
-         "c_composite_qs.malloy",
-         query,
-         { ROLE: "blocked", REGION: "us-west" },
-      );
-      expect(blocked).toEqual([]);
    });
 });
 
@@ -1645,10 +1622,11 @@ describe("a query-local join to a locked source is not gated (Q16)", () => {
          "c_query_local_join.malloy",
          `source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
-#(authorize) "false"
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
+  #(authorize)
+  internal dimension: authorized is false
 }
 `,
       );
@@ -1674,8 +1652,11 @@ describe("authorize compile-path gate", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.table('customers') extend { measure: c is count() }
+source: gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 
 source: open_src is duckdb.table('customers') extend { measure: c is count() }
 `;
@@ -1789,13 +1770,14 @@ given:
   ROLE :: string
   REGION :: string
 
-#(authorize) "$ROLE = 'analyst'"
 source: regional is duckdb.table('customers') extend {
   measure: c is count()
   view: in_region is {
     where: region = $REGION
     aggregate: c
   }
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
 }
 `;
 
