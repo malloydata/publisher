@@ -119,6 +119,44 @@ source: mz_authz is base -> { aggregate: c is count() }`);
       );
    });
 
+   it("refuses a source protected by a DIMENSION-FORM #(authorize) gate (empty annotation body)", async () => {
+      // Unlike every other fixture in this file, this one's annotation body is
+      // EMPTY (`#(authorize)` with no `"expr"` string) — the dimension form,
+      // where the expression lives in the annotated `internal dimension:`
+      // itself, not in the annotation text. `parseAuthorizeAnnotation("")`
+      // THROWS (`unwrapQuotedExpression` requires a leading `"`), so
+      // `isAuthorizeAnnotation` only calls this a gate via its catch branch,
+      // not the parse-succeeds path every other fixture here exercises. A
+      // "cleanup" that made an empty body return `null` instead of throwing
+      // (a reasonable-looking fix for "empty is not malformed, it's just a
+      // different form") would silently flip this to ineligible-for-refusal —
+      // every dimension-form-gated source would become both
+      // storage-materializable and colocated-servable with no test noticing.
+      //
+      // Deliberately references NO given (`org_id = 999`, a fixed predicate —
+      // `gate_dimension_no_given_reference` at load time, still a valid gate
+      // dimension) rather than a `given:`-keyed comparison: `assertMaterializationEligible`
+      // checks `referencesGiven` BEFORE `referencesAuthorize`, and a
+      // dimension-form gate's given reference is REAL compiled IR (unlike the
+      // string form's, which never compiles into anything), so a given-keyed
+      // gate here would refuse on the given check first and never reach the
+      // authorize path this test exists to exercise.
+      const sources = await persistSources(`##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS org_id") extend {
+  #(authorize)
+  internal dimension: authorized is org_id = 999
+}
+#@ persist name="mz_dim_authz"
+source: mz_dim_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_dim_authz).toBeDefined();
+      expect(() => assertMaterializationEligible(sources.mz_dim_authz)).toThrow(
+         MaterializationEligibilityError,
+      );
+      expect(() => assertMaterializationEligible(sources.mz_dim_authz)).toThrow(
+         /authorize/i,
+      );
+   });
+
    it("refuses a source that reaches an #(authorize) gate through a JOIN", async () => {
       // The gate is on the joined source, not on mz_authz_joined itself — a join
       // must not launder an authorize-gated source into a frozen table.
@@ -217,6 +255,39 @@ source: orders__preagg__category is orders -> {
       ).toThrow(/authorize/i);
       expect(() =>
          assertMaterializationEligible(sources.orders__preagg__category),
+      ).toThrow(/authorize/i);
+   });
+
+   it("refuses a pre-aggregation ROLLUP whose base is DIMENSION-FORM #(authorize)-gated (empty annotation body)", async () => {
+      // Same landmine as the persist-origin dimension-form test above, for the
+      // preaggregate/rollup origin: the gate here is `internal dimension:
+      // authorized is …` with a bare `#(authorize)`, so `isAuthorizeAnnotation`
+      // only classifies it as a gate via the parse-throws catch branch. A
+      // rollup groups ACROSS the gated column, so if this refusal silently
+      // stopped firing for the dimension form, a gated source's rollup would
+      // freeze into an ungated, un-row-filterable artifact served to everyone.
+      // No-given predicate for the same reason as the persist-origin test
+      // above — a given-keyed gate would refuse on `referencesGiven` first.
+      const sources =
+         await persistSources(`##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id") extend {
+  #(authorize)
+  internal dimension: authorized is org_id = 999
+}
+
+#@ persist
+source: orders__preagg__dim_category is orders -> {
+  group_by: category
+  aggregate: total__partial is amount.sum()
+}`);
+      expect(sources.orders__preagg__dim_category).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            sources.orders__preagg__dim_category,
+         ),
+      ).toThrow(/authorize/i);
+      expect(() =>
+         assertMaterializationEligible(sources.orders__preagg__dim_category),
       ).toThrow(/authorize/i);
    });
 
