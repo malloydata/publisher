@@ -11,11 +11,20 @@ import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
-import { EmbeddingProvider } from "../../service/embedding_provider";
+import {
+   EmbeddingProvider,
+   prepareEmbeddingInput,
+} from "../../service/embedding_provider";
 import type { Package } from "../../service/package";
 import {
+   CHUNK_MAX_CHARS,
    EmbeddableEntity,
+   MAX_DOC_CHUNKS,
+   MAX_EMBEDDED_ENTITIES,
    MIN_SIMILARITY,
+   chunkDoc,
+   entityFacets,
+   getEmbeddingIndexStatus,
    SemanticSearchResult,
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
@@ -157,6 +166,78 @@ describe("humanizeName / embeddingText", () => {
    });
 });
 
+describe("chunkDoc / entityFacets", () => {
+   const sentence = (n: number) =>
+      `Fact number ${n} about the grain of this source and how to read it.`;
+
+   it("keeps a short doc as one chunk, so short docs never re-embed", () => {
+      // The upgrade property: anything at or under the ceiling produces the
+      // same single chunk the unchunked scheme produced, so its content hash
+      // is unchanged and it is not re-embedded when chunking ships.
+      expect(chunkDoc("One row per product sold.")).toEqual([
+         "One row per product sold.",
+      ]);
+      const exactly = "a".repeat(CHUNK_MAX_CHARS);
+      expect(chunkDoc(exactly)).toEqual([exactly]);
+   });
+
+   it("returns nothing for an absent or whitespace-only doc", () => {
+      expect(chunkDoc("")).toEqual([]);
+      expect(chunkDoc("   \n  ")).toEqual([]);
+   });
+
+   it("splits a long doc on sentence boundaries, packing toward the target", () => {
+      const doc = Array.from({ length: 12 }, (_, i) => sentence(i)).join(" ");
+      const chunks = chunkDoc(doc);
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+         expect(chunk.length).toBeLessThanOrEqual(CHUNK_MAX_CHARS);
+         // Whole sentences: never cut mid-clause.
+         expect(chunk).toEndWith(".");
+      }
+      // Every sentence survives somewhere; chunking must not drop text.
+      const rejoined = chunks.join(" ");
+      for (let i = 0; i < 12; i++) {
+         expect(rejoined).toContain(sentence(i));
+      }
+   });
+
+   it("caps the chunk count, folding the remainder into the last chunk", () => {
+      // The bound on what one lavishly-documented entity can cost, and the
+      // reason the fold exists: the previous cap DROPPED the overflow.
+      const doc = Array.from({ length: 60 }, (_, i) => sentence(i)).join(" ");
+      const chunks = chunkDoc(doc);
+      expect(chunks).toHaveLength(MAX_DOC_CHUNKS);
+      expect(chunks.join(" ")).toContain(sentence(59));
+   });
+
+   it("keeps an over-long single sentence whole rather than cutting it", () => {
+      const runOn = `${"word ".repeat(200).trim()}.`;
+      expect(chunkDoc(runOn)).toEqual([runOn]);
+   });
+
+   it("prefixes each chunk with the entity name and numbers the facets", () => {
+      const doc = Array.from({ length: 12 }, (_, i) => sentence(i)).join(" ");
+      const facets = entityFacets(entity("fclt_rooms", "src", doc));
+      expect(facets[0]).toEqual({ facet: "name", text: "fclt rooms" });
+      expect(facets.length).toBeGreaterThan(2);
+      facets.slice(1).forEach((f, i) => {
+         expect(f.facet).toBe(`doc:${i}`);
+         // The name anchors a bare fact to the thing it is about.
+         expect(f.text).toStartWith("fclt rooms: ");
+      });
+   });
+
+   it("keeps every chunk within the provider input cap once prefixed", () => {
+      const doc = Array.from({ length: 40 }, (_, i) => sentence(i)).join(" ");
+      for (const facet of entityFacets(entity("some_source", "src", doc))) {
+         expect(prepareEmbeddingInput(facet.text)).toBe(
+            facet.text.replace(/\s+/g, " ").trim(),
+         );
+      }
+   });
+});
+
 describe("trySemanticSearch", () => {
    it("cold start reports indexing, then ranks by cosine with a floor", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
@@ -243,16 +324,273 @@ describe("trySemanticSearch", () => {
             entity("beta", "src"),
          ],
       });
+      // Only the NEW doc facet is embedded. alpha's name facet is unchanged
+      // by documenting it, so it is not re-embedded, and neither is beta.
       expect(counts.get("alpha: now documented")).toBe(1);
+      expect(counts.get("alpha")).toBe(1);
       expect(counts.get("beta")).toBe(1);
-      if (!("hits" in changed)) throw new Error("expected hits");
-      // alpha's new vector is orthogonal to the query, so beta leads now.
-      expect(changed.hits.map((h) => h.name)).toEqual(["beta"]);
 
+      // The point of faceting: documenting alpha must not cost alpha its own
+      // name. Its doc vector here is orthogonal to the query, which under a
+      // single averaged vector per entity is exactly what used to sink it
+      // below beta. Scored on its best facet, alpha still leads.
+      if (!("hits" in changed)) throw new Error("expected hits");
+      expect(changed.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
+      expect(changed.hits[0].score).toBeCloseTo(1.0, 3);
+
+      // Three rows: alpha's name and doc, beta's name. One row per entity
+      // still comes back from the search, because scoring groups by entity.
       const rows = await db.all<{ n: number }>(
          "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
       );
-      expect(rows[0].n).toBe(2);
+      expect(rows[0].n).toBe(3);
+   });
+
+   it("reports index readiness without taking locks or writing", async () => {
+      // Before this, "is the index warm?" was answerable only by scraping a
+      // server log line, so a harness measuring retrieval had no supported
+      // way to wait for a fair measurement.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: documented": [0, 1, 0],
+      });
+      const entities = [
+         entity("alpha", "src", "documented"),
+         entity("beta", "src"),
+      ];
+      const args = {
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "status",
+         query: "find alpha",
+         limit: 10,
+         entities,
+      };
+
+      const cold = await getEmbeddingIndexStatus(
+         db,
+         "env",
+         "status",
+         entities.length,
+      );
+      expect(cold.status).toBe("indexing");
+      expect(cold.embeddedRows).toBe(0);
+      expect(cold.lastSyncedAt).toBeUndefined();
+
+      await searchReady(args);
+
+      const warm = await getEmbeddingIndexStatus(
+         db,
+         "env",
+         "status",
+         entities.length,
+      );
+      expect(warm.status).toBe("ready");
+      // alpha contributes a name row and a doc row, beta only a name row, so
+      // rows exceed entities on a documented model.
+      expect(warm.embeddedRows).toBe(3);
+      expect(warm.totalEntities).toBe(2);
+      expect(warm.lastSyncedAt).toBeDefined();
+   });
+
+   it("reports a package past the embedding cap as oversize, not as indexing", async () => {
+      // A permanent condition an operator must act on, not a transient one to
+      // wait out: reporting it as "indexing" would poll forever.
+      const status = await getEmbeddingIndexStatus(
+         db,
+         "env",
+         "huge",
+         MAX_EMBEDDED_ENTITIES + 1,
+      );
+      expect(status.status).toBe("oversize");
+   });
+
+   it("counts the entities that matched only below the floor", async () => {
+      // gamma is orthogonal to the query and dropped by the floor. Without a
+      // count, an agent cannot tell "dropped as irrelevant" from "not
+      // modelled here at all", and we watched analysts conclude the latter.
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "cutoff",
+         query: "find alpha",
+         limit: 10,
+         entities: [
+            entity("alpha", "src"),
+            entity("beta", "src"),
+            entity("gamma", "src"),
+         ],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
+      expect(result.belowCutoffCount).toBe(1);
+   });
+
+   it("reports a true negative as no hits and nothing below the floor", async () => {
+      // The distinction the count exists for: an empty result with a zero
+      // count means the package genuinely models nothing related.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "find something absent": [0, 1, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "true-negative",
+         query: "find something absent",
+         limit: 10,
+         entities: [entity("alpha", "src")],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits).toEqual([]);
+      // alpha scored 0 against an orthogonal query: below the floor, so it
+      // is counted rather than silently absent.
+      expect(result.belowCutoffCount).toBe(1);
+   });
+
+   it("counts within the drill-down scope, not the whole package", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "scoped-cutoff",
+         query: "find alpha",
+         limit: 10,
+         entities: [
+            entity("alpha", "a"),
+            entity("gamma", "a"),
+            entity("gamma", "b"),
+         ],
+      };
+      await searchReady({ ...base, pkg: {} as unknown as Package });
+      const scoped = await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         sourceName: "a",
+      });
+      if (!("hits" in scoped)) throw new Error("expected hits");
+      // Only source `a`'s gamma is below the floor here; `b`'s is out of
+      // scope entirely, exactly as it is for the ranked query.
+      expect(scoped.belowCutoffCount).toBe(1);
+   });
+
+   it("retrieves a fact buried mid-doc by that fact's own content", async () => {
+      // Symptom B of the same finding: on a ~300-word source doc, a rare
+      // token retrieved the source at rank 1 but near-verbatim business
+      // phrasing from the same doc did not retrieve it at all. Averaged over
+      // everything a long doc mentions, no single fact in it is close to
+      // anything. Here the population rule lives in the doc's fifth
+      // sentence, and the query is that rule in the modeller's own words.
+      const filler = Array.from(
+         { length: 4 },
+         (_, i) => `Unrelated background sentence number ${i} about history.`,
+      ).join(" ");
+      const rule =
+         "Restrict to the buildings Facilities currently holds, excluding leased space.";
+      const doc = `${filler} ${rule} ${filler}`;
+      const chunks = chunkDoc(doc);
+      const ruleChunk = chunks.find((c) => c.includes(rule));
+      if (!ruleChunk) throw new Error("fixture: the rule must land in a chunk");
+
+      // Only the chunk carrying the rule points at the query; the entity's
+      // name and its other chunks point elsewhere.
+      const vectors: Record<string, number[]> = {
+         ...QUERY_VECTORS,
+         "which buildings does facilities hold": [1, 0, 0],
+         "fclt building hist": [0, 0, 1],
+      };
+      for (const chunk of chunks) {
+         vectors[`fclt building hist: ${chunk}`] =
+            chunk === ruleChunk ? [1, 0, 0] : [0, 0, 1];
+      }
+
+      const result = await searchReady({
+         db,
+         provider: mapProvider(vectors).provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "symptom-b",
+         query: "which buildings does facilities hold",
+         limit: 10,
+         entities: [entity("fclt_building_hist", "src", doc)],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits[0].name).toBe("fclt_building_hist");
+      expect(result.hits[0].score).toBeCloseTo(1.0, 3);
+   });
+
+   it("keeps a documented entity findable by its own name", async () => {
+      // The measured §3 failure, reduced: on a real 42-source model a field
+      // with a 547-char doc ranked 10th for its own plain name while
+      // short-doc siblings ranked 1st. Here alpha's doc points away from the
+      // query and its short-doc'd sibling beta points at it; alpha must
+      // still win on the name it is named.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: a long aside about unrelated matters": [0, 0, 1],
+         "beta: alpha-ish": [0.9, 0.4, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "dilution",
+         query: "find alpha",
+         limit: 10,
+         entities: [
+            entity("alpha", "src", "a long aside about unrelated matters"),
+            entity("beta", "src", "alpha-ish"),
+         ],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits[0].name).toBe("alpha");
+      expect(result.hits[0].score).toBeCloseTo(1.0, 3);
+   });
+
+   it("drops a doc facet when the doc is removed, keeping the name facet", async () => {
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: documented": [0, 1, 0],
+      });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "undoc",
+         query: "find alpha",
+         limit: 10,
+      };
+      // A fresh Package per call: the sync memo is per instance, exactly as
+      // a reload swaps the instance in production.
+      await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src", "documented")],
+      });
+      await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src")],
+      });
+
+      const rows = await db.all<{ facet: string }>(
+         `SELECT facet FROM entity_embeddings
+          WHERE environment_name = 'env' AND package_name = 'undoc'`,
+      );
+      expect(rows.map((r) => r.facet)).toEqual(["name"]);
    });
 
    it("re-embeds everything on a model switch without a key collision", async () => {
@@ -672,6 +1010,9 @@ describe("trySemanticSearch", () => {
          },
       });
       const changed = mapProvider({
+         // Name facets included: rewording a doc leaves alpha's name facet
+         // alone, but beta is new here and needs both of its facets.
+         ...ENTITY_VECTORS,
          ...QUERY_VECTORS,
          "alpha: reworded": [0, 1, 0],
          "beta: new": [0, 0, 1],
@@ -699,7 +1040,7 @@ describe("trySemanticSearch", () => {
       // the cool-down so the failed sync has fully settled. This
       // converges with or without the finally bump, so it does not mask
       // the pin below.
-      let settled: SemanticSearchResult = { hits: [] };
+      let settled: SemanticSearchResult = { hits: [], belowCutoffCount: 0 };
       for (let i = 0; i < 200; i++) {
          settled = await trySemanticSearch({
             ...base,

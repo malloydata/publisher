@@ -28,6 +28,7 @@ interface EvalCase {
    pkg: string;
    query: string;
    expect: string; // substring expected in a top-K result name (case-insensitive)
+   expectKind?: string; // also require the hit to be of this kind
    gap?: boolean; // true = no token overlap; lexical is expected to miss
 }
 
@@ -80,6 +81,35 @@ const CASES: EvalCase[] = [
       query: "refund percentage",
       expect: "return_rate",
       gap: true,
+   },
+   // Declared joins are retrievable entities, not just structure. A model's
+   // relationships were invisible to retrieval, so agents concluded there
+   // were none and spent calls guessing; these two find a join by what it is
+   // called and by what its own #(doc) says.
+   {
+      env: "examples",
+      pkg: "storefront",
+      query: "customer who placed the order",
+      expect: "customers",
+      expectKind: "join",
+   },
+   {
+      env: "examples",
+      pkg: "storefront",
+      query: "which sales region does this line roll up to",
+      expect: "regions",
+      expectKind: "join",
+      gap: true,
+   },
+   // Documenting an entity must not cost it its own name. total_margin
+   // carries the longest measure doc in the package and competes with
+   // gross_margin and margin_by_category; under one averaged vector per
+   // entity, that doc is what sank a field for its own plain name.
+   {
+      env: "examples",
+      pkg: "storefront",
+      query: "total margin",
+      expect: "total_margin",
    },
    // malloy-samples (needs a config serving them as environment "samples").
    {
@@ -234,8 +264,10 @@ async function main(): Promise<void> {
       modesSeen.add(mode);
 
       scored++;
-      const rank = results.findIndex((r) =>
-         r.name.toLowerCase().includes(c.expect.toLowerCase()),
+      const rank = results.findIndex(
+         (r) =>
+            r.name.toLowerCase().includes(c.expect.toLowerCase()) &&
+            (c.expectKind === undefined || r.kind === c.expectKind),
       );
       const hit = rank >= 0;
       if (hit) hits++;
@@ -247,7 +279,7 @@ async function main(): Promise<void> {
       const tag = hit ? `HIT@${rank + 1}` : "MISS  ";
       const gap = c.gap ? " [gap]" : "";
       console.log(
-         `  [${tag}] [${mode}] ${c.env}/${c.pkg} / "${c.query}" (want ~${c.expect})${gap}`,
+         `  [${tag}] [${mode}] ${c.env}/${c.pkg} / "${c.query}" (want ~${c.expect}${c.expectKind ? ` as ${c.expectKind}` : ""})${gap}`,
       );
       console.log(`            top: ${top}`);
    }

@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import lunr from "lunr";
+import type { Relationship } from "@malloydata/malloy-interfaces";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import {
@@ -11,17 +12,24 @@ import {
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
-import { entityRowKey, trySemanticSearch } from "./embedding_index";
+import {
+   entityRowKey,
+   getEmbeddingIndexStatus,
+   humanizeName,
+   trySemanticSearch,
+   type EmbeddingIndexStatus,
+   type SemanticUnavailableReason,
+} from "./embedding_index";
 
 /**
  * A retrievable model entity: a source, one of its views, a field (dimension or
- * measure) defined on a source, or a named query. Sources, views, and fields come
- * from the compiled SourceInfo (Model.getSourceInfos()); named queries from
- * Model.getQueries().
+ * measure) defined on a source, a join it declares, or a named query. Sources,
+ * views, fields, and joins come from the compiled SourceInfo
+ * (Model.getSourceInfos()); named queries from Model.getQueries().
  */
 interface Entity {
    id: string;
-   kind: "source" | "view" | "query" | "dimension" | "measure";
+   kind: "source" | "view" | "query" | "dimension" | "measure" | "join";
    name: string;
    source: string | undefined;
    modelPath: string;
@@ -30,6 +38,12 @@ interface Entity {
    // #(doc)-only text used as embedding input; never carries predicate
    // annotations (#(authorize) etc.) that must not leave the machine.
    embedDoc: string;
+   // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
+   // traversing the join fans out (many) before it writes a query against it.
+   relationship?: Relationship;
+   // Other spellings of this same field in the same source that were
+   // collapsed into it (see collapseAliases). Present only when non-empty.
+   aliases?: string[];
 }
 
 /** One tier-4 result. `score` (cosine) rides only on semantic results. */
@@ -41,7 +55,167 @@ interface ResultEntity {
    packageName: string;
    modelPath: string;
    doc: string;
+   relationship?: Relationship;
+   /** Other spellings of this field in its own source, collapsed into it. */
+   aliases?: string[];
+   /** Other sources carrying this same concept, when near-identically scored. */
+   alsoIn?: string[];
    score?: number;
+}
+
+/**
+ * Caps on doc text carried as CONTEXT rather than as a result. A source's own
+ * doc arrives in full when the source is itself a hit; these caps apply only
+ * to the copy that rides along with a field hit, where the point is to deliver
+ * the grain caveat, not to reproduce the model file.
+ */
+export const SOURCE_DOC_MAX_CHARS = 500;
+export const JOIN_DOC_MAX_CHARS = 200;
+
+/** A join as reported in source context: enough to write the traversal. */
+interface SourceContextJoin {
+   name: string;
+   relationship: Relationship;
+   doc?: string;
+}
+
+/**
+ * The parent-source context for one source represented in `results`.
+ *
+ * A field hit alone tells an agent nothing about the grain, population rule,
+ * or reporting convention its source carries, because a source's `#(doc)` only
+ * reached the agent when the source itself independently cleared the relevance
+ * floor for that query. That made whether guidance arrived a function of query
+ * phrasing. Every source behind a result now reports its doc and its complete
+ * join list exactly once per response.
+ */
+interface SourceContextEntry {
+   name: string;
+   modelPath: string;
+   /** Truncated to SOURCE_DOC_MAX_CHARS; the model file has the full text. */
+   doc: string;
+   /**
+    * Every join the source declares, not just retrieved ones. An empty array
+    * is therefore an authoritative "this source declares no joins", which is
+    * what an agent needs to stop probing for one and write it inline.
+    */
+   joins: SourceContextJoin[];
+}
+
+/**
+ * How close two sibling scores must be before they are treated as the same
+ * concept found in parallel sources rather than as two ranked answers.
+ * Tuned against get_context_eval.ts; deliberately tight, so a sibling that
+ * is genuinely a worse match keeps its own row.
+ */
+export const SIBLING_SCORE_EPSILON = 0.03;
+
+/**
+ * Ceiling on what the semantic query may fetch, matching the `limit`
+ * parameter's own maximum. Sibling collapsing over-fetches to refill the
+ * window, and this bounds the scan it can ask for.
+ */
+const SEMANTIC_MAX_LIMIT = 50;
+
+/**
+ * Why a server that HAS an embedding provider answered lexically. Reported
+ * so an agent can act on it: "indexing" is a cold index that clears on its
+ * own within seconds and is worth one retry, while the rest are conditions
+ * an immediate retry cannot fix.
+ */
+type RetrievalReason =
+   | "indexing"
+   | "cooldown"
+   | "too-many-entities"
+   | "provider-error"
+   | "unavailable";
+
+/**
+ * The index's internal reasons, mapped to the wire vocabulary. "error" is
+ * widened to "provider-error" because from the caller's side that is what it
+ * is: the embedding endpoint failed, not this tool.
+ */
+const REASON_BY_UNAVAILABLE: Record<
+   SemanticUnavailableReason,
+   RetrievalReason
+> = {
+   indexing: "indexing",
+   cooldown: "cooldown",
+   "too-many-entities": "too-many-entities",
+   error: "provider-error",
+};
+
+/**
+ * Collapse the same concept appearing in parallel sources into one row that
+ * names the others.
+ *
+ * A model with sibling source families returns the same field from each of
+ * them at effectively the same score: `"site of the building"` returned
+ * `SITE` at 0.96 from all three of `fac_building`, `fclt_building` and
+ * `fclt_building_hist` — identical scores, presented as peers, with nothing
+ * in the response to tell an agent they were near-duplicates or how to
+ * choose. Agents picked one arbitrarily, and choosing wrong between sibling
+ * families was the single largest failure class measured.
+ *
+ * Collapsing does double duty: it returns the wasted slots to genuinely
+ * different concepts, and `alsoIn` makes the ambiguity explicit instead of
+ * leaving it to be inferred from three rows that look independent. Only
+ * near-identical scores group — a sibling that really is a worse match is a
+ * ranked answer, not a duplicate.
+ */
+function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
+   const keptByConcept = new Map<string, ResultEntity>();
+   const kept: ResultEntity[] = [];
+   for (const r of results) {
+      const key = `${r.kind}|${humanizeName(r.name)}`;
+      const peer = keptByConcept.get(key);
+      if (
+         peer &&
+         r.source &&
+         peer.source !== r.source &&
+         Math.abs((peer.score ?? 0) - (r.score ?? 0)) <= SIBLING_SCORE_EPSILON
+      ) {
+         peer.alsoIn = [...(peer.alsoIn ?? []), r.source];
+         continue;
+      }
+      // Keep scanning the over-fetch after the window is full: a later hit
+      // can still be the sibling that makes an already-kept row's ambiguity
+      // visible, and dropping it would report a lone confident answer where
+      // the model actually offers three.
+      if (kept.length >= limit) continue;
+      keptByConcept.set(key, r);
+      kept.push(r);
+   }
+   return kept;
+}
+
+/**
+ * The source-context entries for a result set: one per distinct source behind
+ * a result, in the order those sources first appear, so the most relevant
+ * source's guidance reads first. Keyed on the sources present rather than on
+ * "the first hit", so re-ranking never moves which entry carries what.
+ */
+function contextForResults(
+   results: ResultEntity[],
+   sourceContext: Map<string, SourceContextEntry>,
+): SourceContextEntry[] {
+   const seen = new Set<string>();
+   const entries: SourceContextEntry[] = [];
+   for (const r of results) {
+      if (!r.source || seen.has(r.source)) continue;
+      seen.add(r.source);
+      const entry = sourceContext.get(r.source);
+      if (entry) entries.push(entry);
+   }
+   return entries;
+}
+
+/** Cut over-long context text on a word boundary, marking that it was cut. */
+function truncateDoc(doc: string, max: number): string {
+   if (doc.length <= max) return doc;
+   const cut = doc.slice(0, max);
+   const lastSpace = cut.lastIndexOf(" ");
+   return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
 const getContextShape = {
@@ -124,9 +298,10 @@ export function sanitize(query: string): string {
 }
 
 /**
- * Walk every model in the package and collect sources, their views and
- * dimension/measure fields, and named queries. Returns the full set; the
- * optional source-level drill-down is applied by the caller after retrieval.
+ * Walk every model in the package and collect sources, their views,
+ * dimension/measure fields and declared joins, and named queries. Returns the
+ * full set; the optional source-level drill-down is applied by the caller
+ * after retrieval.
  */
 async function collectEntities(pkg: Package): Promise<Entity[]> {
    // listModels() already returns only .malloy model files (notebooks are listed separately).
@@ -157,8 +332,32 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
             embedDoc: docOnlyText(sourceInfo.annotations),
          });
          for (const field of sourceInfo.schema.fields ?? []) {
-            // v1 indexes the queryable surface: views and dimension/measure
-            // fields. Joins (structural) and calculate (window) are skipped.
+            // Joins are indexed as entities in their own right: an agent that
+            // cannot see a declared join concludes the model has none and
+            // burns queries guessing one. The join's own #(doc) is a common
+            // home for the rule that governs the relationship, so it has to
+            // be retrievable. `calculate` (window) fields stay unindexed:
+            // they are not referenceable outside the view that defines them.
+            if (field.kind === "join") {
+               entities.push({
+                  id: String(n++),
+                  kind: "join",
+                  name: field.name,
+                  // The source that DECLARES the join, so a drill-down on
+                  // that source sees it. The stable JoinInfo inlines the
+                  // target's schema without naming the target source, so
+                  // there is no targetSource to report.
+                  source: sourceName,
+                  modelPath,
+                  doc: docText(field.annotations),
+                  embedDoc: docOnlyText(field.annotations),
+                  relationship: field.relationship,
+               });
+               // Deliberately NOT recursing into field.schema: those fields
+               // are the target source's own, already indexed under it.
+               // Recursing would duplicate every joined field once per join.
+               continue;
+            }
             if (
                field.kind !== "view" &&
                field.kind !== "dimension" &&
@@ -196,12 +395,80 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
    // model that extends another), which surfaces the same entity twice. Keep the
    // first occurrence per (kind, source, name).
    const seen = new Set<string>();
-   return entities.filter((e) => {
+   const deduped = entities.filter((e) => {
       const key = entityRowKey(e.kind, e.source ?? "", e.name);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
    });
+   return collapseAliases(deduped);
+}
+
+/**
+ * Collapse entities within one source that differ only in the spelling of
+ * the same name, keeping the documented one and recording the rest.
+ *
+ * A model that renames a physical column without hiding the original leaves
+ * both in the schema — `SITE` and `site` are one column, indexed twice — and
+ * both then compete for the same scarce result slots. Measured across 8
+ * representative queries on a 42-source model, 34% of returned slots were a
+ * concept the same result set already contained, and the worst case spent
+ * six of eight slots on one concept, three of them a raw column sitting
+ * beside its own alias.
+ *
+ * Detection is by humanized name, and it has to be: the stable Malloy
+ * interface gives a dimension only `{name, type, annotations}`, with no
+ * expression, so there is no way to prove `site` is a rename of `SITE`
+ * rather than a derivation. The heuristic covers the measured case (a pure
+ * case/separator respelling inside one source) and stops there. Two
+ * genuinely distinct fields whose names humanize identically would collapse,
+ * but they would also have embedded near-identically, so what is lost is a
+ * near-duplicate rather than a distinct concept — and the dropped name is
+ * still reported in `aliases`.
+ *
+ * The real fix belongs in the model: Malloy's `include { internal: ... }`
+ * hides the raw column outright, and the indexer already honours it, because
+ * the compiler drops non-public fields before this code ever sees them (see
+ * the access-modifier spec). This collapse is what the tool can do for the
+ * models that have not done that.
+ */
+function collapseAliases(entities: Entity[]): Entity[] {
+   const groups = new Map<string, Entity[]>();
+   for (const e of entities) {
+      // Sources are their own namespace, and joins name a relationship
+      // rather than a column; only fields within one source can be two
+      // spellings of one thing.
+      if (e.kind !== "dimension" && e.kind !== "measure") continue;
+      const key = `${e.kind}|${e.source ?? ""}|${humanizeName(e.name)}`;
+      const group = groups.get(key);
+      if (group) group.push(e);
+      else groups.set(key, [e]);
+   }
+
+   const dropped = new Map<string, Entity>();
+   for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      // Prefer the documented spelling: a modeller who wrote a #(doc) said
+      // which name they meant an agent to use. Failing that, prefer the
+      // lowercase-looking one (`site` over `SITE`), then be deterministic.
+      const [keep, ...rest] = [...group].sort((a, b) => {
+         if (Boolean(b.embedDoc) !== Boolean(a.embedDoc)) {
+            return b.embedDoc ? 1 : -1;
+         }
+         const aRaw = a.name === a.name.toUpperCase();
+         const bRaw = b.name === b.name.toUpperCase();
+         if (aRaw !== bRaw) return aRaw ? 1 : -1;
+         return a.name.localeCompare(b.name);
+      });
+      keep.aliases = rest.map((e) => e.name);
+      for (const e of rest) {
+         dropped.set(entityRowKey(e.kind, e.source ?? "", e.name), e);
+      }
+   }
+   if (dropped.size === 0) return entities;
+   return entities.filter(
+      (e) => !dropped.has(entityRowKey(e.kind, e.source ?? "", e.name)),
+   );
 }
 
 interface PackageIndex {
@@ -209,6 +476,41 @@ interface PackageIndex {
    byId: Map<string, Entity>;
    index: lunr.Index;
    entityCount: number;
+   /** Per-source context, keyed by source name. Built once with the index. */
+   sourceContext: Map<string, SourceContextEntry>;
+}
+
+/**
+ * Derive per-source context from the collected entities: the source's own doc
+ * and every join declared on it. Built once per package alongside the index,
+ * so attaching it to a response costs a lookup rather than a model walk.
+ */
+function buildSourceContext(
+   entities: Entity[],
+): Map<string, SourceContextEntry> {
+   const context = new Map<string, SourceContextEntry>();
+   for (const e of entities) {
+      if (e.kind !== "source") continue;
+      context.set(e.name, {
+         name: e.name,
+         modelPath: e.modelPath,
+         doc: truncateDoc(e.doc, SOURCE_DOC_MAX_CHARS),
+         joins: [],
+      });
+   }
+   for (const e of entities) {
+      if (e.kind !== "join" || !e.relationship) continue;
+      // A join declared on a source the collector never emitted (defensive:
+      // every join reaches us through its source) has nowhere to hang.
+      const parent = e.source ? context.get(e.source) : undefined;
+      if (!parent) continue;
+      parent.joins.push({
+         name: e.name,
+         relationship: e.relationship,
+         ...(e.doc ? { doc: truncateDoc(e.doc, JOIN_DOC_MAX_CHARS) } : {}),
+      });
+   }
+   return context;
 }
 
 // Cache the built entity index per Package instance. environment.getPackage()
@@ -251,6 +553,7 @@ async function getPackageIndex(
       byId,
       index,
       entityCount: entities.length,
+      sourceContext: buildSourceContext(entities),
    };
    indexCache.set(pkg, built);
    logger.debug("[MCP Tool getContext] Built and cached entity index", {
@@ -260,27 +563,38 @@ async function getPackageIndex(
    return built;
 }
 
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you can ground a query in what the model actually defines instead of guessing. This is the starting point when you do not yet know the environment, package, or model names.
+/**
+ * Kept under the truncation budget pinned by server.protocol.spec.ts: a client
+ * was observed cutting this description off mid-sentence, and a tail cut takes
+ * whatever is last. So the contract rules an agent cannot self-correct come
+ * first and the reference material last, and the reference stays terse to buy
+ * room for it. Full prose belongs in docs/ai-agents.md, not here.
+ */
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in names the model actually defines. Start here when you do not know the environment or package names.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
 - Start broad and narrow down: environments, then packages, then sources, then a query.
 - An error, stale, or note field means the data did not load or predates the files: read it before trusting a number.
+- A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probing for one.
+- Read a source's doc before querying it: it carries grain and population rules its fields do not.
 
 ## Parameters
-All optional. Supply what you know and omit the rest; each combination answers at its own level.
-- none: lists the environments, each with its package names.
-- environmentName: lists that environment's packages, with descriptions.
-- + packageName: lists that package's sources.
-- + query: a plain-English description of what you need, returning the sources, views, named queries, and dimension/measure fields most relevant to it.
-- sourceName: narrows retrieval to one source (the drill-down phase).
-- limit: caps results (max 50). Retrieval defaults to 10; the listing levels return all unless set.
+All optional; supply what you know.
+- none: the environments and their package names.
+- environmentName: that environment's packages.
+- + packageName: that package's sources, each with its joins.
+- + query: what you need, in plain English; returns the most relevant sources, views, queries, joins and fields.
+- sourceName: drill down into one source. Its own entity comes back only when relevant; its doc and joins always arrive in sources.
+- limit: caps results (max 50; retrieval defaults to 10).
 
 ## Response
-A JSON object with a results array whose items carry a kind field. For retrieval, each entity has kind (source / view / query / dimension / measure), name, source, modelPath, and doc; environmentName, packageName, modelPath, and source map directly onto malloy_executeQuery parameters, and for a view or named query you pass its name as queryName with sourceName. When the server is configured with an embedding provider, retrieval is ranked by semantic similarity: the payload then carries a retrieval field ("semantic", or "lexical" when the provider is unavailable) and each semantic entity a score.
+results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or query as queryName with sourceName. A join adds relationship, traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs.
+sources[]: per source behind a result — its doc (may be truncated) and full joins.
+With an embedding provider, ranking is semantic and entities carry a score. belowCutoffCount counts matches below the floor: 0 with no results means nothing is related. A "lexical" retrieval adds a retrievalReason; only "indexing" is worth retrying.
 
 ## Worked example
-{ "environmentName": "examples", "packageName": "storefront", "query": "revenue by product category" }`;
+{"environmentName":"examples","packageName":"storefront","query":"revenue by product category"}`;
 
 /**
  * Every tier of this tool answers with `results`, so an error keeps that key
@@ -309,7 +623,7 @@ function contextError(uri: string, identifier: string, error: unknown) {
  * with no environment it lists environments, with an environment but no package
  * it lists packages, with a package but no query it lists the package's sources,
  * and with a query it runs lexical (lunr/BM25) retrieval over the package's model
- * entities (sources, views, dimension/measure fields, named queries). The entity
+ * entities (sources, views, dimension/measure fields, joins, named queries). The entity
  * index is built once per Package and cached (see getPackageIndex), rebuilding
  * automatically when the package reloads.
  */
@@ -463,7 +777,7 @@ export function registerGetContextTool(
             );
          }
 
-         const { byId, index } = pkgIndex;
+         const { byId, index, sourceContext } = pkgIndex;
          const uri = buildMalloyUri(
             { environment: environmentName, package: packageName },
             "get-context",
@@ -526,6 +840,10 @@ export function registerGetContextTool(
                   packageName,
                   modelPath: e.modelPath,
                   doc: e.doc,
+                  // The overview is where an agent decides how to combine
+                  // sources, so each one states its relationships here rather
+                  // than making that a second call. Empty means none declared.
+                  joins: sourceContext.get(e.name)?.joins ?? [],
                }));
             // An empty enumeration is ambiguous to an agent: "no data here" and
             // "the package exposes nothing" look identical. The package DID
@@ -553,12 +871,21 @@ export function registerGetContextTool(
          // provider is configured, so the unconfigured payload stays
          // byte-identical to the lexical-only releases.
          const configured = embeddingConfigured();
+         // A drill-down is confined to one source, so no two hits can be the
+         // same concept in parallel sources and there is nothing to collapse.
+         const scoped = Boolean(sourceName);
          let semanticResults: ResultEntity[] | undefined;
+         let belowCutoffCount = 0;
+         // Why a configured server answered lexically. Without it "lexical"
+         // is a dead end: an agent cannot tell a cold index, which clears in
+         // seconds and is worth retrying, from a down provider, which is not.
+         let retrievalReason: RetrievalReason | undefined;
          if (configured) {
             let provider: EmbeddingProvider | null = null;
             try {
                provider = getEmbeddingProvider();
             } catch (error) {
+               retrievalReason = "unavailable";
                logger.warn(
                   "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
                   {
@@ -579,7 +906,14 @@ export function registerGetContextTool(
                      packageName,
                      entities: Array.from(byId.values()),
                      query: query ?? sanitized,
-                     limit: max,
+                     // Over-fetch so sibling collapsing can refill the
+                     // window with genuinely different concepts instead of
+                     // returning fewer results than asked for. A drill-down
+                     // is already confined to one source, so nothing there
+                     // can collapse and the extra rows would be waste.
+                     limit: scoped
+                        ? max
+                        : Math.min(SEMANTIC_MAX_LIMIT, max * 3),
                      // "" means no drill-down, matching the lexical
                      // path's truthiness filter.
                      sourceName: sourceName || undefined,
@@ -594,7 +928,7 @@ export function registerGetContextTool(
                      // Rows are only a vector cache: modelPath and doc
                      // come from the live entity, and a hit with no live
                      // entity (deleted since the last sync) is dropped.
-                     semanticResults = semantic.hits.flatMap((hit) => {
+                     const ranked = semantic.hits.flatMap((hit) => {
                         const e = byKey.get(
                            entityRowKey(hit.kind, hit.source ?? "", hit.name),
                         );
@@ -608,16 +942,28 @@ export function registerGetContextTool(
                               packageName,
                               modelPath: e.modelPath,
                               doc: e.doc,
+                              ...(e.relationship
+                                 ? { relationship: e.relationship }
+                                 : {}),
+                              ...(e.aliases ? { aliases: e.aliases } : {}),
                               score: Math.round(hit.score * 10_000) / 10_000,
                            },
                         ];
                      });
+                     semanticResults = scoped
+                        ? ranked.slice(0, max)
+                        : groupSiblings(ranked, max);
+                     belowCutoffCount = semantic.belowCutoffCount;
+                  } else {
+                     retrievalReason =
+                        REASON_BY_UNAVAILABLE[semantic.unavailable];
                   }
                } catch (error) {
                   // Defensive: trySemanticSearch does not throw, but the
                   // storage handle lookup can (e.g. before initialization
                   // or under a partial test double). Semantic retrieval
                   // must never take tier 4 down with it.
+                  retrievalReason = "unavailable";
                   logger.warn(
                      "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
                      {
@@ -632,9 +978,14 @@ export function registerGetContextTool(
          }
 
          if (semanticResults !== undefined) {
+            const sources = contextForResults(semanticResults, sourceContext);
             return jsonResource(uri, {
                retrieval: "semantic",
+               // Always present on a semantic response, including 0: the
+               // reading depends on being able to tell 0 from absent.
+               belowCutoffCount,
                results: semanticResults,
+               ...(sources.length > 0 ? { sources } : {}),
                ...noteFor(),
             });
          }
@@ -665,14 +1016,54 @@ export function registerGetContextTool(
                packageName,
                modelPath: e.modelPath,
                doc: e.doc,
+               ...(e.relationship ? { relationship: e.relationship } : {}),
+               ...(e.aliases ? { aliases: e.aliases } : {}),
             }));
 
+         const sources = contextForResults(results, sourceContext);
+         const context = sources.length > 0 ? { sources } : {};
          return jsonResource(
             uri,
             configured
-               ? { retrieval: "lexical", results, ...noteFor() }
-               : { results, ...noteFor() },
+               ? {
+                    retrieval: "lexical",
+                    ...(retrievalReason ? { retrievalReason } : {}),
+                    results,
+                    ...context,
+                    ...noteFor(),
+                 }
+               : { results, ...context, ...noteFor() },
          );
       },
+   );
+}
+
+/**
+ * The semantic index state for one package, or undefined when this server has
+ * no embedding provider and therefore no index to describe.
+ *
+ * Composed here rather than in the controller because `totalEntities` means
+ * "entities this package exposes to retrieval", which is exactly what
+ * collectEntities decides — including the joins it now indexes and the
+ * aliases it collapses. Reusing the same cached index keeps the number
+ * honest instead of letting a second definition of "entity" drift from the
+ * one retrieval actually uses.
+ */
+export async function getPackageEmbeddingStatus(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   packageName: string,
+): Promise<EmbeddingIndexStatus | undefined> {
+   if (!embeddingConfigured()) return undefined;
+   const pkgIndex = await getPackageIndex(
+      environmentStore,
+      environmentName,
+      packageName,
+   );
+   return getEmbeddingIndexStatus(
+      environmentStore.storageManager.getDuckDbConnection(),
+      environmentName,
+      packageName,
+      pkgIndex.entityCount,
    );
 }

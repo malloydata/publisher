@@ -3252,6 +3252,51 @@ components:
             (package version, connection config). Returned by default whenever the
             package is compiled; null only when the package declares no persist
             source.
+        embeddingIndex:
+          type: object
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the state of this package's semantic
+            discovery index, which is what `malloy_getContext` ranks against
+            when an embedding provider is configured. Absent when the server has
+            no provider, because there is no index to describe. Poll `status`
+            until `ready` to know retrieval is warm — before this, that state
+            existed only as a server log line, so anything waiting on a warm
+            index had to scrape logs. It is derived from the same state the
+            search path reads and takes no locks, so polling it cannot perturb
+            or queue behind an indexing run.
+          properties:
+            status:
+              type: string
+              enum:
+                - indexing
+                - ready
+                - cooldown
+                - oversize
+              description: >-
+                `indexing` = rows are still being embedded; retrieval answers
+                lexically meanwhile and this clears on its own. `ready` = the
+                cache covers the package and is serving semantic ranking.
+                `cooldown` = the provider failed recently, so the semantic path
+                is short-circuited for a window. `oversize` = the package has
+                more entities than the embedding cap, so it stays lexical
+                permanently rather than transiently.
+            embeddedRows:
+              type: integer
+              description: >-
+                Cached vectors for this package. An entity contributes one row
+                for its name plus one per chunk of its documentation, so this
+                exceeds `totalEntities` on a documented model and is not a
+                count of entities.
+            totalEntities:
+              type: integer
+              description: Entities the package currently exposes to retrieval.
+            lastSyncedAt:
+              type: string
+              format: date-time
+              description: >-
+                Most recent write to this package's vectors. Absent when
+                nothing has been embedded yet.
 
     PackageMaterializationConfig:
       type: object
